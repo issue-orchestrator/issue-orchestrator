@@ -885,7 +885,9 @@ def _assert_issue_detail_dom_matches_payload(
     run = expected_runs[0]
     run_header = journey.locator(".journey-run > .journey-cycle-header").first
     expect(run_header).to_contain_text(f"Run {run['run_number']}")
-    expect(run_header).to_contain_text(str(run["outcome"]))
+    # PR #6333: ``outcome`` is now a typed ``OutcomeBadge {label, tone}``.
+    # The header displays the label; the tone drives the CSS class.
+    expect(run_header).to_contain_text(run["outcome"]["label"])
     _expect_parseable_time_text(
         page,
         run_header.locator(".journey-cycle-time"),
@@ -1650,23 +1652,23 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
                 has_text=f"#{issue_number}",
             )
             expect(issue_block).to_have_count(1)
-            # The drawer button on the block must carry the typed
-            # Command — same single-owner check as the run-level
-            # affordance.
-            drawer_button = issue_block.locator(
-                "button",
-                has_text="Open issue drawer",
-            ).first
-            expect(drawer_button).to_be_visible()
-            cmd_attr = drawer_button.get_attribute("data-lifecycle-command") or ""
+            # Issue #6322 follow-up: linked-failure drill-in is the
+            # inline ``▸ Attempts on issue #N`` expander, backed by a
+            # typed ``OpenInlineAgentAttemptsCommand``.  The legacy
+            # ``open_issue_timeline`` teleport is gone.
+            expect(
+                issue_block.locator("button", has_text="Open issue drawer")
+            ).to_have_count(0)
+            expander = issue_block.locator(".agent-context-attempts-expander")
+            expect(expander).to_have_count(1)
+            assert expander.get_attribute("data-issue-number") == str(issue_number)
+            cmd_attr = expander.get_attribute("data-lifecycle-command") or ""
             assert cmd_attr, (
-                f"plugin Open-issue-drawer button for #{issue_number} must "
-                f"carry data-lifecycle-command"
+                f"expander for #{issue_number} must carry data-lifecycle-command"
             )
             cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
-            assert cmd.get("kind") == "open_issue_timeline"
+            assert cmd.get("kind") == "open_inline_agent_attempts"
             assert cmd.get("issue_number") == issue_number
-            assert cmd.get("scope_kind") == "dashboard"
 
     if passing_count > 0:
         # Passing tests live inside the browse-by-file expander.  The
@@ -1946,10 +1948,10 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
       clipboard (no per-row Copy Error button — same capability,
       different surface).
     - The linked failure carries the ``io.agent-context`` plugin
-      block with the right issue number and an Open-issue-drawer
-      affordance.  Per-row Coder Session / Timeline / Review buttons
-      are intentionally gone — navigation into the per-issue drawer is
-      the single entry point now.
+      block with the right issue number and the inline ``▸ Attempts
+      on issue #N`` expander (issue #6322 follow-up).  Per-row Coder
+      Session / Timeline / Review buttons are intentionally gone —
+      the inline drill-in is the single entry point now.
     - Filter chips are intentionally gone (cut in Phase C).
     """
     base_url = fixture_web_server["url"]
@@ -2112,12 +2114,49 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
         f"Copy-error icon must copy the failure detail; got {copied_text!r}"
     )
 
-    # ── Linked-failure plugin block carries the issue number + drawer link ─
-    # Inside the now-open card body.
+    # ── Linked-failure plugin block carries the issue number + inline ─
+    # ``▸ Attempts on issue #N`` expander backed by a typed Command
+    # (issue #6322 follow-up).  Inside the now-open card body.
     plugin = failure_card.locator(".cvv-plugin.agent-context")
     expect(plugin).to_be_visible()
     expect(plugin).to_contain_text("#5723")
-    expect(plugin).to_contain_text("Open issue drawer")
+    expect(plugin.locator("button", has_text="Open issue drawer")).to_have_count(0)
+    expander = plugin.locator(".agent-context-attempts-expander")
+    expect(expander).to_have_count(1)
+    assert expander.get_attribute("data-issue-number") == "5723"
+    expect(expander).to_contain_text("Attempts on issue #5723")
+    cmd_attr = expander.get_attribute("data-lifecycle-command") or ""
+    assert cmd_attr, "expander must carry data-lifecycle-command"
+    cmd = json.loads(cmd_attr.replace("&quot;", '"').replace("&amp;", "&"))
+    assert cmd.get("kind") == "open_inline_agent_attempts"
+    assert cmd.get("issue_number") == 5723
+
+    # E2E click-through proof (piggybacks on the existing run-modal
+    # test): stub ``fetch`` and prove the inline expander's
+    # ``runE2ELifecycleCommandFromToggle`` dispatch lands on the
+    # ops-view issue-detail URL.  Catches a regression where the
+    # markup is right but the dispatcher's branch breaks.
+    page.evaluate(
+        "() => {"
+        "  window.__inlineAttemptsCalls = [];"
+        "  window.fetch = (url) => {"
+        "    window.__inlineAttemptsCalls.push(String(url));"
+        "    return Promise.resolve({ ok: true, status: 200, "
+        "      json: () => Promise.resolve({ runs: [] }), "
+        "    });"
+        "  };"
+        "}"
+    )
+    expander.locator("summary").first.click()
+    page.wait_for_function(
+        "() => (window.__inlineAttemptsCalls || []).length > 0",
+        timeout=5000,
+    )
+    inline_calls = page.evaluate("() => window.__inlineAttemptsCalls")
+    assert any("/api/issue-detail/5723?view=ops" in url for url in inline_calls), (
+        f"expected lazy fetch of /api/issue-detail/5723?view=ops via the typed "
+        f"Command dispatcher; got: {inline_calls}"
+    )
 
     # ── Passing test renders inside the canonical viewer (browse-by-file) ─
     expect(cvv).to_contain_text(expected_passed_label)

@@ -48,24 +48,22 @@ function loadViewer(overrides = {}) {
 
 function loadViewerWithAgentPlugin(overrides = {}) {
     const ctx = loadViewer(overrides);
-    // The plugin's "Open issue drawer" affordance renders through the
-    // shared lifecycle Command pipeline (PR #6319 Blocker 1 fix).  In
-    // production ``lifecycle_commands.js`` is loaded earlier in the
-    // bundle; in JS-vm tests we load it before the plugin so the
-    // symbol is in scope.
-    const lifecycleSource = fs.readFileSync(
-        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
+    // The plugin's drill-in affordance is the inline "Attempts on
+    // issue #N" expander (issue #6322 follow-up).  It's defined in
+    // ``inline_agent_attempts.js`` and exposed on ``window`` — the
+    // plugin checks ``typeof renderInlineAgentAttemptsExpander``
+    // before rendering, so it must be in scope at plugin load time.
+    if (!ctx.window) {
+        ctx.window = ctx;
+    }
+    ctx.Map = Map;
+    ctx.Promise = Promise;
+    ctx.setTimeout = (fn) => fn;
+    const inlineSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/inline_agent_attempts.js'),
         'utf8',
     );
-    vm.runInContext(lifecycleSource, ctx, { filename: 'lifecycle_commands.js' });
-    // ``_renderLifecycleCommandButton`` depends on ``_humanizeSnakeCase``
-    // when falling back on a derived label.  Provide a thin stub —
-    // tests pass an explicit fallbackLabel so the stub is never
-    // actually consulted, but loading it avoids a ReferenceError if
-    // some future test omits the label.
-    if (typeof ctx._humanizeSnakeCase !== 'function') {
-        ctx._humanizeSnakeCase = (s) => String(s || '');
-    }
+    vm.runInContext(inlineSource, ctx, { filename: 'inline_agent_attempts.js' });
     const pluginSource = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js'),
         'utf8',
@@ -485,41 +483,42 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
     assert.match(html, /#4503/);
     assert.match(html, /fixture cohort split/);
     assert.match(html, /blocked/);
-    assert.match(html, /Open issue drawer/);
-    // PR #6319 Blocker 1: the Open-issue-drawer affordance must route
-    // through the typed-Command pipeline (data-lifecycle-command on
-    // a real button) so a click actually dispatches into
-    // ``runE2ELifecycleCommand`` → ``openIssueTimeline``.  Plain
-    // ``<a href="/api/...">`` had no real route behind it.
-    const buttonMatch = html.match(/<button[^>]*data-lifecycle-command="([^"]+)"[^>]*>/);
-    assert.ok(buttonMatch, `expected a data-lifecycle-command button; got: ${html.slice(0, 400)}…`);
-    const decoded = buttonMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-    const cmd = JSON.parse(decoded);
-    assert.strictEqual(cmd.kind, 'open_issue_timeline');
+    // Issue #6322 follow-up: the drill-in is no longer a "Open
+    // issue drawer" teleport button — it's an inline expander
+    // (▸ Attempts on issue #N) that lazy-fetches and renders in
+    // place.  The expander is still backed by a typed Command
+    // (``open_inline_agent_attempts``), routed through the shared
+    // lifecycle pipeline.
+    assert.match(html, /agent-context-attempts-expander/);
+    assert.match(html, /Attempts on issue #4503/);
+    assert.match(html, /data-issue-number="4503"/);
+    assert.match(html, /ontoggle="runE2ELifecycleCommandFromToggle\(this\)"/);
+    // No legacy ``open_issue_timeline`` teleport for the plugin's
+    // drill-in (the run-level affordance still uses it, unrelated).
+    assert.doesNotMatch(html, /Open issue drawer/);
+    // Decode the typed Command on the expander.
+    const cmdMatch = html.match(/agent-context-attempts-expander[^>]*data-lifecycle-command="([^"]+)"/);
+    assert.ok(cmdMatch, 'expander must carry typed data-lifecycle-command');
+    const cmd = JSON.parse(cmdMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+    assert.strictEqual(cmd.kind, 'open_inline_agent_attempts');
     assert.strictEqual(cmd.issue_number, 4503);
-    assert.strictEqual(cmd.scope_kind, 'dashboard');
 });
 
-test('plugin: agent-context plugin degrades to text-only when lifecycle_commands.js is not loaded', () => {
+test('plugin: agent-context plugin degrades to text-only when inline_agent_attempts.js is not loaded', () => {
     // Generic JUnit consumers (tixmeup et al.) may register the
     // agent-context plugin but NOT load
-    // ``lifecycle_commands.js`` — they don't have a typed-Command
-    // pipeline.  The plugin must still render the linked-issue
-    // summary (issue number, title, final state, summary text)
-    // without throwing or emitting a broken button.  The
-    // Open-issue-drawer button is simply omitted when the shared
-    // command renderer is unavailable.
-    //
-    // This test loads only the viewer + the plugin (no
-    // lifecycle_commands.js) and exercises a normal linked-issue
-    // payload.  Without the guard in the plugin, the call to
-    // ``_renderLifecycleCommandButton`` would ReferenceError.
+    // ``inline_agent_attempts.js`` — they don't have an
+    // orchestrator-style Attempts/Cycles drill-in.  The plugin must
+    // still render the linked-issue summary (issue number, title,
+    // final state, summary text) without throwing or emitting a
+    // broken expander.  The inline drill-in is simply omitted when
+    // its symbol is unavailable.
     const ctx = loadViewer();
     const pluginSource = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js'),
         'utf8',
     );
-    vm.runInContext(pluginSource, ctx, { filename: 'plugins/agent_context.js (no lifecycle bundle)' });
+    vm.runInContext(pluginSource, ctx, { filename: 'plugins/agent_context.js (no inline bundle)' });
     const html = ctx.renderCanonicalValidationViewer({
         status: 'failed',
         junit_cases: [{
@@ -541,10 +540,9 @@ test('plugin: agent-context plugin degrades to text-only when lifecycle_commands
     assert.match(html, /#4503/);
     assert.match(html, /fixture cohort split/);
     assert.match(html, /blocked/);
-    // ... but with no Open-issue-drawer button (no typed-Command
-    // pipeline available to dispatch the click).
-    assert.doesNotMatch(html, /data-lifecycle-command/);
-    assert.doesNotMatch(html, /Open issue drawer/);
+    // ... but with no inline expander (its symbol wasn't loaded).
+    assert.doesNotMatch(html, /agent-context-attempts-expander/);
+    assert.doesNotMatch(html, /Attempts on issue/);
 });
 
 test('plugin: agent-context plugin ignores legacy run_url even if a stale payload passes one', () => {

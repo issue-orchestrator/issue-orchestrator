@@ -403,7 +403,7 @@ class IssueCyclePayload(BaseModel):
     expanded: bool | None
     iteration: int | None
     lifecycle: int | None
-    outcome: str
+    outcome: OutcomeBadgePayload
     phase_groups: list[JourneyPhaseGroupPayload]
     reset_from_scratch: bool | None
     retry_count: int | None
@@ -536,7 +536,7 @@ class JourneyRunPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     cycles: list[IssueCyclePayload]
     expanded: bool
-    outcome: str
+    outcome: OutcomeBadgePayload
     reset_from_scratch: bool
     run_id: str | None
     run_key: str
@@ -611,6 +611,12 @@ class OpenE2ERunCommandPayload(BaseModel):
     label: str
     run_id: int = Field(..., ge=1, strict=True)
 
+class OpenInlineAgentAttemptsCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_number: int = Field(..., ge=1, strict=True)
+    kind: Literal['open_inline_agent_attempts']
+    label: str
+
 class OpenIssueTimelineCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     e2e_run_id: int | None = None
@@ -641,6 +647,11 @@ class OpenValidationDetailsCommandPayload(BaseModel):
     kind: Literal['open_validation_details']
     label: str
     run_dir: str
+
+class OutcomeBadgePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str
+    tone: Literal['passed', 'failed', 'error', 'in_progress', 'neutral']
 
 class PassedE2ETestExecutionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -922,6 +933,6 @@ ReviewTranscriptEvidencePayload: TypeAlias = ReviewTranscriptAvailablePayload | 
 
 SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload
 
-TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload
+TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | OpenInlineAgentAttemptsCommandPayload
 
 ValidationOutcomePayload: TypeAlias = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload

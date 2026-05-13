@@ -1211,6 +1211,16 @@
           "expand_run_details": {"type": "boolean"}
         }
       },
+      "OpenInlineAgentAttemptsCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "issue_number"],
+        "properties": {
+          "kind": {"const": "open_inline_agent_attempts"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer", "minimum": 1}
+        }
+      },
       "TimelineCommandPayload": {
         "oneOf": [
           {"$ref": "#/components/schemas/ShowEventDetailsCommandPayload"},
@@ -1219,7 +1229,8 @@
           {"$ref": "#/components/schemas/OpenSessionRecordingCommandPayload"},
           {"$ref": "#/components/schemas/OpenReviewFeedbackCommandPayload"},
           {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"},
-          {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"}
+          {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
+          {"$ref": "#/components/schemas/OpenInlineAgentAttemptsCommandPayload"}
         ],
         "discriminator": {"propertyName": "kind"}
       },
@@ -1640,6 +1651,15 @@
           }
         }
       },
+      "OutcomeBadgePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "tone"],
+        "properties": {
+          "label": {"type": "string"},
+          "tone": {"enum": ["passed", "failed", "error", "in_progress", "neutral"]}
+        }
+      },
       "IssueCyclePayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1654,7 +1674,7 @@
           "cycle_number": {"type": "integer"},
           "coder": {"$ref": "#/components/schemas/CodingAttemptPayload"},
           "review": {"$ref": "#/components/schemas/ReviewStagePayload"},
-          "outcome": {"type": "string"},
+          "outcome": {"$ref": "#/components/schemas/OutcomeBadgePayload"},
           "diagnostics": {"type": "array", "items": {"$ref": "#/components/schemas/TimelineDiagnosticPayload"}},
           "lifecycle": {"type": ["integer", "null"]},
           "iteration": {"type": ["integer", "null"]},
@@ -1696,7 +1716,7 @@
         "properties": {
           "run_number": {"type": "integer"},
           "run_label": {"type": "string"},
-          "outcome": {"type": "string"},
+          "outcome": {"$ref": "#/components/schemas/OutcomeBadgePayload"},
           "run_key": {"type": "string"},
           "run_id": {"type": ["string", "null"]},
           "session_run_ids": {"type": "array", "items": {"type": "string"}},

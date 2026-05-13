@@ -392,7 +392,7 @@ export interface IssueCyclePayload {
   expanded: boolean | null;
   iteration: number | null;
   lifecycle: number | null;
-  outcome: string;
+  outcome: OutcomeBadgePayload;
   phase_groups: JourneyPhaseGroupPayload[];
   reset_from_scratch: boolean | null;
   retry_count: number | null;
@@ -526,7 +526,7 @@ export interface JourneyPhaseGroupPayload {
 export interface JourneyRunPayload {
   cycles: IssueCyclePayload[];
   expanded: boolean;
-  outcome: string;
+  outcome: OutcomeBadgePayload;
   reset_from_scratch: boolean;
   run_id: string | null;
   run_key: string;
@@ -602,6 +602,12 @@ export interface OpenE2ERunCommandPayload {
   run_id: number;
 }
 
+export interface OpenInlineAgentAttemptsCommandPayload {
+  issue_number: number;
+  kind: "open_inline_agent_attempts";
+  label: string;
+}
+
 export interface OpenIssueTimelineCommandPayload {
   e2e_run_id?: number | null;
   issue_number: number;
@@ -631,6 +637,11 @@ export interface OpenValidationDetailsCommandPayload {
   kind: "open_validation_details";
   label: string;
   run_dir: string;
+}
+
+export interface OutcomeBadgePayload {
+  label: string;
+  tone: "passed" | "failed" | "error" | "in_progress" | "neutral";
 }
 
 export interface PassedE2ETestExecutionPayload {
@@ -914,6 +925,6 @@ export type ReviewTranscriptEvidencePayload = ReviewTranscriptAvailablePayload |
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
 
-export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload;
+export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | OpenInlineAgentAttemptsCommandPayload;
 
 export type ValidationOutcomePayload = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload;

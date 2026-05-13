@@ -214,7 +214,11 @@ def test_rework_cycle_outcome_prefixed_for_non_review_cycle() -> None:
         _evt("session.failed", timestamp="2026-02-16T10:30:00Z", logical_run=1, logical_cycle=2, status="failed", summary="compile error"),
     ]
     cycles = _journey_cycles(events, "2026-02-16")
-    assert cycles[0].outcome.startswith("Rework →")
+    assert cycles[0].outcome.label.startswith("Rework →")
+    # Path B (PR #6333): tone is owned by the projection.  A
+    # non-review rework cycle whose inner outcome is a session
+    # failure is failed-toned.
+    assert cycles[0].outcome.tone == "failed"
 
 
 def test_phase_groups_follow_logical_phase_not_event_name_guessing() -> None:

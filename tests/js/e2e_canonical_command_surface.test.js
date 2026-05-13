@@ -60,12 +60,23 @@ function _baseStubs() {
 // the renderer returns strings.
 function loadCanonicalSurface(spies = {}) {
     const ctx = { ..._baseStubs(), ...spies };
+    // ``inline_agent_attempts.js`` exposes
+    // ``renderInlineAgentAttemptsExpander`` on ``window`` — the
+    // agent-context plugin checks for it at render time.  Mirror the
+    // production bundle so the plugin's inline expander shows up.
+    ctx.Map = Map;
+    ctx.Promise = Promise;
+    ctx.setTimeout = (fn) => fn;
+    ctx.window = ctx;
     vm.createContext(ctx);
     vm.runInContext(_readJs('validation_viewer.js'), ctx, {
         filename: 'validation_viewer.js',
     });
     vm.runInContext(_readJs('lifecycle_commands.js'), ctx, {
         filename: 'lifecycle_commands.js',
+    });
+    vm.runInContext(_readJs('inline_agent_attempts.js'), ctx, {
+        filename: 'inline_agent_attempts.js',
     });
     vm.runInContext(_readJs('plugins/agent_context.js'), ctx, {
         filename: 'plugins/agent_context.js',
@@ -128,7 +139,15 @@ test('cmd surface: untracked-failure-only run produces NO Commands in the body',
     assert.match(html, /AssertionError: untriaged break/);
 });
 
-test('cmd surface: linked-failure run produces exactly one Open-issue-drawer Command with the right issue number', () => {
+test('cmd surface: linked-failure run renders an inline Attempts expander backed by an open_inline_agent_attempts typed Command', () => {
+    // Issue #6322 follow-up: the plugin no longer teleports to the
+    // drawer via an Open-issue-drawer typed Command.  The drill-in
+    // is an inline ``▸ Attempts on issue #N`` expander, but the
+    // expander is STILL backed by a typed Command — the
+    // ``open_inline_agent_attempts`` kind — so dispatch flows
+    // through the same single-owner pipeline as every other
+    // affordance in the canonical viewer.  The new Command
+    // replaces the legacy ``open_issue_timeline`` teleport.
     const ctx = loadCanonicalSurface();
     const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
@@ -141,25 +160,33 @@ test('cmd surface: linked-failure run produces exactly one Open-issue-drawer Com
         },
     });
     const html = ctx.renderCanonicalValidationViewer(canonical);
+    // Exactly one typed Command — the inline-attempts loader for #4503.
     const commands = extractCommands(html);
     assert.strictEqual(commands.length, 1);
     assert.deepStrictEqual(commands[0], {
-        kind: 'open_issue_timeline',
+        kind: 'open_inline_agent_attempts',
+        label: 'Open Inline Agent Attempts',
         issue_number: 4503,
-        scope_kind: 'dashboard',
-        label: 'Open issue drawer ↗',
     });
+    // The inline expander carries the issue number and is closed.
+    assert.match(html, /agent-context-attempts-expander/);
+    assert.match(html, /data-issue-number="4503"/);
+    assert.match(html, /Attempts on issue #4503/);
+    assert.match(html, /ontoggle="runE2ELifecycleCommandFromToggle\(this\)"/);
+    assert.ok(!/<details[^>]*data-issue-number="4503"[^>]*\sopen[\s>]/.test(html),
+        'inline expander must start closed');
     // The user sees the right issue + final state + summary.
     assert.match(html, /#4503/);
     assert.match(html, /publish flake/);
     assert.match(html, /TimeoutError: publish did not complete/);
 });
 
-test('cmd surface: mixed run (linked + untracked failures) produces one Command per LINKED failure only', () => {
+test('cmd surface: mixed run (linked + untracked) renders one inline expander per LINKED failure, untracked failures get no expander', () => {
     // Three failures: one linked (#4503), one linked (#4504), one
-    // untracked.  Each linked failure gets a plugin block →
-    // an Open-issue-drawer Command.  The untracked failure gets
-    // nothing in the body.
+    // untracked.  Each linked failure renders an inline Attempts
+    // expander with its own data-issue-number.  The untracked
+    // failure surfaces in the viewer body (name + headline) but
+    // gets no expander.
     const ctx = loadCanonicalSurface();
     const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
@@ -185,18 +212,24 @@ test('cmd surface: mixed run (linked + untracked failures) produces one Command 
         },
     });
     const html = ctx.renderCanonicalValidationViewer(canonical);
+    // One typed Command per LINKED failure (kind
+    // ``open_inline_agent_attempts``).  Untracked failures have no
+    // Command — they have nothing to drill into.
     const commands = extractCommands(html);
-    assert.strictEqual(commands.length, 2);
-    // Order is the order the failures appear in the rendered
-    // viewer body, which matches the translator's category
-    // ordering (untriaged → has_issue → flaky).  Untracked
-    // failure has no Command, so the first Command corresponds to
-    // the first linked failure.
-    assert.strictEqual(commands[0].issue_number, 4503);
-    assert.strictEqual(commands[0].scope_kind, 'dashboard');
-    assert.strictEqual(commands[1].issue_number, 4504);
-    assert.strictEqual(commands[1].scope_kind, 'dashboard');
-    // Content sanity for the untracked failure surface (no Command,
+    const inlineCmds = commands.filter((c) => c.kind === 'open_inline_agent_attempts');
+    assert.strictEqual(inlineCmds.length, 2);
+    const issueNumbers = inlineCmds.map((c) => c.issue_number).sort((a, b) => a - b);
+    assert.deepStrictEqual(issueNumbers, [4503, 4504]);
+    // One expander per LINKED failure.
+    const expanderIssues = Array.from(
+        html.matchAll(/agent-context-attempts-expander[^>]*data-issue-number="(\d+)"/g),
+    ).map((m) => Number(m[1]));
+    assert.deepStrictEqual(expanderIssues.sort((a, b) => a - b), [4503, 4504],
+        `expected exactly one expander per linked failure; got ${JSON.stringify(expanderIssues)}`);
+    // Each expander has its corresponding human-readable title.
+    assert.match(html, /Attempts on issue #4503/);
+    assert.match(html, /Attempts on issue #4504/);
+    // Content sanity for the untracked failure surface (no expander,
     // but the test name + headline DID render).
     assert.match(html, /test_new/);
     assert.match(html, /AssertionError: brand new/);
@@ -488,10 +521,27 @@ test('dispatch: unknown kind toasts a warning (visible signal, no crash)', () =>
 // rendered Command JSON disagrees with what the dispatcher
 // expects.
 
-test('round-trip: render a linked-failure payload, extract the Command from the button, dispatch it, observe the handler call', () => {
-    // 1. Render
-    const render = loadCanonicalSurface();
-    const canonical = render.e2eRunToCanonicalPayload({
+test('round-trip: render a linked-failure payload, extract the typed Command from the expander, dispatch through runE2ELifecycleCommandFromToggle, observe the lazy fetch', () => {
+    // The strongest "Command pattern works end-to-end" assertion:
+    // render the payload, pull the typed Command out of the
+    // rendered ``data-lifecycle-command`` on the inline expander,
+    // simulate the ``<details>`` toggle through the SHARED
+    // dispatcher (``runE2ELifecycleCommandFromToggle``), and prove
+    // the lazy-fetch URL on the spy.  Catches an entire class of
+    // bugs where the rendered Command JSON disagrees with what the
+    // dispatcher expects.
+    const fetchCalls = [];
+    const ctx = loadCanonicalSurface({
+        fetch: (url) => {
+            fetchCalls.push(url);
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve({ runs: [] }),
+            });
+        },
+    });
+    const canonical = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
             has_issue: [{
                 nodeid: 'tests/e2e/test.py::test_x',
@@ -501,18 +551,33 @@ test('round-trip: render a linked-failure payload, extract the Command from the 
             }],
         },
     });
-    const html = render.renderCanonicalValidationViewer(canonical);
-
-    // 2. Extract the Command
+    const html = ctx.renderCanonicalValidationViewer(canonical);
+    // 1. Extract the typed Command from the expander's
+    //    ``data-lifecycle-command`` attribute.
     const commands = extractCommands(html);
     assert.strictEqual(commands.length, 1);
-
-    // 3. Dispatch into a separate vm with spies
-    const dispatch = loadDispatcherWithSpies();
-    dispatch.runE2ELifecycleCommand(commands[0]);
-
-    // 4. The right handler ran with the right args.
-    assert.deepEqual(dispatch.calls, [
-        ['openIssueTimeline', 7777, null, {}],
-    ]);
+    assert.deepStrictEqual(commands[0], {
+        kind: 'open_inline_agent_attempts',
+        label: 'Open Inline Agent Attempts',
+        issue_number: 7777,
+    });
+    // 2. Build a fake ``<details>`` element that carries the same
+    //    typed JSON and dispatch through the shared toggle helper.
+    const body = { innerHTML: '' };
+    const detailsEl = {
+        open: true,
+        dataset: {
+            issueNumber: '7777',
+            loaded: '',
+            lifecycleCommand: JSON.stringify(commands[0]),
+        },
+        querySelector: (sel) => (sel === '.agent-context-attempts-body' ? body : null),
+    };
+    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    // 3. The dispatcher must have routed through the loader, which
+    //    called ``fetch`` exactly once with the ops-scoped
+    //    issue-detail URL for issue 7777.
+    assert.deepStrictEqual(fetchCalls, ['/api/issue-detail/7777?view=ops']);
+    // And the loaded marker is set, so a re-toggle short-circuits.
+    assert.strictEqual(detailsEl.dataset.loaded, '1');
 });

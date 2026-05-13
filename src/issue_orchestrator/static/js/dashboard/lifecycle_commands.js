@@ -24,13 +24,37 @@ function runE2ELifecycleCommandFromButton(button) {
     const raw = button.dataset.lifecycleCommand || '';
     if (!raw) return;
     try {
-        runE2ELifecycleCommand(JSON.parse(raw));
+        runE2ELifecycleCommand(JSON.parse(raw), button);
     } catch (err) {
         showToast(`Failed to decode lifecycle command: ${err instanceof Error ? err.message : String(err)}`, 'error');
     }
 }
 
-function runE2ELifecycleCommand(command) {
+// Element-aware toggle dispatcher: fired from a ``<details>`` element's
+// inline ``ontoggle="runE2ELifecycleCommandFromToggle(this)"`` so that
+// expand-on-first-open affordances (e.g. the inline ``▸ Attempts on
+// issue #N`` expander in the agent-context plugin) route through the
+// same typed-Command pipeline as click affordances.  Pre-conditions:
+//  * the details element is currently open (closed → no-op),
+//  * ``dataset.loaded`` is not "1" (re-opens are no-ops; renderers
+//    set ``dataset.loaded = '1'`` once populated).
+// The trigger element is forwarded to the dispatcher so the handler
+// can read element-scoped state (e.g. ``data-issue-number`` on the
+// expander) and populate its body.
+function runE2ELifecycleCommandFromToggle(detailsEl) {
+    if (!detailsEl || !detailsEl.dataset) return;
+    if (detailsEl.open !== true) return;
+    if (detailsEl.dataset.loaded === '1') return;
+    const raw = detailsEl.dataset.lifecycleCommand || '';
+    if (!raw) return;
+    try {
+        runE2ELifecycleCommand(JSON.parse(raw), detailsEl);
+    } catch (err) {
+        showToast(`Failed to decode lifecycle command: ${err instanceof Error ? err.message : String(err)}`, 'error');
+    }
+}
+
+function runE2ELifecycleCommand(command, triggerEl = null) {
     if (!command || typeof command !== 'object') return;
     const kind = String(command.kind || '').trim();
     if (!kind) return;
@@ -74,6 +98,16 @@ function runE2ELifecycleCommand(command) {
     if (kind === 'open_e2e_run' && command.run_id) {
         const expandRunDetails = command.expand_run_details === true;
         showUnifiedRunView(command.run_id, { expandRunDetails });
+        return;
+    }
+    // Typed-Command entry point for the inline Attempts expander
+    // (issue #6322 follow-up).  ``triggerEl`` is the ``<details>``
+    // carrying ``data-issue-number`` and the per-expander body that
+    // the loader populates.  Backed by ``OpenInlineAgentAttemptsCommand``
+    // in ``view_models/lifecycle_semantics.py``.
+    if (kind === 'open_inline_agent_attempts' && command.issue_number) {
+        if (typeof loadInlineAgentAttempts !== 'function') return;
+        loadInlineAgentAttempts(command.issue_number, triggerEl);
         return;
     }
     showToast(`Unsupported lifecycle command: ${kind}`, 'warning');

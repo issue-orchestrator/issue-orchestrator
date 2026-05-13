@@ -54,6 +54,7 @@ from .lifecycle_semantics import (
     OpenReviewFeedbackCommand,
     OpenSessionRecordingCommand,
     OpenValidationDetailsCommand,
+    OutcomeBadge,
     PassedE2ETestExecution,
     PublishFailedCodingAttempt,
     ReviewApproved,
@@ -1561,43 +1562,54 @@ def _float_or_none(value: Any) -> float | None:
     return None
 
 
-def _cycle_outcome(coder: CodingAttempt, review: ReviewStage) -> str:
+def _cycle_outcome(coder: CodingAttempt, review: ReviewStage) -> OutcomeBadge:
+    """Project a cycle outcome from typed coder/review state.
+
+    Returns a typed ``OutcomeBadge`` whose ``label`` is the canonical
+    lifecycle string (``approved``, ``changes_requested``,
+    ``completed``, ``in_progress``, etc.) and whose ``tone`` reflects
+    the visual semantic (passed/failed/error/in_progress/neutral).
+
+    Tone classification is owned at the projection layer (PR #6333
+    blocker) so the UI never has to string-match against these
+    labels.
+    """
     review_outcome = _review_outcome(review)
     if review_outcome is not None:
         return review_outcome
     return _coder_outcome(coder)
 
 
-def _review_outcome(review: ReviewStage) -> str | None:
+def _review_outcome(review: ReviewStage) -> OutcomeBadge | None:
     if isinstance(review, ReviewApproved):
-        return "approved"
+        return OutcomeBadge(label="approved", tone="passed")
     if isinstance(review, ReviewChangesRequested):
-        return "changes_requested"
+        return OutcomeBadge(label="changes_requested", tone="failed")
     if isinstance(review, ReviewFailed):
-        return "review_failed"
+        return OutcomeBadge(label="review_failed", tone="failed")
     if isinstance(review, ReviewRunning):
-        return "review_in_progress"
+        return OutcomeBadge(label="review_in_progress", tone="in_progress")
     if isinstance(review, ReviewSkipped):
-        return "review_skipped"
+        return OutcomeBadge(label="review_skipped", tone="neutral")
     if isinstance(review, MissingReviewEvidence):
-        return "missing_review_evidence"
+        return OutcomeBadge(label="missing_review_evidence", tone="error")
     return None
 
 
-def _coder_outcome(coder: CodingAttempt) -> str:
+def _coder_outcome(coder: CodingAttempt) -> OutcomeBadge:
     if isinstance(coder, CompletedCodingAttempt):
-        return "completed"
+        return OutcomeBadge(label="completed", tone="passed")
     if isinstance(coder, RunningCodingAttempt):
-        return "in_progress"
+        return OutcomeBadge(label="in_progress", tone="in_progress")
     if isinstance(coder, BlockedCodingAttempt):
-        return "blocked"
+        return OutcomeBadge(label="blocked", tone="failed")
     if isinstance(coder, PublishFailedCodingAttempt):
-        return "publish_failed"
+        return OutcomeBadge(label="publish_failed", tone="failed")
     if isinstance(coder, FailedCodingAttempt):
-        return "failed"
+        return OutcomeBadge(label="failed", tone="failed")
     if isinstance(coder, MissingCodingEvidence):
-        return "missing_coding_evidence"
-    return "unknown"
+        return OutcomeBadge(label="missing_coding_evidence", tone="error")
+    return OutcomeBadge(label="unknown", tone="neutral")
 
 
 __all__ = [

@@ -11,6 +11,11 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     # render the validation dialog body) and before any plugin module
     # (which call ``registerValidationPlugin`` at load time).
     "validation_viewer.js",
+    # ``inline_agent_attempts.js`` exposes the ``▸ Attempts on issue #N``
+    # expander that the ``io.agent-context`` plugin renders (issue
+    # #6322).  Loaded BEFORE the plugin module so the symbol is in
+    # scope when the plugin checks for it at render time.
+    "inline_agent_attempts.js",
     # Plugin modules register themselves at load time with the registry
     # defined in ``validation_viewer.js``.  Today the only Phase-0
     # plugin is the issue-orchestrator agent-context renderer — Phase C

@@ -45,6 +45,7 @@ from issue_orchestrator.view_models.dialogs import (
 )
 from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_model
 from issue_orchestrator.view_models.lifecycle_semantics import (
+    OutcomeBadge,
     AgentIdentity,
     CompletedCodingAttempt,
     CompletionRecordEvidence,
@@ -72,6 +73,18 @@ class _OrchestratorStub:
     config: Config
     shutdown_requested: bool = False
 
+
+
+# OutcomeBadge constructor shim for tests (PR #6333): the
+# projection layer owns tone classification, but tests construct
+# IssueCycle/JourneyRun directly with bare label strings.  This
+# helper wraps any label in the typed shape so the assertions
+# stay focused on cycle/run shape, not tone bookkeeping.
+def _ob(label: str, tone: str = "neutral") -> OutcomeBadge:
+    """Test helper: wrap a bare outcome label in an OutcomeBadge.
+    Tone defaults to neutral; tests that care about tone pass it
+    explicitly."""
+    return OutcomeBadge(label=label, tone=tone)  # type: ignore[arg-type]
 
 def _make_config() -> Config:
     config = Config()
@@ -377,6 +390,51 @@ def test_issue_item_open_run_command_strict_int_rejects_string_and_boolean() -> 
                 "expand_run_details": False,
             },
         })
+
+
+def test_open_inline_agent_attempts_command_payload_matches_openapi() -> None:
+    """Issue #6322 follow-up: the inline ``▸ Attempts on issue #N``
+    expander emits a typed ``OpenInlineAgentAttemptsCommandPayload``
+    on its ``<details>`` element.  Both the OpenAPI schema and the
+    generated Pydantic contract enforce the same invariants:
+
+      * ``kind`` is the literal ``open_inline_agent_attempts``.
+      * ``issue_number`` is a positive integer (``minimum: 1``).
+      * Strict-int scalar semantics — no coercion from strings or
+        booleans — same as ``OpenE2ERunCommand.run_id``.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        OpenInlineAgentAttemptsCommandPayload,
+    )
+    from pydantic import ValidationError
+
+    validator = _validator("OpenInlineAgentAttemptsCommandPayload")
+    # Valid payload.
+    valid = {
+        "kind": "open_inline_agent_attempts",
+        "label": "Open Inline Agent Attempts",
+        "issue_number": 4503,
+    }
+    validator.validate(valid)
+    OpenInlineAgentAttemptsCommandPayload.model_validate(valid)
+
+    # Wrong kind discriminator.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "kind": "open_e2e_run"})
+
+    # Non-positive issue numbers.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "issue_number": 0})
+    with pytest.raises(ValidationError):
+        OpenInlineAgentAttemptsCommandPayload.model_validate({**valid, "issue_number": 0})
+    with pytest.raises(ValidationError):
+        OpenInlineAgentAttemptsCommandPayload.model_validate({**valid, "issue_number": -1})
+
+    # Strict-int: reject string and boolean coercion at the Python layer.
+    with pytest.raises(ValidationError):
+        OpenInlineAgentAttemptsCommandPayload.model_validate({**valid, "issue_number": "4503"})
+    with pytest.raises(ValidationError):
+        OpenInlineAgentAttemptsCommandPayload.model_validate({**valid, "issue_number": True})
 
 
 def test_dialog_payloads_match_ui_openapi() -> None:
@@ -978,7 +1036,7 @@ def _issue_lifecycle(issue_number: int) -> IssueLifecycle:
                     ),
                 ),
                 review=ReviewNotReached(reason="not_required"),
-                outcome="Completed",
+                outcome=_ob("Completed"),
             ),
         ),
     )

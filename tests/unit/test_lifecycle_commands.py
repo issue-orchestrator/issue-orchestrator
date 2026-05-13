@@ -22,6 +22,7 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     CycleValidationBadge,
     OpenCompletionRecordCommand,
     OpenE2ERunCommand,
+    OpenInlineAgentAttemptsCommand,
     OpenIssueTimelineCommand,
     OpenReviewFeedbackCommand,
     OpenSessionRecordingCommand,
@@ -186,6 +187,56 @@ def test_open_e2e_run_command_rejects_boolean_run_id_strict() -> None:
         OpenE2ERunCommand(run_id=True)  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         OpenE2ERunCommand(run_id=False)  # type: ignore[arg-type]
+
+
+def test_open_inline_agent_attempts_command_wire_shape() -> None:
+    """``OpenInlineAgentAttemptsCommand`` (issue #6322 follow-up):
+    the typed Command that the inline ``▸ Attempts on issue #N``
+    expander emits on its ``<details>`` element.  Backs the
+    ``open_inline_agent_attempts`` branch in the JS dispatcher.
+    """
+    assert _dump(OpenInlineAgentAttemptsCommand(issue_number=4503)) == {
+        "kind": "open_inline_agent_attempts",
+        "label": "Open Inline Agent Attempts",
+        "issue_number": 4503,
+    }
+
+
+def test_open_inline_agent_attempts_command_rejects_non_positive_issue_number() -> None:
+    """``issue_number`` must be a positive integer.
+
+    GitHub issue numbers are always >= 1; zero or negative payloads
+    are malformed by definition.
+    """
+    with pytest.raises(ValueError):
+        OpenInlineAgentAttemptsCommand(issue_number=0)
+    with pytest.raises(ValueError):
+        OpenInlineAgentAttemptsCommand(issue_number=-1)
+
+
+def test_open_inline_agent_attempts_command_rejects_string_issue_number_strict() -> None:
+    """``issue_number`` is strict-int — no coercion from strings.
+
+    Same invariant as ``OpenE2ERunCommand.run_id`` (PR #6329
+    round-5): Pydantic's default ``int`` coerces ``"4503"`` to
+    ``4503``, while JSON Schema rejects it.  The canonical model
+    matches the wire contract via ``Field(strict=True)``.
+    """
+    with pytest.raises(ValueError):
+        OpenInlineAgentAttemptsCommand(issue_number="4503")  # type: ignore[arg-type]
+
+
+def test_open_inline_agent_attempts_command_rejects_boolean_issue_number_strict() -> None:
+    """``issue_number`` is strict-int — no coercion from booleans.
+
+    ``bool`` is a ``int`` subclass; without ``strict=True``
+    ``True`` becomes 1 and ``False`` becomes 0.  Both are
+    malformed payloads.
+    """
+    with pytest.raises(ValueError):
+        OpenInlineAgentAttemptsCommand(issue_number=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        OpenInlineAgentAttemptsCommand(issue_number=False)  # type: ignore[arg-type]
 
 
 def test_cycle_validation_badge_wire_shape_for_each_state() -> None:

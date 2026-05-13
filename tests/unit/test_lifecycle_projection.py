@@ -176,7 +176,7 @@ def _stage_command_kinds(stage: object) -> tuple[str, ...]:
 def _cycle_summary(cycle) -> dict[str, object]:
     return {
         "cycle_number": cycle.cycle_number,
-        "outcome": cycle.outcome,
+        "outcome": cycle.outcome.label,
         "coder_kind": cycle.coder.kind,
         "review_kind": cycle.review.kind,
         "validation_kind": _coding_validation_kind(cycle),
@@ -608,7 +608,7 @@ def test_blocked_coder_projects_as_terminal_blocked_state() -> None:
     assert cycle.coder.reason == "Need product decision"
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "coding_failed"
-    assert cycle.outcome == "blocked"
+    assert cycle.outcome.label == "blocked"
 
 
 def test_failed_coding_attempt_ignores_stale_review_start() -> None:
@@ -627,7 +627,7 @@ def test_failed_coding_attempt_ignores_stale_review_start() -> None:
     assert isinstance(cycle.coder, FailedCodingAttempt)
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "coding_failed"
-    assert cycle.outcome == "failed"
+    assert cycle.outcome.label == "failed"
 
 
 def test_failed_coding_attempt_ignores_stale_review_approved() -> None:
@@ -646,7 +646,7 @@ def test_failed_coding_attempt_ignores_stale_review_approved() -> None:
     assert isinstance(cycle.coder, FailedCodingAttempt)
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "coding_failed"
-    assert cycle.outcome == "failed"
+    assert cycle.outcome.label == "failed"
 
 
 def test_blocked_coding_attempt_ignores_stale_review_start() -> None:
@@ -665,7 +665,7 @@ def test_blocked_coding_attempt_ignores_stale_review_start() -> None:
     assert isinstance(cycle.coder, BlockedCodingAttempt)
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "coding_failed"
-    assert cycle.outcome == "blocked"
+    assert cycle.outcome.label == "blocked"
 
 
 def test_publish_failed_coding_attempt_ignores_stale_review_start() -> None:
@@ -686,7 +686,7 @@ def test_publish_failed_coding_attempt_ignores_stale_review_start() -> None:
     assert isinstance(cycle.coder, PublishFailedCodingAttempt)
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "publish_failed"
-    assert cycle.outcome == "publish_failed"
+    assert cycle.outcome.label == "publish_failed"
 
 
 def test_validation_failed_attempt_ignores_stale_review_start() -> None:
@@ -710,7 +710,7 @@ def test_validation_failed_attempt_ignores_stale_review_start() -> None:
     assert isinstance(cycle.coder.validation, ValidationFailed)
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "validation_failed"
-    assert cycle.outcome == "completed"
+    assert cycle.outcome.label == "completed"
 
 
 def test_publish_failed_after_coding_completion_projects_publish_failed_attempt() -> (
@@ -743,7 +743,7 @@ def test_publish_failed_after_coding_completion_projects_publish_failed_attempt(
     assert cycle.coder.diagnostics[0].code == "publish.failed"
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "publish_failed"
-    assert cycle.outcome == "publish_failed"
+    assert cycle.outcome.label == "publish_failed"
 
 
 def test_review_completion_observation_does_not_replace_coding_completion() -> None:
@@ -793,7 +793,7 @@ def test_review_completion_observation_does_not_replace_coding_completion() -> N
     cycle = lifecycle.cycles[0]
     assert isinstance(cycle.coder, CompletedCodingAttempt)
     assert isinstance(cycle.review, ReviewApproved)
-    assert cycle.outcome == "approved"
+    assert cycle.outcome.label == "approved"
 
 
 def test_legacy_review_only_cycle_uses_full_event_window_for_semantics() -> None:
@@ -877,7 +877,7 @@ def test_missing_coding_terminal_ignores_stale_review_signals() -> None:
     assert [item.evidence for item in cycle.coder.missing] == ["coding_terminal_event"]
     assert isinstance(cycle.review, ReviewNotReached)
     assert cycle.review.reason == "coding_failed"
-    assert cycle.outcome == "missing_coding_evidence"
+    assert cycle.outcome.label == "missing_coding_evidence"
 
 
 def test_review_required_without_review_stage_becomes_missing_evidence() -> None:
@@ -924,7 +924,7 @@ def test_review_approved_projects_transcript_evidence() -> None:
     review = lifecycle.cycles[0].review
     assert isinstance(review, ReviewApproved)
     assert review.transcript.kind == "available"
-    assert lifecycle.cycles[0].outcome == "approved"
+    assert lifecycle.cycles[0].outcome.label == "approved"
 
 
 def test_review_running_skipped_and_failed_project_distinct_states() -> None:
@@ -938,7 +938,7 @@ def test_review_running_skipped_and_failed_project_distinct_states() -> None:
         review_required=True,
     ).cycles[0]
     assert isinstance(running.review, ReviewRunning)
-    assert running.outcome == "review_in_progress"
+    assert running.outcome.label == "review_in_progress"
 
     skipped_event = _event(
         "review.skipped",
@@ -955,7 +955,7 @@ def test_review_running_skipped_and_failed_project_distinct_states() -> None:
         ],
     ).cycles[0]
     assert isinstance(skipped.review, ReviewSkipped)
-    assert skipped.outcome == "review_skipped"
+    assert skipped.outcome.label == "review_skipped"
 
     failed_event = _event(
         "review_exchange.failed",
@@ -978,7 +978,7 @@ def test_review_running_skipped_and_failed_project_distinct_states() -> None:
         review_required=True,
     ).cycles[0]
     assert isinstance(failed.review, ReviewFailed)
-    assert failed.outcome == "review_failed"
+    assert failed.outcome.label == "review_failed"
 
 
 def test_review_not_reached_reasons_are_semantically_distinct() -> None:
@@ -1212,9 +1212,9 @@ def test_issue_lifecycles_from_events_group_issues_and_synthesize_cycles() -> No
     assert [lifecycle.issue_number for lifecycle in lifecycles] == [5723, 5724]
     assert lifecycles[0].title == "E2E Issue #5723"
     assert isinstance(lifecycles[0].cycles[0].coder, CompletedCodingAttempt)
-    assert lifecycles[0].cycles[0].outcome == "changes_requested"
+    assert lifecycles[0].cycles[0].outcome.label == "changes_requested"
     assert isinstance(lifecycles[1].cycles[0].coder, RunningCodingAttempt)
-    assert lifecycles[1].cycles[0].outcome == "in_progress"
+    assert lifecycles[1].cycles[0].outcome.label == "in_progress"
 
 
 def test_issue_lifecycle_without_presentation_cycles_groups_by_logical_cycle() -> None:
@@ -1335,7 +1335,7 @@ def test_orphan_rework_completion_tail_merges_with_cached_review_cycle() -> None
     assert len(lifecycle.cycles) == 1
     assert isinstance(lifecycle.cycles[0].coder, CompletedCodingAttempt)
     assert isinstance(lifecycle.cycles[0].review, ReviewApproved)
-    assert lifecycle.cycles[0].outcome == "approved"
+    assert lifecycle.cycles[0].outcome.label == "approved"
 
 
 def test_rework_completion_tail_with_iteration_start_does_not_merge() -> None:
@@ -1445,7 +1445,7 @@ def test_lifecycle_projection_state_matrix_preserves_distinct_public_states(
     assert cycle.coder.kind == expected["coder_kind"]
     assert cycle.review.kind == expected["review_kind"]
     assert _coding_validation_kind(cycle) == expected["validation_kind"]
-    assert cycle.outcome == expected["outcome"]
+    assert cycle.outcome.label == expected["outcome"]
 
     if "coder_commands" in expected:
         assert _stage_command_kinds(cycle.coder) == expected["coder_commands"]
