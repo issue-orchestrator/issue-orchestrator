@@ -437,6 +437,77 @@ def test_expand_e2e_run_command_payload_matches_openapi() -> None:
         ExpandE2ERunCommandPayload.model_validate({**valid, "run_id": True})
 
 
+def test_switch_e2e_timeline_view_command_payload_matches_openapi() -> None:
+    """Issue #6334 round-2: Story/Ops/Debug buttons inside an
+    expanded row emit a typed ``SwitchE2ETimelineViewCommand``.
+
+    The OpenAPI schema and the generated Pydantic contract enforce
+    the same invariants as ``OpenE2ERunCommand.run_id`` plus a
+    Literal-constrained ``view`` field.  A typo in ``view`` (e.g.
+    ``"detail"`` instead of ``"debug"``) must fail validation, not
+    silently route to the wrong API call.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        SwitchE2ETimelineViewCommandPayload,
+    )
+    from pydantic import ValidationError
+
+    validator = _validator("SwitchE2ETimelineViewCommandPayload")
+    valid = {
+        "kind": "switch_e2e_timeline_view",
+        "label": "Switch suite timeline to Ops",
+        "run_id": 88,
+        "view": "ops",
+    }
+    validator.validate(valid)
+    SwitchE2ETimelineViewCommandPayload.model_validate(valid)
+
+    # ``view`` enum is strict.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "view": "detail"})
+    with pytest.raises(ValidationError):
+        SwitchE2ETimelineViewCommandPayload.model_validate({**valid, "view": "detail"})
+
+    # Strict-int + ge=1 on ``run_id`` (same family invariant).
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "run_id": 0})
+    with pytest.raises(ValidationError):
+        SwitchE2ETimelineViewCommandPayload.model_validate({**valid, "run_id": "88"})
+
+
+def test_create_e2e_untriaged_issues_command_payload_matches_openapi() -> None:
+    """Issue #6334 round-2: the "Create issue(s)" button inside an
+    expanded row's untracked-failures banner emits a typed
+    ``CreateE2EUntriagedIssuesCommand``.
+
+    Same run_id invariants as the rest of the E2E command family.
+    The agent does NOT live in the payload — it's read at click
+    time from the row-scoped ``.unified-run-agent`` select.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        CreateE2EUntriagedIssuesCommandPayload,
+    )
+    from pydantic import ValidationError
+
+    validator = _validator("CreateE2EUntriagedIssuesCommandPayload")
+    valid = {
+        "kind": "create_e2e_untriaged_issues",
+        "label": "Create issue(s)",
+        "run_id": 88,
+    }
+    validator.validate(valid)
+    CreateE2EUntriagedIssuesCommandPayload.model_validate(valid)
+
+    # Payload may not carry agent / nodeids — those are runtime reads.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({**valid, "agent": "agent:web"})
+
+    with pytest.raises(ValidationError):
+        CreateE2EUntriagedIssuesCommandPayload.model_validate({**valid, "run_id": "88"})
+    with pytest.raises(ValidationError):
+        CreateE2EUntriagedIssuesCommandPayload.model_validate({**valid, "run_id": 0})
+
+
 def test_recent_e2e_runs_payload_matches_openapi() -> None:
     """Issue #6334: the runs-as-rows panel renders from
     ``RecentE2ERunsPayload``, a typed wrapper around a list of

@@ -58,6 +58,12 @@ export interface ConfigDialogPayload {
   title: string;
 }
 
+export interface CreateE2EUntriagedIssuesCommandPayload {
+  kind: "create_e2e_untriaged_issues";
+  label: string;
+  run_id: number;
+}
+
 export interface CycleArtifactsPayload {
   has_review_feedback: boolean;
   log_url: string | null;
@@ -838,6 +844,13 @@ export interface ShowEventDetailsCommandPayload {
   label: string;
 }
 
+export interface SwitchE2ETimelineViewCommandPayload {
+  kind: "switch_e2e_timeline_view";
+  label: string;
+  run_id: number;
+  view: "user" | "ops" | "debug";
+}
+
 export interface TestCaseHistoryPayload {
   outcome: string;
   run_id: number;
@@ -960,6 +973,6 @@ export type ReviewTranscriptEvidencePayload = ReviewTranscriptAvailablePayload |
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
 
-export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | OpenInlineAgentAttemptsCommandPayload;
+export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | SwitchE2ETimelineViewCommandPayload | CreateE2EUntriagedIssuesCommandPayload | OpenInlineAgentAttemptsCommandPayload;
 
 export type ValidationOutcomePayload = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload;

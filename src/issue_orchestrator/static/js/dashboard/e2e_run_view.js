@@ -1,10 +1,24 @@
-// ``unifiedRunData`` is shared state for the currently-mounted run.
-// In issue #6334 ownership moved from the modal (``showUnifiedRunView``)
-// to the inline runs-list loader (``loadE2ERunIntoRow`` in
-// ``e2e_runs_list.js``).  Kept as ``window.unifiedRunData`` so
-// ``createIssuesForUntriaged`` and other handlers below resolve it
-// from a single place regardless of which surface mounted the run.
-let unifiedRunData = null;
+// Issue #6334 round-2 reviewer blocker: the modal-era top-level
+// ``let unifiedRunData`` was a singleton that broke as soon as two
+// rows could be expanded at once.  The owner of "what run is this
+// action targeting?" is now the row itself.  ``loadE2ERunIntoRow``
+// stashes the fetched detail payload on ``row._e2eRunData``; every
+// row-scoped action (switchE2ETimelineView, createIssuesForUntriaged,
+// etc.) resolves the row from the clicked control via
+// ``control.closest('details.e2e-run-row')`` and reads its
+// ``_e2eRunData``.  No module-level or window-level shared state
+// for the active run.
+//
+// The ``_runFromControl`` helper below is the single seam for that
+// lookup; tests that exercise these actions just need a fake
+// ``<details>`` carrying ``_e2eRunData`` on it.
+function _runFromControl(control) {
+    if (!control || typeof control.closest !== 'function') return null;
+    const row = control.closest('details.e2e-run-row');
+    if (!row) return null;
+    return row;
+}
+
 const E2E_LABEL_OVERRIDES = Object.freeze({
     pytest: 'Pytest',
     command: 'Command',
@@ -209,13 +223,19 @@ function renderE2EResultsPanel(data) {
     const canonical = e2eRunToCanonicalPayload(data);
     const untrackedCount = _untrackedFailureCount(data);
     const viewerHtml = renderCanonicalValidationViewer(canonical);
+    // Issue #6334 round-2: thread the run id through every action
+    // surface that used to read from the module-level
+    // ``unifiedRunData`` singleton.  Typed Commands carry the run
+    // id explicitly; the dispatcher resolves the row from
+    // ``triggerEl`` and reads the row-scoped DOM (no global ids).
+    const runId = (data && data.run && data.run.id) ? Number(data.run.id) : 0;
 
     return `
         <div class="e2e-canonical-panel">
             ${_renderRunSummaryChips(data, canonical)}
-            ${untrackedCount > 0 ? _renderUntrackedFailuresBanner(untrackedCount) : ''}
+            ${untrackedCount > 0 ? _renderUntrackedFailuresBanner(untrackedCount, runId) : ''}
             <div class="e2e-canonical-body">${viewerHtml}</div>
-            ${renderRunDetailsDisclosure(data)}
+            ${renderRunDetailsDisclosure(data, runId)}
         </div>
     `;
 }
@@ -248,20 +268,34 @@ function _renderRunSummaryChips(data, canonical) {
 // Untracked-failures banner: only renders when at least one failing
 // test has no linked issue.  Hooks the shared agent-picker → Create
 // Issues for the orchestrator's existing bulk-create flow.
-function _renderUntrackedFailuresBanner(untrackedCount) {
+//
+// Issue #6334 round-2: emit a typed ``CreateE2EUntriagedIssuesCommand``
+// instead of an inline ``createIssuesForUntriaged()`` call.  The
+// button dispatches through the shared pipeline; the dispatcher
+// resolves the row from ``triggerEl`` and reads the row-scoped
+// agent select via ``.unified-run-agent`` (no more document-global
+// ``#unifiedRunAgent`` id which collided across expanded rows).
+function _renderUntrackedFailuresBanner(untrackedCount, runId) {
     const agentSelect = (window && window.dashboardData && Array.isArray(window.dashboardData.agents))
         ? window.dashboardData.agents.map(a => `<option value="${escapeAttr(a)}">${escapeHtml(a)}</option>`).join('')
         : '';
     const plural = untrackedCount === 1 ? 'test has' : 'tests have';
+    const buttonLabel = `Create issue${untrackedCount === 1 ? '' : 's'}`;
+    const command = {
+        kind: 'create_e2e_untriaged_issues',
+        label: buttonLabel,
+        run_id: Number(runId),
+    };
+    const cmdAttr = escapeAttr(JSON.stringify(command));
     return `
         <div class="e2e-untracked-banner">
             <span class="e2e-untracked-banner-text">🎯 ${untrackedCount} failing ${plural} no linked issue</span>
             <div class="e2e-untracked-banner-actions">
-                <select id="unifiedRunAgent" class="agent-select">
+                <select class="agent-select unified-run-agent">
                     <option value="">Select agent…</option>
                     ${agentSelect}
                 </select>
-                <button class="btn-primary" onclick="createIssuesForUntriaged()">Create issue${untrackedCount === 1 ? '' : 's'}</button>
+                <button class="btn-primary" data-lifecycle-command="${cmdAttr}" onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();">${escapeHtml(buttonLabel)}</button>
             </div>
         </div>
     `;
@@ -274,12 +308,38 @@ function _untrackedFailureCount(data) {
     return untriaged.length;
 }
 
-function renderRunDetailsDisclosure(data) {
+function renderRunDetailsDisclosure(data, runId) {
     const run = data && data.run ? data.run : {};
     const command = _formatRunCommand(run);
     const buttons = _renderRunArtifactButtons(data);
+    const numericRunId = Number(runId || (run && run.id) || 0);
+
+    // Issue #6334 round-2: Story/Ops/Debug buttons emit a typed
+    // ``SwitchE2ETimelineViewCommand`` instead of inline
+    // ``switchE2ETimelineView(view, this)`` calls.  The dispatcher
+    // resolves the active row from ``triggerEl`` and updates the
+    // row-scoped ``.e2e-timeline-content`` container — no
+    // document-global ``#e2eTimelineContent`` id that collided
+    // across expanded rows.
+    function _viewButton(view, label, isActive) {
+        const cmd = {
+            kind: 'switch_e2e_timeline_view',
+            label: `Switch suite timeline to ${label}`,
+            run_id: numericRunId,
+            view,
+        };
+        const cmdAttr = escapeAttr(JSON.stringify(cmd));
+        const cssClass = isActive ? 'e2e-view-btn active' : 'e2e-view-btn';
+        return (
+            `<button class="${cssClass}" ` +
+            `data-lifecycle-command="${cmdAttr}" ` +
+            `onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();" ` +
+            `data-view="${view}">${escapeHtml(label)}</button>`
+        );
+    }
+
     return `
-        <details class="run-details-disclosure" id="runDetailsDisclosure">
+        <details class="run-details-disclosure">
             <summary>Run details &amp; artifacts<span class="rdd-summary-hint"> · runner, command, suite artifacts, suite timeline</span></summary>
             <div class="rdd-body">
                 <div class="rdd-grid">
@@ -295,11 +355,11 @@ function renderRunDetailsDisclosure(data) {
                 <div class="rdd-timeline">
                     <div class="rdd-section-title">Suite timeline</div>
                     <div class="e2e-timeline-view-switcher">
-                        <button class="e2e-view-btn active" onclick="switchE2ETimelineView('user', this); event.stopPropagation();" data-view="user">Story</button>
-                        <button class="e2e-view-btn" onclick="switchE2ETimelineView('ops', this); event.stopPropagation();" data-view="ops">Ops</button>
-                        <button class="e2e-view-btn" onclick="switchE2ETimelineView('debug', this); event.stopPropagation();" data-view="debug">Debug</button>
+                        ${_viewButton('user', 'Story', true)}
+                        ${_viewButton('ops', 'Ops', false)}
+                        ${_viewButton('debug', 'Debug', false)}
                     </div>
-                    <div id="e2eTimelineContent"></div>
+                    <div class="e2e-timeline-content"></div>
                 </div>
             </div>
         </details>
@@ -396,21 +456,37 @@ function renderE2EIssueTimelineAffordances(affordances) {
     </section>`;
 }
 
-async function switchE2ETimelineView(view, btn) {
-    const btns = document.querySelectorAll('.e2e-view-btn');
-    btns.forEach(b => b.classList.remove('active'));
-    if (btn) btn.classList.add('active');
+// Typed-Command target: invoked by the dispatcher when a Story/Ops/
+// Debug button fires.  ``triggerEl`` is the clicked button; the run
+// id comes from the typed Command (validated as a strict positive
+// int upstream).  Every DOM read/write here is scoped to the
+// trigger's owning row — two expanded rows can't cross-update.
+async function switchE2ETimelineView(runId, view, triggerEl) {
+    const numericRunId = Number(runId);
+    if (!Number.isInteger(numericRunId) || numericRunId <= 0) return;
+    const row = triggerEl && triggerEl.closest ? triggerEl.closest('details.e2e-run-row') : null;
+    if (!row) return;
 
-    const runId = unifiedRunData && unifiedRunData.run ? unifiedRunData.run.id : null;
-    if (!runId) return;
+    // Toggle ``active`` only within THIS row's switcher.  The legacy
+    // ``document.querySelectorAll('.e2e-view-btn')`` toggled across
+    // every expanded row, which broke as soon as #6334's two-rows-
+    // open case existed.
+    const switcher = row.querySelector('.e2e-timeline-view-switcher');
+    if (switcher) {
+        switcher.querySelectorAll('.e2e-view-btn').forEach((b) => b.classList.remove('active'));
+        if (triggerEl) triggerEl.classList.add('active');
+    }
 
-    const container = document.getElementById('e2eTimelineContent');
+    const container = row.querySelector('.e2e-timeline-content');
     if (!container) return;
     container.innerHTML = '<div class="loading-spinner">Loading...</div>';
 
     try {
-        const data = await _fetchE2ERunDetail(runId, view);
-        unifiedRunData = data;
+        const data = await _fetchE2ERunDetail(numericRunId, view);
+        // Stash the fresh detail on the row — same shape
+        // ``loadE2ERunIntoRow`` writes on initial mount.  Other row-
+        // scoped actions read ``row._e2eRunData`` instead of a global.
+        row._e2eRunData = data;
         renderE2ETimeline(container, data);
     } catch (err) {
         container.innerHTML = `<div style="color: var(--danger);">Error: ${escapeHtml(err.message)}</div>`;
@@ -424,31 +500,52 @@ async function switchE2ETimelineView(view, btn) {
 // owner now.
 
 /**
- * Create issues for all untriaged tests.
+ * Typed-Command target for the row's untracked-failures banner.
+ *
+ * Issue #6334 round-2: the legacy ``createIssuesForUntriaged()`` read
+ * its target run id from the module-level ``unifiedRunData`` singleton
+ * and its agent from a document-global ``#unifiedRunAgent`` select —
+ * both broke as soon as two rows could be expanded at once.  This
+ * variant takes the run id from the typed Command (validated strict
+ * positive int) and reads the agent from the row-scoped
+ * ``.unified-run-agent`` select that lives inside THIS row's banner.
  */
-async function createIssuesForUntriaged() {
-    if (!unifiedRunData) return;
-
-    const agent = document.getElementById('unifiedRunAgent')?.value;
-    if (!agent) {
-        showToast('Please select an agent', true);
+async function createIssuesForUntriaged(runId, triggerEl) {
+    const numericRunId = Number(runId);
+    if (!Number.isInteger(numericRunId) || numericRunId <= 0) return;
+    const row = triggerEl && triggerEl.closest ? triggerEl.closest('details.e2e-run-row') : null;
+    if (!row) return;
+    const rowData = row._e2eRunData;
+    if (!rowData || !rowData.run) {
+        showToast('Run data not loaded yet', true);
         return;
     }
 
-    const untriaged = _resultCategories(unifiedRunData).untriaged || [];
+    const agentSelect = row.querySelector('.unified-run-agent');
+    const agent = agentSelect ? agentSelect.value : '';
+    if (!agent) {
+        showToast('Please select an agent', true);
+        if (agentSelect) agentSelect.focus();
+        return;
+    }
+
+    const untriaged = _resultCategories(rowData).untriaged || [];
     if (untriaged.length === 0) {
         showToast('No tests need action', true);
         return;
     }
 
-    const nodeids = untriaged.map(t => t.nodeid);
+    const nodeids = untriaged.map((t) => t.nodeid);
 
     try {
-        const res = await fetch(`/control/e2e/create-issues/${unifiedRunData.run.id}?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ nodeids, agent }),
-        });
+        const res = await fetch(
+            `/control/e2e/create-issues/${numericRunId}?repo_root=${encodeURIComponent(REPO_ROOT)}&config_name=${encodeURIComponent(CONFIG_NAME)}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ nodeids, agent }),
+            },
+        );
         const data = await res.json();
 
         if (!res.ok) {
@@ -458,15 +555,19 @@ async function createIssuesForUntriaged() {
 
         showToast(`Created parent issue #${data.parent_issue.number} with ${data.sub_issues.length} sub-issue(s)`);
 
-        // Refresh the view via the typed Command dispatcher so EVERY
-        // route into ``showUnifiedRunView`` goes through one owner
-        // (PR #6329 single-owner contract).
-        runE2ELifecycleCommand({
-            kind: 'open_e2e_run',
-            label: 'Open E2E Run',
-            run_id: Number(unifiedRunData.run.id),
-            expand_run_details: false,
-        });
+        // Refresh THIS row's content by re-firing its expand Command
+        // through the shared dispatcher.  Single-owner contract:
+        // every refresh routes through ``expand_e2e_run`` →
+        // ``loadE2ERunIntoRow``.
+        row.dataset.loaded = '';
+        runE2ELifecycleCommand(
+            {
+                kind: 'expand_e2e_run',
+                label: 'Expand E2E Run',
+                run_id: numericRunId,
+            },
+            row,
+        );
 
         // Open parent issue in new tab
         if (data.parent_issue.url) {

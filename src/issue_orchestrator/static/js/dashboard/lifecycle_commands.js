@@ -121,6 +121,26 @@ function runE2ELifecycleCommand(command, triggerEl = null) {
         loadE2ERunIntoRow(command.run_id, triggerEl);
         return;
     }
+    // Issue #6334 round-2: Story/Ops/Debug buttons inside an
+    // expanded row's "Run details & artifacts" disclosure dispatch
+    // ``switch_e2e_timeline_view``.  Handler is row-scoped — it
+    // resolves the row from ``triggerEl`` and updates only that
+    // row's timeline container.
+    if (kind === 'switch_e2e_timeline_view' && command.run_id && command.view) {
+        if (typeof switchE2ETimelineView !== 'function') return;
+        switchE2ETimelineView(command.run_id, command.view, triggerEl);
+        return;
+    }
+    // Issue #6334 round-2: the row's untracked-failures banner emits
+    // ``create_e2e_untriaged_issues``.  Handler reads the agent from
+    // the row-scoped ``.unified-run-agent`` select (resolved via
+    // ``triggerEl.closest('details.e2e-run-row')``) — no document-
+    // global ``#unifiedRunAgent`` id.
+    if (kind === 'create_e2e_untriaged_issues' && command.run_id) {
+        if (typeof createIssuesForUntriaged !== 'function') return;
+        createIssuesForUntriaged(command.run_id, triggerEl);
+        return;
+    }
     // Typed-Command entry point for the inline Attempts expander
     // (issue #6322 follow-up).  ``triggerEl`` is the ``<details>``
     // carrying ``data-issue-number`` and the per-expander body that

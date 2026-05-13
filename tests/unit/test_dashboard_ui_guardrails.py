@@ -1691,9 +1691,11 @@ def test_e2e_run_timeline_is_directly_addressable() -> None:
     assert "'open_e2e_run'" in legacy_entry
     assert "expand_run_details: true" in legacy_entry
     # ``expandE2ERunRow`` honors the expand-run-details intent —
-    # opens the row, then opens the inner #runDetailsDisclosure.
+    # opens the row, then opens the inner .run-details-disclosure.
+    # Issue #6334 round-2 swapped the id selector for a class selector
+    # so two expanded rows don't collide.
     assert "options.expandRunDetails" in expand_body
-    assert "runDetailsDisclosure" in expand_body
+    assert "'.run-details-disclosure'" in expand_body
     # The canonical viewer mount inside the row body uses the same
     # ``renderE2ETimeline`` call; ``loadE2ERunIntoRow`` (in
     # ``e2e_runs_list.js``) is the owner now.
@@ -1744,13 +1746,17 @@ def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
     # The panel translates the orchestrator-categorized run-detail
     # payload to the JUnit-canonical viewer payload, then mounts the
     # shared viewer + the run-details footer.
+    #
+    # Issue #6334 round-2: the panel threads ``runId`` into the
+    # untracked-failures banner + the run-details disclosure so
+    # each typed Command they emit carries the right run_id.
     assert "e2eRunToCanonicalPayload(data)" in results_body
     assert "renderCanonicalValidationViewer(canonical)" in results_body
-    assert "renderRunDetailsDisclosure(data)" in results_body
+    assert "renderRunDetailsDisclosure(data, runId)" in results_body
     # Run-level summary chips + untracked-failures banner are the only
     # two run-scoped surfaces above the body.
     assert "_renderRunSummaryChips(data" in results_body
-    assert "_renderUntrackedFailuresBanner(untrackedCount)" in results_body
+    assert "_renderUntrackedFailuresBanner(untrackedCount, runId)" in results_body
 
     # The legacy "test-results-panel" container is gone — the new wrapper
     # is .e2e-canonical-panel.  test_results_list / test-results-list
@@ -1795,7 +1801,10 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
     artifact_button_body = _function_body(js, "_artifactButton")
     artifact_open_body = _function_body(js, "openE2EArtifactFromButton")
     assert "<details" in disclosure_body
-    assert 'id="runDetailsDisclosure"' in disclosure_body
+    # Issue #6334 round-2: disclosure uses CLASS not id (two
+    # expanded rows have one each — id would collide).
+    assert 'class="run-details-disclosure"' in disclosure_body
+    assert 'id="runDetailsDisclosure"' not in disclosure_body
     assert "rdd-grid" in disclosure_body
     assert "Runner" in disclosure_body
     assert "Command" in disclosure_body
@@ -1805,7 +1814,9 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
     assert "Run details &amp; artifacts" in disclosure_body
     assert "Run evidence" not in disclosure_body
     assert "Suite timeline" in disclosure_body
-    assert 'id="e2eTimelineContent"' in disclosure_body
+    # Same class-not-id rule for the timeline container.
+    assert 'class="e2e-timeline-content"' in disclosure_body
+    assert 'id="e2eTimelineContent"' not in disclosure_body
     assert "Suite artifacts" in disclosure_body
     # Artifact buttons still go through openPath via the host action handler;
     # the broken file:// behavior is preserved for now in the disclosure but
@@ -2080,12 +2091,24 @@ def test_server_rendered_issue_cards_render_summary_once() -> None:
 
 
 def test_e2e_timeline_view_switcher_refetches() -> None:
-    """View switcher re-fetches timeline with view param."""
+    """View switcher re-fetches timeline with view param.
+
+    Issue #6334 round-2: the switcher is row-scoped — ``runId`` comes
+    from the typed Command (not a module-level singleton); the row
+    is resolved from ``triggerEl``; the timeline container is the
+    row-scoped ``.e2e-timeline-content`` class.
+    """
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "switchE2ETimelineView")
-    assert "_fetchE2ERunDetail(runId, view)" in body
-    assert "_fetchE2ERunDetail" in body
+    assert "function switchE2ETimelineView(runId, view, triggerEl)" in js
+    assert "_fetchE2ERunDetail(numericRunId, view)" in body
     assert "renderE2ETimeline" in body
+    # Row resolution + row-scoped writes.
+    assert "triggerEl.closest('details.e2e-run-row')" in body
+    assert "row.querySelector('.e2e-timeline-content')" in body
+    assert "row._e2eRunData = data" in body
+    # No module-level ``unifiedRunData`` singleton.
+    assert "unifiedRunData" not in body
 
 
 def test_dashboard_and_e2e_ui_preserve_lifecycle_payloads() -> None:

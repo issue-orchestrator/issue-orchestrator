@@ -199,21 +199,24 @@
             if (cvvRoot && typeof enhanceCanonicalValidationViewerAccessibility === 'function') {
                 enhanceCanonicalValidationViewerAccessibility(cvvRoot);
             }
-            const timelineContainer = body.querySelector('#e2eTimelineContent');
+            // Issue #6334 round-2: query the row-scoped class — the
+            // legacy ``#e2eTimelineContent`` id collided across
+            // expanded rows, and ``document.getElementById`` would
+            // route updates to whichever row rendered first.
+            const timelineContainer = body.querySelector('.e2e-timeline-content');
             if (timelineContainer && typeof renderE2ETimeline === 'function') {
                 const normalized = (typeof normalizeE2ETimelineData === 'function')
                     ? normalizeE2ETimelineData(data)
                     : data;
                 renderE2ETimeline(timelineContainer, normalized);
             }
-            // Stash the currently mounted run's data on the row so
-            // helpers like ``createIssuesForUntriaged`` can resolve
-            // the active run without a global.  Mirrors how the
-            // legacy modal kept ``unifiedRunData``.
+            // Stash the currently mounted run's data on the row.
+            // Every row-scoped action (``switchE2ETimelineView``,
+            // ``createIssuesForUntriaged``) reads ``row._e2eRunData``
+            // — no module-level or window-level shared state.  The
+            // earlier ``window.unifiedRunData`` write was the bug
+            // PR #6336 round-2 review caught.
             detailsEl._e2eRunData = data;
-            if (typeof window !== 'undefined') {
-                window.unifiedRunData = data;
-            }
         } catch (err) {
             detailsEl.dataset.loaded = '';
             const message = err && err.message ? err.message : 'Unknown error';
@@ -248,11 +251,14 @@
         if (options.expandRunDetails) {
             // The canonical viewer mounts inside the row body and
             // includes its own "Run details & artifacts" disclosure
-            // (id ``runDetailsDisclosure``).  Fetch is async, so
-            // poll briefly for the disclosure node before opening.
+            // (class ``.run-details-disclosure``).  Fetch is async,
+            // so poll briefly for the disclosure node before opening.
+            // Issue #6334 round-2: ``.run-details-disclosure`` is a
+            // class, not an id — two expanded rows have one each,
+            // each scoped to its own row.
             const start = Date.now();
             const tick = () => {
-                const disclosure = row.querySelector('#runDetailsDisclosure');
+                const disclosure = row.querySelector('.run-details-disclosure');
                 if (disclosure) {
                     disclosure.open = true;
                     return;

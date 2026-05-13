@@ -1032,10 +1032,10 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
 
     # Run timeline is rendered eagerly inside the (collapsed) "Run details"
     # disclosure. Expand it to assert on its content.
-    disclosure = modal.locator("#runDetailsDisclosure")
+    disclosure = modal.locator(".run-details-disclosure").first
     expect(disclosure).to_be_visible(timeout=15_000)
     disclosure.locator("summary").first.click()
-    timeline_panel = disclosure.locator("#e2eTimelineContent")
+    timeline_panel = disclosure.locator(".e2e-timeline-content").first
     expect(timeline_panel).to_be_visible(timeout=15_000)
     expect(timeline_panel).to_have_attribute(
         "data-lifecycle-kind",
@@ -1669,7 +1669,7 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
 
     # The run command + raw artifact buttons relocated to the collapsed
     # "Run details" disclosure. Expand it and verify they're reachable.
-    disclosure = modal.locator("#runDetailsDisclosure")
+    disclosure = modal.locator(".run-details-disclosure").first
     expect(disclosure).to_be_visible(timeout=5000)
     disclosure.locator("summary").first.click()
     expect(disclosure.locator(".e2e-run-command")).to_contain_text(
@@ -1685,7 +1685,7 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     # is exercised by test_run_drawer_timeline_renders_clickable_issue_links;
     # this test's job is the run-modal contract: headline + filter chips +
     # disclosure-housed timeline + issue affordances.
-    timeline_panel = disclosure.locator("#e2eTimelineContent")
+    timeline_panel = disclosure.locator(".e2e-timeline-content").first
     expect(timeline_panel).to_be_visible(timeout=5000)
     issue_btn = timeline_panel.locator(
         ".e2e-issue-timeline-btn",
@@ -1824,7 +1824,7 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
 
     # Run command + raw artifact buttons live in the collapsed Run details
     # disclosure. Expand it before clicking the artifact buttons.
-    disclosure = modal.locator("#runDetailsDisclosure")
+    disclosure = modal.locator(".run-details-disclosure").first
     expect(disclosure).to_be_visible(timeout=5000)
     disclosure.locator("summary").first.click()
     expect(disclosure.locator(".e2e-run-command")).to_contain_text(

@@ -1246,6 +1246,27 @@
           "run_id": {"type": "integer", "minimum": 1}
         }
       },
+      "SwitchE2ETimelineViewCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "run_id", "view"],
+        "properties": {
+          "kind": {"const": "switch_e2e_timeline_view"},
+          "label": {"type": "string"},
+          "run_id": {"type": "integer", "minimum": 1},
+          "view": {"enum": ["user", "ops", "debug"]}
+        }
+      },
+      "CreateE2EUntriagedIssuesCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "label", "run_id"],
+        "properties": {
+          "kind": {"const": "create_e2e_untriaged_issues"},
+          "label": {"type": "string"},
+          "run_id": {"type": "integer", "minimum": 1}
+        }
+      },
       "OpenInlineAgentAttemptsCommandPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1266,6 +1287,8 @@
           {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"},
           {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
           {"$ref": "#/components/schemas/ExpandE2ERunCommandPayload"},
+          {"$ref": "#/components/schemas/SwitchE2ETimelineViewCommandPayload"},
+          {"$ref": "#/components/schemas/CreateE2EUntriagedIssuesCommandPayload"},
           {"$ref": "#/components/schemas/OpenInlineAgentAttemptsCommandPayload"}
         ],
         "discriminator": {"propertyName": "kind"}

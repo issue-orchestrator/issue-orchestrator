@@ -270,7 +270,9 @@ function _fakeRow(runId, payloadAttr, contentEl) {
         querySelector(sel) {
             if (sel === '.e2e-run-row-content') return contentEl;
             if (sel === '.cvv-root') return null;
-            if (sel === '#e2eTimelineContent') return null;
+            // ``.e2e-timeline-content`` is the row-scoped class
+            // that replaced ``#e2eTimelineContent`` (PR #6336 round-2).
+            if (sel === '.e2e-timeline-content') return null;
             return null;
         },
     };

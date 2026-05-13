@@ -69,6 +69,12 @@ class ConfigDialogPayload(BaseModel):
     config_text: str
     title: str
 
+class CreateE2EUntriagedIssuesCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal['create_e2e_untriaged_issues']
+    label: str
+    run_id: int = Field(..., ge=1, strict=True)
+
 class CycleArtifactsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     has_review_feedback: bool
@@ -846,6 +852,13 @@ class ShowEventDetailsCommandPayload(BaseModel):
     kind: Literal['show_event_details']
     label: str
 
+class SwitchE2ETimelineViewCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal['switch_e2e_timeline_view']
+    label: str
+    run_id: int = Field(..., ge=1, strict=True)
+    view: Literal['user', 'ops', 'debug']
+
 class TestCaseHistoryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     outcome: str
@@ -968,6 +981,6 @@ ReviewTranscriptEvidencePayload: TypeAlias = ReviewTranscriptAvailablePayload | 
 
 SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload
 
-TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | OpenInlineAgentAttemptsCommandPayload
+TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | SwitchE2ETimelineViewCommandPayload | CreateE2EUntriagedIssuesCommandPayload | OpenInlineAgentAttemptsCommandPayload
 
 ValidationOutcomePayload: TypeAlias = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload

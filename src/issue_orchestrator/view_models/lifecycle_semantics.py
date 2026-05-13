@@ -204,6 +204,56 @@ class ExpandE2ERunCommand(LifecycleBase):
     run_id: int = Field(..., ge=1, strict=True)
 
 
+class SwitchE2ETimelineViewCommand(LifecycleBase):
+    """Switch the suite-timeline view inside an expanded run row
+    (issue #6334 round-2 reviewer blocker).
+
+    The legacy ``switchE2ETimelineView(view, btn)`` call read state
+    from a module-level ``unifiedRunData`` singleton — that broke as
+    soon as two rows could be expanded at once (rows share no
+    state).  The new ownership model: each row is the owner of its
+    mounted run.  The Story/Ops/Debug buttons inside a row carry a
+    typed Command (this) with the row's ``run_id`` and the target
+    ``view``.  The dispatcher resolves the row from the trigger
+    element and updates that row's timeline container — no
+    cross-row contamination.
+
+    Strict-int + ge=1 on ``run_id`` matches the rest of the
+    E2E-command family (a silently-stringified payload would fail
+    validation, not route to the wrong run).
+    """
+
+    kind: Literal["switch_e2e_timeline_view"] = "switch_e2e_timeline_view"
+    label: str = "Switch E2E Timeline View"
+    run_id: int = Field(..., ge=1, strict=True)
+    view: Literal["user", "ops", "debug"]
+
+
+class CreateE2EUntriagedIssuesCommand(LifecycleBase):
+    """Create issues for every untriaged failure in an expanded run row
+    (issue #6334 round-2 reviewer blocker).
+
+    The legacy ``createIssuesForUntriaged()`` read its target run id
+    from the module-level ``unifiedRunData`` singleton + its agent
+    from a document-global ``#unifiedRunAgent`` select.  Both broke
+    when two rows could be expanded at once.  The new typed Command
+    pins the target ``run_id`` from the row that emitted the
+    button; the dispatcher resolves the row's agent select via
+    ``triggerEl.closest('details.e2e-run-row')`` and the row-scoped
+    ``.unified-run-agent`` class.
+
+    No agent goes in the Command payload — the user picks the agent
+    in a row-scoped ``<select>`` and we read it at click time.  A
+    stale typed Command carrying the wrong agent (e.g. from
+    long-lived re-renders) would silently mis-route untriaged work
+    to the wrong queue; the click-time read avoids that.
+    """
+
+    kind: Literal["create_e2e_untriaged_issues"] = "create_e2e_untriaged_issues"
+    label: str = "Create issue(s)"
+    run_id: int = Field(..., ge=1, strict=True)
+
+
 TimelineCommand = Annotated[
     ShowEventDetailsCommand
     | OpenSessionRecordingCommand
@@ -213,6 +263,8 @@ TimelineCommand = Annotated[
     | OpenIssueTimelineCommand
     | OpenE2ERunCommand
     | ExpandE2ERunCommand
+    | SwitchE2ETimelineViewCommand
+    | CreateE2EUntriagedIssuesCommand
     | OpenInlineAgentAttemptsCommand,
     Field(discriminator="kind"),
 ]
@@ -1233,6 +1285,8 @@ __all__ = [
     "E2ESuiteTimelineContainer",
     "E2ETestExecution",
     "ExpandE2ERunCommand",
+    "CreateE2EUntriagedIssuesCommand",
+    "SwitchE2ETimelineViewCommand",
     "FailedCodingAttempt",
     "FailedE2ETestExecution",
     "IssueCycle",
