@@ -142,6 +142,7 @@ def _patch_persistent_runner(
     write_recording: bool = True,
     write_coder_completion: bool = True,
     coder_completion_script: list[bool] | None = None,
+    coder_validation_payload_script: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Patch the runner functions in pse to consume a per-role response script.
 
@@ -157,16 +158,24 @@ def _patch_persistent_runner(
 
     ``coder_completion_script`` lets a test vary that invariant per
     coder attempt without timing or background coordination.
+
+    ``coder_validation_payload_script`` lets a test vary the validation
+    record payload written with each successful coder completion.
     """
     registry = _FakePairRegistry()
     state: dict[str, Any] = {
-        "opened": [], "rounds_seen": [],
+        "opened": [], "rounds_seen": [], "prompts_seen": [],
         "run_dir": None,
         "registry": registry,
     }
     completion_script = (
         list(coder_completion_script)
         if coder_completion_script is not None
+        else None
+    )
+    validation_payload_script = (
+        list(coder_validation_payload_script)
+        if coder_validation_payload_script is not None
         else None
     )
 
@@ -220,6 +229,7 @@ def _patch_persistent_runner(
     def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
         role = session.role
         state["rounds_seen"].append((role, prompt[:40]))
+        state["prompts_seen"].append((role, prompt))
         if not response_script.get(role):
             raise AssertionError(f"send_round called for {role} with no scripted response left")
         head = response_script[role].pop(0)
@@ -248,8 +258,16 @@ def _patch_persistent_runner(
             assert validation_dir is not None
             validation_dir.mkdir(parents=True, exist_ok=True)
             validation_record = validation_dir / "validation-record.json"
+            if validation_payload_script is not None:
+                if not validation_payload_script:
+                    raise AssertionError(
+                        "test fixture: coder_validation_payload_script exhausted"
+                    )
+                validation_payload = validation_payload_script.pop(0)
+            else:
+                validation_payload = {"passed": True}
             validation_record.write_text(
-                json.dumps({"passed": True}), encoding="utf-8",
+                json.dumps(validation_payload), encoding="utf-8",
             )
             completion.write_text(
                 json.dumps({
@@ -395,14 +413,54 @@ class TestPairValidationMirror:
             "head_sha": "new-sha",
         }
 
-    def test_missing_initial_validation_source_clears_stale_pair_record(
+    def test_current_validation_seed_is_mirrored_to_exchange_run_record(
         self, tmp_path: Path,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
         pair_record = pair_dir / "validation-record.json"
+        run_record = (
+            coder_wt
+            / ".issue-orchestrator"
+            / "sessions"
+            / "review-exchange-run"
+            / "validation-record.json"
+        )
+        payload = {"passed": True, "head_sha": "new-sha"}
+        current_record = tmp_path / "current-validation-record.json"
+        current_record.write_text(json.dumps(payload), encoding="utf-8")
+
+        mirror = pse._PairValidationMirror(  # noqa: SLF001
+            pair_dir=pair_dir,
+            record_path=pair_record,
+            coder_worktree_path=coder_wt,
+            run_record_path=run_record,
+        )
+        mirror.replace_from_initial(current_record)
+
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == payload
+        assert json.loads(run_record.read_text(encoding="utf-8")) == payload
+
+    def test_missing_initial_validation_source_clears_stale_pair_and_run_records(
+        self, tmp_path: Path,
+    ) -> None:
+        coder_wt = tmp_path / "coder-wt"
+        pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
+        pair_record = pair_dir / "validation-record.json"
+        run_record = (
+            coder_wt
+            / ".issue-orchestrator"
+            / "sessions"
+            / "review-exchange-run"
+            / "validation-record.json"
+        )
         pair_dir.mkdir(parents=True)
+        run_record.parent.mkdir(parents=True)
         pair_record.write_text(
+            json.dumps({"passed": True, "head_sha": "old-sha"}),
+            encoding="utf-8",
+        )
+        run_record.write_text(
             json.dumps({"passed": True, "head_sha": "old-sha"}),
             encoding="utf-8",
         )
@@ -410,11 +468,13 @@ class TestPairValidationMirror:
             pair_dir=pair_dir,
             record_path=pair_record,
             coder_worktree_path=coder_wt,
+            run_record_path=run_record,
         )
 
         mirror.replace_from_initial(None)
 
         assert not pair_record.exists()
+        assert not run_record.exists()
 
     def test_completion_validation_record_replaces_stale_pair_head(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1468,6 +1528,125 @@ class TestCallerHooks:
         assert observed[0].exists()
         # And the run dir contains the exchange artifacts.
         assert (observed[0] / "review-exchange").is_dir()
+
+    def test_initial_validation_record_is_available_to_reviewer_in_run_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        validation_payload = {"passed": True, "head_sha": "head-a"}
+        current_record = tmp_path / "current-validation-record.json"
+        current_record.write_text(
+            json.dumps(validation_payload), encoding="utf-8",
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-a")
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
+                ],
+                "coder": [],
+            },
+        )
+
+        observed: list[Path] = []
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=2,
+            require_validation=True,
+            initial_validation_record_path=current_record,
+            on_started=lambda d: observed.append(d),
+        )
+
+        assert outcome.status == "ok"
+        assert len(observed) == 1
+        run_record = observed[0] / "validation-record.json"
+        assert json.loads(run_record.read_text(encoding="utf-8")) == validation_payload
+        reviewer_prompt = next(
+            prompt for role, prompt in state["prompts_seen"] if role == "reviewer"
+        )
+        assert str(run_record) in reviewer_prompt
+        assert "Do not rerun validation solely to create this file" in reviewer_prompt
+
+    def test_coder_validation_refresh_updates_reviewer_run_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        initial_payload = {"passed": True, "head_sha": "head-a"}
+        refreshed_payload = {"passed": True, "head_sha": "head-b"}
+        current_record = tmp_path / "current-validation-record.json"
+        current_record.write_text(
+            json.dumps(initial_payload), encoding="utf-8",
+        )
+        monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "please fix",
+                        "getting_closer": True,
+                    },
+                    {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "fixed"},
+                ],
+            },
+            coder_validation_payload_script=[refreshed_payload],
+        )
+
+        observed: list[Path] = []
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=2,
+            max_no_progress=2,
+            require_validation=True,
+            initial_validation_record_path=current_record,
+            on_started=lambda d: observed.append(d),
+        )
+
+        assert outcome.status == "ok"
+        assert len(observed) == 1
+        run_record = observed[0] / "validation-record.json"
+        pair_record = tmp_path / "persistent-pairs" / "issue-42" / "validation-record.json"
+        assert json.loads(run_record.read_text(encoding="utf-8")) == refreshed_payload
+        assert json.loads(pair_record.read_text(encoding="utf-8")) == refreshed_payload
+        reviewer_prompts = [
+            prompt for role, prompt in state["prompts_seen"] if role == "reviewer"
+        ]
+        assert len(reviewer_prompts) == 2
+        assert all(str(run_record) in prompt for prompt in reviewer_prompts)
 
 
 # ---------------------------------------------------------------------------

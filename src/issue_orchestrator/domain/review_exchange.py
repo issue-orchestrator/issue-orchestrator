@@ -63,10 +63,18 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         )
     validation_note = ""
     if packet.require_validation:
+        validation_record = packet.prompt_files.validation_record
+        if validation_record is None:
+            raise ValueError(
+                "build_reviewer_prompt requires "
+                "packet.prompt_files.validation_record when validation is required"
+            )
         validation_note = (
-            "Validation is required. Only respond ok if validation-record.json exists "
-            f"and passed in {packet.run_dir}. If missing or failed, respond changes_requested "
-            "asking the coder to run validation and fix any failures."
+            "Validation is required. Check "
+            f"{validation_record}. Only respond ok if that file exists and has "
+            "passed=true. Do not rerun validation solely to create this file; "
+            "if it is missing or failed, respond changes_requested asking the "
+            "coder to run validation and fix any failures."
         )
     prior = ""
     if packet.last_coder_text:
