@@ -127,7 +127,6 @@ def test_e2e_run_history_css_contract_prevents_clipped_rows() -> None:
     assert "line-height: 1.35;" in summary_rule
 
     assert re.search(
-        r"\.e2e-run-row-summary:focus,\s*"
         r"\.e2e-run-row-summary:focus-visible\s*\{[^}]*"
         r"outline:\s*2px solid var\(--accent\);",
         css,

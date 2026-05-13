@@ -318,8 +318,22 @@ def test_run_history_rows_are_not_clipped_and_expanded_list_uses_page_scroll(
     _inject_runs_list(page, _many_recent_runs_payload())
 
     first_row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{_RUN_ID}']")
-    first_row.locator("summary").click()
+    first_summary = first_row.locator("summary.e2e-run-row-summary")
+    first_summary.click()
     expect(first_row.locator(".cvv-root")).to_be_visible(timeout=10_000)
+    page.evaluate(
+        """() => {
+            const root = document.getElementById('e2eRunsListRoot');
+            const sentinel = document.createElement('button');
+            sentinel.type = 'button';
+            sentinel.id = 'e2eRunHistoryFocusSentinel';
+            sentinel.textContent = 'Focus sentinel';
+            root.parentElement.insertBefore(sentinel, root);
+            sentinel.focus();
+        }"""
+    )
+    page.keyboard.press("Tab")
+    expect(first_summary).to_be_focused()
 
     metrics = page.evaluate(
         """() => {
@@ -338,7 +352,6 @@ def test_run_history_rows_are_not_clipped_and_expanded_list_uses_page_scroll(
                         || childRect.bottom > summaryRect.bottom + 0.5;
                 });
             });
-            summaries[0].focus();
             const focusStyle = getComputedStyle(summaries[0]);
             const listRect = list.getBoundingClientRect();
             return {
@@ -350,6 +363,7 @@ def test_run_history_rows_are_not_clipped_and_expanded_list_uses_page_scroll(
                 viewportHeight: window.innerHeight,
                 minClosedSummaryHeight: Math.min(...closedSummaryHeights),
                 clippedChildren,
+                firstSummaryFocused: document.activeElement === summaries[0],
                 firstSummaryControls: summaries[0].getAttribute('aria-controls'),
                 firstBodyRole: rows[0].querySelector('.e2e-run-row-body').getAttribute('role'),
                 firstBodyLabel: rows[0].querySelector('.e2e-run-row-body').getAttribute('aria-labelledby'),
@@ -363,8 +377,9 @@ def test_run_history_rows_are_not_clipped_and_expanded_list_uses_page_scroll(
     assert metrics["listMaxHeight"] == "none"
     assert metrics["listHeight"] > metrics["viewportHeight"] * 0.75
     assert abs(metrics["listScrollHeight"] - metrics["listClientHeight"]) <= 2
-    assert metrics["minClosedSummaryHeight"] >= 40
+    assert metrics["minClosedSummaryHeight"] >= 44
     assert metrics["clippedChildren"] is False
+    assert metrics["firstSummaryFocused"] is True
     assert metrics["firstSummaryControls"] is None
     assert metrics["firstBodyRole"] is None
     assert metrics["firstBodyLabel"] is None
