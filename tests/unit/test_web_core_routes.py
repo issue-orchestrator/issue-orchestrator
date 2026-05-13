@@ -483,6 +483,81 @@ class TestHostOpenPathEndpoint:
         assert data["action"] == "copy_path"
         assert data["path"] == "/tmp/ui-session.log"
 
+    def test_open_host_path_allows_configured_issue_worktree(
+        self, tmp_path: Path
+    ):
+        """Timeline worktree actions point at generated issue worktree roots."""
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web_operator_routes import (
+            install_web_operator_dependencies,
+        )
+
+        # Avoid pytest's tmp_path because CI places it under /tmp, which is
+        # already a legacy safe prefix for this endpoint.
+        base = Path("/workspace") / f"issue-orchestrator-{tmp_path.name}"
+        host_repo = base / "tixmeup"
+        worktree = base / "tixmeup-360"
+
+        client_host = _StubClientHost()
+        set_client_host(client_host)
+        install_web_operator_dependencies(
+            app,
+            get_client_host=web.get_client_host,
+            broadcast_event=web.broadcast_event,
+            trigger_server_shutdown=web.trigger_server_shutdown,
+            get_host_repo_root=lambda: host_repo,
+            get_worktree_base=lambda: base,
+        )
+
+        client = TestClient(app)
+        with patch(
+            "issue_orchestrator.entrypoints.web_operator_routes.Path.exists"
+        ) as mock_exists:
+            mock_exists.return_value = True
+            response = client.post(
+                "/api/host/open-path",
+                json={"path": str(worktree)},
+            )
+
+        assert response.status_code == 200, response.json()
+        assert response.json()["action"] == "opened"
+        assert response.json()["path"] == str(worktree)
+
+    def test_open_host_path_rejects_non_worktree_sibling(
+        self, tmp_path: Path
+    ):
+        """The worktree allowance must stay tied to generated issue names."""
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web_operator_routes import (
+            install_web_operator_dependencies,
+        )
+
+        # Avoid pytest's tmp_path because CI places it under /tmp, which is
+        # already a legacy safe prefix for this endpoint.
+        base = Path("/workspace") / f"issue-orchestrator-{tmp_path.name}"
+        host_repo = base / "tixmeup"
+        unrelated = base / "tixmeup-secrets"
+
+        client_host = _StubClientHost()
+        set_client_host(client_host)
+        install_web_operator_dependencies(
+            app,
+            get_client_host=web.get_client_host,
+            broadcast_event=web.broadcast_event,
+            trigger_server_shutdown=web.trigger_server_shutdown,
+            get_host_repo_root=lambda: host_repo,
+            get_worktree_base=lambda: tmp_path,
+        )
+
+        client = TestClient(app)
+        response = client.post(
+            "/api/host/open-path",
+            json={"path": str(unrelated)},
+        )
+
+        assert response.status_code == 403
+        assert response.json()["error"] == "Cannot open files outside safe directories"
+
     def test_open_host_path_falls_back_to_host_repo_session_mirror(
         self, tmp_path: Path
     ):
@@ -513,14 +588,15 @@ class TestHostOpenPathEndpoint:
         )
         assert not Path(stale_agent_worktree_path).exists()
 
-        set_client_host(_StubClientHost())
+        client_host = _StubClientHost()
+        set_client_host(client_host)
         # Inject the orchestrator's host repo root via the operator deps.
         from issue_orchestrator.entrypoints.web_operator_routes import (
             install_web_operator_dependencies,
         )
         install_web_operator_dependencies(
             app,
-            get_client_host=lambda: web._client_host,
+            get_client_host=web.get_client_host,
             broadcast_event=web.broadcast_event,
             trigger_server_shutdown=web.trigger_server_shutdown,
             get_host_repo_root=lambda: host_repo,
@@ -561,10 +637,11 @@ class TestHostOpenPathEndpoint:
         outside_target = tmp_path / "secret.txt"
         outside_target.write_text("not for the dashboard")
 
-        set_client_host(_StubClientHost())
+        client_host = _StubClientHost()
+        set_client_host(client_host)
         install_web_operator_dependencies(
             app,
-            get_client_host=lambda: web._client_host,
+            get_client_host=web.get_client_host,
             broadcast_event=web.broadcast_event,
             trigger_server_shutdown=web.trigger_server_shutdown,
             get_host_repo_root=lambda: host_repo,
@@ -589,10 +666,11 @@ class TestHostOpenPathEndpoint:
             install_web_operator_dependencies,
         )
 
-        set_client_host(_StubClientHost())
+        client_host = _StubClientHost()
+        set_client_host(client_host)
         install_web_operator_dependencies(
             app,
-            get_client_host=lambda: web._client_host,
+            get_client_host=web.get_client_host,
             broadcast_event=web.broadcast_event,
             trigger_server_shutdown=web.trigger_server_shutdown,
             get_host_repo_root=lambda: None,

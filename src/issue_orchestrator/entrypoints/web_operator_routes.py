@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import logging
 from pathlib import Path
+import re
 import threading
 from typing import Annotated, Any
 
@@ -42,6 +43,10 @@ class WebOperatorDependencies:
     # cleaned up post-merge. Returning ``None`` is fine — the endpoint
     # falls back to the legacy "file not found" response.
     get_host_repo_root: Callable[[], "Path | None"] = lambda: None
+    # Optional accessor for the configured worktree base. Timeline actions
+    # can point at an issue worktree root (for example ``../repo-360``), which
+    # is outside ``.issue-orchestrator`` but still owned by this orchestrator.
+    get_worktree_base: Callable[[], "Path | None"] = lambda: None
 
 
 def install_web_operator_dependencies(
@@ -51,6 +56,7 @@ def install_web_operator_dependencies(
     broadcast_event: Callable[[str, dict | None], Awaitable[None]],
     trigger_server_shutdown: Callable[[], None],
     get_host_repo_root: Callable[[], "Path | None"] | None = None,
+    get_worktree_base: Callable[[], "Path | None"] | None = None,
 ) -> None:
     """Install operator route dependencies on the FastAPI app."""
     deps_kwargs: dict[str, Any] = {
@@ -60,6 +66,8 @@ def install_web_operator_dependencies(
     }
     if get_host_repo_root is not None:
         deps_kwargs["get_host_repo_root"] = get_host_repo_root
+    if get_worktree_base is not None:
+        deps_kwargs["get_worktree_base"] = get_worktree_base
     setattr(
         app.state,
         _WEB_OPERATOR_DEPENDENCIES_STATE_KEY,
@@ -628,6 +636,52 @@ def _resolve_archived_session_path(
     return candidate if candidate.exists() else None
 
 
+def _is_generated_worktree_path(
+    file_path: str,
+    *,
+    host_repo_root: "Path | None",
+    worktree_base: "Path | None",
+) -> bool:
+    if host_repo_root is None:
+        return False
+    candidate = Path(file_path).expanduser()
+    if not candidate.is_absolute():
+        return False
+    try:
+        host_root = host_repo_root.expanduser().resolve()
+        base = (worktree_base or host_root.parent).expanduser().resolve()
+        resolved = candidate.resolve()
+        relative = resolved.relative_to(base)
+    except (OSError, ValueError):
+        return False
+    if not relative.parts:
+        return False
+    repo_name = host_root.name
+    worktree_name = relative.parts[0]
+    pattern = re.compile(rf"^{re.escape(repo_name)}-\d+(?:-review-[^/]+)?$")
+    return pattern.fullmatch(worktree_name) is not None
+
+
+def _is_safe_open_path(
+    file_path: str,
+    operator_deps: WebOperatorDependencies,
+) -> bool:
+    safe_prefixes = [
+        str(Path.home() / ".claude"),
+        str(Path.home() / ".issue-orchestrator"),
+        "/tmp/",
+    ]
+    if "/.issue-orchestrator/" in file_path:
+        return True
+    if any(file_path.startswith(prefix) for prefix in safe_prefixes):
+        return True
+    return _is_generated_worktree_path(
+        file_path,
+        host_repo_root=operator_deps.get_host_repo_root(),
+        worktree_base=operator_deps.get_worktree_base(),
+    )
+
+
 async def _open_host_path(request: Request, operator_deps: WebOperatorDependencies) -> JSONResponse:
     """Open a file via the current client-host integration."""
     try:
@@ -639,12 +693,7 @@ async def _open_host_path(request: Request, operator_deps: WebOperatorDependenci
     if not file_path:
         return JSONResponse({"error": "path is required"}, status_code=400)
 
-    safe_prefixes = [
-        str(Path.home() / ".claude"),
-        str(Path.home() / ".issue-orchestrator"),
-        "/tmp/",
-    ]
-    if "/.issue-orchestrator/" not in file_path and not any(file_path.startswith(prefix) for prefix in safe_prefixes):
+    if not _is_safe_open_path(file_path, operator_deps):
         return JSONResponse({"error": "Cannot open files outside safe directories"}, status_code=403)
 
     resolved_path = Path(file_path)

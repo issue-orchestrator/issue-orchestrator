@@ -68,6 +68,7 @@ from ..domain.review_exchange import (
     build_coder_prompt,
     build_reviewer_prompt,
 )
+from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.review_exchange_turn import (
     ReviewExchangeTurnPacket,
     ReviewExchangeTurnResult,
@@ -443,6 +444,70 @@ def _acquire_pair_or_emit_failure(
         raise
 
 
+def _release_pair_after_no_completion(
+    *,
+    pair_registry: InMemoryPersistentExchangePairRegistry,
+    pair: PersistentExchangePair,
+    issue_number: int,
+    session_name: str,
+    outcome: ReviewExchangeOutcome,
+) -> bool:
+    """Release a wedged persistent pair after a no-completion exchange.
+
+    ``*_no_completion`` means one role timed out before writing the required
+    response artifact. The resume policy retries those summaries by launching a
+    fresh exchange; with persistent pairs, "fresh" must include the underlying
+    PTYs. Otherwise an alive-but-not-reading agent keeps getting reused and the
+    retry loop recreates the same timeout.
+    """
+    if outcome.status != "error" or not is_no_completion_reason(outcome.reason):
+        return False
+    logger.warning(
+        "[REVIEW_EXCHANGE] no-completion result; releasing persistent pair "
+        "before retry issue=%s session_name=%s reason=%s coder_pid=%d "
+        "reviewer_pid=%d coder_response=%s reviewer_response=%s "
+        "reviewer_worktree=%s",
+        issue_number,
+        session_name,
+        outcome.reason,
+        pair.coder_session.proc.pid,
+        pair.reviewer_session.proc.pid,
+        pair.coder_response_path,
+        pair.reviewer_response_path,
+        pair.reviewer_worktree_path,
+    )
+    pair_registry.release(
+        issue_number,
+        reason=f"review-exchange-{outcome.reason}",
+    )
+    return True
+
+
+def _release_pair_after_exchange_exception(
+    *,
+    pair_registry: InMemoryPersistentExchangePairRegistry,
+    pair: PersistentExchangePair,
+    issue_number: int,
+    session_name: str,
+    exc: Exception,
+) -> None:
+    logger.warning(
+        "[REVIEW_EXCHANGE] exchange raised; releasing persistent pair "
+        "issue=%s session_name=%s exception_type=%s coder_pid=%d "
+        "reviewer_pid=%d coder_response=%s reviewer_response=%s "
+        "reviewer_worktree=%s",
+        issue_number,
+        session_name,
+        type(exc).__name__,
+        pair.coder_session.proc.pid,
+        pair.reviewer_session.proc.pid,
+        pair.coder_response_path,
+        pair.reviewer_response_path,
+        pair.reviewer_worktree_path,
+    )
+    pair_registry.release(issue_number, reason="review-exchange-exception")
+
+
 def run_persistent_session_exchange(  # noqa: PLR0913
     *,
     session_output: SessionOutput,
@@ -777,6 +842,13 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             reviewer_mirror=reviewer_mirror,
         )
     except Exception as exc:
+        _release_pair_after_exchange_exception(
+            pair_registry=pair_registry,
+            pair=pair,
+            issue_number=issue_number,
+            session_name=session_name,
+            exc=exc,
+        )
         _emit_review_exchange_failed(
             emit=_emit,
             issue_number=issue_number,
@@ -788,6 +860,13 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         _detach_slice_mirror(pair.coder_session, coder_session_slice)
         _detach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
 
+    _release_pair_after_no_completion(
+        pair_registry=pair_registry,
+        pair=pair,
+        issue_number=issue_number,
+        session_name=session_name,
+        outcome=outcome,
+    )
     return outcome
 
 

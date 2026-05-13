@@ -716,7 +716,7 @@ Timestamp: {self._now_iso()}
             return 0
         runs = sorted(
             (d for d in base_dir.iterdir() if d.is_dir() and not d.is_symlink()),
-            key=lambda p: p.stat().st_mtime,
+            key=self._session_run_chronology_key,
             reverse=True,
         )
         count = 0
@@ -778,6 +778,42 @@ Timestamp: {self._now_iso()}
             # the loop is no longer the no-completion runaway.
             break
         return count
+
+    def _session_run_chronology_key(self, run_dir: Path) -> tuple[int, str, float]:
+        """Sort runs by recorded start time, falling back to run id then mtime.
+
+        Files inside a long-lived coding run can be updated after later
+        review-exchange runs finish. Using directory mtime as the primary
+        chronology signal makes the no-completion budget see the old coding
+        run as "newer" and reset the streak after every timeout. The manifest's
+        ``started_at`` timestamp is the run chronology contract; the run-dir
+        timestamp is the fallback for partial manifests, and mtime is only a
+        legacy fallback when neither durable timestamp exists.
+        """
+        manifest = self.read_manifest(run_dir) or {}
+        started_at = manifest.get("started_at")
+        if isinstance(started_at, str) and started_at:
+            return (1, started_at, run_dir.stat().st_mtime)
+        run_id_started_at = self._started_at_from_run_dir_name(run_dir.name)
+        if run_id_started_at is not None:
+            return (1, run_id_started_at, run_dir.stat().st_mtime)
+        return (0, "", run_dir.stat().st_mtime)
+
+    @staticmethod
+    def _started_at_from_run_dir_name(name: str) -> str | None:
+        run_id = name.split("__", 1)[0]
+        if len(run_id) != 16 or not run_id.endswith("Z"):
+            return None
+        if run_id[8] not in {"-", "T"}:
+            return None
+        date_part = run_id[:8]
+        time_part = run_id[9:15]
+        if not (date_part.isdigit() and time_part.isdigit()):
+            return None
+        return (
+            f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
+            f"T{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}+00:00"
+        )
 
     @staticmethod
     def _manifest_matches_parent_session(
