@@ -209,6 +209,7 @@ async function toggleExcluded() {
             'session.started',
             'session.completed',
             'history.reconciled',
+            'issue.unblocked',
             'orchestrator.paused',
             'orchestrator.resumed',
             'startup_complete',

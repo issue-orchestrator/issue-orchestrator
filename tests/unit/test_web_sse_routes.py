@@ -22,6 +22,79 @@ class TestGetTemplates:
         assert env.autoescape("dashboard.html") is True
 
 
+class TestDashboardReadModelLoggingHelpers:
+    """Test dashboard read-model diagnostic helper behavior."""
+
+    def test_reset_retry_pending_issue_numbers_uses_label_manager_names(self):
+        from types import SimpleNamespace
+
+        from issue_orchestrator.entrypoints.web_read_model_routes import (
+            _reset_retry_pending_issue_numbers,
+        )
+
+        view_model = SimpleNamespace(
+            queue_items=[
+                {
+                    "issue_number": 11,
+                    "orchestrator_labels": ["custom-reset-retry-pending"],
+                },
+                {
+                    "issue_number": 12,
+                    "orchestrator_labels": ["other-label"],
+                },
+            ],
+            blocked_items=[
+                {
+                    "issue_number": 13,
+                    "orchestrator_labels": ["custom-reset-retry-scratch-pending"],
+                }
+            ],
+            awaiting_merge_items=[
+                {
+                    "issue_number": "not-int",
+                    "orchestrator_labels": ["custom-reset-retry-pending"],
+                }
+            ],
+            active_items=[],
+            completed_items=[],
+        )
+        orchestrator = SimpleNamespace(
+            deps=SimpleNamespace(
+                label_manager=SimpleNamespace(
+                    reset_retry_pending="custom-reset-retry-pending",
+                    reset_retry_scratch_pending="custom-reset-retry-scratch-pending",
+                )
+            )
+        )
+
+        assert _reset_retry_pending_issue_numbers(view_model, orchestrator) == [11, 13]
+
+    def test_reset_retry_pending_issue_numbers_requires_complete_label_manager(self):
+        from types import SimpleNamespace
+
+        from issue_orchestrator.entrypoints.web_read_model_routes import (
+            _reset_retry_pending_issue_numbers,
+        )
+
+        view_model = SimpleNamespace(
+            queue_items=[],
+            blocked_items=[],
+            awaiting_merge_items=[],
+            active_items=[],
+            completed_items=[],
+        )
+        orchestrator = SimpleNamespace(
+            deps=SimpleNamespace(
+                label_manager=SimpleNamespace(
+                    reset_retry_pending="custom-reset-retry-pending",
+                )
+            )
+        )
+
+        with pytest.raises(AttributeError):
+            _reset_retry_pending_issue_numbers(view_model, orchestrator)
+
+
 class TestSSEFunctionality:
     """Test Server-Sent Events functionality."""
 

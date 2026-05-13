@@ -33,6 +33,8 @@ from .repo_lock import (
 
 logger = logging.getLogger(__name__)
 _EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
+ENGINE_LOG_LEVEL_ENV = "ISSUE_ORCHESTRATOR_ENGINE_LOG_LEVEL"
+_VALID_ENGINE_LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
 
 
 @dataclass
@@ -146,6 +148,28 @@ def _extract_error_from_log(log_file: Path) -> str:
     return ""
 
 
+def _resolve_engine_log_level(log_level: str | None) -> str | None:
+    raw_level = log_level or os.environ.get(ENGINE_LOG_LEVEL_ENV)
+    if raw_level is None:
+        return None
+    normalized = raw_level.strip().upper()
+    if not normalized:
+        return None
+    if normalized not in _VALID_ENGINE_LOG_LEVELS:
+        valid = ", ".join(sorted(_VALID_ENGINE_LOG_LEVELS))
+        raise ValueError(
+            f"{ENGINE_LOG_LEVEL_ENV} must be one of: {valid}; got {raw_level!r}"
+        )
+    return normalized
+
+
+def _engine_log_level_args(log_level: str | None) -> list[str]:
+    engine_log_level = _resolve_engine_log_level(log_level)
+    if engine_log_level is None:
+        return []
+    return ["--log-level", engine_log_level]
+
+
 def start(
     repo_root: Path | str,
     config_name: str = "default.yaml",
@@ -153,6 +177,7 @@ def start(
     port: int | None = None,
     expected_identity: dict[str, Any] | None = None,
     start_paused: bool = False,
+    log_level: str | None = None,
     *,
     spawn_process: Callable[..., Any] | None = None,
 ) -> LockInfo:
@@ -189,6 +214,7 @@ def start(
     ]
     if start_paused:
         cmd.append("--start-paused")
+    cmd.extend(_engine_log_level_args(log_level))
 
     # Set up environment for the subprocess
     env = os.environ.copy()
@@ -616,6 +642,7 @@ def start_instances(
     count: int | None = None,
     expected_identity: dict[str, Any] | None = None,
     start_paused: bool = False,
+    log_level: str | None = None,
 ) -> list[LockInfo]:
     """Start multiple orchestrator instances for a repository.
 
@@ -645,6 +672,7 @@ def start_instances(
                 config_name,
                 expected_identity=expected_identity,
                 start_paused=start_paused,
+                log_level=log_level,
             )
         ]
 
@@ -661,6 +689,7 @@ def start_instances(
                 port=port,
                 expected_identity=expected_identity,
                 start_paused=start_paused,
+                log_level=log_level,
             )
             results.append(info)
             logger.info("Started instance %s on port %d", instance_id, port)
@@ -795,6 +824,7 @@ class SupervisorOps(Protocol):
         port: int | None = None,
         expected_identity: dict[str, Any] | None = None,
         start_paused: bool = False,
+        log_level: str | None = None,
     ) -> LockInfo: ...
 
     def stop(
@@ -829,6 +859,7 @@ class SupervisorOps(Protocol):
         count: int | None = None,
         expected_identity: dict[str, Any] | None = None,
         start_paused: bool = False,
+        log_level: str | None = None,
     ) -> list[LockInfo]: ...
 
     def stop_all_instances(
@@ -860,14 +891,16 @@ class DefaultSupervisorOps:
         port: int | None = None,
         expected_identity: dict[str, Any] | None = None,
         start_paused: bool = False,
+        log_level: str | None = None,
     ) -> LockInfo:
         return start(
-            repo_root,
-            config_name,
-            instance_id,
-            port,
-            expected_identity,
-            start_paused,
+            repo_root=repo_root,
+            config_name=config_name,
+            instance_id=instance_id,
+            port=port,
+            expected_identity=expected_identity,
+            start_paused=start_paused,
+            log_level=log_level,
         )
 
     def stop(
@@ -913,13 +946,15 @@ class DefaultSupervisorOps:
         count: int | None = None,
         expected_identity: dict[str, Any] | None = None,
         start_paused: bool = False,
+        log_level: str | None = None,
     ) -> list[LockInfo]:
         return start_instances(
-            repo_root,
-            config_name,
-            count,
-            expected_identity,
-            start_paused,
+            repo_root=repo_root,
+            config_name=config_name,
+            count=count,
+            expected_identity=expected_identity,
+            start_paused=start_paused,
+            log_level=log_level,
         )
 
     def stop_all_instances(

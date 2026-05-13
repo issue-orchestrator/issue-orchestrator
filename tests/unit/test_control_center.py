@@ -117,12 +117,16 @@ def test_start_tray_icon_returns_none_when_startup_fails() -> None:
 
 
 def _make_main_args(
-    *, debug_http: bool, dev_no_auth: bool = False, host: str = "127.0.0.1"
+    *,
+    debug_http: bool,
+    debug: bool = False,
+    dev_no_auth: bool = False,
+    host: str = "127.0.0.1",
 ) -> Namespace:
     return Namespace(
         port=19080,
         host=host,
-        debug=False,
+        debug=debug,
         debug_http=debug_http,
         no_browser=True,
         no_tray=True,
@@ -297,6 +301,58 @@ def test_main_enables_uvicorn_access_log_with_debug_http_flag() -> None:
 
     assert result == 0
     assert run_mock.call_args.kwargs["access_log"] is True
+
+
+def test_main_debug_sets_default_engine_log_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control Center --debug opts repository engines into DEBUG logs by default."""
+    from issue_orchestrator.infra.supervisor import ENGINE_LOG_LEVEL_ENV
+
+    monkeypatch.delenv(ENGINE_LOG_LEVEL_ENV, raising=False)
+    with (
+        patch(
+            "argparse.ArgumentParser.parse_args",
+            return_value=_make_main_args(debug_http=False, debug=True),
+        ),
+        patch("issue_orchestrator.entrypoints.control_center.uvicorn.run"),
+        patch("issue_orchestrator.entrypoints.control_center.write_dashboard_pid"),
+        patch("issue_orchestrator.entrypoints.control_center.clear_dashboard_pid"),
+        patch("issue_orchestrator.entrypoints.control_center.logging.basicConfig"),
+        patch("issue_orchestrator.infra.repo_registry.cleanup_stale_repos", return_value=0),
+        patch("issue_orchestrator.entrypoints.control_center.threading.Thread") as thread_cls,
+    ):
+        thread_cls.return_value = MagicMock(start=MagicMock())
+        result = control_center.main()
+
+    assert result == 0
+    assert os.environ[ENGINE_LOG_LEVEL_ENV] == "DEBUG"
+
+
+def test_main_debug_preserves_explicit_engine_log_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit engine log-level env remains the source of truth."""
+    from issue_orchestrator.infra.supervisor import ENGINE_LOG_LEVEL_ENV
+
+    monkeypatch.setenv(ENGINE_LOG_LEVEL_ENV, "WARNING")
+    with (
+        patch(
+            "argparse.ArgumentParser.parse_args",
+            return_value=_make_main_args(debug_http=False, debug=True),
+        ),
+        patch("issue_orchestrator.entrypoints.control_center.uvicorn.run"),
+        patch("issue_orchestrator.entrypoints.control_center.write_dashboard_pid"),
+        patch("issue_orchestrator.entrypoints.control_center.clear_dashboard_pid"),
+        patch("issue_orchestrator.entrypoints.control_center.logging.basicConfig"),
+        patch("issue_orchestrator.infra.repo_registry.cleanup_stale_repos", return_value=0),
+        patch("issue_orchestrator.entrypoints.control_center.threading.Thread") as thread_cls,
+    ):
+        thread_cls.return_value = MagicMock(start=MagicMock())
+        result = control_center.main()
+
+    assert result == 0
+    assert os.environ[ENGINE_LOG_LEVEL_ENV] == "WARNING"
 
 
 def test_start_buttons_are_disabled_while_start_is_pending() -> None:

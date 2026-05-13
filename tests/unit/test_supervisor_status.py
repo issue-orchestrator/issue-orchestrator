@@ -254,6 +254,72 @@ class TestSupervisorStartErrorSurfacing:
         command = captured["args"][0]
         assert "--start-paused" in command
 
+    def test_start_log_level_adds_subprocess_flag(self, tmp_path: Path) -> None:
+        """Supervisor passes explicit engine log level to the child process."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        captured: dict[str, object] = {}
+        mock_process = MagicMock()
+        mock_process.pid = 99999
+        mock_process.poll.return_value = 1
+
+        def spawn_process(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return mock_process
+
+        with pytest.raises(RuntimeError):
+            start(tmp_path, log_level="DEBUG", spawn_process=spawn_process)
+
+        command = captured["args"][0]
+        assert command[command.index("--log-level") + 1] == "DEBUG"
+
+    def test_start_log_level_env_adds_subprocess_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Supervisor lets Control Center opt repository engines into DEBUG logs."""
+        from issue_orchestrator.infra.supervisor import ENGINE_LOG_LEVEL_ENV
+
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+        monkeypatch.setenv(ENGINE_LOG_LEVEL_ENV, "debug")
+
+        captured: dict[str, object] = {}
+        mock_process = MagicMock()
+        mock_process.pid = 99999
+        mock_process.poll.return_value = 1
+
+        def spawn_process(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return mock_process
+
+        with pytest.raises(RuntimeError):
+            start(tmp_path, spawn_process=spawn_process)
+
+        command = captured["args"][0]
+        assert command[command.index("--log-level") + 1] == "DEBUG"
+
+    def test_start_invalid_log_level_fails_before_spawn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Invalid engine log-level env should fail fast instead of launching."""
+        from issue_orchestrator.infra.supervisor import ENGINE_LOG_LEVEL_ENV
+
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+        monkeypatch.setenv(ENGINE_LOG_LEVEL_ENV, "verbose")
+        spawn_process = MagicMock()
+
+        with pytest.raises(ValueError, match=ENGINE_LOG_LEVEL_ENV):
+            start(tmp_path, spawn_process=spawn_process)
+
+        spawn_process.assert_not_called()
+
 
 class TestMultiInstanceSupport:
     """Tests for multi-instance supervisor functionality."""
@@ -321,11 +387,13 @@ class TestMultiInstanceSupport:
             port: int | None = None,
             expected_identity: dict[str, object] | None = None,
             start_paused: bool = False,
+            log_level: str | None = None,
         ) -> LockInfo:
             calls.append({
                 "instance_id": instance_id,
                 "port": port,
                 "start_paused": start_paused,
+                "log_level": log_level,
             })
             return LockInfo(
                 repo_root=str(repo_root),
@@ -347,6 +415,51 @@ class TestMultiInstanceSupport:
 
         assert [info.instance_id for info in infos] == ["orchestrator-1", "orchestrator-2"]
         assert [call["start_paused"] for call in calls] == [True, True]
+
+    def test_start_instances_forwards_log_level(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Multi-instance startup passes log-level intent to each child."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("instances: 2\nagents: {}\n")
+
+        calls: list[dict[str, object]] = []
+
+        def fake_start(
+            repo_root: Path | str,
+            config_name: str = "default.yaml",
+            instance_id: str | None = None,
+            port: int | None = None,
+            expected_identity: dict[str, object] | None = None,
+            start_paused: bool = False,
+            log_level: str | None = None,
+        ) -> LockInfo:
+            calls.append({
+                "instance_id": instance_id,
+                "port": port,
+                "log_level": log_level,
+            })
+            return LockInfo(
+                repo_root=str(repo_root),
+                pid=1000 + len(calls),
+                started_at="",
+                http_port=port or 0,
+                state_dir=str(tmp_path / ".issue-orchestrator" / "state"),
+                recovered=False,
+                instance_id=instance_id,
+            )
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.supervisor.find_free_port",
+            MagicMock(side_effect=[19081, 19082]),
+        )
+        monkeypatch.setattr("issue_orchestrator.infra.supervisor.start", fake_start)
+
+        infos = start_instances(tmp_path, count=2, log_level="DEBUG")
+
+        assert [info.instance_id for info in infos] == ["orchestrator-1", "orchestrator-2"]
+        assert [call["log_level"] for call in calls] == ["DEBUG", "DEBUG"]
 
 
 class TestMultiInstanceStatus:

@@ -258,6 +258,13 @@ async def reset_and_retry(
             {"error": "issues must be a non-empty list"},
             status_code=400,
         )
+    request_started_at = time.monotonic()
+    logger.debug(
+        "[reset-retry] Request received: issues=%s from_scratch=%s count=%d",
+        issue_numbers,
+        from_scratch,
+        len(issue_numbers),
+    )
 
     state = orchestrator.state
     config = orchestrator.config
@@ -292,6 +299,15 @@ async def reset_and_retry(
             continue
         failed.append({"issue": issue_number, "error": "Unknown reset+retry failure"})
 
+    logger.info(
+        "[reset-retry] Request complete: issues=%s reset=%s failed=%s "
+        "from_scratch=%s duration_ms=%d",
+        issue_numbers,
+        [result["issue"] for result in reset_results],
+        [failure.get("issue") for failure in failed],
+        from_scratch,
+        _elapsed_ms(request_started_at),
+    )
     return JSONResponse({
         "reset": reset_results,
         "failed": failed,
@@ -316,7 +332,13 @@ def _reset_and_retry_issue(  # noqa: PLR0913
     # AddLabelAction is lazy for the same reason as RemoveLabelAction above.
     from ..control.actions import AddLabelAction
 
+    issue_started_at = time.monotonic()
     try:
+        logger.debug(
+            "[reset-retry] Begin issue reset: issue=%d from_scratch=%s",
+            issue_number,
+            from_scratch,
+        )
         # Tear down the persistent exchange pair before reset clears
         # local state so the pair's reviewer worktree (a child of the
         # coder worktree) is reclaimed before the coder worktree
@@ -326,7 +348,15 @@ def _reset_and_retry_issue(  # noqa: PLR0913
         if pair_registry is not None:
             pair_registry.release(issue_number, reason="reset-retry")
 
+        labels_started_at = time.monotonic()
         current_labels = repository_host.get_issue_labels(issue_number)
+        logger.debug(
+            "[reset-retry] Current labels fetched: issue=%d labels=%s duration_ms=%d",
+            issue_number,
+            current_labels,
+            _elapsed_ms(labels_started_at),
+        )
+        reset_started_at = time.monotonic()
         result = reset_issue_fn(
             issue_number=issue_number,
             config=config,
@@ -341,6 +371,18 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             timeline_store=deps.timeline_store if from_scratch else None,
             from_scratch=from_scratch,
             repository_host=repository_host,
+        )
+        logger.debug(
+            "[reset-retry] Reset operation returned: issue=%d success=%s "
+            "labels_removed=%s superseded_prs=%s deleted_branches=%s "
+            "timeline_events_deleted=%s duration_ms=%d",
+            issue_number,
+            result.success,
+            result.labels_removed or [],
+            result.superseded_prs or [],
+            result.deleted_branches or [],
+            result.timeline_events_deleted,
+            _elapsed_ms(reset_started_at),
         )
         if not result.success:
             return None, _make_reset_failure(
@@ -397,7 +439,7 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             pending_label,
             pending_labels_to_add,
         )
-        logger.info(
+        logger.debug(
             "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s "
             "pending=%s from_scratch=%s queued_now=true",
             issue_number,
@@ -406,6 +448,13 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             result.labels_removed or "(none)",
             pending_label,
             from_scratch,
+        )
+        logger.debug(
+            "[reset-retry] Issue reset complete: issue=%d from_scratch=%s "
+            "duration_ms=%d",
+            issue_number,
+            from_scratch,
+            _elapsed_ms(issue_started_at),
         )
         return success, None
     except Exception as exc:
@@ -428,7 +477,7 @@ def _clear_scratch_retry_pending_state(
         issue_number=issue_number,
         superseded_prs=result.superseded_prs or (),
     )
-    logger.info(
+    logger.debug(
         "[reset-retry] Cleared scratch retry pending state for issue #%d: "
         "reviews %d->%d reworks %d->%d cleanups %d->%d superseded_prs=%s",
         issue_number,
@@ -484,6 +533,7 @@ def _enqueue_reset_retry_issue(
     from_scratch: bool,
     result: Any,
 ) -> dict[str, Any] | None:
+    enqueue_started_at = time.monotonic()
     refreshed_issue = repository_host.get_issue(issue_number)
     if refreshed_issue is None:
         return _make_reset_failure(
@@ -498,12 +548,32 @@ def _enqueue_reset_retry_issue(
         record_issue_refreshes(state, {issue_number}, refreshed_at)
         queue_cache.prune_refresh_timestamps()
         queue_cache.save_snapshot()
-        RetryHistoryState(state).prioritize_issue_front(issue_number)
+        priority_inserted = RetryHistoryState(state).prioritize_issue_front(issue_number)
+        logger.debug(
+            "[reset-retry] Queue cache accepted issue: issue=%d labels=%s "
+            "updated_existing=%s priority_inserted=%s queue_size=%d "
+            "duration_ms=%d",
+            issue_number,
+            list(refreshed_issue.labels),
+            outcome.updated,
+            priority_inserted,
+            len(state.cached_queue_issues),
+            _elapsed_ms(enqueue_started_at),
+        )
         return None
 
     clear_issue_refresh(state, issue_number)
     queue_cache.prune_refresh_timestamps()
     queue_cache.save_snapshot()
+    logger.debug(
+        "[reset-retry] Queue cache rejected issue: issue=%d status=%s labels=%s "
+        "queue_size=%d duration_ms=%d",
+        issue_number,
+        outcome.status.value,
+        list(refreshed_issue.labels),
+        len(state.cached_queue_issues),
+        _elapsed_ms(enqueue_started_at),
+    )
     return _make_reset_failure(
         issue_number,
         result,
@@ -536,6 +606,14 @@ def _emit_reset_retry_unblocked(
                 "from_scratch": from_scratch,
             },
         )
+    )
+    logger.debug(
+        "[reset-retry] Published UI refresh event: event=%s issue=%d "
+        "from_scratch=%s pending_labels=%s",
+        EventName.ISSUE_UNBLOCKED.value,
+        issue_number,
+        from_scratch,
+        pending_labels_to_add,
     )
 
 
@@ -586,3 +664,7 @@ def _make_reset_failure(
         "error": error,
         "partial": partial,
     }
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.monotonic() - started_at) * 1000)
