@@ -29,6 +29,11 @@ export interface BlockedIssuesDialogPayload {
   title: string;
 }
 
+export interface CapturedOutputAvailabilityPayload {
+  stderr_available: boolean;
+  stdout_available: boolean;
+}
+
 export interface CodingOutputsPayload {
   pull_request_url?: string | null;
   worktree_path?: string | null;
@@ -863,6 +868,7 @@ export interface TestCaseIssueLinkPayload {
 }
 
 export interface TestCaseResultPayload {
+  captured_output: CapturedOutputAvailabilityPayload;
   case_id: string;
   category: string;
   display_name: string | null;

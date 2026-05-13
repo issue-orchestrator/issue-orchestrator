@@ -886,6 +886,7 @@ class TestE2ERunDetailEndpoint:
         from issue_orchestrator.contracts.ui_openapi_models import TestCaseResultPayload
         from issue_orchestrator.entrypoints.web import set_orchestrator
         from issue_orchestrator.infra.e2e_db import E2EDB
+        from issue_orchestrator.infra.e2e_reports import E2ERunArtifactRecord
 
         store_key = TimelineKey.for_e2e_run(6).to_store_key()
         records = [
@@ -954,6 +955,31 @@ class TestE2ERunDetailEndpoint:
             first_failing_run_id=6,
             first_failing_sha="abc123",
         )
+        junit_path = mock_orch.config.repo_root / "junit.xml"
+        junit_path.write_text(
+            """\
+<testsuite name="suite">
+  <testcase classname="tixmeup.e2e.smoke" name="runtime.verify_primary_search" time="0.10">
+    <system-out>search stdout</system-out>
+  </testcase>
+  <testcase classname="tixmeup.e2e.smoke" name="runtime.verify_checkout" time="1.00">
+    <failure message="checkout failed">checkout failed</failure>
+    <system-err>checkout stderr</system-err>
+  </testcase>
+</testsuite>
+""",
+            encoding="utf-8",
+        )
+        db.replace_run_artifacts(
+            6,
+            [
+                E2ERunArtifactRecord(
+                    kind="junit_xml",
+                    label="JUnit XML: junit.xml",
+                    path=str(junit_path),
+                )
+            ],
+        )
 
         set_orchestrator(mock_orch)
         try:
@@ -974,10 +1000,18 @@ class TestE2ERunDetailEndpoint:
             assert passed[0]["nodeid"] == "tixmeup.e2e.smoke::runtime.verify_primary_search"
             assert passed[0]["result_category"] == "passed"
             assert set(passed[0]) == set(TestCaseResultPayload.model_fields)
+            assert passed[0]["captured_output"] == {
+                "stdout_available": True,
+                "stderr_available": False,
+            }
             has_issue = results_by_category["has_issue"]
             assert len(has_issue) == 1
             assert has_issue[0]["result_category"] == "has_issue"
             assert set(has_issue[0]) == set(TestCaseResultPayload.model_fields)
+            assert has_issue[0]["captured_output"] == {
+                "stdout_available": False,
+                "stderr_available": True,
+            }
             assert has_issue[0]["existing_issue"] == {
                 "number": 1234,
                 "status": "open",

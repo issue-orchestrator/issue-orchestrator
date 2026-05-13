@@ -40,6 +40,11 @@ class BlockedIssuesDialogPayload(BaseModel):
     blocked_issues: list[BlockedIssuePayload]
     title: str
 
+class CapturedOutputAvailabilityPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stderr_available: bool
+    stdout_available: bool
+
 class CodingOutputsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     pull_request_url: str | None = None
@@ -872,6 +877,7 @@ class TestCaseIssueLinkPayload(BaseModel):
 
 class TestCaseResultPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    captured_output: CapturedOutputAvailabilityPayload
     case_id: str
     category: str
     display_name: str | None

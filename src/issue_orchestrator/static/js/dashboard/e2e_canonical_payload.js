@@ -30,6 +30,7 @@
 function e2eRunToCanonicalPayload(runData) {
     const data = (runData && typeof runData === 'object') ? runData : {};
     const categories = _categoriesFromRunData(data);
+    const runId = _runIdFromRunData(data);
 
     const junitCases = [];
     const failedTests = [];
@@ -40,7 +41,7 @@ function e2eRunToCanonicalPayload(runData) {
     // test failed in this run.
     for (const category of ['untriaged', 'has_issue', 'flaky']) {
         for (const test of categories[category] || []) {
-            const junitCase = _testToJunitCase(test, 'failed');
+            const junitCase = _testToJunitCase(test, 'failed', runId);
             junitCases.push(junitCase);
             const nodeId = String(test && test.nodeid || '').trim();
             if (nodeId) failedTests.push(nodeId);
@@ -51,11 +52,11 @@ function e2eRunToCanonicalPayload(runData) {
     // canonical viewer — the "previously failing" story is in the
     // ``existing_issue`` linkage carried via ``extras``.
     for (const test of categories.fixed || []) {
-        junitCases.push(_testToJunitCase(test, 'passed'));
+        junitCases.push(_testToJunitCase(test, 'passed', runId));
     }
     // ``passed`` — pure passes, no orchestrator context.
     for (const test of categories.passed || []) {
-        junitCases.push(_testToJunitCase(test, 'passed'));
+        junitCases.push(_testToJunitCase(test, 'passed', runId));
     }
     // ``skipped`` and ``quarantined`` both map to outcome=skipped.
     // Quarantined tests get a small marker in ``extras`` so the future
@@ -63,10 +64,10 @@ function e2eRunToCanonicalPayload(runData) {
     // but for Phase C scope we just preserve the data path.  Actual
     // quarantine UI is deferred per issue #6318.
     for (const test of categories.skipped || []) {
-        junitCases.push(_testToJunitCase(test, 'skipped'));
+        junitCases.push(_testToJunitCase(test, 'skipped', runId));
     }
     for (const test of categories.quarantined || []) {
-        junitCases.push(_testToJunitCase(test, 'skipped'));
+        junitCases.push(_testToJunitCase(test, 'skipped', runId));
     }
 
     const failureCount = failedTests.length;
@@ -90,6 +91,11 @@ function e2eRunToCanonicalPayload(runData) {
 
 // ─── internals (exported so JS-vm tests can exercise them directly) ────────
 
+function _runIdFromRunData(data) {
+    const runId = Number(data && data.run && data.run.id);
+    return Number.isInteger(runId) && runId > 0 ? runId : null;
+}
+
 function _categoriesFromRunData(data) {
     const payload = (data && data.results_by_category && typeof data.results_by_category === 'object')
         ? data.results_by_category
@@ -105,7 +111,7 @@ function _categoriesFromRunData(data) {
     };
 }
 
-function _testToJunitCase(test, outcome) {
+function _testToJunitCase(test, outcome, runId) {
     const safe = (test && typeof test === 'object') ? test : {};
     const nodeId = String(safe.nodeid || '').trim();
     const displayName = String(safe.label || safe.display_name || _shortNameFromNodeId(nodeId) || nodeId);
@@ -130,7 +136,7 @@ function _testToJunitCase(test, outcome) {
         failureDetails = raw || null;
     }
 
-    return {
+    const junitCase = {
         case_id: nodeId || displayName,
         display_name: displayName,
         duration_seconds: duration,
@@ -138,9 +144,16 @@ function _testToJunitCase(test, outcome) {
         failure_details: failureDetails,
         outcome,
         suite_name: suiteName,
-        system_err: null,
-        system_out: null,
+        system_err: _optionalCapturedText(safe.system_err),
+        system_out: _optionalCapturedText(safe.system_out),
     };
+    const capturedOutputUrl = _capturedOutputUrlForTest(safe, runId);
+    const capturedOutput = _capturedOutputAvailabilityForTest(safe);
+    if (capturedOutputUrl && (capturedOutput.stdout_available || capturedOutput.stderr_available)) {
+        junitCase.captured_output_url = capturedOutputUrl;
+        junitCase.captured_output = capturedOutput;
+    }
+    return junitCase;
 }
 
 function _failureDetailsFromTest(test) {
@@ -193,6 +206,27 @@ function _shortNameFromNodeId(nodeId) {
     if (!nodeId) return '';
     const parts = String(nodeId).split('::');
     return parts.length > 0 ? parts[parts.length - 1] : '';
+}
+
+function _optionalCapturedText(value) {
+    return typeof value === 'string' ? value : null;
+}
+
+function _capturedOutputUrlForTest(test, runId) {
+    if (!Number.isInteger(runId) || runId <= 0) return null;
+    const nodeId = String(test && (test.nodeid || test.case_id) || '').trim();
+    if (!nodeId) return null;
+    return `/api/e2e-run/${runId}/test-output?nodeid=${encodeURIComponent(nodeId)}`;
+}
+
+function _capturedOutputAvailabilityForTest(test) {
+    const capturedOutput = test && test.captured_output && typeof test.captured_output === 'object'
+        ? test.captured_output
+        : {};
+    return {
+        stdout_available: capturedOutput.stdout_available === true,
+        stderr_available: capturedOutput.stderr_available === true,
+    };
 }
 
 // (Phase C originally introduced a ``flakinessChipForTest`` helper here
