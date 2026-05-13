@@ -8,8 +8,12 @@
 // the mounted ``_e2eRunData``, and the row-scoped DOM accessors
 // (timeline container, view switcher, agent select).  Returns
 // ``null`` when:
-//   - ``runId`` isn't a positive integer (rejects strings/booleans
-//     that slipped past Command validation upstream),
+//   - ``runId`` is not a positive integer Number (mirrors the
+//     typed Command's strict-int Pydantic contract: a string
+//     ``"88"`` or a boolean ``true`` must be rejected here even if
+//     they slipped past upstream validation — accepting them would
+//     silently re-introduce the silent-coercion class of bugs the
+//     strict contract exists to prevent),
 //   - the trigger doesn't resolve to a ``details.e2e-run-row``, or
 //   - the row's ``data-e2e-run-id`` disagrees with the Command's
 //     ``run_id`` (would mean the typed payload and the rendered
@@ -23,14 +27,26 @@
 // The single ownership rule this enforces: row-targeting policy
 // lives in this function, nowhere else.
 function resolveRowCommandContext(runId, triggerEl) {
-    const numericRunId = Number(runId);
-    if (!Number.isInteger(numericRunId) || numericRunId <= 0) return null;
+    // Strict-Number gate: mirrors the typed Pydantic Command's
+    // ``strict=True`` invariant.  Reject string, boolean, NaN,
+    // null/undefined, etc. before any conversion — only a real
+    // JS number that is a positive integer is accepted.
+    if (typeof runId !== 'number' || !Number.isInteger(runId) || runId <= 0) {
+        return null;
+    }
     const row = triggerEl && typeof triggerEl.closest === 'function'
         ? triggerEl.closest('details.e2e-run-row')
         : null;
     if (!row) return null;
-    const rowRunId = Number(row.dataset && row.dataset.e2eRunId);
-    if (!Number.isInteger(rowRunId) || rowRunId !== numericRunId) return null;
+    // The row's data-e2e-run-id comes from the DOM as a string;
+    // parse strictly and require integer-equality with the Command.
+    const rawRowId = row.dataset && row.dataset.e2eRunId;
+    if (typeof rawRowId !== 'string' || !/^[1-9][0-9]*$/.test(rawRowId)) {
+        return null;
+    }
+    const rowRunId = Number(rawRowId);
+    if (rowRunId !== runId) return null;
+    const numericRunId = runId;
 
     return Object.freeze({
         runId: numericRunId,

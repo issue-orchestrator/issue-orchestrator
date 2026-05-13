@@ -428,18 +428,44 @@ test('row-targeting policy is centralized in resolveRowCommandContext', () => {
     );
 });
 
-test('resolveRowCommandContext: rejects non-positive run_id', () => {
+test('resolveRowCommandContext: rejects non-positive integer run_id', () => {
     const ctx = _loadFullStack();
     const row = _fakeRow(88);
     const triggerEl = { closest: (sel) => sel === 'details.e2e-run-row' ? row : null };
-    // The Pydantic layer enforces strict-int on the wire; the
-    // runtime abstraction enforces the ``ge=1`` invariant defensively
-    // in case a Command sneaks past with a coerced 0/negative.
     assert.strictEqual(ctx.resolveRowCommandContext(0, triggerEl), null);
     assert.strictEqual(ctx.resolveRowCommandContext(-1, triggerEl), null);
     assert.strictEqual(ctx.resolveRowCommandContext(NaN, triggerEl), null);
-    assert.strictEqual(ctx.resolveRowCommandContext(null, triggerEl), null);
-    assert.strictEqual(ctx.resolveRowCommandContext(undefined, triggerEl), null);
+    assert.strictEqual(ctx.resolveRowCommandContext(1.5, triggerEl), null,
+        'non-integer numbers must reject');
+});
+
+test('resolveRowCommandContext: rejects non-number run_id (strict contract mirror)', () => {
+    // The typed Pydantic Command has ``strict=True`` on ``run_id``;
+    // the runtime abstraction enforces the same contract so a
+    // coerced ``"88"`` or boolean payload cannot silently route to
+    // the wrong run.  ``Number(true) === 1`` and ``Number("88") === 88``
+    // are exactly the silent-coercion bugs this guard prevents.
+    const ctx = _loadFullStack();
+    const row88 = _fakeRow(88);
+    const row1 = _fakeRow(1);
+    const triggerInRow88 = { closest: (sel) => sel === 'details.e2e-run-row' ? row88 : null };
+    const triggerInRow1 = { closest: (sel) => sel === 'details.e2e-run-row' ? row1 : null };
+
+    // Stringified payload: a stale producer sent ``"88"`` instead
+    // of ``88``.  Reject — even though ``row88.dataset.e2eRunId``
+    // matches the string after coercion.
+    assert.strictEqual(ctx.resolveRowCommandContext('88', triggerInRow88), null,
+        'string run_id must reject (strict contract mirror)');
+    // Boolean payload: ``Number(true) === 1`` would route the
+    // action to row 1.  Reject.
+    assert.strictEqual(ctx.resolveRowCommandContext(true, triggerInRow1), null,
+        'boolean run_id must reject (strict contract mirror)');
+    assert.strictEqual(ctx.resolveRowCommandContext(false, triggerInRow88), null);
+    // null / undefined / objects / arrays all rejected.
+    assert.strictEqual(ctx.resolveRowCommandContext(null, triggerInRow88), null);
+    assert.strictEqual(ctx.resolveRowCommandContext(undefined, triggerInRow88), null);
+    assert.strictEqual(ctx.resolveRowCommandContext({}, triggerInRow88), null);
+    assert.strictEqual(ctx.resolveRowCommandContext([88], triggerInRow88), null);
 });
 
 test('resolveRowCommandContext: rejects trigger that does not resolve to a row', () => {

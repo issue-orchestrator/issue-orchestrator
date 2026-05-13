@@ -799,120 +799,162 @@ def test_canonical_viewer_body_identical_across_run_view_and_validation_modal(
     web_server: dict[str, object],
 ) -> None:
     """An end-user sees the SAME canonical viewer content regardless of
-    which dashboard surface they used to reach it.
+    which dashboard surface mounted it.
 
-    Both the dashboard's inline E2E row body
-    (``renderE2EResultsPanel`` → ``renderCanonicalValidationViewer``)
-    and the validation modal / issue-detail drawer
-    (``renderCanonicalValidationViewer`` directly) share the same
-    renderer.  Given the same canonical payload, the ``.cvv-root``
-    body must produce identical HTML — minus the wrapping chrome
-    that's the legitimate "context difference" for each surface
-    (run-level summary chips, untracked-failures banner,
-    run-details disclosure for the run view; the modal/drawer have
-    their own outer frames).
+    The dashboard's inline E2E row body calls
+    ``renderE2EResultsPanel(data)``, which internally runs
+    ``e2eRunToCanonicalPayload(data)`` and then
+    ``renderCanonicalValidationViewer(canonical)``.  The validation
+    modal / issue-detail drawer call ``renderCanonicalValidationViewer``
+    directly with the canonical payload.
 
-    Run the renderer twice in the live browser with the same
-    canonical payload and assert the ``.cvv-root`` HTML matches.
+    This test honestly exercises BOTH call paths in the live
+    browser:
+
+      1. Build the E2E results-by-category ``data`` shape the
+         dashboard uses.
+      2. Render via ``renderE2EResultsPanel(data)``, then extract
+         the ``.cvv-root`` subtree.
+      3. Compute the canonical payload the dashboard would derive
+         (``e2eRunToCanonicalPayload(data)``).
+      4. Render via ``renderCanonicalValidationViewer(canonical)``
+         directly — same call the validation modal / drawer make.
+      5. Assert the two ``.cvv-root`` HTML strings are byte-identical.
+
+    A regression where the dashboard's translator drifts away from
+    what the modal/drawer expect — or where the run-view path adds
+    a per-test class the modal path doesn't — would fire this test.
     """
     errors: list[str] = []
     page.on("pageerror", lambda err: errors.append(str(err)))
 
     _goto_dashboard_e2e_tab(page, str(web_server["url"]))
 
-    # Build a representative canonical payload (the same shape the
-    # E2E translator produces; ``renderE2EResultsPanel`` runs
-    # ``e2eRunToCanonicalPayload(data)`` and feeds the result to
-    # ``renderCanonicalValidationViewer``).  Use a non-trivial
-    # payload (one failed + one passed + one skipped) so the
-    # comparison covers every code path the renderer hits.
-    canonical_payload = {
-        "status": "failed",
-        "junit_cases": [
-            {
-                "case_id": "tests/foo.py::test_failed",
-                "display_name": "tests/foo.py::test_failed",
-                "suite_name": "tests/foo.py",
+    # E2E results-by-category shape (one untracked failure, one
+    # linked failure, two passes, one skipped) — every translator
+    # branch is exercised.
+    e2e_run_detail = {
+        "run": {
+            "id": 9001,
+            "status": "failed",
+            "started_at": "2026-05-12T01:00:00Z",
+            "duration_seconds": 0.5,
+            "commit_sha": "abc",
+            "branch": "main",
+            "runner_kind": "pytest",
+            "command": ["pytest"],
+        },
+        "results_by_category": {
+            "untriaged": [{
+                "nodeid": "tests/a.py::test_untracked",
+                "suite_name": "tests/a.py",
                 "outcome": "failed",
-                "duration_seconds": 0.42,
-                "failure_summary": "AssertionError",
-                "longrepr": "AssertionError: bad",
-                "stdout_excerpt": [],
-                "stderr_excerpt": [],
-                "extras": {},
-            },
-            {
-                "case_id": "tests/foo.py::test_passed",
-                "display_name": "tests/foo.py::test_passed",
-                "suite_name": "tests/foo.py",
-                "outcome": "passed",
                 "duration_seconds": 0.1,
-                "extras": {},
-            },
-            {
-                "case_id": "tests/foo.py::test_skipped",
-                "display_name": "tests/foo.py::test_skipped",
-                "suite_name": "tests/foo.py",
+                "failure_summary": "AssertionError: untracked",
+                "longrepr": "AssertionError: untracked\n  at line 1",
+                "history": [],
+                "existing_issue": None,
+                "is_quarantined": False,
+                "result_source": "junit_xml",
+            }],
+            "has_issue": [{
+                "nodeid": "tests/b.py::test_linked",
+                "suite_name": "tests/b.py",
+                "outcome": "failed",
+                "duration_seconds": 0.2,
+                "failure_summary": "AssertionError: linked",
+                "longrepr": "AssertionError: linked\n  at line 2",
+                "history": [],
+                "existing_issue": {"number": 1234, "title": "x", "state": "open"},
+                "is_quarantined": False,
+                "result_source": "junit_xml",
+            }],
+            "passed": [
+                {"nodeid": "tests/c.py::test_p1", "suite_name": "tests/c.py",
+                 "outcome": "passed", "duration_seconds": 0.01},
+                {"nodeid": "tests/c.py::test_p2", "suite_name": "tests/c.py",
+                 "outcome": "passed", "duration_seconds": 0.01},
+            ],
+            "flaky": [],
+            "fixed": [],
+            "quarantined": [],
+            "skipped": [{
+                "nodeid": "tests/d.py::test_skip",
+                "suite_name": "tests/d.py",
                 "outcome": "skipped",
                 "duration_seconds": 0.0,
                 "failure_details": "skip(reason='pending'): pending",
-                "extras": {},
-            },
-        ],
-        "failed_tests": ["tests/foo.py::test_failed"],
-        "stdout_excerpt": [],
-        "stderr_excerpt": [],
-        "action_sections": [],
+            }],
+        },
+        "results_summary": {"total": 5, "passed": 2, "failed": 2, "skipped": 1,
+                            "untriaged": 1, "has_issue": 1, "flaky": 0, "fixed": 0,
+                            "quarantined": 0},
+        "artifacts": [], "reports": [], "issue_affordances": [],
+        "lifecycle": None, "events": [], "phase_toc": [], "cycles": [],
     }
 
-    # Render once via the canonical viewer directly (the modal +
-    # drawer mount path) and once via the dashboard E2E run-view
-    # path.  Strip whitespace before comparing — line breaks can
-    # differ between template literals.
+    # Real cross-surface comparison: each call path mounts its own
+    # ``.cvv-root`` from the live module code, no string-wrapping.
     compare = page.evaluate(
-        """(canonical) => {
-            // Direct mount (validation modal / issue-detail drawer path).
-            const direct = window.renderCanonicalValidationViewer(canonical);
-            // Dashboard E2E run-view path.  The E2E translator
-            // ``e2eRunToCanonicalPayload`` is the seam between the
-            // orchestrator's results-by-category shape and the
-            // canonical payload.  Skip the translator here and feed
-            // the canonical payload to ``renderE2EResultsPanel`` via
-            // a wrapper that the dashboard surface uses.
-            const wrappedPanel = `
-                <div class="e2e-canonical-panel">
-                    <div class="e2e-canonical-body">${direct}</div>
-                </div>`;
-            // Mount both into off-screen containers so we can extract
-            // and compare their ``.cvv-root`` subtrees.
-            const a = document.createElement('div');
-            a.innerHTML = direct;
-            const b = document.createElement('div');
-            b.innerHTML = wrappedPanel;
-            const cvvA = a.querySelector('.cvv-root');
-            const cvvB = b.querySelector('.cvv-root');
+        """(data) => {
+            // ── Path A: dashboard E2E run-view ───────────────────
+            // ``renderE2EResultsPanel`` runs ``e2eRunToCanonicalPayload``
+            // internally and then calls ``renderCanonicalValidationViewer``.
+            const panelHtml = window.renderE2EResultsPanel(data);
+            const panelHost = document.createElement('div');
+            panelHost.innerHTML = panelHtml;
+            const cvvFromPanel = panelHost.querySelector('.cvv-root');
+
+            // ── Path B: validation modal / issue-detail drawer ───
+            // These surfaces call ``renderCanonicalValidationViewer``
+            // directly with a canonical payload.  Compute the
+            // canonical payload the same way the dashboard does
+            // (the translator is exposed as a top-level symbol so
+            // both surfaces share it).
+            const canonical = window.e2eRunToCanonicalPayload(data);
+            const directHtml = window.renderCanonicalValidationViewer(canonical);
+            const directHost = document.createElement('div');
+            directHost.innerHTML = directHtml;
+            const cvvFromDirect = directHost.querySelector('.cvv-root');
+
             return {
-                a: cvvA ? cvvA.outerHTML : null,
-                b: cvvB ? cvvB.outerHTML : null,
+                fromPanel: cvvFromPanel ? cvvFromPanel.outerHTML : null,
+                fromDirect: cvvFromDirect ? cvvFromDirect.outerHTML : null,
+                // Also surface the translator output so a mismatch
+                // diff can show which canonical input each path saw.
+                canonicalKind: typeof canonical,
+                canonicalCases: Array.isArray(canonical && canonical.junit_cases)
+                    ? canonical.junit_cases.length : -1,
             };
         }""",
-        canonical_payload,
+        e2e_run_detail,
     )
-    assert compare["a"] is not None, "direct mount must produce .cvv-root"
-    assert compare["b"] is not None, "dashboard-wrapped mount must produce .cvv-root"
-    # Identical canonical body across surfaces.
-    assert compare["a"] == compare["b"], (
-        "canonical viewer body differs between surfaces — the UI parity "
-        "contract is broken.  Diff (first 400 chars each):\n"
-        f"direct={compare['a'][:400]!r}\nwrapped={compare['b'][:400]!r}"
+    assert compare["fromPanel"] is not None, (
+        "dashboard run-view path failed to produce .cvv-root from renderE2EResultsPanel"
     )
-
-    # The renderer is the SAME function — there is only one
-    # implementation.  Surface this invariant directly so a future
-    # refactor that introduces a fork fires the test.
-    same_fn = page.evaluate(
-        "() => typeof window.renderCanonicalValidationViewer === 'function'"
+    assert compare["fromDirect"] is not None, (
+        "validation-modal/drawer path failed to produce .cvv-root from renderCanonicalValidationViewer"
     )
-    assert same_fn, "renderCanonicalValidationViewer must be exposed on window"
+    assert compare["canonicalCases"] >= 5, (
+        f"translator under-produced cases: {compare['canonicalCases']}"
+    )
+    # The single byte-equality assertion that the parity contract
+    # demands: same canonical input → identical .cvv-root HTML.
+    if compare["fromPanel"] != compare["fromDirect"]:
+        # Surface a useful diff prefix.
+        a = compare["fromPanel"]
+        b = compare["fromDirect"]
+        for i, (ca, cb) in enumerate(zip(a, b)):
+            if ca != cb:
+                start = max(0, i - 60)
+                end = min(min(len(a), len(b)), i + 60)
+                raise AssertionError(
+                    f"canonical .cvv-root diverged at char {i}:\n"
+                    f"  panel:  …{a[start:end]!r}…\n"
+                    f"  direct: …{b[start:end]!r}…"
+                )
+        raise AssertionError(
+            f"canonical .cvv-root lengths differ — panel={len(a)} vs direct={len(b)}"
+        )
 
     assert not errors, f"unexpected page errors: {errors}"

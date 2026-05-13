@@ -2130,13 +2130,18 @@ def test_row_command_context_is_the_single_owner_of_row_targeting() -> None:
     js = _read(DASHBOARD_JS)
     # The abstraction exists.
     assert "function resolveRowCommandContext(runId, triggerEl)" in js
-    # The abstraction validates: positive int + trigger resolves to
-    # a row + row dataset agrees with the typed Command's run_id.
+    # The abstraction validates: strict-number + integer + ge=1 +
+    # trigger resolves to a row + row dataset agrees with the typed
+    # Command's run_id.  The strict-Number gate mirrors the typed
+    # Pydantic Command's ``strict=True`` invariant: ``"88"`` and
+    # ``true`` must reject even though ``Number()`` would coerce
+    # them.
     ctx_body = _function_body(js, "resolveRowCommandContext")
-    assert "Number.isInteger(numericRunId)" in ctx_body
-    assert "numericRunId <= 0" in ctx_body
+    assert "typeof runId !== 'number'" in ctx_body
+    assert "Number.isInteger(runId)" in ctx_body
+    assert "runId <= 0" in ctx_body
     assert "triggerEl.closest('details.e2e-run-row')" in ctx_body
-    assert "rowRunId !== numericRunId" in ctx_body
+    assert "rowRunId !== runId" in ctx_body
     # Frozen context shape — handlers can't mutate it.
     assert "Object.freeze" in ctx_body
     # Both handlers route through the abstraction.
