@@ -42,6 +42,20 @@ class BackgroundJobFailure:
 
 
 @dataclass(frozen=True)
+class BackgroundJobStatus:
+    """Observable supervisor-owned state for one background job."""
+
+    job_id: str
+    running: bool
+    started_at: float | None
+    elapsed_seconds: float | None
+    timeout_seconds: float | None
+    deadline_exceeded: bool
+    failure_recorded: bool
+    cancelled: bool
+
+
+@dataclass(frozen=True)
 class _RunningJob:
     """Supervisor-owned metadata for one accepted background job."""
 
@@ -111,10 +125,39 @@ class BackgroundJobSupervisor:
         return accepted
 
     def is_running(self, job_id: str) -> bool:
+        return self.status(job_id).running
+
+    def status(self, job_id: str) -> BackgroundJobStatus:
+        """Return the current supervisor view for ``job_id``.
+
+        This is the matrix input for callers that need to distinguish
+        "still running inside its deadline" from "running with no bound" or
+        "deadline failure already recorded." It intentionally reports
+        supervisor metadata instead of exposing the raw runner/thread.
+        """
         self._record_deadline_failures(job_id)
-        if job_id in self._cancelled:
-            return False
-        return self._runner.is_running(job_id)
+        running = False if job_id in self._cancelled else self._runner.is_running(job_id)
+        metadata = self._running.get(job_id)
+        elapsed_seconds: float | None = None
+        deadline_exceeded = False
+        if metadata is not None:
+            elapsed_seconds = self._clock() - metadata.started_at
+            deadline_exceeded = (
+                metadata.timeout_seconds is not None
+                and elapsed_seconds > metadata.timeout_seconds
+            )
+        return BackgroundJobStatus(
+            job_id=job_id,
+            running=running,
+            started_at=metadata.started_at if metadata is not None else None,
+            elapsed_seconds=elapsed_seconds,
+            timeout_seconds=(
+                metadata.timeout_seconds if metadata is not None else None
+            ),
+            deadline_exceeded=deadline_exceeded,
+            failure_recorded=job_id in self._failures,
+            cancelled=job_id in self._cancelled,
+        )
 
     def cancel(self, job_id: str, *, reason: str) -> bool:
         """Record *job_id* as cancelled and stop waiting on it.

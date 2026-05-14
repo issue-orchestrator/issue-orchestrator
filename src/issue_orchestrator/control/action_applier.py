@@ -42,6 +42,7 @@ from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
+    from .review_exchange_lifecycle import IssueRuntimeTermination
     from .review_exchange_lifecycle import ReviewExchangeCancellation
     from ..ports.label_store import LabelStore
     from ..ports.persistent_exchange_pair_registry import (
@@ -54,7 +55,10 @@ from .reconciliation import (
     require_reconciliation,
 )
 from .claim_gate import ClaimGate, ClaimLostError
-from .review_exchange_lifecycle import cancel_issue_review_exchange
+from .review_exchange_lifecycle import (
+    cancel_issue_review_exchange,
+    terminate_issue_runtime,
+)
 from .actions import (
     Action,
     ActionResult,
@@ -170,9 +174,8 @@ class ActionApplier:
     # Optional label persistence store for write-through tracking
     label_store: Optional["LabelStore"] = None
     # Issue-scoped persistent coder/reviewer subprocess pair registry.
-    # Used by ``_apply_escalate`` to terminate the pair when an issue
-    # is escalated to human (the automated retry loop is over, the pair
-    # is no longer useful). ADR 0026 / B2.
+    # Used with the background supervisor to terminate hidden review-exchange
+    # runtime work at issue lifecycle boundaries. ADR 0026 / B2.
     pair_registry: Optional["PersistentExchangePairRegistry"] = None
     # Shared background-job supervisor. Used with pair_registry to make
     # issue/rework cancellation a terminal review-exchange lifecycle event.
@@ -849,11 +852,33 @@ class ActionApplier:
     ) -> "ReviewExchangeCancellation | None":
         if ref.session_type not in {SessionType.ISSUE, SessionType.REWORK}:
             return None
+        return self._cancel_review_exchange_for_issue(ref.number, reason=reason)
+
+    def _cancel_review_exchange_for_issue(
+        self,
+        issue_number: int,
+        *,
+        reason: str,
+    ) -> "ReviewExchangeCancellation | None":
         return cancel_issue_review_exchange(
-            issue_number=ref.number,
+            issue_number=issue_number,
             reason=reason,
             pair_registry=self.pair_registry,
             job_supervisor=self.background_job_supervisor,
+        )
+
+    def _terminate_issue_runtime_for_issue(
+        self,
+        issue_number: int,
+        *,
+        reason: str,
+    ) -> "IssueRuntimeTermination":
+        return terminate_issue_runtime(
+            issue_number=issue_number,
+            reason=reason,
+            pair_registry=self.pair_registry,
+            job_supervisor=self.background_job_supervisor,
+            session_manager=self.sessions,
         )
 
     def _apply_queue_operation(self, action: Action) -> ActionResult:
@@ -918,14 +943,15 @@ class ActionApplier:
         # Claims are on issues, not PRs, so use issue_number
         self._verify_claim_before_write(action, action.issue_number)
 
-        # Tear down the pair before label mutations so a partial
+        # Tear down runtime work before label mutations so a partial
         # escalation (e.g. label add succeeds, comment fails) still
-        # ends with the agent processes terminated. The lifecycle
-        # contract is "escalation kills the pair, full stop".
-        if self.pair_registry is not None:
-            self.pair_registry.release(
-                action.issue_number, reason="escalated-to-human",
-            )
+        # ends with hidden review-exchange work and visible issue/rework
+        # terminals stopped. The lifecycle contract is "escalation kills
+        # issue automation, full stop".
+        self._terminate_issue_runtime_for_issue(
+            action.issue_number,
+            reason="escalated-to-human",
+        )
 
         errors = []
         comment_url = ""
@@ -1130,17 +1156,16 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
 
         # Awaiting-merge reconciliation that flips an issue's history
         # entry to a terminal state (``merged`` or ``closed``) is the
-        # canonical "issue done" boundary. Release the persistent
-        # exchange pair here so it doesn't linger until orchestrator
+        # canonical "issue done" boundary. Terminate every issue-scoped
+        # runtime owner here so it doesn't linger until orchestrator
         # shutdown — ADR 0026 / B2 review feedback (PR #6212): without
-        # this, a successfully merged issue keeps its coder/reviewer
-        # processes alive even though no more exchanges can occur.
-        if (
-            self.pair_registry is not None
-            and outcome.status in {"merged", "closed"}
-        ):
-            self.pair_registry.release(
-                action.issue_number, reason="issue-completed",
+        # this, a successfully merged issue keeps subprocesses or
+        # supervised background jobs alive even though no more exchanges
+        # can occur.
+        if outcome.status in {"merged", "closed"}:
+            self._terminate_issue_runtime_for_issue(
+                action.issue_number,
+                reason="issue-completed",
             )
         return ActionResult.ok(
             action,
