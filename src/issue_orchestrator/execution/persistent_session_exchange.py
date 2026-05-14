@@ -168,8 +168,10 @@ _BOOTSTRAP_PROMPT_TEMPLATE = (
     "You are the {role} in a coder↔reviewer review exchange for issue "
     "#{issue_number}: {issue_title}.\n\n"
     "Wait for the orchestrator to send your role-specific instructions via "
-    "stdin. For each prompt, follow the instructions and write exactly one "
-    "line of JSON to the file at $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE. "
+    "stdin. The orchestrator may send the full prompt directly, or it may "
+    "send a short notice pointing at a prompt file in this worktree. For "
+    "each turn, read the full instructions, follow them, and write exactly "
+    "one line of JSON to the file at $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE. "
     "Then wait for the next prompt. Do not exit on your own; the orchestrator "
     "will terminate you when the exchange is done.\n"
 )
@@ -1183,6 +1185,39 @@ def _turn_prompt_path(
     return _turns_dir(exchange_dir) / f"{stem}.prompt.md"
 
 
+def _role_prompt_inbox_path(response_file: Path) -> Path:
+    """Stable role-local prompt inbox next to the response file.
+
+    The role process is launched with its worktree as cwd, while its response
+    file lives under ``<worktree>/.issue-orchestrator``. Writing each turn's
+    full prompt beside that response file keeps the prompt readable inside the
+    role's sandbox and lets the PTY carry only a short wake-up message.
+    """
+    return response_file.with_name("review-exchange-turn-prompt.md")
+
+
+def _write_role_prompt_inbox(response_file: Path, prompt_text: str) -> Path:
+    path = _role_prompt_inbox_path(response_file)
+    _atomic_write_bytes(path, prompt_text.encode("utf-8"))
+    return path
+
+
+def _build_prompt_inbox_notice(
+    *,
+    role: Role,
+    round_index: int,
+    attempt_index: int,
+    prompt_path: Path,
+) -> str:
+    return (
+        f"Review-exchange {role.value} turn round={round_index} "
+        f"attempt={attempt_index} is ready.\n"
+        f"Read the full instructions from: {prompt_path}\n"
+        "Follow that file exactly, then write one JSON response line to "
+        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
+    )
+
+
 def _persist_turn_prompt(
     exchange_dir: Path,
     *,
@@ -1817,10 +1852,17 @@ def _send_role_round(  # noqa: PLR0913
     """
     role_value = role.value
     attempt_index = turn_started.scope.attempt_index.value
+    prompt_inbox_path = _write_role_prompt_inbox(response_file, prompt)
+    pty_notice = _build_prompt_inbox_notice(
+        role=role,
+        round_index=cycle_index,
+        attempt_index=attempt_index,
+        prompt_path=prompt_inbox_path,
+    )
     try:
         parsed = send_round(
             session,
-            prompt=prompt,
+            prompt=pty_notice,
             response_file=response_file,
             timeout_seconds=timeout_seconds,
             # Tag heartbeat/diagnostic logs with role + cycle so an
