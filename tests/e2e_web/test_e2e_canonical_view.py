@@ -195,7 +195,7 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
 
     # Locate the row by run_id and click its summary to expand.  The
     # row's ``ontoggle`` dispatches through the typed-Command pipeline
-    # (``runE2ELifecycleCommandFromToggle`` → ``loadE2ERunIntoRow``).
+    # (``runLifecycleCommandFromToggle`` → ``loadE2ERunIntoRow``).
     row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{_RUN_ID}']")
     expect(row).to_have_count(1)
     row.locator("summary").first.click()

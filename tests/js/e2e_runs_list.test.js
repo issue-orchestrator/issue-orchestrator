@@ -9,7 +9,7 @@
 //   A. Pure render: ``renderE2ERunsList(payload)`` produces N rows,
 //      each a ``<details>`` with a typed ``expand_e2e_run`` Command
 //      in ``data-lifecycle-command`` + an ``ontoggle`` that
-//      dispatches via ``runE2ELifecycleCommandFromToggle``.
+//      dispatches via ``runLifecycleCommandFromToggle``.
 //
 //   B. Predictable-collapse: rows are closed by default; the
 //      ``runs: []`` case renders the empty state.
@@ -21,7 +21,7 @@
 //
 //   D. Dispatcher round-trip: render → extract Command from
 //      ``data-lifecycle-command`` → dispatch via
-//      ``runE2ELifecycleCommandFromToggle`` → assert
+//      ``runLifecycleCommandFromToggle`` → assert
 //      ``/api/e2e-run-detail/{n}?view=user`` was fetched.
 //
 //   E. Re-routed ``open_e2e_run``: the typed Command that used to
@@ -80,6 +80,11 @@ function _loadRunsListModule(extra = {}) {
     ctx.window = ctx;
     vm.createContext(ctx);
     vm.runInContext(
+        fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'lifecycle_commands.js'), 'utf8'),
+        ctx,
+        { filename: 'lifecycle_commands.js' },
+    );
+    vm.runInContext(
         fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'e2e_runs_list.js'), 'utf8'),
         ctx,
         { filename: 'e2e_runs_list.js' },
@@ -88,13 +93,7 @@ function _loadRunsListModule(extra = {}) {
 }
 
 function _loadRunsListPlusDispatcher(extra = {}) {
-    const ctx = _loadRunsListModule(extra);
-    vm.runInContext(
-        fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'lifecycle_commands.js'), 'utf8'),
-        ctx,
-        { filename: 'lifecycle_commands.js' },
-    );
-    return ctx;
+    return _loadRunsListModule(extra);
 }
 
 function _ob(label, tone) {
@@ -144,8 +143,8 @@ test('renderE2ERunsList: produces N <details> rows each carrying typed expand_e2
     const cmdMatches = html.match(/data-lifecycle-command="([^"]+)"/g);
     assert.strictEqual(cmdMatches.length, 2, 'each row must carry data-lifecycle-command');
     assert.ok(
-        (html.match(/ontoggle="runE2ELifecycleCommandFromToggle\(this\)"/g) || []).length === 2,
-        'each row must dispatch via runE2ELifecycleCommandFromToggle',
+        (html.match(/ontoggle="runLifecycleCommandFromToggle\(this\)"/g) || []).length === 2,
+        'each row must dispatch via runLifecycleCommandFromToggle',
     );
     assert.ok(!html.includes('aria-controls='), 'native details/summary must own disclosure semantics');
     assert.ok(!html.includes('role="region"'), 'run bodies must not create landmark noise');
@@ -314,7 +313,7 @@ test('dispatcher round-trip: toggling a row calls loadE2ERunIntoRow and fetches 
     // attribute would fire.
     const contentEl = { innerHTML: '', querySelector: () => null };
     const detailsEl = _fakeRow(88, cmdRaw, contentEl);
-    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    ctx.runLifecycleCommandFromToggle(detailsEl);
 
     // The dispatcher routes ``expand_e2e_run`` → ``loadE2ERunIntoRow``
     // → ``fetch('/api/e2e-run-detail/88?view=user')``.  Async — wait
@@ -335,7 +334,7 @@ test('dispatcher round-trip: re-opening a loaded row is a no-op (predictable-col
     const detailsEl = _fakeRow(88, cmdRaw, contentEl);
     // Already loaded → re-toggle must not fetch again.
     detailsEl.dataset.loaded = '1';
-    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    ctx.runLifecycleCommandFromToggle(detailsEl);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(calls.fetch, [], 're-opening must NOT re-fetch (dataset.loaded === "1")');
 });
@@ -349,7 +348,7 @@ test('dispatcher round-trip: closed <details> does not fire the loader', async (
     const contentEl = { innerHTML: '', querySelector: () => null };
     const detailsEl = _fakeRow(88, cmdRaw, contentEl);
     detailsEl.open = false;
-    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    ctx.runLifecycleCommandFromToggle(detailsEl);
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(calls.fetch, []);
 });

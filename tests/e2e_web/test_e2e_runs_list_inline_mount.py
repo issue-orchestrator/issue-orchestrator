@@ -6,7 +6,7 @@ Command → dispatcher → lazy fetch → canonical viewer mount):
   1. The Run History panel renders one ``<details class="e2e-run-row">``
      per recent E2E run, each carrying a typed ``expand_e2e_run``
      Command in ``data-lifecycle-command`` and the shared
-     ``runE2ELifecycleCommandFromToggle`` dispatcher hook.
+     ``runLifecycleCommandFromToggle`` dispatcher hook.
   2. Clicking a row's summary triggers a lazy fetch of
      ``/api/e2e-run-detail/{run_id}`` and mounts the canonical
      viewer (``.cvv-root``) inside the row body — no modal teleport.
@@ -249,7 +249,7 @@ def test_inline_runs_list_renders_rows_and_mounts_canonical_viewer_on_expand(
         "run_id": _RUN_ID,
     }, f"unexpected typed Command on row: {cmd!r}"
     ontoggle = first_row.get_attribute("ontoggle") or ""
-    assert "runE2ELifecycleCommandFromToggle" in ontoggle, (
+    assert "runLifecycleCommandFromToggle" in ontoggle, (
         f"row ontoggle must route through the shared dispatcher; got {ontoggle!r}"
     )
 

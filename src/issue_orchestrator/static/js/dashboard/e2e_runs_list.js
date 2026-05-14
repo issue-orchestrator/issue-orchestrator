@@ -7,7 +7,7 @@
 //
 // Typed-Command contract: each row carries an ``ExpandE2ERunCommand``
 // in ``data-lifecycle-command`` and an
-// ``ontoggle="runE2ELifecycleCommandFromToggle(this)"`` hook; the
+// ``ontoggle="runLifecycleCommandFromToggle(this)"`` hook; the
 // shared dispatcher routes ``expand_e2e_run`` →
 // ``loadE2ERunIntoRow``.  ``open_e2e_run`` (from chips elsewhere on
 // the dashboard) re-routes to ``expandE2ERunRow``, which scrolls to
@@ -128,7 +128,7 @@
             label: 'Expand E2E Run',
             run_id: runId,
         };
-        const payloadAttr = escapeAttr(JSON.stringify(command));
+        const payloadAttr = _renderLifecycleCommandAttr(command);
         const tone = _toneFor(summary.outcome);
         const outcomeLabel = (summary.outcome && summary.outcome.label) || 'Unknown';
         const counts = _renderCountSpans(summary.results);
@@ -142,8 +142,8 @@
             `role="listitem" ` +
             `data-e2e-run-id="${runId}" ` +
             `data-loaded="" ` +
-            `data-lifecycle-command="${payloadAttr}" ` +
-            `ontoggle="runE2ELifecycleCommandFromToggle(this)">` +
+            `${payloadAttr} ` +
+            `ontoggle="runLifecycleCommandFromToggle(this)">` +
             `<summary class="e2e-run-row-summary">` +
                 `<span class="e2e-run-row-caret" aria-hidden="true">▸</span>` +
                 `<span class="cvv-ico cvv-ico-${tone}" aria-hidden="true">${_toneGlyph(tone)}</span>` +
@@ -162,7 +162,7 @@
     // ── Lazy detail loader ───────────────────────────────────────
     // Dispatched by ``runE2ELifecycleCommand`` when the row toggles
     // open the first time.  Re-opens are guarded upstream by
-    // ``runE2ELifecycleCommandFromToggle`` (``dataset.loaded === '1'``
+    // ``runLifecycleCommandFromToggle`` (``dataset.loaded === '1'``
     // bypasses the dispatcher).
 
     async function loadE2ERunIntoRow(runId, detailsEl) {

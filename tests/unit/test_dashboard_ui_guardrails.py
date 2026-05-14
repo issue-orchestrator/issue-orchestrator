@@ -1465,23 +1465,24 @@ def test_journey_timeline_uses_native_disclosure_hierarchy() -> None:
     assert '<summary class="journey-cycle-header unified-timeline-summary">' in body
     assert '_journeyDisclosureCommandAttr(runId)' in body
     assert '_journeyDisclosureCommandAttr(cycleId)' in body
-    assert 'ontoggle="runJourneyTimelineCommandFromToggle(this)"' in body
+    assert 'ontoggle="runLifecycleCommandFromToggle(this)"' in body
     assert 'onclick="toggleJourneyCycle' not in body
 
 
 def test_journey_timeline_disclosure_uses_command_pattern() -> None:
     js = _read(DASHBOARD_JS)
+    lifecycle_js = (DASHBOARD_JS_DIR / "lifecycle_commands.js").read_text(encoding="utf-8")
     command_attr_body = _function_body(js, "_journeyDisclosureCommandAttr")
-    command_from_element_body = _function_body(js, "_journeyTimelineCommandFromElement")
-    toggle_body = _function_body(js, "runJourneyTimelineCommandFromToggle")
-    dispatcher_body = _function_body(js, "runJourneyTimelineCommand")
+    toggle_body = _function_body(lifecycle_js, "runLifecycleCommandFromToggle")
+    dispatcher_body = _function_body(lifecycle_js, "runE2ELifecycleCommand")
     assert "kind: 'sync_journey_disclosure'" in command_attr_body
-    assert "data-timeline-command=" in command_attr_body
-    assert "JSON.parse(raw)" in command_from_element_body
-    assert "Failed to decode timeline command" in command_from_element_body
-    assert "runJourneyTimelineCommand(command, disclosure)" in toggle_body
+    assert "_renderLifecycleCommandAttr(command)" in command_attr_body
+    assert "data-timeline-command" not in command_attr_body
+    assert "sync_journey_disclosure" in toggle_body
+    assert "runE2ELifecycleCommand(command, detailsEl)" in toggle_body
     assert "syncJourneyDisclosureState(triggerEl)" in dispatcher_body
-    assert "Unsupported timeline command" in dispatcher_body
+    assert "Timeline command target mismatch" in dispatcher_body
+    assert "Unsupported lifecycle command" in dispatcher_body
 
 
 def test_toggle_journey_cycle_targets_own_header_toggle() -> None:
@@ -2757,7 +2758,7 @@ def test_e2e_runs_list_uses_typed_command_pipeline() -> None:
     """Issue #6334: each ``<details>`` row in the runs-as-rows panel
     must carry a typed ``expand_e2e_run`` Command in
     ``data-lifecycle-command`` and dispatch on ``ontoggle`` through
-    the shared ``runE2ELifecycleCommandFromToggle`` pipeline — the
+    the shared ``runLifecycleCommandFromToggle`` pipeline — the
     same single-owner contract every other affordance uses.
 
     Prevents drift back to a bespoke ``ontoggle="_handleE2ERunRow(...)"``
@@ -2769,14 +2770,18 @@ def test_e2e_runs_list_uses_typed_command_pipeline() -> None:
         "'expand_e2e_run'" in src or '"expand_e2e_run"' in src
     ), "e2e_runs_list.js must emit the typed kind 'expand_e2e_run'"
     assert (
-        'ontoggle="runE2ELifecycleCommandFromToggle' in src
-    ), "row <details> must dispatch via runE2ELifecycleCommandFromToggle (single-owner toggle)"
+        'ontoggle="runLifecycleCommandFromToggle' in src
+    ), "row <details> must dispatch via runLifecycleCommandFromToggle (single-owner toggle)"
     assert (
-        'data-lifecycle-command="' in src
-    ), "row must carry the typed Command in data-lifecycle-command"
+        "_renderLifecycleCommandAttr(command)" in src
+    ), "row must render its typed Command via the shared lifecycle attr helper"
 
     # Dispatcher wiring.
     dispatcher_src = (DASHBOARD_JS_DIR / "lifecycle_commands.js").read_text(encoding="utf-8")
+    attr_body = _function_body(dispatcher_src, "_renderLifecycleCommandAttr")
+    assert (
+        'data-lifecycle-command="' in attr_body
+    ), "shared lifecycle attr helper must emit data-lifecycle-command"
     assert (
         "'expand_e2e_run'" in dispatcher_src
     ), "lifecycle_commands.js must dispatch 'expand_e2e_run'"

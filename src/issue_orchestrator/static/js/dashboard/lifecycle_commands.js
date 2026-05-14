@@ -19,39 +19,50 @@ function _renderLifecycleCommandButton(command, fallbackLabel = null, cssClass =
     return `<button class="${cssClass}" data-lifecycle-command="${payload}" onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();">${escapeHtml(label)}</button>`;
 }
 
-function runE2ELifecycleCommandFromButton(button) {
-    if (!button || !button.dataset) return;
-    const raw = button.dataset.lifecycleCommand || '';
-    if (!raw) return;
+function _renderLifecycleCommandAttr(command) {
+    if (!command || typeof command !== 'object') return '';
+    return `data-lifecycle-command="${escapeAttr(JSON.stringify(command))}"`;
+}
+
+function _lifecycleCommandFromElement(element) {
+    if (!element || !element.dataset) return null;
+    const raw = element.dataset.lifecycleCommand || '';
+    if (!raw) return null;
     try {
-        runE2ELifecycleCommand(JSON.parse(raw), button);
+        return JSON.parse(raw);
     } catch (err) {
         showToast(`Failed to decode lifecycle command: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        return null;
     }
 }
 
+function runE2ELifecycleCommandFromButton(button) {
+    const command = _lifecycleCommandFromElement(button);
+    if (!command) return;
+    runE2ELifecycleCommand(command, button);
+}
+
 // Element-aware toggle dispatcher: fired from a ``<details>`` element's
-// inline ``ontoggle="runE2ELifecycleCommandFromToggle(this)"`` so that
-// expand-on-first-open affordances (e.g. the inline ``▸ Attempts on
-// issue #N`` expander in the agent-context plugin) route through the
-// same typed-Command pipeline as click affordances.  Pre-conditions:
-//  * the details element is currently open (closed → no-op),
-//  * ``dataset.loaded`` is not "1" (re-opens are no-ops; renderers
-//    set ``dataset.loaded = '1'`` once populated).
-// The trigger element is forwarded to the dispatcher so the handler
-// can read element-scoped state (e.g. ``data-issue-number`` on the
-// expander) and populate its body.
-function runE2ELifecycleCommandFromToggle(detailsEl) {
+// inline ``ontoggle="runLifecycleCommandFromToggle(this)"`` so native
+// disclosure rows route through the same typed-Command pipeline as click
+// affordances.  Most toggle Commands are open-only lazy loaders:
+// closed → no-op, and re-open after ``dataset.loaded === '1'`` → no-op.
+// ``sync_journey_disclosure`` is the deliberate exception because its
+// job is to mirror the native open/closed state into the journey row's
+// legacy body/caret classes on both transitions.
+function runLifecycleCommandFromToggle(detailsEl) {
     if (!detailsEl || !detailsEl.dataset) return;
-    if (detailsEl.open !== true) return;
-    if (detailsEl.dataset.loaded === '1') return;
-    const raw = detailsEl.dataset.lifecycleCommand || '';
-    if (!raw) return;
-    try {
-        runE2ELifecycleCommand(JSON.parse(raw), detailsEl);
-    } catch (err) {
-        showToast(`Failed to decode lifecycle command: ${err instanceof Error ? err.message : String(err)}`, 'error');
-    }
+    const command = _lifecycleCommandFromElement(detailsEl);
+    if (!command) return;
+    const kind = String(command.kind || '').trim();
+    const runsWhenClosed = kind === 'sync_journey_disclosure';
+    if (!runsWhenClosed && detailsEl.open !== true) return;
+    if (!runsWhenClosed && detailsEl.dataset.loaded === '1') return;
+    runE2ELifecycleCommand(command, detailsEl);
+}
+
+function runE2ELifecycleCommandFromToggle(detailsEl) {
+    runLifecycleCommandFromToggle(detailsEl);
 }
 
 function runE2ELifecycleCommand(command, triggerEl = null) {
@@ -88,6 +99,20 @@ function runE2ELifecycleCommand(command, triggerEl = null) {
         openPath(command.path);
         return;
     }
+    if (kind === 'sync_journey_disclosure') {
+        const targetId = String(command.target_id || '').trim();
+        const triggerId = triggerEl && triggerEl.id ? String(triggerEl.id) : '';
+        if (targetId && targetId !== triggerId) {
+            showToast('Timeline command target mismatch', 'error');
+            return;
+        }
+        if (typeof syncJourneyDisclosureState !== 'function') {
+            showToast('Timeline disclosure sync is unavailable.', 'error');
+            return;
+        }
+        syncJourneyDisclosureState(triggerEl);
+        return;
+    }
     // ``open_e2e_run`` is the typed "navigate the user to run #N"
     // Command emitted by chips, View buttons, and other affordances
     // anywhere on the dashboard.  Routes to the inline runs-list
@@ -105,7 +130,7 @@ function runE2ELifecycleCommand(command, triggerEl = null) {
     }
     // ``expand_e2e_run`` fires from the row's ``ontoggle`` the first
     // time it opens.  ``triggerEl`` is the ``<details>`` itself,
-    // forwarded by ``runE2ELifecycleCommandFromToggle``.
+    // forwarded by ``runLifecycleCommandFromToggle``.
     if (kind === 'expand_e2e_run' && command.run_id) {
         if (typeof loadE2ERunIntoRow !== 'function') return;
         loadE2ERunIntoRow(command.run_id, triggerEl);

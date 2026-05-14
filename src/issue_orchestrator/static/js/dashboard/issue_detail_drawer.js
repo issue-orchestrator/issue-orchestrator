@@ -161,7 +161,7 @@ function _renderJourneyRuns(container, allRuns) {
         const runId = `journey-run-${runIndex}`;
         const runBodyClass = runExpanded ? '' : ' collapsed';
         const runLabel = run.run_label || `Run ${run.run_number || (runIndex + 1)}`;
-        html += `<details class="journey-run unified-timeline-node" id="${runId}"${runExpanded ? ' open' : ''} ${_journeyDisclosureCommandAttr(runId)} ontoggle="runJourneyTimelineCommandFromToggle(this)">
+        html += `<details class="journey-run unified-timeline-node" id="${runId}"${runExpanded ? ' open' : ''} ${_journeyDisclosureCommandAttr(runId)} ontoggle="runLifecycleCommandFromToggle(this)">
             <summary class="journey-cycle-header unified-timeline-summary">
                 <span class="journey-cycle-toggle">${runToggle}</span>
                 <span class="journey-cycle-label">${escapeHtml(runLabel)}</span>
@@ -190,7 +190,7 @@ function _renderJourneyRuns(container, allRuns) {
                 ? `<button type="button" class="journey-cycle-artifacts-btn" onclick="event.preventDefault(); event.stopPropagation(); toggleArtifactPopover(${runIndex}, ${cycleIndex}, ${issueNum})" title="Cycle artifacts" aria-label="Open artifacts for ${escapeAttr(cycleLabel)}">\ud83d\udcce</button>`
                 : '';
 
-            html += `<details class="journey-cycle unified-timeline-node" id="${cycleId}"${cycleExpanded ? ' open' : ''} ${_journeyDisclosureCommandAttr(cycleId)} ontoggle="runJourneyTimelineCommandFromToggle(this)">
+            html += `<details class="journey-cycle unified-timeline-node" id="${cycleId}"${cycleExpanded ? ' open' : ''} ${_journeyDisclosureCommandAttr(cycleId)} ontoggle="runLifecycleCommandFromToggle(this)">
             <summary class="journey-cycle-header unified-timeline-summary">
                 <span class="journey-cycle-toggle">${toggle}</span>
                 <span class="journey-cycle-label">${escapeHtml(cycleLabel)}</span>
@@ -283,36 +283,7 @@ function _journeyDisclosureCommandAttr(targetId) {
         label: 'Sync Timeline Disclosure',
         target_id: String(targetId || ''),
     };
-    return `data-timeline-command="${escapeAttr(JSON.stringify(command))}"`;
-}
-
-function _journeyTimelineCommandFromElement(element) {
-    if (!element || !element.dataset) return null;
-    const raw = element.dataset.timelineCommand || '';
-    if (!raw) return null;
-    try {
-        return JSON.parse(raw);
-    } catch (err) {
-        showToast(`Failed to decode timeline command: ${err instanceof Error ? err.message : String(err)}`, 'error');
-        return null;
-    }
-}
-
-function runJourneyTimelineCommandFromToggle(disclosure) {
-    const command = _journeyTimelineCommandFromElement(disclosure);
-    if (!command) return;
-    runJourneyTimelineCommand(command, disclosure);
-}
-
-function runJourneyTimelineCommand(command, triggerEl = null) {
-    if (!command || typeof command !== 'object') return;
-    const kind = String(command.kind || '').trim();
-    if (!kind) return;
-    if (kind === 'sync_journey_disclosure') {
-        syncJourneyDisclosureState(triggerEl);
-        return;
-    }
-    showToast(`Unsupported timeline command: ${kind}`, 'warning');
+    return _renderLifecycleCommandAttr(command);
 }
 
 function syncJourneyDisclosureState(disclosure) {

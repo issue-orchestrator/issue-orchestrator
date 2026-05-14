@@ -32,7 +32,12 @@ function loadRenderSlice(overrides = {}) {
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js'),
         'utf8',
     );
+    const lifecycleSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
+        'utf8',
+    );
     const slice = [
+        _extractFunction(lifecycleSource, 'function _renderLifecycleCommandAttr'),
         _extractFunction(source, 'function _journeyDisclosureCommandAttr'),
         _extractFunction(source, 'function _renderJourneyRuns'),
     ].join('\n');
@@ -66,15 +71,16 @@ function loadRenderSlice(overrides = {}) {
 }
 
 function loadCommandSlice(overrides = {}) {
-    const source = fs.readFileSync(
-        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js'),
+    const lifecycleSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
         'utf8',
     );
     const calls = [];
     const slice = [
-        _extractFunction(source, 'function _journeyTimelineCommandFromElement'),
-        _extractFunction(source, 'function runJourneyTimelineCommandFromToggle'),
-        _extractFunction(source, 'function runJourneyTimelineCommand('),
+        _extractFunction(lifecycleSource, 'function _lifecycleCommandFromElement'),
+        _extractFunction(lifecycleSource, 'function runLifecycleCommandFromToggle'),
+        _extractFunction(lifecycleSource, 'function runE2ELifecycleCommandFromToggle'),
+        _extractFunction(lifecycleSource, 'function runE2ELifecycleCommand('),
     ].join('\n');
     const context = {
         console,
@@ -125,12 +131,14 @@ test('issue detail timeline renders runs and cycles as native disclosure nodes',
     assert.match(html, /<details class="journey-run unified-timeline-node" id="journey-run-0"/);
     assert.match(html, /<summary class="journey-cycle-header unified-timeline-summary">/);
     assert.match(html, /<details class="journey-cycle unified-timeline-node" id="journey-cycle-0-0"/);
-    assert.match(html, /data-timeline-command="/);
+    assert.match(html, /data-lifecycle-command="/);
     assert.match(html, /&quot;kind&quot;:&quot;sync_journey_disclosure&quot;/);
-    assert.match(html, /ontoggle="runJourneyTimelineCommandFromToggle\(this\)"/);
+    assert.match(html, /ontoggle="runLifecycleCommandFromToggle\(this\)"/);
     assert.match(html, /<div class="journey-cycle-body collapsed" id="journey-run-0-body">/);
     assert.match(html, /<div class="journey-cycle-body collapsed" id="journey-cycle-0-0-body">/);
     assert.doesNotMatch(html, /onclick="toggleJourneyCycle/);
+    assert.doesNotMatch(html, /data-timeline-command/);
+    assert.doesNotMatch(html, /runJourneyTimelineCommandFromToggle/);
     assert.strictEqual(listeners.length, 1);
     assert.strictEqual(listeners[0].type, 'click');
 });
@@ -167,39 +175,54 @@ test('timeline command: toggle dispatch syncs the disclosure UI', () => {
     const ctx = loadCommandSlice();
     const disclosure = {
         id: 'journey-cycle-0-0',
+        open: false,
         dataset: {
-            timelineCommand: JSON.stringify({
+            lifecycleCommand: JSON.stringify({
                 kind: 'sync_journey_disclosure',
                 target_id: 'journey-cycle-0-0',
             }),
         },
     };
 
-    ctx.runJourneyTimelineCommandFromToggle(disclosure);
+    ctx.runLifecycleCommandFromToggle(disclosure);
 
     assert.deepEqual(ctx.calls, [['sync', 'journey-cycle-0-0']]);
 });
 
 test('timeline command: malformed command fails before touching UI', () => {
     const ctx = loadCommandSlice();
-    ctx.runJourneyTimelineCommandFromToggle({
+    ctx.runLifecycleCommandFromToggle({
         id: 'journey-run-0',
-        dataset: { timelineCommand: '{not json' },
+        dataset: { lifecycleCommand: '{not json' },
     });
 
     assert.strictEqual(ctx.calls.length, 1);
     assert.strictEqual(ctx.calls[0][0], 'toast');
-    assert.match(ctx.calls[0][1], /Failed to decode timeline command/);
+    assert.match(ctx.calls[0][1], /Failed to decode lifecycle command/);
     assert.strictEqual(ctx.calls[0][2], 'error');
 });
 
 test('timeline command: unsupported kind does not sync UI', () => {
     const ctx = loadCommandSlice();
-    ctx.runJourneyTimelineCommand({ kind: 'unknown_timeline_kind' }, { id: 'journey-run-0' });
+    ctx.runE2ELifecycleCommand({ kind: 'unknown_timeline_kind' }, { id: 'journey-run-0' });
 
     assert.deepEqual(ctx.calls, [[
         'toast',
-        'Unsupported timeline command: unknown_timeline_kind',
+        'Unsupported lifecycle command: unknown_timeline_kind',
         'warning',
+    ]]);
+});
+
+test('timeline command: target mismatch does not sync UI', () => {
+    const ctx = loadCommandSlice();
+    ctx.runE2ELifecycleCommand(
+        { kind: 'sync_journey_disclosure', target_id: 'journey-cycle-0-1' },
+        { id: 'journey-cycle-0-0' },
+    );
+
+    assert.deepEqual(ctx.calls, [[
+        'toast',
+        'Timeline command target mismatch',
+        'error',
     ]]);
 });
