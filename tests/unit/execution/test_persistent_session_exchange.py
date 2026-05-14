@@ -165,6 +165,7 @@ def _patch_persistent_runner(
     registry = _FakePairRegistry()
     state: dict[str, Any] = {
         "opened": [], "rounds_seen": [], "prompts_seen": [],
+        "prompt_inboxes_seen": [],
         "run_dir": None,
         "registry": registry,
     }
@@ -230,6 +231,13 @@ def _patch_persistent_runner(
         role = session.role
         state["rounds_seen"].append((role, prompt[:40]))
         state["prompts_seen"].append((role, prompt))
+        prompt_inbox = Path(response_file).with_name("review-exchange-turn-prompt.md")
+        if prompt_inbox.exists():
+            state["prompt_inboxes_seen"].append((
+                role,
+                prompt_inbox.read_text(encoding="utf-8"),
+                prompt,
+            ))
         if not response_script.get(role):
             raise AssertionError(f"send_round called for {role} with no scripted response left")
         head = response_script[role].pop(0)
@@ -332,6 +340,17 @@ class TestPersistentSessionExchangeHappyPath:
         assert outcome.reason == "reviewer_ok"
         assert outcome.reviewer_response is not None
         assert outcome.reviewer_response.response_type == "ok"
+        reviewer_prompt, reviewer_notice = next(
+            (prompt, notice)
+            for role, prompt, notice in state["prompt_inboxes_seen"]
+            if role == "reviewer"
+        )
+        assert "reviewer in a coder↔reviewer exchange for issue #42: Test" in reviewer_prompt
+        assert "review-exchange-turn-prompt.md" in reviewer_notice
+        assert len(reviewer_notice) < 512
+        assert not (
+            reviewer_wt / ".issue-orchestrator" / "review-exchange-turn-prompt.md"
+        ).exists()
 
     def test_two_round_exchange_changes_then_ok(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1578,10 +1597,17 @@ class TestCallerHooks:
         run_record = observed[0] / "validation-record.json"
         assert json.loads(run_record.read_text(encoding="utf-8")) == validation_payload
         reviewer_prompt = next(
-            prompt for role, prompt in state["prompts_seen"] if role == "reviewer"
+            prompt for role, prompt, _notice in state["prompt_inboxes_seen"]
+            if role == "reviewer"
         )
         assert str(run_record) in reviewer_prompt
         assert "Do not rerun validation solely to create this file" in reviewer_prompt
+        reviewer_notice = next(
+            notice for role, _prompt, notice in state["prompt_inboxes_seen"]
+            if role == "reviewer"
+        )
+        assert "review-exchange-turn-prompt.md" in reviewer_notice
+        assert len(reviewer_notice) < 512
 
     def test_coder_validation_refresh_updates_reviewer_run_record(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1643,7 +1669,8 @@ class TestCallerHooks:
         assert json.loads(run_record.read_text(encoding="utf-8")) == refreshed_payload
         assert json.loads(pair_record.read_text(encoding="utf-8")) == refreshed_payload
         reviewer_prompts = [
-            prompt for role, prompt in state["prompts_seen"] if role == "reviewer"
+            prompt for role, prompt, _notice in state["prompt_inboxes_seen"]
+            if role == "reviewer"
         ]
         assert len(reviewer_prompts) == 2
         assert all(str(run_record) in prompt for prompt in reviewer_prompts)
