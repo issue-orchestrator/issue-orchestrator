@@ -32,7 +32,10 @@ function loadRenderSlice(overrides = {}) {
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js'),
         'utf8',
     );
-    const slice = _extractFunction(source, 'function _renderJourneyRuns');
+    const slice = [
+        _extractFunction(source, 'function _journeyDisclosureCommandAttr'),
+        _extractFunction(source, 'function _renderJourneyRuns'),
+    ].join('\n');
     const listeners = [];
     const context = {
         console,
@@ -59,6 +62,29 @@ function loadRenderSlice(overrides = {}) {
     };
     vm.createContext(context);
     vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (_renderJourneyRuns slice)' });
+    return context;
+}
+
+function loadCommandSlice(overrides = {}) {
+    const source = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js'),
+        'utf8',
+    );
+    const calls = [];
+    const slice = [
+        _extractFunction(source, 'function _journeyTimelineCommandFromElement'),
+        _extractFunction(source, 'function runJourneyTimelineCommandFromToggle'),
+        _extractFunction(source, 'function runJourneyTimelineCommand('),
+    ].join('\n');
+    const context = {
+        console,
+        calls,
+        showToast: (message, severity) => calls.push(['toast', String(message), severity]),
+        syncJourneyDisclosureState: (triggerEl) => calls.push(['sync', triggerEl && triggerEl.id]),
+        ...overrides,
+    };
+    vm.createContext(context);
+    vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (timeline command slice)' });
     return context;
 }
 
@@ -99,6 +125,9 @@ test('issue detail timeline renders runs and cycles as native disclosure nodes',
     assert.match(html, /<details class="journey-run unified-timeline-node" id="journey-run-0"/);
     assert.match(html, /<summary class="journey-cycle-header unified-timeline-summary">/);
     assert.match(html, /<details class="journey-cycle unified-timeline-node" id="journey-cycle-0-0"/);
+    assert.match(html, /data-timeline-command="/);
+    assert.match(html, /&quot;kind&quot;:&quot;sync_journey_disclosure&quot;/);
+    assert.match(html, /ontoggle="runJourneyTimelineCommandFromToggle\(this\)"/);
     assert.match(html, /<div class="journey-cycle-body collapsed" id="journey-run-0-body">/);
     assert.match(html, /<div class="journey-cycle-body collapsed" id="journey-cycle-0-0-body">/);
     assert.doesNotMatch(html, /onclick="toggleJourneyCycle/);
@@ -132,4 +161,45 @@ test('cycle artifact affordance is a keyboard-reachable button', () => {
     assert.match(html, /<button type="button" class="journey-cycle-artifacts-btn"/);
     assert.match(html, /aria-label="Open artifacts for Cycle 1"/);
     assert.doesNotMatch(html, /<span class="journey-cycle-artifacts-btn"/);
+});
+
+test('timeline command: toggle dispatch syncs the disclosure UI', () => {
+    const ctx = loadCommandSlice();
+    const disclosure = {
+        id: 'journey-cycle-0-0',
+        dataset: {
+            timelineCommand: JSON.stringify({
+                kind: 'sync_journey_disclosure',
+                target_id: 'journey-cycle-0-0',
+            }),
+        },
+    };
+
+    ctx.runJourneyTimelineCommandFromToggle(disclosure);
+
+    assert.deepEqual(ctx.calls, [['sync', 'journey-cycle-0-0']]);
+});
+
+test('timeline command: malformed command fails before touching UI', () => {
+    const ctx = loadCommandSlice();
+    ctx.runJourneyTimelineCommandFromToggle({
+        id: 'journey-run-0',
+        dataset: { timelineCommand: '{not json' },
+    });
+
+    assert.strictEqual(ctx.calls.length, 1);
+    assert.strictEqual(ctx.calls[0][0], 'toast');
+    assert.match(ctx.calls[0][1], /Failed to decode timeline command/);
+    assert.strictEqual(ctx.calls[0][2], 'error');
+});
+
+test('timeline command: unsupported kind does not sync UI', () => {
+    const ctx = loadCommandSlice();
+    ctx.runJourneyTimelineCommand({ kind: 'unknown_timeline_kind' }, { id: 'journey-run-0' });
+
+    assert.deepEqual(ctx.calls, [[
+        'toast',
+        'Unsupported timeline command: unknown_timeline_kind',
+        'warning',
+    ]]);
 });

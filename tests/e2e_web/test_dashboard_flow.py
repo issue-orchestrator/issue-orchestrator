@@ -82,6 +82,24 @@ def test_issue_card_timeline_button_opens_cycle_timeline(
     expect(journey).to_contain_text("Review approved")
     expect(journey.locator(".timeline-empty")).to_have_count(0)
 
+    run_row = journey.locator("details.journey-run").first
+    cycle_row = journey.locator("details.journey-cycle").first
+    expect(run_row).to_be_visible()
+    expect(run_row).to_have_attribute("open", "")
+    expect(run_row).to_have_attribute("data-timeline-command", re.compile("sync_journey_disclosure"))
+    expect(cycle_row).to_be_visible()
+    expect(cycle_row).to_have_attribute("open", "")
+    expect(cycle_row).to_have_attribute("data-timeline-command", re.compile("sync_journey_disclosure"))
+
+    cycle_body = cycle_row.locator(":scope > .journey-cycle-body")
+    expect(cycle_body).to_be_visible()
+    cycle_row.locator(":scope > summary").click()
+    expect(cycle_row).not_to_have_attribute("open", "")
+    expect(cycle_body).to_be_hidden()
+    cycle_row.locator(":scope > summary").click()
+    expect(cycle_row).to_have_attribute("open", "")
+    expect(cycle_body).to_be_visible()
+
 
 def test_e2e_tab_navigation_works(page: Page, web_server: dict[str, object]) -> None:
     """Dashboard tabs should navigate to E2E view."""

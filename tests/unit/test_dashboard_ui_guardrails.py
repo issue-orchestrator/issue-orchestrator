@@ -1463,8 +1463,25 @@ def test_journey_timeline_uses_native_disclosure_hierarchy() -> None:
     assert '<details class="journey-run unified-timeline-node"' in body
     assert '<details class="journey-cycle unified-timeline-node"' in body
     assert '<summary class="journey-cycle-header unified-timeline-summary">' in body
-    assert 'ontoggle="syncJourneyDisclosureState(this)"' in body
+    assert '_journeyDisclosureCommandAttr(runId)' in body
+    assert '_journeyDisclosureCommandAttr(cycleId)' in body
+    assert 'ontoggle="runJourneyTimelineCommandFromToggle(this)"' in body
     assert 'onclick="toggleJourneyCycle' not in body
+
+
+def test_journey_timeline_disclosure_uses_command_pattern() -> None:
+    js = _read(DASHBOARD_JS)
+    command_attr_body = _function_body(js, "_journeyDisclosureCommandAttr")
+    command_from_element_body = _function_body(js, "_journeyTimelineCommandFromElement")
+    toggle_body = _function_body(js, "runJourneyTimelineCommandFromToggle")
+    dispatcher_body = _function_body(js, "runJourneyTimelineCommand")
+    assert "kind: 'sync_journey_disclosure'" in command_attr_body
+    assert "data-timeline-command=" in command_attr_body
+    assert "JSON.parse(raw)" in command_from_element_body
+    assert "Failed to decode timeline command" in command_from_element_body
+    assert "runJourneyTimelineCommand(command, disclosure)" in toggle_body
+    assert "syncJourneyDisclosureState(triggerEl)" in dispatcher_body
+    assert "Unsupported timeline command" in dispatcher_body
 
 
 def test_toggle_journey_cycle_targets_own_header_toggle() -> None:
