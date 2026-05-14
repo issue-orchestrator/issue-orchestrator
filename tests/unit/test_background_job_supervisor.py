@@ -144,6 +144,38 @@ def test_running_job_deadline_is_reported_as_failure() -> None:
     assert runner.wait_until_idle(timeout=5.0)
 
 
+def test_status_reports_running_job_deadline_metadata() -> None:
+    runner = ThreadBackgroundJobRunner()
+    now = 1000.0
+    supervisor = BackgroundJobSupervisor(runner, clock=lambda: now)
+    started = threading.Event()
+    release = threading.Event()
+
+    def block() -> None:
+        started.set()
+        release.wait(timeout=5.0)
+
+    assert supervisor.submit("slow", block, timeout_seconds=10.0) is True
+    assert started.wait(timeout=5.0)
+
+    now = 1004.5
+    status = supervisor.status("slow")
+    assert status.running is True
+    assert status.elapsed_seconds == 4.5
+    assert status.timeout_seconds == 10.0
+    assert status.deadline_exceeded is False
+    assert status.failure_recorded is False
+
+    now = 1011.0
+    status = supervisor.status("slow")
+    assert status.running is True
+    assert status.deadline_exceeded is True
+    assert status.failure_recorded is True
+
+    release.set()
+    assert runner.wait_until_idle(timeout=5.0)
+
+
 def test_cancel_records_terminal_failure_without_waiting_for_thread() -> None:
     runner = ThreadBackgroundJobRunner()
     supervisor = BackgroundJobSupervisor(runner)

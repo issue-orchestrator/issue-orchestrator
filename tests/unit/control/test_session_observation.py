@@ -61,7 +61,7 @@ def test_append_unique_active_sessions_suppresses_duplicate_terminals(tmp_path: 
 
     added = append_unique_active_sessions(active_sessions, [duplicate, incoming])
 
-    assert added == 1
+    assert added == [incoming]
     assert [session.issue.number for session in active_sessions] == [1, 3]
     assert has_active_terminal(active_sessions, "issue-1") is True
     assert has_active_terminal(active_sessions, "missing") is False

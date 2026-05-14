@@ -11,6 +11,7 @@ coordination.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -152,6 +153,43 @@ def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
 
 
 class TestPersistentSessionLifecycle:
+    def test_open_session_starts_slave_in_noncanonical_mode(self, tmp_path: Path) -> None:
+        probe = tmp_path / "termios.json"
+        script = tmp_path / "termios_probe.py"
+        script.write_text(textwrap.dedent("""
+            import json
+            import os
+            import sys
+            import termios
+            from pathlib import Path
+
+            attrs = termios.tcgetattr(sys.stdin.fileno())
+            Path(os.environ["TERMIO_PROBE_PATH"]).write_text(
+                json.dumps({
+                    "icanon": bool(attrs[3] & termios.ICANON),
+                    "echo": bool(attrs[3] & termios.ECHO),
+                }),
+                encoding="utf-8",
+            )
+            for _raw in sys.stdin:
+                pass
+        """).strip(), encoding="utf-8")
+        env = dict(os.environ)
+        env["TERMIO_PROBE_PATH"] = str(probe)
+
+        session = open_persistent_session(
+            command=[sys.executable, "-u", str(script)],
+            working_dir=tmp_path,
+            env=env,
+        )
+        try:
+            _wait_until(lambda: probe.exists() and probe.stat().st_size > 0)
+        finally:
+            close_persistent_session(session)
+
+        state = json.loads(probe.read_text(encoding="utf-8"))
+        assert state == {"icanon": False, "echo": False}
+
     def test_one_process_handles_three_sequential_rounds(self, tmp_path: Path) -> None:
         stub = _write_stub_agent(tmp_path)
         response_file = tmp_path / "response.json"
@@ -171,6 +209,30 @@ class TestPersistentSessionLifecycle:
         assert r1 == {"round": 1, "prompt": "alpha", "ack": True}
         assert r2 == {"round": 2, "prompt": "bravo", "ack": True}
         assert r3 == {"round": 3, "prompt": "charlie", "ack": True}
+
+    def test_send_round_accepts_prompt_larger_than_canonical_line_limit(
+        self, tmp_path: Path,
+    ) -> None:
+        stub = _write_stub_agent(tmp_path)
+        response_file = tmp_path / "response.json"
+        long_prompt = "x" * 5000
+
+        session = open_persistent_session(
+            command=_stub_command(stub),
+            working_dir=tmp_path,
+            env=_stub_env(response_file),
+        )
+        try:
+            response = send_round(
+                session,
+                prompt=long_prompt,
+                response_file=response_file,
+                timeout_seconds=5,
+            )
+        finally:
+            close_persistent_session(session)
+
+        assert response == {"round": 1, "prompt": long_prompt, "ack": True}
 
     def test_response_file_is_re_armed_each_round(self, tmp_path: Path) -> None:
         stub = _write_stub_agent(tmp_path)
@@ -222,8 +284,8 @@ class TestPersistentSessionLifecycle:
                     base64.b64decode(event["data_b64"]).decode("utf-8", errors="replace")
                 )
         combined = "".join(decoded)
-        pos_a = combined.find("alpha")
-        pos_b = combined.find("bravo")
+        pos_a = combined.find("wrote round 1")
+        pos_b = combined.find("wrote round 2")
         assert pos_a != -1 and pos_b != -1 and pos_a < pos_b
 
 

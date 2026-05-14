@@ -103,6 +103,7 @@ def open_persistent_session(
     master_fd, slave_fd = os.openpty()
     os.set_blocking(master_fd, False)
     _set_pty_geometry(slave_fd, rows=rows, cols=cols)
+    _set_pty_noncanonical(slave_fd)
 
     log_writer: MirroredTerminalRecordingWriter | None = None
     if recording_path is not None:
@@ -150,6 +151,7 @@ def _write_full(
     role_label: str | None = None,
     pid: int | None = None,
     heartbeat_seconds: float = _PTY_WRITE_HEARTBEAT_SECONDS,
+    drain_output: Callable[[], int] | None = None,
 ) -> int:
     """Write all of ``payload`` to a non-blocking fd, looping on partial writes.
 
@@ -183,6 +185,7 @@ def _write_full(
         try:
             n = os.write(fd, payload[written:])
         except BlockingIOError:
+            _drain_during_write_backoff(drain_output)
             if current - last_heartbeat >= heartbeat_seconds:
                 logger.info(
                     "[send_round] waiting for PTY write role=%s pid=%s fd=%d "
@@ -204,6 +207,7 @@ def _write_full(
                 f"Could not write prompt to PTY fd={fd} role={label}: {exc}"
             ) from exc
         if n == 0:
+            _drain_during_write_backoff(drain_output)
             if current - last_heartbeat >= heartbeat_seconds:
                 logger.info(
                     "[send_round] waiting for PTY write role=%s pid=%s fd=%d "
@@ -230,6 +234,17 @@ def _write_full(
     return written
 
 
+def _drain_during_write_backoff(drain_output: Callable[[], int] | None) -> None:
+    if drain_output is None:
+        return
+    drained = drain_output()
+    if drained:
+        logger.debug(
+            "[send_round] drained %d PTY output byte(s) while write was blocked",
+            drained,
+        )
+
+
 def _write_prompt_with_timeout_diagnostics(
     session: PersistentSession,
     payload: bytes,
@@ -250,6 +265,7 @@ def _write_prompt_with_timeout_diagnostics(
             sleep=sleep,
             role_label=role_label,
             pid=session.proc.pid,
+            drain_output=lambda: _drain_pty_output(session),
         )
     except PersistentRoundTimeoutError as exc:
         recording_size = _safe_recording_size(session)
@@ -698,4 +714,18 @@ def _set_pty_geometry(slave_fd: int, *, rows: int, cols: int) -> None:
         size = struct.pack("HHHH", rows, cols, 0, 0)
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, size)
     except OSError:
-        logger.debug("Failed to seed persistent-round PTY geometry", exc_info=True)
+        logger.warning("Failed to seed persistent-round PTY geometry", exc_info=True)
+
+
+def _set_pty_noncanonical(slave_fd: int) -> None:
+    """Avoid canonical line-buffer limits for orchestrator-driven PTY input."""
+    try:
+        attrs = termios.tcgetattr(slave_fd)
+        attrs[3] &= ~(termios.ICANON | termios.ECHO)
+        attrs[6][termios.VMIN] = 1
+        attrs[6][termios.VTIME] = 0
+        termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+    except OSError:
+        logger.warning(
+            "Failed to seed persistent-round PTY input mode", exc_info=True
+        )

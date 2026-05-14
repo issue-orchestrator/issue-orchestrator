@@ -59,8 +59,10 @@ from ..control.session_observation import observe_active_sessions as _observe_ac
 from ..control.publish_executor import create_publish_job
 from ..control.cleanup_manager import CleanupManager
 from ..control.review_exchange_lifecycle import (
+    IssueRuntimeTermination,
     ReviewExchangeCancellation,
     cancel_issue_review_exchange,
+    terminate_issue_runtime,
 )
 from ..control.completion_handler import (
     CompletionHandler,
@@ -170,6 +172,22 @@ class Orchestrator:
             reason=reason,
             pair_registry=self.deps.services.pair_registry,
             job_supervisor=self.deps.services.background_job_supervisor,
+        )
+
+    def terminate_issue_runtime_for_issue(
+        self,
+        issue_number: int,
+        *,
+        reason: str,
+    ) -> IssueRuntimeTermination:
+        """Terminate all issue-scoped runtime owners at a lifecycle boundary."""
+        return terminate_issue_runtime(
+            issue_number=issue_number,
+            reason=reason,
+            pair_registry=self.deps.services.pair_registry,
+            job_supervisor=self.deps.services.background_job_supervisor,
+            session_manager=self.deps.session_manager,
+            active_sessions=self.state.active_sessions,
         )
 
     @cached_property

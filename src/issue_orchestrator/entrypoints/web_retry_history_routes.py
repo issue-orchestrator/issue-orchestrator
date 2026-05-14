@@ -17,6 +17,7 @@ from ..control.queue_cache import (
     clear_issue_refresh,
     record_issue_refreshes,
 )
+from ..control.review_exchange_lifecycle import terminate_issue_runtime
 from ..control.retry_history_state import RetryHistoryState
 from ..events import EventName
 from ..history import latest_history_entries_by_issue
@@ -339,14 +340,15 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             issue_number,
             from_scratch,
         )
-        # Tear down the persistent exchange pair before reset clears
-        # local state so the pair's reviewer worktree (a child of the
-        # coder worktree) is reclaimed before the coder worktree
-        # itself is removed by ``reset_issue``. ADR 0026 / B2: this is
-        # the canonical "reset" lifecycle boundary.
-        pair_registry = getattr(deps, "pair_registry", None)
-        if pair_registry is not None:
-            pair_registry.release(issue_number, reason="reset-retry")
+        # Reset is a hard issue-runtime boundary. Stop visible issue/rework
+        # terminals and hidden review-exchange pair/job work before local
+        # state or worktrees are removed, otherwise a live subprocess can keep
+        # writing into a reset attempt or leave stale active-session gating.
+        _terminate_reset_retry_runtime(
+            issue_number=issue_number,
+            state=state,
+            deps=deps,
+        )
 
         labels_started_at = time.monotonic()
         current_labels = repository_host.get_issue_labels(issue_number)
@@ -466,6 +468,49 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             exc_info=True,
         )
         return None, {"issue": issue_number, "error": str(exc)}
+
+
+def _terminate_reset_retry_runtime(
+    *,
+    issue_number: int,
+    state: "OrchestratorState",
+    deps: Any,
+) -> None:
+    services = _configured_attr(deps, "services")
+    pair_registry = _configured_attr(services, "pair_registry")
+    background_job_supervisor = _configured_attr(
+        services,
+        "background_job_supervisor",
+    )
+    session_manager = _configured_attr(deps, "session_manager")
+    terminate_issue_runtime(
+        issue_number=issue_number,
+        reason="reset-retry",
+        pair_registry=pair_registry,
+        job_supervisor=background_job_supervisor,
+        session_manager=session_manager,
+        active_sessions=state.active_sessions,
+    )
+
+
+def _configured_attr(obj: Any, name: str) -> Any | None:
+    """Return explicitly configured dataclass/test attributes only.
+
+    Unit route tests use ``MagicMock`` dependency bundles. Plain ``getattr``
+    would manufacture child mocks for collaborators that were never wired,
+    which makes lifecycle code think a session manager exists. Real
+    dataclass-based dependencies and explicitly assigned test doubles both
+    surface through ``vars``. Real slotted runtime objects may use normal
+    attribute lookup after ``vars`` proves the object has no instance
+    dictionary.
+    """
+    if obj is None:
+        return None
+    try:
+        values = vars(obj)
+    except TypeError:
+        return getattr(obj, name, None)
+    return values.get(name)
 
 
 def _clear_scratch_retry_pending_state(
