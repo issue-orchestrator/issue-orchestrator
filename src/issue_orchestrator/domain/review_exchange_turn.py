@@ -5,7 +5,7 @@ Replaces three loose seams:
 1. **Per-turn input args**. ``_drive_rounds`` previously threaded eight
    keyword args (``issue_number``, ``round_index``, ``last_coder_text``,
    ``last_reviewer_text``, ``require_validation``, ``run_dir``, ``role``,
-   ``issue_title``) into ``build_reviewer_prompt`` /
+   file paths, ``issue_title``) into ``build_reviewer_prompt`` /
    ``build_coder_prompt``. A drift between writer and prompt builder was
    silent — the type checker had nothing to grab onto.
    ``ReviewExchangeTurnPacket`` is the one typed bundle.
@@ -25,6 +25,7 @@ Replaces three loose seams:
    pinned by round-trip tests.
 
 Public API:
+    ReviewExchangePromptFiles — injected file references for prompts
     ReviewExchangeTurnPacket — typed inputs for one role's round
     TurnResultKind — enum naming each result variant
     ReviewExchangeTurnResult — typed parsed result (kind + payload)
@@ -34,9 +35,10 @@ Public API:
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 
 class Role(str, enum.Enum):
@@ -83,6 +85,41 @@ _VALID_RESPONSE_TYPES: dict[str, TurnResultKind] = {
 
 
 @dataclass(frozen=True)
+class ReviewExchangePromptFiles:
+    """Explicit file dependencies a review-exchange prompt may reference.
+
+    Prompt builders consume these injected paths rather than deriving
+    file locations from layout fields such as ``run_dir``. Add new file
+    references here when another prompt needs a concrete artifact path.
+    """
+
+    validation_record: Path | None = None
+
+    def to_manifest_fields(self) -> dict[str, Any]:
+        manifest: dict[str, Any] = {}
+        if self.validation_record is not None:
+            manifest["validation_record"] = str(self.validation_record)
+        return manifest
+
+    @classmethod
+    def from_manifest(
+        cls,
+        manifest: Any,
+    ) -> "ReviewExchangePromptFiles | None":
+        if manifest is None:
+            return cls()
+        if not isinstance(manifest, Mapping):
+            return None
+        validation_record_raw = manifest.get("validation_record")
+        validation_record = None
+        if validation_record_raw is not None:
+            if not isinstance(validation_record_raw, str) or not validation_record_raw:
+                return None
+            validation_record = Path(validation_record_raw)
+        return cls(validation_record=validation_record)
+
+
+@dataclass(frozen=True)
 class ReviewExchangeTurnPacket:
     """Typed input bundle for one role's turn in the exchange.
 
@@ -98,6 +135,9 @@ class ReviewExchangeTurnPacket:
     role: Role
     require_validation: bool
     run_dir: Path
+    prompt_files: ReviewExchangePromptFiles = field(
+        default_factory=ReviewExchangePromptFiles,
+    )
     last_coder_text: str | None = None
     last_reviewer_text: str | None = None
     reviewer_feedback: str | None = None
@@ -113,7 +153,7 @@ class ReviewExchangeTurnPacket:
         manifest header pattern), so readers detect "unset" by absence
         rather than by sentinel value.
         """
-        fields: dict[str, Any] = {
+        manifest: dict[str, Any] = {
             "issue_number": self.issue_number,
             "issue_title": self.issue_title,
             "round_index": self.round_index,
@@ -121,17 +161,20 @@ class ReviewExchangeTurnPacket:
             "require_validation": self.require_validation,
             "run_dir": str(self.run_dir),
         }
+        prompt_files = self.prompt_files.to_manifest_fields()
+        if prompt_files:
+            manifest["prompt_files"] = prompt_files
         if self.last_coder_text is not None:
-            fields["last_coder_text"] = self.last_coder_text
+            manifest["last_coder_text"] = self.last_coder_text
         if self.last_reviewer_text is not None:
-            fields["last_reviewer_text"] = self.last_reviewer_text
+            manifest["last_reviewer_text"] = self.last_reviewer_text
         if self.reviewer_feedback is not None:
-            fields["reviewer_feedback"] = self.reviewer_feedback
-        return fields
+            manifest["reviewer_feedback"] = self.reviewer_feedback
+        return manifest
 
     @classmethod
     def from_manifest(
-        cls, fields: Mapping[str, Any],
+        cls, manifest: Mapping[str, Any],
     ) -> "ReviewExchangeTurnPacket | None":
         """Recover a packet from its persisted manifest dict.
 
@@ -139,13 +182,18 @@ class ReviewExchangeTurnPacket:
         — the caller treats ``None`` as "this artifact is unusable" and
         falls through to whatever recovery path applies (typically: log
         and continue without replay).
+
+        Scalar optional text fields are ignored when malformed. The
+        structured ``prompt_files`` object is stricter: malformed file
+        references reject the packet so prompt dependencies never silently
+        degrade to "unset."
         """
-        issue_number = fields.get("issue_number")
-        issue_title = fields.get("issue_title")
-        round_index = fields.get("round_index")
-        role_raw = fields.get("role")
-        require_validation = fields.get("require_validation")
-        run_dir_raw = fields.get("run_dir")
+        issue_number = manifest.get("issue_number")
+        issue_title = manifest.get("issue_title")
+        round_index = manifest.get("round_index")
+        role_raw = manifest.get("role")
+        require_validation = manifest.get("require_validation")
+        run_dir_raw = manifest.get("run_dir")
         if not isinstance(issue_number, int):
             return None
         if not isinstance(issue_title, str):
@@ -162,9 +210,14 @@ class ReviewExchangeTurnPacket:
             return None
         if not isinstance(run_dir_raw, str) or not run_dir_raw:
             return None
-        last_coder_text = fields.get("last_coder_text")
-        last_reviewer_text = fields.get("last_reviewer_text")
-        reviewer_feedback = fields.get("reviewer_feedback")
+        last_coder_text = manifest.get("last_coder_text")
+        last_reviewer_text = manifest.get("last_reviewer_text")
+        reviewer_feedback = manifest.get("reviewer_feedback")
+        prompt_files = ReviewExchangePromptFiles.from_manifest(
+            manifest.get("prompt_files"),
+        )
+        if prompt_files is None:
+            return None
         return cls(
             issue_number=issue_number,
             issue_title=issue_title,
@@ -172,6 +225,7 @@ class ReviewExchangeTurnPacket:
             role=role,
             require_validation=require_validation,
             run_dir=Path(run_dir_raw),
+            prompt_files=prompt_files,
             last_coder_text=last_coder_text if isinstance(last_coder_text, str) else None,
             last_reviewer_text=last_reviewer_text if isinstance(last_reviewer_text, str) else None,
             reviewer_feedback=reviewer_feedback if isinstance(reviewer_feedback, str) else None,

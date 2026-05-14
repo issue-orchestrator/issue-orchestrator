@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.domain.review_exchange import build_reviewer_prompt
 from issue_orchestrator.domain.review_exchange_turn import (
+    ReviewExchangePromptFiles,
     ReviewExchangeTurnPacket,
     ReviewExchangeTurnResult,
     Role,
@@ -34,6 +36,11 @@ class TestReviewExchangeTurnPacketRoundTrip:
             role=Role.REVIEWER,
             require_validation=True,
             run_dir=Path("/wt/.issue-orchestrator/sessions/r1"),
+            prompt_files=ReviewExchangePromptFiles(
+                validation_record=Path(
+                    "/wt/.issue-orchestrator/sessions/r1/validation.json",
+                ),
+            ),
             last_coder_text="Applied the fix.",
             last_reviewer_text="Still failing on edge case.",
             reviewer_feedback=None,
@@ -76,6 +83,7 @@ class TestReviewExchangeTurnPacketRoundTrip:
         assert "last_coder_text" not in fields
         assert "last_reviewer_text" not in fields
         assert "reviewer_feedback" not in fields
+        assert "prompt_files" not in fields
 
     @pytest.mark.parametrize("missing_key", [
         "issue_number",
@@ -135,6 +143,17 @@ class TestReviewExchangeTurnPacketRoundTrip:
                 f"expected None for bad {bad_field}={bad_value!r}"
             )
 
+    def test_from_manifest_returns_none_for_wrong_typed_prompt_files(self) -> None:
+        assert ReviewExchangeTurnPacket.from_manifest({
+            "issue_number": 1,
+            "issue_title": "t",
+            "round_index": 1,
+            "role": "reviewer",
+            "require_validation": True,
+            "run_dir": "/r",
+            "prompt_files": {"validation_record": ""},
+        }) is None
+
     def test_from_manifest_ignores_wrong_typed_optional_fields(self) -> None:
         # A wrong-typed optional field is treated as "unset" rather
         # than as a hard rejection of the whole packet.
@@ -151,6 +170,48 @@ class TestReviewExchangeTurnPacketRoundTrip:
         assert recovered is not None
         assert recovered.last_coder_text is None
         assert recovered.reviewer_feedback is None
+
+
+# ---------------------------------------------------------------------------
+# Reviewer prompt contract
+# ---------------------------------------------------------------------------
+
+
+class TestBuildReviewerPrompt:
+    def test_validation_note_uses_injected_validation_record_path(self) -> None:
+        run_dir = Path("/wt/.issue-orchestrator/sessions/review-exchange-run")
+        validation_record = Path("/explicit/artifacts/validation-record.json")
+        packet = ReviewExchangeTurnPacket(
+            issue_number=42,
+            issue_title="Make it right",
+            round_index=1,
+            role=Role.REVIEWER,
+            require_validation=True,
+            run_dir=run_dir,
+            prompt_files=ReviewExchangePromptFiles(
+                validation_record=validation_record,
+            ),
+        )
+
+        prompt = build_reviewer_prompt(packet)
+
+        assert str(validation_record) in prompt
+        assert str(run_dir / "validation-record.json") not in prompt
+        assert "passed=true" in prompt
+        assert "Do not rerun validation solely to create this file" in prompt
+
+    def test_validation_required_without_injected_record_fails_fast(self) -> None:
+        packet = ReviewExchangeTurnPacket(
+            issue_number=42,
+            issue_title="Make it right",
+            round_index=1,
+            role=Role.REVIEWER,
+            require_validation=True,
+            run_dir=Path("/wt/.issue-orchestrator/sessions/review-exchange-run"),
+        )
+
+        with pytest.raises(ValueError, match="prompt_files.validation_record"):
+            build_reviewer_prompt(packet)
 
 
 # ---------------------------------------------------------------------------

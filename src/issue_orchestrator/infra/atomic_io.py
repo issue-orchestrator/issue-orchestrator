@@ -1,8 +1,8 @@
-"""Shared atomic-write toolkit for run-scoped JSON artifacts.
+"""Shared atomic-write toolkit for run-scoped artifacts.
 
 Multiple writers (the persistent-session review-exchange runner, the
 orchestrator-startup tempfile sweep, the legacy synchronous publisher)
-need to write JSON artifacts atomically so concurrent readers — most
+need to write artifacts atomically so concurrent readers — most
 notably the main orchestrator tick polling ``summary.json`` — never
 observe a partially written file. Centralizing the helper here avoids
 duplicating the temp-file pattern across modules and gives the sweep
@@ -47,6 +47,26 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     except Exception:
         # Only clean up on failure; the success path already renamed the
         # tempfile out of existence.
+        try:
+            os.unlink(tmp_path_str)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def atomic_write_bytes(path: Path, payload: bytes) -> None:
+    """Write bytes atomically so mid-write readers never see torn content."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path_str = tempfile.mkstemp(
+        prefix=f"{ATOMIC_WRITE_TMP_PREFIX}{path.name}.",
+        suffix=ATOMIC_WRITE_TMP_SUFFIX,
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+        os.replace(tmp_path_str, path)
+    except Exception:
         try:
             os.unlink(tmp_path_str)
         except FileNotFoundError:

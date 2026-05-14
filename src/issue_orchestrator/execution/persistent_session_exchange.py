@@ -70,6 +70,7 @@ from ..domain.review_exchange import (
 )
 from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.review_exchange_turn import (
+    ReviewExchangePromptFiles,
     ReviewExchangeTurnPacket,
     ReviewExchangeTurnResult,
     Role,
@@ -654,10 +655,12 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         ).to_manifest_fields(),
     )
 
+    run_validation_record_path = run_dir / "validation-record.json"
     pair_validation = _PairValidationMirror(
         pair_dir=pair_dir,
         record_path=pair_validation_record,
         coder_worktree_path=coder_worktree_path,
+        run_record_path=run_validation_record_path,
     )
     pair_validation.replace_from_initial(initial_validation_record_path)
 
@@ -828,6 +831,9 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             reviewer_recording=pair.reviewer_recording_path,
             coder_completion_path=pair.coder_completion_path,
             validation_record_path=pair.validation_record_path,
+            prompt_files=ReviewExchangePromptFiles(
+                validation_record=run_validation_record_path,
+            ),
             pair_validation=pair_validation,
             coder_timeout_seconds=coder_agent.timeout_minutes * 60,
             reviewer_timeout_seconds=reviewer_agent.timeout_minutes * 60,
@@ -884,6 +890,7 @@ class _PairValidationMirror:
     pair_dir: Path
     record_path: Path
     coder_worktree_path: Path
+    run_record_path: Path | None = None
 
     def replace_from_initial(self, source: Path | None) -> None:
         """Mirror the caller's current validation source at exchange start.
@@ -956,10 +963,15 @@ class _PairValidationMirror:
             self._clear()
             return
         self.pair_dir.mkdir(parents=True, exist_ok=True)
-        self.record_path.write_bytes(source.read_bytes())
+        payload = source.read_bytes()
+        _atomic_write_bytes(self.record_path, payload)
+        if self.run_record_path is not None:
+            _atomic_write_bytes(self.run_record_path, payload)
 
     def _clear(self) -> None:
         self.record_path.unlink(missing_ok=True)
+        if self.run_record_path is not None:
+            self.run_record_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1299,6 +1311,7 @@ def _drive_rounds(  # noqa: PLR0913
     reviewer_recording: Path,
     coder_completion_path: Path,
     validation_record_path: Path,
+    prompt_files: ReviewExchangePromptFiles,
     pair_validation: _PairValidationMirror,
     coder_timeout_seconds: float,
     reviewer_timeout_seconds: float,
@@ -1328,6 +1341,7 @@ def _drive_rounds(  # noqa: PLR0913
             role=Role.REVIEWER,
             require_validation=require_validation,
             run_dir=run_dir,
+            prompt_files=prompt_files,
             last_coder_text=last_coder_text,
             last_reviewer_text=last_reviewer_text,
         )
@@ -2429,3 +2443,4 @@ def _validate_coder_completion(
 # re-export under the private name so the existing test that monkeypatches
 # ``pse.os.replace`` continues to find the same write path.
 from ..infra.atomic_io import atomic_write_json as _atomic_write_json  # noqa: E402
+from ..infra.atomic_io import atomic_write_bytes as _atomic_write_bytes  # noqa: E402
