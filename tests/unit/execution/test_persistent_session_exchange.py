@@ -348,6 +348,9 @@ class TestPersistentSessionExchangeHappyPath:
         assert "reviewer in a coder↔reviewer exchange for issue #42: Test" in reviewer_prompt
         assert "review-exchange-turn-prompt.md" in reviewer_notice
         assert len(reviewer_notice) < 512
+        assert not (
+            reviewer_wt / ".issue-orchestrator" / "review-exchange-turn-prompt.md"
+        ).exists()
 
     def test_two_round_exchange_changes_then_ok(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

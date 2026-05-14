@@ -225,7 +225,6 @@ def _write_full(
             backoff = min(backoff * 2, 0.1)
             continue
         written += n
-        _drain_during_write_backoff(drain_output)
         backoff = 0.005
         if written < len(payload):
             logger.debug(
@@ -236,8 +235,14 @@ def _write_full(
 
 
 def _drain_during_write_backoff(drain_output: Callable[[], int] | None) -> None:
-    if drain_output is not None:
-        drain_output()
+    if drain_output is None:
+        return
+    drained = drain_output()
+    if drained:
+        logger.debug(
+            "[send_round] drained %d PTY output byte(s) while write was blocked",
+            drained,
+        )
 
 
 def _write_prompt_with_timeout_diagnostics(
@@ -709,7 +714,7 @@ def _set_pty_geometry(slave_fd: int, *, rows: int, cols: int) -> None:
         size = struct.pack("HHHH", rows, cols, 0, 0)
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, size)
     except OSError:
-        logger.debug("Failed to seed persistent-round PTY geometry", exc_info=True)
+        logger.warning("Failed to seed persistent-round PTY geometry", exc_info=True)
 
 
 def _set_pty_noncanonical(slave_fd: int) -> None:
@@ -721,4 +726,6 @@ def _set_pty_noncanonical(slave_fd: int) -> None:
         attrs[6][termios.VTIME] = 0
         termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
     except OSError:
-        logger.debug("Failed to seed persistent-round PTY input mode", exc_info=True)
+        logger.warning(
+            "Failed to seed persistent-round PTY input mode", exc_info=True
+        )

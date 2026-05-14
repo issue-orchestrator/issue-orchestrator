@@ -867,6 +867,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     finally:
         _detach_slice_mirror(pair.coder_session, coder_session_slice)
         _detach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
+        _clear_role_prompt_inbox(pair.coder_response_path)
+        _clear_role_prompt_inbox(pair.reviewer_response_path)
 
     _release_pair_after_no_completion(
         pair_registry=pair_registry,
@@ -1192,6 +1194,9 @@ def _role_prompt_inbox_path(response_file: Path) -> Path:
     file lives under ``<worktree>/.issue-orchestrator``. Writing each turn's
     full prompt beside that response file keeps the prompt readable inside the
     role's sandbox and lets the PTY carry only a short wake-up message.
+
+    This inbox is intentionally transient and overwritten per turn; the durable
+    per-turn prompt remains under ``<exchange_dir>/turns/``.
     """
     return response_file.with_name("review-exchange-turn-prompt.md")
 
@@ -1200,6 +1205,10 @@ def _write_role_prompt_inbox(response_file: Path, prompt_text: str) -> Path:
     path = _role_prompt_inbox_path(response_file)
     _atomic_write_bytes(path, prompt_text.encode("utf-8"))
     return path
+
+
+def _clear_role_prompt_inbox(response_file: Path) -> None:
+    _role_prompt_inbox_path(response_file).unlink(missing_ok=True)
 
 
 def _build_prompt_inbox_notice(
