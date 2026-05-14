@@ -50,7 +50,7 @@ System design and decision records:
 
 ## Design
 
-- [Making Agentic Development Sustainable](design/sustainable-agentic-development.md) - Design thesis for enforceable architecture and deterministic workflow
+- [Making Agentic Development Sustainable](design/sustainable-agentic-development.md) - Design backstory for enforceable architecture and deterministic workflow
 - [Goal Pilot Design](design/goal-pilot.md) - Goal Pilot architecture and design
 - [Blocked Issues UX Ideas](design/blocked-issues-ux-ideas.md) - UX improvement brainstorm
 

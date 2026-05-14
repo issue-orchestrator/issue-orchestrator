@@ -6,7 +6,8 @@ The goal is not to make agents trusted maintainers. The goal is to let agents co
 
 > **▶ 2-minute walkthrough:** _video coming soon_
 >
-> **Core thesis:** read [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md), then [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md).
+> **Core thesis:** read [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md).
+> For the design backstory, see [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md).
 
 ## What it does
 
