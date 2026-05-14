@@ -417,11 +417,27 @@ def _create_completion_components(
     from ..execution.persistent_review_exchange_runner import (
         PersistentReviewExchangeRunner,
     )
+    from ..control.review_exchange_lifecycle import (
+        ReviewExchangeCancellation,
+        cancel_issue_review_exchange,
+    )
 
     if label_manager is None:
         label_manager = _LM(config)
     if pair_registry is None:
         pair_registry = InMemoryPersistentExchangePairRegistry()
+
+    def _cancel_review_exchange(
+        issue_number: int,
+        reason: str,
+    ) -> ReviewExchangeCancellation:
+        return cancel_issue_review_exchange(
+            issue_number=issue_number,
+            reason=reason,
+            pair_registry=pair_registry,
+            job_supervisor=background_job_supervisor,
+        )
+
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
@@ -435,6 +451,7 @@ def _create_completion_components(
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
         config=config,
         background_job_supervisor=background_job_supervisor,
+        review_exchange_canceller=_cancel_review_exchange,
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -452,6 +469,7 @@ def _create_completion_components(
         max_validation_retries=config.retry.max_validation_retries,
         provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
+        review_exchange_canceller=_cancel_review_exchange,
     ) if completion_processor else None
 
     return completion_processor, session_controller_instance
@@ -1060,10 +1078,26 @@ def build_orchestrator_for_testing(
     from ..execution.persistent_review_exchange_runner import (
         PersistentReviewExchangeRunner,
     )
+    from ..control.review_exchange_lifecycle import (
+        ReviewExchangeCancellation,
+        cancel_issue_review_exchange,
+    )
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor
+
+    def _cancel_review_exchange_for_testing(
+        issue_number: int,
+        reason: str,
+    ) -> ReviewExchangeCancellation:
+        return cancel_issue_review_exchange(
+            issue_number=issue_number,
+            reason=reason,
+            pair_registry=pair_registry_for_testing,
+            job_supervisor=background_job_supervisor,
+        )
+
     completion_processor = CompletionProcessor(
         label_adapter=github,
         pr_adapter=github,
@@ -1076,6 +1110,8 @@ def build_orchestrator_for_testing(
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
         config=config,
+        background_job_supervisor=background_job_supervisor,
+        review_exchange_canceller=_cancel_review_exchange_for_testing,
     )
 
     # Create SessionController for testing (with optional validation gate)
@@ -1092,6 +1128,7 @@ def build_orchestrator_for_testing(
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
         provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
+        review_exchange_canceller=_cancel_review_exchange_for_testing,
     )
 
     # Create LabelSync for testing

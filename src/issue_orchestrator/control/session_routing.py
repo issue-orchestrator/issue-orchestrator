@@ -163,19 +163,19 @@ def restore_running_sessions(
 ) -> list[Session]:
     """Restore running terminal sessions into active-session tracking."""
     restored = session_restorer.restore_sessions(running, active_sessions)
-    append_unique_active_sessions(active_sessions, restored)
-    if restored:
+    added = append_unique_active_sessions(active_sessions, restored)
+    if added:
         logger.info(
             "[ORPHAN] Restored %d running terminal session(s): %s",
-            len(restored),
-            ", ".join(str(getattr(s, "terminal_id", s)) for s in restored),
+            len(added),
+            ", ".join(str(session.terminal_id) for session in added),
         )
     elif running:
         logger.warning(
             "[ORPHAN] Found %d running terminal session(s), but none could be restored",
             len(running),
         )
-    return restored
+    return added
 
 
 def parse_session_ref(

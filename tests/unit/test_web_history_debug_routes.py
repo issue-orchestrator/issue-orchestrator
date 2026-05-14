@@ -12,6 +12,38 @@ globals().update(
 class TestHistoryEndpoints:
     """Test history management endpoints."""
 
+    def test_configured_attr_ignores_unconfigured_mock_children(self):
+        """Dependency probing must not treat MagicMock child mocks as wiring."""
+        from issue_orchestrator.entrypoints.web_retry_history_routes import _configured_attr
+
+        deps = MagicMock()
+
+        assert _configured_attr(deps, "session_manager") is None
+        _ = deps.session_manager
+        assert _configured_attr(deps, "session_manager") is None
+
+        session_manager = Mock()
+        deps.session_manager = session_manager
+
+        assert _configured_attr(deps, "session_manager") is session_manager
+
+    def test_configured_attr_supports_slotted_runtime_objects(self):
+        """Real slotted runtime collaborators still support explicit lookup."""
+        from issue_orchestrator.entrypoints.web_retry_history_routes import _configured_attr
+
+        class SlottedDeps:
+            __slots__ = ("session_manager",)
+
+            def __init__(self, session_manager):
+                self.session_manager = session_manager
+
+        session_manager = object()
+
+        assert (
+            _configured_attr(SlottedDeps(session_manager), "session_manager")
+            is session_manager
+        )
+
     def test_clear_history_success(self):
         """Test clearing all history."""
         from issue_orchestrator.entrypoints import web
@@ -201,6 +233,91 @@ class TestHistoryEndpoints:
         assert event_arg.data["source"] == "web.reset-retry"
         assert event_arg.data["pending_labels"] == [lm.reset_retry_pending]
         assert event_arg.data["from_scratch"] is False
+
+    def test_reset_retry_cancels_review_exchange_runtime(self):
+        """Reset is terminal for issue-scoped pair and background job."""
+        from issue_orchestrator.control.maintenance import ResetResult
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        pair_registry = Mock()
+        job_supervisor = Mock()
+        job_supervisor.cancel_matching.return_value = [
+            "review-exchange:4057:coding-1"
+        ]
+        legacy_pair_registry = Mock()
+        mock_orch.deps.pair_registry = legacy_pair_registry
+        mock_orch.deps.services = SimpleNamespace(
+            pair_registry=pair_registry,
+            background_job_supervisor=job_supervisor,
+        )
+        session_manager = Mock()
+        session_manager.exists.side_effect = (
+            lambda ref: ref.name in {"issue-4057", "rework-4057"}
+        )
+        mock_orch.deps.session_manager = session_manager
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(
+            success=True,
+            error=None,
+        )
+        mock_orch.deps.events = MagicMock()
+        mock_orch.deps.queue_cache_store = MagicMock()
+        mock_orch.repository_host.get_issue_labels.return_value = [
+            "agent:web",
+            lm.blocked_failed,
+        ]
+        mock_orch.repository_host.get_issue.return_value = create_issue(
+            4057,
+            labels=["agent:web", lm.reset_retry_pending],
+        )
+        mock_orch.state.active_sessions = [
+            SimpleNamespace(
+                terminal_id="issue-4057",
+                issue=SimpleNamespace(number=4057),
+            ),
+            SimpleNamespace(
+                terminal_id="rework-4057",
+                issue=SimpleNamespace(number=4057),
+            ),
+            SimpleNamespace(
+                terminal_id="issue-999",
+                issue=SimpleNamespace(number=999),
+            ),
+        ]
+
+        set_orchestrator(mock_orch)
+
+        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
+            reset_issue_mock.return_value = ResetResult(
+                success=True,
+                issue_number=4057,
+                deleted_worktree="/tmp/worktree-4057",
+                deleted_branch="4057-fix",
+                labels_removed=[lm.blocked_failed],
+            )
+            client = TestClient(app)
+            response = client.post("/api/reset-retry", json={"issues": [4057]})
+
+        assert response.status_code == 200
+        assert response.json()["failed"] == []
+        pair_registry.release.assert_called_once_with(
+            4057,
+            reason="reset-retry",
+        )
+        legacy_pair_registry.release.assert_not_called()
+        job_supervisor.cancel_matching.assert_called_once()
+        predicate = job_supervisor.cancel_matching.call_args.args[0]
+        assert predicate("review-exchange:4057:coding-1")
+        assert not predicate("review-exchange:4058:coding-1")
+        assert [call.args[0].name for call in session_manager.stop.call_args_list] == [
+            "issue-4057",
+            "rework-4057",
+        ]
+        assert [session.terminal_id for session in mock_orch.state.active_sessions] == [
+            "issue-999",
+        ]
 
     def test_reset_retry_from_scratch_sets_scratch_pending_label(self):
         """Reset+retry from scratch should persist scratch pending label and queue immediately."""

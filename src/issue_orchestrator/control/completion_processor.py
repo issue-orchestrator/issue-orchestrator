@@ -77,6 +77,7 @@ from .completion_types import (
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
+from .review_exchange_contracts import ReviewExchangeCanceller
 from .test_skip_guard import scan_added_test_skip_guards
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
@@ -423,6 +424,7 @@ class CompletionProcessor:
         pre_publish_gate: PrePublishGate | None = None,
         config: "Config | None" = None,
         background_job_supervisor: "BackgroundJobSupervisor | None" = None,
+        review_exchange_canceller: ReviewExchangeCanceller | None = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -442,6 +444,8 @@ class CompletionProcessor:
                 inline-execution path still works for tests; production MUST
                 pass the shared supervisor from bootstrap so
                 ``Orchestrator.tick`` drains its completions.
+            review_exchange_canceller: Issue-scoped lifecycle hook used when
+                the async review-exchange job reaches a terminal failure.
         """
         self.label_adapter = label_adapter
         self.pr_adapter = pr_adapter
@@ -476,6 +480,7 @@ class CompletionProcessor:
             emit_review_outcome=self._emit_review_outcome,
             review_exchange_runner=review_exchange_runner or NullReviewExchangeRunner(),
             job_supervisor=background_job_supervisor,
+            review_exchange_canceller=review_exchange_canceller,
         )
         # Per-(session, head_sha) consecutive validation-failed reroute count.
         # The reroute path can re-enter every tick when downstream rework

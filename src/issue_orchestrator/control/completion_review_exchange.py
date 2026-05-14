@@ -18,9 +18,11 @@ from ..ports.review_exchange_runner import ReviewExchangeRunner
 from ..ports.session_output import ReviewExchangeSummary, SessionOutput
 from .background_job_supervisor import (
     BackgroundJobCancelledError,
+    BackgroundJobTimeoutError,
     BackgroundJobSupervisor,
 )
 from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
+from .review_exchange_contracts import ReviewExchangeCanceller
 from .review_publish_pipeline import resolve_review_publish_pipeline
 
 
@@ -88,12 +90,14 @@ class CompletionReviewExchange:
         emit_review_outcome: ReviewOutcomeEmitter,
         review_exchange_runner: ReviewExchangeRunner,
         job_supervisor: BackgroundJobSupervisor | None = None,
+        review_exchange_canceller: ReviewExchangeCanceller | None = None,
     ) -> None:
         self._config = config
         self._session_output = session_output
         self._review_exchange_runner = review_exchange_runner
         self._emit_review_started = emit_review_started
         self._emit_review_outcome = emit_review_outcome
+        self._review_exchange_canceller = review_exchange_canceller
         # Supervisor injection is REQUIRED for the async failure path to work:
         # ``take_failure`` only returns values that ``tick()`` has populated,
         # and ``tick()`` must be called from the orchestrator's main loop.
@@ -300,12 +304,12 @@ class CompletionReviewExchange:
             return loop_budget_halt
 
         if self._job_supervisor.is_running(job_id):
-            logger.info(
-                "[REVIEW_EXCHANGE] job still running issue=%d job_id=%s — deferring",
-                issue_number,
-                job_id,
+            return self._defer_running_review_exchange(
+                exchange_mode=exchange_mode,
+                job_id=job_id,
+                issue_number=issue_number,
+                errors=errors,
             )
-            return exchange_mode, None, False, True
 
         logger.info("Review exchange mode selected: %s", exchange_mode)
         submitted = self._submit_background_review_exchange(
@@ -357,9 +361,16 @@ class CompletionReviewExchange:
         failure = self._job_supervisor.take_failure(job_id)
         if failure is None:
             return None
+        cancel_error = self._cancel_runtime_after_background_failure(
+            issue_number=issue_number,
+            job_id=job_id,
+            reason=self._background_failure_cancellation_reason(failure.error),
+        )
         if isinstance(failure.error, BackgroundJobCancelledError):
             reason = f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job cancelled: {failure.error.reason}"
             errors.append(reason)
+            if cancel_error:
+                errors.append(cancel_error)
             logger.info(
                 "[REVIEW_EXCHANGE] background job cancelled; halting issue=%d job_id=%s reason=%s",
                 issue_number,
@@ -369,6 +380,8 @@ class CompletionReviewExchange:
             return failure
         reason = f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job raised: {failure.error}"
         errors.append(reason)
+        if cancel_error:
+            errors.append(cancel_error)
         logger.error(
             "[REVIEW_EXCHANGE] background job failed; halting issue=%d job_id=%s",
             issue_number,
@@ -376,6 +389,120 @@ class CompletionReviewExchange:
             exc_info=(type(failure.error), failure.error, None),
         )
         return failure
+
+    def _cancel_runtime_after_background_failure(
+        self,
+        *,
+        issue_number: int,
+        job_id: str,
+        reason: str,
+    ) -> str | None:
+        """Tear down issue-scoped runtime work after a terminal job failure."""
+        if self._review_exchange_canceller is None:
+            logger.warning(
+                "[REVIEW_EXCHANGE] no canceller configured for background "
+                "failure issue=%d job_id=%s reason=%s",
+                issue_number,
+                job_id,
+                reason,
+            )
+            return None
+        try:
+            cancellation = self._review_exchange_canceller(issue_number, reason)
+        except Exception as exc:  # noqa: BLE001 - failure path must still halt visibly
+            logger.exception(
+                "[REVIEW_EXCHANGE] failed to cancel runtime after background "
+                "failure issue=%d job_id=%s reason=%s",
+                issue_number,
+                job_id,
+                reason,
+            )
+            return (
+                f"{REVIEW_EXCHANGE_ERROR_PREFIX} failed to cancel runtime work: {exc}"
+            )
+        cancelled_jobs = cancellation.cancelled_job_ids
+        logger.info(
+            "[REVIEW_EXCHANGE] cancelled runtime after background failure "
+            "issue=%d job_id=%s reason=%s jobs=%s",
+            issue_number,
+            job_id,
+            reason,
+            ",".join(cancelled_jobs) if cancelled_jobs else "none",
+        )
+        return None
+
+    @staticmethod
+    def _background_failure_cancellation_reason(error: BaseException) -> str:
+        if isinstance(error, BackgroundJobCancelledError):
+            return error.reason
+        if isinstance(error, BackgroundJobTimeoutError):
+            return "background-job-timeout"
+        return "background-job-failed"
+
+    def _defer_running_review_exchange(
+        self,
+        *,
+        exchange_mode: str,
+        job_id: str,
+        issue_number: int,
+        errors: list[str],
+    ) -> tuple[str | None, ReviewExchangeOutcome | None, bool, bool]:
+        """Return the running-job decision cell for the exchange matrix."""
+        status_fn = getattr(self._job_supervisor, "status", None)
+        status = status_fn(job_id) if callable(status_fn) else None
+        if status is not None and getattr(status, "failure_recorded", False):
+            background_failure = self._take_background_failure(
+                job_id=job_id,
+                issue_number=issue_number,
+                errors=errors,
+            )
+            if background_failure is not None:
+                return exchange_mode, None, True, False
+        if status is not None and getattr(status, "timeout_seconds", None) is None:
+            reason = (
+                f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job is running "
+                f"without a supervisor deadline: job_id={job_id}"
+            )
+            errors.append(reason)
+            cancel_error = self._cancel_runtime_after_background_failure(
+                issue_number=issue_number,
+                job_id=job_id,
+                reason="background-job-unbounded",
+            )
+            if cancel_error:
+                errors.append(cancel_error)
+            logger.error(
+                "[REVIEW_EXCHANGE] refusing unbounded background wait "
+                "issue=%d job_id=%s elapsed=%s",
+                issue_number,
+                job_id,
+                self._format_seconds(getattr(status, "elapsed_seconds", None)),
+            )
+            return exchange_mode, None, True, False
+        if status is not None:
+            elapsed = getattr(status, "elapsed_seconds", None)
+            timeout = getattr(status, "timeout_seconds", None)
+            deadline_in = timeout - elapsed if elapsed is not None and timeout else None
+            logger.info(
+                "[REVIEW_EXCHANGE] job still running issue=%d job_id=%s "
+                "elapsed=%s timeout=%s deadline_in=%s — deferring",
+                issue_number,
+                job_id,
+                self._format_seconds(elapsed),
+                self._format_seconds(timeout),
+                self._format_seconds(deadline_in),
+            )
+        else:
+            logger.info(
+                "[REVIEW_EXCHANGE] job still running issue=%d job_id=%s — deferring",
+                issue_number,
+                job_id,
+            )
+        return exchange_mode, None, False, True
+
+    @staticmethod
+    def _format_seconds(value: float | None) -> str:
+        return "n/a" if value is None else f"{value:.1f}s"
 
     def _submit_background_review_exchange(
         self,

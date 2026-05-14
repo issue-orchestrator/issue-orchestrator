@@ -390,6 +390,50 @@ class TestSessionControllerTerminated:
             "review_exchange: Session timed out while review exchange was still running"
         ]
 
+    def test_timed_out_deferred_review_exchange_cancels_runtime(self):
+        """A terminal timeout must tear down hidden review-exchange work."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        processor.process_result.review_exchange_deferred = True
+        cancellations: list[tuple[int, str]] = []
+
+        class _Cancellation:
+            cancelled_job_ids = ("review-exchange:123:coding-1",)
+
+        def cancel(issue_number: int, reason: str) -> _Cancellation:
+            cancellations.append((issue_number, reason))
+            return _Cancellation()
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+            review_exchange_canceller=cancel,
+        )
+
+        observation = SessionObservationResult.timed_out(
+            runtime_minutes=121.0,
+            timeout_minutes=120,
+            session_exists=True,
+        )
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=Path("/tmp/test"),
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.TIMED_OUT
+        assert decision.processing_result is not None
+        assert decision.processing_result.review_exchange_halted is True
+        assert cancellations == [(123, "session-timeout")]
+
     def test_terminated_with_blocked_record_is_blocked(self):
         """Session that exits with blocked outcome = BLOCKED."""
         processor = MockCompletionProcessor()

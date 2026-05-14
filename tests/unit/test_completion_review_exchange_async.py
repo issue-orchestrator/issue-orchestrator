@@ -400,6 +400,176 @@ def test_second_pass_while_running_keeps_deferring(tmp_path: Path) -> None:
     assert len(job_runner.submitted) == 1
 
 
+def test_running_background_job_without_deadline_halts(tmp_path: Path) -> None:
+    from issue_orchestrator.control.background_job_supervisor import (
+        BackgroundJobSupervisor,
+    )
+
+    class _NoDeadlineRunner(_FakeReviewExchangeRunner):
+        def job_timeout_seconds(self, **_: Any) -> float | None:
+            return None
+
+    job_runner = _FakeJobRunner()
+    supervisor = BackgroundJobSupervisor(job_runner)
+    cancellations: list[tuple[int, str, tuple[str, ...]]] = []
+
+    @dataclass(frozen=True)
+    class _Cancellation:
+        cancelled_job_ids: tuple[str, ...]
+
+    def cancel(issue_number: int, reason: str) -> _Cancellation:
+        cancelled = tuple(
+            supervisor.cancel_matching(
+                lambda job_id: job_id.startswith(f"review-exchange:{issue_number}:"),
+                reason=reason,
+            )
+        )
+        cancellations.append((issue_number, reason, cancelled))
+        return _Cancellation(cancelled_job_ids=cancelled)
+
+    errors: list[str] = []
+    review = CompletionReviewExchange(
+        config=_make_config(tmp_path),
+        session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_NoDeadlineRunner(),
+        job_supervisor=supervisor,
+        review_exchange_canceller=cancel,
+    )
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("must not run synchronously")
+
+    review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=errors,
+        actions_taken=[],
+        run_review_exchange_loop=fake_loop,
+    )
+
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=errors,
+        actions_taken=[],
+        run_review_exchange_loop=fake_loop,
+    )
+
+    assert deferred is False
+    assert halt is True
+    assert completed is False
+    assert outcome is None
+    assert len(job_runner.submitted) == 1
+    assert cancellations == [
+        (
+            230,
+            "background-job-unbounded",
+            ("review-exchange:230:coding-1",),
+        )
+    ]
+    assert supervisor.is_running("review-exchange:230:coding-1") is False
+    assert errors == [
+        "review_exchange: background job is running without a supervisor "
+        "deadline: job_id=review-exchange:230:coding-1"
+    ]
+
+
+def test_background_deadline_failure_cancels_runtime(tmp_path: Path) -> None:
+    from issue_orchestrator.control.background_job_supervisor import (
+        BackgroundJobSupervisor,
+    )
+
+    class _ShortTimeoutRunner(_FakeReviewExchangeRunner):
+        def job_timeout_seconds(self, **_: Any) -> float | None:
+            return 1.0
+
+    @dataclass(frozen=True)
+    class _Cancellation:
+        cancelled_job_ids: tuple[str, ...]
+
+    job_runner = _FakeJobRunner()
+    now = 1000.0
+    supervisor = BackgroundJobSupervisor(job_runner, clock=lambda: now)
+    cancellations: list[tuple[int, str, tuple[str, ...]]] = []
+
+    def cancel(issue_number: int, reason: str) -> _Cancellation:
+        cancelled = tuple(
+            supervisor.cancel_matching(
+                lambda job_id: job_id.startswith(f"review-exchange:{issue_number}:"),
+                reason=reason,
+            )
+        )
+        cancellations.append((issue_number, reason, cancelled))
+        return _Cancellation(cancelled_job_ids=cancelled)
+
+    errors: list[str] = []
+    review = CompletionReviewExchange(
+        config=_make_config(tmp_path),
+        session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_ShortTimeoutRunner(),
+        job_supervisor=supervisor,
+        review_exchange_canceller=cancel,
+    )
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("must not run synchronously")
+
+    review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=errors,
+        actions_taken=[],
+        run_review_exchange_loop=fake_loop,
+    )
+
+    now = 1002.0
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=errors,
+        actions_taken=[],
+        run_review_exchange_loop=fake_loop,
+    )
+
+    assert deferred is False
+    assert halt is True
+    assert completed is False
+    assert outcome is None
+    assert cancellations == [
+        (
+            230,
+            "background-job-timeout",
+            ("review-exchange:230:coding-1",),
+        )
+    ]
+    assert supervisor.is_running("review-exchange:230:coding-1") is False
+    assert any("background job exceeded deadline" in error for error in errors)
+
+
 def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
     job_runner = _FakeJobRunner()
     started: list[dict[str, Any]] = []

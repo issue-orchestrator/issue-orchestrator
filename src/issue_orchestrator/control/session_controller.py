@@ -58,8 +58,9 @@ from ..ports.run_evidence import (
     ValidationEvidenceRecorder,
 )
 from ..ports.session_output import SessionOutput, ValidationRecord, ValidationState
-from .validation import PublishGate
 from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
+from .review_exchange_contracts import ReviewExchangeCanceller
+from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
 _AGENT_DONE_MARKER = ".agent-done-marker"
@@ -155,6 +156,7 @@ class SessionController:
         max_validation_retries: int = 0,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
         provider_blocked_label: Optional[str] = None,
+        review_exchange_canceller: ReviewExchangeCanceller | None = None,
     ):
         """Initialize the controller.
 
@@ -190,6 +192,7 @@ class SessionController:
         self._validation_attempt_key_factory = validation_attempt_key_factory
         self._provider_resilience = provider_resilience
         self._provider_blocked_label = provider_blocked_label
+        self._review_exchange_canceller = review_exchange_canceller
 
     def decide_outcome(
         self,
@@ -461,11 +464,17 @@ class SessionController:
             timeout_reason = "Session timed out while review exchange was still running"
             errors = list(result.errors or [])
             errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {timeout_reason}")
-            # Timeout is an issue-lifetime boundary. We do not cancel the
-            # background exchange thread here because it may still write useful
-            # diagnostics to the run dir, but this terminal decision removes
-            # the session from active processing so the preserved completion
-            # record is not re-entered on the next tick.
+            cancel_error = self._cancel_deferred_review_exchange(
+                issue_number=issue_number,
+                session_name=session_name,
+                reason="session-timeout",
+            )
+            if cancel_error:
+                errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {cancel_error}")
+            # Timeout is an issue-lifetime boundary: once the visible coding
+            # run is terminal, the hidden review-exchange pair/job must be
+            # terminal too. Diagnostics already written to the run directory
+            # are preserved; live subprocesses are not.
             halted_result = replace(
                 result,
                 errors=errors,
@@ -498,6 +507,44 @@ class SessionController:
             recovered_from_timeout=recovered,
             reason="Review exchange running in background; awaiting completion",
         )
+
+    def _cancel_deferred_review_exchange(
+        self,
+        *,
+        issue_number: int,
+        session_name: str,
+        reason: str,
+    ) -> str | None:
+        if self._review_exchange_canceller is None:
+            logger.warning(
+                "[REVIEW_EXCHANGE] no canceller configured for terminal "
+                "deferred exchange issue=%d session=%s reason=%s",
+                issue_number,
+                session_name,
+                reason,
+            )
+            return None
+        try:
+            cancellation = self._review_exchange_canceller(issue_number, reason)
+        except Exception as exc:  # noqa: BLE001 - terminal path must still surface timeout
+            logger.exception(
+                "[REVIEW_EXCHANGE] failed to cancel terminal deferred exchange "
+                "issue=%d session=%s reason=%s",
+                issue_number,
+                session_name,
+                reason,
+            )
+            return f"failed to cancel runtime work: {exc}"
+        cancelled_jobs = cancellation.cancelled_job_ids
+        logger.info(
+            "[REVIEW_EXCHANGE] cancelled terminal deferred exchange "
+            "issue=%d session=%s reason=%s jobs=%s",
+            issue_number,
+            session_name,
+            reason,
+            ",".join(cancelled_jobs) if cancelled_jobs else "none",
+        )
+        return None
 
     def _handle_pre_publish_validation_failure(
         self,

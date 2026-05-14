@@ -1606,6 +1606,41 @@ class TestOrchestratorLaunchSession:
         assert len(state.active_sessions) == 1
         assert state.active_sessions[0].terminal_id == "issue-123"
 
+    def test_suppresses_duplicate_terminal_id_from_launch_result(
+        self,
+        sample_issue,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """Launch wrappers must not admit duplicate terminal IDs."""
+        existing = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=sample_issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "existing",
+            branch_name="123-existing",
+        )
+        duplicate = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=sample_issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "duplicate",
+            branch_name="123-duplicate",
+        )
+        state = OrchestratorState(active_sessions=[existing])
+        session_launcher = MagicMock()
+        session_launcher.launch_issue_session.return_value = LaunchResult(
+            duplicate,
+            True,
+        )
+
+        result = orchestrator_launch_session(sample_issue, state, session_launcher)
+
+        assert result is duplicate
+        assert state.active_sessions == [existing]
+
     def test_restores_orphaned_terminal_when_keep_queued(
         self,
         launcher_bundle,
@@ -1892,15 +1927,58 @@ class TestRestoreRunningSessions:
         """Verify restored sessions are added to active list."""
         mock_restorer = MagicMock()
         mock_session = MagicMock()
+        mock_session.terminal_id = "issue-123"
         mock_restorer.restore_sessions.return_value = [mock_session]
 
         active_sessions = []
         running = [{"tab_name": "issue-123", "issue_number": 123}]
 
-        restore_running_sessions(running, active_sessions, mock_restorer)
+        added = restore_running_sessions(running, active_sessions, mock_restorer)
 
+        assert added == [mock_session]
         assert len(active_sessions) == 1
         assert active_sessions[0] == mock_session
+
+    def test_suppresses_duplicate_terminal_ids_from_restorer(self, tmp_path):
+        """Runtime restoration also goes through the active-session owner."""
+        issue = Issue(number=123, title="Test", labels=["agent:web"])
+        agent_config = AgentConfig(prompt_path=tmp_path / "prompt.txt")
+        existing = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "existing",
+            branch_name="123-existing",
+        )
+        duplicate = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "duplicate",
+            branch_name="123-duplicate",
+        )
+        new_session = Session(
+            key=SessionKey(issue=FakeIssueKey("456"), task=TaskKind.CODE),
+            issue=Issue(number=456, title="Other", labels=["agent:web"]),
+            agent_config=agent_config,
+            terminal_id="issue-456",
+            worktree_path=tmp_path / "new",
+            branch_name="456-new",
+        )
+        mock_restorer = MagicMock()
+        mock_restorer.restore_sessions.return_value = [duplicate, new_session]
+        active_sessions = [existing]
+
+        added = restore_running_sessions(
+            [{"tab_name": "issue-123"}, {"tab_name": "issue-456"}],
+            active_sessions,
+            mock_restorer,
+        )
+
+        assert added == [new_session]
+        assert active_sessions == [existing, new_session]
 
 
 # =============================================================================

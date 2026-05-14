@@ -457,6 +457,81 @@ class TestReconcileHistoryEntryAction:
             228, reason="issue-completed",
         )
 
+    def test_reconcile_history_entry_cancels_supervised_exchange_on_merged(
+        self, applier,
+    ):
+        """Terminal merge reconciliation must cancel the pair and job."""
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        pair_registry = Mock()
+        job_supervisor = Mock()
+        job_supervisor.cancel_matching.return_value = [
+            "review-exchange:228:coding-1"
+        ]
+        applier.pair_registry = pair_registry
+        applier.background_job_supervisor = job_supervisor
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        pair_registry.release.assert_called_once_with(
+            228, reason="issue-completed",
+        )
+        job_supervisor.cancel_matching.assert_called_once()
+        predicate = job_supervisor.cancel_matching.call_args.args[0]
+        assert predicate("review-exchange:228:coding-1")
+        assert not predicate("review-exchange:229:coding-1")
+
+    def test_reconcile_history_entry_stops_visible_issue_runtime_on_merged(
+        self, applier, mock_sessions,
+    ):
+        """Merged issue reconciliation is terminal for issue/rework sessions."""
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        mock_sessions.exists.side_effect = (
+            lambda ref: ref.name in {"issue-228", "rework-228"}
+        )
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert [call.args[0].name for call in mock_sessions.stop.call_args_list] == [
+            "issue-228",
+            "rework-228",
+        ]
+
     def test_reconcile_history_entry_releases_pair_on_closed(
         self, applier,
     ):
@@ -942,6 +1017,63 @@ class TestEscalateToHumanAction:
         applier.pair_registry.release.assert_called_once_with(
             123, reason="escalated-to-human",
         )
+
+    def test_escalate_cancels_supervised_review_exchange_job(
+        self, applier, mock_labels,
+    ):
+        """Escalation is terminal for both the pair and supervisor job."""
+        pair_registry = Mock()
+        job_supervisor = Mock()
+        job_supervisor.cancel_matching.return_value = [
+            "review-exchange:123:coding-1"
+        ]
+        applier.pair_registry = pair_registry
+        applier.background_job_supervisor = job_supervisor
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        pair_registry.release.assert_called_once_with(
+            123, reason="escalated-to-human",
+        )
+        job_supervisor.cancel_matching.assert_called_once()
+        predicate = job_supervisor.cancel_matching.call_args.args[0]
+        assert predicate("review-exchange:123:coding-1")
+        assert not predicate("review-exchange:124:coding-1")
+
+    def test_escalate_stops_visible_issue_runtime_sessions(
+        self, applier, mock_labels, mock_sessions,
+    ):
+        """Escalation stops visible issue/rework terminals before mutation."""
+        mock_sessions.exists.side_effect = (
+            lambda ref: ref.name in {"issue-123", "rework-123"}
+        )
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert [call.args[0].name for call in mock_sessions.stop.call_args_list] == [
+            "issue-123",
+            "rework-123",
+        ]
 
     def test_escalate_releases_pair_before_label_mutations(
         self, applier, mock_labels,
