@@ -212,7 +212,8 @@
     letter-spacing: 0.05em;
 }
 
-/* Journey cycles — collapsible groups */
+/* Journey cycles — native disclosure rows shared with the E2E hierarchy. */
+.journey-run,
 .journey-cycle { margin-bottom: 2px; position: relative; }
 .journey-cycle-header {
     display: flex;
@@ -222,8 +223,14 @@
     cursor: pointer;
     border-radius: 4px;
     position: relative;
+    list-style: none;
 }
+.journey-cycle-header::-webkit-details-marker { display: none; }
 .journey-cycle-header:hover { background: rgba(128,128,128,0.08); }
+.journey-cycle-header:focus-visible {
+    outline: 2px solid var(--accent, #4a9eff);
+    outline-offset: 2px;
+}
 .journey-cycle-toggle { width: 12px; font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
 .journey-cycle-label { font-size: 12px; font-weight: 500; white-space: nowrap; }
 .journey-cycle-agent { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
@@ -233,7 +240,26 @@
 .journey-cycle-outcome.outcome-success { color: var(--ok, #46c37b); }
 .journey-cycle-outcome.outcome-warning { color: var(--warn, #f0b24f); }
 .journey-cycle-time { font-size: 11px; color: var(--text-muted); margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.journey-cycle-artifacts-btn { cursor: pointer; font-size: 12px; flex-shrink: 0; }
+.journey-cycle-artifacts-btn {
+    cursor: pointer;
+    font-size: 12px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 4px;
+    padding: 1px 6px;
+    line-height: 1.4;
+}
+.journey-cycle-artifacts-btn:hover,
+.journey-cycle-artifacts-btn:focus-visible {
+    color: var(--text);
+    border-color: var(--text-muted);
+    outline: none;
+}
+.journey-cycle-artifacts-btn:focus-visible {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #4a9eff) 35%, transparent);
+}
 
 /* Per-cycle validation badge — the discoverable entry point into JUnit
    evidence for that cycle. Three states map to three CSS classes that

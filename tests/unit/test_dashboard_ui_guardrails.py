@@ -1457,11 +1457,44 @@ def test_journey_renders_phase_group_headers() -> None:
     assert "journey-phase-header" in body
 
 
+def test_journey_timeline_uses_native_disclosure_hierarchy() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert '<details class="journey-run unified-timeline-node"' in body
+    assert '<details class="journey-cycle unified-timeline-node"' in body
+    assert '<summary class="journey-cycle-header unified-timeline-summary">' in body
+    assert 'ontoggle="syncJourneyDisclosureState(this)"' in body
+    assert 'onclick="toggleJourneyCycle' not in body
+
+
 def test_toggle_journey_cycle_targets_own_header_toggle() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "toggleJourneyCycle")
     assert "const cycleNode = document.getElementById(cycleId);" in body
     assert ":scope > .journey-cycle-header .journey-cycle-toggle" in body
+    assert "syncJourneyDisclosureState(cycleNode)" in body
+
+
+def test_journey_artifact_affordance_is_semantic_button() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert '<button type="button" class="journey-cycle-artifacts-btn"' in body
+    assert 'aria-label="Open artifacts for ${escapeAttr(cycleLabel)}"' in body
+    assert "event.preventDefault(); event.stopPropagation(); toggleArtifactPopover" in body
+
+
+def test_journey_disclosure_rows_have_keyboard_focus_styles() -> None:
+    css = _read_dashboard_css_bundle()
+    assert ".journey-cycle-header:focus-visible" in css
+    assert ".journey-cycle-header::-webkit-details-marker" in css
+    assert ".journey-cycle-artifacts-btn:focus-visible" in css
+
+
+def test_journey_disclosure_toggle_sync_closes_open_timeline_menus() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "syncJourneyDisclosureState")
+    assert "typeof closeTimelineEventMenus === 'function'" in body
+    assert "closeTimelineEventMenus();" in body
 
 
 def test_review_feedback_modal_includes_review_comment_events_and_details() -> None:

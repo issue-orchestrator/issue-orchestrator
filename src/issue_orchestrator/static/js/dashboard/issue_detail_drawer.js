@@ -161,13 +161,13 @@ function _renderJourneyRuns(container, allRuns) {
         const runId = `journey-run-${runIndex}`;
         const runBodyClass = runExpanded ? '' : ' collapsed';
         const runLabel = run.run_label || `Run ${run.run_number || (runIndex + 1)}`;
-        html += `<div class="journey-run" id="${runId}">
-            <div class="journey-cycle-header" onclick="toggleJourneyCycle('${runId}')">
+        html += `<details class="journey-run unified-timeline-node" id="${runId}"${runExpanded ? ' open' : ''} ontoggle="syncJourneyDisclosureState(this)">
+            <summary class="journey-cycle-header unified-timeline-summary">
                 <span class="journey-cycle-toggle">${runToggle}</span>
                 <span class="journey-cycle-label">${escapeHtml(runLabel)}</span>
                 <span class="journey-cycle-outcome ${_readOutcomeBadge(run.outcome).toneClass}">\u2014 ${escapeHtml(_readOutcomeBadge(run.outcome).label || 'In progress')}</span>
                 <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || ''))}</span>
-            </div>
+            </summary>
             <div class="journey-cycle-body${runBodyClass}" id="${runId}-body">`;
 
         const cycles = run.cycles || [];
@@ -186,9 +186,12 @@ function _renderJourneyRuns(container, allRuns) {
             const artifacts = c.artifacts || {};
             const hasArtifacts = artifacts.log_url || artifacts.pr_url || artifacts.has_review_feedback;
             const validationBadge = _renderCycleValidationBadge(c.validation, issueNum);
+            const artifactButton = hasArtifacts
+                ? `<button type="button" class="journey-cycle-artifacts-btn" onclick="event.preventDefault(); event.stopPropagation(); toggleArtifactPopover(${runIndex}, ${cycleIndex}, ${issueNum})" title="Cycle artifacts" aria-label="Open artifacts for ${escapeAttr(cycleLabel)}">\ud83d\udcce</button>`
+                : '';
 
-            html += `<div class="journey-cycle" id="${cycleId}">
-            <div class="journey-cycle-header" onclick="toggleJourneyCycle('${cycleId}')">
+            html += `<details class="journey-cycle unified-timeline-node" id="${cycleId}"${cycleExpanded ? ' open' : ''} ontoggle="syncJourneyDisclosureState(this)">
+            <summary class="journey-cycle-header unified-timeline-summary">
                 <span class="journey-cycle-toggle">${toggle}</span>
                 <span class="journey-cycle-label">${escapeHtml(cycleLabel)}</span>
                 ${agentPill}
@@ -196,8 +199,8 @@ function _renderJourneyRuns(container, allRuns) {
                 <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(cycleOutcomeBadge.label || 'In progress')}</span>
                 ${validationBadge}
                 <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || ''))}</span>
-                ${hasArtifacts ? `<span class="journey-cycle-artifacts-btn" onclick="event.stopPropagation(); toggleArtifactPopover(${runIndex}, ${cycleIndex}, ${issueNum})" title="Cycle artifacts">\ud83d\udcce</span>` : ''}
-            </div>
+                ${artifactButton}
+            </summary>
             <div class="journey-cycle-body${bodyClass}" id="${cycleId}-body">`;
 
             const phaseGroups = Array.isArray(c.phase_groups) && c.phase_groups.length > 0
@@ -260,9 +263,9 @@ function _renderJourneyRuns(container, allRuns) {
                 html += `</div>`;
             }
 
-            html += `</div></div>`;
+            html += `</div></details>`;
         }
-        html += `</div></div>`;
+        html += `</div></details>`;
     }
 
     container.innerHTML = html;
@@ -271,6 +274,19 @@ function _renderJourneyRuns(container, allRuns) {
     if (!container.dataset.journeyActionsBound) {
         container.addEventListener('click', handleTimelineEventActionsClick);
         container.dataset.journeyActionsBound = 'true';
+    }
+}
+
+function syncJourneyDisclosureState(disclosure) {
+    if (!disclosure) return;
+    if (typeof closeTimelineEventMenus === 'function') closeTimelineEventMenus();
+    const isOpen = !!disclosure.open;
+    const body = disclosure.querySelector(':scope > .journey-cycle-body');
+    const toggle = disclosure.querySelector(':scope > .journey-cycle-header .journey-cycle-toggle');
+    if (toggle) toggle.textContent = isOpen ? '\u25be' : '\u25b8';
+    if (body) {
+        if (isOpen) body.classList.remove('collapsed');
+        else body.classList.add('collapsed');
     }
 }
 
@@ -407,7 +423,7 @@ function _renderCycleValidationBadge(badge, _issueNumber) {
     const label = state === 'passed' ? '✓ Validated' : '✗ Failed';
     return `<button type="button" class="${cls}"
         data-validation-state="${escapeAttr(state)}"
-        onclick="event.stopPropagation(); _handleCycleValidationBadgeClick(this);"
+        onclick="event.preventDefault(); event.stopPropagation(); _handleCycleValidationBadgeClick(this);"
         title="Jump to validation details for this cycle">${label}</button>`;
 }
 
@@ -460,6 +476,11 @@ function toggleJourneyCycle(cycleId) {
     if (!body || !cycleNode) return;
     const header = cycleNode.querySelector(':scope > .journey-cycle-header .journey-cycle-toggle');
     const isCollapsed = body.classList.contains('collapsed');
+    if (cycleNode.tagName === 'DETAILS') {
+        cycleNode.open = isCollapsed;
+        syncJourneyDisclosureState(cycleNode);
+        return;
+    }
     body.classList.toggle('collapsed');
     if (header) header.textContent = isCollapsed ? '\u25be' : '\u25b8';
 }
