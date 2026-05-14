@@ -1,16 +1,10 @@
 # Issue-Orchestrator: Making Agentic Development Sustainable
 
-AI agents are very good at finishing tasks.
+This essay is the design backstory behind Issue-Orchestrator's enforcement model. For the concise product thesis, read [No Free Lunch for Coding Agents](../journeys/no-free-lunch.md).
 
-They are not good at maintaining systems.
+The short version: AI agents are good at finishing bounded tasks, but they are not automatically good at maintaining systems. Task completion without enforced architecture, validation, and review slowly erodes a codebase.
 
-If you give an agent a task, it will get it done. But will it be done the way a senior engineer would do it? Or will it be "done" in the narrowest possible sense — tests barely passing, architecture slightly eroded, validation bypassed because it was inconvenient?
-
-If you keep building that way, your system will eventually sink under its own weight. It becomes harder to modify, harder to reason about, less reliable. It fails not because the agents are incapable, but because nothing is enforcing discipline.
-
-I wanted something different. I wanted to be able to give my agentic helpers a list of tasks and have confidence that the system would remain well-architected, validated, and reviewable over time.
-
-Prompting wasn't enough. Exhortation wasn't enough. What I needed was enforcement.
+I wanted to be able to give my agentic helpers a list of tasks and still keep the system well-architected, validated, and reviewable over time. Prompting and exhortation were not enough. The design lesson was enforcement.
 
 ---
 
@@ -166,22 +160,8 @@ This layer is explicitly experimental and advisory. Execution remains strictly c
 
 ---
 
-## What This Is (and Isn't)
+## Relationship to the Core Thesis
 
-Issue-Orchestrator is not:
+This essay is background, not the canonical product thesis. [No Free Lunch for Coding Agents](../journeys/no-free-lunch.md) states the public contract: agents contribute work, while the system decides whether that work advances.
 
-- a prompt collection
-- an autonomous coding system
-- a replacement for human judgment
-
-It is an opinionated system that treats AI agents as powerful but fallible contributors operating inside enforced engineering constraints.
-
-There is no free lunch. Sustainable agentic development requires structure, guardrails, and human oversight.
-
----
-
-## Try It
-
-The repository is [public and evolving](../../README.md). Core orchestration and guardrails are stable; some integrations and higher-level planning layers are still being refined.
-
-If you're experimenting with AI agents on non-trivial systems, I'm happy to share more, walk through the design, or discuss tradeoffs.
+This document preserves the design path that led there: enforce architecture mechanically, make workflow deterministic, externalize task management, and leave humans with merge authority.
