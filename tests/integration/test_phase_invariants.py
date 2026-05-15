@@ -488,8 +488,9 @@ class TestDashboardRendering:
         assert response.status_code == 200
         assert "issueDetailDrawer" in response.text
         assert "issueDetailTitle" in response.text
-        assert "issueDetailFocusBtn" in response.text
-        assert "issueDetailGitHubBtn" in response.text
+        assert "issueDetailJourney" in response.text
+        assert "issueDetailFocusBtn" not in response.text
+        assert "issueDetailGitHubBtn" not in response.text
 
     def test_dashboard_api_endpoints_exist(self) -> None:
         """Dashboard API endpoints should exist."""

@@ -9,7 +9,7 @@
 // 1. ``_renderCycleValidationBadge`` produces the expected HTML for each
 //    state, including the typed-Command payload for passed/failed.
 // 2. Simulating a click on the rendered button (via
-//    ``runE2ELifecycleCommandFromButton``) dispatches the correct
+//    ``runLifecycleCommandFromButton``) dispatches the correct
 //    handler with the correct args.
 //
 // Without this test the drawer badge can render the wrong shape (or call
@@ -88,8 +88,8 @@ function _extractPayload(html) {
 test('badge passed state renders an inline-expansion button (Phase B)', () => {
     // Phase B (issue #6310 follow-up): the badge no longer carries a
     // typed-Command payload that opens a modal.  It's an in-drawer
-    // button that triggers ``_handleCycleValidationBadgeClick`` which
-    // expands the cycle's validation event row inline.  The Command
+    // button that routes through the hierarchical host capability
+    // registry to expand the cycle's validation event row inline.  The Command
     // pipeline is still used elsewhere (e.g. timeline event actions);
     // it's just no longer the badge's path.
     const { context } = loadBadgeContext();
@@ -105,8 +105,9 @@ test('badge passed state renders an inline-expansion button (Phase B)', () => {
     const html = context._renderCycleValidationBadge(badge, 4124);
     assert.match(html, /journey-cycle-validation-badge is-passed/);
     assert.match(html, /✓ Validated/);
-    assert.match(html, /_handleCycleValidationBadgeClick\(this\)/);
+    assert.match(html, /runHierarchicalTimelineHostCapability\('handleCycleValidationBadgeClick', this\)/);
     assert.match(html, /data-validation-state="passed"/);
+    assert.match(html, /data-issue-number="4124"/);
     // Modal Command payload is gone from the badge HTML.
     assert.doesNotMatch(html, /data-lifecycle-command/);
 });
@@ -125,8 +126,9 @@ test('badge failed state renders an inline-expansion button (Phase B)', () => {
     const html = context._renderCycleValidationBadge(badge, 4124);
     assert.match(html, /journey-cycle-validation-badge is-failed/);
     assert.match(html, /✗ Failed/);
-    assert.match(html, /_handleCycleValidationBadgeClick\(this\)/);
+    assert.match(html, /runHierarchicalTimelineHostCapability\('handleCycleValidationBadgeClick', this\)/);
     assert.match(html, /data-validation-state="failed"/);
+    assert.match(html, /data-issue-number="4124"/);
     assert.doesNotMatch(html, /data-lifecycle-command/);
 });
 
@@ -205,7 +207,7 @@ test('badge dispatch covers every supported lifecycle command kind', () => {
         ],
     ];
     for (const [command, expected] of cases) {
-        context.runE2ELifecycleCommand(command);
+        context.runLifecycleCommand(command);
     }
     assert.deepEqual(
         calls,
@@ -215,7 +217,7 @@ test('badge dispatch covers every supported lifecycle command kind', () => {
 
 test('badge dispatch toasts a warning for an unknown command kind', () => {
     const { context, calls, toasts } = loadBadgeContext();
-    context.runE2ELifecycleCommand({ kind: 'totally_unknown_kind', issue_number: 1 });
+    context.runLifecycleCommand({ kind: 'totally_unknown_kind', issue_number: 1 });
     assert.deepEqual(calls, []);
     assert.strictEqual(toasts.length, 1);
     assert.match(toasts[0][0], /Unsupported lifecycle command: totally_unknown_kind/);

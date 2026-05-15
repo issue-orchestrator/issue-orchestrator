@@ -116,6 +116,15 @@ class TestFilterEventsByView:
         result = _filter_events_by_view(events, "debug")
         assert len(result) == 3
 
+    def test_raw_view_includes_unregistered_view_tags(self):
+        events = [
+            {"event": "agent.coding_started", "views": ["user", "ops", "debug"]},
+            {"event": "claim.renewed", "views": ["debug"]},
+            {"event": "third.party.detail", "views": ["plugin-only"]},
+        ]
+        result = _filter_events_by_view(events, "raw")
+        assert result == events
+
     def test_ops_view_excludes_debug_only(self):
         events = [
             {"event": "agent.coding_started", "views": ["user", "ops", "debug"]},
@@ -419,6 +428,29 @@ class TestViewModelViewFiltering:
             view="ops",
         )
         assert result["view"] == "ops"
+
+    def test_raw_view_payload_uses_raw_event_source(self):
+        semantic_events = self._make_events()
+        raw_events = [
+            {
+                "event": "trace.noisy_internal",
+                "timestamp": "2026-03-07T10:09:00Z",
+                "views": ["plugin-only"],
+            },
+            *semantic_events,
+        ]
+        result = build_issue_detail_view_model(
+            issue_number=42,
+            title="Test",
+            issue_url="https://github.com/test/42",
+            events=semantic_events,
+            phase_toc=[],
+            cycles=[],
+            view="raw",
+            raw_events=raw_events,
+        )
+        assert result["events"] == raw_events
+        assert result["raw_events_count"] == len(raw_events)
 
     def test_narrative_from_registry_used_in_steps(self):
         events = self._make_events()

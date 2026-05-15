@@ -1196,6 +1196,21 @@ class TestE2ERunDetailEndpoint:
                 "Debug view must show both issues — got "
                 f"{_nums(debug_test_started)}"
             )
+
+            # Raw view: the issue affordance owner treats raw as unfiltered
+            # event access, so all issues with in-window events attach.
+            raw_response = client.get(
+                f"/api/e2e-run-detail/{run_id}", params={"view": "raw"},
+            )
+            assert raw_response.status_code == 200
+            raw_test_started = next(
+                e for e in raw_response.json()["events"]
+                if e.get("event") == "e2e.test_started"
+            )
+            assert _nums(raw_test_started) == [5705, 5707], (
+                "Raw view must show both issues — got "
+                f"{_nums(raw_test_started)}"
+            )
         finally:
             set_orchestrator(None)
 

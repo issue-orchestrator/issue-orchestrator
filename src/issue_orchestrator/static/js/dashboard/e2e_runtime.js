@@ -69,7 +69,7 @@ function showLatestE2ERunResults() {
     // PR #6329 reviewer Blocker 2: route through the typed Command
     // pipeline.  Single owner for "open E2E run" navigation across
     // every entry point.
-    return runE2ELifecycleCommand({
+    return runLifecycleCommand({
         kind: 'open_e2e_run',
         label: 'Open E2E Run',
         run_id: runId,
@@ -84,7 +84,7 @@ function showE2ERunResultsById(rawRunId) {
         return;
     }
     // PR #6329 reviewer Blocker 2: route through the typed Command.
-    return runE2ELifecycleCommand({
+    return runLifecycleCommand({
         kind: 'open_e2e_run',
         label: 'Open E2E Run',
         run_id: runId,
@@ -704,7 +704,7 @@ async function diagnoseCurrentTest() {
     // ``expandE2ERunRow``, which expands the matching row in the
     // inline runs list and mounts the canonical viewer body inline.
     closeTestFailureModal();
-    runE2ELifecycleCommand({
+    runLifecycleCommand({
         kind: 'open_e2e_run',
         label: 'Open E2E Run',
         run_id: Number(e2eLastRun.id),

@@ -358,25 +358,21 @@
 
     <aside class="issue-detail-drawer" id="issueDetailDrawer" role="dialog" aria-modal="true" aria-labelledby="issueDetailTitle" aria-hidden="true" tabindex="-1">
         <div class="issue-detail-header">
-            <h2 id="issueDetailTitle">Issue Detail</h2>
+            <div class="issue-detail-heading">
+                <h2 id="issueDetailTitle">Issue Detail</h2>
+                <div class="issue-detail-status" id="issueDetailStatus">Loading issue detail...</div>
+            </div>
             <button class="modal-close" id="issueDetailCloseBtn" onclick="closeIssueDetail()" aria-label="Close issue detail">&times;</button>
         </div>
-        <div class="issue-detail-actions">
+        <div class="issue-detail-actions" id="issueDetailActions" style="display:none;">
             <button class="issue-action-btn" id="issueDetailUnblockBtn" style="display:none;" onclick="unblockFromDrawer()">Unblock</button>
             <button class="issue-action-btn" id="issueDetailRetryPublishBtn" style="display:none;">Retry Publish</button>
-            <button class="issue-action-btn" id="issueDetailFocusBtn">Focus</button>
-            <a class="issue-action-btn" id="issueDetailGitHubBtn" href="#" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
         </div>
-        <div class="issue-detail-status" id="issueDetailStatus"></div>
-        <h3 class="issue-detail-section-title" id="issueDetailTimelineHeading" tabindex="-1">Timeline</h3>
-        <div class="issue-detail-journey" id="issueDetailJourney"></div>
+        <h3 class="issue-detail-section-title visually-hidden" id="issueDetailTimelineHeading">Timeline</h3>
+        <div class="issue-detail-journey" id="issueDetailJourney" tabindex="-1" aria-labelledby="issueDetailTimelineHeading"></div>
         <details class="issue-detail-section" id="issueDetailPrevCycles" style="display:none;">
             <summary id="issueDetailPrevCyclesSummary">Previous runs</summary>
             <div id="issueDetailPrevCyclesBody"></div>
-        </details>
-        <details class="issue-detail-section" id="issueDetailRawEvents">
-            <summary id="issueDetailRawEventsSummary">Raw events</summary>
-            <div id="issueDetailRawEventsBody"></div>
         </details>
     </aside>
 

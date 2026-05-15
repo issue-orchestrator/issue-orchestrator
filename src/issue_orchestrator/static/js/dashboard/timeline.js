@@ -110,10 +110,15 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
     if (detailIds.length > 0) {
         container.dataset.timelineDetailIds = detailIds.join(' ');
     }
-    if (!container.dataset.timelineBound) {
-        container.addEventListener('click', handleTimelineEventActionsClick);
-        container.dataset.timelineBound = 'true';
-    }
+    bindTimelineEventActions(container);
+}
+
+function bindTimelineEventActions(container) {
+    if (!container || typeof container.addEventListener !== 'function') return;
+    if (!container.dataset) container.dataset = {};
+    if (container.dataset.timelineActionsBound === '1') return;
+    container.addEventListener('click', handleTimelineEventActionsClick);
+    container.dataset.timelineActionsBound = '1';
 }
 
 function handleTimelineEventActionsClick(event) {

@@ -22,12 +22,12 @@ function loadE2ERuntime(overrides = {}) {
         showToast: (message, severity) => toasts.push([String(message), severity]),
         // PR #6329 reviewer Blocker 2: ``showLatestE2ERunResults``,
         // ``showE2ERunResultsById``, and ``showE2ERunDetails`` route
-        // through the typed Command pipeline (``runE2ELifecycleCommand``),
+        // through the typed Command pipeline (``runLifecycleCommand``),
         // not directly through ``showUnifiedRunView``.  Tests now
         // record the Command that was dispatched, then the stub
         // forwards to ``showUnifiedRunView`` so the recorded chain
         // matches what the real dispatcher does.
-        runE2ELifecycleCommand: (command) => {
+        runLifecycleCommand: (command) => {
             calls.push(['run_e2e_lifecycle_command', command]);
             if (command && command.kind === 'open_e2e_run' && command.run_id) {
                 calls.push(['show_unified_run_view', command.run_id]);

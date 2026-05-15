@@ -1073,7 +1073,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # typed-Command pipeline.  Each button must carry a
     # ``data-lifecycle-command`` attribute with the right typed shape.
     # Without that, the click would not dispatch through the
-    # ``runE2ELifecycleCommand`` owner.
+    # ``runLifecycleCommand`` owner.
     for issue_number in expected_run_level_issues:
         button = run_level_affordances.locator(
             ".e2e-issue-timeline-btn",
@@ -1364,60 +1364,29 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
         f"drawer showing failure state: {status_text!r}"
     )
 
-    # --- Focus button → #timelineModal stacks ABOVE the drawer ---
-    # The Focus button in the drawer header opens a separate
-    # #timelineModal (class .modal-overlay) via openTimelineModal.
-    # This is a DIFFERENT element from #modalOverlay, and a regression
-    # in the CSS stacking rule would leave it rendering behind the
-    # drawer. We assert the modal (a) becomes visible, (b) is
-    # hit-testable at its own center (nothing is covering it), and
-    # (c) can be dismissed without also dismissing the drawer.
-    focus_btn = page.locator("#issueDetailFocusBtn")
-    _dom_click_hit_tested(focus_btn, "issue detail focus button")
-
-    timeline_modal = page.locator("#timelineModal.visible")
-    expect(timeline_modal).to_be_visible(timeout=5000)
-    expect(page.locator("#timelineModalTitle")).to_contain_text(
-        f"Timeline #{TEST_CLICK_ISSUE_NUMBER}"
+    # The drawer no longer carries ambiguous Focus/GitHub issue-level
+    # actions; timeline density is selected through the grouped chips.
+    expect(page.locator("#issueDetailFocusBtn")).to_have_count(0)
+    expect(page.locator("#issueDetailGitHubBtn")).to_have_count(0)
+    expect(page.locator('#issueDetailDrawer [role="radiogroup"]')).to_have_count(0)
+    expect(page.locator('#issueDetailDrawer [role="radio"]')).to_have_count(0)
+    expect(page.locator("#issueDetailDrawer .journey-filter-group").first).to_be_visible()
+    raw_events_btn = page.locator(
+        "#issueDetailDrawer button",
+        has_text="Raw events",
     )
-
-    # Hit-test: the element at the modal's geometric center must be
-    # inside #timelineModal, not inside #issueDetailDrawer. If the
-    # drawer stacks above the modal, document.elementFromPoint() at
-    # the modal center returns something inside the drawer.
-    hit_result = page.evaluate(
-        """
-        (() => {
-            const m = document.getElementById('timelineModal');
-            if (!m) return { error: 'no-modal' };
-            const r = m.getBoundingClientRect();
-            const cx = r.left + r.width / 2;
-            const cy = r.top + r.height / 2;
-            const el = document.elementFromPoint(cx, cy);
-            if (!el) return { error: 'no-element' };
-            const inModal = !!el.closest('#timelineModal');
-            const inDrawer = !!el.closest('#issueDetailDrawer');
-            return { tag: el.tagName, inModal, inDrawer };
-        })()
-        """
+    _dom_click_hit_tested(raw_events_btn, "issue detail raw events view")
+    expect(raw_events_btn).to_have_attribute("aria-pressed", "true")
+    expect(page.locator("#issueDetailDrawer .journey-raw-event").first).to_be_visible(
+        timeout=5000
     )
-    assert hit_result.get("inModal"), (
-        f"#timelineModal is not hit-testable at its center — the drawer "
-        f"or another element is covering it: {hit_result!r}"
+    story_btn = page.locator(
+        "#issueDetailDrawer button",
+        has_text="Story",
     )
-    assert not hit_result.get("inDrawer"), (
-        f"drawer is intercepting clicks meant for #timelineModal: {hit_result!r}"
-    )
-
-    # Dismiss the timeline modal via its close button and verify the
-    # drawer is still visible underneath (closing the modal must not
-    # close the drawer).
-    _dom_click_hit_tested(
-        page.locator("#timelineModal .modal-close").first,
-        "timeline modal close button",
-    )
-    expect(page.locator("#timelineModal.visible")).to_have_count(0, timeout=5000)
-    expect(page.locator("#issueDetailDrawer.visible")).to_have_count(1)
+    _dom_click_hit_tested(story_btn, "issue detail story view")
+    expect(story_btn).to_have_attribute("aria-pressed", "true")
+    expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
 
     # --- Session Recording click-through ---
     # The fixture stager wired one agent.coding_started event for
@@ -2111,7 +2080,7 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
 
     # E2E click-through proof (piggybacks on the existing run-modal
     # test): stub ``fetch`` and prove the inline expander's
-    # ``runE2ELifecycleCommandFromToggle`` dispatch lands on the
+    # ``runLifecycleCommandFromToggle`` dispatch lands on the
     # ops-view issue-detail URL.  Catches a regression where the
     # markup is right but the dispatcher's branch breaks.
     page.evaluate(

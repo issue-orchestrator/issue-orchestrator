@@ -14,7 +14,7 @@
 // the rendered ``<details>`` carries a typed
 // ``data-lifecycle-command`` JSON payload (the
 // ``OpenInlineAgentAttemptsCommand`` Pydantic shape) and an
-// ``ontoggle="runE2ELifecycleCommandFromToggle(this)"`` hook.  The
+// ``ontoggle="runLifecycleCommandFromToggle(this)"`` hook.  The
 // shared dispatcher routes ``open_inline_agent_attempts`` to
 // ``loadInlineAgentAttempts(issueNumber, triggerEl)`` defined here.
 //
@@ -25,13 +25,10 @@
 // and nothing else — the plugin guards on
 // ``typeof renderInlineAgentAttemptsExpander === 'function'``.
 //
-// Vocabulary (locked in issue #6322):
-//   * The backend payload still names the orchestrator-session
-//     ``run`` (a JourneyRunPayload).  The view-model rename to
-//     ``attempt`` is a follow-up; for now the rendering layer
-//     translates: ``runs[N]`` → ``Attempt N``.
-//   * Cycle is unchanged.
-//   * Events are NOT rendered inline yet — v1 stops at Cycle.
+// The Attempts → Cycles → Events body uses ``renderIssueLifecycleTimeline``
+// from the ``io.agent-context`` plugin.  The dashboard issue drawer uses the
+// same plugin renderer for its primary timeline, so the E2E plugin and
+// dashboard timeline share the run/cycle/event display instead of drifting.
 
 (function () {
     if (typeof window === 'undefined') return;
@@ -63,104 +60,45 @@
         return promise;
     }
 
-    function _renderAttempts(detail) {
+    function _renderAttempts(detail, issueNumber) {
         const runs = Array.isArray(detail && detail.runs) ? detail.runs : [];
         if (runs.length === 0) {
             return '<div class="agent-context-empty">No agent attempts recorded for this issue.</div>';
         }
+        if (typeof renderIssueLifecycleTimeline !== 'function') {
+            return '<div class="agent-context-error">Issue lifecycle renderer is unavailable.</div>';
+        }
         // Render newest-first.  Each ``run`` becomes an Attempt.
         const reversed = [...runs].reverse();
-        let html = '<div class="agent-context-attempts">';
-        for (let i = 0; i < reversed.length; i++) {
-            const run = reversed[i];
-            const attemptIdx = reversed.length - i;  // human-readable: 1 = oldest, N = newest
-            html += _renderAttemptRow(run, attemptIdx);
-        }
-        html += '</div>';
-        return html;
+        return renderIssueLifecycleTimeline(reversed, {
+            baseId: `agent-context-issue-${issueNumber}`,
+            issueNumber,
+            listClassName: 'agent-context-attempts',
+            showToneIcon: true,
+            runLabel: (run, ctx) => {
+                const attemptIdx = reversed.length - ctx.runIndex;  // human-readable: 1 = oldest, N = newest
+                const resetSuffix = run && run.reset_from_scratch ? ' (reset)' : '';
+                return `Attempt ${attemptIdx}${resetSuffix}`;
+            },
+            runMeta: (run) => {
+                const cycles = Array.isArray(run && run.cycles) ? run.cycles : [];
+                return `<span class="agent-context-attempt-meta">${cycles.length} cycle${cycles.length === 1 ? '' : 's'}</span>`;
+            },
+            renderCycleSummaryExtras: (cycle) => {
+                const validation = cycle && cycle.validation && typeof cycle.validation === 'object'
+                    ? String(cycle.validation.state || '')
+                    : '';
+                return validation
+                    ? `<span class="agent-context-cycle-meta">validation: ${escapeHtml(validation)}</span>`
+                    : '';
+            },
+        });
     }
 
-    function _renderAttemptRow(run, attemptIdx) {
-        const cycles = Array.isArray(run && run.cycles) ? run.cycles : [];
-        // Path B (PR #6333): outcome is a typed ``OutcomeBadge``
-        // ``{label, tone}``.  The projection layer owns tone
-        // classification; the UI just reads ``.tone`` to pick its
-        // visual treatment.  No string-matching, no green-by-default
-        // for unknown labels.
-        const outcome = _outcomeBadge(run && run.outcome);
-        const reworkSuffix = run && run.reset_from_scratch ? ' (reset)' : '';
-        const summaryParts = [
-            `${cycles.length} cycle${cycles.length === 1 ? '' : 's'}`,
-            `final: ${escapeHtml(outcome.label)}`,
-        ];
-        let html = `<details class="agent-context-attempt">`;
-        html += `<summary><span class="caret">▸</span>`;
-        html += `<span class="cvv-ico cvv-ico-${outcome.tone}">${_toneGlyph(outcome.tone)}</span>`;
-        html += `<span class="agent-context-attempt-title">Attempt ${attemptIdx}${reworkSuffix}</span>`;
-        html += `<span class="agent-context-attempt-meta">${summaryParts.join(' · ')}</span>`;
-        html += `</summary>`;
-        html += `<div class="agent-context-attempt-body">`;
-        if (cycles.length === 0) {
-            html += '<div class="agent-context-empty">No cycles in this attempt.</div>';
-        } else {
-            for (const cycle of cycles) {
-                html += _renderCycleRow(cycle);
-            }
-        }
-        html += '</div></details>';
-        return html;
-    }
-
-    function _renderCycleRow(cycle) {
-        const cycleNumber = (cycle && typeof cycle.cycle_number === 'number') ? cycle.cycle_number : '?';
-        const cycleLabel = cycle && typeof cycle.cycle_label === 'string' && cycle.cycle_label
-            ? String(cycle.cycle_label)
-            : `Cycle ${cycleNumber}`;
-        const outcome = _outcomeBadge(cycle && cycle.outcome);
-        const validation = cycle && cycle.validation && typeof cycle.validation === 'object'
-            ? String(cycle.validation.state || '')
-            : '';
-        const parts = [`outcome: ${escapeHtml(outcome.label)}`];
-        if (validation) parts.push(`validation: ${escapeHtml(validation)}`);
-        return (
-            `<div class="agent-context-cycle">` +
-            `<span class="cvv-ico cvv-ico-${outcome.tone}">${_toneGlyph(outcome.tone)}</span>` +
-            `<span class="agent-context-cycle-title">${escapeHtml(cycleLabel)}</span>` +
-            `<span class="agent-context-cycle-meta">${parts.join(' · ')}</span>` +
-            `</div>`
-        );
-    }
-
-    // Outcome reader: the backend ships ``OutcomeBadge {label, tone}``.
-    // Defensive normalization for malformed/legacy shapes — never
-    // silently render "?" as green.
-    function _outcomeBadge(value) {
-        if (value && typeof value === 'object' && typeof value.label === 'string') {
-            const tone = _knownTone(value.tone) ? value.tone : 'neutral';
-            return { label: value.label, tone };
-        }
-        // Defensive fallback for a malformed payload — neutral, not
-        // passed.  Path B's whole point: unknown ≠ success.
-        return { label: String(value == null ? '' : value) || 'unknown', tone: 'neutral' };
-    }
-
-    function _knownTone(t) {
-        return t === 'passed' || t === 'failed' || t === 'error'
-            || t === 'in_progress' || t === 'neutral';
-    }
-
-    function _toneGlyph(tone) {
-        if (tone === 'failed') return '✕';
-        if (tone === 'error') return '⚠';
-        if (tone === 'in_progress') return '…';
-        if (tone === 'neutral') return '·';
-        return '✓';
-    }
-
-    // Typed-Command handler.  Dispatched by ``runE2ELifecycleCommand``
+    // Typed-Command handler.  Dispatched by ``runLifecycleCommand``
     // when ``kind === 'open_inline_agent_attempts'``.  Pre-conditions
     // (open + ``dataset.loaded !== '1'``) are enforced upstream by
-    // ``runE2ELifecycleCommandFromToggle``, but we re-check
+    // ``runLifecycleCommandFromToggle``, but we re-check
     // ``detailsEl`` defensively so a programmatic dispatcher call
     // doesn't crash on a stale element.
     function loadInlineAgentAttempts(issueNumber, detailsEl) {
@@ -173,7 +111,7 @@
         body.innerHTML = '<div class="agent-context-loading">Loading agent attempts…</div>';
         _fetchIssueDetailOnce(n)
             .then((detail) => {
-                body.innerHTML = _renderAttempts(detail);
+                body.innerHTML = _renderAttempts(detail, n);
             })
             .catch((err) => {
                 // Reset loaded flag so the user can retry by closing
@@ -188,7 +126,7 @@
         const n = Number(issueNumber);
         if (!Number.isInteger(n) || n <= 0) return '';
         // Typed Command (``OpenInlineAgentAttemptsCommand``) on the
-        // ``<details>`` itself.  ``runE2ELifecycleCommandFromToggle``
+        // ``<details>`` itself.  ``runLifecycleCommandFromToggle``
         // reads ``data-lifecycle-command`` on toggle, JSON-parses,
         // and routes through the shared dispatcher.
         const command = {
@@ -202,7 +140,7 @@
             `data-issue-number="${n}" ` +
             `data-loaded="" ` +
             `data-lifecycle-command="${payload}" ` +
-            `ontoggle="runE2ELifecycleCommandFromToggle(this)">` +
+            `ontoggle="runLifecycleCommandFromToggle(this)">` +
             `<summary><span class="caret">▸</span>` +
             `<span class="agent-context-attempts-title">Attempts on issue #${n}</span>` +
             `</summary>` +
@@ -223,5 +161,5 @@
     // exposed them as test-only globals; in practice no test uses
     // them, and test-only globals expand the UI's public API
     // surface for no value.  Tests drive the typed-Command
-    // dispatcher (``runE2ELifecycleCommandFromToggle``) instead.
+    // dispatcher (``runLifecycleCommandFromToggle``) instead.
 })();

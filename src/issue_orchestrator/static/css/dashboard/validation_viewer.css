@@ -398,13 +398,39 @@ details.cvv-triage-card[open] > summary.cvv-triage-head > .cvv-caret {
 .journey-step.journey-step-validation > .journey-step-row {
     display: flex;
     align-items: flex-start;
-    padding: 6px 8px;
-    cursor: pointer;
+    gap: 6px;
+    padding: 0;
     border-radius: 4px;
+}
+.journey-step-inline-toggle {
+    display: flex;
+    align-items: flex-start;
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
     user-select: none;
 }
-.journey-step.journey-step-validation > .journey-step-row:hover {
+.journey-step-inline-toggle:hover {
     background: #f6f8fa;
+}
+.journey-step-inline-toggle:focus-visible {
+    outline: 2px solid #3870e0;
+    outline-offset: 2px;
+}
+.journey-step-inline-toggle .journey-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.journey-step-inline-actions {
+    flex: 0 0 auto;
+    padding: 6px 8px 6px 0;
 }
 .journey-step.journey-step-validation > .journey-step-row .journey-step-caret {
     width: 14px;

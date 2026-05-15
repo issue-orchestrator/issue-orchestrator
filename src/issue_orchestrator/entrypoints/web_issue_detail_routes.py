@@ -44,7 +44,7 @@ from .web_session_context import (
 logger = logging.getLogger(__name__)
 
 web_issue_detail_router = APIRouter()
-_VALID_DETAIL_VIEWS = {"user", "ops", "debug"}
+_VALID_DETAIL_VIEWS = {"user", "ops", "debug", "raw"}
 
 
 class E2ERunDatabaseNotFoundError(FileNotFoundError):
@@ -530,6 +530,7 @@ async def get_issue_detail(
         cycles=cycles,
         context=_build_issue_story_context(orchestrator, issue_number),
         view=_normalize_detail_view(view),
+        raw_events=raw_events,
     )
     payload = _finalize_issue_detail_payload(
         orchestrator=orchestrator,
@@ -659,6 +660,7 @@ async def get_e2e_run_detail(
         cycles=_build_timeline_cycles(events),
         context=None,
         view=matcher_view,
+        raw_events=raw_events,
     )
     payload["issue_affordances"] = collect_issue_affordances(
         agent_events,
@@ -898,6 +900,7 @@ async def get_e2e_issue_detail(
         cycles=_build_timeline_cycles(events),
         context=None,
         view=_normalize_detail_view(view),
+        raw_events=raw_events,
     )
     payload = _finalize_issue_detail_payload(
         orchestrator=orchestrator,

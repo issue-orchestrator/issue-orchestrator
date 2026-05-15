@@ -12,7 +12,7 @@
 //      cache, the loaded marker, and the error path.
 //
 //   C. Dispatcher: the toggle helper +
-//      ``runE2ELifecycleCommandFromToggle`` route the
+//      ``runLifecycleCommandFromToggle`` route the
 //      ``open_inline_agent_attempts`` Command from the rendered
 //      attribute to ``loadInlineAgentAttempts`` with the trigger
 //      element forwarded — same single-owner pipeline as every other
@@ -50,6 +50,12 @@ function _baseStubs() {
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
         _humanizeSnakeCase: (s) => String(s || ''),
         showToast: () => {},
+        renderTimelineEventActions: (actions) => {
+            const items = (Array.isArray(actions) ? actions : [])
+                .map((action) => `<button class="timeline-action-btn" data-action="${JSON.stringify(action).replace(/"/g, '&quot;')}">${action.type}</button>`)
+                .join('');
+            return items ? `<div class="timeline-event-actions">${items}</div>` : '';
+        },
     };
 }
 
@@ -58,9 +64,20 @@ function _loadInlineModule(extra = {}) {
     ctx.window = ctx;  // module assigns to ``window.foo`` — alias
     vm.createContext(ctx);
     vm.runInContext(
+        fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'hierarchical_timeline.js'), 'utf8'),
+        ctx,
+        { filename: 'hierarchical_timeline.js' },
+    );
+    ctx.registerHierarchicalTimelineHostCapability('renderEventActions', () => ctx.renderTimelineEventActions);
+    vm.runInContext(
         fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'inline_agent_attempts.js'), 'utf8'),
         ctx,
         { filename: 'inline_agent_attempts.js' },
+    );
+    vm.runInContext(
+        fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'plugins/agent_context.js'), 'utf8'),
+        ctx,
+        { filename: 'plugins/agent_context.js' },
     );
     return ctx;
 }
@@ -117,7 +134,7 @@ test('expander shell: typed-Command JSON sits on the <details> with the right sh
     // Typed-Command pipeline: ontoggle dispatches through the shared
     // owner, NOT a bespoke per-element handler.
     assert.ok(
-        html.includes('ontoggle="runE2ELifecycleCommandFromToggle(this)"'),
+        html.includes('ontoggle="runLifecycleCommandFromToggle(this)"'),
         'expander must dispatch via the shared lifecycle Command pipeline',
     );
     assert.ok(
@@ -195,9 +212,57 @@ test('loader: lazy-fetches /api/issue-detail on first call and populates body', 
         `expected 'Attempt 1' in body, got: ${body.innerHTML.slice(0, 300)}`);
     assert.ok(body.innerHTML.includes('Cycle 1'));
     assert.ok(body.innerHTML.includes('Cycle 2 (rework)'));
-    assert.ok(body.innerHTML.includes('outcome: failed'));
     assert.ok(body.innerHTML.includes('validation: failed'));
+    assert.ok(body.innerHTML.includes('journey-cycle unified-timeline-node'));
     assert.strictEqual(detailsEl.dataset.loaded, '1');
+});
+
+test('loader: shared lifecycle renderer preserves step action menus and validation expansion hosts', async () => {
+    const payload = {
+        runs: [{
+            outcome: _ob('failed', 'failed'),
+            run_number: 1,
+            cycles: [{
+                cycle_number: 1,
+                outcome: _ob('failed', 'failed'),
+                phase_groups: [{
+                    key: 'coding',
+                    label: 'Coding',
+                    steps: [
+                        {
+                            event: 'session.started',
+                            narrative: 'Coding session started',
+                            actions: [
+                                { type: 'open_agent_log', issue_number: 4503, run_dir: '/tmp/run', label: 'View Coding Session Recording' },
+                                { type: 'open_review_transcript', issue_number: 4503, run_dir: '/tmp/run', label: 'Review Transcript' },
+                            ],
+                        },
+                        {
+                            event: 'validation.failed',
+                            narrative: 'Validation failed',
+                            run_dir: '/tmp/run',
+                            actions: [
+                                { type: 'open_validation_failure', issue_number: 4503, run_dir: '/tmp/run', label: 'Validation Details' },
+                                { type: 'open_agent_log', issue_number: 4503, run_dir: '/tmp/run', label: 'View Coding Session Recording' },
+                            ],
+                        },
+                    ],
+                }],
+            }],
+        }],
+    };
+    const { ctx } = _ctxWithFetch(payload);
+    const body = _fakeBody();
+    ctx.loadInlineAgentAttempts(4503, _fakeDetailsEl(4503, body));
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.ok(body.innerHTML.includes('timeline-event-actions'), 'session/review actions must render as row actions');
+    assert.ok(body.innerHTML.includes('open_agent_log'), 'session log action must survive in the shared renderer');
+    assert.ok(body.innerHTML.includes('open_review_transcript'), 'review transcript menu action must survive');
+    assert.ok(body.innerHTML.includes('journey-step-validation-body'), 'validation rows must host inline JUnit detail');
+    assert.ok(body.innerHTML.includes('toggleValidationEventInline'), 'validation row must lazy-load canonical JUnit output');
+    assert.ok(!body.innerHTML.includes('open_validation_failure'), 'validation modal action is filtered when the row owns JUnit expansion');
 });
 
 test('loader: cache shared across calls for the same issue', async () => {
@@ -299,7 +364,7 @@ test('per-tone: malformed payload (bare string outcome from stale producer) → 
     // Pre-Path-B contract: outcome was a bare string and the JS
     // classifier returned ``passed`` for anything it didn't
     // recognize.  This was the exact bug the reviewer caught.  The
-    // defensive ``_outcomeBadge`` reader on the JS side returns
+    // shared lifecycle badge reader on the JS side returns
     // ``neutral`` for any non-typed-shape outcome so a stale
     // backend can't silently render its raw label as green.
     assert.strictEqual(await _renderedToneFor('Changes Requested'), 'neutral');
@@ -321,7 +386,7 @@ test('per-tone: unknown-but-typed payload (tone "neutral" from projection) → n
 
 // ── Layer C: typed-Command dispatch through the shared owner ─────
 
-test('dispatcher: runE2ELifecycleCommandFromToggle reads typed JSON, dispatches to loadInlineAgentAttempts', async () => {
+test('dispatcher: runLifecycleCommandFromToggle reads typed JSON, dispatches to loadInlineAgentAttempts', async () => {
     const calls = { fetch: [], load: [] };
     const ctx = _loadInlinePlusDispatcher({
         fetch: (url) => {
@@ -335,7 +400,7 @@ test('dispatcher: runE2ELifecycleCommandFromToggle reads typed JSON, dispatches 
     });
     const body = _fakeBody();
     const detailsEl = _fakeDetailsEl(7777, body);
-    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    ctx.runLifecycleCommandFromToggle(detailsEl);
     // Single-owner contract: the dispatcher routed the typed
     // ``open_inline_agent_attempts`` Command to the loader, which
     // hit the lazy-fetch URL for issue 7777.
@@ -352,7 +417,7 @@ test('dispatcher: closed details is a no-op (no fetch)', () => {
         },
     });
     const detailsEl = _fakeDetailsEl(7, _fakeBody(), { open: false });
-    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    ctx.runLifecycleCommandFromToggle(detailsEl);
     assert.deepStrictEqual(calls.fetch, [], 'closed details must NOT trigger a fetch');
 });
 
@@ -365,7 +430,7 @@ test('dispatcher: re-toggle after load (dataset.loaded="1") short-circuits, no r
         },
     });
     const detailsEl = _fakeDetailsEl(42, _fakeBody(), { loaded: '1' });
-    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    ctx.runLifecycleCommandFromToggle(detailsEl);
     assert.deepStrictEqual(calls.fetch, []);
 });
 
@@ -392,7 +457,7 @@ test('dispatcher: round-trip — render → extract Command → toggle → fetch
         dataset: { issueNumber: '8888', loaded: '', lifecycleCommand: cmdJson },
         querySelector: (sel) => (sel === '.agent-context-attempts-body' ? body : null),
     };
-    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    ctx.runLifecycleCommandFromToggle(detailsEl);
     assert.deepStrictEqual(calls.fetch, ['/api/issue-detail/8888?view=ops']);
 });
 
@@ -402,7 +467,7 @@ test('dispatcher: unknown kind falls through to a warning toast (no crash)', () 
         fetch: () => Promise.reject(new Error('should not be reached')),
         showToast: (msg, severity) => toasts.push([msg, severity]),
     });
-    ctx.runE2ELifecycleCommand({ kind: 'not_a_real_command' });
+    ctx.runLifecycleCommand({ kind: 'not_a_real_command' });
     assert.strictEqual(toasts.length, 1);
     assert.match(toasts[0][0], /Unsupported lifecycle command/);
     assert.strictEqual(toasts[0][1], 'warning');

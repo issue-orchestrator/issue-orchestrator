@@ -263,6 +263,10 @@ async function openValidationFailure(issueNumber, runDir = null, mode = 'modal')
     // wires the delegated keydown handler.
     const dialogCvv = document.querySelector('#modalBody .cvv-root');
     if (dialogCvv) enhanceCanonicalValidationViewerAccessibility(dialogCvv);
+    const dialogBody = document.getElementById('modalBody');
+    if (dialogBody && typeof bindTimelineEventActions === 'function') {
+        bindTimelineEventActions(dialogBody);
+    }
 }
 
 function renderValidationFailureChips(status, failedTests, stdoutExcerpt, stderrExcerpt, actionSections) {
@@ -577,7 +581,7 @@ async function handleClick(row) {
     // ``open_e2e_run`` so there's a single owner — no parallel
     // direct ``showUnifiedRunView()`` calls bypassing the dispatcher.
     if (isE2e && e2eRunId) {
-        runE2ELifecycleCommand({
+        runLifecycleCommand({
             kind: 'open_e2e_run',
             label: 'Open E2E Run',
             run_id: parseInt(e2eRunId, 10),

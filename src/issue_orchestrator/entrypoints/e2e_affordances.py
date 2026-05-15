@@ -152,6 +152,9 @@ def _issues_visible_in_view(
             continue
         if issue_num in visible:
             continue
+        if view == "raw":
+            visible.add(issue_num)
+            continue
         views = evt.get("views")
         if views is None or (isinstance(views, list) and view in views):
             visible.add(issue_num)

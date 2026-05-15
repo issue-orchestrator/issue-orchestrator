@@ -73,6 +73,12 @@
     padding: 10px 12px;
     border-bottom: 1px solid var(--border);
 }
+.issue-detail-heading {
+    min-width: 0;
+}
+.issue-detail-heading h2 {
+    margin: 0;
+}
 .issue-detail-actions {
     display: flex;
     flex-wrap: wrap;
@@ -80,19 +86,33 @@
     padding: 10px 12px;
     border-bottom: 1px solid var(--border);
 }
+.issue-detail-actions:empty {
+    display: none;
+}
 /* Issue story: status explanation */
 .issue-detail-status {
-    padding: 12px;
-    border-bottom: 1px solid var(--border);
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text);
-    border-left: 3px solid transparent;
+    padding: 2px 0 0;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-muted);
+    line-height: 1.35;
 }
-.issue-detail-status.status-running { border-left-color: var(--accent, #4a9eff); }
-.issue-detail-status.status-blocked { border-left-color: var(--danger, #e55); }
-.issue-detail-status.status-done { border-left-color: var(--success, #5a5); }
-.issue-detail-status.status-queued { border-left-color: var(--text-muted, #888); }
+.issue-detail-status.status-running,
+.issue-detail-status.status-blocked,
+.issue-detail-status.status-done,
+.issue-detail-status.status-queued { color: var(--text-muted); }
+
+.visually-hidden {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+}
 
 .issue-detail-section-title {
     font-size: 11px;
@@ -114,6 +134,10 @@
     padding: 10px 12px;
     overflow: auto;
     flex: 1;
+}
+.issue-detail-journey:focus-visible {
+    outline: 2px solid var(--accent, #4a9eff);
+    outline-offset: -2px;
 }
 .journey-step {
     display: grid;
@@ -179,8 +203,18 @@
 .journey-empty { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
 .journey-filter {
     display: flex;
+    align-items: center;
     gap: 4px;
     padding: 4px 0 8px;
+}
+.journey-filter-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-panel);
 }
 .journey-filter-btn {
     background: transparent;
@@ -190,6 +224,9 @@
     padding: 2px 10px;
     font-size: 11px;
     cursor: pointer;
+}
+.journey-filter-group .journey-filter-btn {
+    border-color: transparent;
 }
 .journey-filter-btn.active {
     background: var(--accent, #4a9eff);
@@ -203,6 +240,30 @@
     background: var(--border);
     margin: 2px 4px;
 }
+.journey-raw-events {
+    display: grid;
+    gap: 8px;
+    padding-top: 4px;
+}
+.journey-raw-event {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 7px 8px;
+    background: var(--bg-panel);
+}
+.journey-raw-event-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.journey-raw-event-meta,
+.journey-raw-event-summary {
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-top: 3px;
+}
 .journey-day-header {
     font-size: 11px;
     font-weight: 600;
@@ -212,7 +273,8 @@
     letter-spacing: 0.05em;
 }
 
-/* Journey cycles — collapsible groups */
+/* Journey cycles — native disclosure rows shared with the E2E hierarchy. */
+.journey-run,
 .journey-cycle { margin-bottom: 2px; position: relative; }
 .journey-cycle-header {
     display: flex;
@@ -222,8 +284,16 @@
     cursor: pointer;
     border-radius: 4px;
     position: relative;
+    list-style: none;
 }
+.journey-cycle-header::-webkit-details-marker { display: none; }
 .journey-cycle-header:hover { background: rgba(128,128,128,0.08); }
+.journey-cycle-header:focus-visible {
+    outline: 2px solid var(--accent, #4a9eff);
+    outline-offset: 2px;
+}
+.hierarchical-timeline-caret::before { content: "▸"; }
+details[open] > summary .hierarchical-timeline-caret::before { content: "▾"; }
 .journey-cycle-toggle { width: 12px; font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
 .journey-cycle-label { font-size: 12px; font-weight: 500; white-space: nowrap; }
 .journey-cycle-agent { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
@@ -233,7 +303,26 @@
 .journey-cycle-outcome.outcome-success { color: var(--ok, #46c37b); }
 .journey-cycle-outcome.outcome-warning { color: var(--warn, #f0b24f); }
 .journey-cycle-time { font-size: 11px; color: var(--text-muted); margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.journey-cycle-artifacts-btn { cursor: pointer; font-size: 12px; flex-shrink: 0; }
+.journey-cycle-artifacts-btn {
+    cursor: pointer;
+    font-size: 12px;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 4px;
+    padding: 1px 6px;
+    line-height: 1.4;
+}
+.journey-cycle-artifacts-btn:hover,
+.journey-cycle-artifacts-btn:focus-visible {
+    color: var(--text);
+    border-color: var(--text-muted);
+    outline: none;
+}
+.journey-cycle-artifacts-btn:focus-visible {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent, #4a9eff) 35%, transparent);
+}
 
 /* Per-cycle validation badge — the discoverable entry point into JUnit
    evidence for that cycle. Three states map to three CSS classes that
@@ -278,7 +367,6 @@ button.journey-cycle-validation-badge:hover {
     background: color-mix(in srgb, var(--warn, #f0b24f) 12%, transparent);
 }
 .journey-cycle-body { padding-left: 20px; }
-.journey-cycle-body.collapsed { display: none; }
 .journey-phase-group {
     margin-left: 8px;
     padding-left: 10px;

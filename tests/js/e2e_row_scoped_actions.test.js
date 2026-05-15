@@ -71,7 +71,7 @@ function _loadFullStack(extra = {}) {
     const ctx = { ..._baseStubs(), ...extra };
     ctx.window = ctx;
     vm.createContext(ctx);
-    for (const file of ['e2e_run_view.js', 'e2e_runs_list.js', 'lifecycle_commands.js']) {
+    for (const file of ['lifecycle_commands.js', 'hierarchical_timeline.js', 'e2e_run_view.js', 'e2e_runs_list.js']) {
         vm.runInContext(
             fs.readFileSync(path.join(DASHBOARD_JS_DIR, file), 'utf8'),
             ctx,
@@ -171,7 +171,7 @@ test('renderRunDetailsDisclosure: each view button carries a typed switch_e2e_ti
     assert.ok(html.includes('class="e2e-timeline-content"'));
     assert.ok(!html.includes('id="e2eTimelineContent"'));
     // Inline onclick routes through the shared dispatcher.
-    assert.ok((html.match(/runE2ELifecycleCommandFromButton\(this\)/g) || []).length === 3);
+    assert.ok((html.match(/runLifecycleCommandFromButton\(this\)/g) || []).length === 3);
 });
 
 test('renderUntrackedFailuresBanner: button carries typed create_e2e_untriaged_issues Command + row-scoped agent class', () => {
@@ -209,7 +209,7 @@ test('switch_e2e_timeline_view dispatch: handler updates ONLY the row whose butt
     const rowB = _fakeRow(99);
     const btnInA = _fakeButtonInRow(rowA, 'ops');
 
-    ctx.runE2ELifecycleCommand(
+    ctx.runLifecycleCommand(
         {
             kind: 'switch_e2e_timeline_view',
             label: 'Switch suite timeline to Ops',
@@ -252,11 +252,11 @@ test('switch_e2e_timeline_view dispatch: two rows expanded, each updates indepen
     const btnB = _fakeButtonInRow(rowB, 'ops');
 
     // Fire on A then B.  Each Command names its own run id.
-    ctx.runE2ELifecycleCommand(
+    ctx.runLifecycleCommand(
         { kind: 'switch_e2e_timeline_view', label: 'x', run_id: 88, view: 'debug' },
         btnA,
     );
-    ctx.runE2ELifecycleCommand(
+    ctx.runLifecycleCommand(
         { kind: 'switch_e2e_timeline_view', label: 'x', run_id: 99, view: 'ops' },
         btnB,
     );
@@ -302,7 +302,7 @@ test('create_e2e_untriaged_issues dispatch: reads agent from THIS row, fetches w
         closest: (sel) => sel === 'details.e2e-run-row' ? rowA : null,
     };
 
-    ctx.runE2ELifecycleCommand(
+    ctx.runLifecycleCommand(
         {
             kind: 'create_e2e_untriaged_issues',
             label: 'Create issues',
@@ -341,7 +341,7 @@ test('create_e2e_untriaged_issues dispatch: no agent selected → toast, no fetc
         closest: (sel) => sel === 'details.e2e-run-row' ? row : null,
     };
 
-    ctx.runE2ELifecycleCommand(
+    ctx.runLifecycleCommand(
         { kind: 'create_e2e_untriaged_issues', label: 'x', run_id: 88 },
         btn,
     );
@@ -365,7 +365,7 @@ test('create_e2e_untriaged_issues dispatch: row without _e2eRunData → toast, n
         closest: (sel) => sel === 'details.e2e-run-row' ? row : null,
     };
 
-    ctx.runE2ELifecycleCommand(
+    ctx.runLifecycleCommand(
         { kind: 'create_e2e_untriaged_issues', label: 'x', run_id: 88 },
         btn,
     );
@@ -517,7 +517,7 @@ test('handlers dispatched via the typed pipeline still hit row-scoped state', as
     // going through the typed dispatcher so the command-pattern-to-UI
     // layer remains covered."  This test re-confirms that — even
     // after introducing the abstraction — a typed Command dispatched
-    // through ``runE2ELifecycleCommand`` still flows through
+    // through ``runLifecycleCommand`` still flows through
     // ``resolveRowCommandContext`` and reaches the row.
     const ctx = _loadFullStack();
     const calls = [];
@@ -531,7 +531,7 @@ test('handlers dispatched via the typed pipeline still hit row-scoped state', as
     const row = _fakeRow(88);
     const trigger = _fakeButtonInRow(row, 'ops');
 
-    ctx.runE2ELifecycleCommand(
+    ctx.runLifecycleCommand(
         { kind: 'switch_e2e_timeline_view', label: 'x', run_id: 88, view: 'ops' },
         trigger,
     );

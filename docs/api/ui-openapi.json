@@ -239,7 +239,7 @@
             "name": "view",
             "in": "query",
             "required": false,
-            "schema": {"type": "string", "enum": ["user", "ops", "debug"], "default": "user"}
+            "schema": {"type": "string", "enum": ["user", "ops", "debug", "raw"], "default": "user"}
           }
         ],
         "responses": {
@@ -274,7 +274,7 @@
             "name": "view",
             "in": "query",
             "required": false,
-            "schema": {"type": "string", "enum": ["user", "ops", "debug"], "default": "user"}
+            "schema": {"type": "string", "enum": ["user", "ops", "debug", "raw"], "default": "user"}
           }
         ],
         "responses": {
@@ -326,7 +326,7 @@
             "name": "view",
             "in": "query",
             "required": false,
-            "schema": {"type": "string", "enum": ["user", "ops", "debug"], "default": "user"}
+            "schema": {"type": "string", "enum": ["user", "ops", "debug", "raw"], "default": "user"}
           }
         ],
         "responses": {
@@ -390,7 +390,7 @@
             "name": "view",
             "in": "query",
             "required": false,
-            "schema": {"type": "string", "enum": ["user", "ops", "debug"], "default": "user"}
+            "schema": {"type": "string", "enum": ["user", "ops", "debug", "raw"], "default": "user"}
           }
         ],
         "responses": {
@@ -1265,7 +1265,7 @@
           "kind": {"const": "switch_e2e_timeline_view"},
           "label": {"type": "string"},
           "run_id": {"type": "integer", "minimum": 1},
-          "view": {"enum": ["user", "ops", "debug"]}
+          "view": {"enum": ["user", "ops", "debug", "raw"]}
         }
       },
       "CreateE2EUntriagedIssuesCommandPayload": {

@@ -195,7 +195,7 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
 
     # Locate the row by run_id and click its summary to expand.  The
     # row's ``ontoggle`` dispatches through the typed-Command pipeline
-    # (``runE2ELifecycleCommandFromToggle`` → ``loadE2ERunIntoRow``).
+    # (``runLifecycleCommandFromToggle`` → ``loadE2ERunIntoRow``).
     row = page.locator(f"details.e2e-run-row[data-e2e-run-id='{_RUN_ID}']")
     expect(row).to_have_count(1)
     row.locator("summary").first.click()
@@ -251,14 +251,34 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     assert cmd.get("issue_number") == 4503
 
     # Click-through proof: stub ``fetch`` so we can record the lazy
-    # URL the expander hits.
+    # URL the expander hits, then render a realistic lifecycle body
+    # with session-log actions and an overflow menu item.  The action
+    # clicks must route through the shared timeline action delegate
+    # bound on the E2E row body.
     page.evaluate(
         "() => {"
         "  window.__inlineAgentFetchCalls = [];"
+        "  window.__openedAgentLogs = [];"
+        "  window.__openedPaths = [];"
+        "  window.openAgentLogAction = (issue, runDir, label, mode, action) => {"
+        "    window.__openedAgentLogs.push({ issue, runDir, label, mode, type: action && action.type });"
+        "  };"
+        "  window.openPath = (path) => { window.__openedPaths.push(path); };"
         "  window.fetch = (url) => {"
         "    window.__inlineAgentFetchCalls.push(String(url));"
         "    return Promise.resolve({ ok: true, status: 200, "
-        "      json: () => Promise.resolve({ runs: [] }), "
+        "      json: () => Promise.resolve({ runs: [{ "
+        "        run_number: 1, expanded: true, outcome: { label: 'Completed', tone: 'passed' }, "
+        "        cycles: [{ cycle_number: 1, expanded: true, outcome: { label: 'Completed', tone: 'passed' }, "
+        "          steps: [{ event: 'session.coding_completed', narrative: 'Coding session completed', "
+        "            actions: ["
+        "              { type: 'open_agent_log', issue_number: 4503, run_dir: '/tmp/run-4503', label: 'Coding Session Recording' },"
+        "              { type: 'open_review_transcript', issue_number: 4503, run_dir: '/tmp/run-4503', label: 'Review Transcript' },"
+        "              { type: 'open_path', path: '/tmp/run-4503/completion.json', label: 'Open completion' }"
+        "            ]"
+        "          }] "
+        "        }] "
+        "      }] }), "
         "    });"
         "  };"
         "}"
@@ -272,6 +292,25 @@ def test_e2e_run_modal_mounts_canonical_viewer_with_plugin_and_aria(
     assert any("/api/issue-detail/4503" in url for url in calls), (
         f"expected lazy fetch of /api/issue-detail/4503, got: {calls}"
     )
+    session_action = expander.locator(".timeline-action-btn", has_text="Coding Recording")
+    expect(session_action).to_be_visible()
+    session_action.click()
+    opened_logs = page.evaluate("() => window.__openedAgentLogs")
+    assert opened_logs == [
+        {
+            "issue": 4503,
+            "runDir": "/tmp/run-4503",
+            "label": "Coding Session Recording",
+            "mode": "toast",
+            "type": "open_agent_log",
+        }
+    ]
+    menu_trigger = expander.locator(".timeline-event-menu-trigger")
+    expect(menu_trigger).to_be_visible()
+    menu_trigger.click()
+    expander.locator(".timeline-menu-item", has_text="Completion Record").click()
+    opened_paths = page.evaluate("() => window.__openedPaths")
+    assert opened_paths == ["/tmp/run-4503/completion.json"]
 
     # ── untracked failure has NO plugin block (no linked issue) ────
     untracked_card = cvv.locator(".cvv-triage-card", has_text="test_untracked_failure")

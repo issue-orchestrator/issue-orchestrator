@@ -17,6 +17,8 @@ class FakeElement {
             ...rect,
         };
         this.style = {};
+        this.dataset = {};
+        this.listeners = [];
         this.offsetParent = null;
         this.trigger = null;
         this.items = null;
@@ -36,6 +38,10 @@ class FakeElement {
 
     removeAttribute(name) {
         this.attrs.delete(name);
+    }
+
+    addEventListener(type, handler) {
+        this.listeners.push({ type, handler });
     }
 
     querySelector(selector) {
@@ -166,6 +172,19 @@ test('toggleTimelineEventMenu opens the clicked menu and closes other menus', ()
     context.toggleTimelineEventMenu(menu);
 
     assert.equal(menu.hasAttribute('open'), false);
+});
+
+test('bindTimelineEventActions binds the shared action delegate once', () => {
+    const context = loadTimeline();
+    const container = new FakeElement();
+
+    context.bindTimelineEventActions(container);
+    context.bindTimelineEventActions(container);
+
+    assert.equal(container.dataset.timelineActionsBound, '1');
+    assert.equal(container.listeners.length, 1);
+    assert.equal(container.listeners[0].type, 'click');
+    assert.equal(container.listeners[0].handler, context.handleTimelineEventActionsClick);
 });
 
 test('handleTimelineEventActionsClick toggles overflow menus through shared delegate', () => {

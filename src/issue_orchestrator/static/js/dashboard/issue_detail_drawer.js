@@ -1,6 +1,27 @@
 let currentIssueDetailE2ERunId = null;
 let currentIssueDetailFocus = null;
 
+function _lazyDashboardFunction(name) {
+    return () => {
+        const root = typeof window !== 'undefined' ? window : globalThis;
+        const fn = root && root[name];
+        return typeof fn === 'function' ? fn : null;
+    };
+}
+
+if (typeof registerHierarchicalTimelineHostCapabilities === 'function') {
+    registerHierarchicalTimelineHostCapabilities({
+        formatHeaderTimestamp: _lazyDashboardFunction('formatJourneyHeaderTimestamp'),
+        formatStepTimestamp: _lazyDashboardFunction('formatJourneyStepTimestamp'),
+        renderEventActions: _lazyDashboardFunction('renderTimelineEventActions'),
+        renderCanonicalValidationViewer: _lazyDashboardFunction('renderCanonicalValidationViewer'),
+        renderValidationFailureActionSections: _lazyDashboardFunction('renderValidationFailureActionSections'),
+        enhanceCanonicalValidationViewerAccessibility: _lazyDashboardFunction(
+            'enhanceCanonicalValidationViewerAccessibility',
+        ),
+    });
+}
+
 function openIssueTimeline(issueNumber, triggerEl = null, opts = {}) {
     return openIssueDetail(issueNumber, triggerEl, {...opts, focus: 'timeline'});
 }
@@ -24,8 +45,8 @@ async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     document.getElementById('issueDetailJourney').innerHTML = '';
     const prevCycles = document.getElementById('issueDetailPrevCycles');
     if (prevCycles) prevCycles.style.display = 'none';
-    const rawEvents = document.getElementById('issueDetailRawEvents');
-    if (rawEvents) rawEvents.removeAttribute('open');
+    const actionsEl = document.getElementById('issueDetailActions');
+    if (actionsEl) actionsEl.style.display = 'none';
     const unblockBtn = document.getElementById('issueDetailUnblockBtn');
     if (unblockBtn) {
         unblockBtn.style.display = 'none';
@@ -121,25 +142,93 @@ function filterRuns(runs, filter) {
 }
 
 function renderJourneyTimeline(container, data) {
-    _renderJourneyRuns(container, data.runs || []);
+    _renderJourneyRuns(container, data.runs || [], data || {});
 }
 
-function _renderJourneyRuns(container, allRuns) {
+function _collectRunIdsFromJourneyRuns(runs) {
+    const ids = new Set();
+    const add = (value) => {
+        if (value !== undefined && value !== null && String(value) !== '') {
+            ids.add(String(value));
+        }
+    };
+    for (const run of runs || []) {
+        add(run && run.run_id);
+        const cycles = Array.isArray(run && run.cycles) ? run.cycles : [];
+        for (const cycle of cycles) {
+            add(cycle && cycle.run_id);
+            for (const sessionRunId of (cycle && cycle.session_run_ids) || []) {
+                add(sessionRunId);
+            }
+        }
+    }
+    return ids;
+}
+
+function _rawEventBelongsToSelectedRuns(evt, selectedRunIds) {
+    if (!selectedRunIds || selectedRunIds.size === 0) return true;
+    const runId = evt && evt.run_id !== undefined && evt.run_id !== null
+        ? String(evt.run_id)
+        : '';
+    return !runId || selectedRunIds.has(runId);
+}
+
+function renderIssueRawTimelineEvents(data, selectedRuns) {
+    const events = Array.isArray(data && data.events) ? data.events : [];
+    const selectedRunIds = _collectRunIdsFromJourneyRuns(selectedRuns || []);
+    const visibleEvents = journeyFilter === 'all'
+        ? events
+        : events.filter((evt) => _rawEventBelongsToSelectedRuns(evt, selectedRunIds));
+    if (visibleEvents.length === 0) {
+        return '<div class="timeline-empty">No raw events recorded.</div>';
+    }
+    return `<div class="journey-raw-events" role="list" aria-label="Raw timeline events">${
+        visibleEvents.map((evt) => {
+            const eventName = formatStepLabel(String(evt.step || evt.event || evt.source_event || 'event'));
+            const status = evt.status ? formatStatus(evt.status) : '';
+            const timestamp = formatTimestamp(evt.timestamp || '');
+            const summary = evt.summary || evt.detail || '';
+            return `<div class="journey-raw-event ${escapeAttr(evt.status || '')}" role="listitem">
+                <div class="journey-raw-event-header">
+                    <span>${escapeHtml(eventName)}</span>
+                    <span>${escapeHtml(status)}</span>
+                </div>
+                ${timestamp ? `<div class="journey-raw-event-meta">${escapeHtml(timestamp)}</div>` : ''}
+                ${summary ? `<div class="journey-raw-event-summary">${escapeHtml(summary)}</div>` : ''}
+            </div>`;
+        }).join('')
+    }</div>`;
+}
+
+function _renderJourneyRuns(container, allRuns, data) {
+    const detailData = data || issueDetailData || {};
     const runs = filterRuns(allRuns, journeyFilter);
     const isLatestRun = journeyFilter === 'latest-run';
     const isAll = journeyFilter === 'all';
     const issueNum = issueDetailData ? issueDetailData.issue_number : null;
     const timelineDiagnostic = issueDetailData?.summary?.timeline_diagnostic || null;
+    const isRaw = timelineView === 'raw';
 
     let html = `<div class="journey-filter">
-        <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
-        <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
+        <span class="journey-filter-group">
+            <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" type="button" aria-pressed="${isLatestRun ? 'true' : 'false'}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
+            <button class="journey-filter-btn ${isAll ? 'active' : ''}" type="button" aria-pressed="${isAll ? 'true' : 'false'}" onclick="setJourneyFilter('all')">All runs</button>
+        </span>
         <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
         <span class="journey-filter-separator"></span>
-        <button class="journey-filter-btn ${timelineView === 'user' ? 'active' : ''}" onclick="setTimelineView('user')" title="Show key events: coding, review, outcome">Story</button>
-        <button class="journey-filter-btn ${timelineView === 'ops' ? 'active' : ''}" onclick="setTimelineView('ops')" title="Show operational events: validation, retries, exchanges">Ops</button>
-        <button class="journey-filter-btn ${timelineView === 'debug' ? 'active' : ''}" onclick="setTimelineView('debug')" title="Show all internal events">Debug</button>
+        <span class="journey-filter-group">
+            <button class="journey-filter-btn ${timelineView === 'user' ? 'active' : ''}" type="button" aria-pressed="${timelineView === 'user' ? 'true' : 'false'}" onclick="setTimelineView('user')" title="Show key events: coding, review, outcome">Story</button>
+            <button class="journey-filter-btn ${timelineView === 'ops' ? 'active' : ''}" type="button" aria-pressed="${timelineView === 'ops' ? 'true' : 'false'}" onclick="setTimelineView('ops')" title="Show operational events: validation, retries, exchanges">Ops</button>
+            <button class="journey-filter-btn ${timelineView === 'debug' ? 'active' : ''}" type="button" aria-pressed="${timelineView === 'debug' ? 'true' : 'false'}" onclick="setTimelineView('debug')" title="Show all internal events">Debug</button>
+            <button class="journey-filter-btn ${isRaw ? 'active' : ''}" type="button" aria-pressed="${isRaw ? 'true' : 'false'}" onclick="setTimelineView('raw')" title="Show raw timeline events">Raw events</button>
+        </span>
     </div>`;
+
+    if (isRaw) {
+        html += renderIssueRawTimelineEvents(detailData, runs);
+        container.innerHTML = html;
+        return;
+    }
 
     if (runs.length === 0) {
         if (timelineDiagnostic && timelineDiagnostic.state === 'expected_history_missing') {
@@ -154,230 +243,26 @@ function _renderJourneyRuns(container, allRuns) {
         return;
     }
 
-    for (let runIndex = 0; runIndex < runs.length; runIndex++) {
-        const run = runs[runIndex];
-        const runExpanded = journeyFilter === 'latest-run' ? true : Boolean(run.expanded);
-        const runToggle = runExpanded ? '\u25be' : '\u25b8';
-        const runId = `journey-run-${runIndex}`;
-        const runBodyClass = runExpanded ? '' : ' collapsed';
-        const runLabel = run.run_label || `Run ${run.run_number || (runIndex + 1)}`;
-        html += `<div class="journey-run" id="${runId}">
-            <div class="journey-cycle-header" onclick="toggleJourneyCycle('${runId}')">
-                <span class="journey-cycle-toggle">${runToggle}</span>
-                <span class="journey-cycle-label">${escapeHtml(runLabel)}</span>
-                <span class="journey-cycle-outcome ${_readOutcomeBadge(run.outcome).toneClass}">\u2014 ${escapeHtml(_readOutcomeBadge(run.outcome).label || 'In progress')}</span>
-                <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || ''))}</span>
-            </div>
-            <div class="journey-cycle-body${runBodyClass}" id="${runId}-body">`;
-
-        const cycles = run.cycles || [];
-        for (let cycleIndex = 0; cycleIndex < cycles.length; cycleIndex++) {
-            const c = cycles[cycleIndex];
-            const cycleId = `journey-cycle-${runIndex}-${cycleIndex}`;
-            const cycleExpanded = journeyFilter === 'latest-run' ? true : Boolean(c.expanded);
-            const toggle = cycleExpanded ? '\u25be' : '\u25b8';
-            const bodyClass = cycleExpanded ? '' : ' collapsed';
-            const displayCycleNumber = c.cycle_in_run || c.cycle || (cycleIndex + 1);
-            const cycleLabel = c.cycle_label || `Cycle ${displayCycleNumber}`;
-            const agentPill = c.agent ? `<span class="journey-cycle-agent">(${escapeHtml(c.agent)})</span>` : '';
-            const retryInfo = c.retry_count > 0 ? `<span class="journey-cycle-retries">${c.retry_count} ${c.retry_count === 1 ? 'retry' : 'retries'}</span>` : '';
-            const cycleOutcomeBadge = _readOutcomeBadge(c.outcome);
-            const outcomeClass = cycleOutcomeBadge.toneClass;
-            const artifacts = c.artifacts || {};
+    html += renderIssueLifecycleTimeline(runs, {
+        baseId: 'journey',
+        issueNumber: issueNum,
+        runExpanded: (run) => journeyFilter === 'latest-run' ? true : Boolean(run.expanded),
+        cycleExpanded: (cycle) => journeyFilter === 'latest-run' ? true : Boolean(cycle.expanded),
+        renderCycleValidationBadge: _renderCycleValidationBadge,
+        renderCycleTrailingActions: (cycle, ctx) => {
+            const artifacts = cycle.artifacts || {};
             const hasArtifacts = artifacts.log_url || artifacts.pr_url || artifacts.has_review_feedback;
-            const validationBadge = _renderCycleValidationBadge(c.validation, issueNum);
-
-            html += `<div class="journey-cycle" id="${cycleId}">
-            <div class="journey-cycle-header" onclick="toggleJourneyCycle('${cycleId}')">
-                <span class="journey-cycle-toggle">${toggle}</span>
-                <span class="journey-cycle-label">${escapeHtml(cycleLabel)}</span>
-                ${agentPill}
-                ${retryInfo}
-                <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(cycleOutcomeBadge.label || 'In progress')}</span>
-                ${validationBadge}
-                <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || ''))}</span>
-                ${hasArtifacts ? `<span class="journey-cycle-artifacts-btn" onclick="event.stopPropagation(); toggleArtifactPopover(${runIndex}, ${cycleIndex}, ${issueNum})" title="Cycle artifacts">\ud83d\udcce</span>` : ''}
-            </div>
-            <div class="journey-cycle-body${bodyClass}" id="${cycleId}-body">`;
-
-            const phaseGroups = Array.isArray(c.phase_groups) && c.phase_groups.length > 0
-                ? c.phase_groups
-                : [{ key: 'events', label: '', steps: c.steps || [] }];
-            // Run-dir context for the cycle's validation events — sourced
-            // from the first step that carries one.  Validation events
-            // emitted later in the cycle inherit it via the same lookup.
-            const cycleRunDir = _findCycleRunDir(c);
-            let stepCounter = 0;
-            for (const group of phaseGroups) {
-                html += `<div class="journey-phase-group">`;
-                if (group.label) {
-                    html += `<div class="journey-phase-header">${escapeHtml(group.label)}</div>`;
-                }
-                const steps = group.steps || [];
-                for (const s of steps) {
-                    const stepIdx = stepCounter++;
-                    const stepId = `${cycleId}-step-${stepIdx}`;
-                    const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
-                    const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
-                    const stepActions = _filterStepActions(s);
-                    const actions = renderTimelineEventActions(stepActions);
-
-                    // Phase B: validation events become inline-expandable
-                    // rows.  Expanding triggers a lazy fetch from the
-                    // dialog endpoint, then renders the canonical viewer
-                    // beneath the step.  No more modal popover — the
-                    // detail lives in the same scroll context as the
-                    // journey it belongs to.
-                    if (_isValidationStep(s)) {
-                        const stepRunDir = String(s.run_dir || cycleRunDir || '');
-                        html += `<div class="journey-step journey-step-validation ${statusClass}" id="${stepId}">
-                            <div class="journey-step-row" onclick="toggleValidationEventInline('${stepId}', ${issueNum}, ${JSON.stringify(stepRunDir)})">
-                                <span class="journey-step-caret">▸</span>
-                                <span class="journey-time">${escapeHtml(formatJourneyStepTimestamp(s.timestamp || '', s.time_label || ''))}</span>
-                                <div class="journey-main">
-                                    <div class="journey-summary-row">
-                                        <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
-                                        ${actions}
-                                    </div>
-                                    ${detail}
-                                </div>
-                            </div>
-                            <div class="journey-step-validation-body collapsed" id="${stepId}-body" data-loaded="0" data-run-dir="${escapeAttr(stepRunDir)}"></div>
-                        </div>`;
-                    } else {
-                        html += `<div class="journey-step ${statusClass}">
-                        <span class="journey-time">${escapeHtml(formatJourneyStepTimestamp(s.timestamp || '', s.time_label || ''))}</span>
-                        <div class="journey-main">
-                            <div class="journey-summary-row">
-                                <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
-                                ${actions}
-                            </div>
-                            ${detail}
-                        </div>
-                    </div>`;
-                    }
-                }
-                html += `</div>`;
-            }
-
-            html += `</div></div>`;
-        }
-        html += `</div></div>`;
-    }
+            if (!hasArtifacts) return '';
+            const cycleLabel = cycle.cycle_label || `Cycle ${cycle.cycle_in_run || cycle.cycle || (ctx.cycleIndex + 1)}`;
+            return `<button type="button" class="journey-cycle-artifacts-btn" onclick="event.preventDefault(); event.stopPropagation(); toggleArtifactPopover(${ctx.runIndex}, ${ctx.cycleIndex}, ${issueNum})" title="Cycle artifacts" aria-label="Open artifacts for ${escapeAttr(cycleLabel)}">\ud83d\udcce</button>`;
+        },
+    });
 
     container.innerHTML = html;
 
-    // Wire up delegated click handler for action buttons inside journey steps
-    if (!container.dataset.journeyActionsBound) {
-        container.addEventListener('click', handleTimelineEventActionsClick);
-        container.dataset.journeyActionsBound = 'true';
-    }
-}
-
-// Phase B: validation events are inline-expandable within their cycle.
-// Detect the four canonical validation event names (the same set the
-// shared CycleValidationBadge derivation uses) so the row renders with
-// a caret + lazy-loaded body instead of a flat narrative.
-const _VALIDATION_EVENT_NAMES = new Set([
-    'validation.passed',
-    'validation.failed',
-    'session.validation_passed',
-    'session.validation_failed',
-]);
-function _isValidationStep(step) {
-    if (!step || typeof step !== 'object') return false;
-    const name = String(step.event || '').toLowerCase();
-    return _VALIDATION_EVENT_NAMES.has(name);
-}
-
-// Phase B (reviewer Blocker 2 on PR #6315): a validation step's row IS
-// the expansion trigger, so the legacy ``open_validation_failure``
-// action (which the timeline action dispatcher routes to the modal)
-// is both redundant and a regression back to the modal path.  Filter
-// it out for validation steps so the row has exactly one owner for
-// the detail-view interaction.  Non-validation steps pass through
-// unchanged.
-function _filterStepActions(step) {
-    const raw = Array.isArray(step && step.actions) ? step.actions : [];
-    if (!_isValidationStep(step)) return raw;
-    return raw.filter((a) => !a || a.type !== 'open_validation_failure');
-}
-
-// The journey payload puts ``run_dir`` on individual step events when
-// available.  For a validation event that doesn't carry one (older
-// payloads or aggregated views), fall back to the cycle's first event
-// with a run_dir — same run, same validation record.
-function _findCycleRunDir(cycle) {
-    if (!cycle) return '';
-    if (cycle.artifacts && typeof cycle.artifacts === 'object' && typeof cycle.artifacts.run_dir === 'string') {
-        return cycle.artifacts.run_dir;
-    }
-    const phaseGroups = Array.isArray(cycle.phase_groups) ? cycle.phase_groups : [];
-    for (const group of phaseGroups) {
-        for (const s of (group.steps || [])) {
-            if (s && typeof s.run_dir === 'string' && s.run_dir) return s.run_dir;
-        }
-    }
-    for (const s of (cycle.steps || [])) {
-        if (s && typeof s.run_dir === 'string' && s.run_dir) return s.run_dir;
-    }
-    return '';
-}
-
-async function toggleValidationEventInline(stepId, issueNumber, runDir) {
-    const step = document.getElementById(stepId);
-    const body = document.getElementById(`${stepId}-body`);
-    if (!step || !body) return;
-    const caret = step.querySelector(':scope > .journey-step-row > .journey-step-caret');
-    const wasCollapsed = body.classList.contains('collapsed');
-    body.classList.toggle('collapsed');
-    if (caret) caret.textContent = wasCollapsed ? '▾' : '▸';
-
-    // Lazy-load on first expand.  Cache via data-loaded so subsequent
-    // toggles just show/hide the existing DOM.
-    if (wasCollapsed && body.dataset.loaded !== '1') {
-        body.dataset.loaded = '1';  // optimistic — prevents double-fetch
-        body.innerHTML = '<div class="cvv-loading">Loading validation details…</div>';
-        try {
-            const effectiveRunDir = runDir || body.dataset.runDir || '';
-            const params = new URLSearchParams();
-            if (effectiveRunDir) params.set('run_dir', effectiveRunDir);
-            const suffix = params.toString() ? `?${params.toString()}` : '';
-            const res = await fetch(`/api/dialog/validation-failure/${issueNumber}${suffix}`);
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok || data.error) {
-                const message = data.error || `Failed to load validation details (HTTP ${res.status})`;
-                body.innerHTML = `<div class="cvv-error">${escapeHtml(String(message))}</div>`;
-                body.dataset.loaded = 'error';
-                return;
-            }
-            // Inline drawer mount uses the same canonical viewer the
-            // modal does, including the artifacts footer (record /
-            // output / evidence buttons).  The viewer takes the
-            // action-section renderer as an explicit dependency
-            // (reviewer Blocker 2 on PR #6314); without passing it
-            // here we would silently drop the artifacts footer in the
-            // inline path (reviewer Blocker 1 on PR #6315).
-            // ``renderValidationFailureActionSections`` lives in
-            // session_dialogs.js — both files are loaded as plain
-            // script tags into the same global scope, so the symbol
-            // is reachable at call time.
-            body.innerHTML = renderCanonicalValidationViewer(data, {
-                renderActionSections: renderValidationFailureActionSections,
-            });
-            // Phase D (issue #6310 follow-up): enhance the inline-
-            // mounted canonical viewer with ARIA tree semantics +
-            // keyboard nav.  The render-time HTML already carries the
-            // ARIA roles; the enhancer fills in aria-level /
-            // aria-setsize / aria-posinset + roving tabindex + the
-            // delegated keydown handler.
-            const cvvRoot = body.querySelector('.cvv-root');
-            if (cvvRoot) enhanceCanonicalValidationViewerAccessibility(cvvRoot);
-        } catch (err) {
-            const message = err && err.message ? err.message : String(err);
-            body.innerHTML = `<div class="cvv-error">Failed to load validation details: ${escapeHtml(message)}</div>`;
-            body.dataset.loaded = 'error';
-        }
+    // Wire up delegated click handler for action buttons inside journey steps.
+    if (typeof bindTimelineEventActions === 'function') {
+        bindTimelineEventActions(container);
     }
 }
 
@@ -407,61 +292,16 @@ function _renderCycleValidationBadge(badge, _issueNumber) {
     const label = state === 'passed' ? '✓ Validated' : '✗ Failed';
     return `<button type="button" class="${cls}"
         data-validation-state="${escapeAttr(state)}"
-        onclick="event.stopPropagation(); _handleCycleValidationBadgeClick(this);"
+        data-issue-number="${escapeAttr(_issueNumber || '')}"
+        onclick="event.preventDefault(); event.stopPropagation(); runHierarchicalTimelineHostCapability('handleCycleValidationBadgeClick', this);"
         title="Jump to validation details for this cycle">${label}</button>`;
-}
-
-function _handleCycleValidationBadgeClick(button) {
-    if (!button) return;
-    const cycle = button.closest('.journey-cycle');
-    if (!cycle) return;
-    // Ensure the cycle body is expanded so the validation-event row is
-    // mounted and clickable.
-    const cycleBody = cycle.querySelector(':scope > .journey-cycle-body');
-    if (cycleBody && cycleBody.classList.contains('collapsed')) {
-        toggleJourneyCycle(cycle.id);
-    }
-    const stepEl = cycle.querySelector(':scope > .journey-cycle-body .journey-step-validation');
-    if (!stepEl) return;
-    const stepBody = stepEl.querySelector(':scope > .journey-step-validation-body');
-    if (stepBody && stepBody.classList.contains('collapsed')) {
-        // Re-derive the runDir from the data attribute (same value the
-        // server wrote when rendering the step).
-        const runDir = stepBody.dataset.runDir || '';
-        const issueNum = issueDetailData ? issueDetailData.issue_number : null;
-        toggleValidationEventInline(stepEl.id, issueNum, runDir);
-    }
-    stepEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-}
-
-// Read the typed ``OutcomeBadge { label, tone }`` shape from a
-// JourneyRun / IssueCycle payload (PR #6333).  Returns
-// ``{ label, toneClass }`` where ``toneClass`` maps the projection-
-// owned tone to the drawer's outcome CSS class.  Path B: no
-// string-matching against backend labels at the UI layer — the
-// projection already classified, we just read.
-function _readOutcomeBadge(outcome) {
-    const isObj = outcome && typeof outcome === 'object' && typeof outcome.label === 'string';
-    const label = isObj ? outcome.label : (outcome ? String(outcome) : '');
-    const tone = isObj ? String(outcome.tone || '') : '';
-    let toneClass = '';
-    if (tone === 'passed') toneClass = 'outcome-success';
-    else if (tone === 'failed') toneClass = 'outcome-failed';
-    else if (tone === 'error') toneClass = 'outcome-failed';
-    // ``in_progress`` and ``neutral`` deliberately have no class so
-    // the row renders without a colored treatment.
-    return { label, toneClass };
 }
 
 function toggleJourneyCycle(cycleId) {
     closeTimelineEventMenus();
     const cycleNode = document.getElementById(cycleId);
-    const body = document.getElementById(cycleId + '-body');
-    if (!body || !cycleNode) return;
-    const header = cycleNode.querySelector(':scope > .journey-cycle-header .journey-cycle-toggle');
-    const isCollapsed = body.classList.contains('collapsed');
-    body.classList.toggle('collapsed');
-    if (header) header.textContent = isCollapsed ? '\u25be' : '\u25b8';
+    if (!cycleNode || cycleNode.tagName !== 'DETAILS') return;
+    cycleNode.open = !cycleNode.open;
 }
 
 function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
@@ -593,13 +433,13 @@ function copyJourneyTimeline() {
     let text = `Issue #${issueNum}: ${title}\n`;
     for (const run of runs) {
         const runTime = formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || '');
-        const runLabelText = _readOutcomeBadge(run.outcome).label || 'In progress';
+        const runLabelText = readHierarchicalOutcomeBadge(run.outcome).label || 'In progress';
         text += `\n${run.run_label || `Run ${run.run_number || '?'}`} \u2014 ${runLabelText}  ${runTime}\n`;
         for (const c of (run.cycles || [])) {
             const agent = c.agent ? ` (${c.agent})` : '';
             const cycleNum = c.cycle_in_run || c.cycle || '?';
             const cycleTime = formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || '');
-            const cycleLabelText = _readOutcomeBadge(c.outcome).label || 'In progress';
+            const cycleLabelText = readHierarchicalOutcomeBadge(c.outcome).label || 'In progress';
             text += `  ${c.cycle_label || `Cycle ${cycleNum}`}${agent} \u2014 ${cycleLabelText}  ${cycleTime}\n`;
             for (const s of (c.steps || [])) {
                 const time = formatJourneyStepTimestamp(s.timestamp || '', s.time_label || '');
@@ -821,10 +661,9 @@ function renderIssueDetail() {
     const d = issueDetailData;
     applyLifecycleDataset(issueDetailDrawer, d.lifecycle || null);
     document.getElementById('issueDetailTitle').textContent = formatIssueDetailTitle(d);
-    document.getElementById('issueDetailGitHubBtn').href = d.issue_url || '#';
-    document.getElementById('issueDetailFocusBtn').onclick = () => openTimelineModal(d.issue_number);
 
     // Show Unblock button only for blocked issues
+    const actionsEl = document.getElementById('issueDetailActions');
     const unblockBtn = document.getElementById('issueDetailUnblockBtn');
     const summary = d.summary || {};
     const hasBlockedDetail = Boolean(d.blocked_detail);
@@ -843,6 +682,9 @@ function renderIssueDetail() {
             ? String(retryPublishAction.label)
             : 'Retry Publish';
         retryPublishBtn.onclick = () => retryPublishFromDrawer();
+    }
+    if (actionsEl) {
+        actionsEl.style.display = isBlocked || Boolean(retryPublishAction) ? '' : 'none';
     }
 
     // Status explanation with color-coded border
@@ -884,27 +726,6 @@ function renderIssueDetail() {
         prevSection.style.display = 'none';
     }
 
-    // Raw events (collapsed, lazy-rendered on open)
-    const rawSection = document.getElementById('issueDetailRawEvents');
-    const rawBody = document.getElementById('issueDetailRawEventsBody');
-    const rawCount = d.raw_events_count || (d.events || []).length;
-    document.getElementById('issueDetailRawEventsSummary').textContent = `Raw events (${rawCount})`;
-    rawBody.innerHTML = '';
-    rawSection.ontoggle = function () {
-        if (!rawSection.open || rawBody.children.length > 0) return;
-        const events = d.events || [];
-        rawBody.innerHTML = events.map(evt => `
-            <div class="timeline-event ${evt.status || ''}">
-                <div class="timeline-event-header">
-                    <span>${escapeHtml(formatStepLabel(evt.step || evt.event || 'event'))}</span>
-                    <span>${formatStatus(evt.status)}</span>
-                </div>
-                <div class="timeline-time">${escapeHtml(formatTimestamp(evt.timestamp || ''))}</div>
-                ${evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : ''}
-            </div>
-        `).join('') || '<div class="timeline-empty">No events recorded.</div>';
-    };
-
     applyIssueDetailInitialFocus();
 }
 
@@ -918,10 +739,10 @@ function formatIssueDetailTitle(detail) {
 
 function applyIssueDetailInitialFocus() {
     if (currentIssueDetailFocus !== 'timeline') return;
-    const timelineHeading = document.getElementById('issueDetailTimelineHeading');
-    if (!timelineHeading) return;
-    timelineHeading.scrollIntoView({block: 'start'});
-    timelineHeading.focus({preventScroll: true});
+    const timeline = document.getElementById('issueDetailJourney');
+    if (!timeline) return;
+    timeline.scrollIntoView({block: 'start'});
+    timeline.focus({preventScroll: true});
     currentIssueDetailFocus = null;
 }
 

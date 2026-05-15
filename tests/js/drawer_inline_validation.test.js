@@ -16,6 +16,7 @@ const vm = require('node:vm');
 function makeFakeBody() {
     return {
         innerHTML: '',
+        attributes: {},
         classList: {
             _classes: new Set(['collapsed']),
             contains(c) { return this._classes.has(c); },
@@ -26,6 +27,9 @@ function makeFakeBody() {
             },
         },
         dataset: { loaded: '0', runDir: '' },
+        setAttribute(name, value) {
+            this.attributes[name] = String(value);
+        },
         // Phase D (issue #6310 follow-up): after mounting the viewer
         // HTML, the drawer calls ``body.querySelector('.cvv-root')`` so
         // it can enhance the canonical viewer with ARIA tree
@@ -37,10 +41,26 @@ function makeFakeBody() {
 }
 
 function makeFakeStep(bodyEl) {
-    return {
+    const caret = { textContent: '▸' };
+    const toggle = {
+        attributes: {},
+        setAttribute(name, value) {
+            this.attributes[name] = String(value);
+        },
         querySelector(selector) {
+            if (selector === ':scope > .journey-step-caret') return caret;
+            return null;
+        },
+    };
+    return {
+        _caret: caret,
+        _toggle: toggle,
+        querySelector(selector) {
+            if (selector === ':scope > .journey-step-row > .journey-step-inline-toggle') {
+                return toggle;
+            }
             if (selector === ':scope > .journey-step-row > .journey-step-caret') {
-                return { textContent: '▸' };
+                return caret;
             }
             return null;
         },
@@ -84,29 +104,34 @@ function _extractValueDeclaration(source, name) {
 }
 
 function loadDrawerInIsolation() {
-    // Extract just the helpers we exercise so the test doesn't depend
-    // on the rest of the drawer module (which carries deep transitive
-    // imports — global ``issueDetailDrawer``, ``journeyFilter``, etc.).
-    const source = fs.readFileSync(
-        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js'),
+    // Load the generic host module plus the plugin-owned lifecycle
+    // helpers.  The issue drawer only registers host capabilities now;
+    // validation expansion behavior lives with the ``io.agent-context``
+    // renderer that emits the inline validation row.
+    const hierarchicalSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/hierarchical_timeline.js'),
         'utf8',
     );
-    const slice = [
-        _extractFunction(source, 'async function toggleValidationEventInline'),
-        _extractFunction(source, 'function _handleCycleValidationBadgeClick'),
-    ].join('\n');
+    const pluginSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js'),
+        'utf8',
+    );
 
     const fetchCalls = [];
     const fetchResponses = [];
     const viewerCalls = [];
     const context = {
         console,
+        window: null,
+        globalThis: null,
         URLSearchParams,
         escapeHtml: (v) => String(v == null ? '' : v)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
         escapeAttr: (v) => String(v == null ? '' : v)
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
+        _renderLifecycleCommandAttr: (command) =>
+            `data-lifecycle-command="${String(command.kind || '')}"`,
         // Spy on the viewer call so tests can assert what was passed in
         // the ``options`` arg (e.g. the action-section renderer).  Real
         // viewer output is irrelevant to these tests — the stub returns
@@ -131,17 +156,20 @@ function loadDrawerInIsolation() {
             const next = fetchResponses.shift();
             return next || { ok: true, json: async () => ({ junit_cases: [] }) };
         },
-        // Stubs for helpers _handleCycleValidationBadgeClick reaches into.
-        // These tests don't exercise the badge handler — included only
-        // so the slice evaluates cleanly.
-        toggleJourneyCycle: () => {},
-        issueDetailData: { issue_number: 4242 },
         fetchCalls,
         fetchResponses,
         viewerCalls,
     };
+    context.window = context;
+    context.globalThis = context;
     vm.createContext(context);
-    vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (slice)' });
+    vm.runInContext(hierarchicalSource, context, { filename: 'hierarchical_timeline.js' });
+    vm.runInContext(pluginSource, context, { filename: 'plugins/agent_context.js' });
+    context.registerHierarchicalTimelineHostCapabilities({
+        renderCanonicalValidationViewer: () => context.renderCanonicalValidationViewer,
+        renderValidationFailureActionSections: () => context.renderValidationFailureActionSections,
+        enhanceCanonicalValidationViewerAccessibility: () => null,
+    });
     return context;
 }
 
@@ -162,6 +190,8 @@ test('inline toggle: lazy-loads dialog data on first expand', async () => {
     assert.strictEqual(ctx.fetchCalls.length, 1);
     assert.match(ctx.fetchCalls[0], /\/api\/dialog\/validation-failure\/4242\?run_dir=%2Ftmp%2Frun-1/);
     assert.strictEqual(body.dataset.loaded, '1');
+    assert.strictEqual(step._toggle.attributes['aria-expanded'], 'true');
+    assert.strictEqual(body.attributes['aria-hidden'], 'false');
     assert.match(body.innerHTML, /data-cvv-mock/);
     assert.match(body.innerHTML, /cases=1/);
 });
@@ -182,9 +212,13 @@ test('inline toggle: second click toggles visibility without re-fetching', async
     // Collapse — no second fetch
     await ctx.toggleValidationEventInline('step-2', 4242, '/tmp/r');
     assert.strictEqual(ctx.fetchCalls.length, 1);
+    assert.strictEqual(step._toggle.attributes['aria-expanded'], 'false');
+    assert.strictEqual(body.attributes['aria-hidden'], 'true');
     // Expand again — still no second fetch
     await ctx.toggleValidationEventInline('step-2', 4242, '/tmp/r');
     assert.strictEqual(ctx.fetchCalls.length, 1);
+    assert.strictEqual(step._toggle.attributes['aria-expanded'], 'true');
+    assert.strictEqual(body.attributes['aria-hidden'], 'false');
 });
 
 test('inline toggle: HTTP error surfaces inline, does not throw', async () => {
@@ -244,19 +278,14 @@ test('action filter: validation steps drop the modal-opening open_validation_fai
     // ``open_validation_failure`` which the timeline action dispatcher
     // routes to ``openValidationFailure(..., 'inline')`` — and that
     // opens the validation modal.  Phase B's contract is "no modal on
-    // validation rows".  ``_filterStepActions`` enforces it.
-    const source = fs.readFileSync(
-        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js'),
-        'utf8',
-    );
-    const slice = [
-        _extractValueDeclaration(source, '_VALIDATION_EVENT_NAMES'),
-        _extractFunction(source, 'function _isValidationStep'),
-        _extractFunction(source, 'function _filterStepActions'),
-    ].join('\n');
-    const context = { console };
-    vm.createContext(context);
-    vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (filter slice)' });
+    // validation rows".  The plugin-owned lifecycle renderer enforces it.
+    const context = loadDrawerInIsolation();
+    context.registerHierarchicalTimelineHostCapability('renderEventActions', () => (actions) => {
+        const buttons = (Array.isArray(actions) ? actions : [])
+            .map((action) => `<button data-action="${action.type}">${action.type}</button>`)
+            .join('');
+        return buttons ? `<div class="timeline-event-actions">${buttons}</div>` : '';
+    });
 
     // Each canonical validation event name + a non-validation event.
     const validationEvents = [
@@ -266,40 +295,41 @@ test('action filter: validation steps drop the modal-opening open_validation_fai
         'session.validation_failed',
     ];
     for (const eventName of validationEvents) {
-        const step = {
-            event: eventName,
-            actions: [
-                { type: 'open_validation_failure', issue_number: 42 },  // must be filtered
-                { type: 'open_agent_log', issue_number: 42 },           // must survive
-                { type: 'open_review_transcript', issue_number: 42 },   // must survive
-            ],
-        };
-        const filtered = context._filterStepActions(step);
-        assert.strictEqual(
-            filtered.find((a) => a.type === 'open_validation_failure'),
-            undefined,
+        const html = context.renderIssueLifecycleTimeline([{
+            cycles: [{
+                steps: [{
+                    event: eventName,
+                    actions: [
+                        { type: 'open_validation_failure', issue_number: 42 },  // must be filtered
+                        { type: 'open_agent_log', issue_number: 42 },           // must survive
+                        { type: 'open_review_transcript', issue_number: 42 },   // must survive
+                    ],
+                }],
+            }],
+        }], { baseId: `filter-${eventName.replace(/\W/g, '-')}`, issueNumber: 42 });
+        assert.doesNotMatch(
+            html,
+            /open_validation_failure/,
             `open_validation_failure must be filtered for ${eventName}`,
         );
-        assert.ok(
-            filtered.find((a) => a.type === 'open_agent_log'),
-            `open_agent_log must survive on ${eventName}`,
-        );
-        assert.ok(
-            filtered.find((a) => a.type === 'open_review_transcript'),
-            `open_review_transcript must survive on ${eventName}`,
-        );
+        assert.match(html, /open_agent_log/, `open_agent_log must survive on ${eventName}`);
+        assert.match(html, /open_review_transcript/, `open_review_transcript must survive on ${eventName}`);
     }
 
     // Non-validation step: actions pass through unchanged.
-    const nonValidationStep = {
-        event: 'session.completed',
-        actions: [
-            { type: 'open_validation_failure', issue_number: 42 },  // not filtered here
-            { type: 'open_agent_log', issue_number: 42 },
-        ],
-    };
-    const passthrough = context._filterStepActions(nonValidationStep);
-    assert.strictEqual(passthrough.length, 2);
+    const passthroughHtml = context.renderIssueLifecycleTimeline([{
+        cycles: [{
+            steps: [{
+                event: 'session.completed',
+                actions: [
+                    { type: 'open_validation_failure', issue_number: 42 },  // not filtered here
+                    { type: 'open_agent_log', issue_number: 42 },
+                ],
+            }],
+        }],
+    }], { baseId: 'filter-non-validation', issueNumber: 42 });
+    assert.match(passthroughHtml, /open_validation_failure/);
+    assert.match(passthroughHtml, /open_agent_log/);
 });
 
 test('inline toggle: passes renderActionSections so the artifacts footer survives (Blocker 1 on PR #6315)', async () => {

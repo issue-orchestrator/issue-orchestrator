@@ -1,10 +1,11 @@
 // Shared owner for typed-Command rendering and dispatch (issue #6310).
 //
 // The dashboard exposes typed ``TimelineCommand`` payloads (from
-// ``view_models/lifecycle_semantics.py``) as buttons that route through a
-// single dispatcher.  Both the E2E run modal and the issue-detail drawer
-// render command buttons and need this dispatcher, so the module is loaded
-// before either consumer in ``view_models/dashboard_assets.py``.
+// ``view_models/lifecycle_semantics.py``) as buttons and native
+// disclosure rows that route through a single dispatcher.  Both the E2E
+// surfaces and the issue-detail drawer render commands and need this
+// dispatcher, so the module is loaded before those consumers in
+// ``view_models/dashboard_assets.py``.
 //
 // Per-Command-kind dispatch handlers (``openIssueTimeline``,
 // ``openAgentLogAction``, ``openReviewTranscript``, ``openValidationFailure``,
@@ -16,45 +17,47 @@ function _renderLifecycleCommandButton(command, fallbackLabel = null, cssClass =
     if (!command || typeof command !== 'object') return '';
     const payload = escapeAttr(JSON.stringify(command));
     const label = fallbackLabel || command.label || _humanizeSnakeCase(command.kind || 'Action');
-    return `<button class="${cssClass}" data-lifecycle-command="${payload}" onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();">${escapeHtml(label)}</button>`;
+    return `<button class="${cssClass}" data-lifecycle-command="${payload}" onclick="runLifecycleCommandFromButton(this); event.stopPropagation();">${escapeHtml(label)}</button>`;
 }
 
-function runE2ELifecycleCommandFromButton(button) {
-    if (!button || !button.dataset) return;
-    const raw = button.dataset.lifecycleCommand || '';
-    if (!raw) return;
+function _renderLifecycleCommandAttr(command) {
+    if (!command || typeof command !== 'object') return '';
+    return `data-lifecycle-command="${escapeAttr(JSON.stringify(command))}"`;
+}
+
+function _lifecycleCommandFromElement(element) {
+    if (!element || !element.dataset) return null;
+    const raw = element.dataset.lifecycleCommand || '';
+    if (!raw) return null;
     try {
-        runE2ELifecycleCommand(JSON.parse(raw), button);
+        return JSON.parse(raw);
     } catch (err) {
         showToast(`Failed to decode lifecycle command: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        return null;
     }
+}
+
+function runLifecycleCommandFromButton(button) {
+    const command = _lifecycleCommandFromElement(button);
+    if (!command) return;
+    runLifecycleCommand(command, button);
 }
 
 // Element-aware toggle dispatcher: fired from a ``<details>`` element's
-// inline ``ontoggle="runE2ELifecycleCommandFromToggle(this)"`` so that
-// expand-on-first-open affordances (e.g. the inline ``▸ Attempts on
-// issue #N`` expander in the agent-context plugin) route through the
-// same typed-Command pipeline as click affordances.  Pre-conditions:
-//  * the details element is currently open (closed → no-op),
-//  * ``dataset.loaded`` is not "1" (re-opens are no-ops; renderers
-//    set ``dataset.loaded = '1'`` once populated).
-// The trigger element is forwarded to the dispatcher so the handler
-// can read element-scoped state (e.g. ``data-issue-number`` on the
-// expander) and populate its body.
-function runE2ELifecycleCommandFromToggle(detailsEl) {
+// inline ``ontoggle="runLifecycleCommandFromToggle(this)"`` so native
+// disclosure rows route through the same typed-Command pipeline as click
+// affordances.  Most toggle Commands are open-only lazy loaders:
+// closed → no-op, and re-open after ``dataset.loaded === '1'`` → no-op.
+function runLifecycleCommandFromToggle(detailsEl) {
     if (!detailsEl || !detailsEl.dataset) return;
+    const command = _lifecycleCommandFromElement(detailsEl);
+    if (!command) return;
     if (detailsEl.open !== true) return;
     if (detailsEl.dataset.loaded === '1') return;
-    const raw = detailsEl.dataset.lifecycleCommand || '';
-    if (!raw) return;
-    try {
-        runE2ELifecycleCommand(JSON.parse(raw), detailsEl);
-    } catch (err) {
-        showToast(`Failed to decode lifecycle command: ${err instanceof Error ? err.message : String(err)}`, 'error');
-    }
+    runLifecycleCommand(command, detailsEl);
 }
 
-function runE2ELifecycleCommand(command, triggerEl = null) {
+function runLifecycleCommand(command, triggerEl = null) {
     if (!command || typeof command !== 'object') return;
     const kind = String(command.kind || '').trim();
     if (!kind) return;
@@ -105,7 +108,7 @@ function runE2ELifecycleCommand(command, triggerEl = null) {
     }
     // ``expand_e2e_run`` fires from the row's ``ontoggle`` the first
     // time it opens.  ``triggerEl`` is the ``<details>`` itself,
-    // forwarded by ``runE2ELifecycleCommandFromToggle``.
+    // forwarded by ``runLifecycleCommandFromToggle``.
     if (kind === 'expand_e2e_run' && command.run_id) {
         if (typeof loadE2ERunIntoRow !== 'function') return;
         loadE2ERunIntoRow(command.run_id, triggerEl);
