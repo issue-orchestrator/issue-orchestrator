@@ -817,6 +817,75 @@ class TestE2ERunDetailEndpoint:
                 [{"kind": "html_report", "label": "HTML Report", "path": 17}],
             )
 
+    def test_log_excerpt_tails_run_log(self, tmp_path):
+        """``_public_e2e_run_payload`` tails the worker log into ``log_excerpt``."""
+        from issue_orchestrator.entrypoints.web_issue_detail_routes import (
+            _public_e2e_run_payload,
+        )
+
+        log_path = tmp_path / "run.log"
+        log_path.write_text(
+            "first line\nsecond line\nthird line\n",
+            encoding="utf-8",
+        )
+        payload = _public_e2e_run_payload({"log_path": str(log_path)}, run_id=42)
+        assert payload["log_excerpt"] == ["first line", "second line", "third line"]
+
+    def test_log_excerpt_truncates_to_byte_cap(self, tmp_path):
+        """The tail is capped so a chatty pytest run cannot bloat the JSON payload."""
+        from issue_orchestrator.entrypoints.web_issue_detail_routes import (
+            _E2E_LOG_EXCERPT_BYTE_CAP,
+            _public_e2e_run_payload,
+        )
+
+        log_path = tmp_path / "run.log"
+        line = "x" * 200 + "\n"
+        line_count = (_E2E_LOG_EXCERPT_BYTE_CAP // len(line)) + 50
+        log_path.write_text(line * line_count, encoding="utf-8")
+        payload = _public_e2e_run_payload({"log_path": str(log_path)}, run_id=42)
+        joined = "\n".join(payload["log_excerpt"])
+        assert len(joined) <= _E2E_LOG_EXCERPT_BYTE_CAP
+        # Tail (not head): later lines, not earlier ones.
+        assert payload["log_excerpt"][-1] == "x" * 200
+
+    def test_log_excerpt_caps_line_count(self, tmp_path):
+        """Even when each line is tiny, the excerpt is line-capped."""
+        from issue_orchestrator.entrypoints.web_issue_detail_routes import (
+            _E2E_LOG_EXCERPT_LINE_CAP,
+            _public_e2e_run_payload,
+        )
+
+        log_path = tmp_path / "run.log"
+        log_path.write_text(
+            "\n".join(f"line {i}" for i in range(_E2E_LOG_EXCERPT_LINE_CAP * 3))
+            + "\n",
+            encoding="utf-8",
+        )
+        payload = _public_e2e_run_payload({"log_path": str(log_path)}, run_id=42)
+        assert len(payload["log_excerpt"]) == _E2E_LOG_EXCERPT_LINE_CAP
+        # Tail wins over head.
+        assert payload["log_excerpt"][-1] == f"line {_E2E_LOG_EXCERPT_LINE_CAP * 3 - 1}"
+
+    def test_log_excerpt_drops_blank_lines(self, tmp_path):
+        from issue_orchestrator.entrypoints.web_issue_detail_routes import (
+            _public_e2e_run_payload,
+        )
+
+        log_path = tmp_path / "run.log"
+        log_path.write_text("a\n\n   \nb\n", encoding="utf-8")
+        payload = _public_e2e_run_payload({"log_path": str(log_path)}, run_id=42)
+        assert payload["log_excerpt"] == ["a", "b"]
+
+    def test_log_excerpt_empty_when_log_path_missing_or_unreadable(self, tmp_path):
+        """No ``log_path`` or a missing file degrades to an empty excerpt rather than 500ing."""
+        from issue_orchestrator.entrypoints.web_issue_detail_routes import (
+            _public_e2e_run_payload,
+        )
+
+        for log_path in (None, "", "   ", str(tmp_path / "does-not-exist.log")):
+            payload = _public_e2e_run_payload({"log_path": log_path}, run_id=42)
+            assert payload["log_excerpt"] == []
+
     def test_returns_500_without_leaking_malformed_artifact_details(self):
         """Endpoint returns a generic 500 when stored artifact rows are malformed."""
         from unittest.mock import patch

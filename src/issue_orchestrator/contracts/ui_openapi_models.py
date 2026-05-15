@@ -241,6 +241,7 @@ class E2ERunExecutionPayload(BaseModel):
     exit_code: int | None
     finished_at: str | None
     id: int
+    log_excerpt: list[str]
     log_path: str | None
     orchestrator_id: str
     pytest_args: list[str]

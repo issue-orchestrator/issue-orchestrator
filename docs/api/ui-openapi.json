@@ -786,6 +786,7 @@
           "commit_sha",
           "branch",
           "log_path",
+          "log_excerpt",
           "artifacts_dir",
           "total_tests",
           "current_test"
@@ -804,6 +805,7 @@
           "commit_sha": {"type": ["string", "null"]},
           "branch": {"type": ["string", "null"]},
           "log_path": {"type": ["string", "null"]},
+          "log_excerpt": {"type": "array", "items": {"type": "string"}},
           "artifacts_dir": {"type": ["string", "null"]},
           "total_tests": {"type": ["integer", "null"]},
           "current_test": {"type": ["string", "null"]}

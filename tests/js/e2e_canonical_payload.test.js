@@ -311,6 +311,37 @@ test('translator: malformed results_by_category degrades to empty payload', () =
     assert.strictEqual(ctx.e2eRunToCanonicalPayload({ results_by_category: { passed: 'oops' } }).junit_cases.length, 0);
 });
 
+test('translator: run.log_excerpt populates stdout_excerpt (single merged channel)', () => {
+    const ctx = loadModule();
+    const out = ctx.e2eRunToCanonicalPayload({
+        run: {
+            id: 7,
+            log_excerpt: ['line 1', 'line 2', 'line 3'],
+        },
+        results_by_category: { passed: [] },
+    });
+    assert.deepEqual(out.stdout_excerpt, ['line 1', 'line 2', 'line 3']);
+    assert.deepEqual(out.stderr_excerpt, []);
+});
+
+test('translator: missing or malformed log_excerpt yields empty arrays', () => {
+    const ctx = loadModule();
+    for (const run of [undefined, null, {}, { log_excerpt: null }, { log_excerpt: 'oops' }]) {
+        const out = ctx.e2eRunToCanonicalPayload({ run, results_by_category: { passed: [] } });
+        assert.deepEqual(out.stdout_excerpt, []);
+        assert.deepEqual(out.stderr_excerpt, []);
+    }
+});
+
+test('translator: log_excerpt drops non-string entries', () => {
+    const ctx = loadModule();
+    const out = ctx.e2eRunToCanonicalPayload({
+        run: { id: 7, log_excerpt: ['ok', 42, null, 'also ok'] },
+        results_by_category: { passed: [] },
+    });
+    assert.deepEqual(out.stdout_excerpt, ['ok', 'also ok']);
+});
+
 // ``flakinessChipForTest`` tests removed alongside the helper itself
 // (PR #6319 Blocker 3) — it was added without a render path and
 // therefore had no shipped behavior to verify.  Re-introduce both
