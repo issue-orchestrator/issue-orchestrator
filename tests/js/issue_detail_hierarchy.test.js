@@ -1,15 +1,19 @@
 // JS-vm tests for the dashboard issue-detail timeline hierarchy.
 //
-// The dashboard timeline should use the same native disclosure-row idiom
-// as the E2E run list: run and cycle nodes are <details>/<summary>
-// containers, while validation evidence remains the canonical viewer body
-// mounted under validation events.
+// The dashboard timeline and E2E run history share the same native
+// disclosure-row renderer.  These tests keep the drawer-specific
+// content honest without reintroducing a second owner for the row shell.
 
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+
+const DASHBOARD_JS_DIR = path.join(
+    __dirname,
+    '../../src/issue_orchestrator/static/js/dashboard',
+);
 
 function _extractFunction(source, signaturePrefix) {
     const start = source.indexOf(signaturePrefix);
@@ -28,18 +32,11 @@ function _escapeHtml(value) {
 }
 
 function loadRenderSlice(overrides = {}) {
-    const source = fs.readFileSync(
-        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js'),
-        'utf8',
-    );
-    const lifecycleSource = fs.readFileSync(
-        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
-        'utf8',
-    );
+    const source = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'issue_detail_drawer.js'), 'utf8');
+    const hierarchicalSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'hierarchical_timeline.js'), 'utf8');
     const slice = [
-        _extractFunction(lifecycleSource, 'function _renderLifecycleCommandAttr'),
-        _extractFunction(source, 'function _journeyDisclosureCommandAttr'),
         _extractFunction(source, 'function _renderJourneyRuns'),
+        _extractFunction(source, 'function toggleJourneyCycle'),
     ].join('\n');
     const listeners = [];
     const context = {
@@ -61,36 +58,23 @@ function loadRenderSlice(overrides = {}) {
         _isValidationStep: () => false,
         _findCycleRunDir: () => '',
         renderTimelineEventActions: () => '',
+        _renderLifecycleCommandAttr: (command) =>
+            `data-lifecycle-command="${String(command.kind || '')}"`,
         handleTimelineEventActionsClick: () => {},
+        bindTimelineEventActions: (container) => {
+            if (container.dataset.timelineActionsBound === '1') return;
+            container.addEventListener('click', () => {});
+            container.dataset.timelineActionsBound = '1';
+        },
+        closeTimelineEventMenus: () => {},
+        document: { getElementById: () => null },
         listeners,
         ...overrides,
     };
+    context.window = context;
     vm.createContext(context);
+    vm.runInContext(hierarchicalSource, context, { filename: 'hierarchical_timeline.js' });
     vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (_renderJourneyRuns slice)' });
-    return context;
-}
-
-function loadCommandSlice(overrides = {}) {
-    const lifecycleSource = fs.readFileSync(
-        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
-        'utf8',
-    );
-    const calls = [];
-    const slice = [
-        _extractFunction(lifecycleSource, 'function _lifecycleCommandFromElement'),
-        _extractFunction(lifecycleSource, 'function runLifecycleCommandFromToggle'),
-        _extractFunction(lifecycleSource, 'function runE2ELifecycleCommandFromToggle'),
-        _extractFunction(lifecycleSource, 'function runE2ELifecycleCommand('),
-    ].join('\n');
-    const context = {
-        console,
-        calls,
-        showToast: (message, severity) => calls.push(['toast', String(message), severity]),
-        syncJourneyDisclosureState: (triggerEl) => calls.push(['sync', triggerEl && triggerEl.id]),
-        ...overrides,
-    };
-    vm.createContext(context);
-    vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (timeline command slice)' });
     return context;
 }
 
@@ -106,7 +90,7 @@ function renderJourney(payload, overrides = {}) {
     return { html: container.innerHTML, listeners: ctx.listeners };
 }
 
-test('issue detail timeline renders runs and cycles as native disclosure nodes', () => {
+test('issue detail timeline renders runs and cycles through the shared disclosure renderer', () => {
     const { html, listeners } = renderJourney({
         runs: [
             {
@@ -128,17 +112,17 @@ test('issue detail timeline renders runs and cycles as native disclosure nodes',
         summary: {},
     });
 
-    assert.match(html, /<details class="journey-run unified-timeline-node" id="journey-run-0"/);
+    assert.match(html, /<details class="journey-run unified-timeline-node" id="journey-run-0">/);
     assert.match(html, /<summary class="journey-cycle-header unified-timeline-summary">/);
-    assert.match(html, /<details class="journey-cycle unified-timeline-node" id="journey-cycle-0-0"/);
-    assert.match(html, /data-lifecycle-command="/);
-    assert.match(html, /&quot;kind&quot;:&quot;sync_journey_disclosure&quot;/);
-    assert.match(html, /ontoggle="runLifecycleCommandFromToggle\(this\)"/);
-    assert.match(html, /<div class="journey-cycle-body collapsed" id="journey-run-0-body">/);
-    assert.match(html, /<div class="journey-cycle-body collapsed" id="journey-cycle-0-0-body">/);
+    assert.match(html, /<span class="journey-cycle-toggle hierarchical-timeline-caret" aria-hidden="true"><\/span>/);
+    assert.match(html, /<details class="journey-cycle unified-timeline-node" id="journey-cycle-0-0">/);
+    assert.match(html, /<div class="journey-cycle-body" id="journey-run-0-body">/);
+    assert.match(html, /<div class="journey-cycle-body" id="journey-cycle-0-0-body">/);
+    assert.doesNotMatch(html, /data-lifecycle-command="/);
+    assert.doesNotMatch(html, /sync_journey_disclosure/);
+    assert.doesNotMatch(html, /journey-cycle-body collapsed/);
     assert.doesNotMatch(html, /onclick="toggleJourneyCycle/);
     assert.doesNotMatch(html, /data-timeline-command/);
-    assert.doesNotMatch(html, /runJourneyTimelineCommandFromToggle/);
     assert.strictEqual(listeners.length, 1);
     assert.strictEqual(listeners[0].type, 'click');
 });
@@ -171,58 +155,30 @@ test('cycle artifact affordance is a keyboard-reachable button', () => {
     assert.doesNotMatch(html, /<span class="journey-cycle-artifacts-btn"/);
 });
 
-test('timeline command: toggle dispatch syncs the disclosure UI', () => {
-    const ctx = loadCommandSlice();
-    const disclosure = {
-        id: 'journey-cycle-0-0',
-        open: false,
-        dataset: {
-            lifecycleCommand: JSON.stringify({
-                kind: 'sync_journey_disclosure',
-                target_id: 'journey-cycle-0-0',
-            }),
+test('toggleJourneyCycle delegates disclosure state to native details', () => {
+    const cycleNode = { tagName: 'DETAILS', open: false };
+    const calls = [];
+    const ctx = loadRenderSlice({
+        closeTimelineEventMenus: () => calls.push('closed-menus'),
+        document: {
+            getElementById: (id) => (id === 'journey-cycle-0-0' ? cycleNode : null),
         },
-    };
-
-    ctx.runLifecycleCommandFromToggle(disclosure);
-
-    assert.deepEqual(ctx.calls, [['sync', 'journey-cycle-0-0']]);
-});
-
-test('timeline command: malformed command fails before touching UI', () => {
-    const ctx = loadCommandSlice();
-    ctx.runLifecycleCommandFromToggle({
-        id: 'journey-run-0',
-        dataset: { lifecycleCommand: '{not json' },
     });
 
-    assert.strictEqual(ctx.calls.length, 1);
-    assert.strictEqual(ctx.calls[0][0], 'toast');
-    assert.match(ctx.calls[0][1], /Failed to decode lifecycle command/);
-    assert.strictEqual(ctx.calls[0][2], 'error');
+    ctx.toggleJourneyCycle('journey-cycle-0-0');
+    assert.deepEqual(calls, ['closed-menus']);
+    assert.strictEqual(cycleNode.open, true);
+
+    ctx.toggleJourneyCycle('journey-cycle-0-0');
+    assert.deepEqual(calls, ['closed-menus', 'closed-menus']);
+    assert.strictEqual(cycleNode.open, false);
 });
 
-test('timeline command: unsupported kind does not sync UI', () => {
-    const ctx = loadCommandSlice();
-    ctx.runE2ELifecycleCommand({ kind: 'unknown_timeline_kind' }, { id: 'journey-run-0' });
-
-    assert.deepEqual(ctx.calls, [[
-        'toast',
-        'Unsupported lifecycle command: unknown_timeline_kind',
-        'warning',
-    ]]);
-});
-
-test('timeline command: target mismatch does not sync UI', () => {
-    const ctx = loadCommandSlice();
-    ctx.runE2ELifecycleCommand(
-        { kind: 'sync_journey_disclosure', target_id: 'journey-cycle-0-1' },
-        { id: 'journey-cycle-0-0' },
-    );
-
-    assert.deepEqual(ctx.calls, [[
-        'toast',
-        'Timeline command target mismatch',
-        'error',
-    ]]);
+test('timeline source calls the shared issue lifecycle renderer for runs and cycles', () => {
+    const source = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'issue_detail_drawer.js'), 'utf8');
+    const hierarchicalSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'hierarchical_timeline.js'), 'utf8');
+    const body = _extractFunction(source, 'function _renderJourneyRuns');
+    assert.ok(body.includes('renderIssueLifecycleTimeline(runs, {'));
+    assert.ok(hierarchicalSource.includes("className: 'journey-run unified-timeline-node'"));
+    assert.ok(hierarchicalSource.includes("className: 'journey-cycle unified-timeline-node'"));
 });

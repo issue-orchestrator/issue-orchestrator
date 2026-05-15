@@ -249,8 +249,8 @@ function _renderRunArtifactButtons(data) {
 //   per-row triage actions; replaced by the canonical viewer +
 //   ``io.agent-context`` plugin.
 //
-// ``_renderLifecycleCommandButton`` / ``runE2ELifecycleCommandFromButton``
-// / ``runE2ELifecycleCommand`` live in the shared
+// ``_renderLifecycleCommandButton`` / ``runLifecycleCommandFromButton``
+// / ``runLifecycleCommand`` live in the shared
 // ``static/js/dashboard/lifecycle_commands.js`` module (loaded before
 // this file).
 
@@ -337,7 +337,7 @@ function _renderUntrackedFailuresBanner(untrackedCount, runId) {
                     <option value="">Select agent…</option>
                     ${agentSelect}
                 </select>
-                <button class="btn-primary" data-lifecycle-command="${cmdAttr}" onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();">${escapeHtml(buttonLabel)}</button>
+                <button class="btn-primary" data-lifecycle-command="${cmdAttr}" onclick="runLifecycleCommandFromButton(this); event.stopPropagation();">${escapeHtml(buttonLabel)}</button>
             </div>
         </div>
     `;
@@ -371,7 +371,7 @@ function renderRunDetailsDisclosure(data, runId) {
         return (
             `<button class="${cssClass}" ` +
             `data-lifecycle-command="${cmdAttr}" ` +
-            `onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();" ` +
+            `onclick="runLifecycleCommandFromButton(this); event.stopPropagation();" ` +
             `data-view="${view}">${escapeHtml(label)}</button>`
         );
     }
@@ -411,7 +411,7 @@ function openE2ERunTimeline(runId) {
     // Command pipeline (issue #6322, PR #6329 reviewer Blocker 2;
     // re-pointed at ``expandE2ERunRow`` in issue #6334) — single
     // owner for "open E2E run" navigation.
-    return runE2ELifecycleCommand({
+    return runLifecycleCommand({
         kind: 'open_e2e_run',
         label: 'Open E2E Run',
         run_id: Number(runId),
@@ -444,7 +444,7 @@ function renderE2EIssueTimelineAffordances(affordances) {
     // PR #6319 round 4: the run-level issue-timeline affordance now
     // routes through the shared typed-Command pipeline
     // (``_renderLifecycleCommandButton`` →
-    // ``runE2ELifecycleCommandFromButton`` → ``runE2ELifecycleCommand``
+    // ``runLifecycleCommandFromButton`` → ``runLifecycleCommand``
     // → ``openIssueTimeline``).  The previous inline ``onclick``
     // path was a second owner for the same UI command — the
     // ``open_issue_timeline`` kind already has a typed shape with
@@ -478,7 +478,7 @@ function renderE2EIssueTimelineAffordances(affordances) {
             const cmdAttr = escapeAttr(JSON.stringify(cmd));
             return `<button class="e2e-issue-timeline-btn"
                 data-lifecycle-command="${cmdAttr}"
-                onclick="runE2ELifecycleCommandFromButton(this); event.stopPropagation();"
+                onclick="runLifecycleCommandFromButton(this); event.stopPropagation();"
                 title="Open cycle timeline for issue #${issueNumber}"
                 aria-label="Open cycle timeline for issue #${issueNumber}">
                 <span class="e2e-issue-timeline-number">#${issueNumber}</span>${labelHtml}
@@ -580,7 +580,7 @@ async function createIssuesForUntriaged(runId, triggerEl) {
         showToast(`Created parent issue #${data.parent_issue.number} with ${data.sub_issues.length} sub-issue(s)`);
 
         ctx.markUnloaded();
-        runE2ELifecycleCommand(
+        runLifecycleCommand(
             {
                 kind: 'expand_e2e_run',
                 label: 'Expand E2E Run',

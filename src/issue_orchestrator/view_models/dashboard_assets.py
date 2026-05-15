@@ -11,10 +11,20 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     # render the validation dialog body) and before any plugin module
     # (which call ``registerValidationPlugin`` at load time).
     "validation_viewer.js",
+    # ``lifecycle_commands.js`` owns the shared typed-Command renderer
+    # and dispatcher (``_renderLifecycleCommandButton`` /
+    # ``runLifecycleCommand`` /
+    # ``runLifecycleCommandFromButton``).  Loaded before command emitters
+    # so the dependency is declared rather than implicit.
+    "lifecycle_commands.js",
+    # ``hierarchical_timeline.js`` owns the native ``<details>/<summary>``
+    # shell and issue-lifecycle renderer used by both the dashboard issue
+    # timeline and the ``io.agent-context`` validation plugin.
+    "hierarchical_timeline.js",
     # ``inline_agent_attempts.js`` exposes the ``▸ Attempts on issue #N``
-    # expander that the ``io.agent-context`` plugin renders (issue
-    # #6322).  Loaded BEFORE the plugin module so the symbol is in
-    # scope when the plugin checks for it at render time.
+    # expander that the ``io.agent-context`` plugin renders.  Its expanded
+    # body uses ``hierarchical_timeline.js`` so plugin and dashboard issue
+    # timelines share the same lifecycle renderer.
     "inline_agent_attempts.js",
     # Plugin modules register themselves at load time with the registry
     # defined in ``validation_viewer.js``.  Today the only Phase-0
@@ -30,15 +40,6 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     "issue_metadata.js",
     "issue_menus.js",
     "issue_detail_modals.js",
-    # ``lifecycle_commands.js`` owns the shared typed-Command renderer
-    # and dispatcher (``_renderLifecycleCommandButton`` /
-    # ``runE2ELifecycleCommand`` /
-    # ``runE2ELifecycleCommandFromButton``).  Loaded before both
-    # ``issue_detail_drawer.js`` (drawer's per-cycle validation badge
-    # dispatches through it) and ``e2e_run_view.js`` (E2E modal's action
-    # buttons dispatch through it) so the dependency is declared rather
-    # than implicit.
-    "lifecycle_commands.js",
     "issue_detail_drawer.js",
     "timeline.js",
     "diagnostics_actions.js",

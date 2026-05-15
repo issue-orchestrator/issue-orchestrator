@@ -16,6 +16,7 @@ const vm = require('node:vm');
 function makeFakeBody() {
     return {
         innerHTML: '',
+        attributes: {},
         classList: {
             _classes: new Set(['collapsed']),
             contains(c) { return this._classes.has(c); },
@@ -26,6 +27,9 @@ function makeFakeBody() {
             },
         },
         dataset: { loaded: '0', runDir: '' },
+        setAttribute(name, value) {
+            this.attributes[name] = String(value);
+        },
         // Phase D (issue #6310 follow-up): after mounting the viewer
         // HTML, the drawer calls ``body.querySelector('.cvv-root')`` so
         // it can enhance the canonical viewer with ARIA tree
@@ -37,10 +41,26 @@ function makeFakeBody() {
 }
 
 function makeFakeStep(bodyEl) {
-    return {
+    const caret = { textContent: '▸' };
+    const toggle = {
+        attributes: {},
+        setAttribute(name, value) {
+            this.attributes[name] = String(value);
+        },
         querySelector(selector) {
+            if (selector === ':scope > .journey-step-caret') return caret;
+            return null;
+        },
+    };
+    return {
+        _caret: caret,
+        _toggle: toggle,
+        querySelector(selector) {
+            if (selector === ':scope > .journey-step-row > .journey-step-inline-toggle') {
+                return toggle;
+            }
             if (selector === ':scope > .journey-step-row > .journey-step-caret') {
-                return { textContent: '▸' };
+                return caret;
             }
             return null;
         },
@@ -162,6 +182,8 @@ test('inline toggle: lazy-loads dialog data on first expand', async () => {
     assert.strictEqual(ctx.fetchCalls.length, 1);
     assert.match(ctx.fetchCalls[0], /\/api\/dialog\/validation-failure\/4242\?run_dir=%2Ftmp%2Frun-1/);
     assert.strictEqual(body.dataset.loaded, '1');
+    assert.strictEqual(step._toggle.attributes['aria-expanded'], 'true');
+    assert.strictEqual(body.attributes['aria-hidden'], 'false');
     assert.match(body.innerHTML, /data-cvv-mock/);
     assert.match(body.innerHTML, /cases=1/);
 });
@@ -182,9 +204,13 @@ test('inline toggle: second click toggles visibility without re-fetching', async
     // Collapse — no second fetch
     await ctx.toggleValidationEventInline('step-2', 4242, '/tmp/r');
     assert.strictEqual(ctx.fetchCalls.length, 1);
+    assert.strictEqual(step._toggle.attributes['aria-expanded'], 'false');
+    assert.strictEqual(body.attributes['aria-hidden'], 'true');
     // Expand again — still no second fetch
     await ctx.toggleValidationEventInline('step-2', 4242, '/tmp/r');
     assert.strictEqual(ctx.fetchCalls.length, 1);
+    assert.strictEqual(step._toggle.attributes['aria-expanded'], 'true');
+    assert.strictEqual(body.attributes['aria-hidden'], 'false');
 });
 
 test('inline toggle: HTTP error surfaces inline, does not throw', async () => {

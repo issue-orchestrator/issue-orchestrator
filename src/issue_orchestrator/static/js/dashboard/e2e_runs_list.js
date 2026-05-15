@@ -5,13 +5,12 @@
 // ``/api/e2e-run-detail/{run_id}`` and mounts the canonical viewer
 // inline.
 //
-// Typed-Command contract: each row carries an ``ExpandE2ERunCommand``
-// in ``data-lifecycle-command`` and an
-// ``ontoggle="runLifecycleCommandFromToggle(this)"`` hook; the
-// shared dispatcher routes ``expand_e2e_run`` →
-// ``loadE2ERunIntoRow``.  ``open_e2e_run`` (from chips elsewhere on
-// the dashboard) re-routes to ``expandE2ERunRow``, which scrolls to
-// and opens the matching row.
+// Typed-Command contract: the shared hierarchical timeline renderer
+// emits each row's ``ExpandE2ERunCommand`` in ``data-lifecycle-command``
+// and wires ``ontoggle="runLifecycleCommandFromToggle(this)"``; the
+// shared dispatcher routes ``expand_e2e_run`` → ``loadE2ERunIntoRow``.
+// ``open_e2e_run`` (from chips elsewhere on the dashboard) re-routes
+// to ``expandE2ERunRow``, which scrolls to and opens the matching row.
 //
 // The runs list itself is eager: ``renderE2ERunsList`` mounts on
 // ``DOMContentLoaded`` from inline JSON at ``#recentE2ERunsData``.
@@ -128,7 +127,6 @@
             label: 'Expand E2E Run',
             run_id: runId,
         };
-        const payloadAttr = _renderLifecycleCommandAttr(command);
         const tone = _toneFor(summary.outcome);
         const outcomeLabel = (summary.outcome && summary.outcome.label) || 'Unknown';
         const counts = _renderCountSpans(summary.results);
@@ -137,30 +135,30 @@
             ? `<div class="e2e-run-row-note">${escapeHtml(summary.note)}</div>`
             : '';
 
-        return (
-            `<details class="e2e-run-row ${_toneClass(tone)}" ` +
-            `role="listitem" ` +
-            `data-e2e-run-id="${runId}" ` +
-            `data-loaded="" ` +
-            `${payloadAttr} ` +
-            `ontoggle="runLifecycleCommandFromToggle(this)">` +
-            `<summary class="e2e-run-row-summary">` +
-                `<span class="e2e-run-row-caret" aria-hidden="true">▸</span>` +
+        return renderHierarchicalTimelineNode({
+            className: `e2e-run-row ${_toneClass(tone)}`,
+            summaryClassName: 'e2e-run-row-summary',
+            bodyClassName: 'e2e-run-row-body',
+            caretClassName: 'e2e-run-row-caret',
+            role: 'listitem',
+            attrs: {
+                'data-e2e-run-id': runId,
+                'data-loaded': '',
+            },
+            command,
+            summaryHtml: (
                 `<span class="cvv-ico cvv-ico-${tone}" aria-hidden="true">${_toneGlyph(tone)}</span>` +
                 `<span class="e2e-run-row-id">Run #${runId}</span>` +
                 `<span class="e2e-run-row-outcome e2e-run-row-outcome-${tone}">${escapeHtml(outcomeLabel)}</span>` +
                 `<span class="e2e-run-row-counts">${counts}</span>` +
-                (meta ? `<span class="e2e-run-row-meta">${meta}</span>` : '') +
-            `</summary>` +
-            `<div class="e2e-run-row-body">` +
-                `${note}<div class="e2e-run-row-content"></div>` +
-            `</div>` +
-            `</details>`
-        );
+                (meta ? `<span class="e2e-run-row-meta">${meta}</span>` : '')
+            ),
+            bodyHtml: `${note}<div class="e2e-run-row-content"></div>`,
+        });
     }
 
     // ── Lazy detail loader ───────────────────────────────────────
-    // Dispatched by ``runE2ELifecycleCommand`` when the row toggles
+    // Dispatched by ``runLifecycleCommand`` when the row toggles
     // open the first time.  Re-opens are guarded upstream by
     // ``runLifecycleCommandFromToggle`` (``dataset.loaded === '1'``
     // bypasses the dispatcher).
@@ -189,6 +187,9 @@
                 return;
             }
             body.innerHTML = `<div class="e2e-canonical-host" data-e2e-run-id="${n}">${renderE2EResultsPanel(data)}</div>`;
+            if (typeof bindTimelineEventActions === 'function') {
+                bindTimelineEventActions(body);
+            }
 
             const cvvRoot = body.querySelector('.cvv-root');
             if (cvvRoot && typeof enhanceCanonicalValidationViewerAccessibility === 'function') {

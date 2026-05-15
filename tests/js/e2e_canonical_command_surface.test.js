@@ -75,6 +75,9 @@ function loadCanonicalSurface(spies = {}) {
     vm.runInContext(_readJs('lifecycle_commands.js'), ctx, {
         filename: 'lifecycle_commands.js',
     });
+    vm.runInContext(_readJs('hierarchical_timeline.js'), ctx, {
+        filename: 'hierarchical_timeline.js',
+    });
     vm.runInContext(_readJs('inline_agent_attempts.js'), ctx, {
         filename: 'inline_agent_attempts.js',
     });
@@ -172,7 +175,7 @@ test('cmd surface: linked-failure run renders an inline Attempts expander backed
     assert.match(html, /agent-context-attempts-expander/);
     assert.match(html, /data-issue-number="4503"/);
     assert.match(html, /Attempts on issue #4503/);
-    assert.match(html, /ontoggle="runE2ELifecycleCommandFromToggle\(this\)"/);
+    assert.match(html, /ontoggle="runLifecycleCommandFromToggle\(this\)"/);
     assert.ok(!/<details[^>]*data-issue-number="4503"[^>]*\sopen[\s>]/.test(html),
         'inline expander must start closed');
     // The user sees the right issue + final state + summary.
@@ -389,7 +392,7 @@ test('cmd surface: HTML in payload data is escaped, never interpreted', () => {
 
 // ── B. Command → handler invocation ──────────────────────────────────────
 //
-// Given a Command, runE2ELifecycleCommand must call the right
+// Given a Command, runLifecycleCommand must call the right
 // handler with the right args.  These spies replace each handler
 // with a recorder; the assertion is on the recorded call.
 
@@ -421,12 +424,12 @@ function loadDispatcherWithSpies() {
 
 test('dispatch: open_issue_timeline → openIssueTimeline(issue, null, {e2eRunId} | {})', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_issue_timeline',
         issue_number: 4503,
         scope_kind: 'dashboard',
     });
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_issue_timeline',
         issue_number: 7777,
         scope_kind: 'e2e_run',
@@ -440,7 +443,7 @@ test('dispatch: open_issue_timeline → openIssueTimeline(issue, null, {e2eRunId
 
 test('dispatch: open_session_recording → openAgentLogAction with the right args', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_session_recording',
         issue_number: 42,
         run_dir: '/tmp/run-42',
@@ -460,7 +463,7 @@ test('dispatch: open_session_recording → openAgentLogAction with the right arg
 
 test('dispatch: open_review_transcript → openReviewTranscript with the right args', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_review_transcript',
         issue_number: 100,
         run_dir: '/tmp/run-100',
@@ -475,7 +478,7 @@ test('dispatch: open_review_transcript → openReviewTranscript with the right a
 
 test('dispatch: open_validation_details → openValidationFailure with the right args', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_validation_details',
         issue_number: 4244,
         run_dir: '/tmp/run-4244',
@@ -487,7 +490,7 @@ test('dispatch: open_validation_details → openValidationFailure with the right
 
 test('dispatch: open_completion_record → openPath with the right path', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_completion_record',
         path: '/tmp/run-42/completion-record.json',
     });
@@ -496,9 +499,9 @@ test('dispatch: open_completion_record → openPath with the right path', () => 
 
 test('dispatch: malformed Command (no kind) is a silent no-op (no toast spam)', () => {
     const ctx = loadDispatcherWithSpies();
-    ctx.runE2ELifecycleCommand({});
-    ctx.runE2ELifecycleCommand(null);
-    ctx.runE2ELifecycleCommand({ kind: '' });
+    ctx.runLifecycleCommand({});
+    ctx.runLifecycleCommand(null);
+    ctx.runLifecycleCommand({ kind: '' });
     assert.deepEqual(ctx.calls, []);
 });
 
@@ -506,7 +509,7 @@ test('dispatch: unknown kind toasts a warning (visible signal, no crash)', () =>
     const ctx = loadDispatcherWithSpies();
     const toasts = [];
     ctx.showToast = (msg, severity) => toasts.push([msg, severity]);
-    ctx.runE2ELifecycleCommand({ kind: 'this_is_not_a_command' });
+    ctx.runLifecycleCommand({ kind: 'this_is_not_a_command' });
     assert.strictEqual(toasts.length, 1);
     assert.match(toasts[0][0], /Unsupported lifecycle command: this_is_not_a_command/);
     assert.strictEqual(toasts[0][1], 'warning');
@@ -521,12 +524,12 @@ test('dispatch: unknown kind toasts a warning (visible signal, no crash)', () =>
 // rendered Command JSON disagrees with what the dispatcher
 // expects.
 
-test('round-trip: render a linked-failure payload, extract the typed Command from the expander, dispatch through runE2ELifecycleCommandFromToggle, observe the lazy fetch', () => {
+test('round-trip: render a linked-failure payload, extract the typed Command from the expander, dispatch through runLifecycleCommandFromToggle, observe the lazy fetch', () => {
     // The strongest "Command pattern works end-to-end" assertion:
     // render the payload, pull the typed Command out of the
     // rendered ``data-lifecycle-command`` on the inline expander,
     // simulate the ``<details>`` toggle through the SHARED
-    // dispatcher (``runE2ELifecycleCommandFromToggle``), and prove
+    // dispatcher (``runLifecycleCommandFromToggle``), and prove
     // the lazy-fetch URL on the spy.  Catches an entire class of
     // bugs where the rendered Command JSON disagrees with what the
     // dispatcher expects.
@@ -573,7 +576,7 @@ test('round-trip: render a linked-failure payload, extract the typed Command fro
         },
         querySelector: (sel) => (sel === '.agent-context-attempts-body' ? body : null),
     };
-    ctx.runE2ELifecycleCommandFromToggle(detailsEl);
+    ctx.runLifecycleCommandFromToggle(detailsEl);
     // 3. The dispatcher must have routed through the loader, which
     //    called ``fetch`` exactly once with the ops-scoped
     //    issue-detail URL for issue 7777.

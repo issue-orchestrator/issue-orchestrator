@@ -569,10 +569,11 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     js = _read(DASHBOARD_JS)
     badge_body = _function_body(js, "_renderCycleValidationBadge")
     runs_body = _function_body(js, "_renderJourneyRuns")
+    cycle_summary_body = _function_body(js, "_renderIssueLifecycleCycleSummary")
 
     # The cycle header includes the badge.
-    assert "_renderCycleValidationBadge(c.validation" in runs_body
-    assert "${validationBadge}" in runs_body
+    assert "renderCycleValidationBadge: _renderCycleValidationBadge" in runs_body
+    assert "${validationBadge}" in cycle_summary_body
 
     # Typed badge: state-driven, drawer-routed.
     assert "badge.state" in badge_body
@@ -585,7 +586,7 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     assert "if (state === 'pending') return ''" in badge_body
     # Phase B (issue #6310 follow-up): the badge now routes through the
     # drawer's inline-expansion handler, not the modal-opening
-    # ``runE2ELifecycleCommand`` pipeline.  The expansion handler lives
+    # ``runLifecycleCommand`` pipeline.  The expansion handler lives
     # on the drawer module and the badge calls it via the dashboard's
     # ``_handleCycleValidationBadgeClick`` helper.
     assert "_handleCycleValidationBadgeClick" in badge_body
@@ -606,7 +607,7 @@ def test_cycle_validation_badge_derived_from_raw_events() -> None:
     lifecycle projection.  Drawer renders ``state`` directly; for
     passed/failed states it dispatches the typed
     ``OpenValidationDetailsCommand`` through the existing
-    ``runE2ELifecycleCommand`` Command pipeline."""
+    ``runLifecycleCommand`` Command pipeline."""
     from issue_orchestrator.view_models.journey_projection import (
         derive_cycle_validation_badge,
     )
@@ -1430,17 +1431,18 @@ def test_dashboard_js_node_test_sources_present() -> None:
 
 def test_journey_cycle_labels_use_run_local_numbering() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
-    assert "const displayCycleNumber = c.cycle_in_run || c.cycle || (cycleIndex + 1);" in body
+    body = _function_body(js, "_defaultIssueLifecycleCycleLabel")
+    assert "cycle.cycle_in_run || cycle.cycle || cycle.cycle_number || (ctx.cycleIndex + 1)" in body
 
 
 def test_journey_renders_server_supplied_scratch_run_and_cycle_labels() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
-    assert "const runLabel = run.run_label" in body
-    assert "escapeHtml(runLabel)" in body
-    assert "const cycleLabel = c.cycle_label" in body
-    assert "escapeHtml(cycleLabel)" in body
+    run_body = _function_body(js, "_defaultIssueLifecycleRunLabel")
+    cycle_body = _function_body(js, "_defaultIssueLifecycleCycleLabel")
+    summary_body = _function_body(js, "_renderIssueLifecycleCycleSummary")
+    assert "run.run_label" in run_body
+    assert "cycle.cycle_label" in cycle_body
+    assert "escapeHtml(cycleLabel)" in summary_body
 
 
 def test_journey_copy_uses_server_supplied_scratch_run_and_cycle_labels() -> None:
@@ -1452,45 +1454,56 @@ def test_journey_copy_uses_server_supplied_scratch_run_and_cycle_labels() -> Non
 
 def test_journey_renders_phase_group_headers() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
-    assert "c.phase_groups" in body
+    body = _function_body(js, "_renderIssueLifecycleCycleBody")
+    assert "cycle && cycle.phase_groups" in body
     assert "journey-phase-header" in body
 
 
 def test_journey_timeline_uses_native_disclosure_hierarchy() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
-    assert '<details class="journey-run unified-timeline-node"' in body
-    assert '<details class="journey-cycle unified-timeline-node"' in body
-    assert '<summary class="journey-cycle-header unified-timeline-summary">' in body
-    assert '_journeyDisclosureCommandAttr(runId)' in body
-    assert '_journeyDisclosureCommandAttr(cycleId)' in body
-    assert 'ontoggle="runLifecycleCommandFromToggle(this)"' in body
-    assert 'onclick="toggleJourneyCycle' not in body
+    drawer_body = _function_body(js, "_renderJourneyRuns")
+    shared_body = _function_body(js, "renderIssueLifecycleTimeline")
+    assert "renderIssueLifecycleTimeline(runs, {" in drawer_body
+    assert "renderHierarchicalTimelineNode({" in shared_body
+    assert "className: 'journey-run unified-timeline-node'" in shared_body
+    assert "className: 'journey-cycle unified-timeline-node'" in shared_body
+    assert "summaryClassName: 'journey-cycle-header unified-timeline-summary'" in shared_body
+    assert "caretClassName: 'journey-cycle-toggle'" in shared_body
+    assert "_journeyDisclosureCommandAttr" not in drawer_body
+    assert "sync_journey_disclosure" not in drawer_body
+    assert 'ontoggle="runLifecycleCommandFromToggle(this)"' not in drawer_body
+    assert 'onclick="toggleJourneyCycle' not in drawer_body
 
 
-def test_journey_timeline_disclosure_uses_command_pattern() -> None:
+def test_journey_timeline_disclosure_uses_shared_renderer_not_sync_command() -> None:
     js = _read(DASHBOARD_JS)
     lifecycle_js = (DASHBOARD_JS_DIR / "lifecycle_commands.js").read_text(encoding="utf-8")
-    command_attr_body = _function_body(js, "_journeyDisclosureCommandAttr")
     toggle_body = _function_body(lifecycle_js, "runLifecycleCommandFromToggle")
-    dispatcher_body = _function_body(lifecycle_js, "runE2ELifecycleCommand")
-    assert "kind: 'sync_journey_disclosure'" in command_attr_body
-    assert "_renderLifecycleCommandAttr(command)" in command_attr_body
-    assert "data-timeline-command" not in command_attr_body
-    assert "sync_journey_disclosure" in toggle_body
-    assert "runE2ELifecycleCommand(command, detailsEl)" in toggle_body
-    assert "syncJourneyDisclosureState(triggerEl)" in dispatcher_body
-    assert "Timeline command target mismatch" in dispatcher_body
+    dispatcher_body = _function_body(lifecycle_js, "runLifecycleCommand")
+    renderer_body = _function_body(js, "renderHierarchicalTimelineNode")
+    css = _read_dashboard_css_bundle()
+    assert "sync_journey_disclosure" not in js
+    assert "syncJourneyDisclosureState" not in js
+    assert "_journeyDisclosureCommandAttr" not in js
+    assert "sync_journey_disclosure" not in lifecycle_js
+    assert "detailsEl.open !== true" in toggle_body
+    assert "detailsEl.dataset.loaded === '1'" in toggle_body
+    assert "runLifecycleCommand(command, detailsEl)" in toggle_body
+    assert 'ontoggle="runLifecycleCommandFromToggle(this)"' in renderer_body
+    assert "_renderLifecycleCommandAttr(node.command)" in renderer_body
+    assert ".journey-cycle-body.collapsed" not in css
+    assert ".hierarchical-timeline-caret::before" in css
+    assert 'details[open] > summary .hierarchical-timeline-caret::before' in css
     assert "Unsupported lifecycle command" in dispatcher_body
 
 
-def test_toggle_journey_cycle_targets_own_header_toggle() -> None:
+def test_toggle_journey_cycle_uses_native_details_state() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "toggleJourneyCycle")
     assert "const cycleNode = document.getElementById(cycleId);" in body
-    assert ":scope > .journey-cycle-header .journey-cycle-toggle" in body
-    assert "syncJourneyDisclosureState(cycleNode)" in body
+    assert "cycleNode.tagName !== 'DETAILS'" in body
+    assert "cycleNode.open = !cycleNode.open;" in body
+    assert "syncJourneyDisclosureState" not in body
 
 
 def test_journey_artifact_affordance_is_semantic_button() -> None:
@@ -1502,16 +1515,21 @@ def test_journey_artifact_affordance_is_semantic_button() -> None:
 
 
 def test_journey_disclosure_rows_have_keyboard_focus_styles() -> None:
+    js = _read(DASHBOARD_JS)
+    step_body = _function_body(js, "_renderIssueLifecycleStep")
     css = _read_dashboard_css_bundle()
     assert ".journey-cycle-header:focus-visible" in css
     assert ".journey-cycle-header::-webkit-details-marker" in css
     assert ".journey-cycle-artifacts-btn:focus-visible" in css
+    assert '<button type="button" class="journey-step-inline-toggle"' in step_body
+    assert 'aria-controls="${escapeAttr(bodyId)}"' in js
+    assert 'aria-expanded="false"' in js
+    assert ".journey-step-inline-toggle:focus-visible" in css
 
 
-def test_journey_disclosure_toggle_sync_closes_open_timeline_menus() -> None:
+def test_journey_disclosure_toggle_closes_open_timeline_menus() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "syncJourneyDisclosureState")
-    assert "typeof closeTimelineEventMenus === 'function'" in body
+    body = _function_body(js, "toggleJourneyCycle")
     assert "closeTimelineEventMenus();" in body
 
 
@@ -1597,8 +1615,10 @@ def test_timeline_events_pass_detail_context_to_action_menu() -> None:
 def test_timeline_modal_delegate_handles_menu_items() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimeline")
+    bind_body = _function_body(js, "bindTimelineEventActions")
     handler_body = _function_body(js, "handleTimelineEventActionsClick")
-    assert "handleTimelineEventActionsClick" in body
+    assert "bindTimelineEventActions(container)" in body
+    assert "container.addEventListener('click', handleTimelineEventActionsClick)" in bind_body
     assert ".timeline-action-btn, .timeline-menu-item" in handler_body
     assert "timeline-event-menu-trigger" in handler_body
     assert "toggleTimelineEventMenu(ownerMenu)" in handler_body
@@ -1609,11 +1629,19 @@ def test_journey_action_delegate_handles_menu_items_and_closes_menus() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "_renderJourneyRuns")
     handler_body = _function_body(js, "handleTimelineEventActionsClick")
-    assert "handleTimelineEventActionsClick" in body
+    assert "bindTimelineEventActions(container)" in body
     assert ".timeline-action-btn, .timeline-menu-item" in handler_body
     assert "toggleTimelineEventMenu(ownerMenu)" in handler_body
     assert "event.preventDefault()" in handler_body
     assert "closeTimelineEventMenus();" in handler_body
+
+
+def test_canonical_viewer_mounts_bind_timeline_action_delegate_for_plugin_menus() -> None:
+    js = _read(DASHBOARD_JS)
+    row_loader_body = _function_body(js, "loadE2ERunIntoRow")
+    validation_modal_body = _function_body(js, "openValidationFailure")
+    assert "bindTimelineEventActions(body)" in row_loader_body
+    assert "bindTimelineEventActions(dialogBody)" in validation_modal_body
 
 
 def test_timeline_renders_issue_affordances_for_navigation() -> None:
@@ -1803,7 +1831,7 @@ def test_e2e_run_timeline_is_directly_addressable() -> None:
     expand_body = _function_body(js, "expandE2ERunRow")
     assert "function openE2ERunTimeline(runId)" in js
     # Routes through the typed Command pipeline.
-    assert "runE2ELifecycleCommand" in legacy_entry
+    assert "runLifecycleCommand" in legacy_entry
     assert "'open_e2e_run'" in legacy_entry
     assert "expand_run_details: true" in legacy_entry
     # ``expandE2ERunRow`` honors the expand-run-details intent —
@@ -1828,7 +1856,7 @@ def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
     ``data-lifecycle-command`` with the typed shape
     ``{kind: 'open_issue_timeline', issue_number, scope_kind: 'e2e_run',
     e2e_run_id}`` and routes through
-    ``runE2ELifecycleCommandFromButton`` → ``runE2ELifecycleCommand``
+    ``runLifecycleCommandFromButton`` → ``runLifecycleCommand``
     → ``openIssueTimeline``.
     """
     js = _read(DASHBOARD_JS)
@@ -1841,7 +1869,7 @@ def test_e2e_run_timeline_renders_run_level_issue_links() -> None:
     assert "'open_issue_timeline'" in affordance_body
     assert "scope_kind: 'e2e_run'" in affordance_body
     assert "e2e_run_id: runId" in affordance_body
-    assert "runE2ELifecycleCommandFromButton(this)" in affordance_body
+    assert "runLifecycleCommandFromButton(this)" in affordance_body
     # No second-owner direct onclick path.
     assert "openIssueTimeline(${issueNumber}" not in affordance_body
     css = _read_dashboard_css_bundle()
@@ -2144,7 +2172,7 @@ def test_dashboard_templates_expose_direct_timeline_affordances() -> None:
         'data-lifecycle-command="{{ issue.open_run_command | tojson | forceescape }}"'
         in issue_row
     )
-    assert "runE2ELifecycleCommandFromButton(this)" in issue_row
+    assert "runLifecycleCommandFromButton(this)" in issue_row
     assert "openE2ERunTimeline({{ issue.e2e_run_id }})" in issue_row
     assert "openIssueTimeline({{ issue.issue_number }}, this); event.stopPropagation();" in issue_row
     assert "openTimelineModal({{ issue.issue_number }})" not in issue_row
@@ -2168,7 +2196,7 @@ def test_e2e_latest_results_affordance_uses_formatted_run_modal() -> None:
     assert 'data-action="show-latest-e2e-run-results"' in dashboard
     assert "showE2EDiagnosis()" not in dashboard
     # Now goes through the typed Command pipeline.
-    assert "runE2ELifecycleCommand" in latest_body
+    assert "runLifecycleCommand" in latest_body
     assert "'open_e2e_run'" in latest_body
     # No direct ``showUnifiedRunView(runId)`` bypass.
     assert "showUnifiedRunView(runId)" not in latest_body
@@ -2312,10 +2340,14 @@ def test_review_feedback_modal_can_filter_to_specific_timeline_entry() -> None:
 
 def test_journey_renders_local_timestamps_from_raw_event_times() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
-    assert "formatJourneyHeaderTimestamp(run.timestamp" in body
-    assert "formatJourneyHeaderTimestamp(c.timestamp" in body
-    assert "formatJourneyStepTimestamp(s.timestamp" in body
+    header_body = _function_body(js, "_formatHierarchicalHeaderTimestamp")
+    run_summary_body = _function_body(js, "_renderIssueLifecycleRunSummary")
+    cycle_summary_body = _function_body(js, "_renderIssueLifecycleCycleSummary")
+    step_body = _function_body(js, "_renderIssueLifecycleStep")
+    assert "formatJourneyHeaderTimestamp(timestamp, fallback)" in header_body
+    assert "_formatHierarchicalHeaderTimestamp(run.timestamp" in run_summary_body
+    assert "_formatHierarchicalHeaderTimestamp(cycle.timestamp" in cycle_summary_body
+    assert "_formatHierarchicalStepTimestamp((step && step.timestamp)" in step_body
 
 
 def test_journey_layout_uses_content_column_for_actions_and_detail() -> None:
@@ -2559,19 +2591,27 @@ def test_inline_agent_attempts_expander_is_wired_through_typed_command_pipeline(
          ``open_inline_agent_attempts`` Command (the
          ``OpenInlineAgentAttemptsCommand`` Pydantic shape) on the
          ``<details>`` element, routed via
-         ``ontoggle="runE2ELifecycleCommandFromToggle(this)"``.
+         ``ontoggle="runLifecycleCommandFromToggle(this)"``.
       4. The dispatcher in ``lifecycle_commands.js`` has the matching
          branch.
       5. The lazy-fetch helper hits
          ``/api/issue-detail/{n}?view=ops`` — the only contract the
          backend ops-view payload satisfies.
+      6. The expanded plugin body renders through
+         ``renderIssueLifecycleTimeline`` so it shares dashboard timeline
+         rows, menus, and validation event hosts.
     """
     assert "inline_agent_attempts.js" in DASHBOARD_JS_CHUNKS, (
         "inline_agent_attempts.js must be in DASHBOARD_JS_CHUNKS"
     )
     chunks = list(DASHBOARD_JS_CHUNKS)
+    shared_idx = chunks.index("hierarchical_timeline.js")
     inline_idx = chunks.index("inline_agent_attempts.js")
     plugin_idx = chunks.index("plugins/agent_context.js")
+    assert shared_idx < inline_idx, (
+        "hierarchical_timeline.js must load BEFORE inline_agent_attempts.js — "
+        "the plugin expander body uses renderIssueLifecycleTimeline"
+    )
     assert inline_idx < plugin_idx, (
         "inline_agent_attempts.js must load BEFORE plugins/agent_context.js — "
         "the plugin's render-time check for renderInlineAgentAttemptsExpander "
@@ -2596,11 +2636,17 @@ def test_inline_agent_attempts_expander_is_wired_through_typed_command_pipeline(
     inline_src = (DASHBOARD_JS_DIR / "inline_agent_attempts.js").read_text(encoding="utf-8")
     # Typed-Command pipeline.
     assert (
-        'ontoggle="runE2ELifecycleCommandFromToggle(this)"' in inline_src
-    ), "expander must dispatch via runE2ELifecycleCommandFromToggle (shared pipeline)"
+        'ontoggle="runLifecycleCommandFromToggle(this)"' in inline_src
+    ), "expander must dispatch via runLifecycleCommandFromToggle (shared pipeline)"
     assert (
         "'open_inline_agent_attempts'" in inline_src
     ), "expander must emit the typed Command kind 'open_inline_agent_attempts'"
+    assert (
+        "renderIssueLifecycleTimeline(reversed, {" in inline_src
+    ), "plugin body must use the same issue lifecycle renderer as the dashboard timeline"
+    assert (
+        "agent-context-cycle\">" not in inline_src
+    ), "plugin must not keep a bespoke cycle renderer parallel to the dashboard timeline"
     # Legacy bespoke handler is gone.
     assert (
         "_handleAgentAttemptsToggle" not in inline_src
@@ -2626,8 +2672,8 @@ def test_inline_agent_attempts_expander_is_wired_through_typed_command_pipeline(
         "loadInlineAgentAttempts(command.issue_number" in dispatcher_src
     ), "dispatcher must call loadInlineAgentAttempts(issue, triggerEl)"
     assert (
-        "function runE2ELifecycleCommandFromToggle" in dispatcher_src
-    ), "lifecycle_commands.js must define runE2ELifecycleCommandFromToggle"
+        "function runLifecycleCommandFromToggle" in dispatcher_src
+    ), "lifecycle_commands.js must define runLifecycleCommandFromToggle"
 
 
 # ─── Issue #6334: drop the #e2eDiagnosisModal frame ────────────────────
@@ -2739,15 +2785,22 @@ def test_js_bundle_drops_legacy_e2e_diagnosis_modal_callers() -> None:
 def test_e2e_runs_list_chunk_registered_after_e2e_run_view() -> None:
     """``e2e_runs_list.js`` calls ``renderE2EResultsPanel`` /
     ``renderE2ETimeline`` (defined in ``e2e_run_view.js``), so it
-    must load AFTER ``e2e_run_view.js`` in the bundle.  A re-order
-    that drops this invariant would break the inline canonical
-    viewer mount on the first row expand.
+    must load AFTER ``e2e_run_view.js`` in the bundle.  It also uses
+    ``hierarchical_timeline.js`` for the row shell, so the shared
+    renderer must load before both timeline consumers.  A re-order that
+    drops these invariants would break the inline canonical viewer mount
+    or resurrect duplicate disclosure markup.
     """
     chunks = list(DASHBOARD_JS_CHUNKS)
     assert "e2e_run_view.js" in chunks
+    assert "hierarchical_timeline.js" in chunks
+    assert "issue_detail_drawer.js" in chunks
     assert "e2e_runs_list.js" in chunks, (
         "e2e_runs_list.js must be registered in DASHBOARD_JS_CHUNKS (#6334)"
     )
+    assert chunks.index("hierarchical_timeline.js") > chunks.index("lifecycle_commands.js")
+    assert chunks.index("hierarchical_timeline.js") < chunks.index("issue_detail_drawer.js")
+    assert chunks.index("hierarchical_timeline.js") < chunks.index("e2e_runs_list.js")
     assert chunks.index("e2e_runs_list.js") > chunks.index("e2e_run_view.js"), (
         "e2e_runs_list.js must load AFTER e2e_run_view.js — its lazy "
         "loader calls renderE2EResultsPanel/renderE2ETimeline (#6334)"
@@ -2758,23 +2811,31 @@ def test_e2e_runs_list_uses_typed_command_pipeline() -> None:
     """Issue #6334: each ``<details>`` row in the runs-as-rows panel
     must carry a typed ``expand_e2e_run`` Command in
     ``data-lifecycle-command`` and dispatch on ``ontoggle`` through
-    the shared ``runLifecycleCommandFromToggle`` pipeline — the
-    same single-owner contract every other affordance uses.
+    the shared ``runLifecycleCommandFromToggle`` pipeline via
+    ``hierarchical_timeline.js`` — the same single-owner contract every
+    native disclosure affordance uses.
 
     Prevents drift back to a bespoke ``ontoggle="_handleE2ERunRow(...)"``
     handler reading from a one-off attribute (the bug PR #6333
     fixed for the inline Attempts expander).
     """
     src = (DASHBOARD_JS_DIR / "e2e_runs_list.js").read_text(encoding="utf-8")
+    renderer_src = (DASHBOARD_JS_DIR / "hierarchical_timeline.js").read_text(encoding="utf-8")
     assert (
         "'expand_e2e_run'" in src or '"expand_e2e_run"' in src
     ), "e2e_runs_list.js must emit the typed kind 'expand_e2e_run'"
     assert (
-        'ontoggle="runLifecycleCommandFromToggle' in src
-    ), "row <details> must dispatch via runLifecycleCommandFromToggle (single-owner toggle)"
+        "renderHierarchicalTimelineNode({" in src
+    ), "row <details> shell must be rendered by the shared hierarchical renderer"
     assert (
-        "_renderLifecycleCommandAttr(command)" in src
-    ), "row must render its typed Command via the shared lifecycle attr helper"
+        "command," in src
+    ), "row must pass its typed Command to the shared hierarchical renderer"
+    assert (
+        'ontoggle="runLifecycleCommandFromToggle' in renderer_src
+    ), "shared row renderer must dispatch via runLifecycleCommandFromToggle"
+    assert (
+        "_renderLifecycleCommandAttr(node.command)" in renderer_src
+    ), "shared row renderer must use the lifecycle attr helper"
 
     # Dispatcher wiring.
     dispatcher_src = (DASHBOARD_JS_DIR / "lifecycle_commands.js").read_text(encoding="utf-8")

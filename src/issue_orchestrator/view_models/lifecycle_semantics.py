@@ -187,7 +187,7 @@ class ExpandE2ERunCommand(LifecycleBase):
     """Expand a run's row in the inline runs-as-rows list (issue #6334).
 
     Carried by every ``<details>`` row in the E2E "Run History" list.
-    Dispatched from ``runE2ELifecycleCommandFromToggle`` when the user
+    Dispatched from ``runLifecycleCommandFromToggle`` when the user
     first opens the row, which routes to a loader that lazy-fetches
     ``/api/e2e-run-detail/{run_id}`` and mounts the canonical viewer
     body inline — no modal teleport.

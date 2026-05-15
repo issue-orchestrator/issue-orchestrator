@@ -8,7 +8,7 @@ the JS dispatch table notices.
 
 Tests intentionally do not call the model_dump_json round-trip helpers
 because the goal here is to lock the *wire shape* of each Command kind
-that ``runE2ELifecycleCommand`` consumes on the frontend, not the
+that ``runLifecycleCommand`` consumes on the frontend, not the
 generic Pydantic serializer.
 """
 

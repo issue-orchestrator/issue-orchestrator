@@ -9,7 +9,7 @@
 // 1. ``_renderCycleValidationBadge`` produces the expected HTML for each
 //    state, including the typed-Command payload for passed/failed.
 // 2. Simulating a click on the rendered button (via
-//    ``runE2ELifecycleCommandFromButton``) dispatches the correct
+//    ``runLifecycleCommandFromButton``) dispatches the correct
 //    handler with the correct args.
 //
 // Without this test the drawer badge can render the wrong shape (or call
@@ -205,7 +205,7 @@ test('badge dispatch covers every supported lifecycle command kind', () => {
         ],
     ];
     for (const [command, expected] of cases) {
-        context.runE2ELifecycleCommand(command);
+        context.runLifecycleCommand(command);
     }
     assert.deepEqual(
         calls,
@@ -215,7 +215,7 @@ test('badge dispatch covers every supported lifecycle command kind', () => {
 
 test('badge dispatch toasts a warning for an unknown command kind', () => {
     const { context, calls, toasts } = loadBadgeContext();
-    context.runE2ELifecycleCommand({ kind: 'totally_unknown_kind', issue_number: 1 });
+    context.runLifecycleCommand({ kind: 'totally_unknown_kind', issue_number: 1 });
     assert.deepEqual(calls, []);
     assert.strictEqual(toasts.length, 1);
     assert.match(toasts[0][0], /Unsupported lifecycle command: totally_unknown_kind/);

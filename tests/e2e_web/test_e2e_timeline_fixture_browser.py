@@ -1073,7 +1073,7 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # typed-Command pipeline.  Each button must carry a
     # ``data-lifecycle-command`` attribute with the right typed shape.
     # Without that, the click would not dispatch through the
-    # ``runE2ELifecycleCommand`` owner.
+    # ``runLifecycleCommand`` owner.
     for issue_number in expected_run_level_issues:
         button = run_level_affordances.locator(
             ".e2e-issue-timeline-btn",
@@ -2111,7 +2111,7 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
 
     # E2E click-through proof (piggybacks on the existing run-modal
     # test): stub ``fetch`` and prove the inline expander's
-    # ``runE2ELifecycleCommandFromToggle`` dispatch lands on the
+    # ``runLifecycleCommandFromToggle`` dispatch lands on the
     # ops-view issue-detail URL.  Catches a regression where the
     # markup is right but the dispatcher's branch breaks.
     page.evaluate(

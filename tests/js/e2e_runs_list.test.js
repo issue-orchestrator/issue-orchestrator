@@ -1,8 +1,9 @@
 // Tests for the inline E2E runs-as-rows list (issue #6334).  No DOM,
 // no Playwright — pure vm.runInContext mounting of
-// ``e2e_runs_list.js`` plus ``lifecycle_commands.js`` so the
-// dispatcher and renderer exercise the same single-owner pipeline
-// every typed Command in the dashboard rides.
+// ``e2e_runs_list.js`` plus ``lifecycle_commands.js`` and
+// ``hierarchical_timeline.js`` so the dispatcher and row renderer
+// exercise the same single-owner pipeline every typed Command in the
+// dashboard rides.
 //
 // Layers covered:
 //
@@ -85,6 +86,11 @@ function _loadRunsListModule(extra = {}) {
         { filename: 'lifecycle_commands.js' },
     );
     vm.runInContext(
+        fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'hierarchical_timeline.js'), 'utf8'),
+        ctx,
+        { filename: 'hierarchical_timeline.js' },
+    );
+    vm.runInContext(
         fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'e2e_runs_list.js'), 'utf8'),
         ctx,
         { filename: 'e2e_runs_list.js' },
@@ -146,6 +152,10 @@ test('renderE2ERunsList: produces N <details> rows each carrying typed expand_e2
         (html.match(/ontoggle="runLifecycleCommandFromToggle\(this\)"/g) || []).length === 2,
         'each row must dispatch via runLifecycleCommandFromToggle',
     );
+    assert.ok(
+        (html.match(/e2e-run-row-caret hierarchical-timeline-caret/g) || []).length === 2,
+        'each row must use the shared hierarchical timeline caret',
+    );
     assert.ok(!html.includes('aria-controls='), 'native details/summary must own disclosure semantics');
     assert.ok(!html.includes('role="region"'), 'run bodies must not create landmark noise');
     assert.ok(!html.includes('aria-labelledby='), 'run bodies must not need custom summary wiring');
@@ -162,6 +172,12 @@ test('renderE2ERunRow: uses native details/summary semantics without per-row lan
     assert.ok(!html.includes('aria-controls='));
     assert.ok(!html.includes('role="region"'));
     assert.ok(!html.includes('aria-labelledby='));
+});
+
+test('renderE2ERunRow: delegates disclosure shell to the shared hierarchical renderer', () => {
+    const source = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'e2e_runs_list.js'), 'utf8');
+    assert.ok(source.includes('renderHierarchicalTimelineNode({'));
+    assert.ok(source.includes("caretClassName: 'e2e-run-row-caret'"));
 });
 
 test('renderE2ERunsList: empty payload renders the empty state', () => {
@@ -324,6 +340,26 @@ test('dispatcher round-trip: toggling a row calls loadE2ERunIntoRow and fetches 
     assert.deepStrictEqual(calls.fetch, ['/api/e2e-run-detail/88?view=user']);
 });
 
+test('dispatcher round-trip: loaded row binds shared timeline action delegate for plugin menus', async () => {
+    const boundContainers = [];
+    const ctx = _loadRunsListPlusDispatcher({
+        bindTimelineEventActions: (container) => boundContainers.push(container),
+    });
+    _attachFakeFetch(ctx);
+    const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
+    const match = html.match(/data-lifecycle-command="([^"]+)"/);
+    const cmdRaw = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+    const contentEl = { innerHTML: '', querySelector: () => null };
+    const detailsEl = _fakeRow(88, cmdRaw, contentEl);
+
+    ctx.runLifecycleCommandFromToggle(detailsEl);
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(boundContainers.length, 1);
+    assert.equal(boundContainers[0], contentEl);
+});
+
 test('dispatcher round-trip: re-opening a loaded row is a no-op (predictable-collapse rule)', async () => {
     const ctx = _loadRunsListPlusDispatcher();
     const calls = _attachFakeFetch(ctx);
@@ -366,7 +402,7 @@ test('open_e2e_run dispatcher branch: re-routes to expandE2ERunRow, NOT to showU
     ctx.showUnifiedRunView = () => {
         throw new Error('showUnifiedRunView was removed in #6334; open_e2e_run must route via expandE2ERunRow');
     };
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_e2e_run',
         label: 'Open E2E Run',
         run_id: 88,

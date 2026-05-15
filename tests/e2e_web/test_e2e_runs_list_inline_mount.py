@@ -594,7 +594,7 @@ def test_open_e2e_run_command_reroutes_to_row_expansion_not_modal(
     # Dispatch the typed ``open_e2e_run`` Command directly via the
     # global dispatcher — same path the chip / View button take.
     page.evaluate(
-        f"""() => window.runE2ELifecycleCommand({{
+        f"""() => window.runLifecycleCommand({{
             kind: 'open_e2e_run',
             label: 'Open E2E Run',
             run_id: {_RUN_ID},

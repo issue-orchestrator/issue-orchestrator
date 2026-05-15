@@ -231,6 +231,8 @@
     outline: 2px solid var(--accent, #4a9eff);
     outline-offset: 2px;
 }
+.hierarchical-timeline-caret::before { content: "▸"; }
+details[open] > summary .hierarchical-timeline-caret::before { content: "▾"; }
 .journey-cycle-toggle { width: 12px; font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
 .journey-cycle-label { font-size: 12px; font-weight: 500; white-space: nowrap; }
 .journey-cycle-agent { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
@@ -304,7 +306,6 @@ button.journey-cycle-validation-badge:hover {
     background: color-mix(in srgb, var(--warn, #f0b24f) 12%, transparent);
 }
 .journey-cycle-body { padding-left: 20px; }
-.journey-cycle-body.collapsed { display: none; }
 .journey-phase-group {
     margin-left: 8px;
     padding-left: 10px;

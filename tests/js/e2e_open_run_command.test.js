@@ -3,7 +3,7 @@
 // Three layers of the test pyramid, no DOM, no Playwright.  Mirrors
 // the pattern in ``tests/js/e2e_canonical_command_surface.test.js``.
 //
-// Layer A — Unit: ``runE2ELifecycleCommand({kind:'open_e2e_run',...})``
+// Layer A — Unit: ``runLifecycleCommand({kind:'open_e2e_run',...})``
 //   dispatches to ``expandE2ERunRow`` with the right args (NOT the
 //   removed ``showUnifiedRunView`` — that was the modal-driver).
 //   Malformed and unknown variants are handled (silent no-op /
@@ -89,7 +89,7 @@ function _loadDispatcher() {
 
 test('open_e2e_run command dispatches to expandE2ERunRow with the run_id (#6334)', () => {
     const { ctx, calls } = _loadDispatcher();
-    ctx.runE2ELifecycleCommand({ kind: 'open_e2e_run', run_id: 88 });
+    ctx.runLifecycleCommand({ kind: 'open_e2e_run', run_id: 88 });
     assert.strictEqual(calls.expandE2ERunRow.length, 1);
     assert.strictEqual(calls.expandE2ERunRow[0].runId, 88);
     // No expand_run_details → handler receives ``{ expandRunDetails: false }``.
@@ -98,7 +98,7 @@ test('open_e2e_run command dispatches to expandE2ERunRow with the run_id (#6334)
 
 test('open_e2e_run command forwards expand_run_details when true', () => {
     const { ctx, calls } = _loadDispatcher();
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_e2e_run',
         run_id: 88,
         expand_run_details: true,
@@ -109,7 +109,7 @@ test('open_e2e_run command forwards expand_run_details when true', () => {
 
 test('open_e2e_run command treats non-boolean expand_run_details as false', () => {
     const { ctx, calls } = _loadDispatcher();
-    ctx.runE2ELifecycleCommand({
+    ctx.runLifecycleCommand({
         kind: 'open_e2e_run',
         run_id: 88,
         expand_run_details: 'yes-as-string',
@@ -124,14 +124,14 @@ test('open_e2e_run command without run_id does NOT fire the handler', () => {
     // existing pattern for every other command kind (e.g. the
     // ``open_issue_timeline`` guard checks ``command.issue_number``).
     const { ctx, calls } = _loadDispatcher();
-    ctx.runE2ELifecycleCommand({ kind: 'open_e2e_run' });
+    ctx.runLifecycleCommand({ kind: 'open_e2e_run' });
     assert.strictEqual(calls.expandE2ERunRow.length, 0,
         'expandE2ERunRow must NOT fire without a run_id');
 });
 
 test('open_e2e_run command with run_id=0 does NOT fire the handler (falsy guard)', () => {
     const { ctx, calls } = _loadDispatcher();
-    ctx.runE2ELifecycleCommand({ kind: 'open_e2e_run', run_id: 0 });
+    ctx.runLifecycleCommand({ kind: 'open_e2e_run', run_id: 0 });
     assert.strictEqual(calls.expandE2ERunRow.length, 0);
 });
 
@@ -141,12 +141,12 @@ test('open_e2e_run command with run_id=0 does NOT fire the handler (falsy guard)
 // The dashboard template renders the chip like:
 //   <button class="card-focus"
 //           data-lifecycle-command='{"kind":"open_e2e_run","run_id":88}'
-//           onclick="runE2ELifecycleCommandFromButton(this);event.stopPropagation();">
+//           onclick="runLifecycleCommandFromButton(this);event.stopPropagation();">
 //     Run #88
 //   </button>
 // We build a representative chip string here, regex-extract the
 // data-lifecycle-command, JSON.parse it, and dispatch via the real
-// runE2ELifecycleCommand.
+// runLifecycleCommand.
 
 function _buildChipHtml(runId) {
     // Match the production template's rendered shape after
@@ -165,7 +165,7 @@ function _buildChipHtml(runId) {
     const cmdAttr = JSON.stringify(cmd).replace(/"/g, '&#34;');
     return (
         `<button class="card-focus" data-lifecycle-command="${cmdAttr}" ` +
-        `onclick="runE2ELifecycleCommandFromButton(this);event.stopPropagation();">Run #${runId}</button>`
+        `onclick="runLifecycleCommandFromButton(this);event.stopPropagation();">Run #${runId}</button>`
     );
 }
 
@@ -201,7 +201,7 @@ test('chip render → extract → dispatch: end-to-end through the typed Command
     // Dispatch via the real dispatcher.  Issue #6334: routes to
     // ``expandE2ERunRow`` (the inline runs-list driver), not the
     // dropped ``showUnifiedRunView`` modal.
-    ctx.runE2ELifecycleCommand(command);
+    ctx.runLifecycleCommand(command);
     assert.strictEqual(calls.expandE2ERunRow.length, 1);
     assert.strictEqual(calls.expandE2ERunRow[0].runId, 88);
 });
@@ -209,7 +209,7 @@ test('chip render → extract → dispatch: end-to-end through the typed Command
 test('chip render → extract → dispatch for a different run_id (no hard-coded captures)', () => {
     const { ctx, calls } = _loadDispatcher();
     const html = _buildChipHtml(427);
-    ctx.runE2ELifecycleCommand(_extractCommand(html));
+    ctx.runLifecycleCommand(_extractCommand(html));
     assert.strictEqual(calls.expandE2ERunRow[0].runId, 427);
 });
 

@@ -59,6 +59,11 @@ function loadViewerWithAgentPlugin(overrides = {}) {
     ctx.Map = Map;
     ctx.Promise = Promise;
     ctx.setTimeout = (fn) => fn;
+    const hierarchicalSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/hierarchical_timeline.js'),
+        'utf8',
+    );
+    vm.runInContext(hierarchicalSource, ctx, { filename: 'hierarchical_timeline.js' });
     const inlineSource = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/inline_agent_attempts.js'),
         'utf8',
@@ -597,7 +602,7 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
     assert.match(html, /agent-context-attempts-expander/);
     assert.match(html, /Attempts on issue #4503/);
     assert.match(html, /data-issue-number="4503"/);
-    assert.match(html, /ontoggle="runE2ELifecycleCommandFromToggle\(this\)"/);
+    assert.match(html, /ontoggle="runLifecycleCommandFromToggle\(this\)"/);
     // No legacy ``open_issue_timeline`` teleport for the plugin's
     // drill-in (the run-level affordance still uses it, unrelated).
     assert.doesNotMatch(html, /Open issue drawer/);

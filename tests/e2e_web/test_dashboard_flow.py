@@ -86,10 +86,12 @@ def test_issue_card_timeline_button_opens_cycle_timeline(
     cycle_row = journey.locator("details.journey-cycle").first
     expect(run_row).to_be_visible()
     expect(run_row).to_have_attribute("open", "")
-    expect(run_row).to_have_attribute("data-lifecycle-command", re.compile("sync_journey_disclosure"))
+    expect(run_row).not_to_have_attribute("data-lifecycle-command", re.compile(".+"))
+    expect(run_row.locator(":scope > summary .hierarchical-timeline-caret")).to_have_count(1)
     expect(cycle_row).to_be_visible()
     expect(cycle_row).to_have_attribute("open", "")
-    expect(cycle_row).to_have_attribute("data-lifecycle-command", re.compile("sync_journey_disclosure"))
+    expect(cycle_row).not_to_have_attribute("data-lifecycle-command", re.compile(".+"))
+    expect(cycle_row.locator(":scope > summary .hierarchical-timeline-caret")).to_have_count(1)
 
     cycle_body = cycle_row.locator(":scope > .journey-cycle-body")
     expect(cycle_body).to_be_visible()
