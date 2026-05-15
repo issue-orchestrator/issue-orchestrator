@@ -236,16 +236,16 @@ def test_issue_detail_template_includes_retry_publish_button() -> None:
     assert 'id="issueDetailRetryPublishBtn"' in html
 
 
-def test_issue_detail_timeline_filters_are_grouped_radio_controls() -> None:
+def test_issue_detail_timeline_filters_are_grouped_button_controls() -> None:
     js = _read(DASHBOARD_JS)
     css = _read_dashboard_css_bundle()
     body = _function_body(js, "_renderJourneyRuns")
-    assert 'role="radiogroup" aria-label="Run scope"' in body
-    assert 'role="radiogroup" aria-label="Timeline event detail"' in body
-    assert 'role="radio"' in body
+    assert 'role="radiogroup"' not in body
+    assert 'role="radio"' not in body
+    assert "aria-checked=" not in body
+    assert "aria-pressed=" in body
     assert "All runs" in body
     assert "Raw events" in body
-    assert "aria-checked=" in body
     assert ".journey-filter-group" in css
 
 

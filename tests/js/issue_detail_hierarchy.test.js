@@ -235,10 +235,10 @@ test('raw timeline view renders raw event rows instead of lifecycle runs', () =>
         },
     });
 
-    assert.match(html, /role="radiogroup" aria-label="Run scope"/);
-    assert.match(html, /role="radiogroup" aria-label="Timeline event detail"/);
+    assert.doesNotMatch(html, /role="radiogroup"/);
+    assert.doesNotMatch(html, /role="radio"/);
     assert.match(html, /Raw events/);
-    assert.match(html, /aria-checked="true" onclick="setTimelineView\('raw'\)"/);
+    assert.match(html, /aria-pressed="true" onclick="setTimelineView\('raw'\)"/);
     assert.match(html, /class="journey-raw-events"/);
     assert.match(html, /session.started/);
     assert.match(html, /validation.failed/);

@@ -210,17 +210,17 @@ function _renderJourneyRuns(container, allRuns, data) {
     const isRaw = timelineView === 'raw';
 
     let html = `<div class="journey-filter">
-        <span class="journey-filter-group" role="radiogroup" aria-label="Run scope">
-            <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" type="button" role="radio" aria-checked="${isLatestRun ? 'true' : 'false'}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
-            <button class="journey-filter-btn ${isAll ? 'active' : ''}" type="button" role="radio" aria-checked="${isAll ? 'true' : 'false'}" onclick="setJourneyFilter('all')">All runs</button>
+        <span class="journey-filter-group">
+            <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" type="button" aria-pressed="${isLatestRun ? 'true' : 'false'}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
+            <button class="journey-filter-btn ${isAll ? 'active' : ''}" type="button" aria-pressed="${isAll ? 'true' : 'false'}" onclick="setJourneyFilter('all')">All runs</button>
         </span>
         <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
         <span class="journey-filter-separator"></span>
-        <span class="journey-filter-group" role="radiogroup" aria-label="Timeline event detail">
-            <button class="journey-filter-btn ${timelineView === 'user' ? 'active' : ''}" type="button" role="radio" aria-checked="${timelineView === 'user' ? 'true' : 'false'}" onclick="setTimelineView('user')" title="Show key events: coding, review, outcome">Story</button>
-            <button class="journey-filter-btn ${timelineView === 'ops' ? 'active' : ''}" type="button" role="radio" aria-checked="${timelineView === 'ops' ? 'true' : 'false'}" onclick="setTimelineView('ops')" title="Show operational events: validation, retries, exchanges">Ops</button>
-            <button class="journey-filter-btn ${timelineView === 'debug' ? 'active' : ''}" type="button" role="radio" aria-checked="${timelineView === 'debug' ? 'true' : 'false'}" onclick="setTimelineView('debug')" title="Show all internal events">Debug</button>
-            <button class="journey-filter-btn ${isRaw ? 'active' : ''}" type="button" role="radio" aria-checked="${isRaw ? 'true' : 'false'}" onclick="setTimelineView('raw')" title="Show raw timeline events">Raw events</button>
+        <span class="journey-filter-group">
+            <button class="journey-filter-btn ${timelineView === 'user' ? 'active' : ''}" type="button" aria-pressed="${timelineView === 'user' ? 'true' : 'false'}" onclick="setTimelineView('user')" title="Show key events: coding, review, outcome">Story</button>
+            <button class="journey-filter-btn ${timelineView === 'ops' ? 'active' : ''}" type="button" aria-pressed="${timelineView === 'ops' ? 'true' : 'false'}" onclick="setTimelineView('ops')" title="Show operational events: validation, retries, exchanges">Ops</button>
+            <button class="journey-filter-btn ${timelineView === 'debug' ? 'active' : ''}" type="button" aria-pressed="${timelineView === 'debug' ? 'true' : 'false'}" onclick="setTimelineView('debug')" title="Show all internal events">Debug</button>
+            <button class="journey-filter-btn ${isRaw ? 'active' : ''}" type="button" aria-pressed="${isRaw ? 'true' : 'false'}" onclick="setTimelineView('raw')" title="Show raw timeline events">Raw events</button>
         </span>
     </div>`;
 

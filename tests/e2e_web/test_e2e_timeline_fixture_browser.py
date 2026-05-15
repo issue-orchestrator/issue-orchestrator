@@ -1368,26 +1368,24 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     # actions; timeline density is selected through the grouped chips.
     expect(page.locator("#issueDetailFocusBtn")).to_have_count(0)
     expect(page.locator("#issueDetailGitHubBtn")).to_have_count(0)
-    expect(
-        page.locator(
-            '#issueDetailDrawer [role="radiogroup"][aria-label="Run scope"]'
-        )
-    ).to_be_visible()
+    expect(page.locator('#issueDetailDrawer [role="radiogroup"]')).to_have_count(0)
+    expect(page.locator('#issueDetailDrawer [role="radio"]')).to_have_count(0)
+    expect(page.locator("#issueDetailDrawer .journey-filter-group").first).to_be_visible()
     raw_events_btn = page.locator(
-        '#issueDetailDrawer [role="radio"]',
+        "#issueDetailDrawer button",
         has_text="Raw events",
     )
     _dom_click_hit_tested(raw_events_btn, "issue detail raw events view")
-    expect(raw_events_btn).to_have_attribute("aria-checked", "true")
+    expect(raw_events_btn).to_have_attribute("aria-pressed", "true")
     expect(page.locator("#issueDetailDrawer .journey-raw-event").first).to_be_visible(
         timeout=5000
     )
     story_btn = page.locator(
-        '#issueDetailDrawer [role="radio"]',
+        "#issueDetailDrawer button",
         has_text="Story",
     )
     _dom_click_hit_tested(story_btn, "issue detail story view")
-    expect(story_btn).to_have_attribute("aria-checked", "true")
+    expect(story_btn).to_have_attribute("aria-pressed", "true")
     expect(journey.locator(".journey-run").first).to_be_visible(timeout=5000)
 
     # --- Session Recording click-through ---

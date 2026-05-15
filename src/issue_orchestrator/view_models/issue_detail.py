@@ -74,6 +74,8 @@ def build_issue_detail_view_model(
     today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     event_source = raw_events if view == "raw" and raw_events is not None else events
     filtered = _filter_events_by_view(event_source, view)
+    # Raw view still needs semantic runs so the frontend can scope raw events
+    # to Latest run versus All runs without rendering the lifecycle body.
     projection_view = "debug" if view == "raw" else view
     projection_events = _filter_events_by_view(events, projection_view)
     story_events = _story_projection_events(projection_events, projection_view)
