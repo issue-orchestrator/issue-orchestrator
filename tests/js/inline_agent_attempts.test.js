@@ -68,10 +68,16 @@ function _loadInlineModule(extra = {}) {
         ctx,
         { filename: 'hierarchical_timeline.js' },
     );
+    ctx.registerHierarchicalTimelineHostCapability('renderEventActions', () => ctx.renderTimelineEventActions);
     vm.runInContext(
         fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'inline_agent_attempts.js'), 'utf8'),
         ctx,
         { filename: 'inline_agent_attempts.js' },
+    );
+    vm.runInContext(
+        fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'plugins/agent_context.js'), 'utf8'),
+        ctx,
+        { filename: 'plugins/agent_context.js' },
     );
     return ctx;
 }

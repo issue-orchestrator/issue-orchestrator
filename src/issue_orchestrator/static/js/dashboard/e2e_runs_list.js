@@ -19,26 +19,9 @@
     if (typeof window === 'undefined') return;
 
     // ── Tone helpers ─────────────────────────────────────────────
-    // OutcomeBadge is owned by the projection (PR #6333) — the UI
-    // reads ``.tone`` directly.  Unknown tones fall back to neutral,
-    // never passed (the silent-green bug OutcomeBadge prevents).
-
-    const _KNOWN_TONES = new Set(['passed', 'failed', 'error', 'in_progress', 'neutral']);
-
-    function _toneFor(badge) {
-        if (badge && typeof badge === 'object' && _KNOWN_TONES.has(badge.tone)) {
-            return badge.tone;
-        }
-        return 'neutral';
-    }
-
-    function _toneGlyph(tone) {
-        if (tone === 'failed') return '✕';
-        if (tone === 'error') return '⚠';
-        if (tone === 'in_progress') return '⟳';
-        if (tone === 'neutral') return '·';
-        return '✓';
-    }
+    // OutcomeBadge is owned by the projection (PR #6333).  The shared
+    // hierarchical helper normalizes unknown tones to neutral so E2E
+    // rows and lifecycle plugin rows don't drift.
 
     function _toneClass(tone) {
         return `e2e-run-row-${tone}`;
@@ -127,8 +110,8 @@
             label: 'Expand E2E Run',
             run_id: runId,
         };
-        const tone = _toneFor(summary.outcome);
-        const outcomeLabel = (summary.outcome && summary.outcome.label) || 'Unknown';
+        const outcome = readHierarchicalOutcomeBadge(summary.outcome, 'Unknown');
+        const tone = outcome.tone;
         const counts = _renderCountSpans(summary.results);
         const meta = _renderMeta(summary);
         const note = summary.note
@@ -147,9 +130,9 @@
             },
             command,
             summaryHtml: (
-                `<span class="cvv-ico cvv-ico-${tone}" aria-hidden="true">${_toneGlyph(tone)}</span>` +
+                `<span class="cvv-ico cvv-ico-${tone}" aria-hidden="true">${hierarchicalToneGlyph(tone, { inProgress: '⟳' })}</span>` +
                 `<span class="e2e-run-row-id">Run #${runId}</span>` +
-                `<span class="e2e-run-row-outcome e2e-run-row-outcome-${tone}">${escapeHtml(outcomeLabel)}</span>` +
+                `<span class="e2e-run-row-outcome e2e-run-row-outcome-${tone}">${escapeHtml(outcome.label)}</span>` +
                 `<span class="e2e-run-row-counts">${counts}</span>` +
                 (meta ? `<span class="e2e-run-row-meta">${meta}</span>` : '')
             ),

@@ -614,6 +614,64 @@ test('plugin: agent-context plugin renders when case carries the namespace', () 
     assert.strictEqual(cmd.issue_number, 4503);
 });
 
+test('plugin: extras render in payload order when agent-context is not first', () => {
+    // Downstream repos (tixmeup et al.) can contribute their own
+    // namespaces.  Registration order is deliberately irrelevant:
+    // this loads ``io.agent-context`` first, registers a foreign
+    // plugin second, then renders the foreign extra before the
+    // orchestrator extra because that is the payload order.
+    const ctx = loadViewerWithAgentPlugin();
+    ctx.registerValidationPlugin('tixmeup.context', (payload) =>
+        `<div class="cvv-plugin tixmeup-context">Tixmeup ${ctx.escapeHtml(payload.source || '')}</div>`);
+
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'cross repo failure', outcome: 'failed',
+            failure_details: 'AssertionError',
+            extras: [
+                { namespace: 'tixmeup.context', payload: { source: 'domain plugin' } },
+                {
+                    namespace: 'io.agent-context',
+                    payload: {
+                        issue_number: 4503,
+                        issue_title: 'fixture cohort split',
+                        final_state: 'blocked',
+                        summary: 'agent retried 2x then blocked on validation',
+                    },
+                },
+            ],
+        }],
+    });
+
+    const foreignIdx = html.indexOf('tixmeup-context');
+    const agentIdx = html.indexOf('cvv-plugin agent-context');
+    assert.ok(foreignIdx >= 0, 'foreign plugin output should render');
+    assert.ok(agentIdx >= 0, 'agent-context plugin output should render');
+    assert.ok(foreignIdx < agentIdx, 'render order must follow case.extras order, not registration order');
+    assert.match(html, /agent-context-attempts-expander/);
+});
+
+test('plugin: foreign extras render cleanly when agent-context is absent', () => {
+    const ctx = loadViewer();
+    ctx.registerValidationPlugin('tixmeup.context', (payload) =>
+        `<div class="cvv-plugin tixmeup-context">Tixmeup ${ctx.escapeHtml(payload.source || '')}</div>`);
+
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'failed',
+        junit_cases: [{
+            case_id: 'a', display_name: 'generic downstream failure', outcome: 'failed',
+            failure_details: 'AssertionError',
+            extras: [{ namespace: 'tixmeup.context', payload: { source: 'domain plugin' } }],
+        }],
+    });
+
+    assert.match(html, /tixmeup-context/);
+    assert.match(html, /domain plugin/);
+    assert.doesNotMatch(html, /agent-context/);
+    assert.doesNotMatch(html, /diag-validation-plugin-error/);
+});
+
 test('plugin: agent-context plugin degrades to text-only when inline_agent_attempts.js is not loaded', () => {
     // Generic JUnit consumers (tixmeup et al.) may register the
     // agent-context plugin but NOT load

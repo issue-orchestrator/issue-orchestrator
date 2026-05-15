@@ -107,6 +107,7 @@ test('badge passed state renders an inline-expansion button (Phase B)', () => {
     assert.match(html, /✓ Validated/);
     assert.match(html, /_handleCycleValidationBadgeClick\(this\)/);
     assert.match(html, /data-validation-state="passed"/);
+    assert.match(html, /data-issue-number="4124"/);
     // Modal Command payload is gone from the badge HTML.
     assert.doesNotMatch(html, /data-lifecycle-command/);
 });
@@ -127,6 +128,7 @@ test('badge failed state renders an inline-expansion button (Phase B)', () => {
     assert.match(html, /✗ Failed/);
     assert.match(html, /_handleCycleValidationBadgeClick\(this\)/);
     assert.match(html, /data-validation-state="failed"/);
+    assert.match(html, /data-issue-number="4124"/);
     assert.doesNotMatch(html, /data-lifecycle-command/);
 });
 

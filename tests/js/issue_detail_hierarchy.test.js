@@ -34,6 +34,7 @@ function _escapeHtml(value) {
 function loadRenderSlice(overrides = {}) {
     const source = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'issue_detail_drawer.js'), 'utf8');
     const hierarchicalSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'hierarchical_timeline.js'), 'utf8');
+    const pluginSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'plugins/agent_context.js'), 'utf8');
     const slice = [
         _extractFunction(source, 'function _renderJourneyRuns'),
         _extractFunction(source, 'function toggleJourneyCycle'),
@@ -49,14 +50,7 @@ function loadRenderSlice(overrides = {}) {
         filterRuns: (runs) => runs,
         formatJourneyHeaderTimestamp: (_timestamp, label) => label || '13:05',
         formatJourneyStepTimestamp: (_timestamp, label) => label || '13:05',
-        _readOutcomeBadge: (outcome) => ({
-            label: outcome && outcome.label ? outcome.label : 'In progress',
-            toneClass: outcome && outcome.tone === 'failed' ? 'outcome-failed' : '',
-        }),
         _renderCycleValidationBadge: () => '',
-        _filterStepActions: (step) => Array.isArray(step && step.actions) ? step.actions : [],
-        _isValidationStep: () => false,
-        _findCycleRunDir: () => '',
         renderTimelineEventActions: () => '',
         _renderLifecycleCommandAttr: (command) =>
             `data-lifecycle-command="${String(command.kind || '')}"`,
@@ -74,6 +68,7 @@ function loadRenderSlice(overrides = {}) {
     context.window = context;
     vm.createContext(context);
     vm.runInContext(hierarchicalSource, context, { filename: 'hierarchical_timeline.js' });
+    vm.runInContext(pluginSource, context, { filename: 'plugins/agent_context.js' });
     vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (_renderJourneyRuns slice)' });
     return context;
 }
@@ -176,9 +171,9 @@ test('toggleJourneyCycle delegates disclosure state to native details', () => {
 
 test('timeline source calls the shared issue lifecycle renderer for runs and cycles', () => {
     const source = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'issue_detail_drawer.js'), 'utf8');
-    const hierarchicalSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'hierarchical_timeline.js'), 'utf8');
+    const pluginSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'plugins/agent_context.js'), 'utf8');
     const body = _extractFunction(source, 'function _renderJourneyRuns');
     assert.ok(body.includes('renderIssueLifecycleTimeline(runs, {'));
-    assert.ok(hierarchicalSource.includes("className: 'journey-run unified-timeline-node'"));
-    assert.ok(hierarchicalSource.includes("className: 'journey-cycle unified-timeline-node'"));
+    assert.ok(pluginSource.includes("className: 'journey-run unified-timeline-node'"));
+    assert.ok(pluginSource.includes("className: 'journey-cycle unified-timeline-node'"));
 });

@@ -585,11 +585,10 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     # Pending falls through to no badge.
     assert "if (state === 'pending') return ''" in badge_body
     # Phase B (issue #6310 follow-up): the badge now routes through the
-    # drawer's inline-expansion handler, not the modal-opening
-    # ``runLifecycleCommand`` pipeline.  The expansion handler lives
-    # on the drawer module and the badge calls it via the dashboard's
-    # ``_handleCycleValidationBadgeClick`` helper.
+    # plugin-owned inline-expansion handler, not the modal-opening
+    # ``runLifecycleCommand`` pipeline.
     assert "_handleCycleValidationBadgeClick" in badge_body
+    assert 'data-issue-number="${escapeAttr(_issueNumber || \'\')}"' in badge_body
     # Drawer no longer pops a modal — the inline expansion is the canonical
     # viewer mounted right under the validation event row.
     assert "openValidationFailure(" not in badge_body
@@ -1461,18 +1460,43 @@ def test_journey_renders_phase_group_headers() -> None:
 
 def test_journey_timeline_uses_native_disclosure_hierarchy() -> None:
     js = _read(DASHBOARD_JS)
+    generic_src = (DASHBOARD_JS_DIR / "hierarchical_timeline.js").read_text(encoding="utf-8")
+    plugin_src = (DASHBOARD_JS_DIR / "plugins" / "agent_context.js").read_text(encoding="utf-8")
     drawer_body = _function_body(js, "_renderJourneyRuns")
-    shared_body = _function_body(js, "renderIssueLifecycleTimeline")
+    plugin_body = _function_body(plugin_src, "renderIssueLifecycleTimeline")
     assert "renderIssueLifecycleTimeline(runs, {" in drawer_body
-    assert "renderHierarchicalTimelineNode({" in shared_body
-    assert "className: 'journey-run unified-timeline-node'" in shared_body
-    assert "className: 'journey-cycle unified-timeline-node'" in shared_body
-    assert "summaryClassName: 'journey-cycle-header unified-timeline-summary'" in shared_body
-    assert "caretClassName: 'journey-cycle-toggle'" in shared_body
+    assert "function renderIssueLifecycleTimeline" not in generic_src
+    assert "function renderIssueLifecycleTimeline" in plugin_src
+    assert "renderHierarchicalTimelineNode({" in plugin_body
+    assert "className: 'journey-run unified-timeline-node'" in plugin_body
+    assert "className: 'journey-cycle unified-timeline-node'" in plugin_body
+    assert "summaryClassName: 'journey-cycle-header unified-timeline-summary'" in plugin_body
+    assert "caretClassName: 'journey-cycle-toggle'" in plugin_body
     assert "_journeyDisclosureCommandAttr" not in drawer_body
     assert "sync_journey_disclosure" not in drawer_body
     assert 'ontoggle="runLifecycleCommandFromToggle(this)"' not in drawer_body
     assert 'onclick="toggleJourneyCycle' not in drawer_body
+
+
+def test_issue_lifecycle_renderer_uses_plugin_owned_host_capabilities() -> None:
+    generic_src = (DASHBOARD_JS_DIR / "hierarchical_timeline.js").read_text(encoding="utf-8")
+    plugin_src = (DASHBOARD_JS_DIR / "plugins" / "agent_context.js").read_text(encoding="utf-8")
+    drawer_src = (DASHBOARD_JS_DIR / "issue_detail_drawer.js").read_text(encoding="utf-8")
+
+    assert "registerHierarchicalTimelineHostCapability" in generic_src
+    assert "function renderIssueLifecycleTimeline" not in generic_src
+    assert "function renderIssueLifecycleTimeline" in plugin_src
+    assert "async function toggleValidationEventInline" in plugin_src
+    assert "async function toggleValidationEventInline" not in drawer_src
+    assert "function _handleCycleValidationBadgeClick" in plugin_src
+    assert "function _handleCycleValidationBadgeClick" not in drawer_src
+    assert "formatJourneyHeaderTimestamp" not in plugin_src
+    assert "formatJourneyStepTimestamp" not in plugin_src
+    assert "renderTimelineEventActions" not in plugin_src
+    assert "getHierarchicalTimelineHostCapability(name)" in plugin_src
+    assert "registerHierarchicalTimelineHostCapabilities({" in drawer_src
+    assert "renderCanonicalValidationViewer: () =>" in drawer_src
+    assert "renderValidationFailureActionSections: () =>" in drawer_src
 
 
 def test_journey_timeline_disclosure_uses_shared_renderer_not_sync_command() -> None:
@@ -2340,14 +2364,16 @@ def test_review_feedback_modal_can_filter_to_specific_timeline_entry() -> None:
 
 def test_journey_renders_local_timestamps_from_raw_event_times() -> None:
     js = _read(DASHBOARD_JS)
-    header_body = _function_body(js, "_formatHierarchicalHeaderTimestamp")
+    header_body = _function_body(js, "_formatIssueLifecycleHeaderTimestamp")
+    step_timestamp_body = _function_body(js, "_formatIssueLifecycleStepTimestamp")
     run_summary_body = _function_body(js, "_renderIssueLifecycleRunSummary")
     cycle_summary_body = _function_body(js, "_renderIssueLifecycleCycleSummary")
     step_body = _function_body(js, "_renderIssueLifecycleStep")
-    assert "formatJourneyHeaderTimestamp(timestamp, fallback)" in header_body
-    assert "_formatHierarchicalHeaderTimestamp(run.timestamp" in run_summary_body
-    assert "_formatHierarchicalHeaderTimestamp(cycle.timestamp" in cycle_summary_body
-    assert "_formatHierarchicalStepTimestamp((step && step.timestamp)" in step_body
+    assert "_issueLifecycleHostFunction(options, 'formatHeaderTimestamp')" in header_body
+    assert "_issueLifecycleHostFunction(options, 'formatStepTimestamp')" in step_timestamp_body
+    assert "_formatIssueLifecycleHeaderTimestamp(run.timestamp" in run_summary_body
+    assert "_formatIssueLifecycleHeaderTimestamp(cycle.timestamp" in cycle_summary_body
+    assert "_formatIssueLifecycleStepTimestamp(" in step_body
 
 
 def test_journey_layout_uses_content_column_for_actions_and_detail() -> None:
@@ -2597,9 +2623,9 @@ def test_inline_agent_attempts_expander_is_wired_through_typed_command_pipeline(
       5. The lazy-fetch helper hits
          ``/api/issue-detail/{n}?view=ops`` — the only contract the
          backend ops-view payload satisfies.
-      6. The expanded plugin body renders through
-         ``renderIssueLifecycleTimeline`` so it shares dashboard timeline
-         rows, menus, and validation event hosts.
+      6. The expanded plugin body renders through the
+         ``io.agent-context`` plugin's ``renderIssueLifecycleTimeline`` so it
+         shares dashboard timeline rows, menus, and validation event hosts.
     """
     assert "inline_agent_attempts.js" in DASHBOARD_JS_CHUNKS, (
         "inline_agent_attempts.js must be in DASHBOARD_JS_CHUNKS"
@@ -2610,12 +2636,16 @@ def test_inline_agent_attempts_expander_is_wired_through_typed_command_pipeline(
     plugin_idx = chunks.index("plugins/agent_context.js")
     assert shared_idx < inline_idx, (
         "hierarchical_timeline.js must load BEFORE inline_agent_attempts.js — "
-        "the plugin expander body uses renderIssueLifecycleTimeline"
+        "the inline expander depends on the shared row shell being available"
     )
     assert inline_idx < plugin_idx, (
         "inline_agent_attempts.js must load BEFORE plugins/agent_context.js — "
         "the plugin's render-time check for renderInlineAgentAttemptsExpander "
         f"will see undefined otherwise.  Got order: {chunks}"
+    )
+    assert plugin_idx < chunks.index("issue_detail_drawer.js"), (
+        "plugins/agent_context.js must load BEFORE issue_detail_drawer.js — "
+        "the drawer mounts the plugin-owned renderIssueLifecycleTimeline"
     )
 
     plugin_src = (
@@ -2643,7 +2673,7 @@ def test_inline_agent_attempts_expander_is_wired_through_typed_command_pipeline(
     ), "expander must emit the typed Command kind 'open_inline_agent_attempts'"
     assert (
         "renderIssueLifecycleTimeline(reversed, {" in inline_src
-    ), "plugin body must use the same issue lifecycle renderer as the dashboard timeline"
+    ), "plugin body must use the plugin-owned issue lifecycle renderer"
     assert (
         "agent-context-cycle\">" not in inline_src
     ), "plugin must not keep a bespoke cycle renderer parallel to the dashboard timeline"

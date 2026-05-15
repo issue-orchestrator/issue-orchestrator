@@ -98,80 +98,30 @@ test('renderHierarchicalTimelineNode escapes attributes from caller-supplied nod
     assert.match(html, /data-label="a &quot;quoted&quot; &lt;label&gt;"/);
 });
 
-test('renderIssueLifecycleTimeline renders the shared run/cycle/event tree with action menus', () => {
+test('host capability registry resolves late-bound services', () => {
     const ctx = _loadRenderer();
-    const html = ctx.renderIssueLifecycleTimeline([
-        {
-            run_number: 1,
-            run_label: 'Run 1',
-            outcome: { label: 'Failed', tone: 'failed' },
-            expanded: true,
-            cycles: [{
-                cycle_number: 1,
-                cycle_label: 'Cycle 1',
-                outcome: { label: 'Validation failed', tone: 'failed' },
-                expanded: true,
-                phase_groups: [{
-                    key: 'coding',
-                    label: 'Coding',
-                    steps: [{
-                        event: 'session.started',
-                        narrative: 'Coding session started',
-                        actions: [
-                            { type: 'open_agent_log', label: 'Coding Session Recording' },
-                            { type: 'open_review_transcript', label: 'Review Transcript' },
-                        ],
-                    }],
-                }],
-            }],
-        },
-    ], { baseId: 'shared' });
+    const formatter = () => 'formatted';
 
-    assert.match(html, /<details class="journey-run unified-timeline-node" id="shared-run-0" open>/);
-    assert.match(html, /<details class="journey-cycle unified-timeline-node" id="shared-cycle-0-0" open>/);
-    assert.match(html, /Coding session started/);
-    assert.match(html, /timeline-event-actions/);
-    assert.match(html, /open_agent_log/);
-    assert.match(html, /open_review_transcript/);
+    ctx.registerHierarchicalTimelineHostCapability('formatHeaderTimestamp', () => formatter);
+
+    assert.strictEqual(ctx.getHierarchicalTimelineHostCapability('formatHeaderTimestamp'), formatter);
+    assert.strictEqual(ctx.getHierarchicalTimelineHostCapability('missing'), null);
+
+    ctx._resetHierarchicalTimelineHostCapabilitiesForTests();
+
+    assert.strictEqual(ctx.getHierarchicalTimelineHostCapability('formatHeaderTimestamp'), null);
 });
 
-test('renderIssueLifecycleTimeline gives validation events an inline canonical-JUnit host and filters modal action', () => {
+test('outcome badge helper normalizes tone and fallback label', () => {
     const ctx = _loadRenderer();
-    const html = ctx.renderIssueLifecycleTimeline([
-        {
-            run_number: 1,
-            outcome: { label: 'Failed', tone: 'failed' },
-            expanded: true,
-            cycles: [{
-                cycle_number: 1,
-                outcome: { label: 'Validation failed', tone: 'failed' },
-                expanded: true,
-                phase_groups: [{
-                    key: 'coding',
-                    label: 'Coding',
-                    steps: [{
-                        event: 'validation.failed',
-                        narrative: 'Validation failed',
-                        run_dir: '/tmp/run',
-                        actions: [
-                            { type: 'open_validation_failure', label: 'Validation Details' },
-                            { type: 'open_agent_log', label: 'Coding Session Recording' },
-                        ],
-                    }],
-                }],
-            }],
-        },
-    ], { baseId: 'shared', issueNumber: 4503 });
 
-    assert.match(html, /journey-step-validation/);
-    assert.match(html, /<button type="button" class="journey-step-inline-toggle"/);
-    assert.match(html, /aria-expanded="false"/);
-    assert.match(html, /aria-controls="shared-cycle-0-0-step-0-body"/);
-    assert.match(html, /journey-step-validation-body collapsed/);
-    assert.match(html, /role="region"/);
-    assert.match(html, /aria-hidden="true"/);
-    assert.match(html, /data-run-dir="\/tmp\/run"/);
-    assert.match(html, /toggleValidationEventInline\(&quot;shared-cycle-0-0-step-0&quot;, 4503, &quot;\/tmp\/run&quot;\)/);
-    assert.match(html, /open_agent_log/);
-    assert.doesNotMatch(html, /open_validation_failure/);
+    assert.deepEqual(
+        ctx.readHierarchicalOutcomeBadge({ label: 'Failed', tone: 'failed' }),
+        { label: 'Failed', tone: 'failed', toneClass: 'outcome-failed' },
+    );
+    assert.deepEqual(
+        ctx.readHierarchicalOutcomeBadge({ label: '', tone: 'surprise' }, 'Unknown'),
+        { label: 'Unknown', tone: 'neutral', toneClass: '' },
+    );
+    assert.strictEqual(ctx.hierarchicalToneGlyph('in_progress', { inProgress: '⟳' }), '⟳');
 });

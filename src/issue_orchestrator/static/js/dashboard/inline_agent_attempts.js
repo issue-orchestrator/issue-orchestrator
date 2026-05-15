@@ -26,9 +26,9 @@
 // ``typeof renderInlineAgentAttemptsExpander === 'function'``.
 //
 // The Attempts → Cycles → Events body uses ``renderIssueLifecycleTimeline``
-// from ``hierarchical_timeline.js``.  The dashboard issue drawer uses the
-// same renderer for its primary timeline, so the E2E plugin and dashboard
-// timeline share the run/cycle/event display instead of drifting.
+// from the ``io.agent-context`` plugin.  The dashboard issue drawer uses the
+// same plugin renderer for its primary timeline, so the E2E plugin and
+// dashboard timeline share the run/cycle/event display instead of drifting.
 
 (function () {
     if (typeof window === 'undefined') return;
