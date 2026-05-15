@@ -105,6 +105,7 @@ test('host capability registry resolves late-bound services', () => {
     ctx.registerHierarchicalTimelineHostCapability('formatHeaderTimestamp', () => formatter);
 
     assert.strictEqual(ctx.getHierarchicalTimelineHostCapability('formatHeaderTimestamp'), formatter);
+    assert.strictEqual(ctx.runHierarchicalTimelineHostCapability('formatHeaderTimestamp'), 'formatted');
     assert.strictEqual(ctx.getHierarchicalTimelineHostCapability('missing'), null);
 
     ctx._resetHierarchicalTimelineHostCapabilitiesForTests();

@@ -1,27 +1,23 @@
 let currentIssueDetailE2ERunId = null;
 let currentIssueDetailFocus = null;
 
+function _lazyDashboardFunction(name) {
+    return () => {
+        const root = typeof window !== 'undefined' ? window : globalThis;
+        const fn = root && root[name];
+        return typeof fn === 'function' ? fn : null;
+    };
+}
+
 if (typeof registerHierarchicalTimelineHostCapabilities === 'function') {
     registerHierarchicalTimelineHostCapabilities({
-        formatHeaderTimestamp: () => (
-            typeof formatJourneyHeaderTimestamp === 'function' ? formatJourneyHeaderTimestamp : null
-        ),
-        formatStepTimestamp: () => (
-            typeof formatJourneyStepTimestamp === 'function' ? formatJourneyStepTimestamp : null
-        ),
-        renderEventActions: () => (
-            typeof renderTimelineEventActions === 'function' ? renderTimelineEventActions : null
-        ),
-        renderCanonicalValidationViewer: () => (
-            typeof renderCanonicalValidationViewer === 'function' ? renderCanonicalValidationViewer : null
-        ),
-        renderValidationFailureActionSections: () => (
-            typeof renderValidationFailureActionSections === 'function' ? renderValidationFailureActionSections : null
-        ),
-        enhanceCanonicalValidationViewerAccessibility: () => (
-            typeof enhanceCanonicalValidationViewerAccessibility === 'function'
-                ? enhanceCanonicalValidationViewerAccessibility
-                : null
+        formatHeaderTimestamp: _lazyDashboardFunction('formatJourneyHeaderTimestamp'),
+        formatStepTimestamp: _lazyDashboardFunction('formatJourneyStepTimestamp'),
+        renderEventActions: _lazyDashboardFunction('renderTimelineEventActions'),
+        renderCanonicalValidationViewer: _lazyDashboardFunction('renderCanonicalValidationViewer'),
+        renderValidationFailureActionSections: _lazyDashboardFunction('renderValidationFailureActionSections'),
+        enhanceCanonicalValidationViewerAccessibility: _lazyDashboardFunction(
+            'enhanceCanonicalValidationViewerAccessibility',
         ),
     });
 }
@@ -229,7 +225,7 @@ function _renderCycleValidationBadge(badge, _issueNumber) {
     return `<button type="button" class="${cls}"
         data-validation-state="${escapeAttr(state)}"
         data-issue-number="${escapeAttr(_issueNumber || '')}"
-        onclick="event.preventDefault(); event.stopPropagation(); _handleCycleValidationBadgeClick(this);"
+        onclick="event.preventDefault(); event.stopPropagation(); runHierarchicalTimelineHostCapability('handleCycleValidationBadgeClick', this);"
         title="Jump to validation details for this cycle">${label}</button>`;
 }
 

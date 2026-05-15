@@ -388,6 +388,13 @@
         stepEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
+    if (typeof registerHierarchicalTimelineHostCapability === 'function') {
+        registerHierarchicalTimelineHostCapability(
+            'handleCycleValidationBadgeClick',
+            () => _handleCycleValidationBadgeClick,
+        );
+    }
+
     root.renderIssueLifecycleTimeline = renderIssueLifecycleTimeline;
     root.toggleValidationEventInline = toggleValidationEventInline;
     root._handleCycleValidationBadgeClick = _handleCycleValidationBadgeClick;

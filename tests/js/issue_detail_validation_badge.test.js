@@ -88,8 +88,8 @@ function _extractPayload(html) {
 test('badge passed state renders an inline-expansion button (Phase B)', () => {
     // Phase B (issue #6310 follow-up): the badge no longer carries a
     // typed-Command payload that opens a modal.  It's an in-drawer
-    // button that triggers ``_handleCycleValidationBadgeClick`` which
-    // expands the cycle's validation event row inline.  The Command
+    // button that routes through the hierarchical host capability
+    // registry to expand the cycle's validation event row inline.  The Command
     // pipeline is still used elsewhere (e.g. timeline event actions);
     // it's just no longer the badge's path.
     const { context } = loadBadgeContext();
@@ -105,7 +105,7 @@ test('badge passed state renders an inline-expansion button (Phase B)', () => {
     const html = context._renderCycleValidationBadge(badge, 4124);
     assert.match(html, /journey-cycle-validation-badge is-passed/);
     assert.match(html, /✓ Validated/);
-    assert.match(html, /_handleCycleValidationBadgeClick\(this\)/);
+    assert.match(html, /runHierarchicalTimelineHostCapability\('handleCycleValidationBadgeClick', this\)/);
     assert.match(html, /data-validation-state="passed"/);
     assert.match(html, /data-issue-number="4124"/);
     // Modal Command payload is gone from the badge HTML.
@@ -126,7 +126,7 @@ test('badge failed state renders an inline-expansion button (Phase B)', () => {
     const html = context._renderCycleValidationBadge(badge, 4124);
     assert.match(html, /journey-cycle-validation-badge is-failed/);
     assert.match(html, /✗ Failed/);
-    assert.match(html, /_handleCycleValidationBadgeClick\(this\)/);
+    assert.match(html, /runHierarchicalTimelineHostCapability\('handleCycleValidationBadgeClick', this\)/);
     assert.match(html, /data-validation-state="failed"/);
     assert.match(html, /data-issue-number="4124"/);
     assert.doesNotMatch(html, /data-lifecycle-command/);

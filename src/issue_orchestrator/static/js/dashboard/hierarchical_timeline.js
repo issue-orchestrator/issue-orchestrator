@@ -122,6 +122,11 @@ function getHierarchicalTimelineHostCapability(name) {
     return typeof resolver === 'function' ? resolver() : null;
 }
 
+function runHierarchicalTimelineHostCapability(name, ...args) {
+    const capability = getHierarchicalTimelineHostCapability(name);
+    return typeof capability === 'function' ? capability(...args) : null;
+}
+
 function _resetHierarchicalTimelineHostCapabilitiesForTests() {
     for (const key of Object.keys(_hierarchicalTimelineHostCapabilities)) {
         delete _hierarchicalTimelineHostCapabilities[key];
@@ -136,5 +141,6 @@ if (typeof window !== 'undefined') {
     window.registerHierarchicalTimelineHostCapability = registerHierarchicalTimelineHostCapability;
     window.registerHierarchicalTimelineHostCapabilities = registerHierarchicalTimelineHostCapabilities;
     window.getHierarchicalTimelineHostCapability = getHierarchicalTimelineHostCapability;
+    window.runHierarchicalTimelineHostCapability = runHierarchicalTimelineHostCapability;
     window._resetHierarchicalTimelineHostCapabilitiesForTests = _resetHierarchicalTimelineHostCapabilitiesForTests;
 }

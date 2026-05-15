@@ -587,7 +587,7 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     # Phase B (issue #6310 follow-up): the badge now routes through the
     # plugin-owned inline-expansion handler, not the modal-opening
     # ``runLifecycleCommand`` pipeline.
-    assert "_handleCycleValidationBadgeClick" in badge_body
+    assert "runHierarchicalTimelineHostCapability('handleCycleValidationBadgeClick', this)" in badge_body
     assert 'data-issue-number="${escapeAttr(_issueNumber || \'\')}"' in badge_body
     # Drawer no longer pops a modal — the inline expansion is the canonical
     # viewer mounted right under the validation event row.
@@ -1490,13 +1490,16 @@ def test_issue_lifecycle_renderer_uses_plugin_owned_host_capabilities() -> None:
     assert "async function toggleValidationEventInline" not in drawer_src
     assert "function _handleCycleValidationBadgeClick" in plugin_src
     assert "function _handleCycleValidationBadgeClick" not in drawer_src
+    assert "runHierarchicalTimelineHostCapability" in generic_src
+    assert "'handleCycleValidationBadgeClick'" in plugin_src
+    assert "runHierarchicalTimelineHostCapability('handleCycleValidationBadgeClick', this)" in drawer_src
     assert "formatJourneyHeaderTimestamp" not in plugin_src
     assert "formatJourneyStepTimestamp" not in plugin_src
     assert "renderTimelineEventActions" not in plugin_src
     assert "getHierarchicalTimelineHostCapability(name)" in plugin_src
     assert "registerHierarchicalTimelineHostCapabilities({" in drawer_src
-    assert "renderCanonicalValidationViewer: () =>" in drawer_src
-    assert "renderValidationFailureActionSections: () =>" in drawer_src
+    assert "_lazyDashboardFunction('renderCanonicalValidationViewer')" in drawer_src
+    assert "_lazyDashboardFunction('renderValidationFailureActionSections')" in drawer_src
 
 
 def test_journey_timeline_disclosure_uses_shared_renderer_not_sync_command() -> None:
