@@ -223,13 +223,30 @@ def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template(
 
 def test_issue_detail_uses_timeline_label_not_journey() -> None:
     html = _read(DASHBOARD_TEMPLATE)
-    assert '<h3 class="issue-detail-section-title" id="issueDetailTimelineHeading" tabindex="-1">Timeline</h3>' in html
+    assert '<h3 class="issue-detail-section-title visually-hidden" id="issueDetailTimelineHeading">Timeline</h3>' in html
+    assert 'aria-labelledby="issueDetailTimelineHeading"' in html
     assert '<h3 class="issue-detail-section-title">Journey</h3>' not in html
+    assert '<details class="issue-detail-section" id="issueDetailRawEvents">' not in html
+    assert 'id="issueDetailFocusBtn"' not in html
+    assert 'id="issueDetailGitHubBtn"' not in html
 
 
 def test_issue_detail_template_includes_retry_publish_button() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     assert 'id="issueDetailRetryPublishBtn"' in html
+
+
+def test_issue_detail_timeline_filters_are_grouped_radio_controls() -> None:
+    js = _read(DASHBOARD_JS)
+    css = _read_dashboard_css_bundle()
+    body = _function_body(js, "_renderJourneyRuns")
+    assert 'role="radiogroup" aria-label="Run scope"' in body
+    assert 'role="radiogroup" aria-label="Timeline event detail"' in body
+    assert 'role="radio"' in body
+    assert "All runs" in body
+    assert "Raw events" in body
+    assert "aria-checked=" in body
+    assert ".journey-filter-group" in css
 
 
 def test_issue_detail_template_drops_top_of_drawer_validation_section() -> None:
@@ -1712,12 +1729,13 @@ def test_open_issue_detail_routes_to_explicit_e2e_endpoint() -> None:
 
 
 def test_issue_detail_timeline_view_preserves_e2e_run_route() -> None:
-    """Story/Ops/Debug switches must keep E2E issue detail run-scoped."""
+    """Story/Ops/Debug/Raw switches must keep E2E issue detail run-scoped."""
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "setTimelineView")
     assert "currentIssueDetailE2ERunId" in body
     assert "/api/e2e-run/${e2eRunId}/issue-detail/${issueNumber}?view=${view}" in body
     assert "/api/issue-detail/${issueNumber}?view=${view}" in body
+    assert "setTimelineView('raw')" in js
 
 
 def test_issue_detail_drawer_stacks_above_modal_overlay() -> None:
@@ -2240,7 +2258,7 @@ def test_issue_cards_have_cycle_aware_timeline_affordance() -> None:
     assert "function openIssueTimeline(issueNumber, triggerEl = null, opts = {})" in js
     assert "openIssueTimeline(${n}, this);event.stopPropagation();" in js
     assert "card-detail-chevron" not in js
-    assert "issueDetailTimelineHeading" in js
+    assert "issueDetailJourney" in js
     assert "card-timeline-btn" in dashboard
     assert "Open timeline for issue #{{ card.issue_number }}" in dashboard
     assert "openIssueTimeline({{ card.issue_number }}, this);event.stopPropagation();" in dashboard

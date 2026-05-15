@@ -853,7 +853,7 @@ export interface SwitchE2ETimelineViewCommandPayload {
   kind: "switch_e2e_timeline_view";
   label: string;
   run_id: number;
-  view: "user" | "ops" | "debug";
+  view: "user" | "ops" | "debug" | "raw";
 }
 
 export interface TestCaseHistoryPayload {

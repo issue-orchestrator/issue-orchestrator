@@ -367,7 +367,7 @@ async def e2e_run_timeline_endpoint(
     repo_root: str = Query(...),
     view: str = Query(
         "user",
-        description="Timeline view: user (story), ops, or debug",
+        description="Timeline view: user (story), ops, debug, or raw",
     ),
 ) -> JSONResponse:
     """Get timeline events for a specific E2E run."""
@@ -425,7 +425,7 @@ async def e2e_run_timeline_endpoint(
         if not agent_events:
             agent_events = _load_worktree_agent_events(validated_root, run_id)
 
-        if view not in {"user", "ops", "debug"}:
+        if view not in {"user", "ops", "debug", "raw"}:
             view = "user"
         issue_affordances = collect_issue_affordances(
             agent_events,

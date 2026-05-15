@@ -1138,7 +1138,7 @@ async def control_issue_detail(
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
-    valid_views = {"user", "ops", "debug"}
+    valid_views = {"user", "ops", "debug", "raw"}
     if view not in valid_views:
         view = "user"
 
@@ -1182,6 +1182,7 @@ async def control_issue_detail(
         cycles=cycles,
         context=None,
         view=view,
+        raw_events=raw_events,
     )
     return JSONResponse(payload)
 

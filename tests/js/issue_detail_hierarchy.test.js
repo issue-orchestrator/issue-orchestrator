@@ -36,6 +36,9 @@ function loadRenderSlice(overrides = {}) {
     const hierarchicalSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'hierarchical_timeline.js'), 'utf8');
     const pluginSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'plugins/agent_context.js'), 'utf8');
     const slice = [
+        _extractFunction(source, 'function _collectRunIdsFromJourneyRuns'),
+        _extractFunction(source, 'function _rawEventBelongsToSelectedRuns'),
+        _extractFunction(source, 'function renderIssueRawTimelineEvents'),
         _extractFunction(source, 'function _renderJourneyRuns'),
         _extractFunction(source, 'function toggleJourneyCycle'),
     ].join('\n');
@@ -47,6 +50,9 @@ function loadRenderSlice(overrides = {}) {
         issueDetailData: { issue_number: 4503, summary: {} },
         escapeHtml: _escapeHtml,
         escapeAttr: _escapeHtml,
+        formatStepLabel: (value) => String(value || 'event'),
+        formatStatus: (value) => String(value || ''),
+        formatTimestamp: (value) => String(value || ''),
         filterRuns: (runs) => runs,
         formatJourneyHeaderTimestamp: (_timestamp, label) => label || '13:05',
         formatJourneyStepTimestamp: (_timestamp, label) => label || '13:05',
@@ -176,4 +182,65 @@ test('timeline source calls the shared issue lifecycle renderer for runs and cyc
     assert.ok(body.includes('renderIssueLifecycleTimeline(runs, {'));
     assert.ok(pluginSource.includes("className: 'journey-run unified-timeline-node'"));
     assert.ok(pluginSource.includes("className: 'journey-cycle unified-timeline-node'"));
+});
+
+test('raw timeline view renders raw event rows instead of lifecycle runs', () => {
+    const { html } = renderJourney({
+        events: [
+            {
+                event: 'session.started',
+                status: 'running',
+                timestamp: '2026-05-14T10:14:03Z',
+                summary: 'coder launched',
+                run_id: 'run-3',
+            },
+            {
+                event: 'validation.failed',
+                status: 'failed',
+                timestamp: '2026-05-14T10:26:44Z',
+                summary: '1 failed',
+                run_id: 'run-3',
+            },
+        ],
+        runs: [
+            {
+                run_number: 3,
+                run_label: 'Run 3',
+                run_id: 'run-3',
+                cycles: [],
+            },
+        ],
+        summary: {},
+    }, {
+        timelineView: 'raw',
+        issueDetailData: {
+            issue_number: 4503,
+            summary: {},
+            events: [
+                {
+                    event: 'session.started',
+                    status: 'running',
+                    timestamp: '2026-05-14T10:14:03Z',
+                    summary: 'coder launched',
+                    run_id: 'run-3',
+                },
+                {
+                    event: 'validation.failed',
+                    status: 'failed',
+                    timestamp: '2026-05-14T10:26:44Z',
+                    summary: '1 failed',
+                    run_id: 'run-3',
+                },
+            ],
+        },
+    });
+
+    assert.match(html, /role="radiogroup" aria-label="Run scope"/);
+    assert.match(html, /role="radiogroup" aria-label="Timeline event detail"/);
+    assert.match(html, /Raw events/);
+    assert.match(html, /aria-checked="true" onclick="setTimelineView\('raw'\)"/);
+    assert.match(html, /class="journey-raw-events"/);
+    assert.match(html, /session.started/);
+    assert.match(html, /validation.failed/);
+    assert.doesNotMatch(html, /<details class="journey-run/);
 });

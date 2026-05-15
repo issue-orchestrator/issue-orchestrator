@@ -74,7 +74,7 @@ def test_issue_card_timeline_button_opens_cycle_timeline(
     expect(page.locator("#issueDetailTitle")).to_contain_text("Flow smoke item")
 
     journey = page.locator("#issueDetailJourney")
-    expect(page.locator("#issueDetailTimelineHeading")).to_be_focused()
+    expect(journey).to_be_focused()
     expect(journey).to_contain_text("Cycle 1")
     expect(journey).to_contain_text("Coding")
     expect(journey).to_contain_text("Review")

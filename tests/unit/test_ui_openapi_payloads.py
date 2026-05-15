@@ -1165,6 +1165,7 @@ def test_e2e_run_detail_payload_rejects_untyped_detail_fields() -> None:
     payload["reports"] = []
     payload["issue_affordances"] = [{"issue_number": 12, "run_id": 88}]
     payload["lifecycle"] = _e2e_container().model_dump(mode="json")
+    payload["actions"] = [{"id": "retry", "label": "Retry"}]
     payload["summary"]["unexpected_summary_field"] = True
     payload["actions"][0]["unexpected_action_field"] = True
     payload["blocked_detail"] = {

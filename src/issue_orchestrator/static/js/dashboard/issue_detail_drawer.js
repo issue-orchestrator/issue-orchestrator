@@ -45,8 +45,8 @@ async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     document.getElementById('issueDetailJourney').innerHTML = '';
     const prevCycles = document.getElementById('issueDetailPrevCycles');
     if (prevCycles) prevCycles.style.display = 'none';
-    const rawEvents = document.getElementById('issueDetailRawEvents');
-    if (rawEvents) rawEvents.removeAttribute('open');
+    const actionsEl = document.getElementById('issueDetailActions');
+    if (actionsEl) actionsEl.style.display = 'none';
     const unblockBtn = document.getElementById('issueDetailUnblockBtn');
     if (unblockBtn) {
         unblockBtn.style.display = 'none';
@@ -142,25 +142,93 @@ function filterRuns(runs, filter) {
 }
 
 function renderJourneyTimeline(container, data) {
-    _renderJourneyRuns(container, data.runs || []);
+    _renderJourneyRuns(container, data.runs || [], data || {});
 }
 
-function _renderJourneyRuns(container, allRuns) {
+function _collectRunIdsFromJourneyRuns(runs) {
+    const ids = new Set();
+    const add = (value) => {
+        if (value !== undefined && value !== null && String(value) !== '') {
+            ids.add(String(value));
+        }
+    };
+    for (const run of runs || []) {
+        add(run && run.run_id);
+        const cycles = Array.isArray(run && run.cycles) ? run.cycles : [];
+        for (const cycle of cycles) {
+            add(cycle && cycle.run_id);
+            for (const sessionRunId of (cycle && cycle.session_run_ids) || []) {
+                add(sessionRunId);
+            }
+        }
+    }
+    return ids;
+}
+
+function _rawEventBelongsToSelectedRuns(evt, selectedRunIds) {
+    if (!selectedRunIds || selectedRunIds.size === 0) return true;
+    const runId = evt && evt.run_id !== undefined && evt.run_id !== null
+        ? String(evt.run_id)
+        : '';
+    return !runId || selectedRunIds.has(runId);
+}
+
+function renderIssueRawTimelineEvents(data, selectedRuns) {
+    const events = Array.isArray(data && data.events) ? data.events : [];
+    const selectedRunIds = _collectRunIdsFromJourneyRuns(selectedRuns || []);
+    const visibleEvents = journeyFilter === 'all'
+        ? events
+        : events.filter((evt) => _rawEventBelongsToSelectedRuns(evt, selectedRunIds));
+    if (visibleEvents.length === 0) {
+        return '<div class="timeline-empty">No raw events recorded.</div>';
+    }
+    return `<div class="journey-raw-events" role="list" aria-label="Raw timeline events">${
+        visibleEvents.map((evt) => {
+            const eventName = formatStepLabel(String(evt.step || evt.event || evt.source_event || 'event'));
+            const status = evt.status ? formatStatus(evt.status) : '';
+            const timestamp = formatTimestamp(evt.timestamp || '');
+            const summary = evt.summary || evt.detail || '';
+            return `<div class="journey-raw-event ${escapeAttr(evt.status || '')}" role="listitem">
+                <div class="journey-raw-event-header">
+                    <span>${escapeHtml(eventName)}</span>
+                    <span>${escapeHtml(status)}</span>
+                </div>
+                ${timestamp ? `<div class="journey-raw-event-meta">${escapeHtml(timestamp)}</div>` : ''}
+                ${summary ? `<div class="journey-raw-event-summary">${escapeHtml(summary)}</div>` : ''}
+            </div>`;
+        }).join('')
+    }</div>`;
+}
+
+function _renderJourneyRuns(container, allRuns, data) {
+    const detailData = data || issueDetailData || {};
     const runs = filterRuns(allRuns, journeyFilter);
     const isLatestRun = journeyFilter === 'latest-run';
     const isAll = journeyFilter === 'all';
     const issueNum = issueDetailData ? issueDetailData.issue_number : null;
     const timelineDiagnostic = issueDetailData?.summary?.timeline_diagnostic || null;
+    const isRaw = timelineView === 'raw';
 
     let html = `<div class="journey-filter">
-        <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
-        <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
+        <span class="journey-filter-group" role="radiogroup" aria-label="Run scope">
+            <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" type="button" role="radio" aria-checked="${isLatestRun ? 'true' : 'false'}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
+            <button class="journey-filter-btn ${isAll ? 'active' : ''}" type="button" role="radio" aria-checked="${isAll ? 'true' : 'false'}" onclick="setJourneyFilter('all')">All runs</button>
+        </span>
         <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
         <span class="journey-filter-separator"></span>
-        <button class="journey-filter-btn ${timelineView === 'user' ? 'active' : ''}" onclick="setTimelineView('user')" title="Show key events: coding, review, outcome">Story</button>
-        <button class="journey-filter-btn ${timelineView === 'ops' ? 'active' : ''}" onclick="setTimelineView('ops')" title="Show operational events: validation, retries, exchanges">Ops</button>
-        <button class="journey-filter-btn ${timelineView === 'debug' ? 'active' : ''}" onclick="setTimelineView('debug')" title="Show all internal events">Debug</button>
+        <span class="journey-filter-group" role="radiogroup" aria-label="Timeline event detail">
+            <button class="journey-filter-btn ${timelineView === 'user' ? 'active' : ''}" type="button" role="radio" aria-checked="${timelineView === 'user' ? 'true' : 'false'}" onclick="setTimelineView('user')" title="Show key events: coding, review, outcome">Story</button>
+            <button class="journey-filter-btn ${timelineView === 'ops' ? 'active' : ''}" type="button" role="radio" aria-checked="${timelineView === 'ops' ? 'true' : 'false'}" onclick="setTimelineView('ops')" title="Show operational events: validation, retries, exchanges">Ops</button>
+            <button class="journey-filter-btn ${timelineView === 'debug' ? 'active' : ''}" type="button" role="radio" aria-checked="${timelineView === 'debug' ? 'true' : 'false'}" onclick="setTimelineView('debug')" title="Show all internal events">Debug</button>
+            <button class="journey-filter-btn ${isRaw ? 'active' : ''}" type="button" role="radio" aria-checked="${isRaw ? 'true' : 'false'}" onclick="setTimelineView('raw')" title="Show raw timeline events">Raw events</button>
+        </span>
     </div>`;
+
+    if (isRaw) {
+        html += renderIssueRawTimelineEvents(detailData, runs);
+        container.innerHTML = html;
+        return;
+    }
 
     if (runs.length === 0) {
         if (timelineDiagnostic && timelineDiagnostic.state === 'expected_history_missing') {
@@ -593,10 +661,9 @@ function renderIssueDetail() {
     const d = issueDetailData;
     applyLifecycleDataset(issueDetailDrawer, d.lifecycle || null);
     document.getElementById('issueDetailTitle').textContent = formatIssueDetailTitle(d);
-    document.getElementById('issueDetailGitHubBtn').href = d.issue_url || '#';
-    document.getElementById('issueDetailFocusBtn').onclick = () => openTimelineModal(d.issue_number);
 
     // Show Unblock button only for blocked issues
+    const actionsEl = document.getElementById('issueDetailActions');
     const unblockBtn = document.getElementById('issueDetailUnblockBtn');
     const summary = d.summary || {};
     const hasBlockedDetail = Boolean(d.blocked_detail);
@@ -615,6 +682,9 @@ function renderIssueDetail() {
             ? String(retryPublishAction.label)
             : 'Retry Publish';
         retryPublishBtn.onclick = () => retryPublishFromDrawer();
+    }
+    if (actionsEl) {
+        actionsEl.style.display = isBlocked || Boolean(retryPublishAction) ? '' : 'none';
     }
 
     // Status explanation with color-coded border
@@ -656,27 +726,6 @@ function renderIssueDetail() {
         prevSection.style.display = 'none';
     }
 
-    // Raw events (collapsed, lazy-rendered on open)
-    const rawSection = document.getElementById('issueDetailRawEvents');
-    const rawBody = document.getElementById('issueDetailRawEventsBody');
-    const rawCount = d.raw_events_count || (d.events || []).length;
-    document.getElementById('issueDetailRawEventsSummary').textContent = `Raw events (${rawCount})`;
-    rawBody.innerHTML = '';
-    rawSection.ontoggle = function () {
-        if (!rawSection.open || rawBody.children.length > 0) return;
-        const events = d.events || [];
-        rawBody.innerHTML = events.map(evt => `
-            <div class="timeline-event ${evt.status || ''}">
-                <div class="timeline-event-header">
-                    <span>${escapeHtml(formatStepLabel(evt.step || evt.event || 'event'))}</span>
-                    <span>${formatStatus(evt.status)}</span>
-                </div>
-                <div class="timeline-time">${escapeHtml(formatTimestamp(evt.timestamp || ''))}</div>
-                ${evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : ''}
-            </div>
-        `).join('') || '<div class="timeline-empty">No events recorded.</div>';
-    };
-
     applyIssueDetailInitialFocus();
 }
 
@@ -690,10 +739,10 @@ function formatIssueDetailTitle(detail) {
 
 function applyIssueDetailInitialFocus() {
     if (currentIssueDetailFocus !== 'timeline') return;
-    const timelineHeading = document.getElementById('issueDetailTimelineHeading');
-    if (!timelineHeading) return;
-    timelineHeading.scrollIntoView({block: 'start'});
-    timelineHeading.focus({preventScroll: true});
+    const timeline = document.getElementById('issueDetailJourney');
+    if (!timeline) return;
+    timeline.scrollIntoView({block: 'start'});
+    timeline.focus({preventScroll: true});
     currentIssueDetailFocus = null;
 }
 

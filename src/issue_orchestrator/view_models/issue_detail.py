@@ -68,11 +68,15 @@ def build_issue_detail_view_model(
     cycles: list[dict[str, Any]],
     context: IssueStoryContext | None = None,
     view: str = "user",
+    raw_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build issue detail payload used by the dashboard drawer."""
     today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-    filtered = _filter_events_by_view(events, view)
-    story_events = _story_projection_events(filtered, view)
+    event_source = raw_events if view == "raw" and raw_events is not None else events
+    filtered = _filter_events_by_view(event_source, view)
+    projection_view = "debug" if view == "raw" else view
+    projection_events = _filter_events_by_view(events, projection_view)
+    story_events = _story_projection_events(projection_events, projection_view)
     timeline_steps = _build_journey_steps(story_events, today)
     previous_runs = _build_previous_cycles(cycles, today)
 
@@ -99,10 +103,7 @@ def build_issue_detail_view_model(
         "cycles": cycles,
         "events": filtered,
         "summary": _summary(filtered),
-        "actions": [
-            {"id": "focus", "label": "Focus"},
-            {"id": "github", "label": "GitHub ↗", "url": issue_url},
-        ],
+        "actions": [],
         # Story fields
         "view": view,
         "status_explanation": _build_status_explanation(context, filtered),
@@ -111,7 +112,7 @@ def build_issue_detail_view_model(
         "run_count": len(runs),
         "previous_runs": previous_runs,
         "previous_runs_count": len(previous_runs),
-        "raw_events_count": len(events),
+        "raw_events_count": len(raw_events if raw_events is not None else events),
         "blocked_detail": _build_blocked_detail(context, filtered),
     }
 
@@ -147,6 +148,8 @@ def _filter_events_by_view(events: list[dict[str, Any]], view: str) -> list[dict
     Events with a ``views`` tag are included only if ``view`` is in the list.
     Events without a ``views`` tag (pre-registry data) are included in all views.
     """
+    if view == "raw":
+        return list(events)
     result: list[dict[str, Any]] = []
     for evt in events:
         event_name = str(evt.get("source_event") or evt.get("event") or "")
