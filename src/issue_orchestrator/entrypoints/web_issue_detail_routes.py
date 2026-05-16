@@ -292,7 +292,24 @@ def _read_e2e_log_excerpt(log_path: Any) -> list[str]:
     except OSError:
         return []
     text = tail_bytes.decode("utf-8", errors="replace")
-    lines = [line for line in text.splitlines() if line.strip()]
+    # Collapse runs of blank lines to a single blank line. Pytest separates
+    # phases with blank lines (collection banner / live log call / summary)
+    # and dropping every blank produced a visually dense, structureless
+    # excerpt; keeping every blank lets a chatty step degenerate into an
+    # all-blank tail. One blank between non-blank lines preserves structure
+    # without that failure mode.
+    raw_lines = text.splitlines()
+    lines: list[str] = []
+    prev_blank = True  # suppress leading blanks
+    for line in raw_lines:
+        is_blank = not line.strip()
+        if is_blank and prev_blank:
+            continue
+        lines.append(line)
+        prev_blank = is_blank
+    # Trim trailing blank line (if any) left by the collapse pass.
+    if lines and not lines[-1].strip():
+        lines.pop()
     if len(lines) > _E2E_LOG_EXCERPT_LINE_CAP:
         lines = lines[-_E2E_LOG_EXCERPT_LINE_CAP:]
     return lines

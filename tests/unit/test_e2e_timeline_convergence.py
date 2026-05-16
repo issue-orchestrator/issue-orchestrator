@@ -866,15 +866,47 @@ class TestE2ERunDetailEndpoint:
         # Tail wins over head.
         assert payload["log_excerpt"][-1] == f"line {_E2E_LOG_EXCERPT_LINE_CAP * 3 - 1}"
 
-    def test_log_excerpt_drops_blank_lines(self, tmp_path):
+    def test_log_excerpt_collapses_runs_of_blank_lines(self, tmp_path):
+        """Pytest separates phases with blank lines; preserve structure (one
+        blank between non-blank lines) without letting a chatty step
+        degenerate into an all-blank tail."""
         from issue_orchestrator.entrypoints.web_issue_detail_routes import (
             _public_e2e_run_payload,
         )
 
         log_path = tmp_path / "run.log"
-        log_path.write_text("a\n\n   \nb\n", encoding="utf-8")
+        # Three sections separated by varying-length blank runs, plus
+        # leading and trailing blank padding.
+        log_path.write_text(
+            "\n\n"
+            "collected 5 items\n"
+            "\n\n   \n\n"
+            "test_a PASSED\n"
+            "test_b PASSED\n"
+            "\n"
+            "===== 2 passed in 0.5s =====\n"
+            "\n\n",
+            encoding="utf-8",
+        )
         payload = _public_e2e_run_payload({"log_path": str(log_path)}, run_id=42)
-        assert payload["log_excerpt"] == ["a", "b"]
+        assert payload["log_excerpt"] == [
+            "collected 5 items",
+            "",
+            "test_a PASSED",
+            "test_b PASSED",
+            "",
+            "===== 2 passed in 0.5s =====",
+        ]
+
+    def test_log_excerpt_all_blank_file_returns_empty(self, tmp_path):
+        from issue_orchestrator.entrypoints.web_issue_detail_routes import (
+            _public_e2e_run_payload,
+        )
+
+        log_path = tmp_path / "run.log"
+        log_path.write_text("\n\n   \n\n\t\n", encoding="utf-8")
+        payload = _public_e2e_run_payload({"log_path": str(log_path)}, run_id=42)
+        assert payload["log_excerpt"] == []
 
     def test_log_excerpt_empty_when_log_path_missing_or_unreadable(self, tmp_path):
         """No ``log_path`` or a missing file degrades to an empty excerpt rather than 500ing."""
