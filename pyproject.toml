@@ -90,6 +90,11 @@ asyncio_mode = "auto"
 log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(message)s"
+# Emit per-testcase <system-out>/<system-err>/log records in the JUnit XML so
+# the dashboard's captured-output viewer (validation_viewer.js) can render
+# stdout/stderr/log per case instead of "not captured". Default pytest
+# behaviour is junit_logging = "no", which strips captured output entirely.
+junit_logging = "all"
 filterwarnings = [
     # Python 3.14 warns about forkpty in multi-threaded processes.
     # Our PTY tests (pexpect.spawn) trigger this but run sequentially in xdist_group("pty"),

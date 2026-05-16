@@ -242,6 +242,7 @@ def _canonical_e2e_command(run: dict[str, Any]) -> list[str]:
 
 
 def _public_e2e_run_payload(run: dict[str, Any], run_id: int) -> dict[str, Any]:
+    log_path = run.get("log_path")
     return {
         "id": run_id,
         "orchestrator_id": str(run.get("orchestrator_id") or ""),
@@ -255,11 +256,63 @@ def _public_e2e_run_payload(run: dict[str, Any], run_id: int) -> dict[str, Any]:
         "runner_kind": str(run.get("runner_kind") or "unknown"),
         "commit_sha": run.get("commit_sha"),
         "branch": run.get("branch"),
-        "log_path": run.get("log_path"),
+        "log_path": log_path,
+        "log_excerpt": _read_e2e_log_excerpt(log_path),
         "artifacts_dir": run.get("artifacts_dir"),
         "total_tests": run.get("total_tests"),
         "current_test": run.get("current_test"),
     }
+
+
+# Tail size for the run-level log excerpt surfaced in the dashboard.
+# The worker process captures both stdout and stderr into a single file
+# (``e2e_runner`` sets ``stderr=subprocess.STDOUT``), so this is the only
+# run-level captured channel the dashboard can show. Cap at ~32 KB so a
+# verbose pytest run cannot bloat the JSON payload; the full log is still
+# linked via the "Raw Output" artifact row.
+_E2E_LOG_EXCERPT_BYTE_CAP = 32 * 1024
+_E2E_LOG_EXCERPT_LINE_CAP = 200
+
+
+def _read_e2e_log_excerpt(log_path: Any) -> list[str]:
+    if not isinstance(log_path, str) or not log_path.strip():
+        return []
+    try:
+        path = Path(log_path)
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            if size > _E2E_LOG_EXCERPT_BYTE_CAP:
+                handle.seek(size - _E2E_LOG_EXCERPT_BYTE_CAP)
+                # Drop the partial first line so we never split mid-line.
+                handle.readline()
+            else:
+                handle.seek(0)
+            tail_bytes = handle.read()
+    except OSError:
+        return []
+    text = tail_bytes.decode("utf-8", errors="replace")
+    # Collapse runs of blank lines to a single blank line. Pytest separates
+    # phases with blank lines (collection banner / live log call / summary)
+    # and dropping every blank produced a visually dense, structureless
+    # excerpt; keeping every blank lets a chatty step degenerate into an
+    # all-blank tail. One blank between non-blank lines preserves structure
+    # without that failure mode.
+    raw_lines = text.splitlines()
+    lines: list[str] = []
+    prev_blank = True  # suppress leading blanks
+    for line in raw_lines:
+        is_blank = not line.strip()
+        if is_blank and prev_blank:
+            continue
+        lines.append(line)
+        prev_blank = is_blank
+    # Trim trailing blank line (if any) left by the collapse pass.
+    if lines and not lines[-1].strip():
+        lines.pop()
+    if len(lines) > _E2E_LOG_EXCERPT_LINE_CAP:
+        lines = lines[-_E2E_LOG_EXCERPT_LINE_CAP:]
+    return lines
 
 
 def _public_e2e_results_by_category(

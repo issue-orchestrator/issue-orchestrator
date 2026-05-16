@@ -230,6 +230,7 @@ export interface E2ERunExecutionPayload {
   exit_code: number | null;
   finished_at: string | null;
   id: number;
+  log_excerpt: string[];
   log_path: string | null;
   orchestrator_id: string;
   pytest_args: string[];

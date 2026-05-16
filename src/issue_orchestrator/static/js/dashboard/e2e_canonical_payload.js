@@ -77,16 +77,26 @@ function e2eRunToCanonicalPayload(runData) {
         status,
         junit_cases: junitCases,
         failed_tests: failedTests,
-        // E2E payloads don't carry run-level stdout/stderr the way the
-        // validation modal does, so leave these empty.  The canonical
-        // viewer renders no "Run stdout/stderr" footer when empty.
-        stdout_excerpt: [],
+        // The orchestrator merges the worker subprocess's stdout and
+        // stderr at capture time (e2e_runner.py sets
+        // ``stderr=subprocess.STDOUT``), so there is only one
+        // run-level channel: the worker's stdout. Surface its tail in
+        // ``stdout_excerpt`` and leave ``stderr_excerpt`` empty so the
+        // canonical viewer renders a single "Run stdout" disclosure
+        // footer instead of an empty / misleading "Run stderr" row.
+        stdout_excerpt: _runLogExcerptFromRunData(data),
         stderr_excerpt: [],
         // ``action_sections`` is the "Validation artifacts" footer in
         // the modal.  E2E artifacts are surfaced via the run-details
         // disclosure, not the canonical viewer's footer.
         action_sections: [],
     };
+}
+
+function _runLogExcerptFromRunData(data) {
+    const excerpt = data && data.run && data.run.log_excerpt;
+    if (!Array.isArray(excerpt)) return [];
+    return excerpt.filter((line) => typeof line === 'string');
 }
 
 // ─── internals (exported so JS-vm tests can exercise them directly) ────────
