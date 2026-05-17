@@ -9,6 +9,7 @@ or short-circuits onto a cached on-disk summary (returning the outcome).
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -570,11 +571,18 @@ def test_background_deadline_failure_cancels_runtime(tmp_path: Path) -> None:
     assert any("background job exceeded deadline" in error for error in errors)
 
 
-def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
+def test_tick_after_completion_resolves_cached_outcome(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     job_runner = _FakeJobRunner()
     started: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
     review, session_output = _build(tmp_path, job_runner, started, outcomes)
+    caplog.set_level(
+        logging.INFO,
+        logger="issue_orchestrator.control.completion_review_exchange",
+    )
 
     recorded_on_started: list[Path] = []
 
@@ -637,9 +645,23 @@ def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
     assert outcome is not None and outcome.status == "ok"
     assert "Review exchange passed (cached)" in actions_taken
     assert recorded_on_started, "emit_review_started must fire during the job"
+    approval_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "[REVIEW_EXCHANGE] approval accepted" in record.getMessage()
+    ]
+    assert any("issue=230" in message for message in approval_messages)
+    assert any("cached=True" in message for message in approval_messages)
+    assert any(
+        "reviewer_response_text='Looks good.'" in message
+        for message in approval_messages
+    )
 
 
-def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> None:
+def test_cached_review_is_reused_when_validation_sha_matches(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     job_runner = _FakeJobRunner()
     started_events: list[dict[str, Any]] = []
     outcome_events: list[dict[str, Any]] = []
@@ -656,6 +678,10 @@ def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> 
     _write_validation_record(cached_validation, head_sha="same-sha")
     _write_validation_record(current_validation, head_sha="same-sha")
     _store_cached_approval(session_output, tmp_path, cached_validation)
+    caplog.set_level(
+        logging.INFO,
+        logger="issue_orchestrator.control.completion_review_exchange",
+    )
 
     def fake_loop(**_: Any) -> ReviewExchangeOutcome:
         raise AssertionError("matching cached approval should be reused")
@@ -691,6 +717,20 @@ def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> 
     assert outcome_events[0]["review_cache_head_sha"] == "same-sha"
     assert actions_taken == ["Review exchange passed (cached)"]
     assert job_runner.submitted == []
+    approval_message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "[REVIEW_EXCHANGE] approval accepted" in record.getMessage()
+    )
+    assert "issue=230" in approval_message
+    assert "session=coding-1" in approval_message
+    assert "cached=True" in approval_message
+    assert "head_sha=same-sha" in approval_message
+    assert (
+        f"summary_path={session_output.run_dir / 'review-exchange' / 'summary.json'}"
+        in approval_message
+    )
+    assert "reviewer_response_text='Looks good.'" in approval_message
 
 
 def test_cached_review_is_ignored_when_validation_sha_differs(tmp_path: Path) -> None:
@@ -974,12 +1014,19 @@ def test_cached_review_is_ignored_when_current_validation_failed_on_same_sha(
     assert len(job_runner.submitted) == 1
 
 
-def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
+def test_no_job_runner_falls_back_to_inline_execution(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # Construct without a job runner — the NullBackgroundJobRunner default must
     # short-circuit to inline execution so tests without async wiring still pass.
     started: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
     session_output = _FakeSessionOutput(tmp_path)
+    caplog.set_level(
+        logging.INFO,
+        logger="issue_orchestrator.control.completion_review_exchange",
+    )
 
     review = CompletionReviewExchange(
         config=_make_config(tmp_path),
@@ -1024,3 +1071,11 @@ def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
     assert halt is False
     assert completed is True
     assert outcome is not None
+    approval_message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "[REVIEW_EXCHANGE] approval accepted" in record.getMessage()
+    )
+    assert "issue=230" in approval_message
+    assert "cached=False" in approval_message
+    assert "reviewer_response_text='Looks good.'" in approval_message

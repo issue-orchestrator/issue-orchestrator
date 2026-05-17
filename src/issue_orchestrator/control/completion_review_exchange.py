@@ -78,6 +78,62 @@ def _cached_review_event_metadata(exchange_outcome: "ReviewExchangeOutcome") -> 
     return dict(exchange_outcome.cache_metadata or {})
 
 
+def _review_exchange_summary_path(
+    exchange_outcome: "ReviewExchangeOutcome",
+) -> str | None:
+    cache_metadata = exchange_outcome.cache_metadata or {}
+    cached_path = cache_metadata.get("review_cache_summary_path")
+    if cached_path:
+        return cached_path
+    if exchange_outcome.exchange_dir is None:
+        return None
+    return str(exchange_outcome.exchange_dir / "summary.json")
+
+
+def _single_line_log_value(value: object, *, max_chars: int = 500) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+def _log_review_exchange_approval(
+    *,
+    issue_number: int,
+    session_name: str | None,
+    exchange_outcome: "ReviewExchangeOutcome",
+    review_run_dir: Path,
+    cached: bool,
+) -> None:
+    summary = exchange_outcome.summary or {}
+    cache_metadata = exchange_outcome.cache_metadata or {}
+    reviewer_text = (
+        exchange_outcome.reviewer_response.response_text
+        if exchange_outcome.reviewer_response is not None
+        else summary.get("response_text")
+    )
+    head_sha = summary.get("head_sha") or cache_metadata.get("review_cache_head_sha")
+    logger.info(
+        "[REVIEW_EXCHANGE] approval accepted "
+        "issue=%d session=%s cached=%s status=%s reason=%s rounds=%s "
+        "head_sha=%s validation_passed=%s summary_path=%s run_dir=%s "
+        "reviewer_response_text=%r",
+        issue_number,
+        session_name,
+        cached,
+        exchange_outcome.status,
+        exchange_outcome.reason,
+        exchange_outcome.rounds,
+        head_sha,
+        summary.get("validation_passed"),
+        _review_exchange_summary_path(exchange_outcome),
+        review_run_dir,
+        _single_line_log_value(reviewer_text),
+    )
+
+
 class CompletionReviewExchange:
     """Owns review-exchange mode selection, caching, execution, and artifacts."""
 
@@ -704,6 +760,13 @@ class CompletionReviewExchange:
         )
         if existing_outcome.status == "ok":
             actions_taken.append("Review exchange passed (cached)")
+            _log_review_exchange_approval(
+                issue_number=issue_number,
+                session_name=session_name,
+                exchange_outcome=existing_outcome,
+                review_run_dir=review_run_dir,
+                cached=True,
+            )
             reviewer_summary = (
                 existing_outcome.reviewer_response.response_text
                 if getattr(existing_outcome, "reviewer_response", None)
@@ -804,6 +867,13 @@ class CompletionReviewExchange:
             return exchange_mode, exchange_result, True
 
         actions_taken.append("Review exchange passed")
+        _log_review_exchange_approval(
+            issue_number=issue_number,
+            session_name=session_name,
+            exchange_outcome=exchange_result,
+            review_run_dir=review_run_dir,
+            cached=False,
+        )
         reviewer_summary = (
             exchange_result.reviewer_response.response_text
             if exchange_result.reviewer_response
