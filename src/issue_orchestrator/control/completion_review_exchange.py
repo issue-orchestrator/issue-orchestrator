@@ -5,7 +5,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..domain.models import CompletionRecord, RequestedAction
 from ..domain.review_exchange_resume import (
@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 ReviewStartedEmitter = Callable[..., None]
 ReviewOutcomeEmitter = Callable[..., None]
 RunReviewExchangeLoop = Callable[..., "ReviewExchangeOutcome"]
+_TerminalOutcomeMessage = Literal["approval accepted", "halt accepted"]
 
 
 def _review_exchange_job_id(issue_number: int, session_name: str | None) -> str:
@@ -101,7 +102,7 @@ def _single_line_log_value(value: object, *, max_chars: int = 500) -> str | None
 
 def _log_review_exchange_terminal_outcome(
     *,
-    message: str,
+    message: _TerminalOutcomeMessage,
     issue_number: int,
     session_name: str | None,
     exchange_outcome: "ReviewExchangeOutcome",
@@ -134,6 +135,15 @@ def _log_review_exchange_terminal_outcome(
         _review_exchange_summary_path(exchange_outcome),
         review_run_dir,
         _single_line_log_value(reviewer_text),
+    )
+
+
+def _review_exchange_halt_error(
+    exchange_outcome: "ReviewExchangeOutcome",
+) -> str:
+    return (
+        f"{REVIEW_EXCHANGE_ERROR_PREFIX} {exchange_outcome.status} "
+        f"({exchange_outcome.reason})"
     )
 
 
@@ -843,10 +853,7 @@ class CompletionReviewExchange:
             cached=True,
             **cache_metadata,
         )
-        errors.append(
-            f"{REVIEW_EXCHANGE_ERROR_PREFIX} {existing_outcome.status} "
-            f"({existing_outcome.reason})"
-        )
+        errors.append(_review_exchange_halt_error(existing_outcome))
         return exchange_mode, existing_outcome, True
 
     def _run_fresh_review_exchange(
@@ -915,10 +922,7 @@ class CompletionReviewExchange:
                 summary=f"Review exchange halted: {exchange_result.reason}",
                 run_dir=review_run_dir,
             )
-            errors.append(
-                f"{REVIEW_EXCHANGE_ERROR_PREFIX} {exchange_result.status} "
-                f"({exchange_result.reason})"
-            )
+            errors.append(_review_exchange_halt_error(exchange_result))
             return exchange_mode, exchange_result, True
 
         actions_taken.append("Review exchange passed")
