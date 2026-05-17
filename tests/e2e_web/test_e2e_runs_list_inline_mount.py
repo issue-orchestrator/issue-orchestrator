@@ -408,7 +408,7 @@ def test_two_rows_expanded_act_independently(
       2. Clicking a Story/Ops/Debug button inside Row A fetches
          row A's run id with the chosen view, leaves Row B's
          timeline untouched.
-      3. The two rows' "Run details & artifacts" disclosures and
+      3. The two rows' Diagnostics disclosures and
          timeline containers are independent — no document-global
          id collisions.
     """
@@ -476,7 +476,7 @@ def test_two_rows_expanded_act_independently(
     assert any(f"/api/e2e-run-detail/{run_b_id}" in url for url in fetched), \
         f"row B detail not fetched; saw: {fetched}"
 
-    # ── 2. Two distinct "Run details & artifacts" disclosures ──────
+    # ── 2. Two distinct Diagnostics disclosures ────────────────────
     # Each row has ONE — not the SSR-collision case of two
     # ``#runDetailsDisclosure`` ids in the DOM.
     expect(row_a.locator(".run-details-disclosure")).to_have_count(1)
@@ -496,7 +496,7 @@ def test_two_rows_expanded_act_independently(
     )
     assert cmd_a == {
         "kind": "switch_e2e_timeline_view",
-        "label": "Switch suite timeline to Ops",
+        "label": "Switch diagnostics timeline to Ops",
         "run_id": run_a_id,
         "view": "ops",
     }, f"row A Ops button has wrong typed Command: {cmd_a!r}"

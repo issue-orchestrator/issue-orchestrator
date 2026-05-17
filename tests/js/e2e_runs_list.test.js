@@ -27,7 +27,7 @@
 //
 //   E. Re-routed ``open_e2e_run``: the typed Command that used to
 //      open the modal now expands the matching row (and opens the
-//      inner "Run details & artifacts" disclosure when
+//      inner Diagnostics disclosure when
 //      ``expand_run_details: true``).  No modal-driver call survives.
 
 const test = require('node:test');

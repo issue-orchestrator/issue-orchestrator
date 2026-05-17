@@ -96,7 +96,7 @@ function runLifecycleCommand(command, triggerEl = null) {
     // anywhere on the dashboard.  Routes to the inline runs-list
     // driver ``expandE2ERunRow``, which opens (and scrolls to) the
     // matching row.  ``expand_run_details`` opens the row's nested
-    // "Run details & artifacts" disclosure once it mounts.
+    // Diagnostics row once it mounts.
     if (kind === 'open_e2e_run' && command.run_id) {
         const expandRunDetails = command.expand_run_details === true;
         if (typeof expandE2ERunRow !== 'function') {

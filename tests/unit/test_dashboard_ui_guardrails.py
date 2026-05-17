@@ -1845,8 +1845,8 @@ def test_drawer_elevation_covers_all_modal_overlays_except_run_modal() -> None:
 
 
 def test_e2e_timeline_has_view_switcher() -> None:
-    """The Story/Ops/Debug timeline view switcher lives in the Run
-    details disclosure and emits typed ``switch_e2e_timeline_view``
+    """The Story/Ops/Debug timeline view switcher lives in the
+    Diagnostics row and emits typed ``switch_e2e_timeline_view``
     Commands (no inline ``switchE2ETimelineView()`` calls in HTML).
     """
     js = _read(DASHBOARD_JS)
@@ -1862,14 +1862,14 @@ def test_e2e_timeline_has_view_switcher() -> None:
 
 
 def test_e2e_run_timeline_is_directly_addressable() -> None:
-    """The Timeline entrypoint auto-expands the Run details disclosure.
+    """The Timeline entrypoint auto-expands the Diagnostics row.
 
     Issue #6334 re-pointed ``open_e2e_run`` at the inline runs-list
     driver (``expandE2ERunRow``).  ``openE2ERunTimeline`` still
     dispatches the typed Command with ``expand_run_details: true``;
     the dispatcher routes that through ``expandE2ERunRow`` which
     opens the matching row and then auto-opens the inner
-    "Run details & artifacts" disclosure inside the row body.
+    Diagnostics disclosure inside the row body.
     """
     js = _read(DASHBOARD_JS)
     legacy_entry = _function_body(js, "openE2ERunTimeline")
@@ -1983,39 +1983,42 @@ def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
 
 
 def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> None:
-    """Run details & artifacts disclosure carries runner/command/suite artifacts and suite timeline."""
+    """Diagnostics row carries runner/command/artifacts/timeline diagnostics."""
     js = _read(DASHBOARD_JS)
     disclosure_body = _function_body(js, "renderRunDetailsDisclosure")
+    artifact_descriptor_body = _function_body(js, "_runArtifactDescriptors")
     artifact_body = _function_body(js, "_renderRunArtifactButtons")
     artifact_button_body = _function_body(js, "_artifactButton")
     artifact_open_body = _function_body(js, "openE2EArtifactFromButton")
     assert "<details" in disclosure_body
     # Issue #6334 round-2: disclosure uses CLASS not id (two
     # expanded rows have one each — id would collide).
-    assert 'class="run-details-disclosure"' in disclosure_body
+    assert 'class="run-details-disclosure run-diagnostics-row"' in disclosure_body
     assert 'id="runDetailsDisclosure"' not in disclosure_body
     assert "rdd-grid" in disclosure_body
     assert "Runner" in disclosure_body
     assert "Command" in disclosure_body
-    # Renamed from "Run evidence" — that label implied the disclosure proved
-    # the test results above, when it's actually run-level metadata + suite
-    # artifacts + cycle timeline. The new label says what's there.
-    assert "Run details &amp; artifacts" in disclosure_body
+    # The row is diagnostics, not more test-result rows. The label keeps
+    # run metadata, artifacts, and timeline events one expansion away.
+    assert "Diagnostics" in disclosure_body
+    assert "Run details &amp; artifacts" not in disclosure_body
     assert "Run evidence" not in disclosure_body
-    assert "Suite timeline" in disclosure_body
+    assert "Timeline diagnostics" in disclosure_body
     # Same class-not-id rule for the timeline container.
     assert 'class="e2e-timeline-content"' in disclosure_body
     assert 'id="e2eTimelineContent"' not in disclosure_body
-    assert "Suite artifacts" in disclosure_body
+    assert "Artifacts" in disclosure_body
     # Artifact buttons still go through openPath via the host action handler;
     # the broken file:// behavior is preserved for now in the disclosure but
     # is no longer the modal's headline.
-    assert "Raw Output" in artifact_body
+    assert "Raw Output" in artifact_descriptor_body
+    assert "_renderArtifactDescriptorButtons(_runArtifactDescriptors(data))" in artifact_body
     assert "data-artifact-path" in artifact_button_body
     assert "openPath('" not in artifact_button_body
     assert "button.dataset.artifactPath" in artifact_open_body
     css = _read_dashboard_css_bundle()
     assert ".run-details-disclosure" in css
+    assert ".rdd-summary-chip" in css
     # Phase C: ``.test-results-headline`` / ``.test-results-filters``
     # / ``.trr-*`` CSS classes were specific to the deleted
     # ``test_results_panel.js`` panel and are no longer in the

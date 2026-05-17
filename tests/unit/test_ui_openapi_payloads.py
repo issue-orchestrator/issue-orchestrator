@@ -455,7 +455,7 @@ def test_switch_e2e_timeline_view_command_payload_matches_openapi() -> None:
     validator = _validator("SwitchE2ETimelineViewCommandPayload")
     valid = {
         "kind": "switch_e2e_timeline_view",
-        "label": "Switch suite timeline to Ops",
+        "label": "Switch diagnostics timeline to Ops",
         "run_id": 88,
         "view": "ops",
     }

@@ -163,8 +163,7 @@ class OpenE2ERunCommand(LifecycleBase):
     layout: instead of opening ``#e2eDiagnosisModal``, the typed
     Command now expands (and scrolls to) the matching ``<details>``
     row in the inline runs list.  ``expand_run_details`` opens the
-    nested "Run details & artifacts" disclosure once the row has
-    populated.
+    nested Diagnostics disclosure once the row has populated.
 
     Adding this kind to the typed ``TimelineCommand`` union means
     every user-facing "open E2E run" affordance serializes through
