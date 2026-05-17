@@ -276,24 +276,34 @@
    guardrail; see git history for the exact selector list and the
    matching js + tests deletion. */
 
-/* ── Run evidence disclosure ─────────────────────────────────────── */
+/* ── Run diagnostics row ─────────────────────────────────────────── */
 .run-details-disclosure {
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: var(--bg-panel-soft);
+    background: var(--bg-panel);
     margin-top: 8px;
+    overflow: visible;
 }
 .run-details-disclosure > summary {
-    padding: 10px 14px;
+    padding: 8px 12px;
     cursor: pointer;
     font-weight: 600;
     color: var(--text);
     list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    row-gap: 6px;
+    flex-wrap: wrap;
+    min-height: 44px;
+    line-height: 1.35;
+    border-radius: 8px;
 }
 .run-details-disclosure > summary::-webkit-details-marker { display: none; }
 .run-details-disclosure > summary::before {
     content: '▸';
     display: inline-block;
+    flex: 0 0 14px;
     width: 14px;
     color: var(--text-muted);
     font-size: 11px;
@@ -301,10 +311,49 @@
 .run-details-disclosure[open] > summary::before {
     content: '▾';
 }
+.run-details-disclosure > summary:hover {
+    background: var(--bg-panel-soft);
+}
+.run-details-disclosure > summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.rdd-summary-main {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+.rdd-summary-title {
+    color: var(--text);
+    font-weight: 600;
+}
 .rdd-summary-hint {
     color: var(--text-muted);
     font-weight: 400;
     font-size: 12px;
+}
+.rdd-summary-chips {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-left: auto;
+    min-width: 0;
+}
+.rdd-summary-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 2px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-panel-soft);
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
 }
 .rdd-body {
     padding: 10px 14px 14px;
@@ -347,6 +396,12 @@
 .rdd-artifacts, .rdd-timeline {
     display: flex;
     flex-direction: column;
+}
+
+@media (max-width: 720px) {
+    .rdd-summary-chips {
+        margin-left: 24px;
+    }
 }
 
 /* ── Phase C canonical-viewer-based E2E panel ────────────────────────── */

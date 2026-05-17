@@ -214,26 +214,44 @@ function openE2EArtifactFromButton(button) {
 // report among the run's artifacts but had no remaining caller after
 // the per-row triage UI went away.
 
-function _renderRunArtifactButtons(data) {
+function _runArtifactDescriptors(data) {
     const run = data && data.run ? data.run : {};
     const reports = Array.isArray(data && data.reports) ? data.reports : [];
     const artifacts = Array.isArray(data && data.artifacts) ? data.artifacts : [];
-    const html = [];
+    const descriptors = [];
 
     if (run.log_path) {
-        html.push(_artifactButton(run.log_path, 'Raw Output'));
+        descriptors.push({ path: run.log_path, label: 'Raw Output', cssClass: 'issue-action-btn' });
     }
     for (const report of reports) {
         if (!report || !report.path) continue;
-        html.push(_artifactButton(report.path, report.label || _humanizeSnakeCase(report.kind)));
+        descriptors.push({
+            path: report.path,
+            label: report.label || _humanizeSnakeCase(report.kind),
+            cssClass: 'issue-action-btn',
+        });
     }
     for (const artifact of artifacts) {
         if (!artifact || !artifact.path) continue;
         if (reports.includes(artifact)) continue;
         if (artifact.kind === 'raw_log') continue;
-        html.push(_artifactButton(artifact.path, artifact.label || artifact.path, 'issue-action-btn subtle'));
+        descriptors.push({
+            path: artifact.path,
+            label: artifact.label || artifact.path,
+            cssClass: 'issue-action-btn subtle',
+        });
     }
-    return html.join('');
+    return descriptors;
+}
+
+function _renderArtifactDescriptorButtons(artifacts) {
+    return artifacts
+        .map((artifact) => _artifactButton(artifact.path, artifact.label, artifact.cssClass))
+        .join('');
+}
+
+function _renderRunArtifactButtons(data) {
+    return _renderArtifactDescriptorButtons(_runArtifactDescriptors(data));
 }
 
 // Legacy helpers removed in Phase C (PR #6319 Blocker 2):
@@ -353,8 +371,13 @@ function _untrackedFailureCount(data) {
 function renderRunDetailsDisclosure(data, runId) {
     const run = data && data.run ? data.run : {};
     const command = _formatRunCommand(run);
-    const buttons = _renderRunArtifactButtons(data);
+    const artifacts = _runArtifactDescriptors(data);
+    const buttons = _renderArtifactDescriptorButtons(artifacts);
     const numericRunId = Number(runId || (run && run.id) || 0);
+    const artifactCount = artifacts.length;
+    const artifactChip = artifactCount > 0
+        ? `<span class="rdd-summary-chip">${artifactCount} artifact${artifactCount === 1 ? '' : 's'}</span>`
+        : '';
 
     // Each view button carries a typed ``SwitchE2ETimelineViewCommand``;
     // the dispatcher routes through ``resolveRowCommandContext`` so
@@ -362,7 +385,7 @@ function renderRunDetailsDisclosure(data, runId) {
     function _viewButton(view, label, isActive) {
         const cmd = {
             kind: 'switch_e2e_timeline_view',
-            label: `Switch suite timeline to ${label}`,
+            label: `Switch diagnostics timeline to ${label}`,
             run_id: numericRunId,
             view,
         };
@@ -377,8 +400,18 @@ function renderRunDetailsDisclosure(data, runId) {
     }
 
     return `
-        <details class="run-details-disclosure">
-            <summary>Run details &amp; artifacts<span class="rdd-summary-hint"> · runner, command, suite artifacts, suite timeline</span></summary>
+        <details class="run-details-disclosure run-diagnostics-row">
+            <summary>
+                <span class="rdd-summary-main">
+                    <span class="rdd-summary-title">Diagnostics</span>
+                    <span class="rdd-summary-hint">runner · command · artifacts · timeline</span>
+                </span>
+                <span class="rdd-summary-chips" aria-hidden="true">
+                    <span class="rdd-summary-chip">${escapeHtml(_formatRunnerLabel(run))}</span>
+                    ${artifactChip}
+                    <span class="rdd-summary-chip">Timeline</span>
+                </span>
+            </summary>
             <div class="rdd-body">
                 <div class="rdd-grid">
                     <div class="rdd-row"><span class="rdd-label">Runner</span><span class="rdd-value">${escapeHtml(_formatRunnerLabel(run))}</span></div>
@@ -389,9 +422,9 @@ function renderRunDetailsDisclosure(data, runId) {
                     ${run.branch ? `<div class="rdd-row"><span class="rdd-label">Branch</span><span class="rdd-value"><code>${escapeHtml(run.branch)}</code></span></div>` : ''}
                     <div class="rdd-row rdd-command-row"><span class="rdd-label">Command</span><span class="rdd-value">${command ? `<code class="e2e-run-command">${escapeHtml(command)}</code>` : 'Unavailable'}</span></div>
                 </div>
-                ${buttons ? `<div class="rdd-artifacts"><div class="rdd-section-title">Suite artifacts</div><div class="e2e-action-row">${buttons}</div></div>` : ''}
+                ${buttons ? `<div class="rdd-artifacts"><div class="rdd-section-title">Artifacts</div><div class="e2e-action-row">${buttons}</div></div>` : ''}
                 <div class="rdd-timeline">
-                    <div class="rdd-section-title">Suite timeline</div>
+                    <div class="rdd-section-title">Timeline diagnostics</div>
                     <div class="e2e-timeline-view-switcher">
                         ${_viewButton('user', 'Story', true)}
                         ${_viewButton('ops', 'Ops', false)}
@@ -406,8 +439,8 @@ function renderRunDetailsDisclosure(data, runId) {
 
 function openE2ERunTimeline(runId) {
     // Expand the matching ``<details>`` row in the inline runs list
-    // and auto-open the nested "Run details & artifacts" disclosure
-    // (which holds the suite timeline).  Routed through the typed
+    // and auto-open the nested Diagnostics row (which holds the
+    // timeline diagnostics).  Routed through the typed
     // Command pipeline (issue #6322, PR #6329 reviewer Blocker 2;
     // re-pointed at ``expandE2ERunRow`` in issue #6334) — single
     // owner for "open E2E run" navigation.
@@ -421,8 +454,8 @@ function openE2ERunTimeline(runId) {
 
 // ``renderUnifiedRunView`` was removed in issue #6334.  Its
 // responsibilities (mount the canonical viewer, attach ARIA
-// enhancements, render the suite timeline, optionally expand the
-// "Run details & artifacts" disclosure) now live in
+// enhancements, render the diagnostics timeline, optionally expand the
+// Diagnostics row) now live in
 // ``loadE2ERunIntoRow`` (canonical viewer + ARIA + timeline) and
 // ``expandE2ERunRow`` (post-mount disclosure expansion) in
 // ``e2e_runs_list.js``.

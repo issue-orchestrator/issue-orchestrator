@@ -226,8 +226,8 @@
         }
         if (options.expandRunDetails) {
             // The canonical viewer mounts the row's
-            // ``.run-details-disclosure`` lazily; poll briefly for
-            // it before flipping ``.open``.
+            // Diagnostics disclosure lazily; poll briefly for it
+            // before flipping ``.open``.
             const start = Date.now();
             const tick = () => {
                 const disclosure = row.querySelector('.run-details-disclosure');

@@ -1030,8 +1030,8 @@ def test_run_drawer_timeline_renders_clickable_issue_links(
     expect(modal.locator(".cvv-root")).to_have_count(1)
     expect(modal.locator(".e2e-run-summary")).to_be_visible(timeout=15_000)
 
-    # Run timeline is rendered eagerly inside the (collapsed) "Run details"
-    # disclosure. Expand it to assert on its content.
+    # Run timeline is rendered eagerly inside the collapsed Diagnostics row.
+    # Expand it to assert on its content.
     disclosure = modal.locator(".run-details-disclosure").first
     expect(disclosure).to_be_visible(timeout=15_000)
     disclosure.locator("summary").first.click()
@@ -1517,8 +1517,8 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
 ) -> None:
     """The default run view leads with tests; per-test expansion exposes the
     linked agentic cycle's coder session, review session, transcript, and
-    validation actions inline. Run evidence (command, raw artifacts) lives
-    in the collapsed "Run details" disclosure at the bottom."""
+    validation actions inline. Run diagnostics (command, raw artifacts)
+    lives in the collapsed Diagnostics row at the bottom."""
     base_url = fixture_web_server["url"]
     run_id = fixture_web_server["run_id"]
 
@@ -1636,8 +1636,8 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     # the dataset marker would be missing.
     expect(cvv).to_have_attribute("data-cvv-a11y-bound", "1")
 
-    # The run command + raw artifact buttons relocated to the collapsed
-    # "Run details" disclosure. Expand it and verify they're reachable.
+    # The run command + raw artifact buttons live in the collapsed
+    # Diagnostics row. Expand it and verify they're reachable.
     disclosure = modal.locator(".run-details-disclosure").first
     expect(disclosure).to_be_visible(timeout=5000)
     disclosure.locator("summary").first.click()
@@ -1791,8 +1791,8 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
     expect(cvv).to_have_attribute("data-cvv-status", "passed")
     expect(cvv).to_contain_text("package.build_image")
 
-    # Run command + raw artifact buttons live in the collapsed Run details
-    # disclosure. Expand it before clicking the artifact buttons.
+    # Run command + raw artifact buttons live in the collapsed Diagnostics
+    # row. Expand it before clicking the artifact buttons.
     disclosure = modal.locator(".run-details-disclosure").first
     expect(disclosure).to_be_visible(timeout=5000)
     disclosure.locator("summary").first.click()

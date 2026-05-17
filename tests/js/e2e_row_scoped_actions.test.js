@@ -148,10 +148,20 @@ function _fakeButtonInRow(row, view) {
 
 // ── Layer A: typed Command emission on Story/Ops/Debug buttons ────
 
-test('renderRunDetailsDisclosure: each view button carries a typed switch_e2e_timeline_view Command', () => {
+test('renderRunDetailsDisclosure: diagnostics row carries typed switch_e2e_timeline_view Commands', () => {
     const ctx = _loadFullStack();
-    const data = { run: { id: 88, started_at: '2026-05-12T00:00:00Z', status: 'passed' } };
+    const data = {
+        run: {
+            id: 88,
+            started_at: '2026-05-12T00:00:00Z',
+            status: 'passed',
+            log_path: '/tmp/run.log',
+        },
+    };
     const html = ctx.renderRunDetailsDisclosure(data, 88);
+    assert.ok(html.includes('Diagnostics'));
+    assert.ok(!html.includes('Run details &amp; artifacts'));
+    assert.ok(html.includes('1 artifact'));
     // Three view buttons; each carries the typed Command with its
     // own ``view``.
     const matches = [...html.matchAll(/data-lifecycle-command="([^"]+)"/g)];
@@ -165,7 +175,7 @@ test('renderRunDetailsDisclosure: each view button carries a typed switch_e2e_ti
         assert.strictEqual(cmd.run_id, 88);
     }
     // Disclosure uses a class, not an id — multi-row safe.
-    assert.ok(html.includes('class="run-details-disclosure"'));
+    assert.ok(html.includes('class="run-details-disclosure run-diagnostics-row"'));
     assert.ok(!html.includes('id="runDetailsDisclosure"'));
     // Timeline container uses a class too.
     assert.ok(html.includes('class="e2e-timeline-content"'));
@@ -212,7 +222,7 @@ test('switch_e2e_timeline_view dispatch: handler updates ONLY the row whose butt
     ctx.runLifecycleCommand(
         {
             kind: 'switch_e2e_timeline_view',
-            label: 'Switch suite timeline to Ops',
+            label: 'Switch diagnostics timeline to Ops',
             run_id: 88,
             view: 'ops',
         },
