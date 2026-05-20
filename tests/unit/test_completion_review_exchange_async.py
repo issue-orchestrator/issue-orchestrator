@@ -9,6 +9,7 @@ or short-circuits onto a cached on-disk summary (returning the outcome).
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -238,6 +239,24 @@ def _store_cached_approval(
             "reason": "reviewer_ok",
             "completed_rounds": 1,
             "response_text": "Looks good.",
+        },
+        validation_record_path=validation_record_path,
+    )
+
+
+def _store_cached_halt(
+    session_output: _FakeSessionOutput,
+    worktree: Path,
+    validation_record_path: Path | None,
+) -> None:
+    session_output.store_review_exchange_summary(
+        worktree,
+        "review-exchange-230",
+        {
+            "status": "stopped",
+            "reason": "max_rounds_exceeded",
+            "completed_rounds": 3,
+            "response_text": "Max rounds reached.",
         },
         validation_record_path=validation_record_path,
     )
@@ -570,11 +589,18 @@ def test_background_deadline_failure_cancels_runtime(tmp_path: Path) -> None:
     assert any("background job exceeded deadline" in error for error in errors)
 
 
-def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
+def test_tick_after_completion_resolves_cached_outcome(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     job_runner = _FakeJobRunner()
     started: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
     review, session_output = _build(tmp_path, job_runner, started, outcomes)
+    caplog.set_level(
+        logging.INFO,
+        logger="issue_orchestrator.control.completion_review_exchange",
+    )
 
     recorded_on_started: list[Path] = []
 
@@ -637,9 +663,23 @@ def test_tick_after_completion_resolves_cached_outcome(tmp_path: Path) -> None:
     assert outcome is not None and outcome.status == "ok"
     assert "Review exchange passed (cached)" in actions_taken
     assert recorded_on_started, "emit_review_started must fire during the job"
+    approval_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "[REVIEW_EXCHANGE] approval accepted" in record.getMessage()
+    ]
+    assert any("issue=230" in message for message in approval_messages)
+    assert any("cached=True" in message for message in approval_messages)
+    assert any(
+        "reviewer_response_text='Looks good.'" in message
+        for message in approval_messages
+    )
 
 
-def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> None:
+def test_cached_review_is_reused_when_validation_sha_matches(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     job_runner = _FakeJobRunner()
     started_events: list[dict[str, Any]] = []
     outcome_events: list[dict[str, Any]] = []
@@ -656,6 +696,10 @@ def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> 
     _write_validation_record(cached_validation, head_sha="same-sha")
     _write_validation_record(current_validation, head_sha="same-sha")
     _store_cached_approval(session_output, tmp_path, cached_validation)
+    caplog.set_level(
+        logging.INFO,
+        logger="issue_orchestrator.control.completion_review_exchange",
+    )
 
     def fake_loop(**_: Any) -> ReviewExchangeOutcome:
         raise AssertionError("matching cached approval should be reused")
@@ -691,6 +735,87 @@ def test_cached_review_is_reused_when_validation_sha_matches(tmp_path: Path) -> 
     assert outcome_events[0]["review_cache_head_sha"] == "same-sha"
     assert actions_taken == ["Review exchange passed (cached)"]
     assert job_runner.submitted == []
+    approval_message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "[REVIEW_EXCHANGE] approval accepted" in record.getMessage()
+    )
+    assert "issue=230" in approval_message
+    assert "session=coding-1" in approval_message
+    assert "cached=True" in approval_message
+    assert "head_sha=same-sha" in approval_message
+    assert (
+        f"summary_path={session_output.run_dir / 'review-exchange' / 'summary.json'}"
+        in approval_message
+    )
+    assert "reviewer_response_text='Looks good.'" in approval_message
+
+
+def test_cached_review_halt_is_logged_when_reused(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+
+    cached_validation = tmp_path / "cached-validation.json"
+    current_validation = tmp_path / "current-validation.json"
+    _write_validation_record(cached_validation, head_sha="same-sha")
+    _write_validation_record(current_validation, head_sha="same-sha")
+    _store_cached_halt(session_output, tmp_path, cached_validation)
+    caplog.set_level(
+        logging.INFO,
+        logger="issue_orchestrator.control.completion_review_exchange",
+    )
+
+    errors: list[str] = []
+    actions_taken: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=current_validation),
+        errors=errors,
+        actions_taken=actions_taken,
+        run_review_exchange_loop=lambda **_: (_ for _ in ()).throw(
+            AssertionError("cached halt should be reused"),
+        ),
+    )
+
+    assert deferred is False
+    assert halt is True
+    assert completed is True
+    assert outcome is not None and outcome.status == "stopped"
+    assert actions_taken == []
+    assert errors == [
+        "review_exchange: stopped (max_rounds_exceeded)",
+    ]
+    halt_message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "[REVIEW_EXCHANGE] halt accepted" in record.getMessage()
+    )
+    assert "issue=230" in halt_message
+    assert "session=coding-1" in halt_message
+    assert "cached=True" in halt_message
+    assert "status=stopped" in halt_message
+    assert "reason=max_rounds_exceeded" in halt_message
+    assert "rounds=3" in halt_message
+    assert "head_sha=same-sha" in halt_message
+    assert (
+        f"summary_path={session_output.run_dir / 'review-exchange' / 'summary.json'}"
+        in halt_message
+    )
+    assert "reviewer_response_text='Max rounds reached.'" in halt_message
 
 
 def test_cached_review_is_ignored_when_validation_sha_differs(tmp_path: Path) -> None:
@@ -974,12 +1099,19 @@ def test_cached_review_is_ignored_when_current_validation_failed_on_same_sha(
     assert len(job_runner.submitted) == 1
 
 
-def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
+def test_no_job_runner_falls_back_to_inline_execution(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # Construct without a job runner — the NullBackgroundJobRunner default must
     # short-circuit to inline execution so tests without async wiring still pass.
     started: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
     session_output = _FakeSessionOutput(tmp_path)
+    caplog.set_level(
+        logging.INFO,
+        logger="issue_orchestrator.control.completion_review_exchange",
+    )
 
     review = CompletionReviewExchange(
         config=_make_config(tmp_path),
@@ -1024,3 +1156,85 @@ def test_no_job_runner_falls_back_to_inline_execution(tmp_path: Path) -> None:
     assert halt is False
     assert completed is True
     assert outcome is not None
+    approval_message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "[REVIEW_EXCHANGE] approval accepted" in record.getMessage()
+    )
+    assert "issue=230" in approval_message
+    assert "cached=False" in approval_message
+    assert "reviewer_response_text='Looks good.'" in approval_message
+
+
+def test_inline_review_exchange_halt_is_logged(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    started: list[dict[str, Any]] = []
+    outcomes: list[dict[str, Any]] = []
+    session_output = _FakeSessionOutput(tmp_path)
+    caplog.set_level(
+        logging.INFO,
+        logger="issue_orchestrator.control.completion_review_exchange",
+    )
+
+    review = CompletionReviewExchange(
+        config=_make_config(tmp_path),
+        session_output=cast(SessionOutput, session_output),
+        emit_review_started=lambda **kw: started.append(kw),
+        emit_review_outcome=lambda **kw: outcomes.append(kw),
+        review_exchange_runner=_FakeReviewExchangeRunner(),
+    )
+
+    def fake_loop(**kwargs: Any) -> ReviewExchangeOutcome:
+        kwargs["on_started"](session_output.run_dir)
+        return ReviewExchangeOutcome(
+            status="stopped",
+            rounds=3,
+            reason="max_rounds_exceeded",
+            reviewer_response=ReviewExchangeResponse(
+                response_type="changes_requested",
+                getting_closer=True,
+                response_text="Still not done.",
+            ),
+            exchange_dir=session_output.run_dir / "review-exchange",
+            summary={
+                "status": "stopped",
+                "reason": "max_rounds_exceeded",
+                "completed_rounds": 3,
+                "response_text": "Still not done.",
+            },
+        )
+
+    errors: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=errors,
+        actions_taken=[],
+        run_review_exchange_loop=fake_loop,
+    )
+
+    assert deferred is False
+    assert halt is True
+    assert completed is True
+    assert outcome is not None and outcome.status == "stopped"
+    assert errors == [
+        "review_exchange: stopped (max_rounds_exceeded)",
+    ]
+    halt_message = next(
+        record.getMessage()
+        for record in caplog.records
+        if "[REVIEW_EXCHANGE] halt accepted" in record.getMessage()
+    )
+    assert "issue=230" in halt_message
+    assert "cached=False" in halt_message
+    assert "status=stopped" in halt_message
+    assert "reason=max_rounds_exceeded" in halt_message
+    assert "rounds=3" in halt_message
+    assert "reviewer_response_text='Still not done.'" in halt_message

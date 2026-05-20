@@ -116,6 +116,20 @@ ls -lh $RUN_DIR/terminal-recording.jsonl
 cat $RUN_DIR/orchestrator-tail.log | tail -50
 ```
 
+### Diagnostic Feedback Loop
+
+If the trace or session artifacts do not quickly explain what happened, finish
+the investigation by improving future diagnostics. Prefer adding focused
+logging/events at the component that owns the decision, not extra ad hoc
+parsing in the UI or CLI. Include the identifiers and artifact paths an
+operator needs to answer the same question next time, such as issue/session,
+status/reason, cached-vs-fresh decisions, head SHA, validation result, summary
+or manifest path, and concise human-facing response text.
+
+Keep diagnostic output one-line and bounded so `issue-orchestrator trace <N>`
+remains readable. Add or update a focused test that proves the new log/event
+contains the missing fact.
+
 ---
 
 ## Common Issues

@@ -5,7 +5,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..domain.models import CompletionRecord, RequestedAction
 from ..domain.review_exchange_resume import (
@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 ReviewStartedEmitter = Callable[..., None]
 ReviewOutcomeEmitter = Callable[..., None]
 RunReviewExchangeLoop = Callable[..., "ReviewExchangeOutcome"]
+_TerminalOutcomeMessage = Literal["approval accepted", "halt accepted"]
 
 
 def _review_exchange_job_id(issue_number: int, session_name: str | None) -> str:
@@ -76,6 +77,112 @@ def is_review_exchange_job_for_issue(job_id: str, issue_number: int) -> bool:
 
 def _cached_review_event_metadata(exchange_outcome: "ReviewExchangeOutcome") -> dict[str, str]:
     return dict(exchange_outcome.cache_metadata or {})
+
+
+def _review_exchange_summary_path(
+    exchange_outcome: "ReviewExchangeOutcome",
+) -> str | None:
+    cache_metadata = exchange_outcome.cache_metadata or {}
+    cached_path = cache_metadata.get("review_cache_summary_path")
+    if cached_path:
+        return cached_path
+    if exchange_outcome.exchange_dir is None:
+        return None
+    return str(exchange_outcome.exchange_dir / "summary.json")
+
+
+def _single_line_log_value(value: object, *, max_chars: int = 500) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+def _log_review_exchange_terminal_outcome(
+    *,
+    message: _TerminalOutcomeMessage,
+    issue_number: int,
+    session_name: str | None,
+    exchange_outcome: "ReviewExchangeOutcome",
+    review_run_dir: Path,
+    cached: bool,
+    log: Callable[..., None],
+) -> None:
+    summary = exchange_outcome.summary or {}
+    cache_metadata = exchange_outcome.cache_metadata or {}
+    reviewer_text = (
+        exchange_outcome.reviewer_response.response_text
+        if exchange_outcome.reviewer_response is not None
+        else summary.get("response_text")
+    )
+    head_sha = summary.get("head_sha") or cache_metadata.get("review_cache_head_sha")
+    log(
+        "[REVIEW_EXCHANGE] %s "
+        "issue=%d session=%s cached=%s status=%s reason=%s rounds=%s "
+        "head_sha=%s validation_passed=%s summary_path=%s run_dir=%s "
+        "reviewer_response_text=%r",
+        message,
+        issue_number,
+        session_name,
+        cached,
+        exchange_outcome.status,
+        exchange_outcome.reason,
+        exchange_outcome.rounds,
+        head_sha,
+        summary.get("validation_passed"),
+        _review_exchange_summary_path(exchange_outcome),
+        review_run_dir,
+        _single_line_log_value(reviewer_text),
+    )
+
+
+def _review_exchange_halt_error(
+    exchange_outcome: "ReviewExchangeOutcome",
+) -> str:
+    return (
+        f"{REVIEW_EXCHANGE_ERROR_PREFIX} {exchange_outcome.status} "
+        f"({exchange_outcome.reason})"
+    )
+
+
+def _log_review_exchange_approval(
+    *,
+    issue_number: int,
+    session_name: str | None,
+    exchange_outcome: "ReviewExchangeOutcome",
+    review_run_dir: Path,
+    cached: bool,
+) -> None:
+    _log_review_exchange_terminal_outcome(
+        message="approval accepted",
+        issue_number=issue_number,
+        session_name=session_name,
+        exchange_outcome=exchange_outcome,
+        review_run_dir=review_run_dir,
+        cached=cached,
+        log=logger.info,
+    )
+
+
+def _log_review_exchange_halt(
+    *,
+    issue_number: int,
+    session_name: str | None,
+    exchange_outcome: "ReviewExchangeOutcome",
+    review_run_dir: Path,
+    cached: bool,
+) -> None:
+    _log_review_exchange_terminal_outcome(
+        message="halt accepted",
+        issue_number=issue_number,
+        session_name=session_name,
+        exchange_outcome=exchange_outcome,
+        review_run_dir=review_run_dir,
+        cached=cached,
+        log=logger.warning,
+    )
 
 
 class CompletionReviewExchange:
@@ -704,6 +811,13 @@ class CompletionReviewExchange:
         )
         if existing_outcome.status == "ok":
             actions_taken.append("Review exchange passed (cached)")
+            _log_review_exchange_approval(
+                issue_number=issue_number,
+                session_name=session_name,
+                exchange_outcome=existing_outcome,
+                review_run_dir=review_run_dir,
+                cached=True,
+            )
             reviewer_summary = (
                 existing_outcome.reviewer_response.response_text
                 if getattr(existing_outcome, "reviewer_response", None)
@@ -721,6 +835,13 @@ class CompletionReviewExchange:
                 **cache_metadata,
             )
             return exchange_mode, existing_outcome, False
+        _log_review_exchange_halt(
+            issue_number=issue_number,
+            session_name=session_name,
+            exchange_outcome=existing_outcome,
+            review_run_dir=review_run_dir,
+            cached=True,
+        )
         self._emit_review_outcome(
             issue_number=issue_number,
             reviewer_label=reviewer_label,
@@ -732,10 +853,7 @@ class CompletionReviewExchange:
             cached=True,
             **cache_metadata,
         )
-        errors.append(
-            f"{REVIEW_EXCHANGE_ERROR_PREFIX} {existing_outcome.status} "
-            f"({existing_outcome.reason})"
-        )
+        errors.append(_review_exchange_halt_error(existing_outcome))
         return exchange_mode, existing_outcome, True
 
     def _run_fresh_review_exchange(
@@ -788,6 +906,13 @@ class CompletionReviewExchange:
                 run_dir=review_run_dir,
             )
         if exchange_result.status != "ok":
+            _log_review_exchange_halt(
+                issue_number=issue_number,
+                session_name=session_name,
+                exchange_outcome=exchange_result,
+                review_run_dir=review_run_dir,
+                cached=False,
+            )
             self._emit_review_outcome(
                 issue_number=issue_number,
                 reviewer_label=reviewer_label,
@@ -797,13 +922,17 @@ class CompletionReviewExchange:
                 summary=f"Review exchange halted: {exchange_result.reason}",
                 run_dir=review_run_dir,
             )
-            errors.append(
-                f"{REVIEW_EXCHANGE_ERROR_PREFIX} {exchange_result.status} "
-                f"({exchange_result.reason})"
-            )
+            errors.append(_review_exchange_halt_error(exchange_result))
             return exchange_mode, exchange_result, True
 
         actions_taken.append("Review exchange passed")
+        _log_review_exchange_approval(
+            issue_number=issue_number,
+            session_name=session_name,
+            exchange_outcome=exchange_result,
+            review_run_dir=review_run_dir,
+            cached=False,
+        )
         reviewer_summary = (
             exchange_result.reviewer_response.response_text
             if exchange_result.reviewer_response
