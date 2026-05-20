@@ -216,6 +216,7 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "reviewer_feedback_cache_minutes": LEAF,
         "keep_current_approach_label": LEAF,
         "run_audit": _leaf_keys("min_runtime_minutes", "on_timeout"),
+        "nits": _leaf_keys("default_policy", "by_agent"),
         "exchange": {
             "mode": LEAF,
             "probe": _leaf_keys("schedule", "interval_days"),

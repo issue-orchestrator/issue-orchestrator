@@ -62,6 +62,9 @@ review:
   code_review_label: needs-code-review
   code_reviewed_label: code-reviewed
   max_rework_cycles: 10
+  nits:
+    default_policy: "address"
+    by_agent: {}
 
 validation:
   quick:

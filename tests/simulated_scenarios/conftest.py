@@ -161,6 +161,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         parent_session_name=None,  # noqa: ARG001 — added in PR #6271
         initial_validation_record_path=None,
         web_port=None,  # noqa: ARG001
+        nit_policy="surface",
         events=None,
         event_context=None,
         on_started=None,
@@ -258,6 +259,8 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
                 "reviewer_response_type": reviewer.response_type,
                 "reviewer_response_text": reviewer.response_text,
                 "coder_response_type": coder_response_type,
+                "review_nit_policy": nit_policy,
+                "review_abstraction_status": "no_issues",
             })
 
             if response_type == "ok":
@@ -295,6 +298,8 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             "rounds": rounds_run,
             "status": terminating_status,
             "reason": terminating_reason,
+            "review_nit_policy": nit_policy,
+            "review_abstraction_status": "no_issues",
         })
         summary = {
             "completed_rounds": rounds_run,

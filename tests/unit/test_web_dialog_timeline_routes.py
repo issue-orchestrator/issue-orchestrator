@@ -235,6 +235,134 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_timeline_surfaces_review_report_primary_and_decision_menu(self, tmp_path: Path):
+        """Review artifact pair should be independently actionable from timelines."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-artifacts"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        (run.run_dir / "terminal-recording.jsonl").write_text("{}\n", encoding="utf-8")
+
+        turns = run.run_dir / "review-exchange" / "turns"
+        turns.mkdir(parents=True)
+        report = turns / "round-001.reviewer.attempt-001.review-report.md"
+        decision = turns / "round-001.reviewer.attempt-001.review-decision.json"
+        report.write_text("# Review Report\n\nNo issues.\n", encoding="utf-8")
+        decision.write_text('{"schema_version": 1, "verdict": "approved"}\n', encoding="utf-8")
+
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=123,
+            events=[
+                build_timeline_event(
+                    "review.approved",
+                    issue_number=123,
+                    event_id="review-artifacts",
+                    run_dir=str(run.run_dir),
+                    status="completed",
+                    phase="reviewing",
+                    artifacts=[
+                        TimelineArtifact("review_report", "Review report", str(report)),
+                        TimelineArtifact("review_decision", "Decision JSON", str(decision)),
+                    ],
+                    reviewer_agent="agent:reviewer",
+                )
+            ],
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/timeline/123")
+            assert response.status_code == 200
+            actions = response.json()["events"][0]["actions"]
+            report_action = next(action for action in actions if action.get("artifact_type") == "review_report")
+            decision_action = next(action for action in actions if action.get("artifact_type") == "review_decision")
+
+            assert report_action["type"] == "open_review_artifact"
+            assert report_action["primary"] is True
+            assert report_action["run_dir"] == str(run.run_dir)
+            assert decision_action["type"] == "open_review_artifact"
+            assert "primary" not in decision_action
+        finally:
+            set_orchestrator(None)
+
+    def test_review_artifact_endpoint_serves_run_scoped_report(self, tmp_path: Path):
+        """The review artifact endpoint returns only validated run-scoped artifacts."""
+        mock_orch = create_mock_orchestrator()
+        run_dir = tmp_path / "run"
+        turns = run_dir / "review-exchange" / "turns"
+        turns.mkdir(parents=True)
+        report = turns / "round-001.reviewer.attempt-001.review-report.md"
+        report_text = "# Review\n\n## N1\n\nLooks good after a rename.\n"
+        report.write_text(report_text, encoding="utf-8")
+        decision = turns / "round-001.reviewer.attempt-001.review-decision.json"
+        decision_text = (
+            '{\n'
+            '  "schema_version": 1,\n'
+            '  "verdict": "approved",\n'
+            '  "nits": [{"id": "N1", "title": "Rename helper"}]\n'
+            '}\n'
+        )
+        decision.write_text(decision_text, encoding="utf-8")
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                "/api/session/review-artifact/123",
+                params={
+                    "run_dir": str(run_dir),
+                    "artifact_path": str(report),
+                    "artifact_type": "review_report",
+                },
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["artifact_type"] == "review_report"
+            assert payload["content_type"] == "text/markdown"
+            assert payload["content"] == report_text
+
+            decision_response = client.get(
+                "/api/session/review-artifact/123",
+                params={
+                    "run_dir": str(run_dir),
+                    "artifact_path": str(decision),
+                    "artifact_type": "review_decision",
+                },
+            )
+            assert decision_response.status_code == 200
+            decision_payload = decision_response.json()
+            assert decision_payload["artifact_type"] == "review_decision"
+            assert decision_payload["content_type"] == "application/json"
+            assert decision_payload["content"] == decision_text
+
+            arbitrary = run_dir / "anything-not-emitted-by-this-run.md"
+            arbitrary.write_text("# Not a review artifact\n", encoding="utf-8")
+            arbitrary_response = client.get(
+                "/api/session/review-artifact/123",
+                params={
+                    "run_dir": str(run_dir),
+                    "artifact_path": str(arbitrary),
+                    "artifact_type": "review_report",
+                },
+            )
+            assert arbitrary_response.status_code == 404
+
+            escaped = client.get(
+                "/api/session/review-artifact/123",
+                params={
+                    "run_dir": str(run_dir),
+                    "artifact_path": str(tmp_path / "outside.md"),
+                    "artifact_type": "review_report",
+                },
+            )
+            assert escaped.status_code == 404
+        finally:
+            set_orchestrator(None)
+
     def test_timeline_cycles_include_orchestrator_phase_events_within_active_cycle(self):
         """Validation/queue orchestration events should remain in the same active cycle."""
         mock_orch = create_mock_orchestrator()

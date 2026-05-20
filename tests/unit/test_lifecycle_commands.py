@@ -24,6 +24,7 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
     OpenE2ERunCommand,
     OpenInlineAgentAttemptsCommand,
     OpenIssueTimelineCommand,
+    OpenReviewArtifactCommand,
     OpenReviewFeedbackCommand,
     OpenSessionRecordingCommand,
     OpenValidationDetailsCommand,
@@ -88,6 +89,27 @@ def test_open_review_feedback_command_wire_shape() -> None:
         "label": "Review Feedback",
         "issue_number": 4124,
         "event_ref": "review-evt-9",
+    }
+
+
+def test_open_review_artifact_command_wire_shape() -> None:
+    assert _dump(
+        OpenReviewArtifactCommand(
+            label="Decision JSON",
+            issue_number=4124,
+            run_dir="/tmp/run-1",
+            artifact_path="/tmp/run-1/review-decision.json",
+            artifact_type="review_decision",
+            render_mode="json",
+        )
+    ) == {
+        "kind": "open_review_artifact",
+        "label": "Decision JSON",
+        "issue_number": 4124,
+        "run_dir": "/tmp/run-1",
+        "artifact_path": "/tmp/run-1/review-decision.json",
+        "artifact_type": "review_decision",
+        "render_mode": "json",
     }
 
 

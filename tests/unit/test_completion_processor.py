@@ -33,17 +33,42 @@ from issue_orchestrator.control.completion_processor import (
     GitAdapter,
 )
 from issue_orchestrator.control.pre_publish_gate import PrePublishGateResult
+from issue_orchestrator.execution.review_artifact_reader import ManifestReviewArtifactReader
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.review_artifact_reader import (
+    ReviewArtifactContent,
+    ReviewArtifactReadCommand,
+)
 from issue_orchestrator.ports.working_copy import DiffResult, PushResult
 from issue_orchestrator.domain.events import EventBus, SessionEvent
 from issue_orchestrator.infra.issue_diagnostics import DiagnosticReference
 
 
 # ==================== Fixtures ====================
+
+
+class _FakeReviewArtifactReader:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.commands: list[ReviewArtifactReadCommand] = []
+
+    def read_review_artifact(
+        self,
+        command: ReviewArtifactReadCommand,
+    ) -> ReviewArtifactContent:
+        self.commands.append(command)
+        return ReviewArtifactContent(
+            issue_number=command.issue_number,
+            run_dir=command.run_dir,
+            artifact_path=Path(command.artifact_path),
+            artifact_type=command.artifact_type,
+            content_type="text/markdown",
+            content=self.content,
+        )
 
 
 @pytest.fixture
@@ -458,6 +483,7 @@ class TestReviewExchangeExecution:
                 "code_review": "needs-code-review",
             },
             config=config,
+            review_artifact_reader=ManifestReviewArtifactReader(),
         )
         mock_pr_adapter.get_prs_for_issue.return_value = [
             PRInfo(
@@ -586,6 +612,10 @@ class TestReviewExchangeExecution:
         """Local-loop success should publish explicit review lifecycle trace events."""
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
+        config.review_exchange_require_validation = True
+        review_artifact_reader = _FakeReviewArtifactReader(
+            "# Review Report\n\nNo issues.\n"
+        )
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -597,6 +627,7 @@ class TestReviewExchangeExecution:
                 "code_review": "needs-code-review",
             },
             config=config,
+            review_artifact_reader=review_artifact_reader,
         )
         sink = InMemoryEventSink()
         processor.set_event_emitter(sink, EventContext())
@@ -611,12 +642,28 @@ class TestReviewExchangeExecution:
             / "sessions"
             / "20260218-030043Z__review-exchange-123"
         )
+        report = (
+            review_exchange_run
+            / "review-exchange"
+            / "turns"
+            / "round-001.reviewer.attempt-001.review-report.md"
+        )
         processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
             return_value=ReviewExchangeOutcome(
                 status="ok",
                 rounds=1,
                 reason="reviewer_ok",
                 exchange_dir=review_exchange_run / "review-exchange",
+                summary={
+                    "artifacts": [
+                        {
+                            "type": "review_report",
+                            "label": "Review report",
+                            "value": str(report),
+                            "render_mode": "markdown",
+                        }
+                    ]
+                },
             )
         )
 
@@ -628,6 +675,19 @@ class TestReviewExchangeExecution:
         )
 
         assert result.success is True
+        review_comment = mock_pr_adapter.add_comment.call_args.args[1]
+        assert "✅ Review completed via via-local-loop loop." in review_comment
+        assert "- Validation: required and passed" in review_comment
+        assert "---" in review_comment
+        assert "# Review Report" in review_comment
+        assert review_artifact_reader.commands == [
+            ReviewArtifactReadCommand(
+                issue_number=123,
+                run_dir=review_exchange_run,
+                artifact_path=str(report),
+                artifact_type="review_report",
+            )
+        ]
         event_names = sink.event_names()
         assert str(EventName.REVIEW_STARTED) in event_names
         assert str(EventName.REVIEW_APPROVED) in event_names
@@ -652,6 +712,77 @@ class TestReviewExchangeExecution:
             assert str(event.data.get("run_dir", "")).endswith(
                 "/.issue-orchestrator/sessions/20260218-030043Z__review-exchange-123"
             ), f"missing run_dir on {event.name}"
+
+    def test_review_completion_comment_uses_run_scoped_artifact_reader(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """PR comments must not read review-report paths outside the artifact policy."""
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+            review_artifact_reader=ManifestReviewArtifactReader(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        worktree = worktree_with_completion(record)
+        review_exchange_run = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260218-030045Z__review-exchange-123"
+        )
+        stray_report = review_exchange_run / "review-report.md"
+        stray_report.parent.mkdir(parents=True, exist_ok=True)
+        stray_report.write_text("# Stray Review Report\n\nDo not include.\n", encoding="utf-8")
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="ok",
+                rounds=1,
+                reason="reviewer_ok",
+                exchange_dir=review_exchange_run / "review-exchange",
+                summary={
+                    "artifacts": [
+                        {
+                            "type": "review_report",
+                            "label": "Review report",
+                            "value": str(stray_report),
+                            "render_mode": "markdown",
+                        }
+                    ]
+                },
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is True
+        review_comment = mock_pr_adapter.add_comment.call_args.args[1]
+        assert "✅ Review completed via via-local-loop loop." in review_comment
+        assert "# Stray Review Report" not in review_comment
+        assert "Do not include." not in review_comment
 
     def test_local_loop_failure_emits_review_changes_requested_trace_event(
         self,

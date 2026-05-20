@@ -1331,6 +1331,8 @@ agents:
         assert config.review_exchange_max_rounds == 10
         assert config.review_exchange_max_no_progress == 2
         assert config.review_exchange_require_validation is True
+        assert config.review_nits_default_policy == "surface"
+        assert config.review_nits_by_agent == {}
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         assert config.review_run_audit_min_runtime_minutes == 20
         assert config.review_run_audit_on_timeout is True
@@ -1432,6 +1434,10 @@ review:
       max_rounds: 6
       max_no_progress: 1
       require_validation: false
+  nits:
+    default_policy: address
+    by_agent:
+      agent:coder: ignore
   run_audit:
     min_runtime_minutes: 30
     on_timeout: false
@@ -1454,6 +1460,8 @@ review:
         assert config.review_exchange_max_rounds == 6
         assert config.review_exchange_max_no_progress == 1
         assert config.review_exchange_require_validation is False
+        assert config.review_nits_default_policy == "address"
+        assert config.review_nits_by_agent == {"agent:coder": "ignore"}
         assert config.review_run_audit_min_runtime_minutes == 30
         assert config.review_run_audit_on_timeout is False
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
@@ -1873,6 +1881,40 @@ review:
         config = Config.load(config_file)
         errors = config.validate()
         assert any("probe.schedule" in e for e in errors)
+
+    def test_review_nit_policy_invalid_values(self, tmp_path):
+        """Review nit policies must be explicit supported workflow values."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+
+review:
+  enabled: true
+  default: agent:reviewer
+  nits:
+    default_policy: maybe
+    by_agent:
+      agent:coder: later
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert any("review.nits.default_policy" in e for e in errors)
+        assert any("review.nits.by_agent.agent:coder" in e for e in errors)
 
     def test_validate_no_error_when_review_disabled(self, tmp_path):
         """Test that no error when review.enabled is false (default)."""

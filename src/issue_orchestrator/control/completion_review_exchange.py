@@ -13,6 +13,7 @@ from ..domain.review_exchange_resume import (
     ResumeFacts,
     decide,
 )
+from ..domain.review_artifacts import review_artifacts_from_exchange_result
 from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
 from ..ports.session_output import ReviewExchangeSummary, SessionOutput
@@ -832,6 +833,7 @@ class CompletionReviewExchange:
                 summary=reviewer_summary,
                 run_dir=review_run_dir,
                 cached=True,
+                artifacts=self._review_artifacts_from_outcome(existing_outcome),
                 **cache_metadata,
             )
             return exchange_mode, existing_outcome, False
@@ -851,6 +853,7 @@ class CompletionReviewExchange:
             summary=f"Review exchange halted: {existing_outcome.reason}",
             run_dir=review_run_dir,
             cached=True,
+            artifacts=self._review_artifacts_from_outcome(existing_outcome),
             **cache_metadata,
         )
         errors.append(_review_exchange_halt_error(existing_outcome))
@@ -921,6 +924,7 @@ class CompletionReviewExchange:
                 rounds=getattr(exchange_result, "rounds", None),
                 summary=f"Review exchange halted: {exchange_result.reason}",
                 run_dir=review_run_dir,
+                artifacts=self._review_artifacts_from_outcome(exchange_result),
             )
             errors.append(_review_exchange_halt_error(exchange_result))
             return exchange_mode, exchange_result, True
@@ -946,6 +950,7 @@ class CompletionReviewExchange:
             rounds=exchange_result.rounds,
             summary=reviewer_summary,
             run_dir=review_run_dir,
+            artifacts=self._review_artifacts_from_outcome(exchange_result),
         )
         self.store_review_exchange_summary(
             worktree=worktree,
@@ -966,6 +971,12 @@ class CompletionReviewExchange:
         if not isinstance(max_failures, int) or max_failures < 0:
             return 0
         return max_failures
+
+    @staticmethod
+    def _review_artifacts_from_outcome(
+        exchange_result: "ReviewExchangeOutcome",
+    ) -> list[dict[str, str]] | None:
+        return review_artifacts_from_exchange_result(exchange_result) or None
 
     def _review_exchange_job_timeout_seconds(self, agent_label: str | None) -> float | None:
         """Return a hard wall-clock deadline for one deferred exchange job.
@@ -1412,6 +1423,10 @@ class CompletionReviewExchange:
         reviewer_label = self.resolve_reviewer_label(agent_label)
         coder_agent = self._config.agents[coder_label]
         reviewer_agent = self._config.agents[reviewer_label]
+        nit_policy = self._config.review_nits_by_agent.get(
+            coder_label,
+            self._config.review_nits_default_policy,
+        )
 
         # Reviewer-worktree lifecycle and the round loop live behind the
         # ``ReviewExchangeRunner`` port — ``control/`` no longer reaches
@@ -1428,6 +1443,7 @@ class CompletionReviewExchange:
             max_rounds=self._config.review_exchange_max_rounds,
             max_no_progress=self._config.review_exchange_max_no_progress,
             require_validation=self._config.review_exchange_require_validation,
+            nit_policy=nit_policy,
             parent_session_name=session_name,
             initial_validation_record_path=initial_validation_record_path,
             web_port=self._config.control_api_port,

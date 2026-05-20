@@ -370,6 +370,12 @@ function renderGroupedDialogActions(actions) {
         primary.push(item);
         used.add(item);
     }
+    for (const item of items) {
+        if (used.has(item)) continue;
+        if (!item.action || item.action.primary !== true) continue;
+        primary.push(item);
+        used.add(item);
+    }
 
     const secondary = items.filter(item => !used.has(item));
 
@@ -397,6 +403,10 @@ function _dialogActionShortLabel(action) {
     const label = String(action.label || '');
     if (type === 'open_agent_log') return 'Session Recording';
     if (type === 'open_review_transcript') return 'Review Transcript';
+    if (type === 'open_review_artifact') {
+        if (action.artifact_type === 'review_decision') return 'Decision JSON';
+        return label || 'Review report';
+    }
     if (type === 'open_validation_failure') return 'Validation Details';
     if (type === 'copy_agent_log') return 'Copy Session Recording';
     if (type === 'view_claude_log') return 'Claude Log';
@@ -468,6 +478,7 @@ const _AFFORDANCE_GLYPH_BY_ACTION_TYPE = {
     // Corrected.
     open_validation_failure: ' ⧉',
     open_review_transcript: ' ⧉',
+    open_review_artifact: ' ⧉',
     open_review_feedback: ' ⧉',
     open_session_diagnostics: ' ⧉',
     open_agent_log: ' ⧉',
@@ -512,6 +523,14 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
         const roleLiteral = JSON.stringify(action.transcript_role || null);
         return `<button class="${cssClass}" onclick="openReviewTranscript(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, { round_index: ${roundIndexLiteral}, transcript_role: ${roleLiteral} }, 'inline')">${label}</button>`;
     }
+    if (action.type === 'open_review_artifact') {
+        if (!fallbackRunDir || !action.artifact_path || !action.artifact_type) return '';
+        const runDirLiteral = escapeAttr(JSON.stringify(String(fallbackRunDir)));
+        const pathLiteral = escapeAttr(JSON.stringify(String(action.artifact_path)));
+        const typeLiteral = escapeAttr(JSON.stringify(String(action.artifact_type)));
+        const modeLiteral = escapeAttr(JSON.stringify(String(action.render_mode || '')));
+        return `<button class="${cssClass}" onclick="openReviewArtifact(${action.issue_number}, ${runDirLiteral}, ${pathLiteral}, ${typeLiteral}, ${modeLiteral})">${label}</button>`;
+    }
     if (action.type === 'copy_agent_log') {
         if (!fallbackRunDir) return '';
         return `<button class="${cssClass}" onclick="copyAgentLogAction(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))})">${label}</button>`;
@@ -536,6 +555,133 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
         return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number})">${label}</button>`;
     }
     return '';
+}
+
+function _renderReviewMarkdownInline(text) {
+    return escapeHtml(String(text || '')).replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+
+function _renderReviewMarkdown(content) {
+    const lines = String(content || '').split(/\r?\n/);
+    let html = '<div class="review-artifact-markdown">';
+    let listOpen = false;
+    let fenceOpen = false;
+    let fenceLines = [];
+
+    const closeList = () => {
+        if (!listOpen) return;
+        html += '</ul>';
+        listOpen = false;
+    };
+    const closeFence = () => {
+        if (!fenceOpen) return;
+        html += `<pre class="review-artifact-code">${escapeHtml(fenceLines.join('\n'))}</pre>`;
+        fenceOpen = false;
+        fenceLines = [];
+    };
+
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('```')) {
+            if (fenceOpen) {
+                closeFence();
+            } else {
+                closeList();
+                fenceOpen = true;
+                fenceLines = [];
+            }
+            continue;
+        }
+        if (fenceOpen) {
+            fenceLines.push(line);
+            continue;
+        }
+        if (!trimmed) {
+            closeList();
+            continue;
+        }
+        const heading = /^(#{1,3})\s+(.+)$/.exec(trimmed);
+        if (heading) {
+            closeList();
+            const level = Math.min(heading[1].length + 2, 5);
+            html += `<h${level}>${_renderReviewMarkdownInline(heading[2])}</h${level}>`;
+            continue;
+        }
+        const bullet = /^[-*]\s+(.+)$/.exec(trimmed);
+        if (bullet) {
+            if (!listOpen) {
+                html += '<ul>';
+                listOpen = true;
+            }
+            html += `<li>${_renderReviewMarkdownInline(bullet[1])}</li>`;
+            continue;
+        }
+        closeList();
+        html += `<p>${_renderReviewMarkdownInline(trimmed)}</p>`;
+    }
+    closeFence();
+    closeList();
+    html += '</div>';
+    return html;
+}
+
+function _renderReviewArtifactContent(data, artifactType, renderMode) {
+    const content = String((data && data.content) || '');
+    const mode = String(renderMode || data?.content_type || '').toLowerCase();
+    if (artifactType === 'review_decision' || mode.includes('json')) {
+        let pretty = content;
+        try {
+            pretty = JSON.stringify(JSON.parse(content), null, 2);
+        } catch (_err) {
+            // Preserve the original content if the server-side JSON validator
+            // rejected stale data after the action was rendered.
+        }
+        return `<pre class="review-artifact-json">${escapeHtml(pretty)}</pre>`;
+    }
+    return _renderReviewMarkdown(content);
+}
+
+async function openReviewArtifact(issueNumber, runDir, artifactPath, artifactType, renderMode = null) {
+    if (!runDir || !artifactPath || !artifactType) {
+        showToast('Review artifact is missing run context.', 'error');
+        return;
+    }
+    const title = artifactType === 'review_decision'
+        ? `Decision JSON #${issueNumber}`
+        : `Review report #${issueNumber}`;
+    openModal(title, '<div class="timeline-loading">Loading review artifact...</div>');
+    const modalEl = modalOverlay.querySelector('.modal');
+    if (modalEl) modalEl.classList.add('review-artifact-modal');
+    try {
+        const req = uiActionContract.buildReviewArtifactRequest(
+            issueNumber,
+            runDir,
+            artifactPath,
+            artifactType,
+        );
+        const res = await fetch(req.endpoint, { method: req.method });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            const message = data.error || `Failed to load review artifact (HTTP ${res.status})`;
+            openModal(title, `<div class="diag-action-message" style="display:block;">${escapeHtml(message)}</div>`);
+            return;
+        }
+        const meta = [
+            data.artifact_path ? `Path: ${escapeHtml(String(data.artifact_path))}` : '',
+            data.content_type ? `Type: ${escapeHtml(String(data.content_type))}` : '',
+        ].filter(Boolean).join(' · ');
+        const metaHtml = meta ? `<div class="review-artifact-meta">${meta}</div>` : '';
+        openModal(
+            title,
+            `<div class="review-artifact-viewer">${metaHtml}${_renderReviewArtifactContent(data, artifactType, renderMode)}</div>`,
+        );
+        if (modalEl) modalEl.classList.add('review-artifact-modal');
+    } catch (err) {
+        openModal(
+            title,
+            `<div class="diag-action-message" style="display:block;">${escapeHtml(err instanceof Error ? err.message : String(err))}</div>`,
+        );
+    }
 }
 
 async function sendAgentInput(issueNumber) {

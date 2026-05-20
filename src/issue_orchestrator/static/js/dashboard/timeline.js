@@ -332,6 +332,10 @@ function _timelineActionShortLabel(action) {
         return 'Session Recording';
     }
     if (type === 'open_review_transcript') return 'Review Transcript';
+    if (type === 'open_review_artifact') {
+        if (action.artifact_type === 'review_decision') return 'Decision JSON';
+        return label || 'Review report';
+    }
     if (type === 'open_validation_failure') return 'Validation Details';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
@@ -430,6 +434,16 @@ function runTimelineEventAction(action) {
     }
     if (action.type === 'open_review_transcript' && action.issue_number) {
         openReviewTranscript(action.issue_number, action.run_dir || null, action);
+        return;
+    }
+    if (action.type === 'open_review_artifact' && action.issue_number) {
+        openReviewArtifact(
+            action.issue_number,
+            action.run_dir || null,
+            action.artifact_path || null,
+            action.artifact_type || null,
+            action.render_mode || null,
+        );
         return;
     }
     if (action.type === 'open_agent_log' && action.issue_number) {

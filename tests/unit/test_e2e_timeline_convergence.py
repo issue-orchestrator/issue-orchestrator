@@ -1445,6 +1445,95 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_e2e_issue_detail_surfaces_review_artifact_actions(self, tmp_path):
+        """E2E issue drill-in exposes the same review report/JSON actions."""
+        import sqlite3
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        repo_root = tmp_path / "repo"
+        (repo_root / ".issue-orchestrator").mkdir(parents=True)
+        wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+        run_dir = tmp_path / "agent-run"
+        run_dir.mkdir()
+        (run_dir / "terminal-recording.jsonl").write_text("{}\n", encoding="utf-8")
+        turns = run_dir / "review-exchange" / "turns"
+        turns.mkdir(parents=True)
+        report = turns / "round-001.reviewer.attempt-001.review-report.md"
+        decision = turns / "round-001.reviewer.attempt-001.review-decision.json"
+        report.write_text("# Review Report\n\nApproved.\n", encoding="utf-8")
+        decision.write_text('{"schema_version": 1, "verdict": "approved"}\n', encoding="utf-8")
+
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_id = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_id, status="failed", duration_seconds=60.0)
+        with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as raw:
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                ("2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", run_id),
+            )
+
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(
+            TimelineKey.for_issue(42).to_store_key(),
+            TimelineRecord(
+                event_id="review-artifact-evt",
+                timestamp="2026-01-01T00:02:30Z",
+                event="review.approved",
+                data={
+                    "run_dir": str(run_dir),
+                    "views": ["user", "ops", "debug"],
+                    "logical_run": 1,
+                    "logical_cycle": 1,
+                    "logical_phase": "review",
+                    "timeline_schema_version": 4,
+                    "event_intent": "review",
+                    "review_oriented": True,
+                    "reviewer_agent": "agent:reviewer",
+                    "artifacts": [
+                        {"type": "review_report", "label": "Review report", "value": str(report), "render_mode": "markdown"},
+                        {"type": "review_decision", "label": "Decision JSON", "value": str(decision), "render_mode": "json"},
+                    ],
+                },
+                source_event="review.approved",
+            ),
+        )
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = repo_root
+        mock_orch.deps.timeline_store = SqliteTimelineStore(
+            db_path=repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/e2e-run/{run_id}/issue-detail/42?view=debug")
+            assert response.status_code == 200, response.text
+            event = response.json()["events"][0]
+            report_action = next(
+                action for action in event["actions"]
+                if action.get("artifact_type") == "review_report"
+            )
+            decision_action = next(
+                action for action in event["actions"]
+                if action.get("artifact_type") == "review_decision"
+            )
+            assert report_action["primary"] is True
+            assert report_action["run_dir"] == str(run_dir)
+            assert decision_action["type"] == "open_review_artifact"
+            assert "primary" not in decision_action
+        finally:
+            set_orchestrator(None)
+
     def test_web_endpoint_worktree_fallback_attaches_issue_numbers_end_to_end(self, tmp_path):
         """Full /api/e2e-run-detail/{id} repro through the worktree-fallback route.
 

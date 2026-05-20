@@ -280,6 +280,8 @@ class Config:
     review_exchange_max_rounds: int = 10
     review_exchange_max_no_progress: int = 2
     review_exchange_require_validation: bool = True
+    review_nits_default_policy: str = "surface"
+    review_nits_by_agent: dict[str, str] = field(default_factory=dict)
     # Cap on consecutive review-exchange failures with reason
     # ``*_no_completion`` (reviewer or coder timed out without writing
     # a verdict). After N failures in a row on the same coding session,
@@ -629,6 +631,10 @@ class Config:
                 "code_reviewed_label": self.code_reviewed_label,
                 "run_audit": self._runtime_run_audit_dict(),
                 "exchange": self._runtime_exchange_dict(),
+                "nits": {
+                    "default_policy": self.review_nits_default_policy,
+                    "by_agent": dict(self.review_nits_by_agent),
+                },
                 "triage_review": {
                     "agent": self.triage_review_agent,
                     "label": self.triage_review_label,
@@ -971,6 +977,13 @@ class Config:
             review_dict.setdefault("run_audit", {})["min_runtime_minutes"] = self.review_run_audit_min_runtime_minutes
         if self.review_run_audit_on_timeout is not True:
             review_dict.setdefault("run_audit", {})["on_timeout"] = self.review_run_audit_on_timeout
+        if self.review_nits_default_policy != "surface" or self.review_nits_by_agent:
+            nits_dict: dict[str, object] = {
+                "default_policy": self.review_nits_default_policy,
+            }
+            if self.review_nits_by_agent:
+                nits_dict["by_agent"] = dict(self.review_nits_by_agent)
+            review_dict["nits"] = nits_dict
         exchange_dict = self._serialization_exchange_dict()
         if exchange_dict:
             review_dict["exchange"] = exchange_dict
@@ -1303,6 +1316,14 @@ class Config:
             errors.append(
                 "validation.publish.dirty_check must be one of: tracked, unstaged, all, off"
             )
+        valid_nit_policies = {"ignore", "surface", "address"}
+        if self.review_nits_default_policy not in valid_nit_policies:
+            errors.append("review.nits.default_policy must be one of: ignore, surface, address")
+        for agent_label, policy in self.review_nits_by_agent.items():
+            if policy not in valid_nit_policies:
+                errors.append(
+                    f"review.nits.by_agent.{agent_label} must be one of: ignore, surface, address"
+                )
         if (
             self.review_enabled
             and self.review_exchange_require_validation

@@ -30,6 +30,8 @@ When reviewing changes that touch review/rework/triage/session launch paths, sca
 
 If any of the above appear, recommend centralizing the policy into a shared helper/module and reusing it.
 
+Review for the strongest bounded design, not merely for a working diff. If a direct fix bypasses an existing owner abstraction or should create a small owner/port/command abstraction, request that fix in the PR. Treat this as `Design Smell` when it risks drift and `Correctness Risk` when an invariant can be bypassed.
+
 ## Review Decision Policy (Strict)
 
 Use a hardline merge bar. Do not soften medium-or-higher concerns into an approval.
@@ -63,6 +65,21 @@ Use a hardline merge bar. Do not soften medium-or-higher concerns into an approv
 - Data/contract/schema mismatches or payload bloat risks.
 - Missing or weak tests for changed behavior.
 - Architectural drift from ports/adapters, DI, or lifecycle boundaries.
+
+## Review Artifact Contract
+
+Before PR creation, review exchange output must include a paired artifact set:
+
+- `review-report.md` for human review. It should read like a PR review and include blocker/nit item IDs.
+- `review-decision.json` for orchestration. This is the authoritative no-nonsense contract.
+
+The markdown and JSON must describe the same item IDs. The dashboard/E2E issue detail should expose the report as the primary visible action and keep the JSON as a secondary/menu action.
+
+Review artifact UI/actions must follow the typed command / owner-port pattern. Add tests for producer-to-command content and command-to-UI rendered content, including the primary report action and secondary/menu JSON action.
+
+The decision JSON must include `abstraction_review`. Use `status: "no_issues"` when the bounded owner/port/command shape is sound. Use `status: "changes_requested"` with `A1`, `A2`, ... findings when the coder should add or reuse a bounded abstraction in this PR. Approved decisions must not carry required abstraction changes. Use `status: "deferred"` only with an existing follow-up issue and include `follow_up_issue_url`.
+
+Nits are classified in the same reviewer pass as blockers. Do not add a separate nit pass. If the active nit policy is `address`, an approved decision with only nits enters the normal coder rework loop before PR creation. `surface` shows nits without blocking; `ignore` keeps them in artifacts only.
 
 ## Review Pipeline
 
@@ -137,6 +154,10 @@ review:
   enabled: true
   default: "agent:reviewer"
   max_rework_cycles: 10
+
+  nits:
+    default_policy: "surface"     # ignore | surface | address
+    by_agent: {}                  # e.g. agent:frontend: address
 
   exchange:
     mode: "via-local-loop"       # via-local-loop | via-draft-pr | via-mcp | auto

@@ -416,6 +416,14 @@ def load_review_section(config: "Config", review_section: dict) -> None:
             "on_timeout",
             True,
         )
+    nits_section = review_section.get("nits", {})
+    if isinstance(nits_section, dict):
+        config.review_nits_default_policy = nits_section.get(
+            "default_policy",
+            "surface",
+        )
+        by_agent = nits_section.get("by_agent", {})
+        config.review_nits_by_agent = dict(by_agent) if isinstance(by_agent, dict) else {}
     exchange_section = review_section.get("exchange", {})
     config.review_exchange_mode = exchange_section.get("mode", "via-local-loop")
     probe_section = exchange_section.get("probe", {})

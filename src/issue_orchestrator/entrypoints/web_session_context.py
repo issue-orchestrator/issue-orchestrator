@@ -7,8 +7,10 @@ from typing import Annotated, Any, Callable
 from fastapi import Depends, FastAPI, Request
 
 from ..infra.orchestrator import Orchestrator
+from ..ports.review_artifact_reader import ReviewArtifactReader
 
 _WEB_SESSION_CONTEXT_GETTER_STATE_KEY = "web_session_context_get_orchestrator"
+_WEB_REVIEW_ARTIFACT_READER_STATE_KEY = "web_session_context_review_artifact_reader"
 
 
 @dataclass(frozen=True)
@@ -24,9 +26,11 @@ def install_web_session_context_dependencies(
     app: FastAPI,
     *,
     get_orchestrator: Callable[[], Orchestrator | None],
+    review_artifact_reader: ReviewArtifactReader,
 ) -> None:
     """Install web session-context dependencies on the FastAPI app."""
     setattr(app.state, _WEB_SESSION_CONTEXT_GETTER_STATE_KEY, get_orchestrator)
+    setattr(app.state, _WEB_REVIEW_ARTIFACT_READER_STATE_KEY, review_artifact_reader)
 
 
 def get_web_orchestrator(request: Request) -> Orchestrator | None:
@@ -40,6 +44,20 @@ def get_web_orchestrator(request: Request) -> Orchestrator | None:
 WebOrchestratorDependency = Annotated[
     Orchestrator | None,
     Depends(get_web_orchestrator),
+]
+
+
+def get_web_review_artifact_reader(request: Request) -> ReviewArtifactReader:
+    """Return the configured review-artifact command reader."""
+    reader = getattr(request.app.state, _WEB_REVIEW_ARTIFACT_READER_STATE_KEY, None)
+    if reader is None:
+        raise RuntimeError("review artifact reader dependency is not installed")
+    return reader
+
+
+ReviewArtifactReaderDependency = Annotated[
+    ReviewArtifactReader,
+    Depends(get_web_review_artifact_reader),
 ]
 
 
@@ -130,7 +148,9 @@ def issue_title_for(
 
 __all__ = [
     "IssueSessionContext",
+    "ReviewArtifactReaderDependency",
     "WebOrchestratorDependency",
+    "get_web_review_artifact_reader",
     "get_web_orchestrator",
     "install_web_session_context_dependencies",
     "issue_title_for",

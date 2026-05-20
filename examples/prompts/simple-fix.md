@@ -30,7 +30,7 @@ Choose your approach based on the task:
 
 ### For new functionality:
 1. Write tests first (TDD) - verify they fail
-2. Implement the minimum code to make tests pass
+2. Implement the minimum behavior-complete change to make tests pass
 3. Refactor while keeping tests green
 4. Commit tests and implementation
 
@@ -46,6 +46,10 @@ Write tests that verify **behavior**, not implementation:
 - Test through public APIs, not private methods (`_xxx`)
 - Test observable outcomes, not internal state
 - Ask: "Would a user of this code care about this?"
+
+## Owner-Abstraction Check
+
+Smallest diff is not enough. If the direct fix would duplicate policy, bypass a port/adapter, add another direct reader/writer, make a UI/API handler own business rules, or require callers to know several internals, introduce the bounded owner abstraction in the same PR. Report the abstraction you added, or state that no abstraction finding applied.
 
 ## Completion Commands
 

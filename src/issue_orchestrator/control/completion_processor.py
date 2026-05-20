@@ -34,8 +34,16 @@ from ..domain.models import (
     COMPLETION_RECORD_PATH,
 )
 from ..domain.events import EventBus, SessionEvent
+from ..domain.review_artifacts import (
+    REVIEW_REPORT_ARTIFACT,
+    review_artifacts_from_exchange_result,
+)
 from ..events import EventContext, EventName
 from ..ports import EventSink
+from ..ports.review_artifact_reader import (
+    ReviewArtifactReadCommand,
+    ReviewArtifactReader,
+)
 from .background_job_supervisor import BackgroundJobSupervisor
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.timeline_trace import is_timeline_trace_enabled
@@ -86,6 +94,14 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
+
+
+class _MissingReviewArtifactReader:
+    def read_review_artifact(self, command: ReviewArtifactReadCommand) -> Any:
+        raise RuntimeError(
+            "CompletionProcessor requires review_artifact_reader to read "
+            f"review artifacts for issue #{command.issue_number}"
+        )
 
 
 # Only paths under ``<worktree>/.issue-orchestrator`` are acceptable as a
@@ -425,6 +441,7 @@ class CompletionProcessor:
         config: "Config | None" = None,
         background_job_supervisor: "BackgroundJobSupervisor | None" = None,
         review_exchange_canceller: ReviewExchangeCanceller | None = None,
+        review_artifact_reader: ReviewArtifactReader | None = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -446,6 +463,7 @@ class CompletionProcessor:
                 ``Orchestrator.tick`` drains its completions.
             review_exchange_canceller: Issue-scoped lifecycle hook used when
                 the async review-exchange job reaches a terminal failure.
+            review_artifact_reader: Reader for run-scoped review artifacts.
         """
         self.label_adapter = label_adapter
         self.pr_adapter = pr_adapter
@@ -492,6 +510,7 @@ class CompletionProcessor:
             config=config,
             git_adapter=git_adapter,
         )
+        self._review_artifact_reader = review_artifact_reader or _MissingReviewArtifactReader()
 
     def _emit(
         self,
@@ -694,6 +713,7 @@ class CompletionProcessor:
         rounds: int | None,
         summary: str,
         run_dir: Path | None = None,
+        artifacts: list[dict[str, str]] | None = None,
         cached: bool = False,
         review_cache_summary_path: str | None = None,
         review_cache_validation_record_path: str | None = None,
@@ -708,7 +728,7 @@ class CompletionProcessor:
         """
         if self._trace_events is None or self._event_context is None:
             return
-        payload = {
+        payload: dict[str, Any] = {
             "issue_number": issue_number,
             "task": "review",
             "agent": reviewer_label or "",
@@ -718,6 +738,8 @@ class CompletionProcessor:
         }
         if run_dir is not None:
             payload["run_dir"] = str(run_dir)
+        if artifacts:
+            payload["artifacts"] = artifacts
         if cached:
             payload["cached"] = True
         if review_cache_summary_path:
@@ -2202,6 +2224,14 @@ class CompletionProcessor:
         )
         if self._config and self._config.review_exchange_require_validation:
             comment += "- Validation: required and passed\n"
+        artifacts = review_artifacts_from_exchange_result(exchange_result)
+        report_body = self._review_report_comment_body(
+            issue_number=issue_number,
+            run_dir=run_dir,
+            artifacts=artifacts,
+        )
+        if report_body:
+            comment = comment.rstrip() + "\n\n---\n\n" + report_body
         comment_url = self.pr_adapter.add_comment(pr_number, comment)
         actions_taken.append(f"Posted review completion comment to PR #{pr_number}")
         self._emit_review_comment_added(
@@ -2211,6 +2241,37 @@ class CompletionProcessor:
             comment_body=comment,
             run_dir=run_dir,
         )
+
+    def _review_report_comment_body(
+        self,
+        *,
+        issue_number: int,
+        run_dir: Path | None,
+        artifacts: list[dict[str, str]],
+    ) -> str | None:
+        if run_dir is None:
+            return None
+        for artifact in artifacts:
+            if artifact.get("type") != REVIEW_REPORT_ARTIFACT:
+                continue
+            artifact_path = artifact.get("value")
+            if not artifact_path:
+                continue
+            try:
+                content = self._review_artifact_reader.read_review_artifact(
+                    ReviewArtifactReadCommand(
+                        issue_number=issue_number,
+                        run_dir=run_dir,
+                        artifact_path=artifact_path,
+                        artifact_type=REVIEW_REPORT_ARTIFACT,
+                    )
+                )
+            except FileNotFoundError:
+                continue
+            text = content.content.strip()
+            if text:
+                return text
+        return None
 
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         return self._review_exchange.resolve_review_exchange_mode(agent_label)

@@ -29,6 +29,12 @@ _EXPORTS = {
     "InMemoryEventSink": (".event_sink", "InMemoryEventSink"),
     "make_trace_event": (".event_sink", "make_trace_event"),
     "make_run_scoped_event": (".event_sink", "make_run_scoped_event"),
+    "make_review_exchange_round_completed_event": (
+        ".event_sink", "make_review_exchange_round_completed_event",
+    ),
+    "make_review_exchange_completed_event": (
+        ".event_sink", "make_review_exchange_completed_event",
+    ),
     "SessionRunner": (".session_runner", "SessionRunner"),
     "NullSessionRunner": (".session_runner", "NullSessionRunner"),
     "RepositoryHost": (".repository_host", "RepositoryHost"),
@@ -78,6 +84,9 @@ _EXPORTS = {
     "PersistentExchangePairRegistry": (
         ".persistent_exchange_pair_registry", "PersistentExchangePairRegistry",
     ),
+    "ReviewArtifactContent": (".review_artifact_reader", "ReviewArtifactContent"),
+    "ReviewArtifactReadCommand": (".review_artifact_reader", "ReviewArtifactReadCommand"),
+    "ReviewArtifactReader": (".review_artifact_reader", "ReviewArtifactReader"),
 }
 
 __all__ = (
@@ -104,6 +113,8 @@ __all__ = (
     "InMemoryEventSink",
     "make_trace_event",
     "make_run_scoped_event",
+    "make_review_exchange_round_completed_event",
+    "make_review_exchange_completed_event",
     "SessionRunner",
     "NullSessionRunner",
     "RepositoryHost",
@@ -147,6 +158,9 @@ __all__ = (
     "CompletedJob",
     "NullBackgroundJobRunner",
     "PersistentExchangePairRegistry",
+    "ReviewArtifactContent",
+    "ReviewArtifactReadCommand",
+    "ReviewArtifactReader",
 )
 
 

@@ -145,6 +145,50 @@ def test_get_review_exchange_phase_terminal_recording_falls_back_to_legacy_layou
     assert artifact.path == legacy_recording
 
 
+def test_get_review_artifact_requires_persisted_turn_artifact_path(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    turns = run_dir / "review-exchange" / "turns"
+    turns.mkdir(parents=True)
+    report = turns / "round-001.reviewer.attempt-001.review-report.md"
+    report.write_text("# Review\n\nLooks good.\n", encoding="utf-8")
+
+    artifact = accessor.get_review_artifact(
+        artifact_path=str(report),
+        artifact_type="review_report",
+    )
+
+    assert artifact.path == report
+    assert artifact.descriptor.content_type == "text/markdown"
+
+
+def test_get_review_artifact_rejects_client_selected_non_turn_file(
+    tmp_path: Path,
+) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    stray = run_dir / "anything-not-emitted-by-this-run.md"
+    stray.write_text("# Not a review artifact\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactNotFoundError, match="not a persisted review turn artifact"):
+        accessor.get_review_artifact(
+            artifact_path=str(stray),
+            artifact_type="review_report",
+        )
+
+
+def test_get_review_artifact_rejects_wrong_filename_for_type(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    turns = run_dir / "review-exchange" / "turns"
+    turns.mkdir(parents=True)
+    report = turns / "round-001.reviewer.attempt-001.not-a-review.md"
+    report.write_text("# Not a review artifact\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactNotFoundError, match="not a persisted review turn artifact"):
+        accessor.get_review_artifact(
+            artifact_path=str(report),
+            artifact_type="review_report",
+        )
+
+
 def test_get_agent_log_uses_terminal_recording_even_when_claude_log_exists(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
     recording = run_dir / "terminal-recording.jsonl"

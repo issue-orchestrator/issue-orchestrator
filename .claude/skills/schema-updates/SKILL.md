@@ -32,6 +32,8 @@ Use this skill when you change any schema-backed payloads (UI view models, SSE p
 **Drift test:**
 - `tests/unit/test_public_contract_schemas.py`
 
+Review artifact events expose artifact metadata, not blob content. Keep timeline event fields such as `review_decision_verdict`, `review_nit_policy`, and run-scoped review artifact descriptors in public contracts when dashboard or E2E projections consume them.
+
 ### 2. Settings Schema (Config + UI Settings Dialog)
 
 **When to use:** Adding/changing config fields or settings dialog inputs.

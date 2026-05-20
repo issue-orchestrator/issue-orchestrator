@@ -27,6 +27,8 @@ When an E2E run includes orchestrator work, the Results tab also shows `Linked i
 - `Coder Session`
 - `Review Session`
 - `Review Transcript`
+- `Review Report`
+- `Decision JSON`
 - `Validation`
 
 That is the critical bridge for agentic tests: a non-agentic suite is still debuggable from raw output and JUnit results, while an agentic suite additionally exposes logical cycles and UI session logs.
@@ -150,6 +152,7 @@ Agentic evidence, when present:
 - logical cycle chips
 - coder/reviewer session recordings
 - review transcript
+- review report and decision JSON artifacts
 - validation details
 
 This matters because many E2E suites will not create issues on every failing test. In that case:
@@ -190,6 +193,7 @@ Older examples that omit `config_name` will no longer work.
 - `GET /api/e2e-run/{run_id}/issue-detail/{issue_number}`
 - `GET /api/session/terminal-recording/{issue_number}`
 - `GET /api/session/review-transcript/{issue_number}`
+- `GET /api/session/review-artifact/{issue_number}`
 
 `/api/e2e-run-detail/{run_id}` is the main typed payload for the run drawer. It carries:
 

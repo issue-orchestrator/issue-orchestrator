@@ -69,6 +69,7 @@ from ..execution.worktree_adapter import GitWorktreeManager
 from ..execution.git_working_copy import GitWorkingCopy
 from ..execution.command_runner import LocalCommandRunner
 from ..execution.session_output_adapter import FileSystemSessionOutput
+from ..execution.review_artifact_reader import ManifestReviewArtifactReader
 from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
@@ -452,6 +453,7 @@ def _create_completion_components(
         config=config,
         background_job_supervisor=background_job_supervisor,
         review_exchange_canceller=_cancel_review_exchange,
+        review_artifact_reader=ManifestReviewArtifactReader(),
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -1112,6 +1114,7 @@ def build_orchestrator_for_testing(
         config=config,
         background_job_supervisor=background_job_supervisor,
         review_exchange_canceller=_cancel_review_exchange_for_testing,
+        review_artifact_reader=ManifestReviewArtifactReader(),
     )
 
     # Create SessionController for testing (with optional validation gate)

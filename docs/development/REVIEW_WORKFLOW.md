@@ -11,8 +11,9 @@ flowchart TD
   DONE["Agent completes work"] --> VAL{"Validation gate"}
   VAL -->|fails| BLOCKED["Blocked — validation failed"]
   VAL -->|passes| REVIEW["Reviewer checks code"]
-  REVIEW -->|approved| PR["PR created / marked reviewed"]
-  REVIEW -->|changes needed| REWORK["Agent reworks"]
+  REVIEW --> ARTIFACTS["Review report + decision JSON"]
+  ARTIFACTS -->|approved| PR["PR created / marked reviewed"]
+  ARTIFACTS -->|changes needed| REWORK["Agent reworks"]
   REWORK --> REVIEW
   REWORK -->|cycle limit hit| ESCALATE["Escalated — needs human"]
 ```
@@ -49,6 +50,19 @@ flowchart LR
 ```
 
 Stops when: reviewer approves, `max_rounds` reached, or `max_no_progress` consecutive rounds without improvement.
+
+## Review Artifacts
+
+Before PR creation, each review exchange produces a paired artifact set:
+
+- `review-report.md`: human-readable review with blocker and nit IDs.
+- `review-decision.json`: strict machine-readable decision. This is the authoritative contract the orchestrator consumes.
+
+Both artifacts describe the same review item IDs. The markdown is for operators and PR comments; the JSON drives orchestration. Dashboard and E2E issue detail surfaces show the report as the primary review artifact action and keep the JSON available as a secondary/menu action.
+
+The decision JSON also carries an `abstraction_review` object. Reviewers must use it to say whether the change uses the right owner/port/command abstraction. If a bounded abstraction should be added in the same PR, reviewers set `abstraction_review.status` to `changes_requested` and include `A1`, `A2`, ... findings. An approved decision cannot carry required abstraction changes. If abstraction work is explicitly deferred, the reviewer must set `status` to `deferred` and include `follow_up_issue_url`.
+
+Nits are classified in the same reviewer pass as blockers. They do not get a separate review pass. When `review.nits.default_policy` or a per-agent override is `address`, an approved review with only nits is converted into normal coder rework before PR creation. `surface` records and shows nits without blocking PR creation. `ignore` keeps them only in the persisted artifacts.
 
 ### via-mcp
 
@@ -119,6 +133,10 @@ review:
 
   # Rework cycle limit (via-draft-pr mode)
   max_rework_cycles: 5                # Escalate to needs-human after N cycles
+
+  nits:
+    default_policy: "surface"         # ignore, surface, address
+    by_agent: {}                      # e.g. agent:frontend: address
 
   # Triage batch review
   triage_review_agent: "agent:triage"

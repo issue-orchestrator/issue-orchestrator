@@ -30,6 +30,8 @@ Use this skill when:
    - `tests/unit/test_ui_openapi_generated.py`
    - `tests/unit/test_ui_openapi_payloads.py`
 
+Review artifact UI wiring uses `open_review_artifact` timeline commands and `CycleArtifactsPayload.review_report` / `review_decision`. Add or update those schemas before regenerating when changing review artifact buttons, menus, or E2E issue-detail payloads.
+
 ## Do Not Modify Directly
 
 Never edit these files by hand; they are generated and guarded by tests:

@@ -396,14 +396,21 @@ button.journey-cycle-validation-badge:hover {
     z-index: 100;
     min-width: 180px;
 }
-.journey-artifact-popover a {
+.journey-artifact-popover a,
+.journey-artifact-popover button {
     display: block;
+    width: 100%;
     padding: 6px 12px;
     font-size: 12px;
     color: var(--text);
     text-decoration: none;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
 }
-.journey-artifact-popover a:hover { background: rgba(128,128,128,0.08); }
+.journey-artifact-popover a:hover,
+.journey-artifact-popover button:hover { background: rgba(128,128,128,0.08); }
 
 /* Issue story: collapsible sections */
 .issue-detail-section {

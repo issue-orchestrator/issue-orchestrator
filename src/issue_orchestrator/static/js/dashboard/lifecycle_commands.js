@@ -83,6 +83,22 @@ function runLifecycleCommand(command, triggerEl = null) {
         }, 'toast');
         return;
     }
+    if (
+        kind === 'open_review_artifact'
+        && command.issue_number
+        && command.run_dir
+        && command.artifact_path
+        && command.artifact_type
+    ) {
+        openReviewArtifact(
+            command.issue_number,
+            command.run_dir,
+            command.artifact_path,
+            command.artifact_type,
+            command.render_mode || null,
+        );
+        return;
+    }
     if (kind === 'open_validation_details' && command.issue_number) {
         openValidationFailure(command.issue_number, command.run_dir || null, 'toast');
         return;

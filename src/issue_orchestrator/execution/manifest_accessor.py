@@ -8,6 +8,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ..domain.review_artifacts import (
+    REVIEW_DECISION_ARTIFACT,
+    REVIEW_DECISION_FILENAME,
+    REVIEW_REPORT_ARTIFACT,
+    REVIEW_REPORT_FILENAME,
+)
 from ..domain.run_manifest import RunManifest
 from .session_output_adapter import CLAUDE_SESSION_LOG_NAME
 
@@ -45,6 +51,14 @@ class ArtifactStream:
 
 class ArtifactNotFoundError(FileNotFoundError):
     """Raised when a run-scoped artifact cannot be resolved."""
+
+
+def _review_artifact_filename(artifact_type: str) -> str:
+    if artifact_type == REVIEW_REPORT_ARTIFACT:
+        return REVIEW_REPORT_FILENAME
+    if artifact_type == REVIEW_DECISION_ARTIFACT:
+        return REVIEW_DECISION_FILENAME
+    raise ArtifactNotFoundError(f"unsupported review artifact type: {artifact_type}")
 
 
 def _worktree_path_from_run_dir(run_dir: Path) -> Path | None:
@@ -250,6 +264,48 @@ class ManifestAccessor:
         if not allow_empty:
             self._require_non_empty(path, artifact_name="review exchange transcript")
         return self._artifact_stream("review_exchange_transcript", path)
+
+    def get_review_artifact(
+        self,
+        *,
+        artifact_path: str,
+        artifact_type: str,
+    ) -> ArtifactStream:
+        """Return a review report/decision artifact scoped to this run."""
+        run_dir = self.run_identity.run_dir.resolve()
+        self._require_run_dir_exists(run_dir)
+        candidate = Path(artifact_path)
+        if not candidate.is_absolute():
+            candidate = run_dir / candidate
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(run_dir)
+        except (OSError, ValueError) as exc:
+            raise ArtifactNotFoundError(
+                f"review artifact path escapes run_dir: {candidate}"
+            ) from exc
+        turns_dir = (run_dir / "review-exchange" / "turns").resolve()
+        expected_filename = _review_artifact_filename(artifact_type)
+        if resolved.parent != turns_dir or not resolved.name.endswith(f".{expected_filename}"):
+            raise ArtifactNotFoundError(
+                "review artifact path is not a persisted review turn artifact: "
+                f"{resolved}"
+            )
+        if not resolved.exists() or not resolved.is_file():
+            raise ArtifactNotFoundError(f"review artifact not found: {resolved}")
+        self._require_non_empty(resolved, artifact_name="review artifact")
+        if artifact_type == REVIEW_DECISION_ARTIFACT:
+            self._require_valid_json(resolved, artifact_name="review decision")
+            content_type = "application/json"
+        elif artifact_type == REVIEW_REPORT_ARTIFACT:
+            content_type = "text/markdown"
+        else:
+            raise ArtifactNotFoundError(f"unsupported review artifact type: {artifact_type}")
+        return self._artifact_stream(
+            artifact_type,
+            resolved,
+            content_type=content_type,
+        )
 
     def get_completion_record(self) -> ArtifactStream:
         """Return the completion record stream for this run."""

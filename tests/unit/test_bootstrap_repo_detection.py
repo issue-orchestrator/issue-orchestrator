@@ -402,6 +402,7 @@ class TestBuildOrchestratorForTesting:
             created_at=0.0,
             coder_response_path=tmp_path / "coder/r.json",
             reviewer_response_path=tmp_path / "reviewer/r.json",
+            reviewer_report_path=worktree_path / ".issue-orchestrator" / "review-report.md",
             coder_recording_path=tmp_path / "coder/rec.jsonl",
             reviewer_recording_path=tmp_path / "reviewer/rec.jsonl",
             coder_completion_path=tmp_path / "coder/c.json",
