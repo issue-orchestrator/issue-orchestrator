@@ -22,6 +22,8 @@ from typing import Any
 import pytest
 
 from issue_orchestrator.domain.models import AgentConfig
+from issue_orchestrator.domain.review_artifacts import ReviewDecision
+from issue_orchestrator.domain.review_exchange import ReviewExchangeResponse
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.execution import persistent_session_exchange as pse
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -340,6 +342,22 @@ class TestPersistentSessionExchangeHappyPath:
         assert outcome.reason == "reviewer_ok"
         assert outcome.reviewer_response is not None
         assert outcome.reviewer_response.response_type == "ok"
+        round_completed = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
+        ]
+        completed = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_COMPLETED
+        ]
+        assert len(round_completed) == 1
+        assert len(completed) == 1
+        assert round_completed[0].data["review_decision_verdict"] == "approved"
+        assert round_completed[0].data["review_nit_policy"] == "surface"
+        assert round_completed[0].data["review_abstraction_status"] == "no_issues"
+        assert completed[0].data["review_decision_verdict"] == "approved"
+        assert completed[0].data["review_nit_policy"] == "surface"
+        assert completed[0].data["review_abstraction_status"] == "no_issues"
         reviewer_prompt, reviewer_notice = next(
             (prompt, notice)
             for role, prompt, notice in state["prompt_inboxes_seen"]
@@ -400,6 +418,125 @@ class TestPersistentSessionExchangeHappyPath:
         assert sorted(state["opened"]) == ["coder", "reviewer"]
         assert state["registry"].released == []
         assert len(state["registry"].acquired) == 1
+
+    def test_address_nits_policy_routes_approval_through_coder_rework(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Approved with one nit.",
+                        "getting_closer": True,
+                        "decision": {
+                            "verdict": "approved",
+                            "risk": "low",
+                            "blocking_findings": [],
+                            "nits": [{"id": "N1", "title": "Tighten wording"}],
+                            "abstraction_review": {"status": "no_issues", "findings": []},
+                            "nit_policy": "address",
+                        },
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "Nit addressed.",
+                        "getting_closer": True,
+                    },
+                ],
+                "coder": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Addressed N1.",
+                        "getting_closer": True,
+                    },
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            nit_policy="address",
+        )
+
+        assert outcome.status == "ok"
+        assert outcome.rounds == 2
+        assert [role for role, _ in state["rounds_seen"]] == [
+            "reviewer",
+            "coder",
+            "reviewer",
+        ]
+        coder_prompt = next(
+            prompt
+            for role, prompt, _notice in state["prompt_inboxes_seen"]
+            if role == "coder"
+        )
+        assert "Tighten wording" in coder_prompt
+        assert outcome.exchange_dir is not None
+        decision = json.loads(
+            (
+                outcome.exchange_dir
+                / "turns"
+                / "round-1-reviewer-attempt-1.review-decision.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert decision["verdict"] == "approved"
+        assert decision["nit_policy"] == "address"
+        assert decision["nits"][0]["id"] == "N1"
+
+    def test_addressable_nits_keep_reviewer_decision_intent_in_raw_json(self) -> None:
+        raw_json = {
+            "decision": {
+                "verdict": "approved",
+                "risk": "low",
+                "blocking_findings": [],
+                "nits": [{"id": "N1", "title": "Tighten wording"}],
+                "abstraction_review": {"status": "no_issues", "findings": []},
+                "nit_policy": "address",
+            }
+        }
+        reviewer = ReviewExchangeResponse(
+            response_type="ok",
+            response_text="Approved with one nit.",
+            getting_closer=True,
+            raw_json=raw_json,
+            raw_output=json.dumps(raw_json),
+        )
+        decision = ReviewDecision.from_agent_payload(
+            raw_json,
+            response_type=reviewer.response_type,
+            response_text=reviewer.response_text,
+            nit_policy="address",
+        )
+
+        rework_response = pse._reviewer_response_for_addressable_nits(  # noqa: SLF001
+            reviewer,
+            decision,
+        )
+
+        assert decision.verdict == "approved"
+        assert rework_response.response_type == "changes_requested"
+        assert rework_response.raw_json is raw_json
+        assert "Tighten wording" in rework_response.response_text
 
 
 class TestPairValidationMirror:
@@ -732,11 +869,15 @@ class TestTurnArtifactsPersisted:
             "round-1-coder.packet.json",
             "round-1-reviewer-attempt-1.completed.json",
             "round-1-reviewer-attempt-1.prompt.md",
+            "round-1-reviewer-attempt-1.review-decision.json",
+            "round-1-reviewer-attempt-1.review-report.md",
             "round-1-reviewer-attempt-1.result.json",
             "round-1-reviewer-attempt-1.started.json",
             "round-1-reviewer.packet.json",
             "round-2-reviewer-attempt-1.completed.json",
             "round-2-reviewer-attempt-1.prompt.md",
+            "round-2-reviewer-attempt-1.review-decision.json",
+            "round-2-reviewer-attempt-1.review-report.md",
             "round-2-reviewer-attempt-1.result.json",
             "round-2-reviewer-attempt-1.started.json",
             "round-2-reviewer.packet.json",
@@ -2053,6 +2194,80 @@ class TestTerminalEventsOnError:
     """Every error/timeout exit path emits a terminal REVIEW_EXCHANGE_COMPLETED
     event so the timeline / publish cache observe a definitive end-of-exchange."""
 
+    def test_invalid_reviewer_decision_json_halts_with_error_event(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+        ctx = EventContext()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Approved, but abstraction must change.",
+                        "getting_closer": True,
+                        "decision": {
+                            "verdict": "approved",
+                            "risk": "low",
+                            "blocking_findings": [],
+                            "nits": [],
+                            "abstraction_review": {
+                                "status": "changes_requested",
+                                "findings": [{"id": "A1", "title": "Use owner port"}],
+                            },
+                            "nit_policy": "surface",
+                        },
+                    }
+                ],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=1,
+            max_no_progress=5,
+            require_validation=False,
+            events=sink,
+            event_context=ctx,
+        )
+
+        assert outcome.status == "error"
+        assert outcome.reason == "reviewer_decision_invalid"
+        assert outcome.summary["reason"] == "reviewer_decision_invalid"
+        assert "reviewer produced invalid decision JSON" in outcome.summary["detail"]
+        assert [role for role, _ in state["rounds_seen"]] == ["reviewer"]
+        terminal = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_COMPLETED
+        ]
+        assert len(terminal) == 1
+        assert terminal[0].data["status"] == "error"
+        assert terminal[0].data["reason"] == "reviewer_decision_invalid"
+        assert "reviewer produced invalid decision JSON" in terminal[0].data["detail"]
+        round_completed = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
+        ]
+        assert len(round_completed) == 1
+        assert round_completed[0].data["coder_response_type"] is None
+
     def test_reviewer_timeout_emits_terminal_completed_event_with_error_status(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -2302,6 +2517,7 @@ class TestRoleEnvironmentScrubbing:
 
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
             response_file=response_file,
+            review_report_file=None,
             completion_path=run_dir / "reviewer" / "completion-reviewer.json",
             validation_output_dir=run_dir,
             worktree=worktree,
@@ -2330,6 +2546,7 @@ class TestRoleEnvironmentScrubbing:
 
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
             response_file=response_file,
+            review_report_file=None,
             completion_path=run_dir / "coder" / "completion-coder.json",
             validation_output_dir=run_dir,
             worktree=worktree,
@@ -2363,6 +2580,7 @@ class TestRoleEnvironmentScrubbing:
         worktree.mkdir()
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
             response_file=run_dir / "reviewer" / "review-response.json",
+            review_report_file=worktree / ".issue-orchestrator" / "review-report.md",
             completion_path=run_dir / "reviewer" / "completion-reviewer.json",
             validation_output_dir=run_dir,
             worktree=worktree,
@@ -2403,6 +2621,8 @@ class TestResponseFileInsideWorktree:
             assert recording_path is not None
             writer = _build_pty_writer(recording_path)
             captured[f"{role}_response"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
+            if "ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE" in env:
+                captured[f"{role}_report"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE"])
             captured[f"{role}_working_dir"] = Path(working_dir)
             return _FakeSession(role, log_writer=writer)
 
@@ -2442,6 +2662,10 @@ class TestResponseFileInsideWorktree:
             f"reviewer response file {captured['reviewer_response']} is not "
             f"inside the reviewer worktree {reviewer_wt}"
         )
+        assert captured["reviewer_report"].is_relative_to(reviewer_wt), (
+            f"reviewer report file {captured['reviewer_report']} is not "
+            f"inside the reviewer worktree {reviewer_wt}"
+        )
         assert captured["reviewer_response_arg"] == captured["reviewer_response"]
 
     def test_response_paths_are_outside_persistent_pair_root(
@@ -2463,6 +2687,8 @@ class TestResponseFileInsideWorktree:
             assert recording_path is not None
             writer = _build_pty_writer(recording_path)
             captured[role] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
+            if "ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE" in env:
+                captured[f"{role}_report"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE"])
             return _FakeSession(role, log_writer=writer)
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
@@ -2608,6 +2834,7 @@ class TestPerSessionRecordingMirror:
             created_at=0.0,
             coder_response_path=coder_wt / ".issue-orchestrator" / "review-response.json",
             reviewer_response_path=reviewer_wt / ".issue-orchestrator" / "review-response.json",
+            reviewer_report_path=reviewer_wt / ".issue-orchestrator" / "review-report.md",
             coder_recording_path=stale_pair_root / "coder" / "terminal-recording.jsonl",
             reviewer_recording_path=stale_pair_root / "reviewer" / "terminal-recording.jsonl",
             coder_completion_path=stale_pair_root / "coder" / "completion-coder.json",
@@ -2673,6 +2900,7 @@ class TestPerSessionRecordingMirror:
                 created_at=0.0,
                 coder_response_path=tmp_path / "coder-response.json",
                 reviewer_response_path=tmp_path / "reviewer-response.json",
+                reviewer_report_path=tmp_path / "reviewer-wt" / ".issue-orchestrator" / "review-report.md",
                 coder_recording_path=(
                     pair_root / "coder" / "terminal-recording.jsonl"
                 ),

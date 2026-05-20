@@ -88,3 +88,24 @@ test('buildTerminalRecordingRequest omits since_hash when empty', () => {
     });
     assert.ok(!req.endpoint.includes('since_hash'), `since_hash should not appear: ${req.endpoint}`);
 });
+
+test('buildReviewArtifactRequest returns canonical endpoint and query params', () => {
+    const req = uiActionContract.buildReviewArtifactRequest(
+        4057,
+        '/tmp/run',
+        '/tmp/run/review-exchange/turns/review-report.md',
+        'review_report',
+    );
+    assert.equal(
+        req.endpoint,
+        '/api/session/review-artifact/4057?run_dir=%2Ftmp%2Frun&artifact_path=%2Ftmp%2Frun%2Freview-exchange%2Fturns%2Freview-report.md&artifact_type=review_report',
+    );
+    assert.equal(req.method, 'GET');
+});
+
+test('buildReviewArtifactRequest rejects unsupported artifact type', () => {
+    assert.throws(
+        () => uiActionContract.buildReviewArtifactRequest(4057, '/tmp/run', '/tmp/run/x.txt', 'text'),
+        /Unsupported review artifact type/,
+    );
+});

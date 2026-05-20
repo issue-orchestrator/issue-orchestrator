@@ -32,6 +32,7 @@ Guardrails for the `ui-session` / `open_agent_log` path.
 - Session actions that resolve by issue number while silently changing runs underneath the user
 - Merging coding and review output into one undifferentiated timeline/session presentation
 - Falling back from empty `terminal-recording.jsonl` to `claude-session.jsonl` for the main session replay
+- Rendering review reports or decision JSON through the session replay viewer; review artifacts use their own run-scoped `open_review_artifact` action.
 
 ## Required Invariants
 

@@ -86,6 +86,17 @@ class CycleArtifactsPayload(BaseModel):
     log_url: str | None
     pr_number: int | None
     pr_url: str | None
+    review_decision: CycleReviewArtifactPayload | None
+    review_report: CycleReviewArtifactPayload | None
+    run_dir: str | None
+
+class CycleReviewArtifactPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_path: str
+    artifact_type: Literal['review_report', 'review_decision']
+    label: str
+    render_mode: Literal['markdown', 'json']
+    run_dir: str
 
 class CycleValidationBadgePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -653,6 +664,16 @@ class OpenIssueTimelineCommandPayload(BaseModel):
     label: str
     scope_kind: Literal['dashboard', 'e2e_run']
 
+class OpenReviewArtifactCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_path: str
+    artifact_type: Literal['review_report', 'review_decision']
+    issue_number: int
+    kind: Literal['open_review_artifact']
+    label: str
+    render_mode: Literal['markdown', 'json']
+    run_dir: str
+
 class OpenReviewFeedbackCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     event_ref: str | None = None
@@ -988,6 +1009,6 @@ ReviewTranscriptEvidencePayload: TypeAlias = ReviewTranscriptAvailablePayload | 
 
 SessionRecordingEvidencePayload: TypeAlias = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload
 
-TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | SwitchE2ETimelineViewCommandPayload | CreateE2EUntriagedIssuesCommandPayload | OpenInlineAgentAttemptsCommandPayload
+TimelineCommandPayload: TypeAlias = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenReviewArtifactCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | SwitchE2ETimelineViewCommandPayload | CreateE2EUntriagedIssuesCommandPayload | OpenInlineAgentAttemptsCommandPayload
 
 ValidationOutcomePayload: TypeAlias = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload

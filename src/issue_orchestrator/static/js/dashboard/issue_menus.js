@@ -436,7 +436,7 @@ function closeModal(e) {
         modalOverlay.classList.remove('timeline-event-detail-overlay');
         // Reset modal classes for viewers
         const modalEl = modalOverlay.querySelector('.modal');
-        modalEl.classList.remove('diagnostics-modal', 'log-viewer-modal', 'live-log-modal');
+        modalEl.classList.remove('diagnostics-modal', 'log-viewer-modal', 'live-log-modal', 'review-artifact-modal');
         if (logPoller) {
             clearInterval(logPoller);
             logPoller = null;

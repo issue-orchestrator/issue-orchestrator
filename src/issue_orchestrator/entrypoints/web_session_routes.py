@@ -29,9 +29,11 @@ from ..infra.session_log_prettify import (
     extract_codex_transcript,
     prettify_session_log,
 )
+from ..ports.review_artifact_reader import ReviewArtifactReadCommand
 from ..infra.terminal_recording import first_terminal_geometry, iter_terminal_recording
 from .timeline_presentation import _format_phase_name, _phase_status_icon, _positive_int
 from .web_session_context import (
+    ReviewArtifactReaderDependency,
     WebOrchestratorDependency,
     resolve_issue_session_context,
     worktree_path_from_run_dir,
@@ -1181,6 +1183,57 @@ async def get_review_transcript_content(
                 if (round_index is not None or transcript_role)
                 else len(parsed_entries)
             ),
+        }
+    )
+
+
+@web_session_router.get("/api/session/review-artifact/{issue_number}")
+async def get_review_artifact_content(
+    issue_number: int,
+    orchestrator: WebOrchestratorDependency,
+    review_artifact_reader: ReviewArtifactReaderDependency,
+    run_dir: str | None = None,
+    artifact_path: str | None = None,
+    artifact_type: str | None = None,
+) -> JSONResponse:
+    """Return one run-scoped review report or decision artifact."""
+    if not orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    if not run_dir:
+        return JSONResponse({"error": "run_dir is required"}, status_code=400)
+    if not artifact_path or not artifact_type:
+        return JSONResponse(
+            {"error": "artifact_path and artifact_type are required"},
+            status_code=400,
+        )
+
+    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
+    try:
+        artifact = review_artifact_reader.read_review_artifact(
+            ReviewArtifactReadCommand(
+                issue_number=issue_number,
+                run_dir=run_identity.run_dir,
+                artifact_path=artifact_path,
+                artifact_type=artifact_type,
+            )
+        )
+    except ArtifactNotFoundError as exc:
+        return JSONResponse(
+            {
+                "error": "Review artifact not found",
+                "run_dir": str(run_identity.run_dir),
+                "detail": str(exc),
+            },
+            status_code=404,
+        )
+    return JSONResponse(
+        {
+            "issue_number": issue_number,
+            "run_dir": str(run_identity.run_dir),
+            "artifact_path": str(artifact.artifact_path),
+            "artifact_type": artifact.artifact_type,
+            "content_type": artifact.content_type,
+            "content": artifact.content,
         }
     )
 

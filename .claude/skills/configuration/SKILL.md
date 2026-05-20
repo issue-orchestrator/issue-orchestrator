@@ -42,6 +42,17 @@ The schema drives everything else automatically:
 4. **`tests/unit/test_config.py`** — Add tests for parsing the new option
 5. **`docs/user/e2e.md`** — For e2e-specific options
 
+Review nit policy options are settings-visible review fields:
+
+```yaml
+review:
+  nits:
+    default_policy: "surface"     # ignore | surface | address
+    by_agent: {}                  # coder agent label -> policy
+```
+
+Keep `Config.review_nits_default_policy`, `Config.review_nits_by_agent`, `ReviewSettings`, `examples/config.example.yaml`, generated configuration reference docs, and config parsing tests in sync.
+
 ## Schema Field DSL Reference
 
 Every field in `settings_schema.py` uses `json_schema_extra` as its metadata dictionary.

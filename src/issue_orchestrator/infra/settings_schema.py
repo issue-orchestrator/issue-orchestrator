@@ -734,6 +734,38 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.run_audit.on_timeout",
         },
     )
+    nits_default_policy: Literal["ignore", "surface", "address"] = Field(
+        "surface",
+        title="Default Nit Policy",
+        description="Default policy for reviewer nits before PR creation",
+        json_schema_extra={
+            "doc_examples": ["surface", "address", "ignore"],
+            "doc_notes": (
+                "Nits are non-blocking review items. surface records and shows "
+                "them without rework; address includes them in the normal coder "
+                "rework loop before PR creation; ignore records them only in "
+                "review artifacts."
+            ),
+            "section": "Code Review Workflow",
+            "config_attr": "review_nits_default_policy",
+            "yaml_path": "review.nits.default_policy",
+        },
+    )
+    nits_by_agent: dict[str, Literal["ignore", "surface", "address"]] = Field(
+        default_factory=dict,
+        title="Nit Policy By Agent",
+        description="Per-coder-agent nit policy overrides",
+        json_schema_extra={
+            "doc_examples": ['{"agent:frontend": "address"}'],
+            "doc_notes": (
+                "Keys are coder agent labels. Values override "
+                "review.nits.default_policy for work produced by that agent."
+            ),
+            "section": "Code Review Workflow",
+            "config_attr": "review_nits_by_agent",
+            "yaml_path": "review.nits.by_agent",
+        },
+    )
     exchange_mode: Literal["via-draft-pr", "via-mcp", "via-local-loop", "auto"] = Field(
         "via-local-loop",
         title="Review Exchange Mode",

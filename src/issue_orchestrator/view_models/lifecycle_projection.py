@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ..domain.logical_run_projection import group_events_by_logical_cycle
 from .lifecycle_event_sets import (
@@ -51,6 +51,7 @@ from .lifecycle_semantics import (
     MissingReviewEvidence,
     OpenCompletionRecordCommand,
     OpenIssueTimelineCommand,
+    OpenReviewArtifactCommand,
     OpenReviewFeedbackCommand,
     OpenSessionRecordingCommand,
     OpenValidationDetailsCommand,
@@ -937,7 +938,10 @@ def _approved_review(
         completed_at=_event_timestamp(approved),
         session_recording=_session_recording(issue_number, approved),
         transcript=_review_transcript_evidence(approved),
-        commands=(_details_command(approved),),
+        commands=(
+            _details_command(approved),
+            *_review_artifact_commands(issue_number, approved),
+        ),
     )
 
 
@@ -990,6 +994,7 @@ def _changes_requested_review(
                 issue_number=issue_number,
                 event_ref=_event_ref(changes_requested),
             ),
+            *_review_artifact_commands(issue_number, changes_requested),
         ),
     )
 
@@ -1529,6 +1534,36 @@ def _artifact_value(event: EventDict, artifact_type: str) -> str | None:
         if artifact.get("type") == artifact_type:
             return _optional_text(artifact.get("value"))
     return None
+
+
+def _review_artifact_commands(
+    issue_number: int,
+    event: EventDict,
+) -> tuple[OpenReviewArtifactCommand, ...]:
+    run_dir = _optional_text(event.get("run_dir"))
+    if run_dir is None:
+        return ()
+    commands: list[OpenReviewArtifactCommand] = []
+    for artifact_type, label, render_mode in (
+        ("review_report", "Review report", "markdown"),
+        ("review_decision", "Decision JSON", "json"),
+    ):
+        path = _artifact_value(event, artifact_type)
+        if path is None:
+            continue
+        commands.append(
+            OpenReviewArtifactCommand(
+                label=label,
+                issue_number=issue_number,
+                run_dir=run_dir,
+                artifact_path=path,
+                artifact_type=cast(
+                    Literal["review_report", "review_decision"], artifact_type,
+                ),
+                render_mode=cast(Literal["markdown", "json"], render_mode),
+            )
+        )
+    return tuple(commands)
 
 
 def _has_action(event: EventDict, action_type: str) -> bool:

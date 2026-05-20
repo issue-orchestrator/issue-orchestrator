@@ -35,6 +35,10 @@ Tests should verify **behavior**, not implementation. Flag these anti-patterns:
 
 Good tests exercise public APIs and survive refactoring. See `tests/AGENTS.md`.
 
+### Owner-Abstraction Review
+
+Review for the strongest bounded design, not merely for a working diff. If the change duplicates policy, bypasses a port/adapter, adds a direct reader/writer where an owner exists, puts business rules in a UI/API handler, or makes callers know multiple internals, request the bounded abstraction fix in this PR. Treat missing bounded abstraction work as `Design Smell` or `Correctness Risk`, not a nit.
+
 ## Completion Commands
 
 Don't post reviews or touch GitHub directly - the orchestrator handles that.

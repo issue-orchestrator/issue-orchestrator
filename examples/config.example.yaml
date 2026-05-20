@@ -140,6 +140,9 @@ review:
   triage_review_on_failure: true
   max_rework_cycles: 5
   reviewer_feedback_cache_minutes: 5
+  nits:
+    default_policy: "surface"     # ignore, surface, address
+    by_agent: {}                  # e.g. agent:frontend: address
   run_audit:
     min_runtime_minutes: 20      # 0 disables auto-audit; label-triggered audits still work
     on_timeout: true             # Capture a run audit whenever a session times out

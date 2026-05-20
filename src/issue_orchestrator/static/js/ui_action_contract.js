@@ -15,6 +15,7 @@
         BULK_CANCEL_QUEUED: '/api/bulk-cancel-queued',
         HOST_OPEN_PATH: '/api/host/open-path',
         REVEAL_WORKTREE: (issueNumber) => `/api/host/reveal-worktree/${issueNumber}`,
+        REVIEW_ARTIFACT: (issueNumber) => `/api/session/review-artifact/${issueNumber}`,
         TERMINAL_RECORDING: (issueNumber) => `/api/session/terminal-recording/${issueNumber}`,
         RETRY_PUBLISH: (issueNumber) => `/api/issues/${issueNumber}/retry-publish`,
         CLOSE_ISSUE: (issueNumber) => `/api/issues/${issueNumber}/close`,
@@ -162,6 +163,30 @@
         };
     }
 
+    function buildReviewArtifactRequest(issueNumber, runDir, artifactPath, artifactType) {
+        const normalized = normalizeIssueNumbers([issueNumber]);
+        if (normalized.length !== 1) {
+            throw new Error(`Invalid issue number for review artifact action: ${issueNumber}`);
+        }
+        if (!runDir) {
+            throw new Error('runDir is required for review artifact action');
+        }
+        if (!artifactPath) {
+            throw new Error('artifactPath is required for review artifact action');
+        }
+        if (artifactType !== 'review_report' && artifactType !== 'review_decision') {
+            throw new Error(`Unsupported review artifact type: ${artifactType}`);
+        }
+        const params = new URLSearchParams();
+        params.set('run_dir', String(runDir));
+        params.set('artifact_path', String(artifactPath));
+        params.set('artifact_type', String(artifactType));
+        return {
+            endpoint: `${ENDPOINTS.REVIEW_ARTIFACT(normalized[0])}?${params.toString()}`,
+            method: 'GET',
+        };
+    }
+
     return {
         ENDPOINTS,
         normalizeIssueNumbers,
@@ -176,5 +201,6 @@
         buildHostOpenPathRequest,
         buildRevealWorktreeRequest,
         buildTerminalRecordingRequest,
+        buildReviewArtifactRequest,
     };
 });

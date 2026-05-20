@@ -136,6 +136,9 @@ class TimelineEventContract(ContractBase):
     role: Optional[str] = None
     reviewer_response_type: Optional[str] = None
     reviewer_response_text: Optional[str] = None
+    review_decision_verdict: Optional[str] = None
+    review_nit_policy: Optional[str] = None
+    review_abstraction_status: Optional[str] = None
     coder_response_type: Optional[str] = None
     coder_response_text: Optional[str] = None
 

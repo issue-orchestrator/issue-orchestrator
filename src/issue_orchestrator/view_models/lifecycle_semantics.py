@@ -114,6 +114,16 @@ class OpenReviewFeedbackCommand(LifecycleBase):
     event_ref: str | None = None
 
 
+class OpenReviewArtifactCommand(LifecycleBase):
+    kind: Literal["open_review_artifact"] = "open_review_artifact"
+    label: str
+    issue_number: int
+    run_dir: str
+    artifact_path: str
+    artifact_type: Literal["review_report", "review_decision"]
+    render_mode: Literal["markdown", "json"]
+
+
 class OpenIssueTimelineCommand(LifecycleBase):
     kind: Literal["open_issue_timeline"] = "open_issue_timeline"
     label: str = "Issue Timeline"
@@ -259,6 +269,7 @@ TimelineCommand = Annotated[
     | OpenValidationDetailsCommand
     | OpenCompletionRecordCommand
     | OpenReviewFeedbackCommand
+    | OpenReviewArtifactCommand
     | OpenIssueTimelineCommand
     | OpenE2ERunCommand
     | ExpandE2ERunCommand
@@ -659,6 +670,16 @@ ReviewStage = Annotated[
 ]
 
 
+class CycleReviewArtifact(LifecycleBase):
+    """One review artifact surfaced from a cycle-level affordance."""
+
+    artifact_type: Literal["review_report", "review_decision"]
+    label: str
+    artifact_path: str
+    render_mode: Literal["markdown", "json"]
+    run_dir: str
+
+
 class CycleArtifacts(LifecycleBase):
     """Artifact references collected for one cycle (logs, PR, review flag)."""
 
@@ -666,6 +687,9 @@ class CycleArtifacts(LifecycleBase):
     pr_url: str | None = None
     pr_number: int | None = None
     has_review_feedback: bool = False
+    run_dir: str | None = None
+    review_report: CycleReviewArtifact | None = None
+    review_decision: CycleReviewArtifact | None = None
 
 
 class JourneyStep(LifecycleBase):
@@ -1272,6 +1296,7 @@ __all__ = [
     "CompletedCodingAttempt",
     "CompletionRecordEvidence",
     "CycleArtifacts",
+    "CycleReviewArtifact",
     "CycleValidationBadge",
     "DashboardIteration",
     "DashboardTimelineContainer",
@@ -1302,6 +1327,7 @@ __all__ = [
     "MissingReviewEvidence",
     "OpenCompletionRecordCommand",
     "OpenIssueTimelineCommand",
+    "OpenReviewArtifactCommand",
     "OpenReviewFeedbackCommand",
     "OpenSessionRecordingCommand",
     "OpenValidationDetailsCommand",

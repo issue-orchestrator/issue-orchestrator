@@ -688,6 +688,70 @@
     max-height: 260px;
     overflow: auto;
 }
+.review-artifact-modal {
+    max-width: min(940px, calc(100vw - 32px));
+}
+.review-artifact-viewer {
+    display: grid;
+    gap: 10px;
+}
+.review-artifact-meta {
+    color: var(--text-muted);
+    font-size: 11px;
+    word-break: break-word;
+}
+.review-artifact-markdown {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    background: color-mix(in srgb, var(--bg-panel-soft) 76%, transparent);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+.review-artifact-markdown h3,
+.review-artifact-markdown h4,
+.review-artifact-markdown h5 {
+    margin: 14px 0 6px;
+    color: var(--text);
+    line-height: 1.25;
+}
+.review-artifact-markdown h3:first-child,
+.review-artifact-markdown h4:first-child,
+.review-artifact-markdown h5:first-child {
+    margin-top: 0;
+}
+.review-artifact-markdown p {
+    margin: 6px 0;
+}
+.review-artifact-markdown ul {
+    margin: 6px 0;
+    padding-left: 18px;
+}
+.review-artifact-markdown code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--bg) 78%, var(--bg-panel-soft));
+}
+.review-artifact-code,
+.review-artifact-json {
+    margin: 0;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg) 84%, var(--bg-panel-soft));
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: min(64vh, 620px);
+    overflow: auto;
+}
 @media (max-width: 820px) {
     .diag-validation-grid {
         grid-template-columns: 1fr;

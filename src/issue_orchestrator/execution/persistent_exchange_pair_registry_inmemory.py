@@ -42,14 +42,14 @@ class PersistentExchangePair:
     boundary. Returned by :meth:`InMemoryPersistentExchangePairRegistry.acquire`
     to execution-layer callers.
 
-    Path fields (``*_response_path``, ``*_recording_path``,
-    ``coder_completion_path``, ``validation_record_path``) are
-    *pair-scoped*, not per-exchange. The agent's environment is set
-    once at spawn to point at these stable paths; if the pair
-    survives across exchanges (B2 onward) every round of every
-    exchange reads/writes the same physical files. Per-exchange
-    artifacts (``chapters.json``, ``summary.json``) still live in
-    that exchange's ``run_dir`` and are unaffected by this scope.
+    Path fields are pair-lifetime scoped, not per-exchange. Agent-written
+    response/report paths live inside the role worktrees so sandboxed agents
+    can write them; recordings and validation mirrors live under the
+    persistent pair root. The agent's environment is set once at spawn to
+    point at these stable paths; if the pair survives across exchanges (B2
+    onward) every round of every exchange reads/writes the same physical
+    files. Per-exchange artifacts (``chapters.json``, ``summary.json``) still
+    live in that exchange's ``run_dir`` and are unaffected by this scope.
 
     ``created_at`` is wall-clock seconds since epoch, set once at
     construction. ``last_used_at`` is updated on every cache hit so
@@ -67,6 +67,7 @@ class PersistentExchangePair:
     created_at: float
     coder_response_path: Path
     reviewer_response_path: Path
+    reviewer_report_path: Path
     coder_recording_path: Path
     reviewer_recording_path: Path
     coder_completion_path: Path

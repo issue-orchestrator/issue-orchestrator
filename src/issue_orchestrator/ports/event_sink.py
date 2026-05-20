@@ -11,6 +11,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal, NotRequired, Protocol, TYPE_CHECKING, TypedDict
 
+from ..domain.review_artifacts import (
+    AbstractionReviewStatus,
+    NitPolicy,
+    ReviewVerdict,
+)
+
 if TYPE_CHECKING:
     from issue_orchestrator.events.catalog import EventName
     RunScopedEventName = Literal[
@@ -99,6 +105,40 @@ class SessionValidationFailedEventPayload(RunScopedEventPayload):
     """Payload for ``session.validation_failed`` events."""
 
 
+class ReviewExchangeDecisionEventFields(TypedDict):
+    """Typed review-decision fields shared by review exchange events."""
+
+    review_decision_verdict: NotRequired[ReviewVerdict]
+    review_nit_policy: NotRequired[NitPolicy]
+    review_abstraction_status: NotRequired[AbstractionReviewStatus]
+
+
+class ReviewExchangeRoundCompletedEventPayload(ReviewExchangeDecisionEventFields):
+    """Payload for ``review_exchange.round_completed`` events."""
+
+    issue_number: int
+    session_name: str
+    round_index: int
+    reviewer_response_type: str | None
+    reviewer_response_text: str | None
+    coder_response_type: str | None
+    coder_response_text: NotRequired[str | None]
+    artifacts: NotRequired[list[dict[str, str]]]
+    detail: NotRequired[str]
+
+
+class ReviewExchangeCompletedEventPayload(ReviewExchangeDecisionEventFields):
+    """Payload for ``review_exchange.completed`` events."""
+
+    issue_number: int
+    session_name: str
+    rounds: int
+    status: Literal["ok", "stopped", "error"]
+    reason: str
+    artifacts: NotRequired[list[dict[str, str]]]
+    detail: NotRequired[str]
+
+
 def make_trace_event(
     event_type: "EventName",
     data: dict[str, Any],
@@ -155,6 +195,24 @@ def make_session_validation_failed_event(data: SessionValidationFailedEventPaylo
     from issue_orchestrator.events import EventName
 
     return make_run_scoped_event(EventName.SESSION_VALIDATION_FAILED, data)
+
+
+def make_review_exchange_round_completed_event(
+    data: ReviewExchangeRoundCompletedEventPayload,
+) -> "TraceEvent":
+    """Build a typed ``review_exchange.round_completed`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_trace_event(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, dict(data))
+
+
+def make_review_exchange_completed_event(
+    data: ReviewExchangeCompletedEventPayload,
+) -> "TraceEvent":
+    """Build a typed ``review_exchange.completed`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_trace_event(EventName.REVIEW_EXCHANGE_COMPLETED, dict(data))
 
 
 @dataclass(frozen=True)

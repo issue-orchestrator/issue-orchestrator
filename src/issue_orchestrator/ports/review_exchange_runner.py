@@ -45,6 +45,7 @@ class ReviewExchangeRunner(Protocol):
         max_rounds: int,
         max_no_progress: int,
         require_validation: bool,
+        nit_policy: str = "surface",
         parent_session_name: str | None = None,
         initial_validation_record_path: Path | None = None,
         web_port: int | None = None,

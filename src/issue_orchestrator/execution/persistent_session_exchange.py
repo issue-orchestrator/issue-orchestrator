@@ -68,6 +68,15 @@ from ..domain.review_exchange import (
     build_coder_prompt,
     build_reviewer_prompt,
 )
+from ..domain.review_artifacts import (
+    NitPolicy,
+    REVIEW_DECISION_FILENAME,
+    REVIEW_REPORT_FILENAME,
+    ReviewArtifactPair,
+    ReviewDecision,
+    persist_review_artifact_pair,
+    review_requires_nit_rework,
+)
 from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.review_exchange_turn import (
     ReviewExchangePromptFiles,
@@ -81,7 +90,13 @@ from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path
 from ..infra.repo_identity import get_repo_head_sha
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
-from ..ports import EventSink, make_trace_event
+from ..ports import (
+    EventSink,
+    TraceEvent,
+    make_review_exchange_completed_event,
+    make_review_exchange_round_completed_event,
+    make_trace_event,
+)
 from ..ports.session_output import SessionOutput
 from .persistent_exchange_pair_registry_inmemory import (
     InMemoryPersistentExchangePairRegistry,
@@ -170,8 +185,10 @@ _BOOTSTRAP_PROMPT_TEMPLATE = (
     "Wait for the orchestrator to send your role-specific instructions via "
     "stdin. The orchestrator may send the full prompt directly, or it may "
     "send a short notice pointing at a prompt file in this worktree. For "
-    "each turn, read the full instructions, follow them, and write exactly "
-    "one line of JSON to the file at $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE. "
+    "each turn, read the full instructions and follow them. Reviewers also "
+    "write the human-readable report to $ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE. "
+    "Each role writes exactly one line of JSON to the file at "
+    "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE. "
     "Then wait for the next prompt. Do not exit on your own; the orchestrator "
     "will terminate you when the exchange is done.\n"
 )
@@ -528,6 +545,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
+    nit_policy: str = "surface",
     parent_session_name: str | None = None,
     initial_validation_record_path: Path | None = None,
     web_port: int | None = None,
@@ -603,6 +621,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         "max_rounds": max_rounds,
         "max_no_progress": max_no_progress,
         "require_validation": require_validation,
+        "nit_policy": nit_policy,
         "exchange_dir": str(exchange_dir),
     })
 
@@ -675,6 +694,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         # (writable root for the reviewer's seatbelt sandbox); see
         # the ``coder_response`` comment above for the full rationale.
         reviewer_response = reviewer_wt_path / ".issue-orchestrator" / "review-response.json"
+        reviewer_report = reviewer_wt_path / ".issue-orchestrator" / REVIEW_REPORT_FILENAME
         coder = _open_role_session(
             role="coder",
             agent=coder_agent,
@@ -684,6 +704,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             response_file=coder_response,
             completion_path=coder_completion,
             validation_output_dir=pair_dir,
+            review_report_file=None,
             agent_label=coder_label,
             web_port=web_port,
             issue_number=issue_number,
@@ -711,6 +732,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 response_file=reviewer_response,
                 completion_path=reviewer_pair_dir / "completion-reviewer.json",
                 validation_output_dir=pair_dir,
+                review_report_file=reviewer_report,
                 agent_label=reviewer_label,
                 web_port=web_port,
                 issue_number=issue_number,
@@ -729,6 +751,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             created_at=_wall_clock(),
             coder_response_path=coder_response,
             reviewer_response_path=reviewer_response,
+            reviewer_report_path=reviewer_report,
             coder_recording_path=coder_recording,
             reviewer_recording_path=reviewer_recording,
             coder_completion_path=coder_completion,
@@ -829,6 +852,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             # to the same file the agent's env was set to at spawn.
             coder_response=pair.coder_response_path,
             reviewer_response=pair.reviewer_response_path,
+            reviewer_report_path=pair.reviewer_report_path,
             coder_recording=pair.coder_recording_path,
             reviewer_recording=pair.reviewer_recording_path,
             coder_completion_path=pair.coder_completion_path,
@@ -842,6 +866,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
             require_validation=require_validation,
+            nit_policy=_coerce_runtime_nit_policy(nit_policy),
             coder_provider=_agent_provider(coder_agent),
             reviewer_provider=_agent_provider(reviewer_agent),
             before_reviewer_round=_ff_then_caller_hook,
@@ -993,6 +1018,7 @@ def _open_role_session(  # noqa: PLR0913
     response_file: Path,
     completion_path: Path,
     validation_output_dir: Path,
+    review_report_file: Path | None,
     agent_label: str,
     web_port: int | None,
     issue_number: int,
@@ -1001,12 +1027,11 @@ def _open_role_session(  # noqa: PLR0913
 ) -> PersistentSession:
     """Build the launch command + env for one role and open the persistent session.
 
-    Per-role files (``response_file``, ``completion_path``,
-    ``validation_output_dir``) are pair-scoped: the pair lives across
-    every exchange the issue runs, so the agent's env points at
-    stable paths. ``run_dir`` is per-exchange and is used only for
-    the chapter-mirror recording path so the session viewer keeps
-    seeing per-exchange snapshots.
+    Per-role files are stable for the pair lifetime: response/report files live
+    inside the role worktrees so sandboxed agents can write them, while
+    completion/validation mirrors live under the persistent pair root. ``run_dir``
+    is per-exchange and is used only for the chapter-mirror recording path so
+    the session viewer keeps seeing per-exchange snapshots.
     """
     bootstrap = _BOOTSTRAP_PROMPT_TEMPLATE.format(
         role=role, issue_number=issue_number, issue_title=issue_title,
@@ -1041,6 +1066,7 @@ def _open_role_session(  # noqa: PLR0913
     validation_output_dir.mkdir(parents=True, exist_ok=True)
     env = _build_role_env(
         response_file=response_file,
+        review_report_file=review_report_file,
         completion_path=completion_path,
         validation_output_dir=validation_output_dir,
         worktree=worktree,
@@ -1072,6 +1098,7 @@ def _open_role_session(  # noqa: PLR0913
 def _build_role_env(
     *,
     response_file: Path,
+    review_report_file: Path | None,
     completion_path: Path,
     validation_output_dir: Path,
     worktree: Path,
@@ -1091,10 +1118,10 @@ def _build_role_env(
     would let coder/reviewer agents run with admin GitHub tokens, the
     Control API admin bearer, etc.
 
-    All three file paths (``response_file``, ``completion_path``,
-    ``validation_output_dir``) are pair-scoped — the agent's env is
-    set once at spawn and points at locations that survive across
-    every exchange the persistent pair handles.
+    The agent's env is set once at spawn and points at locations that survive
+    across every exchange the persistent pair handles. Agent-written
+    response/report files must be inside the role worktree; completion and
+    validation paths are orchestrator-managed and may live under the pair root.
     """
     from ..control.isolation import build_runtime_tool_env
     from .agent_runner_env import build_filtered_env
@@ -1108,6 +1135,9 @@ def _build_role_env(
         "ORCHESTRATOR_ISSUE_NUMBER": str(issue_number),
         "ORCHESTRATOR_SESSION_ID": session_name,
     }
+    if review_report_file is not None:
+        review_report_file.parent.mkdir(parents=True, exist_ok=True)
+        overrides[f"{ENV_PREFIX}REVIEW_REPORT_FILE"] = str(review_report_file)
     overrides.update(build_runtime_tool_env(worktree, base_env={}))
     if web_port is not None:
         overrides["ORCHESTRATOR_API_PORT"] = str(web_port)
@@ -1123,6 +1153,12 @@ def _agent_provider(agent: AgentConfig) -> AgentProvider:
             "agent provider or ai_system must be configured",
         )
     return AgentProvider(raw)
+
+
+def _coerce_runtime_nit_policy(value: str) -> NitPolicy:
+    if value in {"ignore", "surface", "address"}:
+        return value  # type: ignore[return-value]
+    return "surface"
 
 
 # ---------------------------------------------------------------------------
@@ -1338,6 +1374,147 @@ def _persist_turn_contract(
     return path
 
 
+def _reviewer_prompt_with_artifact_contract(prompt: str, *, nit_policy: NitPolicy) -> str:
+    return (
+        prompt.rstrip()
+        + "\n\n"
+        "Review artifact contract:\n"
+        "- Write a human-readable markdown review to "
+        "$ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE.\n"
+        "- Also write the existing one-line JSON response to "
+        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE.\n"
+        "- The JSON must include a `decision` object with: "
+        "verdict, risk, blocking_findings, nits, tests_reviewed, "
+        "abstraction_review, nit_policy.\n"
+        "- Use stable IDs for findings and nits (`F1`, `F2`, `N1`, ...), "
+        "and include every ID as a heading or bullet in the markdown report.\n"
+        "- Include `abstraction_review` with `status` set to `no_issues`, "
+        "`changes_requested`, or `deferred`. Use `A1`, `A2`, ... findings "
+        "when a bounded owner/port/command abstraction should be added. "
+        "Use `deferred` only with `follow_up_issue_url`.\n"
+        "- `approved` decisions must not include blocking findings. "
+        "`approved` decisions must not carry "
+        "`abstraction_review.status=changes_requested`. "
+        "`changes_requested` decisions must include at least one blocking finding.\n"
+        "- Review for the strongest bounded design, not merely for a working diff.\n"
+        f"- The active nit policy for this coder is `{nit_policy}`. "
+        "Classify nits honestly; the orchestrator decides whether to route them "
+        "back to the coder before PR creation.\n"
+        "\n"
+        "Example JSON shape:\n"
+        '{"response_type":"ok","getting_closer":true,'
+        '"response_text":"Looks good.",'
+        '"decision":{"verdict":"approved","risk":"low",'
+        '"blocking_findings":[],"nits":[],'
+        '"tests_reviewed":["pytest tests/unit -q"],'
+        '"abstraction_review":{"status":"no_issues","findings":[]},'
+        f'"nit_policy":"{nit_policy}"}}'
+        "\n"
+    )
+
+
+def _persist_reviewer_artifact_pair(
+    *,
+    exchange_dir: Path,
+    round_index: int,
+    reviewer: ReviewExchangeResponse,
+    authored_report_path: Path,
+    nit_policy: NitPolicy,
+) -> Any:
+    decision = ReviewDecision.from_agent_payload(
+        reviewer.raw_json,
+        response_type=reviewer.response_type,
+        response_text=reviewer.response_text,
+        nit_policy=nit_policy,
+    )
+    stem = _turn_artifact_stem(
+        round_index=round_index,
+        role=Role.REVIEWER,
+        attempt_index=1,
+    )
+    return persist_review_artifact_pair(
+        report_path=_turns_dir(exchange_dir) / f"{stem}.{REVIEW_REPORT_FILENAME}",
+        decision_path=_turns_dir(exchange_dir) / f"{stem}.{REVIEW_DECISION_FILENAME}",
+        decision=decision,
+        authored_report_path=authored_report_path,
+    )
+
+
+def _reviewer_response_for_addressable_nits(
+    reviewer: ReviewExchangeResponse,
+    decision: ReviewDecision,
+) -> ReviewExchangeResponse:
+    nit_lines = "\n".join(f"- {item.id}: {item.title}" for item in decision.nits)
+    feedback = (
+        f"{reviewer.response_text}\n\n"
+        "Reviewer approved the implementation, but this coder is configured "
+        "to address nits before PR creation. Address these nits in the normal "
+        "rework loop:\n"
+        f"{nit_lines}"
+    )
+    return ReviewExchangeResponse(
+        response_type="changes_requested",
+        response_text=feedback,
+        getting_closer=True,
+        raw_json=reviewer.raw_json,
+        raw_output=reviewer.raw_output,
+    )
+
+
+@dataclass(frozen=True)
+class _ReviewerDecisionResult:
+    reviewer: ReviewExchangeResponse
+    artifact_pair: ReviewArtifactPair
+
+
+def _emit_built_event(
+    emit: Callable[[EventName, dict[str, Any]], None],
+    event: TraceEvent,
+) -> None:
+    emit(event.event_type, event.data)
+
+
+def _finalize_reviewer_decision(
+    *,
+    exchange_dir: Path,
+    round_index: int,
+    reviewer: ReviewExchangeResponse,
+    reviewer_report_path: Path,
+    nit_policy: NitPolicy,
+    require_validation: bool,
+    pair_validation: _PairValidationMirror,
+) -> _ReviewerDecisionResult:
+    validation_error = pair_validation.current_validation_error() if require_validation else None
+    if reviewer.response_type == "ok" and validation_error is not None:
+        reviewer = ReviewExchangeResponse(
+            response_type="changes_requested",
+            response_text=(
+                f"{validation_error}. Address the failing "
+                "checks and continue."
+            ),
+            getting_closer=False,
+            raw_json=None,
+            raw_output=reviewer.raw_output,
+        )
+
+    artifact_pair = _persist_reviewer_artifact_pair(
+        exchange_dir=exchange_dir,
+        round_index=round_index,
+        reviewer=reviewer,
+        authored_report_path=reviewer_report_path,
+        nit_policy=nit_policy,
+    )
+    if review_requires_nit_rework(artifact_pair.decision):
+        reviewer = _reviewer_response_for_addressable_nits(
+            reviewer,
+            artifact_pair.decision,
+        )
+    return _ReviewerDecisionResult(
+        reviewer=reviewer,
+        artifact_pair=artifact_pair,
+    )
+
+
 def _drive_rounds(  # noqa: PLR0913
     *,
     session_output: SessionOutput,
@@ -1351,6 +1528,7 @@ def _drive_rounds(  # noqa: PLR0913
     reviewer_session: PersistentSession,
     coder_response: Path,
     reviewer_response: Path,
+    reviewer_report_path: Path,
     coder_recording: Path,
     reviewer_recording: Path,
     coder_completion_path: Path,
@@ -1362,6 +1540,7 @@ def _drive_rounds(  # noqa: PLR0913
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
+    nit_policy: NitPolicy,
     coder_provider: AgentProvider,
     reviewer_provider: AgentProvider,
     before_reviewer_round: Callable[[int], None] | None,
@@ -1390,7 +1569,10 @@ def _drive_rounds(  # noqa: PLR0913
             last_reviewer_text=last_reviewer_text,
         )
         _persist_turn_packet(exchange_dir, reviewer_packet)
-        reviewer_prompt_text = build_reviewer_prompt(reviewer_packet)
+        reviewer_prompt_text = _reviewer_prompt_with_artifact_contract(
+            build_reviewer_prompt(reviewer_packet),
+            nit_policy=nit_policy,
+        )
         reviewer_prompt_path = _persist_turn_prompt(
             exchange_dir,
             round_index=round_index,
@@ -1448,6 +1630,7 @@ def _drive_rounds(  # noqa: PLR0913
             "prompt_chars": len(reviewer_prompt_text),
             "artifact_refs": _event_artifact_refs(reviewer_started.artifact_refs()),
         })
+        reviewer_report_path.unlink(missing_ok=True)
         reviewer = _send_role_round(
             session=reviewer_session,
             role=Role.REVIEWER,
@@ -1478,24 +1661,37 @@ def _drive_rounds(  # noqa: PLR0913
                 validation_record_path=validation_record_path,
             )
 
-        validation_error = pair_validation.current_validation_error() if require_validation else None
-        if reviewer.response_type == "ok" and validation_error is not None:
-            reviewer = ReviewExchangeResponse(
-                response_type="changes_requested",
-                response_text=(
-                    f"{validation_error}. Address the failing "
-                    "checks and continue."
-                ),
-                getting_closer=False,
-                raw_json=reviewer.raw_json,
-                raw_output=reviewer.raw_output,
+        try:
+            decision_result = _finalize_reviewer_decision(
+                exchange_dir=exchange_dir,
+                round_index=round_index,
+                reviewer=reviewer,
+                nit_policy=nit_policy,
+                reviewer_report_path=reviewer_report_path,
+                require_validation=require_validation,
+                pair_validation=pair_validation,
             )
+        except ValueError as exc:
+            return _build_outcome_for_reviewer_decision_error(
+                exchange_dir=exchange_dir,
+                round_index=round_index,
+                reviewer=reviewer,
+                error=exc,
+                emit=emit,
+                issue_number=issue_number,
+                session_name=session_name,
+                validation_record_path=validation_record_path,
+            )
+        reviewer = decision_result.reviewer
+        artifact_pair = decision_result.artifact_pair
 
         if reviewer.response_type == "ok":
             return _complete_with_reviewer_ok(
                 exchange_dir=exchange_dir,
                 round_index=round_index,
                 reviewer=reviewer,
+                decision=artifact_pair.decision,
+                review_artifacts=artifact_pair.to_event_artifacts(),
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
@@ -1510,6 +1706,8 @@ def _drive_rounds(  # noqa: PLR0913
                 exchange_dir=exchange_dir,
                 round_index=round_index,
                 reviewer=reviewer,
+                decision=artifact_pair.decision,
+                review_artifacts=artifact_pair.to_event_artifacts(),
                 emit=emit,
                 issue_number=issue_number,
                 session_name=session_name,
@@ -1642,15 +1840,20 @@ def _drive_rounds(  # noqa: PLR0913
         if protocol_outcome is not None:
             return protocol_outcome
 
-        emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+        decision = artifact_pair.decision
+        _emit_built_event(emit, make_review_exchange_round_completed_event({
             "issue_number": issue_number,
             "session_name": session_name,
             "round_index": round_index,
             "reviewer_response_type": reviewer.response_type,
             "reviewer_response_text": reviewer.response_text,
+            "review_decision_verdict": decision.verdict,
+            "review_nit_policy": decision.nit_policy,
+            "review_abstraction_status": decision.abstraction_review.status,
+            "artifacts": artifact_pair.to_event_artifacts(),
             "coder_response_type": coder.response_type,
             "coder_response_text": coder.response_text,
-        })
+        }))
         last_coder_text = coder.response_text
 
     summary = _write_summary(
@@ -1659,13 +1862,13 @@ def _drive_rounds(  # noqa: PLR0913
         reviewer_response=None,
         validation_record_path=validation_record_path,
     )
-    emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+    _emit_built_event(emit, make_review_exchange_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": max_rounds,
         "status": "stopped",
         "reason": "max_rounds_exceeded",
-    })
+    }))
     return ReviewExchangeOutcome(
         status="stopped",
         rounds=max_rounds,
@@ -2061,6 +2264,8 @@ def _complete_with_reviewer_ok(
     exchange_dir: Path,
     round_index: int,
     reviewer: ReviewExchangeResponse,
+    decision: ReviewDecision,
+    review_artifacts: list[dict[str, str]],
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
@@ -2069,23 +2274,32 @@ def _complete_with_reviewer_ok(
     summary = _write_summary(
         exchange_dir, round_index,
         status="ok", reason="reviewer_ok", reviewer_response=reviewer,
+        review_artifacts=review_artifacts,
         validation_record_path=validation_record_path,
     )
-    emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+    _emit_built_event(emit, make_review_exchange_round_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "round_index": round_index,
         "reviewer_response_type": reviewer.response_type,
         "reviewer_response_text": reviewer.response_text,
+        "review_decision_verdict": decision.verdict,
+        "review_nit_policy": decision.nit_policy,
+        "review_abstraction_status": decision.abstraction_review.status,
+        "artifacts": review_artifacts,
         "coder_response_type": None,
-    })
-    emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+    }))
+    _emit_built_event(emit, make_review_exchange_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
         "status": "ok",
         "reason": "reviewer_ok",
-    })
+        "review_decision_verdict": decision.verdict,
+        "review_nit_policy": decision.nit_policy,
+        "review_abstraction_status": decision.abstraction_review.status,
+        "artifacts": review_artifacts,
+    }))
     return ReviewExchangeOutcome(
         status="ok",
         rounds=round_index,
@@ -2101,6 +2315,8 @@ def _stop_for_no_progress(
     exchange_dir: Path,
     round_index: int,
     reviewer: ReviewExchangeResponse,
+    decision: ReviewDecision,
+    review_artifacts: list[dict[str, str]],
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
@@ -2110,27 +2326,82 @@ def _stop_for_no_progress(
         exchange_dir, round_index,
         status="stopped", reason="reviewer_reports_no_progress",
         reviewer_response=reviewer,
+        review_artifacts=review_artifacts,
         validation_record_path=validation_record_path,
     )
-    emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+    _emit_built_event(emit, make_review_exchange_round_completed_event({
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "round_index": round_index,
+        "reviewer_response_type": reviewer.response_type,
+        "reviewer_response_text": reviewer.response_text,
+        "review_decision_verdict": decision.verdict,
+        "review_nit_policy": decision.nit_policy,
+        "review_abstraction_status": decision.abstraction_review.status,
+        "artifacts": review_artifacts,
+        "coder_response_type": None,
+    }))
+    _emit_built_event(emit, make_review_exchange_completed_event({
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "rounds": round_index,
+        "status": "stopped",
+        "reason": "reviewer_reports_no_progress",
+        "review_decision_verdict": decision.verdict,
+        "review_nit_policy": decision.nit_policy,
+        "review_abstraction_status": decision.abstraction_review.status,
+        "artifacts": review_artifacts,
+    }))
+    return ReviewExchangeOutcome(
+        status="stopped",
+        rounds=round_index,
+        reason="reviewer_reports_no_progress",
+        reviewer_response=reviewer,
+        exchange_dir=exchange_dir,
+        summary=summary,
+    )
+
+
+def _build_outcome_for_reviewer_decision_error(
+    *,
+    exchange_dir: Path,
+    round_index: int,
+    reviewer: ReviewExchangeResponse,
+    error: ValueError,
+    emit: Callable[[EventName, dict[str, Any]], None],
+    issue_number: int,
+    session_name: str,
+    validation_record_path: Path,
+) -> ReviewExchangeOutcome:
+    detail = f"reviewer produced invalid decision JSON: {error}"
+    summary = _write_summary(
+        exchange_dir, round_index,
+        status="error", reason="reviewer_decision_invalid",
+        reviewer_response=reviewer,
+        validation_record_path=validation_record_path,
+        detail=detail,
+    )
+    _emit_built_event(emit, make_review_exchange_round_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "round_index": round_index,
         "reviewer_response_type": reviewer.response_type,
         "reviewer_response_text": reviewer.response_text,
         "coder_response_type": None,
-    })
-    emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+        "detail": detail,
+    }))
+    _emit_built_event(emit, make_review_exchange_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
-        "status": "stopped",
-        "reason": "reviewer_reports_no_progress",
-    })
+        "status": "error",
+        "reason": "reviewer_decision_invalid",
+        "detail": detail,
+    }))
     return ReviewExchangeOutcome(
-        status="stopped",
+        status="error",
         rounds=round_index,
-        reason="reviewer_reports_no_progress",
+        reason="reviewer_decision_invalid",
         reviewer_response=reviewer,
         exchange_dir=exchange_dir,
         summary=summary,
@@ -2162,13 +2433,13 @@ def _build_outcome_for_role_timeout(
         status="error", reason=reason, reviewer_response=last_reviewer,
         validation_record_path=validation_record_path,
     )
-    emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+    _emit_built_event(emit, make_review_exchange_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
         "status": "error",
         "reason": reason,
-    })
+    }))
     return ReviewExchangeOutcome(
         status="error",
         rounds=round_index,
@@ -2203,7 +2474,7 @@ def _build_outcome_for_protocol_error(
         reviewer_response=last_reviewer,
         validation_record_path=validation_record_path,
     )
-    emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+    _emit_built_event(emit, make_review_exchange_round_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "round_index": round_index,
@@ -2212,15 +2483,15 @@ def _build_outcome_for_protocol_error(
         "coder_response_type": "protocol_error",
         "coder_response_text": last_coder.response_text if last_coder else None,
         "detail": protocol_error,
-    })
-    emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+    }))
+    _emit_built_event(emit, make_review_exchange_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
         "status": "error",
         "reason": "coder_protocol_error",
         "detail": protocol_error,
-    })
+    }))
     return ReviewExchangeOutcome(
         status="error",
         rounds=round_index,
@@ -2284,6 +2555,8 @@ def _write_summary(
     reason: str,
     reviewer_response: ReviewExchangeResponse | None,
     validation_record_path: Path | None,
+    review_artifacts: list[dict[str, str]] | None = None,
+    detail: str | None = None,
 ) -> dict[str, Any]:
     """Persist summary.json atomically.
 
@@ -2322,6 +2595,10 @@ def _write_summary(
         summary["head_sha"] = head_sha
     if passed is not None:
         summary["validation_passed"] = passed
+    if review_artifacts:
+        summary["artifacts"] = review_artifacts
+    if detail:
+        summary["detail"] = detail
     _atomic_write_json(exchange_dir / "summary.json", summary)
     return summary
 

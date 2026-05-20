@@ -228,6 +228,11 @@ def get_session(self, id: str) -> Session:
 - Abstraction trigger: if implementing one policy requires touching multiple internal fields/classes, stop and introduce or extend a behavior-level abstraction first.
 - Shared state rule: do not mutate shared state collections directly from entrypoints/controllers when policy enforcement is required; route through an owner abstraction with explicit outcomes.
 - Review classification: if this rule is violated, classify as `Correctness Risk` when a concrete invariant can be bypassed, otherwise classify as `Design Smell`.
+- Smallest diff is not a sufficient design goal. Prefer the minimum behavior-complete owner/port/command abstraction when the direct fix would scatter policy or duplicate access rules.
+
+## Command Surface Testing
+
+When behavior is exposed to the UI, route it through the existing typed command / owner-port pattern instead of ad hoc handlers. Tests must cover both sides of the boundary: producer/base system to command payload or port request, and command payload to UI handler/rendered output. Reviewers should treat missing coverage on either side as implementation-required, not a nit.
 
 ## GitHub API Discipline
 

@@ -72,6 +72,7 @@ def _make_pair(
         created_at=created_at,
         coder_response_path=base / "coder/review-response.json",
         reviewer_response_path=base / "reviewer/review-response.json",
+        reviewer_report_path=base / "reviewer/review-report.md",
         coder_recording_path=base / "coder/terminal-recording.jsonl",
         reviewer_recording_path=base / "reviewer/terminal-recording.jsonl",
         coder_completion_path=base / "coder/completion-coder.json",

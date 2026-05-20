@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ..domain.event_taxonomy import EventIntent, infer_event_intent
 from ..domain.logical_run_projection import (
@@ -42,6 +42,7 @@ from .lifecycle_event_sets import (
 from .lifecycle_projection import project_cycle_stages
 from .lifecycle_semantics import (
     CycleArtifacts,
+    CycleReviewArtifact,
     CycleValidationBadge,
     IssueCycle,
     IssueProjectionContext,
@@ -175,12 +176,23 @@ def collect_cycle_artifacts(events: Sequence[EventDict]) -> CycleArtifacts:
     pr_url: str | None = None
     pr_number: int | None = None
     has_review_feedback = False
+    run_dir: str | None = None
+    review_report: CycleReviewArtifact | None = None
+    review_decision: CycleReviewArtifact | None = None
 
     for evt in events:
         canonical = _journey_event_name(evt)
         if canonical == "issue.pr_created":
             pr_url, pr_number = _pr_url_and_number(evt) or (pr_url, pr_number)
         if canonical in ("review.changes_requested", "review.approved"):
+            has_review_feedback = True
+        event_run_dir = str(evt.get("run_dir") or "").strip()
+        if event_run_dir:
+            run_dir = event_run_dir
+        report, decision = _review_artifacts_from_event(evt)
+        review_report = report or review_report
+        review_decision = decision or review_decision
+        if report or decision:
             has_review_feedback = True
         log_url = _log_url_from_artifacts(evt) or log_url
 
@@ -189,7 +201,47 @@ def collect_cycle_artifacts(events: Sequence[EventDict]) -> CycleArtifacts:
         pr_url=pr_url,
         pr_number=pr_number,
         has_review_feedback=has_review_feedback,
+        run_dir=run_dir,
+        review_report=review_report,
+        review_decision=review_decision,
     )
+
+
+def _review_artifacts_from_event(
+    event: EventDict,
+) -> tuple[CycleReviewArtifact | None, CycleReviewArtifact | None]:
+    run_dir = str(event.get("run_dir") or "").strip()
+    if not run_dir:
+        return None, None
+    report: CycleReviewArtifact | None = None
+    decision: CycleReviewArtifact | None = None
+    for artifact in event.get("artifacts") or []:
+        if not isinstance(artifact, Mapping):
+            continue
+        artifact_type = str(artifact.get("type") or "")
+        if artifact_type not in {"review_report", "review_decision"}:
+            continue
+        value = str(artifact.get("value") or "")
+        if not value:
+            continue
+        render_mode = "markdown" if artifact_type == "review_report" else "json"
+        label = (
+            "Review report" if artifact_type == "review_report" else "Decision JSON"
+        )
+        rendered = CycleReviewArtifact(
+            artifact_type=cast(
+                Literal["review_report", "review_decision"], artifact_type,
+            ),
+            label=str(artifact.get("label") or label),
+            artifact_path=value,
+            render_mode=cast(Literal["markdown", "json"], render_mode),
+            run_dir=run_dir,
+        )
+        if artifact_type == "review_report":
+            report = rendered
+        else:
+            decision = rendered
+    return report, decision
 
 
 def _pr_url_and_number(event: EventDict) -> tuple[str, int | None] | None:

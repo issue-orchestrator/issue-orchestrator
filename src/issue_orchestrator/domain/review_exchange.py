@@ -91,6 +91,8 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "B) relevant context in the broader codebase\n"
         "C) any applicable .claude/skills guidance\n"
         "D) docs/ if needed for intended behavior\n"
+        "E) whether the bounded owner/port/command abstraction is strong enough, "
+        "not merely whether the diff works\n"
         f"{prior}\n"
         "Write exactly one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"
         '  {"response_type":"ok","getting_closer":true,"response_text":"Looks good."}\n'

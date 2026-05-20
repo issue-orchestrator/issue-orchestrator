@@ -123,6 +123,10 @@ For dashboard or Control Center actions that call authenticated endpoints:
 - Check `response.ok` on mutating actions and surface failures in the UI instead of optimistic state changes.
 - For route/UI tests, use `fake_browser_auth` or the `auth_enabled_*` / `logged_in_dashboard_client` fixtures so auth is real but deterministic.
 
+## Review Artifact UI
+
+For review artifacts, keep the human-readable report as the primary visible action and place the decision JSON behind a secondary/menu action. Use native buttons with accessible names, visible focus, and the shared UI action contract. Render markdown safely; never inject raw artifact HTML.
+
 ## Checklist for UI Changes
 
 - [ ] Does the change preserve information hierarchy?

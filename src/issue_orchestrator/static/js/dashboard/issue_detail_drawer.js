@@ -251,7 +251,11 @@ function _renderJourneyRuns(container, allRuns, data) {
         renderCycleValidationBadge: _renderCycleValidationBadge,
         renderCycleTrailingActions: (cycle, ctx) => {
             const artifacts = cycle.artifacts || {};
-            const hasArtifacts = artifacts.log_url || artifacts.pr_url || artifacts.has_review_feedback;
+            const hasArtifacts = artifacts.log_url
+                || artifacts.pr_url
+                || artifacts.has_review_feedback
+                || artifacts.review_report
+                || artifacts.review_decision;
             if (!hasArtifacts) return '';
             const cycleLabel = cycle.cycle_label || `Cycle ${cycle.cycle_in_run || cycle.cycle || (ctx.cycleIndex + 1)}`;
             return `<button type="button" class="journey-cycle-artifacts-btn" onclick="event.preventDefault(); event.stopPropagation(); toggleArtifactPopover(${ctx.runIndex}, ${ctx.cycleIndex}, ${issueNum})" title="Cycle artifacts" aria-label="Open artifacts for ${escapeAttr(cycleLabel)}">\ud83d\udcce</button>`;
@@ -339,6 +343,28 @@ function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
 
     if (artifacts.has_review_feedback && issueNumber) {
         items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openReviewFeedback(${issueNumber})">Review feedback</a>`;
+    }
+
+    if (artifacts.review_report && issueNumber) {
+        const artifact = artifacts.review_report;
+        const runDir = artifact.run_dir || artifacts.run_dir || cycleRunDir;
+        if (runDir && artifact.artifact_path) {
+            const runDirLiteral = escapeAttr(JSON.stringify(String(runDir)));
+            const pathLiteral = escapeAttr(JSON.stringify(String(artifact.artifact_path)));
+            const modeLiteral = escapeAttr(JSON.stringify(String(artifact.render_mode || 'markdown')));
+            items += `<button type="button" onclick="event.preventDefault(); closeArtifactPopover(); openReviewArtifact(${issueNumber}, ${runDirLiteral}, ${pathLiteral}, 'review_report', ${modeLiteral})">Review report</button>`;
+        }
+    }
+
+    if (artifacts.review_decision && issueNumber) {
+        const artifact = artifacts.review_decision;
+        const runDir = artifact.run_dir || artifacts.run_dir || cycleRunDir;
+        if (runDir && artifact.artifact_path) {
+            const runDirLiteral = escapeAttr(JSON.stringify(String(runDir)));
+            const pathLiteral = escapeAttr(JSON.stringify(String(artifact.artifact_path)));
+            const modeLiteral = escapeAttr(JSON.stringify(String(artifact.render_mode || 'json')));
+            items += `<button type="button" onclick="event.preventDefault(); closeArtifactPopover(); openReviewArtifact(${issueNumber}, ${runDirLiteral}, ${pathLiteral}, 'review_decision', ${modeLiteral})">Decision JSON</button>`;
+        }
     }
 
     if (issueNumber) {

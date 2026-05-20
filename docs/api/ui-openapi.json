@@ -1226,6 +1226,23 @@
           "event_ref": {"type": ["string", "null"]}
         }
       },
+      "OpenReviewArtifactCommandPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind", "label", "issue_number", "run_dir",
+          "artifact_path", "artifact_type", "render_mode"
+        ],
+        "properties": {
+          "kind": {"const": "open_review_artifact"},
+          "label": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "run_dir": {"type": "string"},
+          "artifact_path": {"type": "string"},
+          "artifact_type": {"enum": ["review_report", "review_decision"]},
+          "render_mode": {"enum": ["markdown", "json"]}
+        }
+      },
       "OpenIssueTimelineCommandPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1297,6 +1314,7 @@
           {"$ref": "#/components/schemas/OpenValidationDetailsCommandPayload"},
           {"$ref": "#/components/schemas/OpenSessionRecordingCommandPayload"},
           {"$ref": "#/components/schemas/OpenReviewFeedbackCommandPayload"},
+          {"$ref": "#/components/schemas/OpenReviewArtifactCommandPayload"},
           {"$ref": "#/components/schemas/OpenIssueTimelineCommandPayload"},
           {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
           {"$ref": "#/components/schemas/ExpandE2ERunCommandPayload"},
@@ -1722,12 +1740,42 @@
       "CycleArtifactsPayload": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["log_url", "pr_url", "pr_number", "has_review_feedback"],
+        "required": [
+          "log_url", "pr_url", "pr_number", "has_review_feedback",
+          "run_dir", "review_report", "review_decision"
+        ],
         "properties": {
           "log_url": {"type": ["string", "null"]},
           "pr_url": {"type": ["string", "null"]},
           "pr_number": {"type": ["integer", "null"]},
-          "has_review_feedback": {"type": "boolean"}
+          "has_review_feedback": {"type": "boolean"},
+          "run_dir": {"type": ["string", "null"]},
+          "review_report": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/CycleReviewArtifactPayload"},
+              {"type": "null"}
+            ]
+          },
+          "review_decision": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/CycleReviewArtifactPayload"},
+              {"type": "null"}
+            ]
+          }
+        }
+      },
+      "CycleReviewArtifactPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_type", "label", "artifact_path", "render_mode", "run_dir"
+        ],
+        "properties": {
+          "artifact_type": {"enum": ["review_report", "review_decision"]},
+          "label": {"type": "string"},
+          "artifact_path": {"type": "string"},
+          "render_mode": {"enum": ["markdown", "json"]},
+          "run_dir": {"type": "string"}
         }
       },
       "JourneyStepPayload": {

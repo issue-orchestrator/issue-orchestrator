@@ -39,7 +39,16 @@ Check each area and note any issues:
 - [ ] **Code Quality**: Clean, readable, follows project conventions
 - [ ] **Logic**: Implementation is correct and handles edge cases
 - [ ] **Tests**: Adequate test coverage for changes (see Test Quality below)
+- [ ] **Owner Abstractions**: Shared policy, artifact access, UI/API actions, validation gates, labels, sessions, and external effects route through the correct owner/port/command abstraction
 - [ ] **Security**: No obvious vulnerabilities introduced
+
+### Owner-Abstraction Review (Required)
+
+Review for the strongest bounded design, not merely for a working diff.
+
+If the change duplicates policy, bypasses a port/adapter, adds a direct reader/writer where an owner exists, puts business rules in a UI/API handler, or makes callers know multiple internals, request the bounded abstraction fix in this PR. Classify it as `Design Smell` when it risks drift and `Correctness Risk` when an invariant can be bypassed. Do not call it a nit unless it is purely cosmetic.
+
+If no issue exists, say `Final abstraction pass: no issues found.`
 
 ### Test Quality (Behavioral Testing)
 

@@ -74,6 +74,17 @@ export interface CycleArtifactsPayload {
   log_url: string | null;
   pr_number: number | null;
   pr_url: string | null;
+  review_decision: CycleReviewArtifactPayload | null;
+  review_report: CycleReviewArtifactPayload | null;
+  run_dir: string | null;
+}
+
+export interface CycleReviewArtifactPayload {
+  artifact_path: string;
+  artifact_type: "review_report" | "review_decision";
+  label: string;
+  render_mode: "markdown" | "json";
+  run_dir: string;
 }
 
 export interface CycleValidationBadgePayload {
@@ -644,6 +655,16 @@ export interface OpenIssueTimelineCommandPayload {
   scope_kind: "dashboard" | "e2e_run";
 }
 
+export interface OpenReviewArtifactCommandPayload {
+  artifact_path: string;
+  artifact_type: "review_report" | "review_decision";
+  issue_number: number;
+  kind: "open_review_artifact";
+  label: string;
+  render_mode: "markdown" | "json";
+  run_dir: string;
+}
+
 export interface OpenReviewFeedbackCommandPayload {
   event_ref?: string | null;
   issue_number: number;
@@ -980,6 +1001,6 @@ export type ReviewTranscriptEvidencePayload = ReviewTranscriptAvailablePayload |
 
 export type SessionRecordingEvidencePayload = SessionRecordingAvailablePayload | SessionRecordingUnavailablePayload;
 
-export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | SwitchE2ETimelineViewCommandPayload | CreateE2EUntriagedIssuesCommandPayload | OpenInlineAgentAttemptsCommandPayload;
+export type TimelineCommandPayload = ShowEventDetailsCommandPayload | OpenCompletionRecordCommandPayload | OpenValidationDetailsCommandPayload | OpenSessionRecordingCommandPayload | OpenReviewFeedbackCommandPayload | OpenReviewArtifactCommandPayload | OpenIssueTimelineCommandPayload | OpenE2ERunCommandPayload | ExpandE2ERunCommandPayload | SwitchE2ETimelineViewCommandPayload | CreateE2EUntriagedIssuesCommandPayload | OpenInlineAgentAttemptsCommandPayload;
 
 export type ValidationOutcomePayload = ValidationPassedPayload | ValidationFailedPayload | ValidationNotRunPayload | ValidationEvidenceMissingPayload;

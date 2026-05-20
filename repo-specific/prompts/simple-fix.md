@@ -65,6 +65,12 @@ If you are adding or touching logic that:
 
 Then default to **centralizing the policy** in a shared helper/module and reuse it. Do not rely on remembering to reapply the check in every call site. If you decide not to centralize, explicitly justify why.
 
+### 2b. Bounded Owner-Abstraction Upgrade (Do This Before Coding)
+
+Smallest diff is not enough. Aim for the minimum behavior-complete change.
+
+If the direct fix would duplicate policy, bypass a port/adapter, add another direct reader/writer, make a UI/API handler own business rules, or require callers to know several internals, introduce the bounded owner abstraction in this PR. Prefer existing command, port, adapter, and composition-root patterns. If the abstraction is not bounded enough for this issue, write down why and include a follow-up proposal.
+
 ### 3. Implement the Solution (Test-Driven Development)
 
 This task is time-bounded. Prioritize the assigned issue's core behavior and the shortest path to a correct `coding-done completed`.
@@ -85,7 +91,7 @@ Choose your approach based on the task:
 
 **For new features:**
 1. Write tests first (TDD) - verify they fail before implementing
-2. Implement the minimum code to make tests pass
+2. Implement the minimum behavior-complete change to make tests pass
 3. Refactor while keeping tests green
 
 **For bug fixes with known behavior:**
@@ -150,8 +156,9 @@ in a stash the orchestrator can't see. Re-run `coding-done` after fixing.
 
 ## Implementation Principles
 
-1. **Keep it simple** - Don't over-engineer
+1. **Keep it simple** - Choose the smallest behavior-complete design, not the smallest diff
 2. **Follow conventions** - Match existing code style
 3. **Test your changes** - Run validation before completing
 4. **Be specific** - Clear implementation summaries help reviewers
 5. **Always report** - Call `coding-done` even for trivial or pre-existing work
+6. **Report abstraction work** - In your `coding-done completed --implementation`, say which bounded owner/port/command abstraction you added or state that no abstraction finding applied

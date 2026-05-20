@@ -43,6 +43,7 @@ _TIMELINE_ARTIFACT_PATH_TYPES = frozenset({
     "validation",
     "worktree",
 })
+_REVIEW_ARTIFACT_TYPES = frozenset({"review_report", "review_decision"})
 _TIMELINE_START_EVENTS = frozenset({"session.started", "review.started", "rework.started"})
 _TIMELINE_FAILURE_EVENTS = frozenset({
     "issue.blocked",
@@ -323,6 +324,14 @@ def _timeline_event_recommended_actions(
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add event-specific suggested actions."""
+    review_report_action = _review_artifact_action_for_event(
+        event=event,
+        issue_number=issue_number,
+        artifact_type="review_report",
+    )
+    if review_report_action is not None:
+        action, dedupe = review_report_action
+        add_action(action, dedupe)
     feedback_action = _review_feedback_action_for_event(
         event=event,
         event_name=event_name,
@@ -417,6 +426,33 @@ def _review_feedback_action_for_event(
     return None
 
 
+def _review_artifact_action_for_event(
+    *,
+    event: dict[str, Any],
+    issue_number: int,
+    artifact_type: str,
+) -> tuple[dict[str, Any], str] | None:
+    for artifact in event.get("artifacts", []):
+        if not isinstance(artifact, dict) or artifact.get("type") != artifact_type:
+            continue
+        value = str(artifact.get("value") or "")
+        if not value:
+            continue
+        label = "Review report" if artifact_type == "review_report" else "Decision JSON"
+        action = {
+            "type": "open_review_artifact",
+            "label": label,
+            "issue_number": issue_number,
+            "artifact_type": artifact_type,
+            "artifact_path": value,
+            "render_mode": str(artifact.get("render_mode") or ""),
+        }
+        if artifact_type == "review_report":
+            action["primary"] = True
+        return action, f"review-artifact:{artifact_type}:{value}"
+    return None
+
+
 def _timeline_event_artifact_actions(
     *,
     event: dict[str, Any],
@@ -437,6 +473,19 @@ def _timeline_event_artifact_actions(
                 {"type": "open_url", "label": f"Open {label} ↗", "url": value},
                 value,
             )
+            continue
+        if artifact_type in _REVIEW_ARTIFACT_TYPES:
+            action = {
+                "type": "open_review_artifact",
+                "label": "Review report" if artifact_type == "review_report" else "Decision JSON",
+                "issue_number": issue_number,
+                "artifact_type": artifact_type,
+                "artifact_path": value,
+                "render_mode": str(artifact.get("render_mode") or ""),
+            }
+            if artifact_type == "review_report":
+                action["primary"] = True
+            add_action(action, f"review-artifact:{artifact_type}:{value}")
             continue
         if artifact_type in _TIMELINE_ARTIFACT_PATH_TYPES:
             add_action(
@@ -536,7 +585,8 @@ def _validated_run_scoped_artifact(
     round_index = _positive_int(action.get("round_index"))
     session_role_raw = action.get("session_role")
     session_role = str(session_role_raw).strip() if isinstance(session_role_raw, str) else None
-    validation_key = (action_type, round_index, session_role)
+    validation_scope = str(action.get("artifact_path") or "") if action_type == "open_review_artifact" else session_role
+    validation_key = (action_type, round_index, validation_scope)
     if validation_key in run_scoped_validated:
         return None
     if not event_run_dir:
@@ -559,6 +609,13 @@ def _validated_run_scoped_artifact(
             )
     elif action_type == "open_review_transcript":
         artifact = accessor.get_review_exchange_transcript(allow_empty=True)
+    elif action_type == "open_review_artifact":
+        artifact_path = str(action.get("artifact_path") or "")
+        artifact_type = str(action.get("artifact_type") or "")
+        artifact = accessor.get_review_artifact(
+            artifact_path=artifact_path,
+            artifact_type=artifact_type,
+        )
     elif action_type == "view_claude_log":
         artifact = accessor.get_claude_log()
     else:
@@ -578,6 +635,7 @@ def _decorate_timeline_action_with_run_dir(action: dict[str, Any], event_run_dir
         return action
     if str(action.get("type") or "") in {
         "open_agent_log",
+        "open_review_artifact",
         "open_review_transcript",
         "open_validation_failure",
         "view_claude_log",
@@ -599,6 +657,7 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     timeline_schema_version = timeline_schema_version_raw if isinstance(timeline_schema_version_raw, int) else 0
     run_scoped_action_types = {
         "open_agent_log",
+        "open_review_artifact",
         "open_review_transcript",
         "view_claude_log",
     }

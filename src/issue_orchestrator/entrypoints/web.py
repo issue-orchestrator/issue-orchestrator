@@ -20,6 +20,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..control.shutdown_manager import shutdown_manager
 from ..execution.client_host import ClientHost, detect_client_host
+from ..execution.review_artifact_reader import ManifestReviewArtifactReader
 from ._auth_middleware import (
     AuthSurfaceConfig,
     evaluate_request,
@@ -291,7 +292,11 @@ def _orchestrator_worktree_base() -> Path | None:
     return worktree_base if isinstance(worktree_base, Path) else None
 
 
-install_web_session_context_dependencies(app, get_orchestrator=get_orchestrator)
+install_web_session_context_dependencies(
+    app,
+    get_orchestrator=get_orchestrator,
+    review_artifact_reader=ManifestReviewArtifactReader(),
+)
 install_web_operator_dependencies(
     app,
     get_client_host=get_client_host,

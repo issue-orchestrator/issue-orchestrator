@@ -75,6 +75,10 @@ The runner tracks progress in real-time:
 
 Dashboard polls `/control/e2e/status` every 2 seconds while running.
 
+## Linked Issue Lifecycles
+
+When an E2E run exercises orchestrator issues, the issue drill-in should expose the same run-scoped evidence as the dashboard: coder/reviewer session recordings, review transcript, validation details, review report, and decision JSON. Review report is the primary review artifact action; decision JSON is secondary/menu evidence. Pin this with `tests/unit/test_e2e_timeline_convergence.py` when changing lifecycle artifacts or timeline actions.
+
 ## Resume Support
 
 When orchestrator restarts mid-run:
