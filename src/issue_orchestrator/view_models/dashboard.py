@@ -815,6 +815,7 @@ def _history_status_belongs_in_completed_lane(
     *,
     merge_pending: bool,
 ) -> bool:
+    """Only terminal done rows that are no longer awaiting merge enter Completed."""
     return status in DONE_HISTORY_STATUSES and not merge_pending
 
 
