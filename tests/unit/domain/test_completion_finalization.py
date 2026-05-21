@@ -67,6 +67,24 @@ def _command(
         (
             _command(
                 requested_actions=(RequestedAction.PUSH_BRANCH,),
+                runtime_state=CompletionRuntimeState.TIMED_OUT,
+                review_exchange_running=False,
+                validation_preflight_configured=True,
+            ),
+            CompletionFinalizationDecision.RUN_DIRTY_PREFLIGHT,
+        ),
+        (
+            _command(
+                requested_actions=(RequestedAction.PUSH_BRANCH,),
+                validation_preflight_configured=False,
+            ),
+            CompletionFinalizationDecision.PROCESS,
+        ),
+        (
+            _command(
+                requested_actions=(RequestedAction.CREATE_PR,),
+                runtime_state=CompletionRuntimeState.TIMED_OUT,
+                review_exchange_running=False,
                 validation_preflight_configured=False,
             ),
             CompletionFinalizationDecision.PROCESS,
@@ -122,4 +140,3 @@ def test_completion_command_requires_positive_issue_number() -> None:
             review_exchange_running=False,
             validation_preflight_configured=False,
         )
-
