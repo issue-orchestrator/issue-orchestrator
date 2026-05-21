@@ -194,7 +194,12 @@ class DashboardViewModel:
 
 @dataclass(frozen=True)
 class HistoryLaneProjection:
-    """Typed owner for session-history lane candidates."""
+    """Typed owner for session-history lane candidates.
+
+    `history_items` and `completed_items` intentionally overlap for terminal
+    done history that should remain visible in the History tab and the
+    Completed kanban lane.
+    """
 
     history_items: list[dict[str, Any]]
     blocked_items: list[dict[str, Any]]
