@@ -113,6 +113,7 @@ def test_validate_worktree_state_applies_dirty_policy(tmp_path: Path) -> None:
     assert not result.ok
     assert result.failure == WorktreeValidationFailure.DIRTY_POLICY
     assert "src/app.py" in result.reason
+    assert result.blocking_paths == ("src/app.py",)
 
 
 def test_validate_worktree_state_allows_non_push_actions_on_main(tmp_path: Path) -> None:

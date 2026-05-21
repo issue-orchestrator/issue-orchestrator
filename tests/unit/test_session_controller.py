@@ -23,6 +23,12 @@ from issue_orchestrator.control.completion_record_validation import (
     WorktreeValidationFailure,
     WorktreeValidationResult,
 )
+from issue_orchestrator.domain.completion_finalization import (
+    CompletionFinalizationCommand,
+    CompletionRuntimeState,
+    ReviewExchangeRunningQuery,
+    decide_completion_finalization,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.observation.observation import (
     SessionObservation,
@@ -95,6 +101,9 @@ class MockCompletionProcessor:
             message="Processed completion",
             pr_url="https://github.com/test/repo/pull/1",
         )
+        self.review_exchange_running = False
+        self.review_exchange_queries: list[ReviewExchangeRunningQuery] = []
+        self.check_dirty_policy_calls: list[Path] = []
 
     def read_completion_record(
         self, worktree_path: Path, completion_path: str | None = None
@@ -126,9 +135,47 @@ class MockCompletionProcessor:
         return self._worktree_state_result()
 
     def check_dirty_policy(self, worktree_path: Path) -> WorktreeValidationResult:
+        self.check_dirty_policy_calls.append(worktree_path)
         if self.dirty_policy_results:
             return self.dirty_policy_results.pop(0)
         return self._worktree_state_result()
+
+    def is_review_exchange_running_for_completion(
+        self,
+        query: ReviewExchangeRunningQuery,
+    ) -> bool:
+        self.review_exchange_queries.append(query)
+        return self.review_exchange_running and query.requires_review_exchange
+
+    def completion_finalization_plan(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+        outcome: CompletionOutcome,
+        requested_actions: tuple[RequestedAction, ...],
+        runtime_state: CompletionRuntimeState,
+        validation_preflight_configured: bool,
+    ):
+        command = CompletionFinalizationCommand(
+            issue_number=issue_number,
+            session_name=session_name,
+            outcome=outcome,
+            requested_actions=requested_actions,
+            runtime_state=runtime_state,
+            review_exchange_running=self.is_review_exchange_running_for_completion(
+                ReviewExchangeRunningQuery(
+                    issue_number=issue_number,
+                    session_name=session_name,
+                    requested_actions=requested_actions,
+                )
+            ),
+            validation_preflight_configured=validation_preflight_configured,
+        )
+        return decide_completion_finalization(command)
+
+    def deferred_review_exchange_result(self) -> ProcessingResult:
+        return ProcessingResult.for_review_exchange_deferred()
 
     def _worktree_state_result(self) -> WorktreeValidationResult:
         if self.worktree_state_valid:
@@ -807,6 +854,56 @@ class MockWorkingCopy:
 class TestSessionControllerValidationCaching:
     """Tests for validation caching via PublishGate."""
 
+    def test_dirty_preflight_defers_while_review_exchange_running(
+        self, tmp_path: Path
+    ):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+        )
+        processor.review_exchange_running = True
+        processor.worktree_state_valid = False
+        processor.worktree_state_reason = (
+            "Working tree is dirty; commit/add/stash before pushing. "
+            "Dirty files: scripts/dev.sh."
+        )
+
+        command_runner = MockCommandRunner(returncode=0)
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            max_validation_retries=1,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.RUNNING
+        assert decision.completion_processed is False
+        assert decision.processing_result is not None
+        assert decision.processing_result.review_exchange_deferred is True
+        assert command_runner.run_calls == []
+        assert processor.process_calls == []
+        assert processor.check_dirty_policy_calls == []
+
     def test_dirty_preflight_returns_validation_retry_without_running_command(
         self, tmp_path: Path
     ):
@@ -816,11 +913,13 @@ class TestSessionControllerValidationCaching:
             summary="Done",
             requested_actions=[RequestedAction.PUSH_BRANCH],
         )
-        processor.worktree_state_valid = False
-        processor.worktree_state_reason = (
-            "Working tree is dirty; commit/add/stash before pushing. "
-            "Dirty files: scripts/dev.sh."
-        )
+        processor.dirty_policy_results = [
+            WorktreeValidationResult.dirty_policy_failure(
+                "Working tree is dirty; commit/add/stash before pushing. "
+                "Dirty files: scripts/dev.sh.",
+                blocking_paths=("scripts/dev.sh",),
+            )
+        ]
 
         command_runner = MockCommandRunner(returncode=0)
         events = RecordingEventSink()
@@ -861,13 +960,21 @@ class TestSessionControllerValidationCaching:
             / "retry-prompt.md"
         )
         assert retry_prompt.exists()
-        assert "scripts/dev.sh" in retry_prompt.read_text()
+        retry_prompt_content = retry_prompt.read_text()
+        assert "No validation command ran" in retry_prompt_content
+        assert "Your changes broke validation" not in retry_prompt_content
+        assert "prepush-check --dirty-only -v" in retry_prompt_content
+        assert "scripts/dev.sh" in retry_prompt_content
         retry_events = [
             event
             for event in events.events
             if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
         ]
         assert len(retry_events) == 1
+        assert retry_events[0].data["validation_failure_kind"] == (
+            "dirty_before_validation"
+        )
+        assert retry_events[0].data["dirty_files"] == ["scripts/dev.sh"]
 
     def test_dirty_preflight_exhausts_without_running_command(self, tmp_path: Path):
         processor = MockCompletionProcessor()
@@ -876,11 +983,13 @@ class TestSessionControllerValidationCaching:
             summary="Done",
             requested_actions=[RequestedAction.PUSH_BRANCH],
         )
-        processor.worktree_state_valid = False
-        processor.worktree_state_reason = (
-            "Working tree is dirty; commit/add/stash before pushing. "
-            "Dirty files: scripts/dev.sh."
-        )
+        processor.dirty_policy_results = [
+            WorktreeValidationResult.dirty_policy_failure(
+                "Working tree is dirty; commit/add/stash before pushing. "
+                "Dirty files: scripts/dev.sh.",
+                blocking_paths=("scripts/dev.sh",),
+            )
+        ]
 
         command_runner = MockCommandRunner(returncode=0)
         controller = SessionController(
@@ -921,10 +1030,10 @@ class TestSessionControllerValidationCaching:
         )
         processor.dirty_policy_results = [
             WorktreeValidationResult.pass_(),
-            WorktreeValidationResult.fail(
-                WorktreeValidationFailure.DIRTY_POLICY,
+            WorktreeValidationResult.dirty_policy_failure(
                 "Working tree is dirty; commit/add/stash before pushing. "
                 "Dirty files: generated.txt.",
+                blocking_paths=("generated.txt",),
             ),
         ]
 
@@ -974,10 +1083,10 @@ class TestSessionControllerValidationCaching:
         )
         processor.dirty_policy_results = [
             WorktreeValidationResult.pass_(),
-            WorktreeValidationResult.fail(
-                WorktreeValidationFailure.DIRTY_POLICY,
+            WorktreeValidationResult.dirty_policy_failure(
                 "Working tree is dirty; commit/add/stash before pushing. "
                 "Dirty files: generated.txt.",
+                blocking_paths=("generated.txt",),
             ),
         ]
 

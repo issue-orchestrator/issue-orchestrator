@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -43,6 +44,7 @@ class WorktreeValidationResult:
     ok: bool
     reason: str = ""
     failure: WorktreeValidationFailure | None = None
+    blocking_paths: tuple[str, ...] = ()
 
     @classmethod
     def pass_(cls) -> "WorktreeValidationResult":
@@ -53,8 +55,28 @@ class WorktreeValidationResult:
         cls,
         failure: WorktreeValidationFailure,
         reason: str,
+        *,
+        blocking_paths: Sequence[str] = (),
     ) -> "WorktreeValidationResult":
-        return cls(ok=False, reason=reason, failure=failure)
+        return cls(
+            ok=False,
+            reason=reason,
+            failure=failure,
+            blocking_paths=tuple(blocking_paths),
+        )
+
+    @classmethod
+    def dirty_policy_failure(
+        cls,
+        reason: str,
+        *,
+        blocking_paths: Sequence[str],
+    ) -> "WorktreeValidationResult":
+        return cls.fail(
+            WorktreeValidationFailure.DIRTY_POLICY,
+            reason,
+            blocking_paths=blocking_paths,
+        )
 
 
 def load_completion_record(record_path: Path) -> CompletionRecord | None:
@@ -295,9 +317,9 @@ class CompletionRecordValidator:
                 remaining = len(blocking_files) - _DIRTY_FILES_REASON_LIMIT
                 suffix = f" (+{remaining} more)" if remaining > 0 else ""
                 reason = f"{reason} Dirty files: {preview}{suffix}."
-            return WorktreeValidationResult.fail(
-                WorktreeValidationFailure.DIRTY_POLICY,
+            return WorktreeValidationResult.dirty_policy_failure(
                 reason,
+                blocking_paths=blocking_files,
             )
 
         return WorktreeValidationResult.pass_()

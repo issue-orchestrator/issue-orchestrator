@@ -10,9 +10,12 @@ Read the task-specific prompt file for what to do. Return here for how to signal
 
 Before calling `coding-done`, ensure your working tree is clean:
 
-1. Run `git status` — if there are uncommitted files, **commit them**.
+1. Run `git status --short` — if there are uncommitted files, **commit them**.
 2. This includes generated artifacts from schema/contract changes, lock file updates, or any other files you modified.
-3. `coding-done` will **reject a dirty working tree** and exit non-zero.
+3. Run `prepush-check --dirty-only -v`; it must pass before `coding-done`.
+4. `coding-done` will **reject a dirty working tree** and exit non-zero.
+
+Runtime-managed metadata under `.issue-orchestrator/` and `.claude/` is ignored by the orchestrator dirty guard. Tracked project files, generated sources, lock files, schemas, and other repo changes must still be committed or removed.
 
 If you genuinely cannot commit certain files (e.g., they shouldn't be tracked), explain why in the `--problems` field.
 

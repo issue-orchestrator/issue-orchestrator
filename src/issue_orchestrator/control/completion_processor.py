@@ -28,7 +28,16 @@ from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
 from ..domain.artifact_contracts import ValidationFailed
+from ..domain.completion_finalization import (
+    CompletionFinalizationCommand,
+    CompletionFinalizationDecision,
+    CompletionFinalizationPlan,
+    CompletionRuntimeState,
+    ReviewExchangeRunningQuery,
+    decide_completion_finalization,
+)
 from ..domain.models import (
+    CompletionOutcome,
     CompletionRecord,
     RequestedAction,
     COMPLETION_RECORD_PATH,
@@ -587,6 +596,46 @@ class CompletionProcessor:
     def check_dirty_policy(self, worktree: Path) -> WorktreeValidationResult:
         return self._record_validator.check_dirty_policy(worktree)
 
+    def deferred_review_exchange_result(self) -> ProcessingResult:
+        """Construct the standard async review-exchange deferral result."""
+        return ProcessingResult.for_review_exchange_deferred()
+
+    def is_review_exchange_running_for_completion(
+        self,
+        query: ReviewExchangeRunningQuery,
+    ) -> bool:
+        """Answer a typed running-exchange query for completion finalization."""
+        return self._review_exchange.is_review_exchange_running_for_completion(query)
+
+    def completion_finalization_plan(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+        outcome: CompletionOutcome,
+        requested_actions: tuple[RequestedAction, ...],
+        runtime_state: CompletionRuntimeState,
+        validation_preflight_configured: bool,
+    ) -> CompletionFinalizationPlan:
+        """Build and decide the typed completion-finalization command."""
+        query = ReviewExchangeRunningQuery(
+            issue_number=issue_number,
+            session_name=session_name,
+            requested_actions=requested_actions,
+        )
+        command = CompletionFinalizationCommand(
+            issue_number=issue_number,
+            session_name=session_name,
+            outcome=outcome,
+            requested_actions=requested_actions,
+            runtime_state=runtime_state,
+            review_exchange_running=self.is_review_exchange_running_for_completion(
+                query
+            ),
+            validation_preflight_configured=validation_preflight_configured,
+        )
+        return decide_completion_finalization(command)
+
     def _emit_review_comment_added(
         self,
         *,
@@ -931,6 +980,27 @@ class CompletionProcessor:
             return error_result
         assert record is not None  # Guaranteed if error_result is None
 
+        finalization_plan = self.completion_finalization_plan(
+            issue_number=issue_number,
+            session_name=session_name,
+            outcome=record.outcome,
+            requested_actions=tuple(record.requested_actions),
+            runtime_state=CompletionRuntimeState.TERMINATED,
+            validation_preflight_configured=False,
+        )
+        if (
+            finalization_plan.decision
+            is CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE
+        ):
+            logger.info(
+                "Completion deferred before pre-action policies: issue=%d "
+                "session=%s reason=%s",
+                issue_number,
+                session_name,
+                finalization_plan.reason,
+            )
+            return ProcessingResult.for_review_exchange_deferred()
+
         pre_action_failure = self._check_pre_action_policies(
             worktree, record, session_name, issue_number
         )
@@ -1004,12 +1074,7 @@ class CompletionProcessor:
                 issue_number,
                 session_name,
             )
-            return ProcessingResult(
-                success=True,
-                message="Review exchange running in background; will resume on next tick",
-                completion_record_path=None,
-                review_exchange_deferred=True,
-            )
+            return ProcessingResult.for_review_exchange_deferred()
 
         # Write reviewer feedback to session run directory for rework sessions to use
         # This is only relevant for review sessions (pr_number provided) with feedback

@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.domain.review_exchange import build_reviewer_prompt
+from issue_orchestrator.domain.review_exchange import (
+    build_coder_prompt,
+    build_reviewer_prompt,
+)
 from issue_orchestrator.domain.review_exchange_turn import (
     ReviewExchangePromptFiles,
     ReviewExchangeTurnPacket,
@@ -212,6 +215,26 @@ class TestBuildReviewerPrompt:
 
         with pytest.raises(ValueError, match="prompt_files.validation_record"):
             build_reviewer_prompt(packet)
+
+
+class TestBuildCoderPrompt:
+    def test_dirty_worktree_prevalidation_instruction_is_explicit(self) -> None:
+        packet = ReviewExchangeTurnPacket(
+            issue_number=42,
+            issue_title="Make it right",
+            round_index=1,
+            role=Role.CODER,
+            require_validation=True,
+            run_dir=Path("/wt/.issue-orchestrator/sessions/review-exchange-run"),
+            reviewer_feedback="Fix the tests and commit the result.",
+        )
+
+        prompt = build_coder_prompt(packet)
+
+        assert "clean working tree required" in prompt
+        assert "prepush-check --dirty-only -v" in prompt
+        assert "Tracked project files" in prompt
+        assert ".issue-orchestrator/" in prompt
 
 
 # ---------------------------------------------------------------------------

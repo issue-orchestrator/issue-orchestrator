@@ -22,6 +22,7 @@ import logging
 import os
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -43,7 +44,11 @@ from ..domain.artifact_contracts import (
     ValidationPassed,
     ValidationRetry,
 )
-from ..domain.models import SessionStatus, CompletionOutcome, RequestedAction
+from ..domain.completion_finalization import (
+    CompletionFinalizationDecision,
+    CompletionRuntimeState,
+)
+from ..domain.models import SessionStatus, CompletionOutcome
 from ..ports.provider_resilience import ProviderErrorType
 from ..infra.provider_resilience import ProviderStatus, read_provider_status
 from ..infra.logging_config import issue_log
@@ -64,6 +69,14 @@ from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
 _AGENT_DONE_MARKER = ".agent-done-marker"
+
+
+class ValidationFailureKind(str, Enum):
+    """Typed reason for validation retry/exhaustion routing."""
+
+    VALIDATION_COMMAND = "validation_command"
+    DIRTY_BEFORE_VALIDATION = "dirty_before_validation"
+    DIRTY_AFTER_VALIDATION = "dirty_after_validation"
 
 
 @dataclass
@@ -117,6 +130,23 @@ class ValidationFailureContext:
     original_prompt: str | None
     retry_prompt_template: str | None
     repo_root: Path | None
+    failure_kind: ValidationFailureKind
+    dirty_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SessionFinalizationContext:
+    record: "CompletionRecord"
+    worktree_path: Path
+    issue_number: int
+    issue_title: str
+    session_name: str
+    run_dir: Path
+    validation_retry_count: int
+    original_prompt: str | None
+    retry_prompt_template: str | None
+    repo_root: Path | None
+    recovered: bool
 
 
 @dataclass(frozen=True)
@@ -257,22 +287,23 @@ class SessionController:
         if recovered:
             self._log_timeout_recovery(issue_number, session_name, record)
 
-        # Phase: dirty preflight. Short-circuit before validation/publish work.
-        dirty_preflight_decision = self._run_dirty_preflight_before_validation(
-            record=record,
-            worktree_path=worktree_path,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            session_name=validation_session_name,
-            run_dir=run_dir,
-            validation_retry_count=validation_retry_count,
-            original_prompt=original_prompt,
-            retry_prompt_template=retry_prompt_template,
-            repo_root=repo_root,
-            recovered=recovered,
+        finalization_decision = self._handle_completion_finalization_preconditions(
+            SessionFinalizationContext(
+                record=record,
+                worktree_path=worktree_path,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                session_name=validation_session_name,
+                run_dir=run_dir,
+                validation_retry_count=validation_retry_count,
+                original_prompt=original_prompt,
+                retry_prompt_template=retry_prompt_template,
+                repo_root=repo_root,
+                recovered=recovered,
+            )
         )
-        if dirty_preflight_decision is not None:
-            return dirty_preflight_decision
+        if finalization_decision is not None:
+            return finalization_decision
 
         # Process completion record
         pr_number = self._extract_pr_number_from_session_name(session_name)
@@ -359,6 +390,55 @@ class SessionController:
             completion_detail=completion_detail,
         )
 
+    def _handle_completion_finalization_preconditions(
+        self,
+        context: SessionFinalizationContext,
+    ) -> SessionDecision | None:
+        finalization_plan = self.completion_processor.completion_finalization_plan(
+            issue_number=context.issue_number,
+            session_name=context.session_name,
+            outcome=context.record.outcome,
+            requested_actions=tuple(context.record.requested_actions),
+            runtime_state=(
+                CompletionRuntimeState.TIMED_OUT
+                if context.recovered
+                else CompletionRuntimeState.TERMINATED
+            ),
+            validation_preflight_configured=bool(
+                self._validation_cmd and self._command_runner
+            ),
+        )
+        if finalization_plan.decision in {
+            CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE,
+            CompletionFinalizationDecision.TERMINAL_REVIEW_EXCHANGE_TIMEOUT,
+        }:
+            return self._deferred_review_exchange_decision(
+                result=self.completion_processor.deferred_review_exchange_result(),
+                run_dir=context.run_dir,
+                session_name=context.session_name,
+                issue_number=context.issue_number,
+                recovered=context.recovered,
+            )
+
+        if (
+            finalization_plan.decision
+            is CompletionFinalizationDecision.RUN_DIRTY_PREFLIGHT
+        ):
+            return self._run_dirty_preflight_before_validation(
+                record=context.record,
+                worktree_path=context.worktree_path,
+                issue_number=context.issue_number,
+                issue_title=context.issue_title,
+                session_name=context.session_name,
+                run_dir=context.run_dir,
+                validation_retry_count=context.validation_retry_count,
+                original_prompt=context.original_prompt,
+                retry_prompt_template=context.retry_prompt_template,
+                repo_root=context.repo_root,
+                recovered=context.recovered,
+            )
+        return None
+
     def _run_dirty_preflight_before_validation(
         self,
         *,
@@ -376,18 +456,9 @@ class SessionController:
     ) -> SessionDecision | None:
         """Return a validation retry decision if push preconditions are dirty.
 
-        This is intentionally before the validation command. A dirty worktree is
-        cheap to detect and actionable for the coder; running a full validation
-        suite first just delays the feedback and can hide the true blocker.
+        The completion-finalization matrix decides whether this phase should
+        run. This method only executes the dirty policy and routes failures.
         """
-        if not (
-            record.outcome == CompletionOutcome.COMPLETED
-            and RequestedAction.PUSH_BRANCH in record.requested_actions
-            and self._validation_cmd
-            and self._command_runner
-        ):
-            return None
-
         dirty_policy = self.completion_processor.check_dirty_policy(worktree_path)
         if dirty_policy.ok:
             logger.info(
@@ -435,6 +506,8 @@ class SessionController:
                 original_prompt=original_prompt,
                 retry_prompt_template=retry_prompt_template,
                 repo_root=repo_root,
+                failure_kind=ValidationFailureKind.DIRTY_BEFORE_VALIDATION,
+                dirty_files=dirty_policy.blocking_paths,
             )
         )
 
@@ -1144,6 +1217,8 @@ class SessionController:
                     original_prompt=original_prompt,
                     retry_prompt_template=retry_prompt_template,
                     repo_root=repo_root,
+                    failure_kind=ValidationFailureKind.VALIDATION_COMMAND,
+                    dirty_files=(),
                 )
             ),
             passed=False,
@@ -1208,6 +1283,8 @@ class SessionController:
                 original_prompt=original_prompt,
                 retry_prompt_template=retry_prompt_template,
                 repo_root=repo_root,
+                failure_kind=ValidationFailureKind.DIRTY_AFTER_VALIDATION,
+                dirty_files=dirty_policy.blocking_paths,
             )
         )
         return ValidationGateDecision(
@@ -1284,6 +1361,8 @@ class SessionController:
             max_retries=self._max_validation_retries,
             template_path=failure.retry_prompt_template,
             repo_root=failure.repo_root,
+            failure_kind=failure.failure_kind,
+            dirty_files=failure.dirty_files,
         )
         self.session_output.write_retry_prompt(failure.run_dir, retry_prompt_content)
 
@@ -1297,6 +1376,8 @@ class SessionController:
                 if failure.error_file
                 else None,
                 "validation_reason": failure.error,
+                "validation_failure_kind": failure.failure_kind.value,
+                "dirty_files": list(failure.dirty_files),
                 "validation_error_summary": validation_summary,
                 "retry_count": failure.retry_count,
                 "max_retries": self._max_validation_retries,
@@ -1330,6 +1411,9 @@ class SessionController:
                 "error_file": str(failure.error_file)
                 if failure.error_file
                 else None,
+                "validation_reason": failure.error,
+                "validation_failure_kind": failure.failure_kind.value,
+                "dirty_files": list(failure.dirty_files),
                 "retry_count": failure.retry_count,
                 "run_dir": str(failure.run_dir),
                 "artifacts": self._validation_record_artifacts(failure.run_dir),
@@ -1633,6 +1717,8 @@ class SessionController:
         max_retries: int,
         template_path: Optional[str] = None,
         repo_root: Optional[Path] = None,
+        failure_kind: ValidationFailureKind = ValidationFailureKind.VALIDATION_COMMAND,
+        dirty_files: tuple[str, ...] = (),
     ) -> str:
         """Render the retry prompt content.
 
@@ -1648,6 +1734,19 @@ class SessionController:
         Returns:
             Rendered retry prompt content.
         """
+        if failure_kind in {
+            ValidationFailureKind.DIRTY_BEFORE_VALIDATION,
+            ValidationFailureKind.DIRTY_AFTER_VALIDATION,
+        }:
+            return self._render_dirty_worktree_retry_prompt(
+                task_prompt=task_prompt,
+                validation_error=validation_error,
+                retry_count=retry_count,
+                max_retries=max_retries,
+                failure_kind=failure_kind,
+                dirty_files=dirty_files,
+            )
+
         # Load template - custom or default
         template = DEFAULT_RETRY_TEMPLATE
         if template_path and repo_root:
@@ -1682,6 +1781,63 @@ class SessionController:
             max_retries=display_max,
             retries_remaining=display_max - display_count,
         )
+
+    def _render_dirty_worktree_retry_prompt(
+        self,
+        *,
+        task_prompt: str,
+        validation_error: str,
+        retry_count: int,
+        max_retries: int,
+        failure_kind: ValidationFailureKind,
+        dirty_files: tuple[str, ...],
+    ) -> str:
+        """Render a dirty-worktree-specific retry prompt."""
+        display_count = retry_count + 1
+        display_max = max_retries + 1
+        dirty_lines = (
+            "\n".join(f"- `{path}`" for path in dirty_files)
+            if dirty_files
+            else "- See the worktree blocker text below."
+        )
+        if failure_kind is ValidationFailureKind.DIRTY_BEFORE_VALIDATION:
+            timing = (
+                "No validation command ran. The orchestrator blocked completion "
+                "because the worktree was not publishable."
+            )
+        else:
+            timing = (
+                "The validation command passed, but the worktree became dirty "
+                "before publish."
+            )
+        return f"""# Dirty Worktree Retry (Attempt {display_count}/{display_max}) - {display_max - display_count} attempt(s) remaining after this
+
+{timing}
+
+## Required Fix
+
+1. Run `git status --short`.
+2. Commit files that belong to the requested fix.
+3. Remove, revert, or stash unrelated/generated files that should not be part of this issue.
+4. Run `prepush-check --dirty-only -v`; it must pass before `coding-done`.
+5. Run `coding-done completed --implementation "describe what you fixed" --problems "any remaining issues"`.
+
+Runtime note: orchestrator-managed metadata under `.issue-orchestrator/` and `.claude/` is ignored by the orchestrator dirty guard. Tracked project files, generated sources, lock files, schemas, and other repo changes must still be committed or removed.
+
+## Dirty Files
+
+{dirty_lines}
+
+## Original Task
+
+{task_prompt}
+
+## Worktree Blocker
+
+```
+{_truncate_with_tail(validation_error)}
+```
+"""
 
     def _emit_event(self, event_type: EventName, data: dict[str, Any]) -> None:
         """Emit a trace event."""

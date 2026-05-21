@@ -238,3 +238,38 @@ def test_review_approved_does_not_use_cumulative_rounds_as_cycle_number() -> Non
     assert out.logical_run == 2
     assert out.logical_cycle == 3
     assert out.logical_phase == "review"
+
+
+def test_review_round_hint_never_decreases_validation_retry_cycle() -> None:
+    """Review round indices are exchange-local, not absolute lifecycle cycles."""
+    out = enrich_logical_semantics(
+        event_name="review_exchange.round_started",
+        event_data={"task": "review", "round_index": 1},
+        previous_event_name="review_exchange.started",
+        previous_data={
+            "logical_run": 1,
+            "logical_cycle": 2,
+            "logical_phase": "review",
+        },
+    )
+
+    assert out.logical_run == 1
+    assert out.logical_cycle == 2
+    assert out.logical_phase == "review"
+
+
+def test_review_rework_round_hint_advances_only_from_current_cycle() -> None:
+    out = enrich_logical_semantics(
+        event_name="review.rework_started",
+        event_data={"task": "rework", "round_index": 1},
+        previous_event_name="review_exchange.round_completed",
+        previous_data={
+            "logical_run": 1,
+            "logical_cycle": 3,
+            "logical_phase": "review",
+        },
+    )
+
+    assert out.logical_run == 1
+    assert out.logical_cycle == 3
+    assert out.logical_phase == "review"
