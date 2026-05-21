@@ -264,6 +264,43 @@ def test_kanban_completed_column_session_scoped(jinja_env):
     assert menu_btn.get("data-pr-url") == "https://example.test/pr/7"
 
 
+def test_completed_column_renders_merged_history_card(jinja_env):
+    config = make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=7,
+                title="Merged issue",
+                agent_type="agent:web",
+                status="merged",
+                runtime_minutes=9,
+                pr_url="https://example.test/pr/7",
+                status_reason="PR merged; awaiting merge reconciled",
+            )
+        ],
+    )
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="kanban",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    awaiting_merge_col = soup.select_one('[data-column="awaiting-merge"]')
+    completed_col = soup.select_one('[data-column="completed"]')
+    assert awaiting_merge_col is not None
+    assert completed_col is not None
+    assert awaiting_merge_col.select_one(".count").text.strip() == "0"
+    assert completed_col.select_one(".count").text.strip() == "1"
+    completed_card = completed_col.select_one('.column-cards .issue-card[data-issue="7"]')
+    assert completed_card is not None
+    menu_btn = completed_card.select_one(".card-menu-btn")
+    assert menu_btn is not None
+    assert menu_btn.get("data-pr-url") == "https://example.test/pr/7"
+
+
 def test_awaiting_merge_template_renders_one_pr_card_when_queue_and_history_overlap(jinja_env):
     config = make_config()
     config.agents = {"agent:web": make_agent_config()}

@@ -192,6 +192,20 @@ class DashboardViewModel:
         }
 
 
+@dataclass(frozen=True)
+class HistoryLaneProjection:
+    """Typed owner for session-history lane candidates.
+
+    `history_items` and `completed_items` intentionally overlap for terminal
+    done history that should remain visible in the History tab and the
+    Completed kanban lane.
+    """
+
+    history_items: list[dict[str, Any]]
+    blocked_items: list[dict[str, Any]]
+    completed_items: list[dict[str, Any]]
+
+
 def _issue_label_fields(issue_number: int, title: str) -> tuple[dict[str, Any], str]:
     """Build the issue_key/issue_label pair and the display title for a card.
 
@@ -801,9 +815,19 @@ def _history_status_label(status: SessionHistoryStatus) -> str:
     assert_never(status)
 
 
-def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _history_status_belongs_in_completed_lane(
+    status: SessionHistoryStatus,
+    *,
+    merge_pending: bool,
+) -> bool:
+    """Only terminal done rows that are no longer awaiting merge enter Completed."""
+    return status in DONE_HISTORY_STATUSES and not merge_pending
+
+
+def _build_history_items(state, config) -> HistoryLaneProjection:
     history_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
+    completed_items: list[dict[str, Any]] = []
     for entry in latest_history_entries_by_issue(state.session_history, limit=50):
         # Completed-without-PR is not a terminal lane; let queue data drive placement.
         if entry.status == "completed" and not entry.pr_url:
@@ -826,6 +850,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
         worktree_path = str(entry.worktree_path) if entry.worktree_path else ""
 
         label_fields, display_title = _issue_label_fields(entry.issue_number, entry.title)
+        merge_pending = entry.status == "completed" and bool(entry.pr_url)
         item = {
             "issue_number": entry.issue_number,
             **label_fields,
@@ -853,15 +878,24 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
                 else None
             ),
             # History records with an open PR belong in Awaiting Merge, not Completed.
-            "merge_pending": entry.status == "completed" and bool(entry.pr_url),
+            "merge_pending": merge_pending,
             **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in BLOCKED_HISTORY_STATUSES:
             blocked_items.append(item)
         else:
             history_items.append(item)
+            if _history_status_belongs_in_completed_lane(
+                entry.status,
+                merge_pending=merge_pending,
+            ):
+                completed_items.append(item)
 
-    return history_items, blocked_items
+    return HistoryLaneProjection(
+        history_items=history_items,
+        blocked_items=blocked_items,
+        completed_items=completed_items,
+    )
 
 
 def _build_pending_validation_retry_items(state, config) -> list[dict[str, Any]]:
@@ -1091,7 +1125,9 @@ def build_dashboard_view_model(
             if issue_number is not None
         }
         backlog_items = _build_backlog_items(state, config, lm=lm)
-        history_items, history_blocked = _build_history_items(state, config)
+        history_projection = _build_history_items(state, config)
+        history_items = history_projection.history_items
+        history_blocked = history_projection.blocked_items
         pending_validation_blocked = _build_pending_validation_retry_items(state, config)
         blocked_items.extend(
             _merge_blocked_items(
@@ -1112,8 +1148,7 @@ def build_dashboard_view_model(
         _attach_refresh_meta(history_items, state, config, now_ts)
         _attach_refresh_meta(backlog_items, state, config, now_ts)
 
-        # Completed = items the agent finished this session
-        completed_items = [item for item in history_items if item.get("status") == "completed"]
+        completed_items = history_projection.completed_items
         completed_items = _sort_by_issue_number(completed_items)
 
         # Awaiting merge = items with PRs ready for human merge

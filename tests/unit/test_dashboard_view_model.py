@@ -636,7 +636,7 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
     assert view_model.scope_summary["in_scope_total"] == 1
 
 
-def test_merged_history_with_pr_url_does_not_route_to_awaiting_merge():
+def test_merged_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     config = _make_config()
     pr_url = "https://github.com/test/repo/pull/4124"
     state = OrchestratorState(
@@ -666,9 +666,20 @@ def test_merged_history_with_pr_url_does_not_route_to_awaiting_merge():
     awaiting_column = next(
         col for col in view_model.flow_columns if col["id"] == "awaiting-merge"
     )
+    completed_column = next(
+        col for col in view_model.flow_columns if col["id"] == "completed"
+    )
     assert all(item["issue_number"] != 4057 for item in view_model.awaiting_merge_items)
     assert all(item["issue_number"] != 4057 for item in awaiting_column["items"])
-    assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+    assert any(item["issue_number"] == 4057 for item in view_model.completed_items)
+    assert any(item["issue_number"] == 4057 for item in completed_column["items"])
+    completed_item = next(
+        item for item in view_model.completed_items if item["issue_number"] == 4057
+    )
+    assert completed_item["status"] == "merged"
+    assert completed_item["detail_label"] == "Merged"
+    assert completed_item["merge_pending"] is False
+    assert completed_item["pr_url"] == pr_url
     history_item = next(
         item for item in view_model.history_items if item["issue_number"] == 4057
     )
@@ -676,10 +687,10 @@ def test_merged_history_with_pr_url_does_not_route_to_awaiting_merge():
     assert history_item["detail_label"] == "Merged"
     assert history_item["merge_pending"] is False
     assert history_item["pr_url"] == pr_url
-    assert view_model.scope_summary["in_scope_total"] == 0
+    assert view_model.scope_summary["in_scope_total"] == 1
 
 
-def test_closed_history_with_pr_url_does_not_route_to_awaiting_merge():
+def test_closed_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     config = _make_config()
     pr_url = "https://github.com/test/repo/pull/4124"
     state = OrchestratorState(
@@ -709,9 +720,20 @@ def test_closed_history_with_pr_url_does_not_route_to_awaiting_merge():
     awaiting_column = next(
         col for col in view_model.flow_columns if col["id"] == "awaiting-merge"
     )
+    completed_column = next(
+        col for col in view_model.flow_columns if col["id"] == "completed"
+    )
     assert all(item["issue_number"] != 4057 for item in view_model.awaiting_merge_items)
     assert all(item["issue_number"] != 4057 for item in awaiting_column["items"])
-    assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+    assert any(item["issue_number"] == 4057 for item in view_model.completed_items)
+    assert any(item["issue_number"] == 4057 for item in completed_column["items"])
+    completed_item = next(
+        item for item in view_model.completed_items if item["issue_number"] == 4057
+    )
+    assert completed_item["status"] == "closed"
+    assert completed_item["detail_label"] == "Closed"
+    assert completed_item["merge_pending"] is False
+    assert completed_item["pr_url"] == pr_url
     history_item = next(
         item for item in view_model.history_items if item["issue_number"] == 4057
     )
@@ -719,7 +741,7 @@ def test_closed_history_with_pr_url_does_not_route_to_awaiting_merge():
     assert history_item["detail_label"] == "Closed"
     assert history_item["merge_pending"] is False
     assert history_item["pr_url"] == pr_url
-    assert view_model.scope_summary["in_scope_total"] == 0
+    assert view_model.scope_summary["in_scope_total"] == 1
 
 
 def test_validation_failed_history_routes_to_blocked_lane():
