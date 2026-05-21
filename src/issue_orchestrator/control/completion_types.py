@@ -32,3 +32,13 @@ class ProcessingResult:
     # back into coder rework via the review-exchange path. Callers should keep
     # the session running but still surface validation-failure evidence.
     validation_failed_rerouted: bool = False
+
+    @classmethod
+    def for_review_exchange_deferred(cls) -> "ProcessingResult":
+        """Typed constructor for the async review-exchange deferral result."""
+        return cls(
+            success=True,
+            message="Review exchange running in background; will resume on next tick",
+            completion_record_path=None,
+            review_exchange_deferred=True,
+        )

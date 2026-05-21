@@ -12,6 +12,7 @@ Architecture reminder:
 
 import json
 import pytest
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,12 +33,14 @@ from issue_orchestrator.control.completion_processor import (
     PRAdapter,
     GitAdapter,
 )
+from issue_orchestrator.control.background_job_supervisor import BackgroundJobSupervisor
 from issue_orchestrator.control.pre_publish_gate import PrePublishGateResult
 from issue_orchestrator.execution.review_artifact_reader import ManifestReviewArtifactReader
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
+from issue_orchestrator.ports.background_job import CompletedJob
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.review_artifact_reader import (
     ReviewArtifactContent,
@@ -69,6 +72,20 @@ class _FakeReviewArtifactReader:
             content_type="text/markdown",
             content=self.content,
         )
+
+
+class _RunningReviewExchangeJobRunner:
+    def __init__(self, running_ids: set[str]) -> None:
+        self.running_ids = set(running_ids)
+
+    def submit(self, job_id: str, fn: Callable[[], None]) -> bool:  # noqa: ARG002
+        return False
+
+    def is_running(self, job_id: str) -> bool:
+        return job_id in self.running_ids
+
+    def drain_completed(self) -> list[CompletedJob]:
+        return []
 
 
 @pytest.fixture
@@ -2457,6 +2474,45 @@ class TestCompletionProcessorPublishGate:
         comment = mock_pr_adapter.add_comment.call_args[0][1]
         assert "Validation Failed" in comment
         assert "Test-skipping patterns detected" in comment
+
+    def test_running_review_exchange_defers_before_publish_preconditions(
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        mock_publish_gate,
+        worktree_with_completion,
+    ):
+        mock_git_adapter.has_tracked_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = ["src/app.py"]
+        supervisor = BackgroundJobSupervisor(
+            _RunningReviewExchangeJobRunner({"review-exchange:123:test-session"})
+        )
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            publish_gate=mock_publish_gate,
+            background_job_supervisor=supervisor,
+            session_output=FileSystemSessionOutput(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert result.success is True
+        assert result.review_exchange_deferred is True
+        mock_git_adapter.has_tracked_changes.assert_not_called()
+        mock_git_adapter.diff_against_base.assert_not_called()
+        mock_publish_gate.check.assert_not_called()
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        mock_label_adapter.add_label.assert_not_called()
 
     def test_test_skip_guard_blocks_before_review_exchange_or_push(
         self,

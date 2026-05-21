@@ -511,6 +511,116 @@ def test_timeline_writer_preserves_sequenced_event_id_and_schema(
     assert record.data["logical_phase"] == "coding"
 
 
+def test_timeline_writer_review_round_after_validation_retry_keeps_cycle(
+    tmp_path: Path,
+) -> None:
+    store = RecordingTimelineStore()
+    writer = DefaultTimelineWriter(store)
+    issue_number = 364
+    code_run_dir = tmp_path / "sessions" / "r364__issue-364"
+    review_run_dir = tmp_path / "sessions" / "r364-review__issue-364"
+    code_run_dir.mkdir(parents=True)
+    review_run_dir.mkdir(parents=True)
+    (code_run_dir / "ui-session.log").write_text("", encoding="utf-8")
+    (review_run_dir / "ui-session.log").write_text("", encoding="utf-8")
+
+    def record(event_name: EventName, data: dict[str, object]) -> None:
+        writer.record(
+            TraceEvent(
+                event_name,
+                {
+                    "issue_number": issue_number,
+                    **data,
+                },
+            )
+        )
+
+    record(
+        EventName.REVIEW_APPROVED,
+        {
+            "run_dir": str(review_run_dir),
+            "task": "review",
+            "rounds": 1,
+        },
+    )
+    record(
+        EventName.SESSION_VALIDATION_RETRY_NEEDED,
+        {"run_dir": str(code_run_dir)},
+    )
+    record(
+        EventName.SESSION_STARTED,
+        {
+            "run_dir": str(code_run_dir),
+            "task": "code",
+        },
+    )
+    record(
+        EventName.REVIEW_STARTED,
+        {
+            "run_dir": str(review_run_dir),
+            "task": "review",
+        },
+    )
+    record(
+        EventName.REVIEW_EXCHANGE_STARTED,
+        {
+            "run_dir": str(review_run_dir),
+            "task": "review",
+        },
+    )
+    record(
+        EventName.REVIEW_EXCHANGE_ROUND_STARTED,
+        {
+            "run_dir": str(review_run_dir),
+            "task": "review",
+            "round_index": 1,
+        },
+    )
+    record(
+        EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
+        {
+            "run_dir": str(review_run_dir),
+            "task": "review",
+            "round_index": 1,
+            "reviewer_response_type": "ok",
+        },
+    )
+    record(
+        EventName.REVIEW_EXCHANGE_COMPLETED,
+        {
+            "run_dir": str(review_run_dir),
+            "task": "review",
+            "rounds": 1,
+            "status": "ok",
+        },
+    )
+    record(
+        EventName.REVIEW_APPROVED,
+        {
+            "run_dir": str(review_run_dir),
+            "task": "review",
+            "rounds": 1,
+        },
+    )
+
+    retry_review_records = [
+        record
+        for record in store.records
+        if record.source_event
+        in {
+            EventName.REVIEW_STARTED.value,
+            EventName.REVIEW_EXCHANGE_STARTED.value,
+            EventName.REVIEW_EXCHANGE_ROUND_STARTED.value,
+            EventName.REVIEW_EXCHANGE_ROUND_COMPLETED.value,
+            EventName.REVIEW_EXCHANGE_COMPLETED.value,
+            EventName.REVIEW_APPROVED.value,
+        }
+    ][1:]
+    assert retry_review_records
+    assert {record.data["logical_cycle"] for record in retry_review_records} == {2}
+    assert retry_review_records[-1].event == "review.approved"
+
+
 def test_timeline_writer_overwrites_stale_schema_versions(tmp_path: Path) -> None:
     store = RecordingTimelineStore()
     writer = DefaultTimelineWriter(store)

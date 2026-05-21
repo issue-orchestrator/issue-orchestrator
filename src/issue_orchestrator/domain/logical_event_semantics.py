@@ -97,7 +97,11 @@ def enrich_logical_semantics(
     elif logical_run != (prev_run or 1):
         logical_cycle = 1
     elif round_cycle is not None:
-        logical_cycle = round_cycle
+        # Review-exchange round indices are local to the exchange. They may
+        # advance an initial review into a later cycle when no stronger cycle
+        # signal exists, but they must never pull a validation-retry/restart
+        # cycle backward.
+        logical_cycle = max(round_cycle, prev_cycle or round_cycle)
         rework_driven = logical_cycle > 1
     elif event_name in _CYCLE_BOUNDARY_EVENTS:
         logical_cycle = (prev_cycle or 1) + 1
@@ -160,7 +164,7 @@ def _cycle_from_review_round(event_name: str, event_data: dict[str, Any]) -> int
         # `rounds` is a cumulative exchange summary ("approved after 2 rounds"),
         # not a stable cycle identifier. Using it here incorrectly back-assigns
         # later review outcomes into earlier cycles after retries/restarts.
-        return round_index
+        return None
     return None
 
 

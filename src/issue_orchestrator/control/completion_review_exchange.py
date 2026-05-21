@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..domain.models import CompletionRecord, RequestedAction
+from ..domain.completion_finalization import ReviewExchangeRunningQuery
 from ..domain.review_exchange_resume import (
     ResumeDecision,
     ResumeFacts,
@@ -46,6 +47,7 @@ class ResumeResolution:
     @classmethod
     def no_cache(cls) -> "ResumeResolution":
         return cls(decision=ResumeDecision.NO_CACHE)
+
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -331,6 +333,19 @@ class CompletionReviewExchange:
         """
         job_id = _review_exchange_job_id(issue_number, session_name)
         return self._job_supervisor.is_running(job_id)
+
+    def is_review_exchange_running_for_completion(
+        self,
+        query: ReviewExchangeRunningQuery,
+    ) -> bool:
+        """Answer the typed running-job query used by finalization policy."""
+        _require_review_exchange_running_query(query)
+        if not query.requires_review_exchange:
+            return False
+        return self.is_review_exchange_running(
+            issue_number=query.issue_number,
+            session_name=query.session_name,
+        )
 
     def run_review_exchange_if_needed(
         self,
@@ -1451,3 +1466,8 @@ class CompletionReviewExchange:
             event_context=event_context,
             on_started=on_started,
         )
+
+
+def _require_review_exchange_running_query(query: object) -> None:
+    if not isinstance(query, ReviewExchangeRunningQuery):
+        raise TypeError("query must be a ReviewExchangeRunningQuery")
