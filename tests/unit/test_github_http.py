@@ -368,16 +368,17 @@ def test_list_issues_paginates_when_limit_exceeds_per_page() -> None:
         pages_seen.append(page)
         assert request.url.params.get("per_page") == "100"
         if page == 1:
-            # Full page: 100 issues numbered 200..101
-            return httpx.Response(
-                200,
-                json=[{"number": n, "title": f"Issue {n}"} for n in range(200, 100, -1)],
-            )
+            # Full page: 99 issues + 1 PR (PR must be filtered out, but still
+            # counts toward per_page so the loop must continue to page 2).
+            payload = [{"number": n, "title": f"Issue {n}"} for n in range(200, 102, -1)]
+            payload.append({"number": 101, "title": "PR not issue", "pull_request": {"url": "x"}})
+            payload.append({"number": 100, "title": "Issue 100"})
+            return httpx.Response(200, json=payload)
         if page == 2:
             # Short page: signals end of stream
             return httpx.Response(
                 200,
-                json=[{"number": n, "title": f"Issue {n}"} for n in range(100, 50, -1)],
+                json=[{"number": n, "title": f"Issue {n}"} for n in range(99, 49, -1)],
             )
         pytest.fail(f"Unexpected request for page {page}")
         return httpx.Response(500)
@@ -386,9 +387,11 @@ def test_list_issues_paginates_when_limit_exceeds_per_page() -> None:
     issues = client.list_issues(state="all", limit=250)
 
     assert pages_seen == [1, 2]
-    assert len(issues) == 150
+    # 99 issues from page 1 (1 PR filtered) + 50 from page 2 = 149
+    assert len(issues) == 149
+    assert all("pull_request" not in i for i in issues)
     assert issues[0]["number"] == 200
-    assert issues[-1]["number"] == 51
+    assert issues[-1]["number"] == 50
 
 
 def test_list_issues_stops_paginating_on_short_page() -> None:
