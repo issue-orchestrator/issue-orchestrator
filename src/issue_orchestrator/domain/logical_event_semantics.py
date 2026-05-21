@@ -98,8 +98,9 @@ def enrich_logical_semantics(
         logical_cycle = 1
     elif round_cycle is not None:
         # Review-exchange round indices are local to the exchange. They may
-        # advance an initial review into a later cycle, but they must never
-        # pull a validation-retry/restart cycle backward.
+        # advance an initial review into a later cycle when no stronger cycle
+        # signal exists, but they must never pull a validation-retry/restart
+        # cycle backward.
         logical_cycle = max(round_cycle, prev_cycle or round_cycle)
         rework_driven = logical_cycle > 1
     elif event_name in _CYCLE_BOUNDARY_EVENTS:

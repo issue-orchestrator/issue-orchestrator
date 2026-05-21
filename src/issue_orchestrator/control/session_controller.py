@@ -408,16 +408,27 @@ class SessionController:
                 self._validation_cmd and self._command_runner
             ),
         )
-        if finalization_plan.decision in {
-            CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE,
-            CompletionFinalizationDecision.TERMINAL_REVIEW_EXCHANGE_TIMEOUT,
-        }:
+        if (
+            finalization_plan.decision
+            is CompletionFinalizationDecision.TERMINAL_REVIEW_EXCHANGE_TIMEOUT
+        ):
+            return self._terminal_review_exchange_timeout_decision(
+                result=self.completion_processor.deferred_review_exchange_result(),
+                session_name=context.session_name,
+                issue_number=context.issue_number,
+                timeout_reason=finalization_plan.reason,
+            )
+
+        if (
+            finalization_plan.decision
+            is CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE
+        ):
             return self._deferred_review_exchange_decision(
                 result=self.completion_processor.deferred_review_exchange_result(),
                 run_dir=context.run_dir,
                 session_name=context.session_name,
                 issue_number=context.issue_number,
-                recovered=context.recovered,
+                recovered=False,
             )
 
         if (
@@ -437,7 +448,11 @@ class SessionController:
                 repo_root=context.repo_root,
                 recovered=context.recovered,
             )
-        return None
+        if finalization_plan.decision is CompletionFinalizationDecision.PROCESS:
+            return None
+        raise AssertionError(
+            f"Unhandled completion finalization decision: {finalization_plan.decision}"
+        )
 
     def _run_dirty_preflight_before_validation(
         self,
@@ -534,32 +549,11 @@ class SessionController:
             return None
 
         if recovered:
-            timeout_reason = "Session timed out while review exchange was still running"
-            errors = list(result.errors or [])
-            errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {timeout_reason}")
-            cancel_error = self._cancel_deferred_review_exchange(
-                issue_number=issue_number,
+            return self._terminal_review_exchange_timeout_decision(
+                result=result,
                 session_name=session_name,
-                reason="session-timeout",
-            )
-            if cancel_error:
-                errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {cancel_error}")
-            # Timeout is an issue-lifetime boundary: once the visible coding
-            # run is terminal, the hidden review-exchange pair/job must be
-            # terminal too. Diagnostics already written to the run directory
-            # are preserved; live subprocesses are not.
-            halted_result = replace(
-                result,
-                errors=errors,
-                review_exchange_deferred=False,
-                review_exchange_halted=True,
-            )
-            return SessionDecision(
-                status=SessionStatus.TIMED_OUT,
-                processing_result=halted_result,
-                completion_processed=True,
-                recovered_from_timeout=True,
-                reason=timeout_reason,
+                issue_number=issue_number,
+                timeout_reason="Session timed out while review exchange was still running",
             )
 
         # Exchange is running in a background thread. Keep the session active
@@ -579,6 +573,41 @@ class SessionController:
             completion_processed=False,
             recovered_from_timeout=recovered,
             reason="Review exchange running in background; awaiting completion",
+        )
+
+    def _terminal_review_exchange_timeout_decision(
+        self,
+        *,
+        result: "ProcessingResult",
+        session_name: str,
+        issue_number: int,
+        timeout_reason: str,
+    ) -> SessionDecision:
+        errors = list(result.errors or [])
+        errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {timeout_reason}")
+        cancel_error = self._cancel_deferred_review_exchange(
+            issue_number=issue_number,
+            session_name=session_name,
+            reason="session-timeout",
+        )
+        if cancel_error:
+            errors.append(f"{REVIEW_EXCHANGE_ERROR_PREFIX} {cancel_error}")
+        # Timeout is an issue-lifetime boundary: once the visible coding run
+        # is terminal, the hidden review-exchange pair/job must be terminal
+        # too. Diagnostics already written to the run directory are preserved;
+        # live subprocesses are not.
+        halted_result = replace(
+            result,
+            errors=errors,
+            review_exchange_deferred=False,
+            review_exchange_halted=True,
+        )
+        return SessionDecision(
+            status=SessionStatus.TIMED_OUT,
+            processing_result=halted_result,
+            completion_processed=True,
+            recovered_from_timeout=True,
+            reason=timeout_reason,
         )
 
     def _cancel_deferred_review_exchange(
@@ -1715,9 +1744,9 @@ class SessionController:
         validation_error_file: Optional[Path],
         retry_count: int,
         max_retries: int,
+        failure_kind: ValidationFailureKind,
         template_path: Optional[str] = None,
         repo_root: Optional[Path] = None,
-        failure_kind: ValidationFailureKind = ValidationFailureKind.VALIDATION_COMMAND,
         dirty_files: tuple[str, ...] = (),
     ) -> str:
         """Render the retry prompt content.

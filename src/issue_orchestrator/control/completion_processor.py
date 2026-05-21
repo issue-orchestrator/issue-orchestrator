@@ -30,7 +30,6 @@ from typing import Any, Callable, TYPE_CHECKING
 from ..domain.artifact_contracts import ValidationFailed
 from ..domain.completion_finalization import (
     CompletionFinalizationCommand,
-    CompletionFinalizationDecision,
     CompletionFinalizationPlan,
     CompletionRuntimeState,
     ReviewExchangeRunningQuery,
@@ -980,24 +979,20 @@ class CompletionProcessor:
             return error_result
         assert record is not None  # Guaranteed if error_result is None
 
-        finalization_plan = self.completion_finalization_plan(
+        running_query = ReviewExchangeRunningQuery(
             issue_number=issue_number,
             session_name=session_name,
-            outcome=record.outcome,
             requested_actions=tuple(record.requested_actions),
-            runtime_state=CompletionRuntimeState.TERMINATED,
-            validation_preflight_configured=False,
         )
         if (
-            finalization_plan.decision
-            is CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE
+            record.outcome is CompletionOutcome.COMPLETED
+            and self.is_review_exchange_running_for_completion(running_query)
         ):
             logger.info(
                 "Completion deferred before pre-action policies: issue=%d "
-                "session=%s reason=%s",
+                "session=%s reason=review exchange is already running",
                 issue_number,
                 session_name,
-                finalization_plan.reason,
             )
             return ProcessingResult.for_review_exchange_deferred()
 

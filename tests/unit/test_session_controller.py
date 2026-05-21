@@ -481,6 +481,55 @@ class TestSessionControllerTerminated:
         assert decision.processing_result.review_exchange_halted is True
         assert cancellations == [(123, "session-timeout")]
 
+    def test_timed_out_running_review_exchange_halts_before_processing(self):
+        """The terminal finalization decision is handled explicitly."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        processor.review_exchange_running = True
+        cancellations: list[tuple[int, str]] = []
+
+        class _Cancellation:
+            cancelled_job_ids = ("review-exchange:123:issue-123",)
+
+        def cancel(issue_number: int, reason: str) -> _Cancellation:
+            cancellations.append((issue_number, reason))
+            return _Cancellation()
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+            review_exchange_canceller=cancel,
+        )
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.timed_out(
+                runtime_minutes=121.0,
+                timeout_minutes=120,
+                session_exists=True,
+            ),
+            worktree_path=Path("/tmp/test"),
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.TIMED_OUT
+        assert decision.completion_processed is True
+        assert decision.processing_result is not None
+        assert decision.processing_result.review_exchange_deferred is False
+        assert decision.processing_result.review_exchange_halted is True
+        assert decision.processing_result.errors == [
+            "review_exchange: visible session timed out while review exchange is running"
+        ]
+        assert processor.process_calls == []
+        assert cancellations == [(123, "session-timeout")]
+
     def test_terminated_with_blocked_record_is_blocked(self):
         """Session that exits with blocked outcome = BLOCKED."""
         processor = MockCompletionProcessor()
