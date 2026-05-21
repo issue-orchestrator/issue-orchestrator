@@ -353,6 +353,92 @@ def test_list_issues_filters_pull_requests() -> None:
     assert issues[0]["number"] == 1
 
 
+def test_list_issues_paginates_when_limit_exceeds_per_page() -> None:
+    """list_issues must follow pagination until limit is filled.
+
+    Regression for #6354: prior to the fix, list_issues issued a single
+    GET with per_page=min(100, limit) and never advanced page. The
+    resolver's call with limit=500 only ever saw the first 100 issues,
+    making older closed milestone deps invisible.
+    """
+    pages_seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        pages_seen.append(page)
+        assert request.url.params.get("per_page") == "100"
+        if page == 1:
+            # Full page: 100 issues numbered 200..101
+            return httpx.Response(
+                200,
+                json=[{"number": n, "title": f"Issue {n}"} for n in range(200, 100, -1)],
+            )
+        if page == 2:
+            # Short page: signals end of stream
+            return httpx.Response(
+                200,
+                json=[{"number": n, "title": f"Issue {n}"} for n in range(100, 50, -1)],
+            )
+        pytest.fail(f"Unexpected request for page {page}")
+        return httpx.Response(500)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    issues = client.list_issues(state="all", limit=250)
+
+    assert pages_seen == [1, 2]
+    assert len(issues) == 150
+    assert issues[0]["number"] == 200
+    assert issues[-1]["number"] == 51
+
+
+def test_list_issues_stops_paginating_on_short_page() -> None:
+    """A page shorter than per_page signals end-of-stream; do not request more."""
+    pages_seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        pages_seen.append(page)
+        if page == 1:
+            return httpx.Response(
+                200,
+                json=[{"number": n, "title": f"Issue {n}"} for n in range(100, 0, -1)],
+            )
+        if page == 2:
+            return httpx.Response(
+                200,
+                json=[{"number": 0, "title": "Last"}],
+            )
+        pytest.fail(f"Unexpected request for page {page}")
+        return httpx.Response(500)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    issues = client.list_issues(state="all", limit=500)
+
+    assert pages_seen == [1, 2]
+    assert len(issues) == 101
+
+
+def test_list_issues_respects_limit_mid_page() -> None:
+    """When the per-page payload would overshoot, truncate to limit."""
+    pages_seen: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        pages_seen.append(page)
+        # Server happens to return 100 items even though we want 5.
+        return httpx.Response(
+            200,
+            json=[{"number": n, "title": f"Issue {n}"} for n in range(100, 0, -1)],
+        )
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    issues = client.list_issues(state="all", limit=5)
+
+    assert pages_seen == [1]
+    assert len(issues) == 5
+    assert [i["number"] for i in issues] == [100, 99, 98, 97, 96]
+
+
 def test_list_issues_since_returns_oldest_watermark_hint() -> None:
     payload = [
         {"number": 10, "title": "Newest", "updated_at": "2026-01-02T10:00:00Z"},

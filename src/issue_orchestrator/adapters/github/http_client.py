@@ -392,6 +392,11 @@ class GitHubHttpClient:
     ) -> list[dict[str, Any]]:
         """List issues matching the given criteria.
 
+        Paginates through GitHub's /issues endpoint until either `limit` issues
+        have been collected (excluding pull requests) or a short page signals
+        end-of-stream. Each page is a distinct URL (page=N), so the ETag cache
+        remains correct per page.
+
         Args:
             labels: Filter by issues that have all of these labels.
             state: Filter by issue state. Can be "open", "closed", or "all".
@@ -400,27 +405,38 @@ class GitHubHttpClient:
             use_cache: If True (default), use ETag cache. If False, bypass cache
                 and force a fresh request (used when required IDs are missing).
         """
-        params: dict[str, Any] = {
-            "state": state,
-            "per_page": min(100, max(1, limit)),
-        }
+        per_page = min(100, max(1, limit))
+        base_params: dict[str, Any] = {"state": state, "per_page": per_page}
         if labels:
-            params["labels"] = ",".join(labels)
+            base_params["labels"] = ",".join(labels)
         if milestone:
             milestone_number = self._get_milestone_number(milestone)
             if milestone_number is not None:
-                params["milestone"] = milestone_number
-        payload = self._request_json(
-            "GET",
-            f"/repos/{self._config.repo}/issues",
-            params=params,
-            caller="list_issues",
-            use_cache=use_cache,
-        )
-        if not isinstance(payload, list):
-            return []
-        issues = [item for item in payload if "pull_request" not in item]
-        return issues[:limit]
+                base_params["milestone"] = milestone_number
+
+        collected: list[dict[str, Any]] = []
+        page = 1
+        while len(collected) < limit:
+            params = dict(base_params, page=page)
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/issues",
+                params=params,
+                caller="list_issues",
+                use_cache=use_cache,
+            )
+            if not isinstance(payload, list) or not payload:
+                break
+            for item in payload:
+                if isinstance(item, dict) and "pull_request" not in item:
+                    collected.append(item)
+                    if len(collected) >= limit:
+                        break
+            if len(payload) < per_page:
+                break
+            page += 1
+
+        return collected[:limit]
 
     def list_issues_since(
         self,
