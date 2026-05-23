@@ -227,6 +227,57 @@ class TestExternalIdResolution:
         assert dep.state == DependencyState.MISSING
         assert "Could not resolve" in dep.error
 
+    def test_resolver_query_failure_returns_unknown_not_missing(
+        self, evaluator_with_resolver, resolver
+    ):
+        """Infrastructure failure from resolver.resolve() (e.g. search API
+        rate-limited or 5xx) must classify as UNKNOWN, not MISSING.
+
+        Regression for PR #6356 review finding B2: collapsing query failures
+        into MISSING re-creates the dependency_blocked failure mode the
+        rewrite was meant to fix — a transient API hiccup would permanently
+        stamp the dep as not-existing.
+        """
+        from issue_orchestrator.ports.repository_host import RepositoryHostError
+
+        def _raise(_key):
+            raise RepositoryHostError("rate limited")
+
+        resolver.resolve = _raise  # type: ignore[assignment]
+
+        report = evaluator_with_resolver.evaluate(
+            issue_number=1,
+            issue_body="Depends-on: M3-999",
+            source_milestone="M1",
+        )
+
+        assert not report.runnable
+        assert len(report.missing) == 0  # NOT classified as missing
+        assert len(report.unknown) == 1
+        dep = report.unknown[0]
+        assert dep.external_id == "M3-999"
+        assert dep.state == DependencyState.UNKNOWN
+        assert "Resolver query failed" in dep.error
+
+    def test_resolver_programming_error_propagates(
+        self, evaluator_with_resolver, resolver
+    ):
+        """Non-RepositoryHostError exceptions (programming bugs) must
+        propagate rather than getting laundered into UNKNOWN/MISSING.
+        Fail-fast over silent miscategorization.
+        """
+        def _raise(_key):
+            raise TypeError("bad call")
+
+        resolver.resolve = _raise  # type: ignore[assignment]
+
+        with pytest.raises(TypeError):
+            evaluator_with_resolver.evaluate(
+                issue_number=1,
+                issue_body="Depends-on: M3-999",
+                source_milestone="M1",
+            )
+
     def test_non_int_handle_from_resolver_returns_unknown(
         self, checker, events, resolver
     ):

@@ -23,6 +23,7 @@ from ..domain.dependencies import (
 from ..domain.issue_key import GitHubIssueKey
 from ..events import EventName
 from ..ports import EventSink,  make_trace_event, IssueResolver
+from ..ports.repository_host import RepositoryHostError
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +184,22 @@ class DependencyEvaluator:
             return self._ExternalIdResult(error=True, dependency=Dependency(issue_number=None, external_id=external_id, state=DependencyState.UNKNOWN, error="No resolver configured for external ID references"))
 
         key = GitHubIssueKey(repo=self.repo, external_id=external_id)
-        handle = self.issue_resolver.resolve(key)
+        try:
+            handle = self.issue_resolver.resolve(key)
+        except RepositoryHostError as e:
+            # Infrastructure failure (transport, 4xx/5xx from search API, etc.)
+            # is NOT the same as "issue doesn't exist." Classify as UNKNOWN so
+            # the dep stays unresolved rather than getting stamped MISSING and
+            # blocking the downstream issue indefinitely. Programming errors
+            # (TypeError, AttributeError) intentionally propagate.
+            logger.warning(
+                "External ID %s could not be queried: %s", external_id, e,
+            )
+            return self._ExternalIdResult(error=True, dependency=Dependency(
+                issue_number=None, external_id=external_id,
+                state=DependencyState.UNKNOWN,
+                error=f"Resolver query failed for {external_id}: {e}",
+            ))
 
         if handle is None:
             return self._ExternalIdResult(error=True, dependency=Dependency(issue_number=None, external_id=external_id, state=DependencyState.MISSING, error=f"Could not resolve external ID {external_id} to issue number"))

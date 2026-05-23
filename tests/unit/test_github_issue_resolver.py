@@ -27,6 +27,7 @@ from issue_orchestrator.adapters.github.issue_resolver import (
     STATS_LOG_INTERVAL,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
+from issue_orchestrator.ports.repository_host import RepositoryHostError
 
 
 REPO = "owner/repo"
@@ -246,24 +247,41 @@ def test_custom_negative_ttl_honored(tracker: FakeTracker, events: FakeEvents) -
 
 
 # ---------------------------------------------------------------------------
-# Transport errors
+# Infrastructure errors — must propagate (B2), not get swallowed into None
 # ---------------------------------------------------------------------------
 
-def test_search_error_does_not_negative_cache(
+def test_repository_host_error_propagates_and_does_not_negative_cache(
     resolver: GitHubIssueResolver, tracker: FakeTracker
 ) -> None:
-    tracker.set_search_raise(RuntimeError("boom"))
+    """RepositoryHostError must propagate so the dep evaluator can distinguish
+    "looked, found nothing" (None) from "could not query" (UNKNOWN).
+    Swallowing it would silently recreate the dependency_blocked failure
+    mode this rewrite was meant to fix.
+    """
+    tracker.set_search_raise(RepositoryHostError("rate limited"))
 
-    handle = resolver.resolve(_key("M9-006"))
+    with pytest.raises(RepositoryHostError):
+        resolver.resolve(_key("M9-006"))
 
-    assert handle is None
     assert "M9-006" not in resolver._negative_cache
-    assert resolver._stat_search_errors == 1
+    assert resolver._stat_search_calls == 1  # we did attempt
 
-    # Recover on next attempt with no spurious negative-cache hit between.
+    # Recovery on the next call still works once the underlying error clears.
     tracker.set_search_return([_issue(42, "[M9-006] Foo")])
-    handle2 = resolver.resolve(_key("M9-006"))
-    assert handle2 == 42
+    assert resolver.resolve(_key("M9-006")) == 42
+
+
+def test_programming_errors_propagate(
+    resolver: GitHubIssueResolver, tracker: FakeTracker
+) -> None:
+    """A bug like a port-method TypeError must crash (fail-fast), not be
+    laundered into a misleading 'not found' result.
+    """
+    tracker.set_search_raise(TypeError("bad call"))
+
+    with pytest.raises(TypeError):
+        resolver.resolve(_key("M9-006"))
+    assert "M9-006" not in resolver._negative_cache
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +336,79 @@ def test_resolver_does_not_auto_build_index_on_miss(
     # Pre-#6354 behavior re-scanned via list_issues on miss; new design must
     # go straight to search and never touch list_issues.
     assert tracker.list_calls == 0
+
+
+def test_build_index_replaces_stale_entries(
+    resolver: GitHubIssueResolver, tracker: FakeTracker
+) -> None:
+    """Per the IssueResolver port contract, build_index() *rebuilds* the
+    cache — entries that were valid in a prior build but no longer appear
+    in the current scan must NOT survive. Otherwise resolve() returns
+    stale numbers after renames or removals (B1 finding on PR #6356).
+    """
+    # First build: M9-006 → 42, M9-007 → 43
+    tracker.set_list_return(
+        [_issue(42, "[M9-006] Foo"), _issue(43, "[M9-007] Bar")]
+    )
+    resolver.build_index()
+    assert resolver._cache == {"M9-006": 42, "M9-007": 43}
+
+    # Second build: M9-006 has been renamed away (now bare); M9-007 still
+    # present but its number changed; M9-008 is new.
+    tracker.set_list_return(
+        [_issue(43, "Renamed-away — no prefix"),
+         _issue(50, "[M9-007] Same title new number"),
+         _issue(60, "[M9-008] New entry")]
+    )
+    resolver.build_index()
+
+    # Stale M9-006 must be gone (not lingering at 42).
+    assert "M9-006" not in resolver._cache
+    # M9-007 must reflect the new number, not the old 43.
+    assert resolver._cache["M9-007"] == 50
+    # M9-008 was added.
+    assert resolver._cache["M9-008"] == 60
+
+
+def test_build_index_clears_stale_duplicate_state(
+    resolver: GitHubIssueResolver, tracker: FakeTracker, events: FakeEvents
+) -> None:
+    """Resolved-duplicate keys must not keep emitting duplicate events on
+    subsequent builds when the duplicate has been cleaned up.
+    """
+    # First build: M9-006 appears twice → duplicate.
+    tracker.set_list_return(
+        [_issue(42, "[M9-006] First"), _issue(43, "[M9-006] Dup")]
+    )
+    resolver.build_index()
+    assert resolver._duplicates.get("M9-006") == [42, 43]
+    events.published.clear()
+
+    # Second build: duplicate has been resolved (only one M9-006 now).
+    tracker.set_list_return([_issue(42, "[M9-006] First")])
+    resolver.build_index()
+
+    assert resolver._duplicates == {}
+    # No new duplicate event should fire — the duplicate no longer exists.
+    assert events.published == []
+
+
+def test_build_index_only_clears_negatives_for_found_keys(
+    resolver: GitHubIssueResolver, tracker: FakeTracker
+) -> None:
+    """Negative-cache entries for keys the scan resolved are dropped; entries
+    for keys the scan did not encounter must remain (otherwise we'd lose
+    quota-saving memoization on every seed call).
+    """
+    now = datetime.now(timezone.utc)
+    resolver._negative_cache["M9-006"] = now  # scan will find this
+    resolver._negative_cache["M9-still-missing"] = now  # scan will not
+
+    tracker.set_list_return([_issue(42, "[M9-006] Foo")])
+    resolver.build_index()
+
+    assert "M9-006" not in resolver._negative_cache
+    assert "M9-still-missing" in resolver._negative_cache
 
 
 # ---------------------------------------------------------------------------
