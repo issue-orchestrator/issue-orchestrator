@@ -82,6 +82,11 @@ class PersistentSession:
     log_writer: MirroredTerminalRecordingWriter | None = None
     closed: bool = False
 
+    @property
+    def is_live(self) -> bool:
+        """Whether this session can still accept another round prompt."""
+        return not self.closed and self.proc.poll() is None
+
 
 def open_persistent_session(
     *,
@@ -668,7 +673,17 @@ def _drain_pty_output(session: PersistentSession) -> int:
     """
     drained = 0
     while True:
-        ready, _, _ = select.select([session.master_fd], [], [], 0)
+        if session.closed:
+            return drained
+        try:
+            ready, _, _ = select.select([session.master_fd], [], [], 0)
+        except OSError:
+            logger.debug(
+                "[send_round] PTY drain skipped for closed fd=%d pid=%d",
+                session.master_fd,
+                session.proc.pid,
+            )
+            return drained
         if not ready:
             return drained
         try:
@@ -693,7 +708,17 @@ def _drain_pty_output_until_quiet(
     deadline = now() + quiet_seconds
     hard_cap = now() + max(quiet_seconds, 1.0)
     while now() < deadline and now() < hard_cap:
-        ready, _, _ = select.select([session.master_fd], [], [], 0)
+        if session.closed:
+            return
+        try:
+            ready, _, _ = select.select([session.master_fd], [], [], 0)
+        except OSError:
+            logger.debug(
+                "[send_round] quiet-drain skipped for closed fd=%d pid=%d",
+                session.master_fd,
+                session.proc.pid,
+            )
+            return
         if not ready:
             sleep(min(quiet_seconds / 4, 0.05))
             continue

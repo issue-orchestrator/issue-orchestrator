@@ -81,6 +81,21 @@ The decision JSON must include `abstraction_review`. Use `status: "no_issues"` w
 
 Nits are classified in the same reviewer pass as blockers. Do not add a separate nit pass. If the active nit policy is `address`, an approved decision with only nits enters the normal coder rework loop before PR creation. `surface` shows nits without blocking; `ignore` keeps them in artifacts only.
 
+## Persistent Review Exchange Lifecycle
+
+The review exchange must treat the artifact contract as authoritative for a
+completed turn. If a role writes a valid response/report/decision for its
+current turn and then the process exits, that completed turn is still
+successful. When a later turn for the same role is required, respawn that role
+with the same worktree and pair-scoped artifact paths before sending the next
+prompt. Classify `*_no_completion` only when the current turn exits or times
+out before valid artifacts are available.
+
+This matters for approved-with-nits flows: with `review.nits.default_policy:
+address`, the reviewer may correctly approve with nits, the orchestrator routes
+the nits back to the coder, and a fresh reviewer process may be needed for the
+next review turn if the provider is one-shot.
+
 ## Review Pipeline
 
 ```

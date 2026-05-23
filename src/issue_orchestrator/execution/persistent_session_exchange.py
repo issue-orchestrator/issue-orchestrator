@@ -87,7 +87,7 @@ from ..domain.review_exchange_turn import (
 )
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
-from ..infra.logging_config import get_repo_log_path
+from ..infra.logging_config import get_repo_log_path, log_context
 from ..infra.repo_identity import get_repo_head_sha
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..ports import (
@@ -695,8 +695,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         # the ``coder_response`` comment above for the full rationale.
         reviewer_response = reviewer_wt_path / ".issue-orchestrator" / "review-response.json"
         reviewer_report = reviewer_wt_path / ".issue-orchestrator" / REVIEW_REPORT_FILENAME
-        coder = _open_role_session(
-            role="coder",
+        coder_spec = _RoleSessionSpec(
+            role=Role.CODER,
             agent=coder_agent,
             worktree=coder_worktree_path,
             run_dir=run_dir,
@@ -711,6 +711,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             issue_title=issue_title,
             session_name=session_name,
         )
+        coder = _open_role_session_from_spec(coder_spec)
         # Reviewer-spawn-after-coder-success is the canonical
         # partial-construction case: if the reviewer's PTY/process
         # bring-up raises, the coder is already running and would
@@ -723,8 +724,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         # still pass pair-scoped completion / validation paths so the
         # env layout is consistent across roles.)
         try:
-            reviewer = _open_role_session(
-                role="reviewer",
+            reviewer_spec = _RoleSessionSpec(
+                role=Role.REVIEWER,
                 agent=reviewer_agent,
                 worktree=reviewer_wt_path,
                 run_dir=run_dir,
@@ -739,6 +740,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 issue_title=issue_title,
                 session_name=session_name,
             )
+            reviewer = _open_role_session_from_spec(reviewer_spec)
         except BaseException:
             close_persistent_session(coder)
             raise
@@ -813,6 +815,46 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         session_slice=reviewer_session_slice,
         slice_base=reviewer_slice_base,
     )
+    coder_session_owner = _RoleSessionOwner(
+        pair=pair,
+        spec=_RoleSessionSpec(
+            role=Role.CODER,
+            agent=coder_agent,
+            worktree=coder_worktree_path,
+            run_dir=run_dir,
+            recording_path=pair.coder_recording_path,
+            response_file=pair.coder_response_path,
+            completion_path=pair.coder_completion_path,
+            validation_output_dir=pair_dir,
+            review_report_file=None,
+            agent_label=coder_label,
+            web_port=web_port,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+        ),
+        slice_path=coder_session_slice,
+    )
+    reviewer_session_owner = _RoleSessionOwner(
+        pair=pair,
+        spec=_RoleSessionSpec(
+            role=Role.REVIEWER,
+            agent=reviewer_agent,
+            worktree=pair.reviewer_worktree_path,
+            run_dir=run_dir,
+            recording_path=pair.reviewer_recording_path,
+            response_file=pair.reviewer_response_path,
+            completion_path=reviewer_pair_dir / "completion-reviewer.json",
+            validation_output_dir=pair_dir,
+            review_report_file=pair.reviewer_report_path,
+            agent_label=reviewer_label,
+            web_port=web_port,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+        ),
+        slice_path=reviewer_session_slice,
+    )
 
     # Live mirror registration. From this point on, every event the
     # agent's PTY drains into the canonical pair recording is *also*
@@ -834,8 +876,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     # never attached, so a partial attach (coder succeeded, reviewer
     # raised) cleans up safely.
     try:
-        _attach_slice_mirror(pair.coder_session, coder_session_slice)
-        _attach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
+        coder_session_owner.attach_slice_mirror()
+        reviewer_session_owner.attach_slice_mirror()
         outcome = _drive_rounds(
             session_output=session_output,
             run_dir=run_dir,
@@ -844,8 +886,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             issue_title=issue_title,
             session_name=session_name,
             exchange_run_id=exchange_run_id,
-            coder_session=pair.coder_session,
-            reviewer_session=pair.reviewer_session,
+            coder_session_owner=coder_session_owner,
+            reviewer_session_owner=reviewer_session_owner,
             # Round-loop reads/writes pair-scoped files (stable across
             # exchanges) — never the run_dir-derived defaults that B1
             # used. On cache hit, ``pair.coder_response_path`` points
@@ -890,8 +932,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         )
         raise
     finally:
-        _detach_slice_mirror(pair.coder_session, coder_session_slice)
-        _detach_slice_mirror(pair.reviewer_session, reviewer_session_slice)
+        coder_session_owner.detach_slice_mirror()
+        reviewer_session_owner.detach_slice_mirror()
         _clear_role_prompt_inbox(pair.coder_response_path)
         _clear_role_prompt_inbox(pair.reviewer_response_path)
 
@@ -1003,9 +1045,153 @@ class _PairValidationMirror:
             self.run_record_path.unlink(missing_ok=True)
 
 
+@dataclass(frozen=True)
+class _RoleSessionSpec:
+    """Typed launch command for one review-exchange role process."""
+
+    role: Role
+    agent: AgentConfig
+    worktree: Path
+    run_dir: Path
+    recording_path: Path
+    response_file: Path
+    completion_path: Path
+    validation_output_dir: Path
+    review_report_file: Path | None
+    agent_label: str
+    web_port: int | None
+    issue_number: int
+    issue_title: str
+    session_name: str
+
+
+@dataclass
+class _RoleSessionOwner:
+    """Owns one mutable role session inside a cached persistent pair.
+
+    A role turn is complete when its required artifacts parse and validate.
+    Some providers still exit after that successful turn even when the
+    bootstrap asks them to stay alive. That process exit is not a failure of
+    the completed turn; it only matters when the exchange later needs the
+    same role again. This owner centralizes that observation and replacement
+    policy so round-loop callers do not reach through pair/session internals.
+    """
+
+    pair: PersistentExchangePair
+    spec: _RoleSessionSpec
+    slice_path: Path
+
+    def attach_slice_mirror(self) -> None:
+        _attach_slice_mirror(self._current_session(), self.slice_path)
+
+    def detach_slice_mirror(self) -> None:
+        _detach_slice_mirror(self._current_session(), self.slice_path)
+
+    def ensure_live(self) -> PersistentSession:
+        session = self._current_session()
+        if session.is_live:
+            return session
+
+        exit_code = session.proc.poll()
+        logger.warning(
+            "[REVIEW_EXCHANGE] %s session is not live before next prompt; "
+            "respawning role process issue=%s session_name=%s previous_pid=%d "
+            "exit_code=%s closed=%s response_file=%s recording_path=%s worktree=%s",
+            self.spec.role.value,
+            self.spec.issue_number,
+            self.spec.session_name,
+            session.proc.pid,
+            exit_code,
+            session.closed,
+            self.spec.response_file,
+            self.spec.recording_path,
+            self.spec.worktree,
+            extra=log_context(
+                issue_key=f"issue-{self.spec.issue_number}",
+                session_id=self.spec.session_name,
+            ),
+        )
+        _detach_slice_mirror(session, self.slice_path)
+        try:
+            close_persistent_session(session)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[REVIEW_EXCHANGE] failed to close exited %s session during "
+                "respawn; continuing with a fresh process issue=%s "
+                "session_name=%s previous_pid=%d",
+                self.spec.role.value,
+                self.spec.issue_number,
+                self.spec.session_name,
+                session.proc.pid,
+                extra=log_context(
+                    issue_key=f"issue-{self.spec.issue_number}",
+                    session_id=self.spec.session_name,
+                ),
+            )
+
+        new_session = _open_role_session_from_spec(self.spec)
+        try:
+            _attach_slice_mirror(new_session, self.slice_path)
+        except BaseException:
+            close_persistent_session(new_session)
+            raise
+        self._replace_session(new_session)
+        logger.info(
+            "[REVIEW_EXCHANGE] respawned %s session issue=%s session_name=%s "
+            "previous_pid=%d new_pid=%d response_file=%s recording_path=%s",
+            self.spec.role.value,
+            self.spec.issue_number,
+            self.spec.session_name,
+            session.proc.pid,
+            new_session.proc.pid,
+            self.spec.response_file,
+            self.spec.recording_path,
+            extra=log_context(
+                issue_key=f"issue-{self.spec.issue_number}",
+                session_id=self.spec.session_name,
+            ),
+        )
+        return new_session
+
+    def _current_session(self) -> PersistentSession:
+        if self.spec.role is Role.CODER:
+            return self.pair.coder_session
+        if self.spec.role is Role.REVIEWER:
+            return self.pair.reviewer_session
+        raise RuntimeError(f"unsupported review-exchange role: {self.spec.role}")
+
+    def _replace_session(self, session: PersistentSession) -> None:
+        if self.spec.role is Role.CODER:
+            self.pair.coder_session = session
+            return
+        if self.spec.role is Role.REVIEWER:
+            self.pair.reviewer_session = session
+            return
+        raise RuntimeError(f"unsupported review-exchange role: {self.spec.role}")
+
+
 # ---------------------------------------------------------------------------
 # Session bring-up
 # ---------------------------------------------------------------------------
+
+
+def _open_role_session_from_spec(spec: _RoleSessionSpec) -> PersistentSession:
+    return _open_role_session(
+        role=spec.role.value,
+        agent=spec.agent,
+        worktree=spec.worktree,
+        run_dir=spec.run_dir,
+        recording_path=spec.recording_path,
+        response_file=spec.response_file,
+        completion_path=spec.completion_path,
+        validation_output_dir=spec.validation_output_dir,
+        review_report_file=spec.review_report_file,
+        agent_label=spec.agent_label,
+        web_port=spec.web_port,
+        issue_number=spec.issue_number,
+        issue_title=spec.issue_title,
+        session_name=spec.session_name,
+    )
 
 
 def _open_role_session(  # noqa: PLR0913
@@ -1400,6 +1586,9 @@ def _reviewer_prompt_with_artifact_contract(prompt: str, *, nit_policy: NitPolic
         f"- The active nit policy for this coder is `{nit_policy}`. "
         "Classify nits honestly; the orchestrator decides whether to route them "
         "back to the coder before PR creation.\n"
+        "- If the active policy is `address`, approved-with-nits is still an "
+        "`approved` decision in your JSON; the orchestrator will route those "
+        "nits through coder rework before PR creation.\n"
         "\n"
         "Example JSON shape:\n"
         '{"response_type":"ok","getting_closer":true,'
@@ -1465,6 +1654,7 @@ def _reviewer_response_for_addressable_nits(
 class _ReviewerDecisionResult:
     reviewer: ReviewExchangeResponse
     artifact_pair: ReviewArtifactPair
+    addressable_nit_rework: bool
 
 
 def _emit_built_event(
@@ -1504,7 +1694,8 @@ def _finalize_reviewer_decision(
         authored_report_path=reviewer_report_path,
         nit_policy=nit_policy,
     )
-    if review_requires_nit_rework(artifact_pair.decision):
+    addressable_nit_rework = review_requires_nit_rework(artifact_pair.decision)
+    if addressable_nit_rework:
         reviewer = _reviewer_response_for_addressable_nits(
             reviewer,
             artifact_pair.decision,
@@ -1512,6 +1703,29 @@ def _finalize_reviewer_decision(
     return _ReviewerDecisionResult(
         reviewer=reviewer,
         artifact_pair=artifact_pair,
+        addressable_nit_rework=addressable_nit_rework,
+    )
+
+
+def _log_addressable_nit_rework(
+    *,
+    decision_result: _ReviewerDecisionResult,
+    issue_number: int,
+    session_name: str,
+    round_index: int,
+) -> None:
+    if not decision_result.addressable_nit_rework:
+        return
+    decision = decision_result.artifact_pair.decision
+    logger.info(
+        "[REVIEW_EXCHANGE] reviewer approved with addressable nits; "
+        "routing coder through rework issue=%s session_name=%s "
+        "round_index=%d nit_policy=%s nit_ids=%s",
+        issue_number,
+        session_name,
+        round_index,
+        decision.nit_policy,
+        [item.id for item in decision.nits],
     )
 
 
@@ -1524,8 +1738,8 @@ def _drive_rounds(  # noqa: PLR0913
     issue_title: str,
     session_name: str,
     exchange_run_id: str,
-    coder_session: PersistentSession,
-    reviewer_session: PersistentSession,
+    coder_session_owner: _RoleSessionOwner,
+    reviewer_session_owner: _RoleSessionOwner,
     coder_response: Path,
     reviewer_response: Path,
     reviewer_report_path: Path,
@@ -1632,7 +1846,7 @@ def _drive_rounds(  # noqa: PLR0913
         })
         reviewer_report_path.unlink(missing_ok=True)
         reviewer = _send_role_round(
-            session=reviewer_session,
+            session=reviewer_session_owner.ensure_live(),
             role=Role.REVIEWER,
             turn_started=reviewer_started,
             response_file=reviewer_response,
@@ -1684,6 +1898,12 @@ def _drive_rounds(  # noqa: PLR0913
             )
         reviewer = decision_result.reviewer
         artifact_pair = decision_result.artifact_pair
+        _log_addressable_nit_rework(
+            decision_result=decision_result,
+            issue_number=issue_number,
+            session_name=session_name,
+            round_index=round_index,
+        )
 
         if reviewer.response_type == "ok":
             return _complete_with_reviewer_ok(
@@ -1786,7 +2006,7 @@ def _drive_rounds(  # noqa: PLR0913
         # *this* round's coding-done invocation.
         _clear_coder_completion(coder_completion_path)
         coder = _send_role_round(
-            session=coder_session,
+            session=coder_session_owner.ensure_live(),
             role=Role.CODER,
             turn_started=coder_started,
             response_file=coder_response,
@@ -1817,7 +2037,7 @@ def _drive_rounds(  # noqa: PLR0913
 
         coder, protocol_outcome = _enforce_coder_protocol(
             session_output=session_output,
-            coder_session=coder_session,
+            coder_session_owner=coder_session_owner,
             coder=coder,
             reviewer=reviewer,
             coder_provider=coder_provider,
@@ -1882,7 +2102,7 @@ def _drive_rounds(  # noqa: PLR0913
 def _enforce_coder_protocol(  # noqa: PLR0913
     *,
     session_output: SessionOutput,
-    coder_session: PersistentSession,
+    coder_session_owner: _RoleSessionOwner,
     coder: ReviewExchangeResponse,
     reviewer: ReviewExchangeResponse,
     coder_provider: AgentProvider,
@@ -1984,7 +2204,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
         # left over from the previous attempt before the retry runs.
         _clear_coder_completion(coder_completion_path)
         retry_response = _send_role_round(
-            session=coder_session,
+            session=coder_session_owner.ensure_live(),
             role=Role.CODER,
             turn_started=retry_started,
             response_file=coder_response,
@@ -2085,7 +2305,18 @@ def _send_role_round(  # noqa: PLR0913
         )
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
         logger.warning(
-            "%s round %d failed: %s", role_value, cycle_index, exc,
+            "[REVIEW_EXCHANGE] %s round failed issue=%s session_name=%s "
+            "round_index=%d attempt_index=%d pid=%d response_file=%s "
+            "recording_path=%s error=%s",
+            role_value,
+            issue_number,
+            session_name,
+            cycle_index,
+            attempt_index,
+            session.proc.pid,
+            response_file,
+            recording_path,
+            exc,
         )
         # The typed result artifact must exist on the failure path
         # too — this is the case operators most need to inspect, and
@@ -2147,6 +2378,22 @@ def _send_role_round(  # noqa: PLR0913
         result=typed_result,
     )
     response = _legacy_response_from_typed_result(typed_result)
+    exit_code = session.proc.poll()
+    logger.info(
+        "[REVIEW_EXCHANGE] %s round produced valid response issue=%s "
+        "session_name=%s round_index=%d attempt_index=%d pid=%d "
+        "response_type=%s process_alive=%s exit_code=%s response_file=%s",
+        role_value,
+        issue_number,
+        session_name,
+        cycle_index,
+        attempt_index,
+        session.proc.pid,
+        response.response_type,
+        exit_code is None,
+        exit_code,
+        response_file,
+    )
     _record_chapter(
         session_output=session_output,
         run_dir=run_dir,

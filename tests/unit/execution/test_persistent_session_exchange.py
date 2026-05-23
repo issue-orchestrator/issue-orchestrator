@@ -75,6 +75,10 @@ class _FakeSession:
         # as None — the attach/detach helpers handle absence by no-op.
         self.log_writer = log_writer
 
+    @property
+    def is_live(self) -> bool:
+        return not self.closed and self.proc.poll() is None
+
 
 def _make_agent(prompt_path: Path) -> AgentConfig:
     return AgentConfig(prompt_path=prompt_path, ai_system="claude-code", timeout_minutes=1)

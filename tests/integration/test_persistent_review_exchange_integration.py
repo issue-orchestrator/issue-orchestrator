@@ -54,7 +54,14 @@ _STUB_AGENT_SOURCE = textwrap.dedent("""
 
     response_file = Path(os.environ["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
     completion_path_rel = os.environ["ISSUE_ORCHESTRATOR_COMPLETION_PATH"]
+    review_report_file = os.environ.get("ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE")
     role = os.environ.get("ISSUE_ORCHESTRATOR_AGENT_LABEL", "")
+    spawn_log = os.environ.get("STUB_SPAWN_LOG")
+    if spawn_log:
+        spawn_log_path = Path(spawn_log)
+        spawn_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with spawn_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"role": role, "pid": os.getpid()}) + "\\n")
 
     # Reviewer outcomes are scripted per-round via env so a single stub
     # script drives ok / changes_requested / multi-round / max-rounds
@@ -63,6 +70,27 @@ _STUB_AGENT_SOURCE = textwrap.dedent("""
     reviewer_script = [
         token.strip() or "ok" for token in raw_outcomes.split(",")
     ]
+    exit_after_response_roles = {
+        token.strip()
+        for token in os.environ.get("STUB_EXIT_AFTER_RESPONSE_ROLES", "").split(",")
+        if token.strip()
+    }
+
+    def _should_exit_after_response():
+        return any(token in role for token in exit_after_response_roles)
+
+    def _next_reviewer_outcome_index(local_round_index):
+        counter_file = os.environ.get("STUB_REVIEWER_OUTCOME_COUNTER_FILE")
+        if not counter_file:
+            return local_round_index - 1
+        counter_path = Path(counter_file)
+        counter_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            current = int(counter_path.read_text(encoding="utf-8").strip())
+        except (FileNotFoundError, ValueError):
+            current = 0
+        counter_path.write_text(str(current + 1), encoding="utf-8")
+        return current
 
     fd = sys.stdin.fileno()
     print(f"[stub-{role}] ready", flush=True)
@@ -97,9 +125,10 @@ _STUB_AGENT_SOURCE = textwrap.dedent("""
         worktree = cwd
         completion_full = worktree / completion_path_rel
         if "reviewer" in role:
+            outcome_index = _next_reviewer_outcome_index(round_index)
             outcome = (
-                reviewer_script[round_index - 1]
-                if round_index - 1 < len(reviewer_script)
+                reviewer_script[outcome_index]
+                if outcome_index < len(reviewer_script)
                 else reviewer_script[-1]
             )
             if outcome == "changes_requested":
@@ -110,12 +139,45 @@ _STUB_AGENT_SOURCE = textwrap.dedent("""
                     ),
                     "getting_closer": True,
                 }
+            elif outcome == "ok_with_nit":
+                nit_policy = os.environ.get("STUB_NIT_POLICY", "address")
+                payload = {
+                    "response_type": "ok",
+                    "response_text": (
+                        f"LGTM with nit (stub-reviewer round {round_index})"
+                    ),
+                    "getting_closer": True,
+                    "decision": {
+                        "verdict": "approved",
+                        "risk": "low",
+                        "blocking_findings": [],
+                        "nits": [{
+                            "id": "N1",
+                            "title": "Use precise wording in the audit note",
+                        }],
+                        "tests_reviewed": ["stub validation"],
+                        "abstraction_review": {
+                            "status": "no_issues",
+                            "findings": [],
+                        },
+                        "nit_policy": nit_policy,
+                    },
+                }
             else:
                 payload = {
                     "response_type": "ok",
                     "response_text": f"LGTM (stub-reviewer round {round_index})",
                     "getting_closer": True,
                 }
+            if review_report_file and outcome == "ok_with_nit":
+                report_path = Path(review_report_file)
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_text = (
+                    "# Review Report\\n\\n"
+                    "## Findings\\n\\nNo blocking findings.\\n\\n"
+                    "## Nits\\n\\n### N1. Use precise wording in the audit note\\n"
+                )
+                report_path.write_text(report_text, encoding="utf-8")
         else:
             completion_full.parent.mkdir(parents=True, exist_ok=True)
             completion_full.write_text(
@@ -134,6 +196,9 @@ _STUB_AGENT_SOURCE = textwrap.dedent("""
         response_file.parent.mkdir(parents=True, exist_ok=True)
         response_file.write_text(json.dumps(payload), encoding="utf-8")
         print(f"[stub-{role}] wrote round {round_index}", flush=True)
+        if _should_exit_after_response():
+            print(f"[stub-{role}] exiting after response", flush=True)
+            sys.exit(0)
 """).strip()
 
 
@@ -470,6 +535,188 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
     })
     assert cycle_indices == [1, 2], \
         f"expected reviewer chapters for rounds 1 and 2, got {cycle_indices}"
+
+
+def test_one_shot_reviewer_respawns_after_addressable_nits(
+    tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
+) -> None:
+    """Regression for issue 358's review-exchange timeout.
+
+    The first reviewer process writes a valid approved decision with one nit
+    under the ``address`` policy, then exits like a one-shot provider. The
+    orchestrator must treat that first turn as successful, route the nit back
+    to the coder, and spawn a fresh reviewer for round 2 instead of failing the
+    exchange as ``reviewer_no_completion``.
+    """
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    stub_path = tmp_path / "stub_agent.py"
+    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    spawn_log = tmp_path / "stub-spawns.jsonl"
+    reviewer_outcome_counter = tmp_path / "reviewer-outcome-counter.txt"
+    monkeypatch.setenv("STUB_SPAWN_LOG", str(spawn_log))
+    monkeypatch.setenv("STUB_REVIEWER_OUTCOMES", "ok_with_nit,ok")
+    monkeypatch.setenv("STUB_REVIEWER_OUTCOME_COUNTER_FILE", str(reviewer_outcome_counter))
+    monkeypatch.setenv("STUB_EXIT_AFTER_RESPONSE_ROLES", "reviewer")
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="claude-code",
+        timeout_minutes=1,
+        command=f"{sys.executable} -u {stub_path}",
+    )
+    config = _make_config(tmp_path, agent)
+    config.review_exchange_max_rounds = 3
+    config.review_nits_default_policy = "address"
+
+    captured_events: list[TraceEvent] = []
+
+    class _Sink:
+        def publish(self, event):
+            captured_events.append(event)
+
+    pair_registry = pair_registry_with_cleanup
+    session_output = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=session_output,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_make_review_exchange_runner(
+            session_output,
+            pair_registry=pair_registry,
+        ),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    outcome = cre.run_review_exchange_loop(
+        worktree=coder_wt,
+        issue_number=358,
+        issue_title="One-shot reviewer respawn",
+        session_name="issue-358",
+        agent_label="agent:backend",
+        on_started=lambda _run_dir: None,
+        events=_Sink(),
+        event_context=EventContext(),
+    )
+
+    assert outcome.status == "ok", f"unexpected outcome: {outcome}"
+    assert outcome.rounds == 2
+    assert outcome.reason == "reviewer_ok"
+
+    spawn_records = [
+        json.loads(line)
+        for line in spawn_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    reviewer_spawns = [
+        record for record in spawn_records if "reviewer" in record["role"]
+    ]
+    assert len(reviewer_spawns) == 2, (
+        "round 2 should start a fresh reviewer process after the first "
+        f"one-shot reviewer exited; spawns={spawn_records}"
+    )
+    assert len({record["pid"] for record in reviewer_spawns}) == 2
+
+    first_decision_path = (
+        outcome.exchange_dir
+        / "turns"
+        / "round-1-reviewer-attempt-1.review-decision.json"
+    )
+    first_decision = json.loads(first_decision_path.read_text(encoding="utf-8"))
+    assert first_decision["verdict"] == "approved"
+    assert first_decision["nit_policy"] == "address"
+    assert [nit["id"] for nit in first_decision["nits"]] == ["N1"]
+
+    role_timeouts = [
+        evt for evt in captured_events
+        if evt.event_type == EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+    ]
+    assert role_timeouts == []
+
+
+def test_one_shot_coder_respawns_for_later_rework_turn(
+    tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
+) -> None:
+    """A one-shot coder process is replaced before later coder rework."""
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    stub_path = tmp_path / "stub_agent.py"
+    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    spawn_log = tmp_path / "stub-spawns.jsonl"
+    monkeypatch.setenv("STUB_SPAWN_LOG", str(spawn_log))
+    monkeypatch.setenv("STUB_REVIEWER_OUTCOMES", "changes_requested,changes_requested,ok")
+    monkeypatch.setenv("STUB_EXIT_AFTER_RESPONSE_ROLES", "backend")
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="claude-code",
+        timeout_minutes=1,
+        command=f"{sys.executable} -u {stub_path}",
+    )
+    config = _make_config(tmp_path, agent)
+    config.review_exchange_max_rounds = 4
+
+    captured_events: list[TraceEvent] = []
+
+    class _Sink:
+        def publish(self, event):
+            captured_events.append(event)
+
+    pair_registry = pair_registry_with_cleanup
+    session_output = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=session_output,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_make_review_exchange_runner(
+            session_output,
+            pair_registry=pair_registry,
+        ),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    outcome = cre.run_review_exchange_loop(
+        worktree=coder_wt,
+        issue_number=359,
+        issue_title="One-shot coder respawn",
+        session_name="issue-359",
+        agent_label="agent:backend",
+        on_started=lambda _run_dir: None,
+        events=_Sink(),
+        event_context=EventContext(),
+    )
+
+    assert outcome.status == "ok", f"unexpected outcome: {outcome}"
+    assert outcome.rounds == 3
+    assert outcome.reason == "reviewer_ok"
+
+    spawn_records = [
+        json.loads(line)
+        for line in spawn_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    coder_spawns = [
+        record for record in spawn_records if "backend" in record["role"]
+    ]
+    assert len(coder_spawns) == 2, (
+        "round 2 should start a fresh coder process after the first "
+        f"one-shot coder exited; spawns={spawn_records}"
+    )
+    assert len({record["pid"] for record in coder_spawns}) == 2
+
+    role_timeouts = [
+        evt for evt in captured_events
+        if evt.event_type == EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+    ]
+    assert role_timeouts == []
 
 
 def test_persistent_review_exchange_max_rounds_exhausted(
