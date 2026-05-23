@@ -63,6 +63,13 @@ class CompletionFinalizationCommand:
     runtime_state: CompletionRuntimeState
     review_exchange_running: bool
     validation_preflight_configured: bool
+    # Whether the background review-exchange job is still inside its own
+    # supervisor deadline (``review_exchange_supervisor_timeout_seconds``).
+    # When True, a TIMED_OUT visible session must NOT cancel the BG job —
+    # the exchange has its own much larger budget (per-role timeout *
+    # max_rounds + grace) that owns the cancel decision. False reproduces
+    # the pre-existing behavior of cancelling on outer timeout.
+    review_exchange_within_deadline: bool = False
 
     def __post_init__(self) -> None:
         _require_positive_issue_number(self.issue_number)
@@ -74,6 +81,10 @@ class CompletionFinalizationCommand:
         _require_bool(
             self.validation_preflight_configured,
             "validation_preflight_configured",
+        )
+        _require_bool(
+            self.review_exchange_within_deadline,
+            "review_exchange_within_deadline",
         )
 
     @property
@@ -106,7 +117,10 @@ def decide_completion_finalization(
 
     1. Non-completed outcomes do not publish or review-exchange; process them.
     2. An already-running review exchange wins over dirty/publish preconditions.
-    3. A timed-out visible session with an in-flight exchange is terminal.
+    3. A timed-out visible session with an in-flight exchange that is still
+       within its own supervisor deadline keeps deferring — the BG job owns
+       the cancel decision through its own much larger budget. Only when the
+       BG job has itself overshot do we terminate.
     4. Dirty preflight runs only when validation is configured and push is requested.
     5. Otherwise the normal completion processor may continue.
     """
@@ -118,6 +132,14 @@ def decide_completion_finalization(
 
     if command.requests_review_exchange and command.review_exchange_running:
         if command.runtime_state is CompletionRuntimeState.TIMED_OUT:
+            if command.review_exchange_within_deadline:
+                return CompletionFinalizationPlan(
+                    decision=CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE,
+                    reason=(
+                        "visible session timed out but review exchange is "
+                        "still within its own supervisor deadline"
+                    ),
+                )
             return CompletionFinalizationPlan(
                 decision=CompletionFinalizationDecision.TERMINAL_REVIEW_EXCHANGE_TIMEOUT,
                 reason="visible session timed out while review exchange is running",
