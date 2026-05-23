@@ -54,6 +54,10 @@ class _FakeSession:
         self.closed = False
         self.log_writer = None
 
+    @property
+    def is_live(self) -> bool:
+        return not self.closed and self.proc.poll() is None
+
 
 def _make_pair(
     *,
@@ -115,9 +119,6 @@ class TestAcquireAndRelease:
 
         pair = registry.acquire(issue_key=42, spawn=_spawn)
         assert spawn_calls["n"] == 1
-        # Aliveness lives at module scope, not on the pair, so the
-        # value type stays free of "reach through ``proc.poll()``"
-        # semantics — see PR #6209 review.
         from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory import (
             _pair_is_alive,  # noqa: PLC2701 — adapter-internal helper under test
         )
@@ -194,6 +195,24 @@ class TestAcquireAndRelease:
         assert returned is replacement
         assert any(s.proc.pid == 1001 for s in patched_close), (
             "dead coder must have been closed during eviction"
+        )
+
+    def test_closed_pair_on_acquire_is_evicted_and_respawned(
+        self, patched_close: list[Any],
+    ) -> None:
+        """A closed session cannot be reused even if the subprocess still polls live."""
+        registry = InMemoryPersistentExchangePairRegistry()
+        original = _make_pair(coder_pid=1001, reviewer_pid=1002)
+        registry.acquire(issue_key=42, spawn=lambda: original)
+
+        original.coder_session.closed = True
+
+        replacement = _make_pair(coder_pid=2001, reviewer_pid=2002)
+        returned = registry.acquire(issue_key=42, spawn=lambda: replacement)
+
+        assert returned is replacement
+        assert any(s.proc.pid == 1001 for s in patched_close), (
+            "closed coder session must have been closed during eviction"
         )
 
     def test_shutdown_all_releases_every_cached_pair(

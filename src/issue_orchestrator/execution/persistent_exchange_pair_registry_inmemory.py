@@ -55,9 +55,17 @@ class PersistentExchangePair:
     construction. ``last_used_at`` is updated on every cache hit so
     future diagnostics / idle-reaping can see when the pair was
     last touched. The dataclass is mutable so the registry can
-    update ``last_used_at`` in place; callers must treat it as
-    read-only and route lifecycle changes through
-    ``release`` / ``shutdown_all``.
+    update ``last_used_at`` in place.
+
+    The registry owns cache membership and pair teardown via
+    ``release`` / ``shutdown_all``. Once a pair is acquired for a
+    single exchange, the execution-layer role-session owner may
+    replace ``coder_session`` or ``reviewer_session`` after a role
+    process exits following a valid turn. That owner preserves the
+    pair-scoped worktree/path contract while swapping the active
+    subprocess handle. Registry snapshots are diagnostics-only and
+    may observe either side of that atomic reference swap during the
+    handoff.
     """
 
     coder_session: PersistentSession
@@ -76,18 +84,8 @@ class PersistentExchangePair:
 
 
 def _pair_is_alive(pair: PersistentExchangePair) -> bool:
-    """Both subprocesses are still running.
-
-    Lives at module scope, not as a method on the dataclass, because
-    aliveness is a subprocess-shape question — keeping it out of the
-    value type means the type stays free of "reach through ``proc.poll()``"
-    semantics that the reviewer flagged as a port-boundary smell on
-    PR #6209.
-    """
-    return (
-        pair.coder_session.proc.poll() is None
-        and pair.reviewer_session.proc.poll() is None
-    )
+    """Both role sessions can still accept another round prompt."""
+    return pair.coder_session.is_live and pair.reviewer_session.is_live
 
 
 class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
@@ -157,8 +155,8 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
                     "[exchange-pair-registry] cached pair for issue_key=%s is "
                     "dead (coder_alive=%s reviewer_alive=%s); evicting and respawning",
                     issue_key,
-                    existing.coder_session.proc.poll() is None,
-                    existing.reviewer_session.proc.poll() is None,
+                    existing.coder_session.is_live,
+                    existing.reviewer_session.is_live,
                 )
                 self._tear_down(existing, reason="dead-on-acquire")
                 del self._cache[issue_key]

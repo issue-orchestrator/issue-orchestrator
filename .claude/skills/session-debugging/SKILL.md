@@ -91,6 +91,23 @@ Based on the `reason=` value, go to the appropriate section:
 
 ---
 
+## Review Exchange `*_no_completion` After Valid JSON
+
+When a review exchange reports `reviewer_no_completion` or
+`coder_no_completion`, first check whether that same turn produced a valid
+response artifact before the process exited. A valid artifact means the turn
+itself completed; a later prompt failing because the old role process is gone
+is a persistent-session lifecycle issue. The expected behavior is to respawn
+that role for the later turn using the same worktree and pair-scoped artifact
+paths, not to reclassify the completed prior turn as failed.
+
+This is especially common when `review.nits.*` resolves to `address`: the
+reviewer can approve with nits, the orchestrator routes those nits through the
+coder rework loop, and a one-shot reviewer process may need to be respawned for
+the follow-up review.
+
+---
+
 ## Step 3A: No Completion Record
 
 The agent session terminated without calling `coding-done`/`reviewer-done`. Common causes:

@@ -153,6 +153,31 @@ def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
 
 
 class TestPersistentSessionLifecycle:
+    def test_session_is_live_requires_open_session_and_running_process(self) -> None:
+        from issue_orchestrator.execution import persistent_round_runner
+
+        class _Proc:
+            pid = 123
+
+            def __init__(self) -> None:
+                self.return_code: int | None = None
+
+            def poll(self) -> int | None:
+                return self.return_code
+
+        proc = _Proc()
+        session = persistent_round_runner.PersistentSession(
+            proc=proc,  # type: ignore[arg-type]
+            master_fd=99,
+        )
+
+        assert session.is_live is True
+        session.closed = True
+        assert session.is_live is False
+        session.closed = False
+        proc.return_code = 0
+        assert session.is_live is False
+
     def test_open_session_starts_slave_in_noncanonical_mode(self, tmp_path: Path) -> None:
         probe = tmp_path / "termios.json"
         script = tmp_path / "termios_probe.py"
