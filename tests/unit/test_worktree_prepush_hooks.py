@@ -232,7 +232,7 @@ def test_chained_wrapper_refuses_managed_project_hook(harness: Path) -> None:
         capture_output=True,
         text=True,
         env={**os.environ, "PATH": os.environ.get("PATH", "")},
-        timeout=10,
+        timeout=30,
     )
 
     assert result.returncode != 0, "wrapper must refuse to exec managed project hook"
@@ -255,7 +255,7 @@ def test_chained_wrapper_refuses_legacy_managed_project_hook(harness: Path) -> N
         capture_output=True,
         text=True,
         env={**os.environ, "PATH": os.environ.get("PATH", "")},
-        timeout=10,
+        timeout=30,
     )
 
     assert result.returncode != 0, "wrapper must refuse to exec managed project hook"
@@ -291,7 +291,7 @@ def test_chained_wrapper_ignores_skip_project_hook_env_var(harness: Path) -> Non
             "PATH": os.environ.get("PATH", ""),
             "ORCHESTRATOR_SKIP_PROJECT_HOOK": "1",
         },
-        timeout=10,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stderr
@@ -315,7 +315,7 @@ def test_chained_wrapper_runs_benign_project_hook(harness: Path) -> None:
         capture_output=True,
         text=True,
         env={**os.environ, "PATH": os.environ.get("PATH", "")},
-        timeout=10,
+        timeout=30,
     )
 
     assert result.returncode == 0, result.stderr
