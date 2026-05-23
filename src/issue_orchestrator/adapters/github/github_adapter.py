@@ -378,6 +378,22 @@ class GitHubAdapter:
         )
         return self._raw_issues_to_issues(raw_issues), next_watermark
 
+    def search_issues_by_title(
+        self,
+        query_terms: list[str],
+        *,
+        limit: int = 30,
+    ) -> "list[Issue]":
+        """Targeted title search for resolver fallback.
+
+        Wraps GitHub's `/search/issues` with `in:title is:issue`. Caller filters
+        results — substring semantics mean "M9-006" can match
+        "Notes on M9-006 (deprecated)", so the resolver post-checks
+        parse_external_id equality.
+        """
+        raw = self._client.search_issues_by_title(query_terms, limit=limit)
+        return self._raw_issues_to_issues(raw)
+
     def get_issue(self, issue_number: int) -> "Issue | None":
         """Get a specific issue by number.
 

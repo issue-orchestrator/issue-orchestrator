@@ -118,5 +118,25 @@ class IssueTracker(Protocol):
         """
         ...
 
+    def search_issues_by_title(
+        self,
+        query_terms: list[str],
+        *,
+        limit: int = 30,
+    ) -> list["Issue"]:
+        """Search issues by title substrings, OR'd, scoped to title.
+
+        Used by the resolver as a fallback when scan-based lookup misses an
+        external_id. Substring semantics — callers filter for exact matches.
+
+        Args:
+            query_terms: Substrings to match against issue titles (OR'd).
+            limit: Maximum number of matches to return.
+
+        Returns:
+            Matching Issue objects (pull requests excluded).
+        """
+        ...
+
 # Backwards compatibility alias
 IssueRepository = IssueTracker

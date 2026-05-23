@@ -410,6 +410,43 @@ def test_list_issues_since_default_bypasses_etag_cache() -> None:
     assert "if-none-match" not in requests_seen[1]
 
 
+def test_search_issues_by_title_includes_is_issue_qualifier() -> None:
+    """Search must include `is:issue` and `in:title`; OR terms inside parens.
+
+    Regression bait: GitHub's /search/issues rejects queries without an
+    `is:` qualifier (422); fine-grained PATs are stricter. The OR must
+    bind inside parens so it doesn't cross the qualifiers.
+    """
+    queries_seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries_seen.append(request.url.params.get("q", ""))
+        return httpx.Response(
+            200,
+            json={"items": [{"number": 42, "title": "[M9-006] Foo"}]},
+        )
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    items = client.search_issues_by_title(["M9-006", "M9-007"])
+
+    assert len(queries_seen) == 1
+    q = queries_seen[0]
+    assert "is:issue" in q
+    assert "in:title" in q
+    assert '("M9-006" OR "M9-007")' in q
+    assert items == [{"number": 42, "title": "[M9-006] Foo"}]
+
+
+def test_search_issues_by_title_empty_terms_skips_http() -> None:
+    """No terms → no HTTP call (don't burn search quota on a noop)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        pytest.fail(f"Unexpected HTTP request: {request.url}")
+        return httpx.Response(500)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    assert client.search_issues_by_title([]) == []
+
+
 def test_get_token_scopes_from_header() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
