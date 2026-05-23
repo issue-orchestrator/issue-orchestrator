@@ -1746,7 +1746,10 @@ class TestCallerHooks:
             if role == "reviewer"
         )
         assert str(run_record) in reviewer_prompt
-        assert "Do not rerun validation solely to create this file" in reviewer_prompt
+        # The reviewer must trust validation-record.json and avoid running
+        # build/test tooling itself — see build_reviewer_prompt in
+        # domain/review_exchange.py for the full rationale.
+        assert "do NOT run build, test, or validation commands" in reviewer_prompt
         reviewer_notice = next(
             notice for role, _prompt, notice in state["prompt_inboxes_seen"]
             if role == "reviewer"
