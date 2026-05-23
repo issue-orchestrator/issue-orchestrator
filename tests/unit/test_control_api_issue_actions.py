@@ -604,6 +604,65 @@ class TestRetryIssueEndpoint:
         data = response.json()
         assert data["success"] is True
 
+    def test_retry_prunes_session_history_and_requeues_timed_out_issue(
+        self, client_with_orchestrator
+    ):
+        """Retry must clear session_history + failed_this_cycle and re-add
+        the issue to the queue cache.
+
+        Reproduces the real failure: a timed-out issue lives in
+        `cached_scope_issues` but `evaluate_issue` rejects it from
+        `cached_queue_issues` as REJECTED_EXCLUDED because its number is in
+        `state.session_history`. Removing only the GitHub label leaves the
+        planner skipping it on every refresh.
+        """
+        from issue_orchestrator.domain.models import SessionHistoryEntry
+
+        client, mock_orch = client_with_orchestrator
+
+        # State after a timeout: history entry present, failed_this_cycle
+        # has the issue, label-side has blocked-failed, scope cache has it
+        # but the queue cache does not.
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Timed out issue",
+                agent_type="agent:web",
+                status="timed_out",
+                runtime_minutes=95,
+            )
+        ]
+        mock_orch.state.failed_this_cycle = {123, 999}
+        cached_issue = Issue(
+            number=123,
+            title="Timed out issue",
+            labels=["agent:web", "blocked-failed"],
+        )
+        mock_orch.state.cached_scope_issues = [cached_issue]
+        mock_orch.state.cached_queue_issues = []  # was rejected at refresh time
+        mock_orch.deps.queue_cache_store = MagicMock()
+
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue_labels = MagicMock(
+            return_value=["agent:web", "blocked-failed"]
+        )
+        mock_orch.repository_host.remove_label = MagicMock()
+
+        response = client.post("/api/issues/123/retry")
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+
+        # session_history entry for this issue is gone; others would survive.
+        assert [e.issue_number for e in mock_orch.state.session_history] == []
+        # failed_this_cycle no longer contains this issue but keeps others.
+        assert mock_orch.state.failed_this_cycle == {999}
+        # Re-evaluation put the issue back in the queue cache with the
+        # updated label set so the next planner tick can pick it up.
+        assert [i.number for i in mock_orch.state.cached_queue_issues] == [123]
+        assert mock_orch.state.cached_queue_issues[0].labels == ("agent:web",)
+        mock_orch.deps.queue_cache_store.save_snapshot.assert_called_once()
+
 
 class TestCloseIssueEndpoint:
     """Test the POST /api/issues/{issue_number}/close endpoint."""
