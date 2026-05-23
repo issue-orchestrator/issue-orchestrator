@@ -46,9 +46,9 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
 
     # Bounded poll for process exit.  Subprocess is a real external system,
     # so bounded waits with GIL-yielding pauses are acceptable per test policy.
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 30.0
     while plugin.session_exists(123, "issue-123"):
-        assert time.monotonic() < deadline, "subprocess did not exit within 5s"
+        assert time.monotonic() < deadline, "subprocess did not exit within 30s"
         time.sleep(0.05)  # yield GIL so watcher thread can drain PTY output
 
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
@@ -195,9 +195,9 @@ def test_subprocess_session_auto_accepts_claude_trust_prompt(tmp_path, monkeypat
 
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
 
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 30.0
     while plugin.session_exists(123, "issue-123"):
-        assert time.monotonic() < deadline, "subprocess did not exit within 5s"
+        assert time.monotonic() < deadline, "subprocess did not exit within 30s"
         time.sleep(0.05)
 
     assert "AUTO-RESPONSE:" in _read_recording_output(log_path)

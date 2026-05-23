@@ -1,16 +1,27 @@
 """GitHub issue resolver - translates IssueKeys to GitHub issue numbers.
 
 This is the GitHub-specific implementation of IssueResolver.
-It maintains an in-memory cache of external_id -> issue_number
-mappings, built by scanning issues from the IssueTracker.
 
-For other backing stores (hypothetically):
-- DBIssueResolver would resolve to row IDs
-- FileIssueResolver would resolve to file paths
+Lookup order on resolve():
+1. In-memory cache (instant; populated by past resolves or build_index).
+2. Negative-result cache (skip search call if we recently asked and got nothing).
+3. Targeted /search/issues call against GitHub's index (one call per unique key).
+
+Notably, on a miss we do NOT re-scan the issue list. The legacy behavior
+(full pagination on every cache miss) couldn't find older closed issues
+without paginating through huge windows, and burned REST quota doing so.
+Search is one targeted call regardless of repo size — at the cost of moving
+onto the search quota lane (30/min), which is why the negative-result cache
+exists: a typo'd dep ref would otherwise re-fire a search every tick.
+
+build_index() is still callable as an optional seed (one REST page of
+recent issues) but is not invoked automatically.
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from ...domain.issue_key import IssueKey, IssueHandle, GitHubIssueKey, parse_external_id
@@ -23,144 +34,216 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How long a "we searched and didn't find it" answer stays cached before
+# we'll search again. Long enough that persistently-missing keys (typos,
+# deleted issues) don't burn search quota; short enough that newly-created
+# issues become resolvable within a day.
+DEFAULT_NEGATIVE_TTL = timedelta(hours=24)
+
+# Periodic cumulative-stats log every Nth search call so cold-start cost is
+# visible in ops without per-call grep gymnastics.
+STATS_LOG_INTERVAL = 10
+
 
 @dataclass
 class GitHubIssueResolver:
-    """Resolves IssueKeys to GitHub issue numbers via cached lookup.
-
-    This is the GitHub-specific IssueResolver implementation.
-    The IssueHandle returned is always int (GitHub issue number).
-
-    The cache is built by scanning issues and extracting external_ids
-    from their titles. This is done once at startup and can be rebuilt
-    on demand.
+    """Resolves IssueKeys to GitHub issue numbers via cache + targeted search.
 
     Attributes:
-        repo: The repository in owner/repo format
-        issue_tracker: IssueTracker port for fetching issues
-        events: EventSink for trace events
+        repo: The repository in owner/repo format.
+        issue_tracker: IssueTracker port for fetching/searching issues.
+        events: EventSink for trace events.
+        negative_ttl: How long to remember "searched, not found" results.
     """
 
     repo: str
     issue_tracker: IssueTracker
     events: EventSink
+    negative_ttl: timedelta = DEFAULT_NEGATIVE_TTL
 
-    # Cache: external_id -> issue_number
     _cache: dict[str, int] = field(default_factory=dict, init=False)
-
-    # Track duplicates for warnings
     _duplicates: dict[str, list[int]] = field(default_factory=dict, init=False)
+    _negative_cache: dict[str, datetime] = field(default_factory=dict, init=False)
+
+    # Cumulative counters since process start. Surfaced via _log_stats_summary.
+    _stat_memory_hits: int = field(default=0, init=False)
+    _stat_negative_hits: int = field(default=0, init=False)
+    _stat_search_calls: int = field(default=0, init=False)
+    _stat_search_positives: int = field(default=0, init=False)
+    _stat_search_negatives: int = field(default=0, init=False)
+    _stat_build_index_calls: int = field(default=0, init=False)
 
     def resolve(self, key: IssueKey) -> IssueHandle:
         """Resolve an IssueKey to its GitHub issue number.
 
-        Uses the cache first, rebuilds if not found.
-
-        Args:
-            key: The IssueKey to resolve
-
-        Returns:
-            The GitHub issue number (int), or None if not found
+        Order: in-memory → negative cache → targeted search. Returns None
+        if all three say no.
         """
         external_id = key.stable_id()
 
-        # Fast path: check cache
         if external_id in self._cache:
+            self._stat_memory_hits += 1
             return self._cache[external_id]
 
-        # Slow path: rebuild index and try again
-        logger.debug("Cache miss for %s, rebuilding index", external_id)
-        self.build_index()
+        neg_at = self._negative_cache.get(external_id)
+        if neg_at is not None:
+            if datetime.now(timezone.utc) - neg_at < self.negative_ttl:
+                self._stat_negative_hits += 1
+                return None
+            del self._negative_cache[external_id]
 
-        return self._cache.get(external_id)
+        return self._search_and_cache(external_id)
 
-    def build_index(self) -> None:
-        """Rebuild the resolution cache by scanning issues.
+    def _search_and_cache(self, external_id: str) -> int | None:
+        """Targeted /search/issues call for a single external_id.
 
-        Fetches issues from the tracker, parses titles to extract
-        external_ids, and builds the mapping.
+        Returns the resolved issue number, or None if the search returned no
+        match whose title parses to the requested external_id. Infrastructure
+        errors (RepositoryHostError, programming bugs, etc.) are *not* caught
+        here — they propagate so the caller can distinguish "looked, found
+        nothing" from "could not query." Collapsing those would silently
+        recreate the same `dependency_blocked` failure mode this resolver
+        was rewritten to fix.
         """
-        logger.info("Building issue resolution index for %s", self.repo)
-
-        # Fetch all relevant issues (open + recently closed)
+        self._stat_search_calls += 1
+        start = time.monotonic()
         with gh_audit.context(
             reason=gh_audit.AuditReason.EXTERNAL_ID_RESOLVE,
             scope=gh_audit.AuditScope.ON_DEMAND,
         ):
-            issues = self.issue_tracker.list_issues(state="all", limit=500)
+            results = self.issue_tracker.search_issues_by_title(
+                [external_id], limit=10
+            )
+        elapsed_ms = int((time.monotonic() - start) * 1000)
 
-        new_cache: dict[str, int] = {}
-        new_duplicates: dict[str, list[int]] = {}
+        matches = [
+            issue.number
+            for issue in results
+            if parse_external_id(issue.title).external_id == external_id
+        ]
 
-        for issue in issues:
-            parsed = parse_external_id(issue.title)
-            if parsed.external_id:
-                ext_id = parsed.external_id
+        if not matches:
+            self._stat_search_negatives += 1
+            self._negative_cache[external_id] = datetime.now(timezone.utc)
+            logger.info(
+                "[RESOLVER] search key=%s outcome=empty elapsed_ms=%d "
+                "raw_results=%d",
+                external_id, elapsed_ms, len(results),
+            )
+            self._maybe_log_summary()
+            return None
 
-                if ext_id in new_cache:
-                    # Duplicate found - track for warning
-                    if ext_id not in new_duplicates:
-                        new_duplicates[ext_id] = [new_cache[ext_id]]
-                    new_duplicates[ext_id].append(issue.number)
-                else:
-                    new_cache[ext_id] = issue.number
-
-        self._cache = new_cache
-        self._duplicates = new_duplicates
-
-        # Warn about duplicates
-        for ext_id, numbers in self._duplicates.items():
+        if len(matches) > 1:
+            self._duplicates[external_id] = matches
             logger.warning(
-                "Duplicate external_id %s found in issues: %s",
-                ext_id,
-                numbers,
+                "[RESOLVER] search key=%s outcome=duplicate matches=%s "
+                "elapsed_ms=%d (using first)",
+                external_id, matches, elapsed_ms,
             )
             self.events.publish(
                 TraceEvent(
                     EventName.RESOLVER_DUPLICATE_EXTERNAL_ID,
-                    {
-                        "external_id": ext_id,
-                        "issue_numbers": numbers,
-                    },
+                    {"external_id": external_id, "issue_numbers": matches},
+                )
+            )
+
+        chosen = matches[0]
+        self._cache[external_id] = chosen
+        self._stat_search_positives += 1
+        logger.info(
+            "[RESOLVER] search key=%s outcome=found number=%d elapsed_ms=%d",
+            external_id, chosen, elapsed_ms,
+        )
+        self._maybe_log_summary()
+        return chosen
+
+    def _maybe_log_summary(self) -> None:
+        if self._stat_search_calls % STATS_LOG_INTERVAL != 0:
+            return
+        logger.info(
+            "[RESOLVER] stats search_calls=%d positives=%d negatives=%d "
+            "memory_hits=%d negative_hits=%d cache_size=%d "
+            "negative_cache_size=%d build_index_calls=%d",
+            self._stat_search_calls, self._stat_search_positives,
+            self._stat_search_negatives,
+            self._stat_memory_hits, self._stat_negative_hits,
+            len(self._cache), len(self._negative_cache),
+            self._stat_build_index_calls,
+        )
+
+    def build_index(self) -> None:
+        """Rebuild the resolution cache from one REST page of issues.
+
+        Per the IssueResolver port contract this fully *replaces* the existing
+        index: a fresh cache/duplicate map is built from the scan and assigned
+        atomically, so a renamed-away external_id, a removed prefix, or a
+        previously-detected duplicate that has been resolved no longer
+        survives in the cache. Negative-cache entries for keys the new scan
+        resolved are also cleared.
+
+        Not called automatically. Available for callers that want to amortize
+        search calls by pre-warming the cache for the most-recent issues.
+        """
+        self._stat_build_index_calls += 1
+        logger.info("Building issue resolution index for %s", self.repo)
+
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.EXTERNAL_ID_RESOLVE,
+            scope=gh_audit.AuditScope.ON_DEMAND,
+        ):
+            issues = self.issue_tracker.list_issues(state="all", limit=100)
+
+        new_cache: dict[str, int] = {}
+        new_duplicates: dict[str, list[int]] = {}
+        for issue in issues:
+            parsed = parse_external_id(issue.title)
+            if not parsed.external_id:
+                continue
+            ext_id = parsed.external_id
+            if ext_id in new_cache:
+                new_duplicates.setdefault(ext_id, [new_cache[ext_id]]).append(
+                    issue.number
+                )
+                continue
+            new_cache[ext_id] = issue.number
+
+        # Atomic replace so callers never observe a half-rebuilt state.
+        self._cache = new_cache
+        self._duplicates = new_duplicates
+        # Drop negative entries for keys the new scan resolved; leave others.
+        for ext_id in new_cache:
+            self._negative_cache.pop(ext_id, None)
+
+        for ext_id, numbers in new_duplicates.items():
+            logger.warning(
+                "Duplicate external_id %s found in issues: %s", ext_id, numbers,
+            )
+            self.events.publish(
+                TraceEvent(
+                    EventName.RESOLVER_DUPLICATE_EXTERNAL_ID,
+                    {"external_id": ext_id, "issue_numbers": numbers},
                 )
             )
 
         logger.info(
-            "Index built: %d issues indexed, %d duplicates",
-            len(new_cache),
-            len(new_duplicates),
+            "[RESOLVER] build_index cache_size=%d duplicates=%d",
+            len(self._cache), len(self._duplicates),
         )
 
     def invalidate(self, key: IssueKey) -> None:
-        """Invalidate a cached resolution.
-
-        Args:
-            key: The IssueKey to invalidate
-        """
+        """Drop both positive and negative cache entries for this key."""
         external_id = key.stable_id()
         self._cache.pop(external_id, None)
+        self._negative_cache.pop(external_id, None)
         logger.debug("Invalidated cache for %s", external_id)
 
     def get_key_for_issue(self, issue: "Issue") -> GitHubIssueKey | None:
-        """Create an IssueKey from an Issue if it has an external_id.
-
-        Args:
-            issue: The Issue to extract a key from
-
-        Returns:
-            GitHubIssueKey if the issue has an external_id, None otherwise
-        """
         parsed = parse_external_id(issue.title)
         if parsed.external_id:
             return GitHubIssueKey(repo=self.repo, external_id=parsed.external_id)
         return None
 
     def get_all_keys(self) -> list[GitHubIssueKey]:
-        """Get all known IssueKeys from the cache.
-
-        Returns:
-            List of GitHubIssueKey instances
-        """
         return [
             GitHubIssueKey(repo=self.repo, external_id=ext_id)
             for ext_id in self._cache.keys()

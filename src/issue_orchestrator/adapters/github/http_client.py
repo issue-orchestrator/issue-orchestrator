@@ -1120,6 +1120,32 @@ class GitHubHttpClient:
         )
         return _search_items(payload)
 
+    def search_issues_by_title(
+        self,
+        query_terms: list[str],
+        *,
+        limit: int = 30,
+        use_cache: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Search issues whose title contains any of the given quoted terms.
+
+        Terms are OR'd inside parens; `in:title` scopes the match to titles;
+        `is:issue` is required for fine-grained PATs (search API otherwise
+        returns 422). Returns raw search result items; caller filters.
+        """
+        if not query_terms:
+            return []
+        quoted = " OR ".join(f'"{t}"' for t in query_terms)
+        query = f"repo:{self._config.repo} is:issue ({quoted}) in:title"
+        payload = self._request_json(
+            "GET",
+            "/search/issues",
+            params={"q": query, "per_page": min(100, max(1, limit))},
+            caller="search_issues_by_title",
+            use_cache=use_cache,
+        )
+        return _search_items(payload)
+
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.
 
