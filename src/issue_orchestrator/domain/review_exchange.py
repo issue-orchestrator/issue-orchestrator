@@ -72,9 +72,14 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         validation_note = (
             "Validation is required. Check "
             f"{validation_record}. Only respond ok if that file exists and has "
-            "passed=true. Do not rerun validation solely to create this file; "
-            "if it is missing or failed, respond changes_requested asking the "
-            "coder to run validation and fix any failures."
+            "passed=true. Trust this file as authoritative — do NOT run build, "
+            "test, or validation commands yourself (no ./gradlew, ./scripts/"
+            "validate*, make, npm/pnpm/yarn test, cargo test, pytest, mvn, "
+            "bazel test, or similar). Running them wastes the round's budget "
+            "and can hang on restricted networks where wrapper downloads or "
+            "package fetches fail. If the file is missing or shows "
+            "passed=false, respond changes_requested asking the coder to run "
+            "validation and fix any failures."
         )
     prior = ""
     if packet.last_coder_text:
