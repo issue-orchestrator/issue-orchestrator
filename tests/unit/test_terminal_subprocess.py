@@ -7,6 +7,8 @@ import base64
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
 from issue_orchestrator.infra.env import ENV_PREFIX
 
+_SESSION_EXIT_TIMEOUT_SECONDS = 15.0
+
 
 def _read_recording_output(path):
     output_chunks: list[str] = []
@@ -20,6 +22,17 @@ def _read_recording_output(path):
         if isinstance(data_b64, str) and data_b64:
             output_chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
     return "".join(output_chunks)
+
+
+def _wait_for_session_exit(plugin: SubprocessPlugin, session_id: int, session_name: str) -> None:
+    # PTY-backed subprocess tests can run while xdist is saturating the host.
+    # Keep the wait bounded, but allow enough time for scheduler delays.
+    deadline = time.monotonic() + _SESSION_EXIT_TIMEOUT_SECONDS
+    while plugin.session_exists(session_id, session_name):
+        assert time.monotonic() < deadline, (
+            f"subprocess did not exit within {_SESSION_EXIT_TIMEOUT_SECONDS:g}s"
+        )
+        time.sleep(0.05)  # yield GIL so watcher thread can drain PTY output
 
 
 def test_subprocess_session_writes_log(tmp_path, monkeypatch):
@@ -44,12 +57,7 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     )
     assert created is True
 
-    # Bounded poll for process exit.  Subprocess is a real external system,
-    # so bounded waits with GIL-yielding pauses are acceptable per test policy.
-    deadline = time.monotonic() + 5.0
-    while plugin.session_exists(123, "issue-123"):
-        assert time.monotonic() < deadline, "subprocess did not exit within 5s"
-        time.sleep(0.05)  # yield GIL so watcher thread can drain PTY output
+    _wait_for_session_exit(plugin, 123, "issue-123")
 
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
     assert log_path.exists(), f"Log file not created at {log_path}"
@@ -195,10 +203,7 @@ def test_subprocess_session_auto_accepts_claude_trust_prompt(tmp_path, monkeypat
 
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
 
-    deadline = time.monotonic() + 5.0
-    while plugin.session_exists(123, "issue-123"):
-        assert time.monotonic() < deadline, "subprocess did not exit within 5s"
-        time.sleep(0.05)
+    _wait_for_session_exit(plugin, 123, "issue-123")
 
     assert "AUTO-RESPONSE:" in _read_recording_output(log_path)
 

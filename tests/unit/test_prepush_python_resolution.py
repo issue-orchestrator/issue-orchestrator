@@ -31,6 +31,7 @@ _HOOK_PATH = (
     / "hooks"
     / "pre-push"
 )
+_HOOK_FRAGMENT_TIMEOUT_SECONDS = 30
 
 
 def _make_fake_python(tmp_path: Path, name: str, marker_line: str) -> Path:
@@ -83,7 +84,9 @@ def _run_hook_fragment(
         env=env,
         capture_output=True,
         text=True,
-        timeout=10,
+        # Keep the hook invocation bounded, but allow loaded xdist workers enough
+        # scheduler time to spawn bash and the fake interpreter.
+        timeout=_HOOK_FRAGMENT_TIMEOUT_SECONDS,
     )
 
 

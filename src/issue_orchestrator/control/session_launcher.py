@@ -864,6 +864,7 @@ class SessionLauncher:
             issue_title=issue.title,
             worktree=worktree_path,
             existing_work=existing_work,
+            task_kind=TaskKind.CODE.value,
         )
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
@@ -1493,6 +1494,7 @@ class SessionLauncher:
             worktree=worktree_path,
             pr_number=review.pr_number,
             existing_work=existing_work,
+            task_kind=TaskKind.REVIEW.value,
         )
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
@@ -1561,6 +1563,7 @@ class SessionLauncher:
             agent_label=agent_label,
             pr_number=review.pr_number,
             rework_cycle=rework_count if rework_count > 0 else None,
+            original_prompt=rendered_prompt,
         )
 
         log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")

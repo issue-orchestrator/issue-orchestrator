@@ -328,6 +328,7 @@ def launch_rework_session(
         worktree=worktree_path,
         pr_number=pr_number,
         existing_work=existing_work,
+        task_kind=TaskKind.REWORK.value,
     )
     prompt_path = deps.persist_session_prompt(run.run_dir, rendered_prompt)
     base_command = agent_config.get_command(

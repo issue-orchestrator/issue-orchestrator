@@ -313,10 +313,24 @@ def sample_config(tmp_path):
         model="sonnet",
         timeout_minutes=45,
     )
+    config.agents["agent:gemini"] = AgentConfig(
+        prompt_path=prompt_path,
+        provider="gemini",
+        model="",
+        timeout_minutes=45,
+        ai_system="gemini",
+    )
     config.agents["agent:reviewer"] = AgentConfig(
         prompt_path=prompt_path,
         model="sonnet",
         timeout_minutes=30,
+    )
+    config.agents["agent:gemini-reviewer"] = AgentConfig(
+        prompt_path=prompt_path,
+        provider="gemini",
+        model="",
+        timeout_minutes=30,
+        ai_system="gemini",
     )
     config.code_review_agent = "agent:reviewer"
     config.setup_worktree = []
@@ -556,14 +570,28 @@ class TestLogTransition:
 class TestLaunchIssueSession:
     """Tests for launch_issue_session method."""
 
-    def test_successful_launch(self, session_launcher, sample_issue):
+    @pytest.mark.parametrize(
+        "agent_label",
+        ["agent:web", "agent:gemini"],
+        ids=["legacy-agent", "gemini-agent"],
+    )
+    def test_successful_launch(self, launcher_bundle, sample_issue, agent_label):
         """Verify successful issue session launch."""
-        result = session_launcher.launch_issue_session(sample_issue, active_sessions=[])
+        sample_issue.labels = [agent_label]
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
 
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "issue-123"
         assert result.session.key.task == TaskKind.CODE
+        assert result.session.agent_label == agent_label
+        if agent_label == "agent:gemini":
+            command = launcher_bundle.create_session_calls[0]["cmd"]
+            assert "issue_orchestrator.entrypoints.cli_tools.provider_runner" in command
+            assert "--provider gemini" in command
+            assert "gemini --approval-mode yolo --prompt" in command
+            assert "coding-done" in command
 
     def test_fails_when_no_agent_type(self, session_launcher):
         """Verify fails when issue has no agent type label (line 195)."""
@@ -932,8 +960,14 @@ class TestLaunchIssueSessionPerSessionWorktree:
 class TestLaunchReviewSession:
     """Tests for launch_review_session method."""
 
-    def test_successful_launch(self, session_launcher, mock_repo_host):
+    @pytest.mark.parametrize(
+        "reviewer_label",
+        ["agent:reviewer", "agent:gemini-reviewer"],
+        ids=["legacy-reviewer", "gemini-reviewer"],
+    )
+    def test_successful_launch(self, launcher_bundle, mock_repo_host, reviewer_label):
         """Verify successful review session launch."""
+        launcher_bundle.launcher.config.code_review_agent = reviewer_label
         review = PendingReview(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
             pr_number=456,
@@ -942,12 +976,22 @@ class TestLaunchReviewSession:
             _issue_number=123,
         )
 
-        result = session_launcher.launch_review_session(review, active_sessions=[])
+        result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
 
         assert result.success is True
         assert result.session is not None
         assert result.session.terminal_id == "review-456"
         assert result.session.key.task == TaskKind.REVIEW
+        assert result.session.agent_label == reviewer_label
+        assert result.session.original_prompt is not None
+        assert "use coding-done to report completion" not in result.session.original_prompt
+        if reviewer_label == "agent:gemini-reviewer":
+            command = launcher_bundle.create_session_calls[0]["cmd"]
+            assert "issue_orchestrator.entrypoints.cli_tools.provider_runner" in command
+            assert "--provider gemini" in command
+            assert "gemini --approval-mode yolo --prompt" in command
+            assert "reviewer-done" in command
+            assert "use coding-done to report completion" not in command
 
     def test_fails_when_no_review_agent_configured(self, session_launcher):
         """Verify fails when no code review agent configured (line 418)."""

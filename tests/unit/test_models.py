@@ -284,6 +284,30 @@ class TestAgentConfig:
         user_prompt_pos = cmd.find("Do the work on issue #123")
         assert critical_pos < user_prompt_pos, "Completion command docs must precede user prompt"
 
+    def test_get_command_review_task_uses_reviewer_default_prompt(self, tmp_path):
+        """Default review prompts must not tell non-Claude reviewers to run coding-done."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Review instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="gemini",
+            model="",
+        )
+
+        cmd = config.get_command(
+            123,
+            "Review PR #456",
+            tmp_path,
+            pr_number=456,
+            task_kind=TaskKind.REVIEW.value,
+        )
+
+        assert "reviewer-done" in cmd
+        assert "Review PR #456 for issue #123" in cmd
+        assert "use coding-done to report completion" not in cmd
+
 
     def test_get_command_extra_provider_args_verbose(self, tmp_path):
         """extra_provider_args override merges onto provider_args."""

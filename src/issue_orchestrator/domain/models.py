@@ -53,6 +53,14 @@ def _is_blocking_label(label: str) -> bool:
 # race conditions when multiple sessions reuse the same worktree
 COMPLETION_RECORD_PATH = ".issue-orchestrator/completion.json"  # Legacy fallback
 COMPLETION_DIR = ".issue-orchestrator"
+DEFAULT_AGENT_INITIAL_PROMPT = (
+    "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. "
+    "When done, use coding-done to report completion."
+)
+DEFAULT_REVIEWER_INITIAL_PROMPT = (
+    "Review PR #{pr_number} for issue #{issue_number}. Follow the instructions in {prompt}. "
+    "When done, use reviewer-done to report your verdict."
+)
 
 
 def get_completion_path(
@@ -811,7 +819,7 @@ class AgentConfig:
     command: str = "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     # Optional override for hook verification AI agent (e.g., "claude-code")
     meta_agent: Optional[str] = None
-    initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
+    initial_prompt: str = DEFAULT_AGENT_INITIAL_PROMPT
     # AI system type for log retrieval (e.g., "claude-code", "codex", "gemini", "aider")
     # If not set, auto-detected from command. Must match an entry in ai-systems.yaml.
     ai_system: Optional[str] = None
@@ -828,6 +836,7 @@ class AgentConfig:
         worktree: Path,
         pr_number: Optional[int] = None,
         existing_work: Optional[str] = None,
+        task_kind: str = TaskKind.CODE.value,
     ) -> str:
         """Render the session prompt text before command wrapping."""
         prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
@@ -843,10 +852,19 @@ class AgentConfig:
         if pr_number is not None:
             format_kwargs["pr_number"] = pr_number
 
-        rendered_prompt = self.initial_prompt.format(**format_kwargs)
+        prompt_template = self._initial_prompt_template(task_kind)
+        rendered_prompt = prompt_template.format(**format_kwargs)
         if existing_work:
             rendered_prompt = f"IMPORTANT: {existing_work}\n\n{rendered_prompt}"
         return rendered_prompt
+
+    def _initial_prompt_template(self, task_kind: str) -> str:
+        """Return the configured prompt or the task-specific built-in default."""
+        if self.initial_prompt != DEFAULT_AGENT_INITIAL_PROMPT:
+            return self.initial_prompt
+        if task_kind == TaskKind.REVIEW.value:
+            return DEFAULT_REVIEWER_INITIAL_PROMPT
+        return DEFAULT_AGENT_INITIAL_PROMPT
 
     def get_command(
         self,
@@ -881,6 +899,7 @@ class AgentConfig:
             worktree=worktree,
             pr_number=pr_number,
             existing_work=existing_work,
+            task_kind=task_kind,
         )
         return self.get_command_for_prompt(
             rendered_prompt,

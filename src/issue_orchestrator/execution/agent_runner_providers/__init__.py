@@ -3,6 +3,7 @@
 This module provides command builders for different AI coding agents:
 - ClaudeCodeProvider: Anthropic's Claude Code CLI
 - CodexProvider: OpenAI's Codex CLI
+- GeminiProvider: Google's Gemini CLI
 
 Each provider knows how to build the correct command-line invocation
 for its respective AI agent.
@@ -13,11 +14,13 @@ Previously in ``_vendor/agent_runner/providers/``.
 from .base import CLIProvider
 from .claude import ClaudeCodeProvider
 from .codex import CodexProvider
+from .gemini import GeminiProvider
 
 # Provider registry - maps name to provider class
 _PROVIDERS: dict[str, type[CLIProvider]] = {
     "claude-code": ClaudeCodeProvider,
     "codex": CodexProvider,
+    "gemini": GeminiProvider,
 }
 
 
@@ -47,6 +50,7 @@ __all__ = [
     "CLIProvider",
     "ClaudeCodeProvider",
     "CodexProvider",
+    "GeminiProvider",
     "list_providers",
     "get_provider",
     "is_valid_provider",

@@ -21,7 +21,7 @@ export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
 
 You can also rely on an existing `gh auth login` session; the orchestrator reads GitHub CLI auth from its normal auth storage. `issue-orchestrator auth store` remains the app-specific keychain fallback. Whatever source you use must be able to access the target repo. See [GitHub Permissions](github-permissions.md) for details.
 
-You also need a supported AI coding tool installed. If Claude Code, Cursor, or Codex CLI is missing, sessions will not launch.
+You also need a supported AI coding tool installed. If Claude Code, Cursor, Codex CLI, or Gemini CLI is missing, sessions will not launch.
 
 ## 3. Move to your target repo and run the setup wizard
 
@@ -32,7 +32,7 @@ issue-orchestrator setup
 
 This creates `.issue-orchestrator/config/default.yaml` with your repo settings and agent definitions. If you prefer to stay elsewhere, run `issue-orchestrator setup /path/to/your/project` instead. You can also copy and edit the [example config](../../examples/config.example.yaml) directly.
 
-If you choose `codex`, leave the wizard's Codex model prompt blank for the safest first run. That lets the installed Codex CLI choose the right default for your account.
+If you choose `codex` or `gemini`, leave the wizard's model prompt blank for the safest first run. That lets the installed CLI choose the right default for your account.
 
 A minimal config looks like:
 

@@ -97,8 +97,9 @@ ui:
         assert config.web_port == 0
         assert config.control_api_port == 0
 
-    def test_config_load_codex_agent_without_model_uses_provider_default(self, tmp_path):
-        """Codex agents without a model should not inherit Claude's sonnet fallback."""
+    @pytest.mark.parametrize("provider", ["codex", "gemini"])
+    def test_config_load_non_claude_agent_without_model_uses_provider_default(self, tmp_path, provider):
+        """Non-Claude agents without a model should not inherit Claude's sonnet fallback."""
         prompt = tmp_path / "prompt.md"
         prompt.write_text("Prompt")
         worktree_base = tmp_path / "worktrees"
@@ -108,19 +109,20 @@ ui:
 agents:
   agent:dev:
     prompt: {prompt}
-    provider: codex
-    ai_system: codex
+    provider: {provider}
+    ai_system: {provider}
 worktrees:
   base: {worktree_base}
 """)
 
         config = Config.load(config_file)
 
-        assert config.agents["agent:dev"].provider == "codex"
+        assert config.agents["agent:dev"].provider == provider
         assert config.agents["agent:dev"].model == ""
 
-    def test_config_load_default_agent_codex_without_model_uses_provider_default(self, tmp_path):
-        """Default-agent Codex configs should also preserve the provider CLI default model."""
+    @pytest.mark.parametrize("provider", ["codex", "gemini"])
+    def test_config_load_default_non_claude_agent_without_model_uses_provider_default(self, tmp_path, provider):
+        """Default-agent non-Claude configs should preserve the provider CLI default model."""
         prompt = tmp_path / "prompt.md"
         prompt.write_text("Prompt")
         worktree_base = tmp_path / "worktrees"
@@ -128,19 +130,19 @@ worktrees:
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(f"""
 default_agent:
-  provider: codex
+  provider: {provider}
 
 agents:
   agent:dev:
     prompt: {prompt}
-    ai_system: codex
+    ai_system: {provider}
 worktrees:
   base: {worktree_base}
 """)
 
         config = Config.load(config_file)
 
-        assert config.agents["agent:dev"].provider == "codex"
+        assert config.agents["agent:dev"].provider == provider
         assert config.agents["agent:dev"].model == ""
 
     def test_config_load_from_yaml(self, mock_config_yaml, tmp_path):

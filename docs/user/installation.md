@@ -7,7 +7,7 @@
 - **GNU Make** — `make` on Linux, `gmake` on macOS (`brew install make`)
 - **Git** — for worktree management
 - **GitHub CLI (`gh`)** or a GitHub personal access token — for API access
-- **A supported AI coding tool** — Claude Code, Cursor, or Codex CLI
+- **A supported AI coding tool** — Claude Code, Cursor, Codex CLI, or Gemini CLI
 
 ## Install
 

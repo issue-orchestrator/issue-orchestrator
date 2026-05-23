@@ -27,6 +27,8 @@ from issue_orchestrator.infra.repo_guardrails import (
     MANAGED_PRE_PUSH_MARKER,
 )
 
+_HOOK_RUN_TIMEOUT_SECONDS = 30
+
 
 def _make_managed_wrapper() -> str:
     return (
@@ -232,7 +234,9 @@ def test_chained_wrapper_refuses_managed_project_hook(harness: Path) -> None:
         capture_output=True,
         text=True,
         env={**os.environ, "PATH": os.environ.get("PATH", "")},
-        timeout=10,
+        # Bounded, but tolerant of xdist scheduler delays while push validation
+        # is running many subprocess-heavy hook tests in parallel.
+        timeout=_HOOK_RUN_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0, "wrapper must refuse to exec managed project hook"
@@ -255,7 +259,7 @@ def test_chained_wrapper_refuses_legacy_managed_project_hook(harness: Path) -> N
         capture_output=True,
         text=True,
         env={**os.environ, "PATH": os.environ.get("PATH", "")},
-        timeout=10,
+        timeout=_HOOK_RUN_TIMEOUT_SECONDS,
     )
 
     assert result.returncode != 0, "wrapper must refuse to exec managed project hook"
@@ -291,7 +295,7 @@ def test_chained_wrapper_ignores_skip_project_hook_env_var(harness: Path) -> Non
             "PATH": os.environ.get("PATH", ""),
             "ORCHESTRATOR_SKIP_PROJECT_HOOK": "1",
         },
-        timeout=10,
+        timeout=_HOOK_RUN_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
@@ -315,7 +319,7 @@ def test_chained_wrapper_runs_benign_project_hook(harness: Path) -> None:
         capture_output=True,
         text=True,
         env={**os.environ, "PATH": os.environ.get("PATH", "")},
-        timeout=10,
+        timeout=_HOOK_RUN_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr

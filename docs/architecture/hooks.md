@@ -35,7 +35,7 @@ flowchart TB
 
 | Layer | Mechanism | Bypassable? |
 |-------|-----------|-------------|
-| **1. AI Agent** | Claude `PreToolUse`, Cursor `beforeShellExecution`, Copilot `--deny-tool`, Codex `Execpolicy` | Not by the agent |
+| **1. AI Agent** | Claude `PreToolUse`, Gemini `BeforeTool`, Cursor `beforeShellExecution`, Copilot `--deny-tool`, Codex `Execpolicy` | Not by the agent |
 | **2. Git Hooks** | Pre-push wrapper chains project + orchestrator hooks, audit trail | `--no-verify` (but Layer 1 blocks that) |
 | **3. Server-Side** | GitHub branch protection, required status checks | Cannot be bypassed |
 
@@ -72,6 +72,7 @@ These are installed and refreshed in the target project by `issue-orchestrator s
 | Hook | Type | Location | Purpose | Critical? |
 |------|------|----------|---------|-----------|
 | PreToolUse (Claude) | Claude Code | `.claude/hooks/block-no-verify.sh` | Blocks `git push --no-verify` at AI level | **YES** |
+| BeforeTool (Gemini) | Gemini CLI | `.gemini/hooks/block-no-verify.sh` | Blocks `git push --no-verify` at AI level | **YES** |
 | beforeShellExecution (Cursor) | Cursor | `.cursor/hooks.json` | Blocks `git push --no-verify` at AI level | **YES** |
 | Pre-push | Git | `.githooks/pre-push` | Runs project tests/linters before push | **YES** |
 | Execpolicy rules (Codex) | Codex CLI | `.codex/rules/orchestrator.rules` | Blocks dangerous commands outside sandbox | **YES** |
@@ -85,7 +86,7 @@ These are installed and refreshed in the target project by `issue-orchestrator s
 | Cursor (1.7+) | `beforeShellExecution` in `.cursor/hooks.json` | ✅ Yes (`"permission": "deny"`) | ✅ |
 | GitHub Copilot CLI | `--deny-tool` flags | ✅ Yes (glob patterns) | ✅ |
 | OpenAI Codex CLI | `Execpolicy` rules | ✅ Yes | ✅ |
-| Gemini CLI | In development | ⚠️ Not yet | ❌ |
+| Gemini CLI | `BeforeTool` in `.gemini/settings.json` | ✅ Yes | ✅ |
 | Aider | None (lint only) | ❌ No | ❌ |
 
 **Unsupported AI agents cannot be used** - without hook enforcement, safety guarantees don't hold.
