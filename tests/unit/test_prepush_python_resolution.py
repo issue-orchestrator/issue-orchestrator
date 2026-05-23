@@ -83,7 +83,10 @@ def _run_hook_fragment(
         env=env,
         capture_output=True,
         text=True,
-        timeout=10,
+        # 30s matches the bump applied to test_worktree_prepush_hooks.py
+        # in 10c99c6 — same root cause: heavy xdist parallelism slows the
+        # inner subprocess start. In isolation the hook runs in <5s.
+        timeout=30,
     )
 
 
