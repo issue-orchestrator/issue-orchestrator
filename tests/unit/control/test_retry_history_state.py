@@ -52,6 +52,49 @@ def test_remove_issue_from_history_removes_completed_today_gate() -> None:
     assert state.completed_today == [2]
 
 
+def test_make_retryable_clears_history_and_failed_this_cycle() -> None:
+    """`make_retryable` owns both gates that block planner relaunch.
+
+    Codex review on PR #6359: the retry endpoint used to inline
+    ``session_history`` and ``failed_this_cycle`` mutations directly,
+    bypassing the existing retry/history owner. ``make_retryable``
+    centralizes that clear so callers (the ``/api/issues/{n}/retry``
+    endpoint) just delegate, and the contract is enforced in one place.
+    """
+    state = OrchestratorState(
+        session_history=[_history_entry(1), _history_entry(2), _history_entry(1)],
+        completed_today=[1, 3],
+        failed_this_cycle={1, 2, 999},
+    )
+
+    result = RetryHistoryState(state).make_retryable(1)
+
+    # History side of the clear (matches remove_issue_from_history result).
+    assert result.removed_history_entries == 2
+    assert result.removed_completed_today is True
+    assert [entry.issue_number for entry in state.session_history] == [2]
+    assert state.completed_today == [3]
+    # Progress-flag side of the clear: only the target issue, not others.
+    assert state.failed_this_cycle == {2, 999}
+
+
+def test_make_retryable_is_idempotent_on_already_clean_state() -> None:
+    """Calling `make_retryable` when nothing is queued is a no-op."""
+    state = OrchestratorState(
+        session_history=[_history_entry(2)],
+        completed_today=[2],
+        failed_this_cycle={2},
+    )
+
+    result = RetryHistoryState(state).make_retryable(1)
+
+    assert result.removed_history_entries == 0
+    assert result.removed_completed_today is False
+    assert [entry.issue_number for entry in state.session_history] == [2]
+    assert state.completed_today == [2]
+    assert state.failed_this_cycle == {2}
+
+
 def test_clear_history_clears_completed_today_with_history() -> None:
     state = OrchestratorState(
         session_history=[_history_entry(1)],

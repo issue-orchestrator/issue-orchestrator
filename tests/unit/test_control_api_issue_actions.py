@@ -604,6 +604,70 @@ class TestRetryIssueEndpoint:
         data = response.json()
         assert data["success"] is True
 
+    def test_retry_preserves_gates_when_label_removal_partially_failed(
+        self, client_with_orchestrator
+    ):
+        """When any retry-gating label removal fails, in-memory gates stay.
+
+        Repro: if GitHub still has ``blocked-failed`` on the issue (because
+        the remove_label() call errored) and we cleared session_history /
+        failed_this_cycle anyway, the planner would re-launch into an
+        issue GitHub still considers blocked. Codex review on PR #6359
+        flagged this; the fix is to skip the state reset on partial
+        failure and surface the partial state to logs.
+        """
+        from issue_orchestrator.domain.models import SessionHistoryEntry
+
+        client, mock_orch = client_with_orchestrator
+
+        original_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Timed out issue",
+                agent_type="agent:web",
+                status="timed_out",
+                runtime_minutes=95,
+            )
+        ]
+        original_failed_this_cycle = {123, 999}
+        mock_orch.state.session_history = list(original_history)
+        mock_orch.state.failed_this_cycle = set(original_failed_this_cycle)
+        cached_issue = Issue(
+            number=123,
+            title="Timed out issue",
+            labels=["agent:web", "blocked", "blocked-failed"],
+        )
+        mock_orch.state.cached_scope_issues = [cached_issue]
+        mock_orch.state.cached_queue_issues = []
+        mock_orch.deps.queue_cache_store = MagicMock()
+
+        # Simulate a partial GitHub-side outage: removing `blocked` succeeds
+        # but removing `blocked-failed` errors. The endpoint must NOT
+        # treat the issue as fully unblocked.
+        def selective_remove(_issue_number: int, label: str) -> None:
+            if label == "blocked-failed":
+                raise Exception("Label removal failed")
+
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue_labels = MagicMock(
+            return_value=["agent:web", "blocked", "blocked-failed"]
+        )
+        mock_orch.repository_host.remove_label = MagicMock(
+            side_effect=selective_remove
+        )
+
+        response = client.post("/api/issues/123/retry")
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+
+        # In-memory gates left untouched — planner will keep skipping the
+        # issue, which is correct because GitHub still has blocked-failed.
+        assert mock_orch.state.session_history == original_history
+        assert mock_orch.state.failed_this_cycle == original_failed_this_cycle
+        # The queue-cache upsert is the partner side-effect of the state
+        # reset; on partial failure neither runs.
+        mock_orch.deps.queue_cache_store.save_snapshot.assert_not_called()
+
     def test_retry_prunes_session_history_and_requeues_timed_out_issue(
         self, client_with_orchestrator
     ):
