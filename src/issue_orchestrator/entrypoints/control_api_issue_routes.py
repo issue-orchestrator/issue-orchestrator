@@ -287,7 +287,9 @@ async def retry_issue(
         # confirmed absent on GitHub. If a remove_label() call failed, the
         # issue is still GitHub-side blocked; pruning session_history and
         # failed_this_cycle would just make the planner re-launch into a
-        # still-blocked issue. Skip and surface the partial failure.
+        # still-blocked issue. Skip the state reset AND report partial
+        # failure so the UI does not optimistically requeue the issue and
+        # show a misleading "queued for retry" toast.
         if failed:
             logger.warning(
                 "[retry] Issue #%d retry incomplete: removed=%s, "
@@ -297,13 +299,26 @@ async def retry_issue(
                 removed,
                 failed,
             )
-        else:
-            _reset_state_for_retry(
-                orchestrator,
-                issue_number,
-                removed,
-                deps.with_state_lock,
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": (
+                        f"Issue #{issue_number} not queued for retry: failed to "
+                        f"remove retry-gating labels {failed} from GitHub. "
+                        f"Removed {removed} successfully; retry the action."
+                    ),
+                    "removed_labels": removed,
+                    "failed_labels": failed,
+                },
+                status_code=409,
             )
+
+        _reset_state_for_retry(
+            orchestrator,
+            issue_number,
+            removed,
+            deps.with_state_lock,
+        )
 
         logger.info("[retry] Issue #%d retried, removed labels: %s", issue_number, removed)
         return JSONResponse({
