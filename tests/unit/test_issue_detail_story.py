@@ -170,6 +170,30 @@ def test_status_explanation_surfaces_validation_retry_during_review_exchange() -
     )
 
 
+def test_status_explanation_skips_unhandled_review_exchange_debug_event() -> None:
+    ctx = _ctx(flow_stage="in_progress", active_runtime_minutes=12, active_task_kind="code")
+    events = [
+        {
+            "event": "review_exchange.role_prompted",
+            "source_event": "review_exchange.role_prompted",
+            "role": "reviewer",
+            "round_index": 1,
+            "narrative": "Reviewer prompt sent (round 1)",
+        },
+        {
+            "event": "review_exchange.chapter_recorded",
+            "source_event": "review_exchange.chapter_recorded",
+            "role": "reviewer",
+            "round_index": 1,
+            "narrative": "",
+        },
+    ]
+
+    assert _build_status_explanation(ctx, events) == (
+        "Review exchange: reviewer prompt sent (round 1) (12 min)"
+    )
+
+
 def test_status_explanation_blocked_publish_failed() -> None:
     ctx = _ctx(flow_stage="blocked", labels=("publish-failed",))
     result = _build_status_explanation(ctx, [])

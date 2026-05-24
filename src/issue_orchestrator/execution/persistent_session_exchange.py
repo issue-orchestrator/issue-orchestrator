@@ -68,6 +68,7 @@ from ..domain.review_exchange import (
     build_coder_prompt,
     build_reviewer_prompt,
 )
+from ..domain.review_exchange_failures import round_failure_chapter_label
 from ..domain.review_artifacts import (
     NitPolicy,
     REVIEW_DECISION_FILENAME,
@@ -2392,7 +2393,7 @@ def _send_role_round(  # noqa: PLR0913
             section=CHAPTER_SECTION_TIMEOUT,
             label=(
                 f"Round {cycle_index} {role_value} "
-                f"{_round_failure_label(failure_reason)}"
+                f"{round_failure_chapter_label(failure_reason)}"
             ),
             session_name=session_name,
             emit=emit,
@@ -2481,16 +2482,6 @@ def _send_role_round(  # noqa: PLR0913
         "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
     })
     return response
-
-
-def _round_failure_label(failure_reason: str) -> str:
-    if failure_reason == "timeout":
-        return "timeout"
-    if failure_reason == "process_exited_before_response":
-        return "exited before response"
-    if failure_reason == "invalid_response":
-        return "invalid response"
-    return "no completion"
 
 
 def _legacy_response_from_typed_result(

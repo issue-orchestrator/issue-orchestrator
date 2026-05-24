@@ -482,7 +482,10 @@ def _active_review_exchange_status(events: list[dict[str, Any]]) -> str | None:
         event = events[index]
         event_name = _canonical_event_name(event)
         if event_name.startswith("review_exchange."):
-            return _review_exchange_event_status(event_name, event)
+            status = _review_exchange_event_status(event_name, event)
+            if status:
+                return status
+            continue
         if event_name in {"review.rework_started", "review.rework_completed"}:
             narrative = _event_narrative(event)
             return _lowercase_first(narrative) if narrative else None

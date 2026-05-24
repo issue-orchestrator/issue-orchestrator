@@ -7,6 +7,8 @@ resolution (timeline_presentation) for ``review_exchange.role_prompted``,
 
 from __future__ import annotations
 
+import pytest
+
 from issue_orchestrator.entrypoints.timeline_presentation import (
     _agent_log_context_for_event,
     _review_transcript_context_for_event,
@@ -92,6 +94,32 @@ class TestRoleEventNarrativeEnrichment:
             },
         )
         assert narrative == "Reviewer exited before responding (round 2)"
+
+    @pytest.mark.parametrize(
+        ("failure_reason", "expected"),
+        [
+            (
+                "session_closed",
+                "Reviewer session was closed before responding (round 2)",
+            ),
+            ("prompt_write_failed", "Reviewer prompt delivery failed (round 2)"),
+        ],
+    )
+    def test_role_timeout_narrative_uses_shared_failure_reason_text(
+        self,
+        failure_reason: str,
+        expected: str,
+    ) -> None:
+        narrative = enrich_narrative(
+            "default", "review_exchange.role_timeout",
+            {
+                "role": "reviewer",
+                "round_index": 2,
+                "reason": "no_completion",
+                "failure_reason": failure_reason,
+            },
+        )
+        assert narrative == expected
 
     def test_coder_prompt_narrative_names_rework_reason(self) -> None:
         narrative = enrich_narrative(

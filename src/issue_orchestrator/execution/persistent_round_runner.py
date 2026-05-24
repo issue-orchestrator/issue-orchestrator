@@ -41,6 +41,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..domain.review_exchange_failures import (
+    RoundFailureReason,
+    round_failure_reason_value,
+)
 from ..infra.terminal_recording import MirroredTerminalRecordingWriter
 
 logger = logging.getLogger(__name__)
@@ -64,17 +68,31 @@ _PTY_WRITE_HEARTBEAT_SECONDS = 5.0
 class PersistentRoundError(RuntimeError):
     """Raised when a persistent round fails before a valid response exists."""
 
-    def __init__(self, message: str, *, failure_reason: str = "round_error") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_reason: RoundFailureReason = RoundFailureReason.ROUND_ERROR,
+    ) -> None:
+        if not isinstance(failure_reason, RoundFailureReason):
+            raise TypeError("failure_reason must be a RoundFailureReason")
         super().__init__(message)
-        self.failure_reason = failure_reason
+        self.failure_reason = round_failure_reason_value(failure_reason)
 
 
 class PersistentRoundTimeoutError(TimeoutError):
     """Raised when a round's response file does not appear within the timeout."""
 
-    def __init__(self, message: str, *, failure_reason: str = "timeout") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_reason: RoundFailureReason = RoundFailureReason.TIMEOUT,
+    ) -> None:
+        if not isinstance(failure_reason, RoundFailureReason):
+            raise TypeError("failure_reason must be a RoundFailureReason")
         super().__init__(message)
-        self.failure_reason = failure_reason
+        self.failure_reason = round_failure_reason_value(failure_reason)
 
 
 def persistent_round_failure_reason(exc: BaseException) -> str:
@@ -83,10 +101,10 @@ def persistent_round_failure_reason(exc: BaseException) -> str:
     if isinstance(reason, str) and reason:
         return reason
     if isinstance(exc, PersistentRoundTimeoutError):
-        return "timeout"
+        return RoundFailureReason.TIMEOUT.value
     if isinstance(exc, PersistentRoundError):
-        return "round_error"
-    return "unknown"
+        return RoundFailureReason.ROUND_ERROR.value
+    return RoundFailureReason.UNKNOWN.value
 
 
 @dataclass
@@ -230,7 +248,7 @@ def _write_full(
         except OSError as exc:
             raise PersistentRoundError(
                 f"Could not write prompt to PTY fd={fd} role={label}: {exc}",
-                failure_reason="prompt_write_failed",
+                failure_reason=RoundFailureReason.PROMPT_WRITE_FAILED,
             ) from exc
         if n == 0:
             _drain_during_write_backoff(drain_output)
@@ -352,7 +370,7 @@ def send_round(
     if session.closed:
         raise PersistentRoundError(
             "Session already closed; cannot send another round",
-            failure_reason="session_closed",
+            failure_reason=RoundFailureReason.SESSION_CLOSED,
         )
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -432,7 +450,7 @@ def send_round(
                 )
                 raise PersistentRoundError(
                     f"Agent exited (code={ret}) leaving invalid JSON in {response_file}",
-                    failure_reason="invalid_response",
+                    failure_reason=RoundFailureReason.INVALID_RESPONSE,
                 )
             logger.warning(
                 "[send_round] agent exited before responding role=%s pid=%d "
@@ -442,7 +460,7 @@ def send_round(
             )
             raise PersistentRoundError(
                 f"Agent exited unexpectedly (code={ret}) before responding",
-                failure_reason="process_exited_before_response",
+                failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
             )
         if now() - last_heartbeat >= _SEND_ROUND_HEARTBEAT_SECONDS:
             recording_size = _safe_recording_size(session)

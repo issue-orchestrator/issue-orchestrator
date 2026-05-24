@@ -1058,6 +1058,9 @@ class TestTurnArtifactsPersisted:
         from issue_orchestrator.domain.review_exchange_turn import (
             ReviewExchangeTurnResult,
         )
+        from issue_orchestrator.domain.review_exchange_failures import (
+            RoundFailureReason,
+        )
         from issue_orchestrator.execution.persistent_round_runner import (
             PersistentRoundError,
         )
@@ -1074,7 +1077,9 @@ class TestTurnArtifactsPersisted:
                 "reviewer": [
                     PersistentRoundError(
                         "Agent exited unexpectedly (code=0) before responding",
-                        failure_reason="process_exited_before_response",
+                        failure_reason=(
+                            RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE
+                        ),
                     )
                 ],
                 "coder": [],
@@ -1117,6 +1122,14 @@ class TestTurnArtifactsPersisted:
         assert len(timeouts) == 1
         assert timeouts[0].data["failure_reason"] == "process_exited_before_response"
         assert timeouts[0].data["reason"] == "no_completion"
+        reviewer_sidecar = session_output.read_exchange_chapters(
+            outcome.exchange_dir.parent,  # type: ignore[union-attr]
+            role="reviewer",
+        )
+        assert reviewer_sidecar is not None
+        assert reviewer_sidecar.chapters[-1].label == (
+            "Round 1 reviewer exited before responding"
+        )
 
     def test_coder_timeout_persists_no_completion_result_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

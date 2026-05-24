@@ -45,6 +45,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ..domain.review_exchange_failures import round_failure_narrative_phrase
 from ..ports.timeline_store import TimelineRecord
 from .view_registry import ViewEvent, fan_out
 
@@ -248,17 +249,7 @@ def _enrich_role_timeout(data: dict[str, Any]) -> str | None:
     if not (role and isinstance(ri, int)):
         return None
     failure_reason = data.get("failure_reason") or data.get("reason")
-    if failure_reason == "timeout":
-        return f"{role} timed out (round {ri})"
-    if failure_reason == "process_exited_before_response":
-        return f"{role} exited before responding (round {ri})"
-    if failure_reason == "invalid_response":
-        return f"{role} returned invalid response (round {ri})"
-    if failure_reason == "session_closed":
-        return f"{role} session was closed before responding (round {ri})"
-    if failure_reason == "prompt_write_failed":
-        return f"{role} prompt delivery failed (round {ri})"
-    return f"{role} did not complete (round {ri})"
+    return f"{role} {round_failure_narrative_phrase(failure_reason)} (round {ri})"
 
 
 _NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {
