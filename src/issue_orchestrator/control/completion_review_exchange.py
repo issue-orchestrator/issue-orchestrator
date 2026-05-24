@@ -360,17 +360,25 @@ class CompletionReviewExchange:
         per-agent timeout (per-role * max_rounds + grace), so a healthy
         multi-round exchange routinely outlives the outer budget.
 
-        Returns False when the job is not running, or when it has been
+        Returns False when the job is not running, when it has been
         running long enough that the supervisor would flag the deadline
-        as exceeded — in either case the caller falls through to the
-        existing terminal-cancel path.
+        as exceeded, or when the job has no supervisor deadline at all
+        (``timeout_seconds is None``). The last case must fall through
+        to the terminal-cancel path so the existing unbounded-job halt
+        in ``run_review_exchange_if_needed`` still runs — otherwise a
+        timed-out visible session would defer indefinitely against an
+        unbounded BG job that has no deadline of its own to honor.
         """
         _require_review_exchange_running_query(query)
         if not query.requires_review_exchange:
             return False
         job_id = _review_exchange_job_id(query.issue_number, query.session_name)
         status = self._job_supervisor.status(job_id)
-        return status.running and not status.deadline_exceeded
+        return (
+            status.running
+            and status.timeout_seconds is not None
+            and not status.deadline_exceeded
+        )
 
     def run_review_exchange_if_needed(
         self,

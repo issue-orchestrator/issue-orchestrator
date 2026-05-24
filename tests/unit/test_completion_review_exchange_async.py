@@ -505,6 +505,123 @@ def test_running_background_job_without_deadline_halts(tmp_path: Path) -> None:
     ]
 
 
+def test_within_deadline_for_completion_returns_false_for_unbounded_job(
+    tmp_path: Path,
+) -> None:
+    """An unbounded BG job (timeout_seconds=None) must NOT report as
+    within-deadline — otherwise a TIMED_OUT visible session would defer
+    indefinitely through the finalization matrix instead of falling
+    through to the existing unbounded-job halt path in
+    ``run_review_exchange_if_needed``.
+
+    Reproduces the Codex review finding on PR #6359: ``deadline_exceeded``
+    is False when ``timeout_seconds`` is None, so the original
+    ``return status.running and not status.deadline_exceeded`` was True
+    for unbounded jobs and let the matrix keep deferring forever.
+    """
+    from issue_orchestrator.control.background_job_supervisor import (
+        BackgroundJobSupervisor,
+    )
+    from issue_orchestrator.domain.completion_finalization import (
+        ReviewExchangeRunningQuery,
+    )
+
+    class _NoDeadlineRunner(_FakeReviewExchangeRunner):
+        def job_timeout_seconds(self, **_: Any) -> float | None:
+            return None
+
+    job_runner = _FakeJobRunner()
+    supervisor = BackgroundJobSupervisor(job_runner)
+    review = CompletionReviewExchange(
+        config=_make_config(tmp_path),
+        session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_NoDeadlineRunner(),
+        job_supervisor=supervisor,
+    )
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("must not run synchronously")
+
+    review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=[],
+        actions_taken=[],
+        run_review_exchange_loop=fake_loop,
+    )
+
+    query = ReviewExchangeRunningQuery(
+        issue_number=230,
+        session_name="coding-1",
+        requested_actions=(RequestedAction.CREATE_PR,),
+    )
+    # Sanity: the BG job IS running (just without a deadline).
+    assert review.is_review_exchange_running_for_completion(query) is True
+    # The within-deadline accessor must report False for the unbounded
+    # case so the finalization matrix can hand off to the terminal-cancel
+    # path that owns the unbounded-job halt.
+    assert review.is_review_exchange_within_deadline_for_completion(query) is False
+
+
+def test_within_deadline_for_completion_returns_true_for_bounded_running_job(
+    tmp_path: Path,
+) -> None:
+    """The within-deadline accessor returns True when the BG job has a
+    supervisor deadline and is still inside it — the case the PR #6359
+    backstop is meant to protect from outer-session cancellation.
+    """
+    from issue_orchestrator.control.background_job_supervisor import (
+        BackgroundJobSupervisor,
+    )
+    from issue_orchestrator.domain.completion_finalization import (
+        ReviewExchangeRunningQuery,
+    )
+
+    job_runner = _FakeJobRunner()
+    supervisor = BackgroundJobSupervisor(job_runner)
+    # The default _FakeReviewExchangeRunner reports a 60s deadline, so
+    # the BG job is bounded and still inside it.
+    review = CompletionReviewExchange(
+        config=_make_config(tmp_path),
+        session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_FakeReviewExchangeRunner(),
+        job_supervisor=supervisor,
+    )
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("must not run synchronously")
+
+    review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=231,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=[],
+        actions_taken=[],
+        run_review_exchange_loop=fake_loop,
+    )
+
+    query = ReviewExchangeRunningQuery(
+        issue_number=231,
+        session_name="coding-1",
+        requested_actions=(RequestedAction.CREATE_PR,),
+    )
+    assert review.is_review_exchange_running_for_completion(query) is True
+    assert review.is_review_exchange_within_deadline_for_completion(query) is True
+
+
 def test_background_deadline_failure_cancels_runtime(tmp_path: Path) -> None:
     from issue_orchestrator.control.background_job_supervisor import (
         BackgroundJobSupervisor,
