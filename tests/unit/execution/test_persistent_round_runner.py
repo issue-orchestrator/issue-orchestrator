@@ -27,6 +27,7 @@ from issue_orchestrator.execution.persistent_round_runner import (
     PersistentRoundTimeoutError,
     close_persistent_session,
     open_persistent_session,
+    persistent_round_failure_reason,
     recording_event_count,
     send_round,
 )
@@ -342,7 +343,7 @@ class TestPersistentSessionFailureModes:
             sleeper = clock.make_sleeper(on_sleep=lambda _: clock.__setattr__(
                 "value", max(clock.value, 100.0)
             ))
-            with pytest.raises(PersistentRoundTimeoutError):
+            with pytest.raises(PersistentRoundTimeoutError) as exc_info:
                 send_round(
                     session,
                     prompt="never-responds",
@@ -352,6 +353,7 @@ class TestPersistentSessionFailureModes:
                     now=clock.now,
                     sleep=sleeper,
                 )
+            assert persistent_round_failure_reason(exc_info.value) == "timeout"
         finally:
             close_persistent_session(session)
 
@@ -365,7 +367,7 @@ class TestPersistentSessionFailureModes:
             env=_stub_env(response_file, STUB_FAIL_ON_ROUND="1"),
         )
         try:
-            with pytest.raises(PersistentRoundError, match="exited unexpectedly"):
+            with pytest.raises(PersistentRoundError, match="exited unexpectedly") as exc_info:
                 send_round(
                     session,
                     prompt="will-die",
@@ -373,6 +375,9 @@ class TestPersistentSessionFailureModes:
                     timeout_seconds=5,
                     poll_interval_seconds=0.05,
                 )
+            assert persistent_round_failure_reason(exc_info.value) == (
+                "process_exited_before_response"
+            )
         finally:
             close_persistent_session(session)
 
@@ -388,8 +393,9 @@ class TestPersistentSessionFailureModes:
         send_round(session, prompt="hi", response_file=response_file, timeout_seconds=5)
         close_persistent_session(session)
 
-        with pytest.raises(PersistentRoundError, match="already closed"):
+        with pytest.raises(PersistentRoundError, match="already closed") as exc_info:
             send_round(session, prompt="late", response_file=response_file, timeout_seconds=5)
+        assert persistent_round_failure_reason(exc_info.value) == "session_closed"
 
 
 # ---------------------------------------------------------------------------

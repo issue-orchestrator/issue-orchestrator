@@ -101,7 +101,7 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _user("review_exchange.role_feedback", "Reviewer/coder feedback", "review"),
     ],
     "review_exchange.role_timeout": [
-        _user("review_exchange.role_timeout", "Reviewer/coder timed out", "review"),
+        _user("review_exchange.role_timeout", "Reviewer/coder did not complete", "review"),
     ],
     "review_exchange.chapter_recorded": [
         _ops(

@@ -372,6 +372,14 @@ class TestReviewExchangeTurnResultForNoCompletion:
         assert result.response_text == "Agent produced no response"
         assert result.raw_output is None
 
+    def test_preserves_precise_failure_reason_when_supplied(self) -> None:
+        result = ReviewExchangeTurnResult.for_no_completion(
+            "Agent exited unexpectedly (code=0) before responding",
+            protocol_error_reason="process_exited_before_response",
+        )
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "process_exited_before_response"
+
     def test_round_trips_through_manifest(self) -> None:
         original = ReviewExchangeTurnResult.for_no_completion(
             "process exited with signal 9",

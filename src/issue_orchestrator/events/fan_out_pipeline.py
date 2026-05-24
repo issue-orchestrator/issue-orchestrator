@@ -222,6 +222,12 @@ def _enrich_role_prompted(data: dict[str, Any]) -> str | None:
     if role and isinstance(ri, int):
         if data.get("protocol_retry") is True:
             return f"{role} protocol retry sent (round {ri})"
+        if role == "Coder":
+            rework_reason = data.get("rework_reason")
+            if rework_reason == "nits":
+                return f"Coder addressing review nits (round {ri})"
+            if rework_reason == "changes_requested":
+                return f"Coder addressing requested changes (round {ri})"
         return f"{role} prompt sent (round {ri})"
     return None
 
@@ -239,9 +245,20 @@ def _enrich_role_feedback(data: dict[str, Any]) -> str | None:
 def _enrich_role_timeout(data: dict[str, Any]) -> str | None:
     role = _role_label(data.get("role"))
     ri = data.get("round_index")
-    if role and isinstance(ri, int):
+    if not (role and isinstance(ri, int)):
+        return None
+    failure_reason = data.get("failure_reason") or data.get("reason")
+    if failure_reason == "timeout":
         return f"{role} timed out (round {ri})"
-    return None
+    if failure_reason == "process_exited_before_response":
+        return f"{role} exited before responding (round {ri})"
+    if failure_reason == "invalid_response":
+        return f"{role} returned invalid response (round {ri})"
+    if failure_reason == "session_closed":
+        return f"{role} session was closed before responding (round {ri})"
+    if failure_reason == "prompt_write_failed":
+        return f"{role} prompt delivery failed (round {ri})"
+    return f"{role} did not complete (round {ri})"
 
 
 _NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {

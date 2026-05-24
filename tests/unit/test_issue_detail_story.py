@@ -114,6 +114,62 @@ def test_status_explanation_running_review() -> None:
     assert _build_status_explanation(ctx, []) == "Code review in progress (7 min)"
 
 
+def test_status_explanation_prefers_active_review_exchange_substate() -> None:
+    ctx = _ctx(flow_stage="in_progress", active_runtime_minutes=31, active_task_kind="code")
+    events = [
+        {
+            "event": "review_exchange.role_prompted",
+            "source_event": "review_exchange.role_prompted",
+            "role": "coder",
+            "round_index": 1,
+            "narrative": "Coder addressing review nits (round 1)",
+        }
+    ]
+
+    assert _build_status_explanation(ctx, events) == (
+        "Review exchange: coder addressing review nits (round 1) (31 min)"
+    )
+
+
+def test_status_explanation_names_review_exchange_exit_before_response() -> None:
+    ctx = _ctx(flow_stage="in_progress", active_runtime_minutes=26, active_task_kind="code")
+    events = [
+        {
+            "event": "review_exchange.role_timeout",
+            "source_event": "review_exchange.role_timeout",
+            "role": "reviewer",
+            "round_index": 2,
+            "narrative": "Reviewer exited before responding (round 2)",
+        }
+    ]
+
+    assert _build_status_explanation(ctx, events) == (
+        "Review exchange: reviewer exited before responding (round 2) (26 min)"
+    )
+
+
+def test_status_explanation_surfaces_validation_retry_during_review_exchange() -> None:
+    ctx = _ctx(flow_stage="in_progress", active_runtime_minutes=19, active_task_kind="code")
+    events = [
+        {
+            "event": "review_exchange.role_prompted",
+            "source_event": "review_exchange.role_prompted",
+            "role": "coder",
+            "round_index": 1,
+            "narrative": "Coder addressing requested changes (round 1)",
+        },
+        {
+            "event": "session.validation_retry_needed",
+            "source_event": "session.validation_retry_needed",
+            "narrative": "Validation failed - retrying",
+        },
+    ]
+
+    assert _build_status_explanation(ctx, events) == (
+        "Review exchange: validation failed - retrying (19 min)"
+    )
+
+
 def test_status_explanation_blocked_publish_failed() -> None:
     ctx = _ctx(flow_stage="blocked", labels=("publish-failed",))
     result = _build_status_explanation(ctx, [])

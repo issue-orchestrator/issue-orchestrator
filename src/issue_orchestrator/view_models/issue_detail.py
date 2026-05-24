@@ -432,6 +432,12 @@ def _build_status_explanation(  # noqa: C901 — maps flow stages to status expl
 
     # Running
     if ctx.active_runtime_minutes is not None:
+        review_exchange_status = _active_review_exchange_status(events)
+        if review_exchange_status is not None:
+            return (
+                f"Review exchange: {review_exchange_status} "
+                f"({ctx.active_runtime_minutes} min)"
+            )
         kind_label = {
             "code": "Code session",
             "review": "Code review",
@@ -468,6 +474,95 @@ def _build_status_explanation(  # noqa: C901 — maps flow stages to status expl
         return "In progress"
 
     return _fallback_explanation(events)
+
+
+def _active_review_exchange_status(events: list[dict[str, Any]]) -> str | None:
+    """Return the latest in-flight review-exchange substate, if current."""
+    for index in range(len(events) - 1, -1, -1):
+        event = events[index]
+        event_name = _canonical_event_name(event)
+        if event_name.startswith("review_exchange."):
+            return _review_exchange_event_status(event_name, event)
+        if event_name in {"review.rework_started", "review.rework_completed"}:
+            narrative = _event_narrative(event)
+            return _lowercase_first(narrative) if narrative else None
+        if (
+            event_name in {"session.validation_retry_needed", "session.validation_failed"}
+            and _has_review_exchange_before(events, index)
+        ):
+            narrative = _event_narrative(event)
+            return (
+                _lowercase_first(narrative)
+                if narrative
+                else "validation failed; coder continuing"
+            )
+        if event_name in {"session.started", "agent.coding_started", "rework.started"}:
+            return None
+    return None
+
+
+def _has_review_exchange_before(
+    events: list[dict[str, Any]],
+    before_index: int,
+) -> bool:
+    return any(
+        _canonical_event_name(event).startswith("review_exchange.")
+        for event in events[:before_index]
+    )
+
+
+def _review_exchange_event_status(
+    event_name: str,
+    event: dict[str, Any],
+) -> str | None:
+    round_index = event.get("round_index")
+    round_suffix = (
+        f" (round {round_index})" if isinstance(round_index, int) else ""
+    )
+    if event_name == EventName.REVIEW_EXCHANGE_ROUND_STARTED.value:
+        return f"reviewer running{round_suffix}"
+    if event_name == EventName.REVIEW_EXCHANGE_ROLE_PROMPTED.value:
+        narrative = _event_narrative(event)
+        if narrative:
+            return _lowercase_first(narrative)
+        role = event.get("role")
+        if role == "reviewer":
+            return f"reviewer running{round_suffix}"
+        if role == "coder":
+            return f"coder running{round_suffix}"
+    if event_name == EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK.value:
+        role = event.get("role")
+        response_type = event.get("reviewer_response_type") or event.get("response_type")
+        if role == "reviewer" and response_type == "changes_requested":
+            return f"coder needs requested changes{round_suffix}"
+        narrative = _event_narrative(event)
+        return _lowercase_first(narrative) if narrative else None
+    if event_name == EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT.value:
+        narrative = _event_narrative(event)
+        return _lowercase_first(narrative) if narrative else "role did not complete"
+    if event_name in {
+        EventName.REVIEW_EXCHANGE_ROUND_COMPLETED.value,
+        EventName.REVIEW_EXCHANGE_COMPLETED.value,
+    }:
+        narrative = _event_narrative(event)
+        return _lowercase_first(narrative) if narrative else None
+    return None
+
+
+def _event_narrative(event: dict[str, Any]) -> str:
+    narrative = event.get("narrative")
+    if isinstance(narrative, str) and narrative:
+        return narrative
+    summary = event.get("summary")
+    if isinstance(summary, str) and summary:
+        return summary
+    return ""
+
+
+def _lowercase_first(text: str) -> str:
+    if not text:
+        return ""
+    return text[0].lower() + text[1:]
 
 
 # Canonical blocked-event set lives in ``lifecycle_projection``.  The local

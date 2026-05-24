@@ -251,7 +251,10 @@ class ReviewExchangeTurnResult:
 
     @classmethod
     def for_no_completion(
-        cls, detail: str,
+        cls,
+        detail: str,
+        *,
+        protocol_error_reason: str = "no_completion",
     ) -> "ReviewExchangeTurnResult":
         """Construct a typed result for a turn that never produced a response.
 
@@ -261,11 +264,14 @@ class ReviewExchangeTurnResult:
         ``from_agent_dict(None)`` (which is also a missing-response,
         but the caller did not have an exception detail to surface).
 
-        ``detail`` typically carries the underlying exception's
-        ``str(exc)`` so an operator inspecting the persisted
-        ``round-<n>-<role>-attempt-<m>.result.json`` sees the same root cause the
-        ``REVIEW_EXCHANGE_ROLE_TIMEOUT`` event reports — without
-        having to cross-reference event logs and the recording stream.
+        ``protocol_error_reason`` names the exact current-turn failure
+        while the exchange summary may still use the broader
+        ``*_no_completion`` retry bucket. ``detail`` typically carries
+        the underlying exception's ``str(exc)`` so an operator inspecting
+        the persisted ``round-<n>-<role>-attempt-<m>.result.json`` sees
+        the same root cause the ``REVIEW_EXCHANGE_ROLE_TIMEOUT`` event
+        reports — without having to cross-reference event logs and the
+        recording stream.
         """
         return cls(
             kind=TurnResultKind.PROTOCOL_ERROR,
@@ -273,7 +279,7 @@ class ReviewExchangeTurnResult:
             getting_closer=False,
             raw_json=None,
             raw_output=detail or None,
-            protocol_error_reason="no_completion",
+            protocol_error_reason=protocol_error_reason or "no_completion",
         )
 
     @classmethod

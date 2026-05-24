@@ -62,11 +62,31 @@ _PTY_WRITE_HEARTBEAT_SECONDS = 5.0
 
 
 class PersistentRoundError(RuntimeError):
-    """Raised when the persistent agent dies unexpectedly mid-exchange."""
+    """Raised when a persistent round fails before a valid response exists."""
+
+    def __init__(self, message: str, *, failure_reason: str = "round_error") -> None:
+        super().__init__(message)
+        self.failure_reason = failure_reason
 
 
 class PersistentRoundTimeoutError(TimeoutError):
     """Raised when a round's response file does not appear within the timeout."""
+
+    def __init__(self, message: str, *, failure_reason: str = "timeout") -> None:
+        super().__init__(message)
+        self.failure_reason = failure_reason
+
+
+def persistent_round_failure_reason(exc: BaseException) -> str:
+    """Return the machine reason for a round failure exception."""
+    reason = getattr(exc, "failure_reason", None)
+    if isinstance(reason, str) and reason:
+        return reason
+    if isinstance(exc, PersistentRoundTimeoutError):
+        return "timeout"
+    if isinstance(exc, PersistentRoundError):
+        return "round_error"
+    return "unknown"
 
 
 @dataclass
@@ -209,7 +229,8 @@ def _write_full(
             continue
         except OSError as exc:
             raise PersistentRoundError(
-                f"Could not write prompt to PTY fd={fd} role={label}: {exc}"
+                f"Could not write prompt to PTY fd={fd} role={label}: {exc}",
+                failure_reason="prompt_write_failed",
             ) from exc
         if n == 0:
             _drain_during_write_backoff(drain_output)
@@ -329,7 +350,10 @@ def send_round(
     ``now`` and ``sleep`` are injectable for deterministic tests.
     """
     if session.closed:
-        raise PersistentRoundError("Session already closed; cannot send another round")
+        raise PersistentRoundError(
+            "Session already closed; cannot send another round",
+            failure_reason="session_closed",
+        )
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     if write_timeout_seconds <= 0:
@@ -407,7 +431,8 @@ def send_round(
                     label, session.proc.pid, ret, response_file,
                 )
                 raise PersistentRoundError(
-                    f"Agent exited (code={ret}) leaving invalid JSON in {response_file}"
+                    f"Agent exited (code={ret}) leaving invalid JSON in {response_file}",
+                    failure_reason="invalid_response",
                 )
             logger.warning(
                 "[send_round] agent exited before responding role=%s pid=%d "
@@ -416,7 +441,8 @@ def send_round(
                 poll_iter, bytes_drained_total,
             )
             raise PersistentRoundError(
-                f"Agent exited unexpectedly (code={ret}) before responding"
+                f"Agent exited unexpectedly (code={ret}) before responding",
+                failure_reason="process_exited_before_response",
             )
         if now() - last_heartbeat >= _SEND_ROUND_HEARTBEAT_SECONDS:
             recording_size = _safe_recording_size(session)
