@@ -582,10 +582,20 @@ class TestRetryIssueEndpoint:
             repo="test/repo",
         )
 
-    def test_retry_handles_label_removal_failure_gracefully(
+    def test_retry_reports_failure_when_no_labels_could_be_removed(
         self, client_with_orchestrator
     ):
-        """Retry continues even when label removal fails (label may not exist)."""
+        """If every retry-gating label fails to remove, the endpoint must
+        report failure so the dashboard does not show a misleading
+        "queued for retry" toast for an issue GitHub still has blocked.
+
+        Previously this test asserted ``success: true`` on the grounds that
+        \"silent exception handling is acceptable for missing labels.\" That
+        was wrong: a missing label is not the same as a failed-removal —
+        the wrapper exception fires for any error, including a real
+        GitHub-side failure. Codex review on PR #6359 caught the wider
+        version of this bug.
+        """
         client, mock_orch = client_with_orchestrator
 
         # Mock the repository_host to raise exception on label removal
@@ -599,10 +609,155 @@ class TestRetryIssueEndpoint:
 
         response = client.post("/api/issues/123/retry")
 
-        # Should still succeed (silent exception handling is acceptable for missing labels)
+        assert response.status_code == 409
+        body = response.json()
+        assert body["success"] is False
+        assert "blocked" in body["failed_labels"]
+        assert "pr-pending" in body["failed_labels"]
+        assert body["removed_labels"] == []
+
+    def test_retry_reports_partial_failure_and_preserves_gates(
+        self, client_with_orchestrator
+    ):
+        """When any retry-gating label removal fails, in-memory gates stay
+        AND the endpoint reports the partial failure so the dashboard
+        does not optimistically requeue.
+
+        Repro chain (Codex re-review on PR #6359):
+        1. Endpoint removes some labels but `remove_label('blocked-failed')`
+           errors → GitHub still has the gating label.
+        2. If we cleared session_history / failed_this_cycle anyway, the
+           planner would re-launch into an issue GitHub still considers
+           blocked. (Fixed by the prior commit.)
+        3. If we then returned ``success: true``, the dashboard
+           (``diagnostics_actions.js::retryIssue``) trusts the flag,
+           shows "Issue #N queued for retry", and applies the optimistic
+           requeue — but the planner keeps skipping. The user sees the
+           same "stuck" symptom this PR was meant to remove.
+
+        So the endpoint must surface the partial failure: HTTP 409,
+        ``success=False``, ``failed_labels`` listing what didn't come off,
+        and ``removed_labels`` showing what did. The dashboard's else
+        branch reads ``data.error`` and surfaces it as an error toast.
+        """
+        from issue_orchestrator.domain.models import SessionHistoryEntry
+
+        client, mock_orch = client_with_orchestrator
+
+        original_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Timed out issue",
+                agent_type="agent:web",
+                status="timed_out",
+                runtime_minutes=95,
+            )
+        ]
+        original_failed_this_cycle = {123, 999}
+        mock_orch.state.session_history = list(original_history)
+        mock_orch.state.failed_this_cycle = set(original_failed_this_cycle)
+        cached_issue = Issue(
+            number=123,
+            title="Timed out issue",
+            labels=["agent:web", "blocked", "blocked-failed"],
+        )
+        mock_orch.state.cached_scope_issues = [cached_issue]
+        mock_orch.state.cached_queue_issues = []
+        mock_orch.deps.queue_cache_store = MagicMock()
+
+        # Simulate a partial GitHub-side outage: removing `blocked` succeeds
+        # but removing `blocked-failed` errors. The endpoint must NOT
+        # treat the issue as fully unblocked.
+        def selective_remove(_issue_number: int, label: str) -> None:
+            if label == "blocked-failed":
+                raise Exception("Label removal failed")
+
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue_labels = MagicMock(
+            return_value=["agent:web", "blocked", "blocked-failed"]
+        )
+        mock_orch.repository_host.remove_label = MagicMock(
+            side_effect=selective_remove
+        )
+
+        response = client.post("/api/issues/123/retry")
+
+        # Partial-failure contract: 409 + success=False so the dashboard's
+        # success branch (optimistic requeue + "queued for retry" toast)
+        # is skipped and the user sees the error path.
+        assert response.status_code == 409
+        body = response.json()
+        assert body["success"] is False
+        assert "blocked-failed" in body["failed_labels"]
+        assert "blocked" in body["removed_labels"]
+        assert "error" in body and body["error"]
+
+        # In-memory gates left untouched — planner will keep skipping the
+        # issue, which is correct because GitHub still has blocked-failed.
+        assert mock_orch.state.session_history == original_history
+        assert mock_orch.state.failed_this_cycle == original_failed_this_cycle
+        # The queue-cache upsert is the partner side-effect of the state
+        # reset; on partial failure neither runs.
+        mock_orch.deps.queue_cache_store.save_snapshot.assert_not_called()
+
+    def test_retry_prunes_session_history_and_requeues_timed_out_issue(
+        self, client_with_orchestrator
+    ):
+        """Retry must clear session_history + failed_this_cycle and re-add
+        the issue to the queue cache.
+
+        Reproduces the real failure: a timed-out issue lives in
+        `cached_scope_issues` but `evaluate_issue` rejects it from
+        `cached_queue_issues` as REJECTED_EXCLUDED because its number is in
+        `state.session_history`. Removing only the GitHub label leaves the
+        planner skipping it on every refresh.
+        """
+        from issue_orchestrator.domain.models import SessionHistoryEntry
+
+        client, mock_orch = client_with_orchestrator
+
+        # State after a timeout: history entry present, failed_this_cycle
+        # has the issue, label-side has blocked-failed, scope cache has it
+        # but the queue cache does not.
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Timed out issue",
+                agent_type="agent:web",
+                status="timed_out",
+                runtime_minutes=95,
+            )
+        ]
+        mock_orch.state.failed_this_cycle = {123, 999}
+        cached_issue = Issue(
+            number=123,
+            title="Timed out issue",
+            labels=["agent:web", "blocked-failed"],
+        )
+        mock_orch.state.cached_scope_issues = [cached_issue]
+        mock_orch.state.cached_queue_issues = []  # was rejected at refresh time
+        mock_orch.deps.queue_cache_store = MagicMock()
+
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue_labels = MagicMock(
+            return_value=["agent:web", "blocked-failed"]
+        )
+        mock_orch.repository_host.remove_label = MagicMock()
+
+        response = client.post("/api/issues/123/retry")
+
         assert response.status_code == 200
-        data = response.json()
-        assert data["success"] is True
+        assert response.json()["success"] is True
+
+        # session_history entry for this issue is gone; others would survive.
+        assert [e.issue_number for e in mock_orch.state.session_history] == []
+        # failed_this_cycle no longer contains this issue but keeps others.
+        assert mock_orch.state.failed_this_cycle == {999}
+        # Re-evaluation put the issue back in the queue cache with the
+        # updated label set so the next planner tick can pick it up.
+        assert [i.number for i in mock_orch.state.cached_queue_issues] == [123]
+        assert mock_orch.state.cached_queue_issues[0].labels == ("agent:web",)
+        mock_orch.deps.queue_cache_store.save_snapshot.assert_called_once()
 
 
 class TestCloseIssueEndpoint:

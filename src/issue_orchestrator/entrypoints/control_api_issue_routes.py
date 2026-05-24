@@ -274,18 +274,49 @@ async def retry_issue(
         current_labels = orchestrator.repository_host.get_issue_labels(issue_number)
         labels_to_remove = labels_to_remove_for_retry(current_labels, lm)
 
-        removed = []
+        removed: list[str] = []
+        failed: list[str] = []
         for label in labels_to_remove:
             try:
                 orchestrator.repository_host.remove_label(issue_number, label)
                 removed.append(label)
             except Exception:
-                pass
+                failed.append(label)
 
-        _update_cached_issue_labels(
+        # Only clear in-memory retry gates once every retry-gating label is
+        # confirmed absent on GitHub. If a remove_label() call failed, the
+        # issue is still GitHub-side blocked; pruning session_history and
+        # failed_this_cycle would just make the planner re-launch into a
+        # still-blocked issue. Skip the state reset AND report partial
+        # failure so the UI does not optimistically requeue the issue and
+        # show a misleading "queued for retry" toast.
+        if failed:
+            logger.warning(
+                "[retry] Issue #%d retry incomplete: removed=%s, "
+                "remove_label failed for=%s; in-memory retry gates left in "
+                "place so the planner won't relaunch into a still-blocked issue",
+                issue_number,
+                removed,
+                failed,
+            )
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": (
+                        f"Issue #{issue_number} not queued for retry: failed to "
+                        f"remove retry-gating labels {failed} from GitHub. "
+                        f"Removed {removed} successfully; retry the action."
+                    ),
+                    "removed_labels": removed,
+                    "failed_labels": failed,
+                },
+                status_code=409,
+            )
+
+        _reset_state_for_retry(
             orchestrator,
             issue_number,
-            labels_to_remove,
+            removed,
             deps.with_state_lock,
         )
 
@@ -434,40 +465,66 @@ async def close_issue(
         }, status_code=500)
 
 
-def _update_cached_issue_labels(
+def _reset_state_for_retry(
     orchestrator: "Orchestrator",
     issue_number: int,
-    labels_to_remove: list[str],
+    removed_labels: list[str],
     with_state_lock: StateLockFn,
 ) -> None:
-    """Update cached issue labels after a local retry action."""
+    """Make a timed-out / blocked-failed issue eligible for the planner again.
 
-    def _update() -> None:
+    Removing the GitHub label is not enough: ``QueueCache.evaluate_issue``
+    rejects any issue whose number is in ``state.session_history`` (or
+    ``state.failed_this_cycle``), so the planner keeps skipping it on every
+    refresh until the orchestrator restarts.
+
+    The retry-gate clearing itself is owned by
+    :meth:`RetryHistoryState.make_retryable`; this function coordinates
+    the surrounding queue-cache refresh so the planner sees the issue
+    back in the queue on its next tick instead of waiting for a GitHub
+    refresh. Callers must pass only labels that were successfully
+    removed from GitHub — leaving retry-gating labels in place server-
+    side while clearing local state would let the planner re-launch
+    into an issue GitHub still considers blocked.
+    """
+    from ..control.retry_history_state import RetryHistoryState
+
+    def _reset() -> None:
         state = orchestrator.state
-        for issue in state.cached_queue_issues:
-            if issue.number != issue_number:
-                continue
-            new_labels = tuple(
-                label for label in issue.labels
-                if label not in labels_to_remove
-            )
-            if is_dataclass(issue) and not isinstance(issue, type):
-                updated_issue = replace(issue, labels=new_labels)
-                queue_cache = QueueCache(
-                    orchestrator.config,
-                    state,
-                    orchestrator.deps.queue_cache_store,
-                )
-                queue_cache.upsert_refreshed_issue(updated_issue)
-                queue_cache.save_snapshot()
-                logger.debug(
-                    "[cache] Updated issue #%d labels: removed %s",
-                    issue_number,
-                    labels_to_remove,
-                )
-            break
+        RetryHistoryState(state).make_retryable(issue_number)
 
-    with_state_lock(_update)
+        # Cached queue/scope copies still carry the stale labels; use the
+        # scope copy (queue copy will have been rejected after timeout) and
+        # let `upsert_refreshed_issue` re-evaluate against the freshly
+        # pruned state.
+        cached = next(
+            (
+                issue for issue in state.cached_scope_issues
+                if issue.number == issue_number
+            ),
+            None,
+        )
+        if cached is None or not is_dataclass(cached) or isinstance(cached, type):
+            return
+        new_labels = tuple(
+            label for label in cached.labels
+            if label not in removed_labels
+        )
+        updated_issue = replace(cached, labels=new_labels)
+        queue_cache = QueueCache(
+            orchestrator.config,
+            state,
+            orchestrator.deps.queue_cache_store,
+        )
+        queue_cache.upsert_refreshed_issue(updated_issue)
+        queue_cache.save_snapshot()
+        logger.debug(
+            "[cache] Reset issue #%d for retry: removed labels=%s",
+            issue_number,
+            removed_labels,
+        )
+
+    with_state_lock(_reset)
 
 
 def _get_issue_title(

@@ -347,6 +347,39 @@ class CompletionReviewExchange:
             session_name=query.session_name,
         )
 
+    def is_review_exchange_within_deadline_for_completion(
+        self,
+        query: ReviewExchangeRunningQuery,
+    ) -> bool:
+        """Report whether the in-flight BG job is still inside its own deadline.
+
+        The completion-finalization matrix uses this to decide whether a
+        TIMED_OUT visible session should cancel the BG review-exchange or
+        keep deferring. The BG job's deadline (``review_exchange_supervisor
+        _timeout_seconds``) is *much* larger than the visible session's
+        per-agent timeout (per-role * max_rounds + grace), so a healthy
+        multi-round exchange routinely outlives the outer budget.
+
+        Returns False when the job is not running, when it has been
+        running long enough that the supervisor would flag the deadline
+        as exceeded, or when the job has no supervisor deadline at all
+        (``timeout_seconds is None``). The last case must fall through
+        to the terminal-cancel path so the existing unbounded-job halt
+        in ``run_review_exchange_if_needed`` still runs — otherwise a
+        timed-out visible session would defer indefinitely against an
+        unbounded BG job that has no deadline of its own to honor.
+        """
+        _require_review_exchange_running_query(query)
+        if not query.requires_review_exchange:
+            return False
+        job_id = _review_exchange_job_id(query.issue_number, query.session_name)
+        status = self._job_supervisor.status(job_id)
+        return (
+            status.running
+            and status.timeout_seconds is not None
+            and not status.deadline_exceeded
+        )
+
     def run_review_exchange_if_needed(
         self,
         *,

@@ -201,7 +201,12 @@ class TestBuildReviewerPrompt:
         assert str(validation_record) in prompt
         assert str(run_dir / "validation-record.json") not in prompt
         assert "passed=true" in prompt
-        assert "Do not rerun validation solely to create this file" in prompt
+        # The reviewer must trust validation-record.json and not re-run build/
+        # test tooling itself. Wrapper downloads (services.gradle.org,
+        # repo1.maven.org, npm registry, ...) hang on restricted networks and
+        # eat the per-round budget for no benefit.
+        assert "do NOT run build, test, or validation commands" in prompt
+        assert "./gradlew" in prompt
 
     def test_validation_required_without_injected_record_fails_fast(self) -> None:
         packet = ReviewExchangeTurnPacket(

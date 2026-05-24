@@ -333,3 +333,43 @@ def test_load_validation_failure_summary_tolerates_missing_junit_file(
     )
     assert summary is not None
     assert summary.junit_cases == ()
+
+
+def test_load_validation_failure_summary_tolerates_missing_recorded_junit(
+    tmp_path: Path,
+) -> None:
+    """Recorded manifest paths that no longer exist on disk must not 500.
+
+    Repro: Gradle's ``test`` task wipes ``build/test-results/<task>/``
+    before each run, so a session that crashes/times out mid-validation
+    leaves the run manifest pointing at JUnit files the next run has
+    since deleted. The read-only issue-detail UI route called
+    ``parse_junit_report`` on those paths and surfaced ``ValueError:
+    JUnit XML does not exist`` as a 500. The summary loader now skips
+    missing files (and unparseable ones) so the dashboard renders the
+    basic failure card with empty ``junit_cases`` instead.
+    """
+    worktree, run_dir = _seed_failed_validation(tmp_path)
+    present_path = worktree / "recorded" / "junit-present.xml"
+    missing_path = worktree / "recorded" / "junit-missing.xml"
+    _write_junit_xml(present_path, case_name="test_kept")
+    # missing_path is intentionally never created
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["artifacts"] = {
+        "validation_junit_xml_present": {
+            "kind": "junit_xml",
+            "path": str(present_path),
+            "content_type": "application/xml",
+        },
+        "validation_junit_xml_missing": {
+            "kind": "junit_xml",
+            "path": str(missing_path),
+            "content_type": "application/xml",
+        },
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    summary = load_validation_failure_summary(run_dir)
+
+    assert summary is not None
+    assert [case.display_name for case in summary.junit_cases] == ["test_kept"]

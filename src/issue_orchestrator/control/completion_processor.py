@@ -622,16 +622,26 @@ class CompletionProcessor:
             session_name=session_name,
             requested_actions=requested_actions,
         )
+        running = self.is_review_exchange_running_for_completion(query)
+        # Avoid the extra supervisor lookup on the happy path: the matrix
+        # only consults ``review_exchange_within_deadline`` when the BG job
+        # is actually running. When it isn't, the field stays at its default
+        # (False) and no decision branch reads it.
+        within_deadline = (
+            running
+            and self._review_exchange.is_review_exchange_within_deadline_for_completion(
+                query
+            )
+        )
         command = CompletionFinalizationCommand(
             issue_number=issue_number,
             session_name=session_name,
             outcome=outcome,
             requested_actions=requested_actions,
             runtime_state=runtime_state,
-            review_exchange_running=self.is_review_exchange_running_for_completion(
-                query
-            ),
+            review_exchange_running=running,
             validation_preflight_configured=validation_preflight_configured,
+            review_exchange_within_deadline=within_deadline,
         )
         return decide_completion_finalization(command)
 

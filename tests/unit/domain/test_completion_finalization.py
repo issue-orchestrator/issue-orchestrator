@@ -23,6 +23,7 @@ def _command(
     runtime_state: CompletionRuntimeState = CompletionRuntimeState.TERMINATED,
     review_exchange_running: bool = False,
     validation_preflight_configured: bool = False,
+    review_exchange_within_deadline: bool = False,
 ) -> CompletionFinalizationCommand:
     return CompletionFinalizationCommand(
         issue_number=364,
@@ -32,6 +33,7 @@ def _command(
         runtime_state=runtime_state,
         review_exchange_running=review_exchange_running,
         validation_preflight_configured=validation_preflight_configured,
+        review_exchange_within_deadline=review_exchange_within_deadline,
     )
 
 
@@ -50,12 +52,29 @@ def _command(
             CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE,
         ),
         (
+            # Outer session TIMED_OUT, BG job has overshot its own deadline
+            # too — terminal cancel (pre-existing behavior preserved).
             _command(
                 requested_actions=(RequestedAction.CREATE_PR,),
                 runtime_state=CompletionRuntimeState.TIMED_OUT,
                 review_exchange_running=True,
+                review_exchange_within_deadline=False,
             ),
             CompletionFinalizationDecision.TERMINAL_REVIEW_EXCHANGE_TIMEOUT,
+        ),
+        (
+            # Outer session TIMED_OUT, but BG exchange is still within its
+            # own much larger supervisor budget — defer to the BG job
+            # instead of cancelling healthy in-flight work. Repro: tixmeup
+            # #276/#284/#289 — the outer 90-min coder timeout fired while
+            # a multi-round review exchange was still making progress.
+            _command(
+                requested_actions=(RequestedAction.CREATE_PR,),
+                runtime_state=CompletionRuntimeState.TIMED_OUT,
+                review_exchange_running=True,
+                review_exchange_within_deadline=True,
+            ),
+            CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE,
         ),
         (
             _command(

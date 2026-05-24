@@ -222,9 +222,29 @@ def load_validation_failure_summary_with_config(
 def _load_recorded_junit_cases(
     junit_xml_paths: tuple[str, ...],
 ) -> tuple[JUnitCaseResult, ...]:
+    """Parse recorded JUnit XMLs, tolerating files that no longer exist.
+
+    Manifests record paths captured at validation time. Gradle's ``test``
+    task wipes ``build/test-results/<task>/`` before each run and rewrites
+    it, so a run that crashed, timed out, or was killed mid-suite leaves
+    the manifest pointing at paths the next run has since deleted. The
+    issue-detail route is read-only and must not 500 on this partial
+    state; missing files become "no case data" instead.
+    """
     cases: list[JUnitCaseResult] = []
     for path in junit_xml_paths:
-        cases.extend(parse_junit_report(Path(path)))
+        candidate = Path(path)
+        if not candidate.exists():
+            logger.debug(
+                "Recorded JUnit XML no longer on disk; skipping: %s", candidate
+            )
+            continue
+        try:
+            cases.extend(parse_junit_report(candidate))
+        except ValueError as exc:
+            # Malformed/empty XML (interrupted writer) is the same failure
+            # class as missing — surface to logs, don't 500 the UI.
+            logger.debug("Could not parse recorded JUnit XML %s: %s", candidate, exc)
     return tuple(cases)
 
 

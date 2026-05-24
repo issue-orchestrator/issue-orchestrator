@@ -83,6 +83,24 @@ class RetryHistoryState:
             retried.append(issue_number)
         return retried
 
+    def make_retryable(self, issue_number: int) -> HistoryIssueRemovalResult:
+        """Clear every in-memory planner gate that maps to "this issue has
+        already had a session this run" so the planner will consider the
+        issue again on its next tick.
+
+        Specifically: prune ``session_history`` entries (via
+        :meth:`remove_issue_from_history`) and discard the issue from
+        ``failed_this_cycle``. Both gate :meth:`QueueCache.evaluate_issue`
+        and the planner's eligibility loop — leaving either set means the
+        planner will keep skipping the issue even after retry-gating
+        GitHub labels have been removed. Callers (typically the
+        ``/api/issues/{n}/retry`` endpoint) must only invoke this after
+        confirming the corresponding labels actually came off GitHub.
+        """
+        result = self.remove_issue_from_history(issue_number)
+        self._state.failed_this_cycle.discard(issue_number)
+        return result
+
     def deprioritize_issues(self, issue_numbers: Iterable[int]) -> list[int]:
         """Remove issue numbers from the manual priority queue."""
         removed: list[int] = []
