@@ -68,6 +68,7 @@ from ..domain.review_exchange import (
     build_coder_prompt,
     build_reviewer_prompt,
 )
+from ..domain.review_exchange_failures import round_failure_chapter_label
 from ..domain.review_artifacts import (
     NitPolicy,
     REVIEW_DECISION_FILENAME,
@@ -108,6 +109,7 @@ from .persistent_round_runner import (
     PersistentSession,
     close_persistent_session,
     open_persistent_session,
+    persistent_round_failure_reason,
     recording_event_count,
     send_round,
 )
@@ -1729,6 +1731,46 @@ def _log_addressable_nit_rework(
     )
 
 
+def _coder_role_prompted_event(
+    *,
+    issue_number: int,
+    session_name: str,
+    round_index: int,
+    prompt_chars: int,
+    artifact_refs: list[dict[str, str]],
+    reviewer: ReviewExchangeResponse,
+    decision_result: _ReviewerDecisionResult,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "round_index": round_index,
+        "attempt_index": 1,
+        "role": "coder",
+        "prompt_chars": prompt_chars,
+        "artifact_refs": artifact_refs,
+    }
+    rework_reason = _coder_rework_reason(
+        reviewer=reviewer,
+        decision_result=decision_result,
+    )
+    if rework_reason is not None:
+        event["rework_reason"] = rework_reason
+    return event
+
+
+def _coder_rework_reason(
+    *,
+    reviewer: ReviewExchangeResponse,
+    decision_result: _ReviewerDecisionResult,
+) -> str | None:
+    if decision_result.addressable_nit_rework:
+        return "nits"
+    if reviewer.response_type == "changes_requested":
+        return "changes_requested"
+    return None
+
+
 def _drive_rounds(  # noqa: PLR0913
     *,
     session_output: SessionOutput,
@@ -1991,15 +2033,18 @@ def _drive_rounds(  # noqa: PLR0913
             suffix="started",
             fields=coder_started.to_manifest_fields(),
         )
-        emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": round_index,
-            "attempt_index": 1,
-            "role": "coder",
-            "prompt_chars": len(coder_prompt_text),
-            "artifact_refs": _event_artifact_refs(coder_started.artifact_refs()),
-        })
+        emit(
+            EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+            _coder_role_prompted_event(
+                issue_number=issue_number,
+                session_name=session_name,
+                round_index=round_index,
+                prompt_chars=len(coder_prompt_text),
+                artifact_refs=_event_artifact_refs(coder_started.artifact_refs()),
+                reviewer=reviewer,
+                decision_result=decision_result,
+            ),
+        )
         # Clear the previous turn's completion artifact so a stale file
         # from round N-1 cannot satisfy round N's protocol guardrail —
         # the guardrail must observe an artifact freshly written during
@@ -2304,15 +2349,17 @@ def _send_role_round(  # noqa: PLR0913
             role_label=f"{role_value}@round-{cycle_index}",
         )
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
+        failure_reason = persistent_round_failure_reason(exc)
         logger.warning(
             "[REVIEW_EXCHANGE] %s round failed issue=%s session_name=%s "
-            "round_index=%d attempt_index=%d pid=%d response_file=%s "
+            "round_index=%d attempt_index=%d failure_reason=%s pid=%d response_file=%s "
             "recording_path=%s error=%s",
             role_value,
             issue_number,
             session_name,
             cycle_index,
             attempt_index,
+            failure_reason,
             session.proc.pid,
             response_file,
             recording_path,
@@ -2323,7 +2370,10 @@ def _send_role_round(  # noqa: PLR0913
         # an asymmetric "result.json only on the happy path" contract
         # would leave the on-disk trail incomplete for exactly the
         # rounds that need replay/forensics.
-        typed_result = ReviewExchangeTurnResult.for_no_completion(str(exc))
+        typed_result = ReviewExchangeTurnResult.for_no_completion(
+            str(exc),
+            protocol_error_reason=failure_reason,
+        )
         result_path = _persist_turn_result(
             exchange_dir,
             round_index=cycle_index,
@@ -2341,7 +2391,10 @@ def _send_role_round(  # noqa: PLR0913
             issue_number=issue_number,
             cycle_index=cycle_index,
             section=CHAPTER_SECTION_TIMEOUT,
-            label=f"Round {cycle_index} {role_value} timeout/error",
+            label=(
+                f"Round {cycle_index} {role_value} "
+                f"{round_failure_chapter_label(failure_reason)}"
+            ),
             session_name=session_name,
             emit=emit,
             mirror=mirror,
@@ -2361,6 +2414,7 @@ def _send_role_round(  # noqa: PLR0913
             "round_index": cycle_index,
             "attempt_index": attempt_index,
             "role": role_value,
+            "failure_reason": failure_reason,
             "reason": "no_completion",
             "detail": str(exc),
             "artifact_refs": _event_artifact_refs(completed.artifact_refs()),

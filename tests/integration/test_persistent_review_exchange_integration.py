@@ -636,6 +636,12 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
         if evt.event_type == EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
     ]
     assert role_timeouts == []
+    coder_prompts = [
+        evt for evt in captured_events
+        if evt.event_type == EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
+        and evt.data.get("role") == "coder"
+    ]
+    assert coder_prompts[0].data["rework_reason"] == "nits"
 
 
 def test_one_shot_coder_respawns_for_later_rework_turn(

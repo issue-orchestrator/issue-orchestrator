@@ -7,6 +7,8 @@ resolution (timeline_presentation) for ``review_exchange.role_prompted``,
 
 from __future__ import annotations
 
+import pytest
+
 from issue_orchestrator.entrypoints.timeline_presentation import (
     _agent_log_context_for_event,
     _review_transcript_context_for_event,
@@ -65,9 +67,71 @@ class TestRoleEventNarrativeEnrichment:
     def test_role_timeout_narrative_includes_role_and_round(self) -> None:
         narrative = enrich_narrative(
             "default", "review_exchange.role_timeout",
-            {"role": "coder", "round_index": 4, "reason": "no_completion"},
+            {
+                "role": "coder",
+                "round_index": 4,
+                "reason": "no_completion",
+                "failure_reason": "timeout",
+            },
         )
         assert narrative == "Coder timed out (round 4)"
+
+    def test_role_no_completion_without_precise_reason_is_not_called_timeout(self) -> None:
+        narrative = enrich_narrative(
+            "default", "review_exchange.role_timeout",
+            {"role": "coder", "round_index": 4, "reason": "no_completion"},
+        )
+        assert narrative == "Coder did not complete (round 4)"
+
+    def test_role_exit_before_response_narrative_is_not_called_timeout(self) -> None:
+        narrative = enrich_narrative(
+            "default", "review_exchange.role_timeout",
+            {
+                "role": "reviewer",
+                "round_index": 2,
+                "reason": "no_completion",
+                "failure_reason": "process_exited_before_response",
+            },
+        )
+        assert narrative == "Reviewer exited before responding (round 2)"
+
+    @pytest.mark.parametrize(
+        ("failure_reason", "expected"),
+        [
+            (
+                "session_closed",
+                "Reviewer session was closed before responding (round 2)",
+            ),
+            ("prompt_write_failed", "Reviewer prompt delivery failed (round 2)"),
+        ],
+    )
+    def test_role_timeout_narrative_uses_shared_failure_reason_text(
+        self,
+        failure_reason: str,
+        expected: str,
+    ) -> None:
+        narrative = enrich_narrative(
+            "default", "review_exchange.role_timeout",
+            {
+                "role": "reviewer",
+                "round_index": 2,
+                "reason": "no_completion",
+                "failure_reason": failure_reason,
+            },
+        )
+        assert narrative == expected
+
+    def test_coder_prompt_narrative_names_rework_reason(self) -> None:
+        narrative = enrich_narrative(
+            "default", "review_exchange.role_prompted",
+            {
+                "role": "coder",
+                "round_index": 1,
+                "prompt_chars": 480,
+                "rework_reason": "nits",
+            },
+        )
+        assert narrative == "Coder addressing review nits (round 1)"
 
     def test_unknown_role_falls_back_to_default_narrative(self) -> None:
         narrative = enrich_narrative(

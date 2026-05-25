@@ -93,7 +93,7 @@ records:
       role: reviewer
       section: timeout
       recording_event_index: 38
-      label: "Round 1 reviewer timeout/error"
+      label: "Round 1 reviewer timeout"
 
   - event: review_exchange.role_timeout
     timestamp: "2026-05-04T00:09:05Z"
@@ -103,6 +103,7 @@ records:
       round_index: 1
       role: reviewer
       reason: no_completion
+      failure_reason: timeout
       detail: "Persistent round timed out after 300s"
 
   # `_build_outcome_for_role_timeout` emits the terminal exchange event

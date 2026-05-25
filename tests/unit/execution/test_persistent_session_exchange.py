@@ -1043,7 +1043,7 @@ class TestTurnArtifactsPersisted:
         )
         assert result is not None
         assert result.kind is TurnResultKind.PROTOCOL_ERROR
-        assert result.protocol_error_reason == "no_completion"
+        assert result.protocol_error_reason == "timeout"
         # The exception detail must surface in response_text so an
         # operator inspecting the artifact sees the same root cause
         # the REVIEW_EXCHANGE_ROLE_TIMEOUT event reports.
@@ -1051,6 +1051,85 @@ class TestTurnArtifactsPersisted:
         assert state["registry"].released == [
             (42, "review-exchange-reviewer_no_completion")
         ]
+
+    def test_process_exit_before_response_preserves_precise_failure_reason(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+        )
+        from issue_orchestrator.domain.review_exchange_failures import (
+            RoundFailureReason,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    PersistentRoundError(
+                        "Agent exited unexpectedly (code=0) before responding",
+                        failure_reason=(
+                            RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE
+                        ),
+                    )
+                ],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            events=sink,
+            event_context=EventContext(),
+        )
+
+        assert outcome.reason == "reviewer_no_completion"
+        assert outcome.exchange_dir is not None
+        result_path = (
+            outcome.exchange_dir / "turns" / "round-1-reviewer-attempt-1.result.json"
+        )
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.protocol_error_reason == "process_exited_before_response"
+        timeouts = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+        ]
+        assert len(timeouts) == 1
+        assert timeouts[0].data["failure_reason"] == "process_exited_before_response"
+        assert timeouts[0].data["reason"] == "no_completion"
+        reviewer_sidecar = session_output.read_exchange_chapters(
+            outcome.exchange_dir.parent,  # type: ignore[union-attr]
+            role="reviewer",
+        )
+        assert reviewer_sidecar is not None
+        assert reviewer_sidecar.chapters[-1].label == (
+            "Round 1 reviewer exited before responding"
+        )
 
     def test_coder_timeout_persists_no_completion_result_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1111,7 +1190,7 @@ class TestTurnArtifactsPersisted:
         )
         assert result is not None
         assert result.kind is TurnResultKind.PROTOCOL_ERROR
-        assert result.protocol_error_reason == "no_completion"
+        assert result.protocol_error_reason == "timeout"
         assert "coder hung at 60s" in result.response_text
         assert state["registry"].released == [
             (42, "review-exchange-coder_no_completion")
@@ -1338,6 +1417,8 @@ class TestExchangeTerminationConditions:
         assert any(
             evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
             and evt.data.get("role") == "reviewer"
+            and evt.data.get("failure_reason") == "timeout"
+            and evt.data.get("reason") == "no_completion"
             for evt in sink.events
         )
 
@@ -1893,6 +1974,9 @@ class TestCoderProtocolGuardrail:
             and evt.data.get("role") == "coder"
         ]
         assert [evt.data["attempt_index"] for evt in coder_prompts] == [1, 2, 3]
+        assert coder_prompts[0].data["rework_reason"] == "changes_requested"
+        assert "rework_reason" not in coder_prompts[1].data
+        assert "rework_reason" not in coder_prompts[2].data
         prompt_paths = [
             Path(evt.data["artifact_refs"][0]["path"]) for evt in coder_prompts
         ]
@@ -2330,6 +2414,8 @@ class TestTerminalEventsOnError:
         ]
         assert len(timeouts) == 1
         assert timeouts[0].data["attempt_index"] == 1
+        assert timeouts[0].data["failure_reason"] == "timeout"
+        assert timeouts[0].data["reason"] == "no_completion"
         timeout_refs = timeouts[0].data["artifact_refs"]
         assert [ref["kind"] for ref in timeout_refs] == [
             "prompt",

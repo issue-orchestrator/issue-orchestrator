@@ -45,6 +45,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from ..domain.review_exchange_failures import round_failure_narrative_phrase
 from ..ports.timeline_store import TimelineRecord
 from .view_registry import ViewEvent, fan_out
 
@@ -222,6 +223,12 @@ def _enrich_role_prompted(data: dict[str, Any]) -> str | None:
     if role and isinstance(ri, int):
         if data.get("protocol_retry") is True:
             return f"{role} protocol retry sent (round {ri})"
+        if role == "Coder":
+            rework_reason = data.get("rework_reason")
+            if rework_reason == "nits":
+                return f"Coder addressing review nits (round {ri})"
+            if rework_reason == "changes_requested":
+                return f"Coder addressing requested changes (round {ri})"
         return f"{role} prompt sent (round {ri})"
     return None
 
@@ -239,9 +246,10 @@ def _enrich_role_feedback(data: dict[str, Any]) -> str | None:
 def _enrich_role_timeout(data: dict[str, Any]) -> str | None:
     role = _role_label(data.get("role"))
     ri = data.get("round_index")
-    if role and isinstance(ri, int):
-        return f"{role} timed out (round {ri})"
-    return None
+    if not (role and isinstance(ri, int)):
+        return None
+    failure_reason = data.get("failure_reason") or data.get("reason")
+    return f"{role} {round_failure_narrative_phrase(failure_reason)} (round {ri})"
 
 
 _NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {

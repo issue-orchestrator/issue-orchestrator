@@ -571,9 +571,9 @@ def _summary_from_data(data: dict[str, Any], event_name: str = "") -> str | None
         return None
     if event_name == "review_exchange.role_timeout":
         # Same rationale: `data["reason"]` here is a machine code
-        # (`"no_completion"`, `"protocol_error"`) for downstream
-        # policy. The narrative ("Reviewer timed out (round N)") is
-        # the user-facing text.
+        # (`"no_completion"`) for downstream retry policy. The
+        # narrative carries the precise user-facing failure reason
+        # from `failure_reason` when present.
         return None
     for key in ("reason", "summary", "error", "status", "outcome"):
         value = data.get(key)
