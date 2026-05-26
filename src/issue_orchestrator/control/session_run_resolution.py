@@ -101,8 +101,5 @@ def _session_name_from_completion_path(
     session_output: SessionOutput,
     completion_path: str | None,
 ) -> str | None:
-    extractor = getattr(session_output, "session_name_from_path", None)
-    if not callable(extractor):
-        return None
-    session_name = extractor(completion_path)
+    session_name = session_output.session_name_from_path(completion_path)
     return session_name if isinstance(session_name, str) and session_name else None
