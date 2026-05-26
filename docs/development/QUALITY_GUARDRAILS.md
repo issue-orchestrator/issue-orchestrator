@@ -46,6 +46,20 @@ python tools/quality_guardrails.py --accept control_policy_branch_sites:src/issu
 
 Targeted acceptance updates only the named key, then re-runs the ratchet comparison. Any unrelated increases remain violations.
 
+Stale baseline entries are ignored by the normal ratchet so cleanup PRs can reduce metrics without failing. Check for stale entries explicitly when maintaining the baseline:
+
+```bash
+python tools/quality_guardrails.py --check-stale
+```
+
+When a stale entry should be removed, prune the specific key rather than regenerating the whole baseline:
+
+```bash
+python tools/quality_guardrails.py --prune control_policy_branch_sites:src/issue_orchestrator/control/old_path.py
+```
+
+Targeted pruning only removes keys that are already stale. It refuses to prune current metrics.
+
 ## Adding Guardrails
 
 Add guardrails in small PRs:

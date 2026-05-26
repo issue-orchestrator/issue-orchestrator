@@ -185,6 +185,77 @@ def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
 
 
+def test_check_stale_reports_removed_metric(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path, max_lines=20)
+    stale = tmp_path / "src" / "pkg" / "stale.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(
+        "def f(status):\n"
+        "    if status == 'retry':\n"
+        "        return True\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+    stale.unlink()
+
+    result = _run(tmp_path, "--check-stale")
+
+    assert result.returncode == 2
+    assert "stale baseline entries" in result.stderr
+    assert "src/pkg/stale.py [policy_sites]" in result.stderr
+
+
+def test_prune_removes_only_named_stale_key(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path, max_lines=20)
+    stale = tmp_path / "src" / "pkg" / "stale.py"
+    other_stale = tmp_path / "src" / "pkg" / "other_stale.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(
+        "def f(status):\n"
+        "    if status == 'retry':\n"
+        "        return True\n",
+        encoding="utf-8",
+    )
+    other_stale.write_text(
+        "def g(status):\n"
+        "    if status == 'retry':\n"
+        "        return True\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+    stale.unlink()
+    other_stale.unlink()
+
+    result = _run(tmp_path, "--prune", "policy_sites:src/pkg/stale.py", "--check-stale")
+
+    assert result.returncode == 2
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert "policy_sites:src/pkg/stale.py" not in baseline["metrics"]
+    assert "policy_sites:src/pkg/other_stale.py" in baseline["metrics"]
+    assert "src/pkg/other_stale.py [policy_sites]" in result.stderr
+
+
+def test_prune_rejects_current_metric_key(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path, max_lines=20)
+    current = tmp_path / "src" / "pkg" / "current.py"
+    current.parent.mkdir(parents=True)
+    current.write_text(
+        "def f(status):\n"
+        "    if status == 'retry':\n"
+        "        return True\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+
+    result = _run(tmp_path, "--prune", "policy_sites:src/pkg/current.py")
+
+    assert result.returncode == 1
+    assert "cannot prune current metric key" in result.stderr
+
+
 def test_missing_baseline_returns_error(tmp_path: Path) -> None:
     _copy_runner(tmp_path)
     _write_config(tmp_path)
@@ -222,6 +293,7 @@ def test_json_output_includes_metrics_and_violations(tmp_path: Path) -> None:
     assert result.returncode == 2
     payload = json.loads(result.stdout)
     assert payload["metrics"]
+    assert payload["stale_entries"] == []
     assert payload["violations"][0]["key"] == "policy_sites:src/pkg/control.py"
 
 

@@ -69,6 +69,25 @@ class RatchetViolation:
         )
 
 
+@dataclass(frozen=True)
+class StaleBaselineEntry:
+    key: str
+    rule_id: str
+    kind: str
+    path: str
+    value: int
+    detail: str
+
+    def fmt(self) -> str:
+        return f"{self.path} [{self.rule_id}] stale {self.kind}: {self.value} ({self.detail})"
+
+
+@dataclass(frozen=True)
+class GuardrailResult:
+    violations: list[RatchetViolation]
+    stale_entries: list[StaleBaselineEntry]
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
@@ -279,9 +298,7 @@ def collect_metrics(root: Path, config: Mapping[str, Any]) -> list[Metric]:
 
 
 def compare_to_baseline(metrics: Sequence[Metric], baseline: Mapping[str, Any]) -> list[RatchetViolation]:
-    raw_entries = baseline.get("metrics", {}) or {}
-    if not isinstance(raw_entries, dict):
-        raise ValueError("baseline field 'metrics' must be a mapping")
+    raw_entries = _baseline_entries(baseline)
 
     current_by_key = {metric.key: metric for metric in metrics}
     violations: list[RatchetViolation] = []
@@ -322,6 +339,39 @@ def compare_to_baseline(metrics: Sequence[Metric], baseline: Mapping[str, Any]) 
     return violations
 
 
+def _baseline_entries(baseline: Mapping[str, Any]) -> dict[str, Any]:
+    raw_entries = baseline.get("metrics", {}) or {}
+    if not isinstance(raw_entries, dict):
+        raise ValueError("baseline field 'metrics' must be a mapping")
+    return raw_entries
+
+
+def find_stale_baseline_entries(
+    metrics: Sequence[Metric],
+    baseline: Mapping[str, Any],
+) -> list[StaleBaselineEntry]:
+    current_keys = {metric.key for metric in metrics}
+    stale: list[StaleBaselineEntry] = []
+
+    for key, raw_entry in sorted(_baseline_entries(baseline).items()):
+        if key in current_keys:
+            continue
+        if not isinstance(raw_entry, dict):
+            raise ValueError(f"baseline entry {key!r} must be a mapping")
+        stale.append(
+            StaleBaselineEntry(
+                key=key,
+                rule_id=str(raw_entry.get("rule_id", "<unknown>")),
+                kind=str(raw_entry.get("kind", "<unknown>")),
+                path=str(raw_entry.get("path", raw_entry.get("metric_id", key))),
+                value=int(raw_entry.get("value", 0)),
+                detail=str(raw_entry.get("detail", "baseline entry is not present in current metrics")),
+            )
+        )
+
+    return stale
+
+
 def accept_baseline_keys(
     baseline_path: Path,
     metrics: Sequence[Metric],
@@ -348,7 +398,39 @@ def accept_baseline_keys(
     return baseline
 
 
-def _print_text_report(metrics: Sequence[Metric], violations: Sequence[RatchetViolation]) -> None:
+def prune_baseline_keys(
+    baseline_path: Path,
+    metrics: Sequence[Metric],
+    keys: Sequence[str],
+) -> dict[str, Any]:
+    if not baseline_path.exists():
+        raise ValueError(f"baseline not found: {baseline_path}")
+
+    baseline = _load_baseline(baseline_path)
+    raw_entries = _baseline_entries(baseline)
+    current_keys = {metric.key for metric in metrics}
+
+    missing = [key for key in keys if key not in raw_entries]
+    if missing:
+        raise ValueError(f"cannot prune key(s) not present in baseline: {', '.join(missing)}")
+
+    current = [key for key in keys if key in current_keys]
+    if current:
+        raise ValueError(f"cannot prune current metric key(s): {', '.join(current)}")
+
+    baseline["version"] = BASELINE_VERSION
+    for key in keys:
+        del raw_entries[key]
+
+    _write_baseline_data(baseline_path, baseline)
+    return baseline
+
+
+def _print_text_report(
+    metrics: Sequence[Metric],
+    violations: Sequence[RatchetViolation],
+    stale_entries: Sequence[StaleBaselineEntry],
+) -> None:
     print(f"Quality guardrails tracked metrics: {len(metrics)}")
     by_rule: dict[str, int] = {}
     for metric in metrics:
@@ -356,15 +438,35 @@ def _print_text_report(metrics: Sequence[Metric], violations: Sequence[RatchetVi
     for rule_id, count in sorted(by_rule.items()):
         print(f"  {rule_id}: {count}")
 
+    if stale_entries:
+        print("\nQuality guardrails stale baseline entries:", file=sys.stderr)
+        for entry in stale_entries:
+            print(f"  {entry.fmt()}", file=sys.stderr)
+
     if violations:
         print("\nQuality guardrails ratchet violations:", file=sys.stderr)
         for violation in violations:
             print(f"  {violation.fmt()}", file=sys.stderr)
 
 
-def _print_json_report(metrics: Sequence[Metric], violations: Sequence[RatchetViolation]) -> None:
+def _print_json_report(
+    metrics: Sequence[Metric],
+    violations: Sequence[RatchetViolation],
+    stale_entries: Sequence[StaleBaselineEntry],
+) -> None:
     payload = {
         "metrics": [metric.to_baseline_entry() for metric in metrics],
+        "stale_entries": [
+            {
+                "key": entry.key,
+                "rule_id": entry.rule_id,
+                "kind": entry.kind,
+                "path": entry.path,
+                "value": entry.value,
+                "detail": entry.detail,
+            }
+            for entry in stale_entries
+        ],
         "violations": [
             {
                 "key": violation.key,
@@ -381,6 +483,70 @@ def _print_json_report(metrics: Sequence[Metric], violations: Sequence[RatchetVi
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def _operation_count(args: argparse.Namespace) -> int:
+    return int(args.update_baseline) + int(bool(args.accept)) + int(bool(args.prune))
+
+
+def _load_required_baseline(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise ValueError(f"baseline not found: {path}")
+    return _load_baseline(path)
+
+
+def _compare_and_check_stale(
+    metrics: Sequence[Metric],
+    baseline: Mapping[str, Any],
+    *,
+    check_stale: bool,
+) -> GuardrailResult:
+    stale_entries = find_stale_baseline_entries(metrics, baseline) if check_stale else []
+    return GuardrailResult(
+        violations=compare_to_baseline(metrics, baseline),
+        stale_entries=stale_entries,
+    )
+
+
+def _run_guardrail_operation(
+    args: argparse.Namespace,
+    baseline_path: Path,
+    metrics: Sequence[Metric],
+) -> GuardrailResult:
+    if _operation_count(args) > 1:
+        raise ValueError("--update-baseline, --accept, and --prune cannot be combined")
+
+    if args.update_baseline:
+        _write_baseline(baseline_path, metrics)
+        return GuardrailResult(violations=[], stale_entries=[])
+
+    if args.accept:
+        baseline = accept_baseline_keys(baseline_path, metrics, args.accept)
+        return _compare_and_check_stale(metrics, baseline, check_stale=args.check_stale)
+
+    if args.prune:
+        baseline = prune_baseline_keys(baseline_path, metrics, args.prune)
+        return _compare_and_check_stale(metrics, baseline, check_stale=args.check_stale)
+
+    if args.fail_on_new or args.check_stale:
+        baseline = _load_required_baseline(baseline_path)
+        return GuardrailResult(
+            violations=compare_to_baseline(metrics, baseline) if args.fail_on_new else [],
+            stale_entries=find_stale_baseline_entries(metrics, baseline) if args.check_stale else [],
+        )
+
+    return GuardrailResult(violations=[], stale_entries=[])
+
+
+def _print_operation_messages(args: argparse.Namespace, root: Path, baseline_path: Path) -> None:
+    if args.update_baseline:
+        print(f"Quality guardrails baseline updated: {baseline_path.relative_to(root)}")
+    if args.accept:
+        accepted = ", ".join(args.accept)
+        print(f"Quality guardrails accepted baseline key(s): {accepted}")
+    if args.prune:
+        pruned = ", ".join(args.prune)
+        print(f"Quality guardrails pruned baseline key(s): {pruned}")
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".", help="Repository root to scan")
@@ -394,6 +560,14 @@ def main(argv: list[str]) -> int:
         metavar="KEY",
         help="Update one baseline metric key from current results without rewriting all entries",
     )
+    parser.add_argument(
+        "--prune",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="Remove one stale baseline metric key without rewriting all entries",
+    )
+    parser.add_argument("--check-stale", action="store_true", help="Fail when the baseline contains stale entries")
     parser.add_argument("--fail-on-new", action="store_true")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(argv)
@@ -405,34 +579,15 @@ def main(argv: list[str]) -> int:
     try:
         config = _load_yaml(config_path)
         metrics = collect_metrics(root, config)
-        violations: list[RatchetViolation] = []
-
-        if args.update_baseline and args.accept:
-            print("Quality guardrails error: --update-baseline and --accept cannot be combined", file=sys.stderr)
-            return 1
-
-        if args.update_baseline:
-            _write_baseline(baseline_path, metrics)
-        elif args.accept:
-            baseline = accept_baseline_keys(baseline_path, metrics, args.accept)
-            violations = compare_to_baseline(metrics, baseline)
-        elif args.fail_on_new:
-            if not baseline_path.exists():
-                print(f"Quality guardrails baseline not found: {baseline_path}", file=sys.stderr)
-                return 1
-            violations = compare_to_baseline(metrics, _load_baseline(baseline_path))
+        result = _run_guardrail_operation(args, baseline_path, metrics)
 
         if args.format == "json":
-            _print_json_report(metrics, violations)
+            _print_json_report(metrics, result.violations, result.stale_entries)
         else:
-            if args.update_baseline:
-                print(f"Quality guardrails baseline updated: {baseline_path.relative_to(root)}")
-            if args.accept:
-                accepted = ", ".join(args.accept)
-                print(f"Quality guardrails accepted baseline key(s): {accepted}")
-            _print_text_report(metrics, violations)
+            _print_operation_messages(args, root, baseline_path)
+            _print_text_report(metrics, result.violations, result.stale_entries)
 
-        return 2 if violations else 0
+        return 2 if result.violations or result.stale_entries else 0
     except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         print(f"Quality guardrails error: {exc}", file=sys.stderr)
         return 1
