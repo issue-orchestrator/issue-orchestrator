@@ -35,6 +35,7 @@ rules:
       - src/issue_orchestrator/view_models/**/*.py
     exclude:
       - src/issue_orchestrator/infra/settings_schema.py
+      - src/issue_orchestrator/static/vendor/**
     terms:
       - review_exchange
       - review exchange
