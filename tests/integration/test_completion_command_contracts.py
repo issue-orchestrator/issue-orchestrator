@@ -439,7 +439,14 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager
         get_issue_machine_fn=lambda _issue: None,
         get_session_machine_fn=lambda _terminal: None,
         get_review_machine_fn=lambda _pr: None,
-        session_output=type("SessionOutput", (), {"find_run_dir": lambda self, *_args, **_kwargs: None})(),
+        session_output=type(
+            "SessionOutput",
+            (),
+            {
+                "find_run_dir": lambda self, *_args, **_kwargs: None,
+                "session_name_from_path": lambda self, _path: None,
+            },
+        )(),
     )
 
     for _ in range(3):
