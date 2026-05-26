@@ -65,12 +65,12 @@
       "value": 2
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_processor.py": {
-      "detail": "22 branch site(s) mention lifecycle/control terms",
+      "detail": "21 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/completion_processor.py",
       "path": "src/issue_orchestrator/control/completion_processor.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 22
+      "value": 21
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_record_validation.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -688,14 +688,6 @@
       "rule_id": "control_policy_branch_sites",
       "value": 1
     },
-    "control_policy_branch_sites:src/issue_orchestrator/execution/agent_runner_providers/codex.py": {
-      "detail": "2 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/execution/agent_runner_providers/codex.py",
-      "path": "src/issue_orchestrator/execution/agent_runner_providers/codex.py",
-      "rule_id": "control_policy_branch_sites",
-      "value": 2
-    },
     "control_policy_branch_sites:src/issue_orchestrator/execution/agent_runner_types.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -727,6 +719,14 @@
       "path": "src/issue_orchestrator/execution/control_center_runtime.py",
       "rule_id": "control_policy_branch_sites",
       "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/git_working_copy.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/git_working_copy.py",
+      "path": "src/issue_orchestrator/execution/git_working_copy.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/execution/goal_pilot_store.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
@@ -783,6 +783,14 @@
       "path": "src/issue_orchestrator/execution/run_evidence.py",
       "rule_id": "control_policy_branch_sites",
       "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/sandbox_verify.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/sandbox_verify.py",
+      "path": "src/issue_orchestrator/execution/sandbox_verify.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/execution/session_output_adapter.py": {
       "detail": "8 branch site(s) mention lifecycle/control terms",
@@ -1129,12 +1137,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/issue_menus.js": {
-      "detail": "10 branch site(s) mention lifecycle/control terms",
+      "detail": "9 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/static/js/dashboard/issue_menus.js",
       "path": "src/issue_orchestrator/static/js/dashboard/issue_menus.js",
       "rule_id": "control_policy_branch_sites",
-      "value": 10
+      "value": 9
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/kanban_columns.js": {
       "detail": "6 branch site(s) mention lifecycle/control terms",

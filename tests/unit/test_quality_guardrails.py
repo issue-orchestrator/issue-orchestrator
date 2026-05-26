@@ -35,6 +35,8 @@ def _write_config(root: Path, *, max_lines: int = 2) -> None:
                 terms:
                   - retry
                   - status
+                  - label
+                  - session_state
             """
         ).strip()
         + "\n",
@@ -150,6 +152,48 @@ def test_new_policy_site_below_floor_does_not_fail(tmp_path: Path) -> None:
     result = _run(tmp_path, "--fail-on-new")
 
     assert result.returncode == 0, result.stderr
+
+
+def test_policy_terms_do_not_match_substrings(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path, max_lines=20)
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "def f(prestatus_enabled, retryable):\n"
+        "    if prestatus_enabled:\n"
+        "        return retryable\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert "policy_sites:src/pkg/control.py" not in baseline["metrics"]
+
+
+def test_policy_terms_match_identifier_tokens_and_plurals(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path, max_lines=20)
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "def f(statusCode, labels, session_state):\n"
+        "    if statusCode:\n"
+        "        return True\n"
+        "    if labels:\n"
+        "        return True\n"
+        "    if session_state:\n"
+        "        return labels\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert baseline["metrics"]["policy_sites:src/pkg/control.py"]["value"] == 3
 
 
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:

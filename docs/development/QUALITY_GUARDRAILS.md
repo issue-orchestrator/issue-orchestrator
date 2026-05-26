@@ -23,6 +23,8 @@ The first rule set tracks:
 
 These are proxies for the failure pattern captured in issue #6362: control policy spreading across multiple owners, projections, and execution paths.
 
+Lifecycle/control vocabulary is matched on lexical tokens and configured phrases, not raw substrings. For example, `statusCode`, `session_state`, and `review-exchange` can match configured terms, while unrelated tokens such as `prestatus` do not.
+
 ## Ratchet Model
 
 Existing violations are stored in the baseline. A PR fails when it:
