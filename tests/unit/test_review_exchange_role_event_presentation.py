@@ -11,6 +11,7 @@ import pytest
 
 from issue_orchestrator.entrypoints.timeline_presentation import (
     _agent_log_context_for_event,
+    _phase_status_icon,
     _review_transcript_context_for_event,
 )
 from issue_orchestrator.events.fan_out_pipeline import enrich_narrative
@@ -142,6 +143,9 @@ class TestRoleEventNarrativeEnrichment:
 
 
 class TestRoleEventContextResolution:
+    def test_timed_out_phase_status_uses_failure_icon(self) -> None:
+        assert _phase_status_icon("timed_out") == "✗"
+
     def test_transcript_context_routes_to_role_specific_transcript(self) -> None:
         ctx = _review_transcript_context_for_event(
             {"role": "reviewer", "round_index": 2},

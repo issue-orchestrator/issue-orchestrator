@@ -1,0 +1,52 @@
+version: 1
+
+rules:
+  - id: oversized_control_hotspots
+    type: file_line_budget
+    description: >
+      Prevent high-risk control files from growing without explicit ratchet
+      approval. Existing hotspots are baselined; PRs fail when they increase
+      tracked line counts or introduce a new over-budget file.
+    max_lines: 800
+    include:
+      - src/issue_orchestrator/control/**/*.py
+      - src/issue_orchestrator/entrypoints/**/*.py
+      - src/issue_orchestrator/execution/**/*.py
+      - src/issue_orchestrator/infra/**/*.py
+      - src/issue_orchestrator/view_models/**/*.py
+    exclude:
+      - src/issue_orchestrator/infra/settings_schema.py
+
+  - id: control_policy_branch_sites
+    type: control_policy_branch_sites
+    new_metric_min_value: 3
+    description: >
+      Track branch sites that mention lifecycle/control vocabulary. This is a
+      proxy for control-policy scatter: adding new decision sites should be
+      intentional and should normally route through an owner or decision table.
+      New files with one or two matches are reported but do not fail the ratchet
+      until they cross this rule's `new_metric_min_value`.
+    include:
+      - src/issue_orchestrator/control/**/*.py
+      - src/issue_orchestrator/entrypoints/**/*.py
+      - src/issue_orchestrator/execution/**/*.py
+      - src/issue_orchestrator/infra/**/*.py
+      - src/issue_orchestrator/static/**/*.js
+      - src/issue_orchestrator/view_models/**/*.py
+    exclude:
+      - src/issue_orchestrator/infra/settings_schema.py
+    terms:
+      - review_exchange
+      - review exchange
+      - review-exchange
+      - completion
+      - retry
+      - reset
+      - requeue
+      - timeout
+      - timed_out
+      - session_state
+      - status
+      - reason
+      - label
+      - validation

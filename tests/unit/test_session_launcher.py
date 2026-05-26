@@ -564,6 +564,8 @@ class TestLaunchIssueSession:
         assert result.session is not None
         assert result.session.terminal_id == "issue-123"
         assert result.session.key.task == TaskKind.CODE
+        assert result.session.run_dir is not None
+        assert result.session.run_dir.name.endswith("__coding-1")
 
     def test_fails_when_no_agent_type(self, session_launcher):
         """Verify fails when issue has no agent type label (line 195)."""
@@ -907,6 +909,8 @@ class TestLaunchValidationRetrySession:
         assert result.session.terminal_id == "issue-123"
         assert result.session.validation_retry_count == 1
         assert result.session.original_prompt == "Work on issue #123: Fix checkout"
+        assert result.session.run_dir is not None
+        assert result.session.run_dir.name.endswith("__coding-2")
         assert mock_worktree_manager.create_calls[0]["branch_name"] == "123-fix-checkout"
         command = launcher_bundle.create_session_calls[0]["cmd"]
         assert "Validation Retry" in command
@@ -948,6 +952,8 @@ class TestLaunchReviewSession:
         assert result.session is not None
         assert result.session.terminal_id == "review-456"
         assert result.session.key.task == TaskKind.REVIEW
+        assert result.session.run_dir is not None
+        assert result.session.run_dir.name.endswith("__review-1")
 
     def test_fails_when_no_review_agent_configured(self, session_launcher):
         """Verify fails when no code review agent configured (line 418)."""
@@ -1163,6 +1169,8 @@ class TestLaunchReworkSession:
         assert result.session is not None
         assert result.session.terminal_id == "rework-123"
         assert result.session.key.task == TaskKind.REWORK
+        assert result.session.run_dir is not None
+        assert result.session.run_dir.name.endswith("__coding-2")
         started = next(e for e in mock_events.events if str(e.name) == "rework.started")
         assert started.data["agent"] == "agent:web"
         assert started.data["task"] == "rework"
@@ -2476,6 +2484,67 @@ class TestHandleSessionCompletion:
         assert calls == ["process_completion", "kill", "actions"]
         assert state.active_sessions == []
         assert len(state.discovered_failures) == 1
+
+    def test_completion_artifacts_use_recorded_run_dir_without_lookup(
+        self,
+        sample_agent_config,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Completion diagnostics use the launch-recorded artifact path."""
+        issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+        state = OrchestratorState(active_sessions=[session])
+        run_dir = session.worktree_path / ".issue-orchestrator" / "sessions" / "20260525__coding-1"
+        session.run_dir = run_dir
+        analyzed: list[Path] = []
+
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.return_value = MagicMock(
+            actions=[],
+            history_entry=SessionHistoryEntry(
+                issue_number=123,
+                title="Test Issue",
+                agent_type="agent:web",
+                status="timed_out",
+                runtime_minutes=90,
+            ),
+            should_defer_cleanup=False,
+            pending_cleanup=None,
+            should_queue_review=False,
+            pr_url=None,
+            pr_number=None,
+        )
+        session_output = MagicMock(spec=SessionOutput)
+        monkeypatch.setattr(
+            "issue_orchestrator.control.session_completion.run_session_analysis",
+            lambda path: analyzed.append(path),
+        )
+
+        handle_session_completion(
+            session=session,
+            status=SessionStatus.TIMED_OUT,
+            state=state,
+            completion_handler=mock_completion_handler,
+            action_applier=MagicMock(),
+            observer=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=lambda _name: None,
+            config=MagicMock(),
+            session_output=session_output,
+        )
+
+        session_output.find_run_dir.assert_not_called()
+        session_output.read_manifest.assert_not_called()
+        session_output.attach_claude_log.assert_called_once_with(run_dir)
+        assert analyzed == [run_dir]
 
     def test_completed_session_stops_runtime_before_cleanup_actions(
         self,
