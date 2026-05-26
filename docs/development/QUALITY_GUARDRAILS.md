@@ -46,6 +46,24 @@ python tools/quality_guardrails.py --accept control_policy_branch_sites:src/issu
 
 Targeted acceptance updates only the named key, then re-runs the ratchet comparison. Any unrelated increases remain violations.
 
+Stale baseline entries are ignored by the normal ratchet so cleanup PRs can reduce metrics without failing. Check for stale entries explicitly when maintaining the baseline:
+
+```bash
+make quality-guardrails-stale
+```
+
+This target is intentionally manual maintenance, not part of `make lint-arch`: cleanup PRs should be allowed to reduce metrics first, then prune stale baseline keys deliberately. Stale-only findings exit `3`; ratchet violations exit `2` and take precedence when both are present.
+
+When a stale entry should be removed, prune the specific key rather than regenerating the whole baseline:
+
+```bash
+python tools/quality_guardrails.py --prune control_policy_branch_sites:src/issue_orchestrator/control/old_path.py
+```
+
+Targeted pruning only removes keys that are already stale. It refuses to prune current metrics.
+
+The stale-entry reader treats the committed baseline as generated data. Missing baseline fields fail fast instead of being reported as `unknown`.
+
 ## Adding Guardrails
 
 Add guardrails in small PRs:
