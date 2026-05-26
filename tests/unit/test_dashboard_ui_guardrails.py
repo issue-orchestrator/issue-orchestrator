@@ -1069,6 +1069,15 @@ def test_session_diagnostics_tracks_timeout_and_session_settings_action() -> Non
     assert "'timeout'" in body
 
 
+def test_timeline_status_helpers_render_timed_out_as_failure() -> None:
+    js = _read(DASHBOARD_JS)
+    status_class_body = _function_body(js, "getStatusClass")
+    format_status_body = _function_body(js, "formatStatus")
+
+    assert "'timed_out'" in status_class_body
+    assert "'timed_out': 'Timed Out'" in format_status_body
+
+
 def test_context_menu_retry_statuses_include_awaiting_merge() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "showContextMenu")

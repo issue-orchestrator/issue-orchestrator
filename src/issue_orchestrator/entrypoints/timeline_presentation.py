@@ -972,6 +972,7 @@ def _phase_status_icon(status: str) -> str:
         "validation_failed": "✗",
         "blocked": "✗",
         "timeout": "✗",
+        "timed_out": "✗",
         "unknown": "○",
     }
     return icons.get(status, "○")
