@@ -20,6 +20,8 @@ import yaml
 
 
 BASELINE_VERSION = 1
+EXIT_RATCHET_VIOLATION = 2
+EXIT_STALE_BASELINE = 3
 
 
 @dataclass(frozen=True)
@@ -320,9 +322,8 @@ def compare_to_baseline(metrics: Sequence[Metric], baseline: Mapping[str, Any]) 
                 )
             )
             continue
-        if not isinstance(raw_previous, dict):
-            raise ValueError(f"baseline entry {key!r} must be a mapping")
-        previous_value = int(raw_previous.get("value", 0))
+        previous = _baseline_entry_mapping(key, raw_previous)
+        previous_value = _baseline_entry_int(key, previous, "value")
         if metric.value > previous_value:
             violations.append(
                 RatchetViolation(
@@ -346,6 +347,26 @@ def _baseline_entries(baseline: Mapping[str, Any]) -> dict[str, Any]:
     return raw_entries
 
 
+def _baseline_entry_mapping(key: str, raw_entry: Any) -> Mapping[str, Any]:
+    if not isinstance(raw_entry, dict):
+        raise ValueError(f"baseline entry {key!r} must be a mapping")
+    return raw_entry
+
+
+def _baseline_entry_text(key: str, raw_entry: Mapping[str, Any], field: str) -> str:
+    value = raw_entry.get(field)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"baseline entry {key!r} missing non-empty string field {field!r}")
+    return value
+
+
+def _baseline_entry_int(key: str, raw_entry: Mapping[str, Any], field: str) -> int:
+    value = raw_entry.get(field)
+    if not isinstance(value, int):
+        raise ValueError(f"baseline entry {key!r} missing integer field {field!r}")
+    return value
+
+
 def find_stale_baseline_entries(
     metrics: Sequence[Metric],
     baseline: Mapping[str, Any],
@@ -356,16 +377,15 @@ def find_stale_baseline_entries(
     for key, raw_entry in sorted(_baseline_entries(baseline).items()):
         if key in current_keys:
             continue
-        if not isinstance(raw_entry, dict):
-            raise ValueError(f"baseline entry {key!r} must be a mapping")
+        entry = _baseline_entry_mapping(key, raw_entry)
         stale.append(
             StaleBaselineEntry(
                 key=key,
-                rule_id=str(raw_entry.get("rule_id", "<unknown>")),
-                kind=str(raw_entry.get("kind", "<unknown>")),
-                path=str(raw_entry.get("path", raw_entry.get("metric_id", key))),
-                value=int(raw_entry.get("value", 0)),
-                detail=str(raw_entry.get("detail", "baseline entry is not present in current metrics")),
+                rule_id=_baseline_entry_text(key, entry, "rule_id"),
+                kind=_baseline_entry_text(key, entry, "kind"),
+                path=_baseline_entry_text(key, entry, "path"),
+                value=_baseline_entry_int(key, entry, "value"),
+                detail=_baseline_entry_text(key, entry, "detail"),
             )
         )
 
@@ -547,6 +567,14 @@ def _print_operation_messages(args: argparse.Namespace, root: Path, baseline_pat
         print(f"Quality guardrails pruned baseline key(s): {pruned}")
 
 
+def _result_exit_code(result: GuardrailResult) -> int:
+    if result.violations:
+        return EXIT_RATCHET_VIOLATION
+    if result.stale_entries:
+        return EXIT_STALE_BASELINE
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".", help="Repository root to scan")
@@ -587,7 +615,7 @@ def main(argv: list[str]) -> int:
             _print_operation_messages(args, root, baseline_path)
             _print_text_report(metrics, result.violations, result.stale_entries)
 
-        return 2 if result.violations or result.stale_entries else 0
+        return _result_exit_code(result)
     except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         print(f"Quality guardrails error: {exc}", file=sys.stderr)
         return 1

@@ -6,6 +6,8 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -201,7 +203,7 @@ def test_check_stale_reports_removed_metric(tmp_path: Path) -> None:
 
     result = _run(tmp_path, "--check-stale")
 
-    assert result.returncode == 2
+    assert result.returncode == 3
     assert "stale baseline entries" in result.stderr
     assert "src/pkg/stale.py [policy_sites]" in result.stderr
 
@@ -230,7 +232,7 @@ def test_prune_removes_only_named_stale_key(tmp_path: Path) -> None:
 
     result = _run(tmp_path, "--prune", "policy_sites:src/pkg/stale.py", "--check-stale")
 
-    assert result.returncode == 2
+    assert result.returncode == 3
     baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
     assert "policy_sites:src/pkg/stale.py" not in baseline["metrics"]
     assert "policy_sites:src/pkg/other_stale.py" in baseline["metrics"]
@@ -254,6 +256,54 @@ def test_prune_rejects_current_metric_key(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "cannot prune current metric key" in result.stderr
+
+
+def test_check_stale_fails_fast_on_malformed_baseline_entry(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path, max_lines=20)
+    stale = tmp_path / "src" / "pkg" / "stale.py"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(
+        "def f(status):\n"
+        "    if status == 'retry':\n"
+        "        return True\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+    stale.unlink()
+    baseline_path = tmp_path / "quality" / "guardrails-baseline.json"
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    del baseline["metrics"]["policy_sites:src/pkg/stale.py"]["detail"]
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+
+    result = _run(tmp_path, "--check-stale")
+
+    assert result.returncode == 1
+    assert "missing non-empty string field 'detail'" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--update-baseline", "--accept", "policy_sites:src/pkg/control.py"),
+        ("--update-baseline", "--prune", "policy_sites:src/pkg/control.py"),
+        (
+            "--accept",
+            "policy_sites:src/pkg/control.py",
+            "--prune",
+            "policy_sites:src/pkg/stale.py",
+        ),
+    ],
+)
+def test_update_accept_and_prune_are_mutually_exclusive(tmp_path: Path, args: tuple[str, ...]) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path)
+    (tmp_path / "src").mkdir()
+
+    result = _run(tmp_path, *args)
+
+    assert result.returncode == 1
+    assert "--update-baseline, --accept, and --prune cannot be combined" in result.stderr
 
 
 def test_missing_baseline_returns_error(tmp_path: Path) -> None:
