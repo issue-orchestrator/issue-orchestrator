@@ -30,7 +30,7 @@ def analyze(manifest: RunManifest) -> SessionAnalysis:
 
     if outcome == "blocked":
         return _analyze_blocked(manifest)
-    if outcome == "timeout":
+    if outcome in {"timeout", "timed_out"}:
         return _analyze_timeout(manifest)
     if outcome == "failed":
         return _analyze_failed(manifest)

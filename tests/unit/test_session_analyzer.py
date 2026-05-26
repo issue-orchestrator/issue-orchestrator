@@ -76,6 +76,11 @@ class TestTimeout:
         assert "45 min" in a.headline
         assert "limit: 45" in a.headline
 
+    def test_headline_accepts_session_status_value(self, run_dir: Path) -> None:
+        m = _manifest(run_dir, outcome="timed_out", runtime_minutes=90.0, timeout_minutes=90)
+        a = analyze(m)
+        assert "Timed out after 90 min" in a.headline
+
     def test_headline_runtime_only(self, run_dir: Path) -> None:
         m = _manifest(run_dir, outcome="timeout", runtime_minutes=30.0)
         a = analyze(m)

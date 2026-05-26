@@ -383,16 +383,41 @@ class TestEventEmission:
         assert event.data["issue_number"] == issue.number
         assert "error" in event.data
 
-    def test_failed_session_emits_session_failed_event_with_run_dir_when_available(
+    def test_failed_session_emits_recorded_run_dir_without_lookup(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """SESSION_FAILED should include run_dir when session output resolves one."""
+        """SESSION_FAILED should include the launch-recorded run_dir."""
         events = InMemoryEventSink()
         issue = make_issue()
         session = create_test_session(issue, agent_config, tmp_worktree)
         session_output = Mock(spec=SessionOutput)
         run_dir = tmp_worktree / ".issue-orchestrator" / "sessions" / "20260220-000000Z__issue-1"
-        session_output.find_run_dir.return_value = run_dir
+        session.run_dir = run_dir
+        handler = make_handler(config, events=events, session_output=session_output)
+
+        handler.process_completion(session, SessionStatus.FAILED)
+
+        event = events.last_event(str(EventName.SESSION_FAILED))
+        assert event is not None
+        assert event.data["run_dir"] == str(run_dir)
+        session_output.find_run_dir.assert_not_called()
+
+    def test_failed_session_event_uses_issue_manifest_run_dir_fallback(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Phase-named run dirs still appear in failure events."""
+        events = InMemoryEventSink()
+        issue = make_issue(number=123)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+        run_dir = tmp_worktree / ".issue-orchestrator" / "sessions" / "20260525__coding-1"
+        session_output = Mock(spec=SessionOutput)
+
+        def find_run_dir(_worktree: Path, session_name: str | None = None) -> Path | None:
+            return None if session_name else run_dir
+
+        session_output.find_run_dir.side_effect = find_run_dir
+        session_output.read_manifest.return_value = {"issue_number": issue.number}
+        session_output.get_log_path_for_run_dir.return_value = None
         handler = make_handler(config, events=events, session_output=session_output)
 
         handler.process_completion(session, SessionStatus.FAILED)
@@ -1291,6 +1316,41 @@ class TestLabelActionGeneration:
         audit_path = Path(manifest["run_audit_path"])
         payload = audit_path.read_text()
         assert "\"trigger_source\": \"timeout\"" in payload
+
+    def test_timeout_enriches_recorded_run_manifest_before_audit(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(number=123, labels=["agent:test"])
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+        session.started_at = (datetime.now() - timedelta(minutes=91)).replace(microsecond=0)
+        agent_config.timeout_minutes = 90
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_worktree, "coding-1", issue_number=123)
+        session.run_dir = run.run_dir
+
+        repository_host = SimpleNamespace(
+            get_prs_for_branch=lambda _branch: [],
+            get_pr=lambda _pr_number: None,
+            get_issue=lambda _issue_number: SimpleNamespace(labels=["agent:test"]),
+            get_issue_labels_fresh=lambda _issue_number: ["agent:test"],
+            set_pr_draft=Mock(),
+        )
+        handler = make_handler(
+            config,
+            repository_host=repository_host,
+            session_output=session_output,
+        )
+
+        handler.process_completion(session, SessionStatus.TIMED_OUT)
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        assert manifest["outcome"] == "timed_out"
+        assert manifest["runtime_minutes"] >= 90
+        assert manifest["timeout_minutes"] == 90
+        assert "ended_at" in manifest
+        audit_payload = Path(manifest["run_audit_path"]).read_text()
+        assert "\"outcome\": \"timed_out\"" in audit_payload
 
     def test_timeout_audit_can_be_disabled(self, config: Config, agent_config: AgentConfig, tmp_worktree: Path) -> None:
         config.review_run_audit_on_timeout = False
