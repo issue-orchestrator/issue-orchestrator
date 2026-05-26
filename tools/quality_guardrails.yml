@@ -19,10 +19,13 @@ rules:
 
   - id: control_policy_branch_sites
     type: control_policy_branch_sites
+    new_metric_min_value: 3
     description: >
       Track branch sites that mention lifecycle/control vocabulary. This is a
       proxy for control-policy scatter: adding new decision sites should be
       intentional and should normally route through an owner or decision table.
+      New files with one or two matches are reported but do not fail the ratchet
+      until they cross this rule's `new_metric_min_value`.
     include:
       - src/issue_orchestrator/control/**/*.py
       - src/issue_orchestrator/entrypoints/**/*.py

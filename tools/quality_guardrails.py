@@ -30,6 +30,7 @@ class Metric:
     value: int
     path: str
     detail: str
+    new_metric_min_value: int = 1
 
     @property
     def key(self) -> str:
@@ -84,8 +85,12 @@ def _load_baseline(path: Path) -> dict[str, Any]:
     return data
 
 
-def _write_baseline(path: Path, metrics: Sequence[Metric]) -> None:
+def _write_baseline_data(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_baseline(path: Path, metrics: Sequence[Metric]) -> None:
     payload = {
         "version": BASELINE_VERSION,
         "metrics": {
@@ -93,13 +98,20 @@ def _write_baseline(path: Path, metrics: Sequence[Metric]) -> None:
             for metric in sorted(metrics, key=lambda m: (m.rule_id, m.path, m.metric_id))
         },
     }
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_baseline_data(path, payload)
 
 
 def _patterns(rule: Mapping[str, Any], key: str) -> list[str]:
     value = rule.get(key, []) or []
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"rule {rule.get('id', '<unknown>')} field {key!r} must be a list of strings")
+    return value
+
+
+def _new_metric_min_value(rule: Mapping[str, Any]) -> int:
+    value = int(rule.get("new_metric_min_value", 1))
+    if value < 1:
+        raise ValueError(f"rule {rule.get('id', '<unknown>')} new_metric_min_value must be >= 1")
     return value
 
 
@@ -132,6 +144,7 @@ def _line_count(path: Path) -> int:
 def _collect_file_line_budget(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
     rule_id = str(rule["id"])
     max_lines = int(rule["max_lines"])
+    new_metric_min_value = _new_metric_min_value(rule)
     metrics: list[Metric] = []
 
     for path in _iter_included_files(root, rule):
@@ -147,6 +160,7 @@ def _collect_file_line_budget(root: Path, rule: Mapping[str, Any]) -> list[Metri
                 value=count,
                 path=rel_path,
                 detail=f"{count} lines exceeds budget {max_lines}",
+                new_metric_min_value=new_metric_min_value,
             )
         )
 
@@ -207,6 +221,7 @@ def _js_policy_site_count(path: Path, terms: Sequence[str]) -> int:
 def _collect_control_policy_branch_sites(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
     rule_id = str(rule["id"])
     terms = _patterns(rule, "terms")
+    new_metric_min_value = _new_metric_min_value(rule)
     metrics: list[Metric] = []
 
     for path in _iter_included_files(root, rule):
@@ -231,6 +246,7 @@ def _collect_control_policy_branch_sites(root: Path, rule: Mapping[str, Any]) ->
                 value=count,
                 path=rel_path,
                 detail=f"{count} branch site(s) mention lifecycle/control terms",
+                new_metric_min_value=new_metric_min_value,
             )
         )
 
@@ -273,6 +289,8 @@ def compare_to_baseline(metrics: Sequence[Metric], baseline: Mapping[str, Any]) 
     for key, metric in sorted(current_by_key.items()):
         raw_previous = raw_entries.get(key)
         if raw_previous is None:
+            if metric.value < metric.new_metric_min_value:
+                continue
             violations.append(
                 RatchetViolation(
                     key=key,
@@ -302,6 +320,32 @@ def compare_to_baseline(metrics: Sequence[Metric], baseline: Mapping[str, Any]) 
             )
 
     return violations
+
+
+def accept_baseline_keys(
+    baseline_path: Path,
+    metrics: Sequence[Metric],
+    keys: Sequence[str],
+) -> dict[str, Any]:
+    if not baseline_path.exists():
+        raise ValueError(f"baseline not found: {baseline_path}")
+
+    baseline = _load_baseline(baseline_path)
+    raw_entries = baseline.setdefault("metrics", {})
+    if not isinstance(raw_entries, dict):
+        raise ValueError("baseline field 'metrics' must be a mapping")
+
+    current_by_key = {metric.key: metric for metric in metrics}
+    missing = [key for key in keys if key not in current_by_key]
+    if missing:
+        raise ValueError(f"cannot accept missing current metric(s): {', '.join(missing)}")
+
+    baseline["version"] = BASELINE_VERSION
+    for key in keys:
+        raw_entries[key] = current_by_key[key].to_baseline_entry()
+
+    _write_baseline_data(baseline_path, baseline)
+    return baseline
 
 
 def _print_text_report(metrics: Sequence[Metric], violations: Sequence[RatchetViolation]) -> None:
@@ -343,6 +387,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--config", default="tools/quality_guardrails.yml")
     parser.add_argument("--baseline", default="quality/guardrails-baseline.json")
     parser.add_argument("--update-baseline", action="store_true")
+    parser.add_argument(
+        "--accept",
+        action="append",
+        default=[],
+        metavar="KEY",
+        help="Update one baseline metric key from current results without rewriting all entries",
+    )
     parser.add_argument("--fail-on-new", action="store_true")
     parser.add_argument("--format", choices=("text", "json"), default="text")
     args = parser.parse_args(argv)
@@ -356,8 +407,15 @@ def main(argv: list[str]) -> int:
         metrics = collect_metrics(root, config)
         violations: list[RatchetViolation] = []
 
+        if args.update_baseline and args.accept:
+            print("Quality guardrails error: --update-baseline and --accept cannot be combined", file=sys.stderr)
+            return 1
+
         if args.update_baseline:
             _write_baseline(baseline_path, metrics)
+        elif args.accept:
+            baseline = accept_baseline_keys(baseline_path, metrics, args.accept)
+            violations = compare_to_baseline(metrics, baseline)
         elif args.fail_on_new:
             if not baseline_path.exists():
                 print(f"Quality guardrails baseline not found: {baseline_path}", file=sys.stderr)
@@ -369,6 +427,9 @@ def main(argv: list[str]) -> int:
         else:
             if args.update_baseline:
                 print(f"Quality guardrails baseline updated: {baseline_path.relative_to(root)}")
+            if args.accept:
+                accepted = ", ".join(args.accept)
+                print(f"Quality guardrails accepted baseline key(s): {accepted}")
             _print_text_report(metrics, violations)
 
         return 2 if violations else 0

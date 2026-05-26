@@ -4,6 +4,8 @@ This repository uses ratcheted quality guardrails for architecture and control-p
 
 The goal is not to pretend the current codebase has no debt. The goal is to make new debt visible, fail PRs that make tracked metrics worse, and then reduce the baseline through focused cleanup PRs.
 
+This grew out of the control-architecture discussion around issue #6362 and the follow-up decision to stop relying on longer agent prompts for quality. The intended model is mechanical: whole-repo ratchets for systemic drift, changed-code checks for local regressions, and later Semgrep/CodeQL-style rules once the repo-local metrics have proven useful.
+
 ## Current Guardrails
 
 Run:
@@ -28,11 +30,21 @@ Existing violations are stored in the baseline. A PR fails when it:
 - introduces a new tracked metric that is already over the configured threshold
 - increases a tracked metric above its baseline value
 
+Rules may define `new_metric_min_value` so small new files can be reported without failing the ratchet immediately. For example, the lifecycle/control branch-site rule starts failing unbaselined files at three matching branch sites.
+
 Improvements do not fail. If a cleanup PR removes policy sites or shrinks a hotspot, regenerate the baseline and commit the lower value.
 
 ```bash
 python tools/quality_guardrails.py --update-baseline
 ```
+
+For ordinary PRs that intentionally add exactly one tracked metric, prefer targeted acceptance instead of regenerating the whole baseline:
+
+```bash
+python tools/quality_guardrails.py --accept control_policy_branch_sites:src/issue_orchestrator/control/new_owner.py
+```
+
+Targeted acceptance updates only the named key, then re-runs the ratchet comparison. Any unrelated increases remain violations.
 
 ## Adding Guardrails
 
