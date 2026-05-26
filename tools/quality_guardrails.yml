@@ -17,6 +17,24 @@ rules:
     exclude:
       - src/issue_orchestrator/infra/settings_schema.py
 
+  - id: complex_control_functions
+    type: python_function_complexity
+    description: >
+      Track high-complexity Python functions in control-adjacent layers.
+      Complex functions are a direct maintainability risk: they hide decision
+      tables, make review paths branchy, and tend to accumulate policy
+      scatter. Existing complexity is baselined; PRs fail when a tracked
+      function grows more complex or a new function exceeds the budget.
+    max_complexity: 15
+    include:
+      - src/issue_orchestrator/control/**/*.py
+      - src/issue_orchestrator/entrypoints/**/*.py
+      - src/issue_orchestrator/execution/**/*.py
+      - src/issue_orchestrator/infra/**/*.py
+      - src/issue_orchestrator/view_models/**/*.py
+    exclude:
+      - src/issue_orchestrator/infra/settings_schema.py
+
   - id: control_policy_branch_sites
     type: control_policy_branch_sites
     new_metric_min_value: 3

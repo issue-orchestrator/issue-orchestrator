@@ -95,6 +95,13 @@ class GuardrailResult:
     stale_entries: list[StaleBaselineEntry]
 
 
+@dataclass(frozen=True)
+class FunctionComplexity:
+    qualname: str
+    line: int
+    value: int
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
@@ -189,6 +196,146 @@ def _collect_file_line_budget(root: Path, rule: Mapping[str, Any]) -> list[Metri
                 new_metric_min_value=new_metric_min_value,
             )
         )
+
+    return metrics
+
+
+class _PythonFunctionComplexityVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.value = 1
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_If(self, node: ast.If) -> None:
+        self.value += 1
+        self.generic_visit(node)
+
+    def visit_IfExp(self, node: ast.IfExp) -> None:
+        self.value += 1
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For) -> None:
+        self.value += 1
+        self.generic_visit(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.value += 1
+        self.generic_visit(node)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.value += 1
+        self.generic_visit(node)
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        self.value += max(len(node.values) - 1, 0)
+        self.generic_visit(node)
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self.value += len(node.handlers)
+        self.generic_visit(node)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.value += len(node.cases)
+        self.generic_visit(node)
+
+    def visit_comprehension(self, node: ast.comprehension) -> None:
+        self.value += 1 + len(node.ifs)
+        self.generic_visit(node)
+
+
+class _PythonFunctionComplexityCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.qualifiers: list[str] = []
+        self.findings: list[FunctionComplexity] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.qualifiers.append(node.name)
+        self.generic_visit(node)
+        self.qualifiers.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        qualname = ".".join([*self.qualifiers, node.name])
+        self.findings.append(
+            FunctionComplexity(
+                qualname=qualname,
+                line=node.lineno,
+                value=_python_function_complexity(node),
+            )
+        )
+
+        self.qualifiers.append(node.name)
+        for child in node.body:
+            self.visit(child)
+        self.qualifiers.pop()
+
+
+def _python_function_complexity(node: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    visitor = _PythonFunctionComplexityVisitor()
+    for child in node.body:
+        visitor.visit(child)
+    return visitor.value
+
+
+def _python_function_complexities(path: Path) -> list[FunctionComplexity]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+    collector = _PythonFunctionComplexityCollector()
+    collector.visit(tree)
+    return collector.findings
+
+
+def _function_complexity_metric_id(rel_path: str, finding: FunctionComplexity, seen: set[str]) -> str:
+    metric_id = f"{rel_path}:{finding.qualname}"
+    if metric_id in seen:
+        metric_id = f"{metric_id}:{finding.line}"
+    seen.add(metric_id)
+    return metric_id
+
+
+def _collect_python_function_complexity(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
+    rule_id = str(rule["id"])
+    max_complexity = int(rule["max_complexity"])
+    if max_complexity < 1:
+        raise ValueError(f"rule {rule_id} max_complexity must be >= 1")
+    new_metric_min_value = _new_metric_min_value(rule)
+    metrics: list[Metric] = []
+
+    for path in _iter_included_files(root, rule):
+        if path.suffix != ".py":
+            continue
+        rel_path = path.relative_to(root).as_posix()
+        try:
+            findings = _python_function_complexities(path)
+        except SyntaxError as exc:
+            raise ValueError(f"{rel_path}: syntax error while collecting function complexity: {exc}") from exc
+
+        seen: set[str] = set()
+        for finding in findings:
+            if finding.value <= max_complexity:
+                continue
+            metrics.append(
+                Metric(
+                    rule_id=rule_id,
+                    kind="python_function_complexity",
+                    metric_id=_function_complexity_metric_id(rel_path, finding, seen),
+                    value=finding.value,
+                    path=rel_path,
+                    detail=(
+                        f"{finding.qualname} line {finding.line} complexity "
+                        f"{finding.value} exceeds budget {max_complexity}"
+                    ),
+                    new_metric_min_value=new_metric_min_value,
+                )
+            )
 
     return metrics
 
@@ -435,6 +582,7 @@ def collect_metrics(root: Path, config: Mapping[str, Any]) -> list[Metric]:
     collectors = {
         "file_line_budget": _collect_file_line_budget,
         "control_policy_branch_sites": _collect_control_policy_branch_sites,
+        "python_function_complexity": _collect_python_function_complexity,
     }
     metrics: list[Metric] = []
 

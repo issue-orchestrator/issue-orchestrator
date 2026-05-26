@@ -44,6 +44,26 @@ def _write_config(root: Path, *, max_lines: int = 2) -> None:
     )
 
 
+def _write_complexity_config(root: Path, *, max_complexity: int = 3) -> None:
+    config = root / "tools" / "quality_guardrails.yml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        textwrap.dedent(
+            f"""
+            version: 1
+            rules:
+              - id: complexity
+                type: python_function_complexity
+                max_complexity: {max_complexity}
+                include:
+                  - src/**/*.py
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _copy_runner(root: Path) -> None:
     tools_dir = root / "tools"
     tools_dir.mkdir(exist_ok=True)
@@ -196,6 +216,71 @@ def test_policy_terms_match_identifier_tokens_and_plurals(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
     assert baseline["metrics"]["policy_sites:src/pkg/control.py"]["value"] == 4
+
+
+def test_function_complexity_is_tracked_and_ratchets(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_complexity_config(tmp_path, max_complexity=3)
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "def decide(a, b, c):\n"
+        "    if a and b:\n"
+        "        return 'a'\n"
+        "    if c:\n"
+        "        return 'c'\n"
+        "    return 'none'\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+
+    target.write_text(
+        "def decide(a, b, c, d):\n"
+        "    if a and b:\n"
+        "        return 'a'\n"
+        "    if c:\n"
+        "        return 'c'\n"
+        "    if d:\n"
+        "        return 'd'\n"
+        "    return 'none'\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--fail-on-new")
+
+    assert result.returncode == 2
+    assert "src/pkg/control.py [complexity] python_function_complexity increased" in result.stderr
+    assert "4 -> 5" in result.stderr
+
+
+def test_function_complexity_uses_qualified_names_and_skips_nested_bodies(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_complexity_config(tmp_path, max_complexity=3)
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "class Controller:\n"
+        "    def decide(self, a, b, c):\n"
+        "        def helper(x, y, z):\n"
+        "            if x:\n"
+        "                return x\n"
+        "            if y:\n"
+        "                return y\n"
+        "            if z:\n"
+        "                return z\n"
+        "            return None\n"
+        "        if a:\n"
+        "            return helper(a, b, c)\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert "complexity:src/pkg/control.py:Controller.decide" not in baseline["metrics"]
+    assert baseline["metrics"]["complexity:src/pkg/control.py:Controller.decide.helper"]["value"] == 4
 
 
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:

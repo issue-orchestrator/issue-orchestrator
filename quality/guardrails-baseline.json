@@ -1,5 +1,469 @@
 {
   "metrics": {
+    "complex_control_functions:src/issue_orchestrator/control/orchestrator_support.py:_fetch_and_update_queue": {
+      "detail": "_fetch_and_update_queue line 675 complexity 22 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/control/orchestrator_support.py:_fetch_and_update_queue",
+      "path": "src/issue_orchestrator/control/orchestrator_support.py",
+      "rule_id": "complex_control_functions",
+      "value": 22
+    },
+    "complex_control_functions:src/issue_orchestrator/control/planner.py:Planner._plan_issues": {
+      "detail": "Planner._plan_issues line 986 complexity 41 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/control/planner.py:Planner._plan_issues",
+      "path": "src/issue_orchestrator/control/planner.py",
+      "rule_id": "complex_control_functions",
+      "value": 41
+    },
+    "complex_control_functions:src/issue_orchestrator/control/pr_scanner.py:PRScanner.scan_for_reviews": {
+      "detail": "PRScanner.scan_for_reviews line 101 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/control/pr_scanner.py:PRScanner.scan_for_reviews",
+      "path": "src/issue_orchestrator/control/pr_scanner.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/control/retry_history_state.py:RetryHistoryState._clear_discovered_facts": {
+      "detail": "RetryHistoryState._clear_discovered_facts line 226 complexity 20 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/control/retry_history_state.py:RetryHistoryState._clear_discovered_facts",
+      "path": "src/issue_orchestrator/control/retry_history_state.py",
+      "rule_id": "complex_control_functions",
+      "value": 20
+    },
+    "complex_control_functions:src/issue_orchestrator/control/session_completion.py:handle_session_completion": {
+      "detail": "handle_session_completion line 102 complexity 25 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/control/session_completion.py:handle_session_completion",
+      "path": "src/issue_orchestrator/control/session_completion.py",
+      "rule_id": "complex_control_functions",
+      "value": 25
+    },
+    "complex_control_functions:src/issue_orchestrator/control/session_launcher.py:SessionLauncher.launch_issue_session": {
+      "detail": "SessionLauncher.launch_issue_session line 574 complexity 22 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/control/session_launcher.py:SessionLauncher.launch_issue_session",
+      "path": "src/issue_orchestrator/control/session_launcher.py",
+      "rule_id": "complex_control_functions",
+      "value": 22
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli.py:_apply_cli_overrides": {
+      "detail": "_apply_cli_overrides line 59 complexity 29 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py:_apply_cli_overrides",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "complex_control_functions",
+      "value": 29
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli.py:cmd_start": {
+      "detail": "cmd_start line 203 complexity 37 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py:cmd_start",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "complex_control_functions",
+      "value": 37
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_hook_commands.py:cmd_setup_hooks": {
+      "detail": "cmd_setup_hooks line 239 complexity 21 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_hook_commands.py:cmd_setup_hooks",
+      "path": "src/issue_orchestrator/entrypoints/cli_hook_commands.py",
+      "rule_id": "complex_control_functions",
+      "value": 21
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_hook_commands.py:cmd_verify": {
+      "detail": "cmd_verify line 14 complexity 33 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_hook_commands.py:cmd_verify",
+      "path": "src/issue_orchestrator/entrypoints/cli_hook_commands.py",
+      "rule_id": "complex_control_functions",
+      "value": 33
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:build_completion_record": {
+      "detail": "build_completion_record line 427 complexity 21 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:build_completion_record",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "rule_id": "complex_control_functions",
+      "value": 21
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:format_comment_body": {
+      "detail": "format_comment_body line 306 complexity 18 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:format_comment_body",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "rule_id": "complex_control_functions",
+      "value": 18
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_tools/coding_done.py:main": {
+      "detail": "main line 290 complexity 47 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py:main",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
+      "rule_id": "complex_control_functions",
+      "value": 47
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:run_wizard": {
+      "detail": "run_wizard line 1194 complexity 77 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:run_wizard",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "complex_control_functions",
+      "value": 77
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:wizard_existing_project": {
+      "detail": "wizard_existing_project line 827 complexity 68 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:wizard_existing_project",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "complex_control_functions",
+      "value": 68
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:wizard_new_project": {
+      "detail": "wizard_new_project line 518 complexity 40 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:wizard_new_project",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "complex_control_functions",
+      "value": 40
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/cli_utility_commands.py:cmd_demo": {
+      "detail": "cmd_demo line 53 complexity 19 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_utility_commands.py:cmd_demo",
+      "path": "src/issue_orchestrator/entrypoints/cli_utility_commands.py",
+      "rule_id": "complex_control_functions",
+      "value": 19
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:control_start": {
+      "detail": "control_start line 109 complexity 28 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:control_start",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "complex_control_functions",
+      "value": 28
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:control_status": {
+      "detail": "control_status line 690 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:control_status",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/control_center.py:main": {
+      "detail": "main line 182 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_center.py:main",
+      "path": "src/issue_orchestrator/entrypoints/control_center.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/e2e_worker.py:main": {
+      "detail": "main line 290 complexity 53 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/e2e_worker.py:main",
+      "path": "src/issue_orchestrator/entrypoints/e2e_worker.py",
+      "rule_id": "complex_control_functions",
+      "value": 53
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/timeline_presentation.py:_build_timeline_cycles": {
+      "detail": "_build_timeline_cycles line 161 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:_build_timeline_cycles",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/timeline_presentation.py:_promote_e2e_test_event_fields": {
+      "detail": "_promote_e2e_test_event_fields line 115 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:_promote_e2e_test_event_fields",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/timeline_presentation.py:_timeline_event_artifact_actions": {
+      "detail": "_timeline_event_artifact_actions line 456 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:_timeline_event_artifact_actions",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/timeline_presentation.py:_validated_run_scoped_artifact": {
+      "detail": "_validated_run_scoped_artifact line 576 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:_validated_run_scoped_artifact",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:_build_issue_story_context": {
+      "detail": "_build_issue_story_context line 1038 complexity 18 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:_build_issue_story_context",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "complex_control_functions",
+      "value": 18
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:_timeline_missing_diagnostic": {
+      "detail": "_timeline_missing_diagnostic line 1137 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:_timeline_missing_diagnostic",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/web_operator_routes.py:_prune_issue_runtime_state": {
+      "detail": "_prune_issue_runtime_state line 168 complexity 19 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_operator_routes.py:_prune_issue_runtime_state",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "complex_control_functions",
+      "value": 19
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/web_session_routes.py:get_review_transcript_content": {
+      "detail": "get_review_transcript_content line 1118 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:get_review_transcript_content",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/entrypoints/web_settings_routes.py:update_settings": {
+      "detail": "update_settings line 56 complexity 19 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_settings_routes.py:update_settings",
+      "path": "src/issue_orchestrator/entrypoints/web_settings_routes.py",
+      "rule_id": "complex_control_functions",
+      "value": 19
+    },
+    "complex_control_functions:src/issue_orchestrator/execution/session_output_adapter.py:FileSystemSessionOutput.count_consecutive_review_exchange_no_completion": {
+      "detail": "FileSystemSessionOutput.count_consecutive_review_exchange_no_completion line 690 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/execution/session_output_adapter.py:FileSystemSessionOutput.count_consecutive_review_exchange_no_completion",
+      "path": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/execution/session_output_adapter.py:FileSystemSessionOutput.find_run_dir": {
+      "detail": "FileSystemSessionOutput.find_run_dir line 206 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/execution/session_output_adapter.py:FileSystemSessionOutput.find_run_dir",
+      "path": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/execution/session_output_adapter.py:FileSystemSessionOutput.load_review_exchange_summary": {
+      "detail": "FileSystemSessionOutput.load_review_exchange_summary line 846 complexity 18 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/execution/session_output_adapter.py:FileSystemSessionOutput.load_review_exchange_summary",
+      "path": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "rule_id": "complex_control_functions",
+      "value": 18
+    },
+    "complex_control_functions:src/issue_orchestrator/execution/session_output_log_artifacts.py:SessionLogArtifacts.write_orchestrator_tail": {
+      "detail": "SessionLogArtifacts.write_orchestrator_tail line 72 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/execution/session_output_log_artifacts.py:SessionLogArtifacts.write_orchestrator_tail",
+      "path": "src/issue_orchestrator/execution/session_output_log_artifacts.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/execution/validation_failure_summary.py:load_validation_failure_summary": {
+      "detail": "load_validation_failure_summary line 95 complexity 19 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/execution/validation_failure_summary.py:load_validation_failure_summary",
+      "path": "src/issue_orchestrator/execution/validation_failure_summary.py",
+      "rule_id": "complex_control_functions",
+      "value": 19
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/config.py:Config.to_dict": {
+      "detail": "Config.to_dict line 742 complexity 150 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/config.py:Config.to_dict",
+      "path": "src/issue_orchestrator/infra/config.py",
+      "rule_id": "complex_control_functions",
+      "value": 150
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/config_sections.py:parse_filtering_config": {
+      "detail": "parse_filtering_config line 226 complexity 22 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/config_sections.py:parse_filtering_config",
+      "path": "src/issue_orchestrator/infra/config_sections.py",
+      "rule_id": "complex_control_functions",
+      "value": 22
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/doctor/checks/github.py:check_github_auth": {
+      "detail": "check_github_auth line 11 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/doctor/checks/github.py:check_github_auth",
+      "path": "src/issue_orchestrator/infra/doctor/checks/github.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/orchestrator.py:Orchestrator._poll_job_results": {
+      "detail": "Orchestrator._poll_job_results line 681 complexity 19 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:Orchestrator._poll_job_results",
+      "path": "src/issue_orchestrator/infra/orchestrator.py",
+      "rule_id": "complex_control_functions",
+      "value": 19
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/orchestrator.py:Orchestrator._reconcile_running_sessions": {
+      "detail": "Orchestrator._reconcile_running_sessions line 542 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:Orchestrator._reconcile_running_sessions",
+      "path": "src/issue_orchestrator/infra/orchestrator.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/run_audit.py:_load_review_exchange": {
+      "detail": "_load_review_exchange line 210 complexity 21 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/run_audit.py:_load_review_exchange",
+      "path": "src/issue_orchestrator/infra/run_audit.py",
+      "rule_id": "complex_control_functions",
+      "value": 21
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/settings_schema_support.py:apply_tabs_to_config": {
+      "detail": "apply_tabs_to_config line 98 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/settings_schema_support.py:apply_tabs_to_config",
+      "path": "src/issue_orchestrator/infra/settings_schema_support.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/terminal_cleaning.py:_is_short_fragment": {
+      "detail": "_is_short_fragment line 178 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/terminal_cleaning.py:_is_short_fragment",
+      "path": "src/issue_orchestrator/infra/terminal_cleaning.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
+    "complex_control_functions:src/issue_orchestrator/infra/terminal_cleaning.py:_is_tui_status_noise": {
+      "detail": "_is_tui_status_noise line 123 complexity 18 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/infra/terminal_cleaning.py:_is_tui_status_noise",
+      "path": "src/issue_orchestrator/infra/terminal_cleaning.py",
+      "rule_id": "complex_control_functions",
+      "value": 18
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/dashboard.py:_build_queue_items": {
+      "detail": "_build_queue_items line 606 complexity 27 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:_build_queue_items",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "complex_control_functions",
+      "value": 27
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/dashboard.py:build_dashboard_view_model": {
+      "detail": "build_dashboard_view_model line 1080 complexity 59 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:build_dashboard_view_model",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "complex_control_functions",
+      "value": 59
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/dashboard_flow.py:compact_card": {
+      "detail": "compact_card line 52 complexity 20 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py:compact_card",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "complex_control_functions",
+      "value": 20
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/dialogs.py:SessionDiagnosticsContext.from_payload": {
+      "detail": "SessionDiagnosticsContext.from_payload line 80 complexity 30 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:SessionDiagnosticsContext.from_payload",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "complex_control_functions",
+      "value": 30
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/dialogs.py:_build_session_diagnostics_rows": {
+      "detail": "_build_session_diagnostics_rows line 253 complexity 23 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:_build_session_diagnostics_rows",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "complex_control_functions",
+      "value": 23
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/dialogs.py:build_validation_failure_dialog": {
+      "detail": "build_validation_failure_dialog line 514 complexity 23 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:build_validation_failure_dialog",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "complex_control_functions",
+      "value": 23
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/issue_detail.py:_blocked_explanation": {
+      "detail": "_blocked_explanation line 577 complexity 26 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:_blocked_explanation",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "complex_control_functions",
+      "value": 26
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/issue_detail.py:_event_to_narrative": {
+      "detail": "_event_to_narrative line 767 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:_event_to_narrative",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/issue_detail.py:_review_exchange_event_status": {
+      "detail": "_review_exchange_event_status line 517 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:_review_exchange_event_status",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/journey_projection.py:blocked_explanation_for_event": {
+      "detail": "blocked_explanation_for_event line 796 complexity 22 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:blocked_explanation_for_event",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "complex_control_functions",
+      "value": 22
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/journey_projection.py:build_journey_cycles_from_events": {
+      "detail": "build_journey_cycles_from_events line 856 complexity 33 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:build_journey_cycles_from_events",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "complex_control_functions",
+      "value": 33
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/journey_projection.py:build_journey_runs": {
+      "detail": "build_journey_runs line 568 complexity 30 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:build_journey_runs",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "complex_control_functions",
+      "value": 30
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/journey_projection.py:event_to_narrative": {
+      "detail": "event_to_narrative line 500 complexity 16 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:event_to_narrative",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "complex_control_functions",
+      "value": 16
+    },
+    "complex_control_functions:src/issue_orchestrator/view_models/lifecycle_projection.py:_semantic_cycle_inputs_from_logical_fields": {
+      "detail": "_semantic_cycle_inputs_from_logical_fields line 410 complexity 17 exceeds budget 15",
+      "kind": "python_function_complexity",
+      "metric_id": "src/issue_orchestrator/view_models/lifecycle_projection.py:_semantic_cycle_inputs_from_logical_fields",
+      "path": "src/issue_orchestrator/view_models/lifecycle_projection.py",
+      "rule_id": "complex_control_functions",
+      "value": 17
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/action_applier.py": {
       "detail": "17 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -1273,12 +1737,12 @@
       "value": 835
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_handler.py": {
-      "detail": "1199 lines exceeds budget 800",
+      "detail": "1188 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/completion_handler.py",
       "path": "src/issue_orchestrator/control/completion_handler.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1199
+      "value": 1188
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_processor.py": {
       "detail": "2436 lines exceeds budget 800",

@@ -19,9 +19,12 @@ The command runs `tools/quality_guardrails.py` against `tools/quality_guardrails
 The first rule set tracks:
 
 - oversized control hotspots
+- high-complexity Python functions in control-adjacent layers
 - branch sites that mention lifecycle/control vocabulary
 
 These are proxies for the failure pattern captured in issue #6362: control policy spreading across multiple owners, projections, and execution paths.
+
+Python function complexity is a lightweight McCabe-style count over functions and methods. It starts each function at `1`, then adds decision points for branches, loops, boolean operators, `try` handlers, `match` cases, and comprehension filters. Nested function bodies are counted as their own functions rather than inflating the outer function.
 
 Lifecycle/control vocabulary is matched on lexical tokens and configured phrases, not raw substrings. For example, `statusCode`, `sessionState`, `session_state`, and `review-exchange` can match configured terms, while unrelated tokens such as `prestatus` do not.
 
