@@ -43,7 +43,10 @@ right to submit it under the project license. Use the same name and email as
 the commit author whenever possible.
 
 If you already made an unsigned commit, fix it before opening or updating the
-pull request:
+pull request. Use `git commit --amend -s` when only the latest commit needs a
+sign-off. Use `git rebase --signoff origin/main` when every commit in a
+multi-commit branch needs a sign-off; it rewrites those branch commits and
+changes their SHAs.
 
 ```bash
 git commit --amend -s
