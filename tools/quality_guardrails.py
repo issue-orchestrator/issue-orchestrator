@@ -11,6 +11,7 @@ import argparse
 import ast
 import fnmatch
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ import yaml
 BASELINE_VERSION = 1
 EXIT_RATCHET_VIOLATION = 2
 EXIT_STALE_BASELINE = 3
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_TOKEN_RUN = re.compile(r"[A-Za-z0-9]+")
 
 
 @dataclass(frozen=True)
@@ -188,9 +191,43 @@ def _collect_file_line_budget(root: Path, rule: Mapping[str, Any]) -> list[Metri
     return metrics
 
 
+def _control_term_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for match in _TOKEN_RUN.finditer(text):
+        for part in _CAMEL_BOUNDARY.sub(" ", match.group(0)).split():
+            tokens.append(part.lower())
+    return tokens
+
+
+def _control_phrase_tokens(text: str) -> list[str]:
+    return [match.group(0).lower() for match in _TOKEN_RUN.finditer(text)]
+
+
+def _token_matches_term(token: str, term: str) -> bool:
+    return token in {term, f"{term}s", f"{term}es"} or (term.endswith("y") and token == f"{term[:-1]}ies")
+
+
+def _contains_term_tokens(text_tokens: Sequence[str], term_tokens: Sequence[str]) -> bool:
+    if not text_tokens or not term_tokens:
+        return False
+    if len(term_tokens) == 1:
+        return any(_token_matches_term(token, term_tokens[0]) for token in text_tokens)
+    width = len(term_tokens)
+    return any(list(text_tokens[index : index + width]) == list(term_tokens) for index in range(len(text_tokens) - width + 1))
+
+
 def _contains_any_term(text: str, terms: Sequence[str]) -> bool:
-    lower = text.lower()
-    return any(term.lower() in lower for term in terms)
+    text_tokens = _control_term_tokens(text)
+    phrase_tokens = _control_phrase_tokens(text)
+    for term in terms:
+        term_tokens = _control_term_tokens(term)
+        if len(term_tokens) == 1 and _contains_term_tokens(text_tokens, term_tokens):
+            return True
+        if len(term_tokens) > 1 and (
+            _contains_term_tokens(phrase_tokens, term_tokens) or _contains_term_tokens(text_tokens, term_tokens)
+        ):
+            return True
+    return False
 
 
 def _python_policy_site_count(path: Path, terms: Sequence[str]) -> int:
