@@ -25,6 +25,8 @@ These are proxies for the failure pattern captured in issue #6362: control polic
 
 Lifecycle/control vocabulary is matched on lexical tokens and configured phrases, not raw substrings. For example, `statusCode`, `sessionState`, `session_state`, and `review-exchange` can match configured terms, while unrelated tokens such as `prestatus` do not.
 
+JavaScript branch-site scanning uses a lightweight lexical pass rather than a full parser. It ignores comments and string literals when finding branch keywords, then checks multi-line `if`/`while`/`switch` conditions and `case` clauses for configured control terms. Vendored JavaScript bundles are excluded from this repo-local architecture metric.
+
 ## Ratchet Model
 
 Existing violations are stored in the baseline. A PR fails when it:

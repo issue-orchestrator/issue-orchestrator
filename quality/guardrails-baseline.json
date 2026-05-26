@@ -1065,12 +1065,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/control_center.js": {
-      "detail": "36 branch site(s) mention lifecycle/control terms",
+      "detail": "32 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/static/js/control_center.js",
       "path": "src/issue_orchestrator/static/js/control_center.js",
       "rule_id": "control_policy_branch_sites",
-      "value": 36
+      "value": 32
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/controls_refresh.js": {
       "detail": "8 branch site(s) mention lifecycle/control terms",
@@ -1079,14 +1079,6 @@
       "path": "src/issue_orchestrator/static/js/dashboard/controls_refresh.js",
       "rule_id": "control_policy_branch_sites",
       "value": 8
-    },
-    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/core.js": {
-      "detail": "9 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/static/js/dashboard/core.js",
-      "path": "src/issue_orchestrator/static/js/dashboard/core.js",
-      "rule_id": "control_policy_branch_sites",
-      "value": 9
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/diagnostics_actions.js": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
@@ -1105,12 +1097,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/e2e_runs_list.js": {
-      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "detail": "1 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/static/js/dashboard/e2e_runs_list.js",
       "path": "src/issue_orchestrator/static/js/dashboard/e2e_runs_list.js",
       "rule_id": "control_policy_branch_sites",
-      "value": 3
+      "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/e2e_runtime.js": {
       "detail": "7 branch site(s) mention lifecycle/control terms",
@@ -1121,12 +1113,12 @@
       "value": 7
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js": {
-      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "detail": "4 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js",
       "path": "src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js",
       "rule_id": "control_policy_branch_sites",
-      "value": 5
+      "value": 4
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/issue_detail_modals.js": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
@@ -1145,12 +1137,12 @@
       "value": 9
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/kanban_columns.js": {
-      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "detail": "5 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/static/js/dashboard/kanban_columns.js",
       "path": "src/issue_orchestrator/static/js/dashboard/kanban_columns.js",
       "rule_id": "control_policy_branch_sites",
-      "value": 6
+      "value": 5
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js": {
       "detail": "2 branch site(s) mention lifecycle/control terms",
@@ -1169,12 +1161,12 @@
       "value": 3
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/session_dialogs.js": {
-      "detail": "9 branch site(s) mention lifecycle/control terms",
+      "detail": "7 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/static/js/dashboard/session_dialogs.js",
       "path": "src/issue_orchestrator/static/js/dashboard/session_dialogs.js",
       "rule_id": "control_policy_branch_sites",
-      "value": 9
+      "value": 7
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/session_replay.js": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
@@ -1191,14 +1183,6 @@
       "path": "src/issue_orchestrator/static/js/dashboard/shell_actions.js",
       "rule_id": "control_policy_branch_sites",
       "value": 5
-    },
-    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/timeline.js": {
-      "detail": "12 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/static/js/dashboard/timeline.js",
-      "path": "src/issue_orchestrator/static/js/dashboard/timeline.js",
-      "rule_id": "control_policy_branch_sites",
-      "value": 12
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/validation_viewer.js": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
