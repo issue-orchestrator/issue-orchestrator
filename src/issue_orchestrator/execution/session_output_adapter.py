@@ -347,7 +347,7 @@ class FileSystemSessionOutput:
         """Derive the status of a run from its manifest and artifacts."""
         if manifest.get("ended_at"):
             outcome = manifest.get("outcome", "unknown")
-            if outcome in ("completed", "blocked", "timeout"):
+            if outcome in ("completed", "blocked", "timeout", "timed_out"):
                 validation = manifest.get("validation_passed")
                 if validation is False:
                     return "validation_failed"

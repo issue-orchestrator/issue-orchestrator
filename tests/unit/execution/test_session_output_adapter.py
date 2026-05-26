@@ -253,6 +253,41 @@ class TestListRuns:
         assert runs[0]["outcome"] == "completed"
         assert runs[0]["validation_passed"] is False
 
+    def test_list_runs_derives_timed_out_status(self, session_output, tmp_path):
+        """Verify current timed_out manifests render as timed-out runs."""
+        sessions_dir = tmp_path / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        run_dir = sessions_dir / "20260117-100000Z__coding-1"
+        run_dir.mkdir()
+        (run_dir / MANIFEST_NAME).write_text(json.dumps({
+            "session_name": "coding-1",
+            "run_id": "20260117-100000Z",
+            "started_at": "2026-01-17T10:00:00Z",
+            "ended_at": "2026-01-17T10:30:00Z",
+            "issue_number": 123,
+            "agent_label": "agent:developer",
+            "outcome": "timed_out",
+        }))
+
+        index = {
+            "runs": [{
+                "session_name": "coding-1",
+                "run_id": "20260117-100000Z",
+                "started_at": "2026-01-17T10:00:00Z",
+                "issue_number": 123,
+                "run_dir": str(run_dir),
+                "agent_label": "agent:developer",
+            }]
+        }
+        (sessions_dir / INDEX_NAME).write_text(json.dumps(index))
+
+        runs = session_output.list_runs(tmp_path)
+
+        assert len(runs) == 1
+        assert runs[0]["status"] == "timed_out"
+        assert runs[0]["outcome"] == "timed_out"
+
 
 class TestReviewExchangeSummary:
     """Tests for review exchange summary persistence."""
@@ -526,7 +561,7 @@ class TestClaudeLogAttachment:
             claude_log_dir=str(claude_dir),
         )
 
-        original_write_json = FileSystemSessionOutput._write_json
+        original_write_json = FileSystemSessionOutput._write_json  # noqa: SLF001
         stats = {"active": 0, "max_active": 0}
         stats_lock = threading.Lock()
 

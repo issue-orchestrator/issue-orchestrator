@@ -65,6 +65,7 @@ from ..ports.run_evidence import (
 from ..ports.session_output import SessionOutput, ValidationRecord, ValidationState
 from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 from .review_exchange_contracts import ReviewExchangeCanceller
+from .session_run_resolution import resolve_run_dir
 from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
@@ -237,6 +238,7 @@ class SessionController:
         retry_prompt_template: str | None = None,
         repo_root: Path | None = None,
         issue_key: "IssueKey | None" = None,
+        session_run_dir: Path | None = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -258,7 +260,11 @@ class SessionController:
         )
         validation_session_name = completion_session_name or session_name
         run_dir = self._resolve_run_dir(
-            worktree_path, session_name, completion_session_name
+            worktree_path,
+            session_name,
+            completion_session_name,
+            issue_number,
+            session_run_dir=session_run_dir,
         )
         provider_status = self._read_provider_status(run_dir)
         if provider_status and provider_status.succeeded and self._provider_resilience:
@@ -1455,16 +1461,25 @@ class SessionController:
         worktree_path: Path,
         session_name: str,
         completion_session_name: str | None,
+        issue_number: int,
+        *,
+        session_run_dir: Path | None = None,
     ) -> Path:
         """Pick the most relevant run directory for the session being processed."""
-        if completion_session_name:
-            run_dir = self.session_output.find_run_dir(
-                worktree_path, completion_session_name
-            )
-            if run_dir:
-                return run_dir
-
-        run_dir = self.session_output.find_run_dir(worktree_path, session_name)
+        primary_session_name = completion_session_name or session_name
+        alternate_session_names = (
+            (session_name,)
+            if completion_session_name and completion_session_name != session_name
+            else ()
+        )
+        run_dir = resolve_run_dir(
+            self.session_output,
+            worktree_path=worktree_path,
+            session_name=primary_session_name,
+            issue_number=issue_number,
+            recorded_run_dir=session_run_dir,
+            alternate_session_names=alternate_session_names,
+        )
         if run_dir:
             return run_dir
 

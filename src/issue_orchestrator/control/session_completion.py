@@ -20,6 +20,7 @@ from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager
 from .active_sessions import has_active_terminal
 from .session_completion_diagnostics import run_session_analysis, surface_failure_context
+from .session_run_resolution import resolve_session_run_dir
 from .transition_log import log_transition
 
 if TYPE_CHECKING:
@@ -206,7 +207,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         # action, otherwise a finished agent can be rediscovered as running.
         _terminate_finished_session(session, status, kill_session_fn)
     if session.worktree_path:
-        run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
+        run_dir = resolve_session_run_dir(session_output, session)
         if run_dir:
             session_output.attach_claude_log(run_dir)
             run_session_analysis(run_dir)
@@ -344,6 +345,7 @@ def process_active_sessions(
             ),
             repo_root=config.repo_root,
             issue_key=_validation_issue_key(session, config),
+            session_run_dir=session.run_dir,
         )
         if decision.status == SessionStatus.RUNNING:
             logger.info(

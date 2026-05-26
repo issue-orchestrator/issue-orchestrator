@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Callable
 
@@ -47,6 +47,7 @@ from .completion_action_planner import (
     has_review_exchange_errors,
 )
 from .reconciliation import build_expected_for_mutation
+from .session_run_resolution import resolve_session_run_dir
 from pathlib import Path
 from ..infra.run_audit import write_run_audit
 
@@ -1125,12 +1126,14 @@ class CompletionHandler:
         manifest.runtime_minutes = session.runtime_minutes
         if session.agent_config:
             manifest.timeout_minutes = session.agent_config.timeout_minutes
+        if manifest.outcome is None:
+            manifest.outcome = status.value
+        if manifest.ended_at is None:
+            manifest.ended_at = datetime.now(timezone.utc).isoformat()
 
         # Capture log tail for all outcomes
-        log_path = self._session_output.get_log_path(
-            session.worktree_path, session.terminal_id
-        )
-        if log_path and log_path.exists():
+        log_path = self._session_output.get_log_path_for_run_dir(run_dir)
+        if isinstance(log_path, Path) and log_path.exists():
             try:
                 content = log_path.read_text()
                 lines = content.strip().split("\n")
@@ -1144,22 +1147,8 @@ class CompletionHandler:
             logger.warning("[MANIFEST] Failed to save runtime enrichment: %s", exc)
 
     def _resolve_session_run_dir(self, session: Session) -> Path | None:
-        """Resolve run_dir for events/diagnostics, including issue-scoped fallback.
-
-        Some provider-backed runs use a phase session name in run artifacts while
-        session.terminal_id carries a legacy issue-* token. Prefer exact lookup,
-        then fall back to latest run in this worktree when it belongs to the same issue.
-        """
-        run_dir = self._session_output.find_run_dir(session.worktree_path, session.terminal_id)
-        if run_dir:
-            return run_dir
-        fallback = self._session_output.find_run_dir(session.worktree_path)
-        if not fallback:
-            return None
-        manifest = self._session_output.read_manifest(fallback) or {}
-        if manifest.get("issue_number") == session.issue.number:
-            return fallback
-        return None
+        """Resolve run_dir for events/diagnostics."""
+        return resolve_session_run_dir(self._session_output, session)
 
 def launch_review_by_number(
     n: int,

@@ -1321,20 +1321,20 @@
       "value": 1526
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
-      "detail": "1892 lines exceeds budget 800",
+      "detail": "1907 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/session_controller.py",
       "path": "src/issue_orchestrator/control/session_controller.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1892
+      "value": 1907
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_launcher.py": {
-      "detail": "1763 lines exceeds budget 800",
+      "detail": "1766 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py",
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1763
+      "value": 1766
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
       "detail": "803 lines exceeds budget 800",
@@ -1409,12 +1409,12 @@
       "value": 949
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/timeline_presentation.py": {
-      "detail": "995 lines exceeds budget 800",
+      "detail": "996 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
       "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 995
+      "value": 996
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py": {
       "detail": "1192 lines exceeds budget 800",

@@ -60,7 +60,7 @@ class RunManifest:
     # ------------------------------------------------------------------
     # Outcome (set at completion)
     # ------------------------------------------------------------------
-    outcome: str | None = None  # completed, blocked, timeout, failed, needs_human
+    outcome: str | None = None  # completed, blocked, timed_out, failed, needs_human
 
     # ------------------------------------------------------------------
     # Agent detail (from CompletionRecord — set at completion)

@@ -665,6 +665,43 @@ class TestSessionControllerTimeout:
         assert diagnostic["nearby_completion_candidates"] == []
         assert decision.status == SessionStatus.TIMED_OUT
 
+    def test_timeout_without_completion_uses_recorded_run_dir(self, tmp_path: Path):
+        """A launched session's run_dir is authoritative for diagnostics."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = None
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_path, "launch-recorded", issue_number=123)
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=session_output,
+            working_copy=StubWorkingCopy(),
+        )
+
+        observation = SessionObservationResult.timed_out(
+            runtime_minutes=60.0,
+            timeout_minutes=45,
+            session_exists=True,
+        )
+        completion_rel_path = (
+            ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
+        )
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=tmp_path,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+            completion_path=completion_rel_path,
+            session_run_dir=run.run_dir,
+        )
+
+        diagnostic_files = list(run.run_dir.glob("no-completion-*.json"))
+        assert len(diagnostic_files) == 1
+        assert session_output.find_run_dir(tmp_path, "coding-1") is None
+        assert decision.status == SessionStatus.TIMED_OUT
+
     def test_timeout_without_completion_records_marker_and_nearby_candidates(
         self, tmp_path: Path
     ):
