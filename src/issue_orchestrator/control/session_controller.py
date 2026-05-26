@@ -237,6 +237,7 @@ class SessionController:
         retry_prompt_template: str | None = None,
         repo_root: Path | None = None,
         issue_key: "IssueKey | None" = None,
+        session_run_dir: Path | None = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -258,7 +259,10 @@ class SessionController:
         )
         validation_session_name = completion_session_name or session_name
         run_dir = self._resolve_run_dir(
-            worktree_path, session_name, completion_session_name
+            worktree_path,
+            session_name,
+            completion_session_name,
+            session_run_dir=session_run_dir,
         )
         provider_status = self._read_provider_status(run_dir)
         if provider_status and provider_status.succeeded and self._provider_resilience:
@@ -1455,8 +1459,19 @@ class SessionController:
         worktree_path: Path,
         session_name: str,
         completion_session_name: str | None,
+        *,
+        session_run_dir: Path | None = None,
     ) -> Path:
         """Pick the most relevant run directory for the session being processed."""
+        if session_run_dir is not None:
+            if not session_run_dir.exists():
+                logger.warning(
+                    "Recorded run_dir missing for session=%s: %s",
+                    session_name,
+                    session_run_dir,
+                )
+            return session_run_dir
+
         if completion_session_name:
             run_dir = self.session_output.find_run_dir(
                 worktree_path, completion_session_name

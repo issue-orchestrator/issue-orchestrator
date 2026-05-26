@@ -40,6 +40,7 @@ from ..infra.provider_resilience import ProviderStatus, read_provider_status, no
 from ..ports.provider_resilience import ProviderErrorType
 from ..observation.observation import SessionObservation, SessionObservationResult
 from .completion_record_validation import load_completion_record
+from .session_run_resolution import resolve_session_run_dir
 
 if TYPE_CHECKING:
     from ..ports.session_output import SessionOutput
@@ -190,9 +191,7 @@ class CompletionObserver:
 
         Returns facts about the failure - does not take any actions.
         """
-        session_log = self._get_session_log_tail(
-            session.worktree_path, session.terminal_id
-        )
+        session_log = self._get_session_log_tail(session)
         provider_status = self._read_provider_status(session)
 
         if provider_status and provider_status.error_type == ProviderErrorType.TRANSIENT and not provider_status.succeeded:
@@ -248,14 +247,21 @@ class CompletionObserver:
         )
 
     def _read_provider_status(self, session: Session) -> ProviderStatus | None:
-        run_dir = self.session_output.find_run_dir(session.worktree_path, session.terminal_id)
+        run_dir = resolve_session_run_dir(self.session_output, session)
         if not run_dir:
             return None
         return read_provider_status(run_dir)
 
-    def _get_session_log_tail(self, worktree_path: Path, session_name: str) -> str:
+    def _get_session_log_tail(self, session: Session) -> str:
         """Get last 50 lines of session log for diagnostics."""
-        log_path = self.session_output.get_log_path(worktree_path, session_name)
+        run_dir = resolve_session_run_dir(self.session_output, session)
+        if run_dir:
+            log_path = self.session_output.get_log_path_for_run_dir(run_dir)
+        else:
+            log_path = self.session_output.get_log_path(
+                session.worktree_path,
+                session.terminal_id,
+            )
         if not (log_path and log_path.exists()):
             return ""
         try:

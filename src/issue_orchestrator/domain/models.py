@@ -1037,6 +1037,7 @@ class Session:
     worktree_path: Path
     branch_name: str
     completion_path: str = COMPLETION_RECORD_PATH  # Agent-specific path to completion.json
+    run_dir: Path | None = None  # Exact session artifact directory from launch; None for restored/legacy sessions
     agent_label: Optional[str] = None  # Agent type label (e.g., "agent:backend") for per-agent reviewer
     pr_number: int | None = None  # PR number for review/rework sessions
     rework_cycle: int | None = None  # Which rework iteration (1, 2, ...) — None for initial coding
