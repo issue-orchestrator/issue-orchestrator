@@ -223,7 +223,9 @@ def _contains_any_term(text: str, terms: Sequence[str]) -> bool:
         term_tokens = _control_term_tokens(term)
         if len(term_tokens) == 1 and _contains_term_tokens(text_tokens, term_tokens):
             return True
-        if len(term_tokens) > 1 and _contains_term_tokens(phrase_tokens, term_tokens):
+        if len(term_tokens) > 1 and (
+            _contains_term_tokens(phrase_tokens, term_tokens) or _contains_term_tokens(text_tokens, term_tokens)
+        ):
             return True
     return False
 

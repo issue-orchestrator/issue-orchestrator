@@ -89,12 +89,12 @@
       "value": 2
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_review_exchange.py": {
-      "detail": "29 branch site(s) mention lifecycle/control terms",
+      "detail": "30 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/completion_review_exchange.py",
       "path": "src/issue_orchestrator/control/completion_review_exchange.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 29
+      "value": 30
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/fact_gatherer.py": {
       "detail": "5 branch site(s) mention lifecycle/control terms",
@@ -297,12 +297,12 @@
       "value": 2
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/session_launcher.py": {
-      "detail": "15 branch site(s) mention lifecycle/control terms",
+      "detail": "16 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py",
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 15
+      "value": 16
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/session_observation.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -1065,12 +1065,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/control_center.js": {
-      "detail": "35 branch site(s) mention lifecycle/control terms",
+      "detail": "36 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/static/js/control_center.js",
       "path": "src/issue_orchestrator/static/js/control_center.js",
       "rule_id": "control_policy_branch_sites",
-      "value": 35
+      "value": 36
     },
     "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/controls_refresh.js": {
       "detail": "8 branch site(s) mention lifecycle/control terms",

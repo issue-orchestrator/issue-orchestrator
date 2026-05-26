@@ -179,12 +179,14 @@ def test_policy_terms_match_identifier_tokens_and_plurals(tmp_path: Path) -> Non
     target = tmp_path / "src" / "pkg" / "control.py"
     target.parent.mkdir(parents=True)
     target.write_text(
-        "def f(statusCode, labels, session_state):\n"
+        "def f(statusCode, labels, session_state, sessionState):\n"
         "    if statusCode:\n"
         "        return True\n"
         "    if labels:\n"
         "        return True\n"
         "    if session_state:\n"
+        "        return labels\n"
+        "    if sessionState:\n"
         "        return labels\n",
         encoding="utf-8",
     )
@@ -193,7 +195,7 @@ def test_policy_terms_match_identifier_tokens_and_plurals(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
     baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
-    assert baseline["metrics"]["policy_sites:src/pkg/control.py"]["value"] == 3
+    assert baseline["metrics"]["policy_sites:src/pkg/control.py"]["value"] == 4
 
 
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:

@@ -23,7 +23,7 @@ The first rule set tracks:
 
 These are proxies for the failure pattern captured in issue #6362: control policy spreading across multiple owners, projections, and execution paths.
 
-Lifecycle/control vocabulary is matched on lexical tokens and configured phrases, not raw substrings. For example, `statusCode`, `session_state`, and `review-exchange` can match configured terms, while unrelated tokens such as `prestatus` do not.
+Lifecycle/control vocabulary is matched on lexical tokens and configured phrases, not raw substrings. For example, `statusCode`, `sessionState`, `session_state`, and `review-exchange` can match configured terms, while unrelated tokens such as `prestatus` do not.
 
 ## Ratchet Model
 
