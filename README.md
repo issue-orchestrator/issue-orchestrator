@@ -156,6 +156,21 @@ If you want your AI assistant to drive the setup for you, use the [Agent-Guided 
 
 ~100K lines of Python, a large automated test suite, and architecture decision records.
 
+## License and contributions
+
+Issue-Orchestrator is licensed under the Apache License, Version 2.0. See
+[LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+Contributions require Developer Certificate of Origin sign-off. This project
+does not require a CLA today, and there is no proprietary split in this
+repository. See [CONTRIBUTING.md](CONTRIBUTING.md) for the sign-off process
+and contribution terms.
+
+The Issue-Orchestrator name, logos, and project marks are retained by Bruce
+Gordon. The Apache-2.0 license grants rights to the code; it does not grant
+trademark or brand rights except for reasonable and customary use in describing
+the origin of the software.
+
 ## Documentation
 
 Pick the path that fits:

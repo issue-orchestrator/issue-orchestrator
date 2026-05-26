@@ -3,6 +3,7 @@
   "displayName": "Issue Orchestrator",
   "description": "Native VS Code integration for issue-orchestrator",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "publisher": "issue-orchestrator",
   "engines": {
     "vscode": "^1.85.0"
