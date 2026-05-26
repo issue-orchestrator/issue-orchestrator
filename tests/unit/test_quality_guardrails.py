@@ -451,3 +451,57 @@ def test_javascript_policy_sites_are_tracked(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
     assert baseline["metrics"]["policy_sites:src/ui/view.js"]["value"] == 1
+
+
+def test_javascript_policy_sites_track_multiline_conditions(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path, max_lines=40)
+    target = tmp_path / "src" / "ui" / "view.js"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "function render(status, retryCount, sessionState) {\n"
+        "  if (\n"
+        "    status === 'retry'\n"
+        "  ) return 'retry';\n"
+        "  while (\n"
+        "    retryCount > 0\n"
+        "  ) retryCount -= 1;\n"
+        "  switch (\n"
+        "    sessionState\n"
+        "  ) {\n"
+        "    case 'retry':\n"
+        "      return status;\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert baseline["metrics"]["policy_sites:src/ui/view.js"]["value"] == 4
+
+
+def test_javascript_policy_sites_ignore_comments_and_string_keywords(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_config(tmp_path, max_lines=40)
+    target = tmp_path / "src" / "ui" / "view.js"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "// if (status === 'retry') return true;\n"
+        "/*\n"
+        "switch (sessionState) {\n"
+        "  case 'retry':\n"
+        "}\n"
+        "*/\n"
+        "const text = \"if (status)\";\n"
+        "if (ready /* status */) return true;\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert "policy_sites:src/ui/view.js" not in baseline["metrics"]

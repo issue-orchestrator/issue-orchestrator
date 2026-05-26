@@ -25,6 +25,8 @@ EXIT_RATCHET_VIOLATION = 2
 EXIT_STALE_BASELINE = 3
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _TOKEN_RUN = re.compile(r"[A-Za-z0-9]+")
+_JS_POLICY_KEYWORD = re.compile(r"\b(if|while|switch|case)\b")
+_JS_PAREN_KEYWORDS = {"if", "switch", "while"}
 
 
 @dataclass(frozen=True)
@@ -252,28 +254,142 @@ def _python_policy_site_count(path: Path, terms: Sequence[str]) -> int:
     return count
 
 
-def _strip_js_comment(line: str) -> str:
-    return line.split("//", 1)[0]
+def _js_policy_scan_sources(source: str) -> tuple[str, str]:
+    term_chars = list(source)
+    structure_chars = list(source)
+    index = 0
+
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+
+        if char == "/" and next_char == "/":
+            index = _blank_js_comment(term_chars, structure_chars, source, index, line_comment=True)
+            continue
+
+        if char == "/" and next_char == "*":
+            index = _blank_js_comment(term_chars, structure_chars, source, index, line_comment=False)
+            continue
+
+        if char in {"'", '"', "`"}:
+            index = _blank_js_string_structure(structure_chars, source, index, char)
+            continue
+
+        index += 1
+
+    return "".join(term_chars), "".join(structure_chars)
+
+
+def _blank_js_char(chars: list[str], index: int, source: str) -> None:
+    chars[index] = "\n" if source[index] == "\n" else " "
+
+
+def _blank_js_comment(
+    term_chars: list[str],
+    structure_chars: list[str],
+    source: str,
+    index: int,
+    *,
+    line_comment: bool,
+) -> int:
+    end = index + 2
+    while end < len(source):
+        if line_comment and source[end] == "\n":
+            break
+        if not line_comment and source[end : end + 2] == "*/":
+            end += 2
+            break
+        end += 1
+
+    for blank_index in range(index, end):
+        _blank_js_char(term_chars, blank_index, source)
+        _blank_js_char(structure_chars, blank_index, source)
+    return end
+
+
+def _blank_js_string_structure(
+    structure_chars: list[str],
+    source: str,
+    start_index: int,
+    quote: str,
+) -> int:
+    _blank_js_char(structure_chars, start_index, source)
+    index = start_index + 1
+    escaped = False
+
+    while index < len(source):
+        char = source[index]
+        _blank_js_char(structure_chars, index, source)
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == quote:
+            return index + 1
+        index += 1
+
+    return index
+
+
+def _skip_js_whitespace(source: str, index: int) -> int:
+    while index < len(source) and source[index].isspace():
+        index += 1
+    return index
+
+
+def _find_matching_js_paren(structure_source: str, open_index: int) -> int | None:
+    depth = 0
+    for index in range(open_index, len(structure_source)):
+        char = structure_source[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
+def _find_js_case_colon(structure_source: str, start_index: int) -> int | None:
+    depth = 0
+    for index in range(start_index, len(structure_source)):
+        char = structure_source[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(depth - 1, 0)
+        elif char == ":" and depth == 0:
+            return index
+    return None
+
+
+def _iter_js_policy_segments(source: str) -> Iterable[str]:
+    term_source, structure_source = _js_policy_scan_sources(source)
+
+    for match in _JS_POLICY_KEYWORD.finditer(structure_source):
+        keyword = match.group(1)
+        segment_start = _skip_js_whitespace(term_source, match.end())
+
+        if keyword in _JS_PAREN_KEYWORDS:
+            if segment_start >= len(structure_source) or structure_source[segment_start] != "(":
+                continue
+            segment_end = _find_matching_js_paren(structure_source, segment_start)
+            if segment_end is not None:
+                yield term_source[segment_start + 1 : segment_end]
+            continue
+
+        segment_end = _find_js_case_colon(structure_source, segment_start)
+        if segment_end is not None:
+            yield term_source[segment_start:segment_end]
 
 
 def _js_policy_site_count(path: Path, terms: Sequence[str]) -> int:
-    count = 0
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = _strip_js_comment(line).strip()
-        if not stripped:
-            continue
-        if not (
-            stripped.startswith("if ")
-            or stripped.startswith("if(")
-            or stripped.startswith("switch ")
-            or stripped.startswith("switch(")
-            or stripped.startswith("case ")
-            or " if (" in stripped
-        ):
-            continue
-        if _contains_any_term(stripped, terms):
-            count += 1
-    return count
+    source = path.read_text(encoding="utf-8")
+    return sum(1 for segment in _iter_js_policy_segments(source) if _contains_any_term(segment, terms))
 
 
 def _collect_control_policy_branch_sites(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
