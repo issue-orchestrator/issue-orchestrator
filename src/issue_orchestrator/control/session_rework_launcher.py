@@ -388,6 +388,7 @@ def launch_rework_session(
         worktree_path=worktree_path,
         branch_name=branch_name,
         completion_path=completion_path,
+        run_dir=run.run_dir,
         agent_label=rework.agent_type,
         pr_number=pr_number,
         rework_cycle=rework.rework_cycle,

@@ -598,7 +598,7 @@ function openPhaseDetails() {
 function getStatusClass(status) {
     if (status === 'completed') return 'success';
     if (status === 'in_progress') return 'in-progress';
-    if (['validation_failed', 'blocked', 'timeout'].includes(status)) return 'failed';
+    if (['validation_failed', 'blocked', 'timeout', 'timed_out'].includes(status)) return 'failed';
     return '';
 }
 
@@ -609,6 +609,7 @@ function formatStatus(status) {
         'validation_failed': 'Validation Failed',
         'blocked': 'Blocked',
         'timeout': 'Timed Out',
+        'timed_out': 'Timed Out',
     };
     return labels[status] || status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
