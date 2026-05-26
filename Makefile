@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity quality-guardrails sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -17,6 +17,7 @@ help:
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  lint-complexity     Check cyclomatic complexity (C901) and branch count (PLR0912)"
+	@echo "  quality-guardrails  Run ratcheted control-quality guardrails"
 	@echo "  test-unit           Run unit tests"
 	@echo "  test-simulated      Run all simulated scenario tests"
 	@echo "  test-simulated-core Run fast simulated scenario slice used by local validate"
@@ -213,8 +214,13 @@ lint-arch:
 	$(call TIMED_RUN,lint-arch,\
 		$(LINT_IMPORTS) && \
 		$(PYTHON) tools/check_arch_guardrails.py src && \
+		$(PYTHON) tools/quality_guardrails.py --fail-on-new && \
 		scripts/check_agents_md.sh && \
 		$(PYTHON) scripts/check_docs_md.py)
+
+quality-guardrails:
+	$(call TIMED_RUN,quality-guardrails,\
+		$(PYTHON) tools/quality_guardrails.py --fail-on-new)
 
 # Ruff guardrails - blocks on violations (C901 complexity, PLR0912 branches, SLF001 private access)
 lint-complexity:

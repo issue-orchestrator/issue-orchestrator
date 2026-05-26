@@ -1,0 +1,1557 @@
+{
+  "metrics": {
+    "control_policy_branch_sites:src/issue_orchestrator/control/action_applier.py": {
+      "detail": "17 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/action_applier.py",
+      "path": "src/issue_orchestrator/control/action_applier.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 17
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/actions.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/actions.py",
+      "path": "src/issue_orchestrator/control/actions.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
+      "detail": "13 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
+      "path": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 13
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/background_job_supervisor.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/background_job_supervisor.py",
+      "path": "src/issue_orchestrator/control/background_job_supervisor.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/cleanup_manager.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/cleanup_manager.py",
+      "path": "src/issue_orchestrator/control/cleanup_manager.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/completion_action_planner.py": {
+      "detail": "12 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/completion_action_planner.py",
+      "path": "src/issue_orchestrator/control/completion_action_planner.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 12
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/completion_handler.py": {
+      "detail": "35 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/completion_handler.py",
+      "path": "src/issue_orchestrator/control/completion_handler.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 35
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/completion_observer.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/completion_observer.py",
+      "path": "src/issue_orchestrator/control/completion_observer.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/completion_processor.py": {
+      "detail": "22 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/completion_processor.py",
+      "path": "src/issue_orchestrator/control/completion_processor.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 22
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/completion_record_validation.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/completion_record_validation.py",
+      "path": "src/issue_orchestrator/control/completion_record_validation.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/completion_result_artifacts.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/completion_result_artifacts.py",
+      "path": "src/issue_orchestrator/control/completion_result_artifacts.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/completion_review_exchange.py": {
+      "detail": "29 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/completion_review_exchange.py",
+      "path": "src/issue_orchestrator/control/completion_review_exchange.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 29
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/fact_gatherer.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/fact_gatherer.py",
+      "path": "src/issue_orchestrator/control/fact_gatherer.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/github_workflow.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/github_workflow.py",
+      "path": "src/issue_orchestrator/control/github_workflow.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/goal_pilot.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/goal_pilot.py",
+      "path": "src/issue_orchestrator/control/goal_pilot.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/goal_pilot_skills.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/goal_pilot_skills.py",
+      "path": "src/issue_orchestrator/control/goal_pilot_skills.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/job_store.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/job_store.py",
+      "path": "src/issue_orchestrator/control/job_store.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/label_manager.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/label_manager.py",
+      "path": "src/issue_orchestrator/control/label_manager.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/label_sync.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/label_sync.py",
+      "path": "src/issue_orchestrator/control/label_sync.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/maintenance.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/maintenance.py",
+      "path": "src/issue_orchestrator/control/maintenance.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/orchestrator_support.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/orchestrator_support.py",
+      "path": "src/issue_orchestrator/control/orchestrator_support.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/planner.py": {
+      "detail": "23 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/planner.py",
+      "path": "src/issue_orchestrator/control/planner.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 23
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/pr_scanner.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/pr_scanner.py",
+      "path": "src/issue_orchestrator/control/pr_scanner.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/provider_availability.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/provider_availability.py",
+      "path": "src/issue_orchestrator/control/provider_availability.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/publish_executor.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/publish_executor.py",
+      "path": "src/issue_orchestrator/control/publish_executor.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/publish_recovery.py": {
+      "detail": "13 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/publish_recovery.py",
+      "path": "src/issue_orchestrator/control/publish_recovery.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 13
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/queue_cache.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/queue_cache.py",
+      "path": "src/issue_orchestrator/control/queue_cache.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/reconciliation.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/reconciliation.py",
+      "path": "src/issue_orchestrator/control/reconciliation.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/retry_policy.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/retry_policy.py",
+      "path": "src/issue_orchestrator/control/retry_policy.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/review_exchange_loop.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/review_exchange_loop.py",
+      "path": "src/issue_orchestrator/control/review_exchange_loop.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/review_scope.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/review_scope.py",
+      "path": "src/issue_orchestrator/control/review_scope.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/review_validity.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/review_validity.py",
+      "path": "src/issue_orchestrator/control/review_validity.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/scheduler.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/scheduler.py",
+      "path": "src/issue_orchestrator/control/scheduler.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/session_analyzer.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/session_analyzer.py",
+      "path": "src/issue_orchestrator/control/session_analyzer.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/session_completion.py": {
+      "detail": "7 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/session_completion.py",
+      "path": "src/issue_orchestrator/control/session_completion.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 7
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/session_controller.py": {
+      "detail": "30 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/session_controller.py",
+      "path": "src/issue_orchestrator/control/session_controller.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 30
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/session_history.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/session_history.py",
+      "path": "src/issue_orchestrator/control/session_history.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/session_launcher.py": {
+      "detail": "15 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/session_launcher.py",
+      "path": "src/issue_orchestrator/control/session_launcher.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 15
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/session_observation.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/session_observation.py",
+      "path": "src/issue_orchestrator/control/session_observation.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/session_review_support.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/session_review_support.py",
+      "path": "src/issue_orchestrator/control/session_review_support.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/snapshot_builder.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/snapshot_builder.py",
+      "path": "src/issue_orchestrator/control/snapshot_builder.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/startup_manager.py": {
+      "detail": "12 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/startup_manager.py",
+      "path": "src/issue_orchestrator/control/startup_manager.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 12
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/triage_manifest_builder.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/triage_manifest_builder.py",
+      "path": "src/issue_orchestrator/control/triage_manifest_builder.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/validation.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/validation.py",
+      "path": "src/issue_orchestrator/control/validation.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/validation_retry.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/validation_retry.py",
+      "path": "src/issue_orchestrator/control/validation_retry.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/workflows/rework_workflow.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/workflows/rework_workflow.py",
+      "path": "src/issue_orchestrator/control/workflows/rework_workflow.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/worktree.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/worktree.py",
+      "path": "src/issue_orchestrator/control/worktree.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/_auth_middleware.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/_auth_middleware.py",
+      "path": "src/issue_orchestrator/entrypoints/_auth_middleware.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/bootstrap.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py",
+      "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli.py": {
+      "detail": "14 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 14
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_dry_run.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_dry_run.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_dry_run.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_support.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_support.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_support.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_tools/agent_done.py": {
+      "detail": "25 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 25
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_tools/coding_done.py": {
+      "detail": "17 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 17
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_tools/prepush_check.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/prepush_check.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/prepush_check.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py": {
+      "detail": "12 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 12
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard_support.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard_support.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard_support.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli_utility_commands.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_utility_commands.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_utility_commands.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/control_api.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/control_api_e2e_runs.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/control_api_e2e_triage.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_e2e_triage.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_e2e_triage.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/control_api_goal_pilot_routes.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_goal_pilot_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_goal_pilot_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/control_api_issue_routes.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_issue_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_issue_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py": {
+      "detail": "13 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 13
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/control_api_setup_routes.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_setup_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_setup_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/control_api_shutdown_routes.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_shutdown_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_shutdown_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/dashboard.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/dashboard.py",
+      "path": "src/issue_orchestrator/entrypoints/dashboard.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/e2e_affordances.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/e2e_affordances.py",
+      "path": "src/issue_orchestrator/entrypoints/e2e_affordances.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/e2e_worker.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/e2e_worker.py",
+      "path": "src/issue_orchestrator/entrypoints/e2e_worker.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/mcp_server.py": {
+      "detail": "9 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 9
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/setup_wizard_common.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/setup_wizard_common.py",
+      "path": "src/issue_orchestrator/entrypoints/setup_wizard_common.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/shutdown_reason_support.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/shutdown_reason_support.py",
+      "path": "src/issue_orchestrator/entrypoints/shutdown_reason_support.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/timeline_presentation.py": {
+      "detail": "12 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 12
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/tray.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/tray.py",
+      "path": "src/issue_orchestrator/entrypoints/tray.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_diagnostics_routes.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py": {
+      "detail": "10 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 10
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_operator_routes.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_read_model_routes.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_read_model_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_read_model_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_refresh_routes.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_retry_history_routes.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_session_routes.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_status_routes.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_status_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_status_routes.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/agent_runner_base.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner_base.py",
+      "path": "src/issue_orchestrator/execution/agent_runner_base.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/agent_runner_errors.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner_errors.py",
+      "path": "src/issue_orchestrator/execution/agent_runner_errors.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/agent_runner_providers/codex.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner_providers/codex.py",
+      "path": "src/issue_orchestrator/execution/agent_runner_providers/codex.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/agent_runner_types.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner_types.py",
+      "path": "src/issue_orchestrator/execution/agent_runner_types.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/control_center_actions.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/control_center_actions.py",
+      "path": "src/issue_orchestrator/execution/control_center_actions.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/control_center_repo_status.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/control_center_repo_status.py",
+      "path": "src/issue_orchestrator/execution/control_center_repo_status.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/control_center_runtime.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/control_center_runtime.py",
+      "path": "src/issue_orchestrator/execution/control_center_runtime.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/goal_pilot_store.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/goal_pilot_store.py",
+      "path": "src/issue_orchestrator/execution/goal_pilot_store.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/manifest_accessor.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/manifest_accessor.py",
+      "path": "src/issue_orchestrator/execution/manifest_accessor.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/orchestrator_http_api.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/orchestrator_http_api.py",
+      "path": "src/issue_orchestrator/execution/orchestrator_http_api.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/persistent_review_exchange_runner.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/persistent_review_exchange_runner.py",
+      "path": "src/issue_orchestrator/execution/persistent_review_exchange_runner.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/persistent_round_runner.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/persistent_round_runner.py",
+      "path": "src/issue_orchestrator/execution/persistent_round_runner.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/persistent_session_exchange.py": {
+      "detail": "13 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 13
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/run_evidence.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/run_evidence.py",
+      "path": "src/issue_orchestrator/execution/run_evidence.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/session_output_adapter.py": {
+      "detail": "8 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "path": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 8
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/subprocess_runner.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/subprocess_runner.py",
+      "path": "src/issue_orchestrator/execution/subprocess_runner.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/timeline_artifact_expectations.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/timeline_artifact_expectations.py",
+      "path": "src/issue_orchestrator/execution/timeline_artifact_expectations.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/validation_failure_summary.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/validation_failure_summary.py",
+      "path": "src/issue_orchestrator/execution/validation_failure_summary.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/execution/verification_service.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/execution/verification_service.py",
+      "path": "src/issue_orchestrator/execution/verification_service.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/ai_diagnose.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/ai_diagnose.py",
+      "path": "src/issue_orchestrator/infra/ai_diagnose.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/analysis.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/analysis.py",
+      "path": "src/issue_orchestrator/infra/analysis.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/audit.py": {
+      "detail": "7 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/audit.py",
+      "path": "src/issue_orchestrator/infra/audit.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 7
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/config.py": {
+      "detail": "45 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/config.py",
+      "path": "src/issue_orchestrator/infra/config.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 45
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/config_sections.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/config_sections.py",
+      "path": "src/issue_orchestrator/infra/config_sections.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/doctor/checks/config.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/doctor/checks/config.py",
+      "path": "src/issue_orchestrator/infra/doctor/checks/config.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/doctor/checks/e2e.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/doctor/checks/e2e.py",
+      "path": "src/issue_orchestrator/infra/doctor/checks/e2e.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/doctor/checks/guardrails.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/doctor/checks/guardrails.py",
+      "path": "src/issue_orchestrator/infra/doctor/checks/guardrails.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/doctor/checks/hooks.py": {
+      "detail": "16 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/doctor/checks/hooks.py",
+      "path": "src/issue_orchestrator/infra/doctor/checks/hooks.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 16
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/doctor/checks/workspace.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/doctor/checks/workspace.py",
+      "path": "src/issue_orchestrator/infra/doctor/checks/workspace.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/doctor/types.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/doctor/types.py",
+      "path": "src/issue_orchestrator/infra/doctor/types.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/e2e_db.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/e2e_db.py",
+      "path": "src/issue_orchestrator/infra/e2e_db.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/e2e_run_diagnosis.py": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/e2e_run_diagnosis.py",
+      "path": "src/issue_orchestrator/infra/e2e_run_diagnosis.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/e2e_runner.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/e2e_runner.py",
+      "path": "src/issue_orchestrator/infra/e2e_runner.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/gh_audit.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/gh_audit.py",
+      "path": "src/issue_orchestrator/infra/gh_audit.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/launcher.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/launcher.py",
+      "path": "src/issue_orchestrator/infra/launcher.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/orchestrator.py": {
+      "detail": "7 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py",
+      "path": "src/issue_orchestrator/infra/orchestrator.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 7
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/repo_guardrails.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/repo_guardrails.py",
+      "path": "src/issue_orchestrator/infra/repo_guardrails.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/repo_identity.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/repo_identity.py",
+      "path": "src/issue_orchestrator/infra/repo_identity.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/review_exchange_probe.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/review_exchange_probe.py",
+      "path": "src/issue_orchestrator/infra/review_exchange_probe.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/run_audit.py": {
+      "detail": "7 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/run_audit.py",
+      "path": "src/issue_orchestrator/infra/run_audit.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 7
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/session_failure_diagnosis.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/session_failure_diagnosis.py",
+      "path": "src/issue_orchestrator/infra/session_failure_diagnosis.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/sqlite_connection.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/sqlite_connection.py",
+      "path": "src/issue_orchestrator/infra/sqlite_connection.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/supervisor.py": {
+      "detail": "10 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/supervisor.py",
+      "path": "src/issue_orchestrator/infra/supervisor.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 10
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/terminal_cleaning.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/terminal_cleaning.py",
+      "path": "src/issue_orchestrator/infra/terminal_cleaning.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/validation_state.py": {
+      "detail": "9 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/validation_state.py",
+      "path": "src/issue_orchestrator/infra/validation_state.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 9
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/infra/validators/review.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/infra/validators/review.py",
+      "path": "src/issue_orchestrator/infra/validators/review.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/browser_auth.js": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/browser_auth.js",
+      "path": "src/issue_orchestrator/static/js/browser_auth.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/compact_card_state.js": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/compact_card_state.js",
+      "path": "src/issue_orchestrator/static/js/compact_card_state.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/control_center.js": {
+      "detail": "35 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/control_center.js",
+      "path": "src/issue_orchestrator/static/js/control_center.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 35
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/controls_refresh.js": {
+      "detail": "8 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/controls_refresh.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/controls_refresh.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 8
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/core.js": {
+      "detail": "9 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/core.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/core.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 9
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/diagnostics_actions.js": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/diagnostics_actions.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/diagnostics_actions.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/e2e_run_view.js": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/e2e_run_view.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/e2e_run_view.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/e2e_runs_list.js": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/e2e_runs_list.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/e2e_runs_list.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/e2e_runtime.js": {
+      "detail": "7 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/e2e_runtime.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/e2e_runtime.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 7
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/issue_detail_drawer.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/issue_detail_modals.js": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/issue_detail_modals.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/issue_detail_modals.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/issue_menus.js": {
+      "detail": "10 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/issue_menus.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/issue_menus.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 10
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/kanban_columns.js": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/kanban_columns.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/kanban_columns.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js": {
+      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 2
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/plugins/agent_context.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/session_dialogs.js": {
+      "detail": "9 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/session_dialogs.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/session_dialogs.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 9
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/session_replay.js": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/session_replay.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/session_replay.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/shell_actions.js": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/shell_actions.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/shell_actions.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/timeline.js": {
+      "detail": "12 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/timeline.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/timeline.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 12
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/static/js/dashboard/validation_viewer.js": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/static/js/dashboard/validation_viewer.js",
+      "path": "src/issue_orchestrator/static/js/dashboard/validation_viewer.js",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/dashboard.py": {
+      "detail": "20 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 20
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/dashboard_e2e.py": {
+      "detail": "10 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 10
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/dashboard_flow.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/dialogs.py": {
+      "detail": "13 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 13
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/issue_detail.py": {
+      "detail": "23 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 23
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/journey_projection.py": {
+      "detail": "20 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 20
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/lifecycle_projection.py": {
+      "detail": "7 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/lifecycle_projection.py",
+      "path": "src/issue_orchestrator/view_models/lifecycle_projection.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 7
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/view_models/lifecycle_semantics.py": {
+      "detail": "5 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/view_models/lifecycle_semantics.py",
+      "path": "src/issue_orchestrator/view_models/lifecycle_semantics.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 5
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/action_applier.py": {
+      "detail": "1505 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/action_applier.py",
+      "path": "src/issue_orchestrator/control/action_applier.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1505
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
+      "detail": "835 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
+      "path": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 835
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/completion_handler.py": {
+      "detail": "1199 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/completion_handler.py",
+      "path": "src/issue_orchestrator/control/completion_handler.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1199
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/completion_processor.py": {
+      "detail": "2436 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/completion_processor.py",
+      "path": "src/issue_orchestrator/control/completion_processor.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 2436
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/completion_review_exchange.py": {
+      "detail": "1506 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/completion_review_exchange.py",
+      "path": "src/issue_orchestrator/control/completion_review_exchange.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1506
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/orchestrator_support.py": {
+      "detail": "1370 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/orchestrator_support.py",
+      "path": "src/issue_orchestrator/control/orchestrator_support.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1370
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
+      "detail": "1526 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/planner.py",
+      "path": "src/issue_orchestrator/control/planner.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1526
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
+      "detail": "1907 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/session_controller.py",
+      "path": "src/issue_orchestrator/control/session_controller.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1907
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/session_launcher.py": {
+      "detail": "1766 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/session_launcher.py",
+      "path": "src/issue_orchestrator/control/session_launcher.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1766
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
+      "detail": "803 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/startup_manager.py",
+      "path": "src/issue_orchestrator/control/startup_manager.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 803
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/validation.py": {
+      "detail": "865 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/validation.py",
+      "path": "src/issue_orchestrator/control/validation.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 865
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/bootstrap.py": {
+      "detail": "1235 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py",
+      "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1235
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/cli.py": {
+      "detail": "964 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 964
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py": {
+      "detail": "1663 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1663
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/control_api.py": {
+      "detail": "1292 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1292
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/control_api_e2e_runs.py": {
+      "detail": "950 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 950
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py": {
+      "detail": "1003 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1003
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/setup_wizard_common.py": {
+      "detail": "949 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/setup_wizard_common.py",
+      "path": "src/issue_orchestrator/entrypoints/setup_wizard_common.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 949
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/timeline_presentation.py": {
+      "detail": "996 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 996
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py": {
+      "detail": "1192 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1192
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/entrypoints/web_session_routes.py": {
+      "detail": "1317 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1317
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/execution/git_working_copy.py": {
+      "detail": "810 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/execution/git_working_copy.py",
+      "path": "src/issue_orchestrator/execution/git_working_copy.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 810
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/execution/goal_pilot_store.py": {
+      "detail": "910 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/execution/goal_pilot_store.py",
+      "path": "src/issue_orchestrator/execution/goal_pilot_store.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 910
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/execution/persistent_session_exchange.py": {
+      "detail": "3075 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 3075
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/execution/session_output_adapter.py": {
+      "detail": "1641 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "path": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1641
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
+      "detail": "1419 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/infra/config.py",
+      "path": "src/issue_orchestrator/infra/config.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1419
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
+      "detail": "843 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/infra/config_sections.py",
+      "path": "src/issue_orchestrator/infra/config_sections.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 843
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/infra/e2e_db.py": {
+      "detail": "1624 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/infra/e2e_db.py",
+      "path": "src/issue_orchestrator/infra/e2e_db.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1624
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/infra/hooks/hooks.py": {
+      "detail": "1274 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/infra/hooks/hooks.py",
+      "path": "src/issue_orchestrator/infra/hooks/hooks.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1274
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/infra/orchestrator.py": {
+      "detail": "1193 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py",
+      "path": "src/issue_orchestrator/infra/orchestrator.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1193
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/infra/supervisor.py": {
+      "detail": "984 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/infra/supervisor.py",
+      "path": "src/issue_orchestrator/infra/supervisor.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 984
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/view_models/dashboard.py": {
+      "detail": "1356 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1356
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/view_models/issue_detail.py": {
+      "detail": "1006 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1006
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/view_models/journey_projection.py": {
+      "detail": "1061 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1061
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/view_models/lifecycle_projection.py": {
+      "detail": "1664 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/view_models/lifecycle_projection.py",
+      "path": "src/issue_orchestrator/view_models/lifecycle_projection.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1664
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/view_models/lifecycle_semantics.py": {
+      "detail": "1366 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/view_models/lifecycle_semantics.py",
+      "path": "src/issue_orchestrator/view_models/lifecycle_semantics.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 1366
+    }
+  },
+  "version": 1
+}
