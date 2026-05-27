@@ -69,30 +69,26 @@ class IssueLabelFilter:
         if self.is_empty():
             return list(issues)
 
-        return [
-            issue for issue in issues
-            if not self._should_exclude(issue)
-        ]
+        return [issue for issue in issues if self.exclusion_reason(issue) is None]
 
-    def _should_exclude(self, issue: "Issue") -> bool:
-        """Check if an issue should be excluded.
+    def exclusion_reason(self, issue: "Issue") -> str | None:
+        """Return why an issue is excluded, or None when it passes.
 
         Args:
             issue: Issue to check
 
         Returns:
-            True if issue should be excluded (has any excluded label)
+            Human-readable exclusion reason when the issue is excluded.
         """
         issue_labels = tuple(issue.labels)
-        if self.exclude_labels and bool(set(issue_labels) & self.exclude_labels):
-            return True
-        if self.exclude_label_prefixes:
-            return any(
-                label.startswith(prefix)
-                for label in issue_labels
-                for prefix in self.exclude_label_prefixes
-            )
-        return False
+        for label in issue_labels:
+            if label in self.exclude_labels:
+                return f'has excluded label "{label}"'
+        for label in issue_labels:
+            for prefix in self.exclude_label_prefixes:
+                if label.startswith(prefix):
+                    return f'has label "{label}" matching excluded prefix "{prefix}"'
+        return None
 
     def is_empty(self) -> bool:
         """Check if filter has no criteria (passes everything)."""
