@@ -19,9 +19,15 @@ The command runs `tools/quality_guardrails.py` against `tools/quality_guardrails
 The first rule set tracks:
 
 - oversized control hotspots
+- Ruff C901 complexity findings, including existing `noqa`-suppressed debt
+- Ruff `noqa` suppressions themselves, so new analyzer bypasses require explicit acceptance
 - branch sites that mention lifecycle/control vocabulary
 
 These are proxies for the failure pattern captured in issue #6362: control policy spreading across multiple owners, projections, and execution paths.
+
+Analyzer-backed rules use mature tools for source-language semantics and keep this repository's custom code limited to normalization and ratcheting. The Ruff complexity guardrail runs Ruff's C901 rule with `ignore_noqa` enabled so existing suppressed complexity debt is visible in the baseline. Normal `lint-complexity` still blocks unsuppressed Ruff complexity findings, and Ruff's `PGH004` rule blocks blanket `# noqa` suppressions.
+
+The `noqa` suppression ratchet scans Python comment tokens, not raw source lines, so string literals that mention `# noqa` are ignored. Suppression metric IDs are based on the normalized suppression comment rather than the full line of code. Editing code before an unchanged `# noqa` comment should not create a new suppression metric; duplicate identical suppression comments in the same file fall back to a line-number suffix.
 
 Lifecycle/control vocabulary is matched on lexical tokens and configured phrases, not raw substrings. For example, `statusCode`, `sessionState`, `session_state`, and `review-exchange` can match configured terms, while unrelated tokens such as `prestatus` do not.
 

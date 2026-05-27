@@ -1543,6 +1543,934 @@
       "path": "src/issue_orchestrator/view_models/lifecycle_semantics.py",
       "rule_id": "oversized_control_hotspots",
       "value": 1366
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/control/planner.py:C901:_plan_issues": {
+      "detail": "C901 line 986: `_plan_issues` is too complex (19 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/control/planner.py:C901:_plan_issues",
+      "path": "src/issue_orchestrator/control/planner.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 19
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/control/session_completion.py:C901:handle_session_completion": {
+      "detail": "C901 line 102: `handle_session_completion` is too complex (12 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/control/session_completion.py:C901:handle_session_completion",
+      "path": "src/issue_orchestrator/control/session_completion.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 12
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/control/session_launcher.py:C901:launch_issue_session": {
+      "detail": "C901 line 574: `launch_issue_session` is too complex (21 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/control/session_launcher.py:C901:launch_issue_session",
+      "path": "src/issue_orchestrator/control/session_launcher.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 21
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/domain/logical_run_projection.py:C901:build_runs": {
+      "detail": "C901 line 85: `build_runs` is too complex (12 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/domain/logical_run_projection.py:C901:build_runs",
+      "path": "src/issue_orchestrator/domain/logical_run_projection.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 12
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli.py:C901:_apply_cli_overrides": {
+      "detail": "C901 line 59: `_apply_cli_overrides` is too complex (15 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py:C901:_apply_cli_overrides",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 15
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli.py:C901:cmd_start": {
+      "detail": "C901 line 203: `cmd_start` is too complex (28 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py:C901:cmd_start",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 28
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_hook_commands.py:C901:cmd_setup_hooks": {
+      "detail": "C901 line 239: `cmd_setup_hooks` is too complex (18 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_hook_commands.py:C901:cmd_setup_hooks",
+      "path": "src/issue_orchestrator/entrypoints/cli_hook_commands.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 18
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_hook_commands.py:C901:cmd_verify": {
+      "detail": "C901 line 14: `cmd_verify` is too complex (28 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_hook_commands.py:C901:cmd_verify",
+      "path": "src/issue_orchestrator/entrypoints/cli_hook_commands.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 28
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_support.py:C901:run_test_setup": {
+      "detail": "C901 line 78: `run_test_setup` is too complex (12 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_support.py:C901:run_test_setup",
+      "path": "src/issue_orchestrator/entrypoints/cli_support.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 12
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:C901:format_comment_body": {
+      "detail": "C901 line 306: `format_comment_body` is too complex (11 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:C901:format_comment_body",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 11
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_tools/coding_done.py:C901:main": {
+      "detail": "C901 line 290: `main` is too complex (34 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py:C901:main",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 34
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:C901:run_wizard": {
+      "detail": "C901 line 1194: `run_wizard` is too complex (54 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:C901:run_wizard",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 54
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:C901:wizard_existing_project": {
+      "detail": "C901 line 827: `wizard_existing_project` is too complex (44 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:C901:wizard_existing_project",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 44
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:C901:wizard_new_project": {
+      "detail": "C901 line 518: `wizard_new_project` is too complex (33 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:C901:wizard_new_project",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 33
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_utility_commands.py:C901:cmd_demo": {
+      "detail": "C901 line 53: `cmd_demo` is too complex (15 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_utility_commands.py:C901:cmd_demo",
+      "path": "src/issue_orchestrator/entrypoints/cli_utility_commands.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 15
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/cli_utility_commands.py:C901:cmd_trace": {
+      "detail": "C901 line 277: `cmd_trace` is too complex (13 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_utility_commands.py:C901:cmd_trace",
+      "path": "src/issue_orchestrator/entrypoints/cli_utility_commands.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 13
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/control_api_issue_routes.py:C901:launch_debug_session": {
+      "detail": "C901 line 127: `launch_debug_session` is too complex (13 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_issue_routes.py:C901:launch_debug_session",
+      "path": "src/issue_orchestrator/entrypoints/control_api_issue_routes.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 13
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:C901:control_start": {
+      "detail": "C901 line 109: `control_start` is too complex (20 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:C901:control_start",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 20
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/e2e_worker.py:C901:main": {
+      "detail": "C901 line 290: `main` is too complex (33 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/e2e_worker.py:C901:main",
+      "path": "src/issue_orchestrator/entrypoints/e2e_worker.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 33
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:C901:_build_issue_story_context": {
+      "detail": "C901 line 1038: `_build_issue_story_context` is too complex (16 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:C901:_build_issue_story_context",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 16
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/entrypoints/web_session_routes.py:C901:get_filtered_orchestrator_log": {
+      "detail": "C901 line 970: `get_filtered_orchestrator_log` is too complex (12 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:C901:get_filtered_orchestrator_log",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 12
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/execution/session_output_log_artifacts.py:C901:write_orchestrator_tail": {
+      "detail": "C901 line 72: `write_orchestrator_tail` is too complex (13 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/execution/session_output_log_artifacts.py:C901:write_orchestrator_tail",
+      "path": "src/issue_orchestrator/execution/session_output_log_artifacts.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 13
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/infra/config.py:C901:to_dict": {
+      "detail": "C901 line 742: `to_dict` is too complex (139 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/infra/config.py:C901:to_dict",
+      "path": "src/issue_orchestrator/infra/config.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 139
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/timeline.py:C901:_detail_from_data": {
+      "detail": "C901 line 615: `_detail_from_data` is too complex (29 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/timeline.py:C901:_detail_from_data",
+      "path": "src/issue_orchestrator/timeline.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 29
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/view_models/dashboard.py:C901:_build_queue_items": {
+      "detail": "C901 line 606: `_build_queue_items` is too complex (14 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:C901:_build_queue_items",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 14
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/view_models/issue_detail.py:C901:_blocked_explanation": {
+      "detail": "C901 line 577: `_blocked_explanation` is too complex (12 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:C901:_blocked_explanation",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 12
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/view_models/issue_detail.py:C901:_build_status_explanation": {
+      "detail": "C901 line 425: `_build_status_explanation` is too complex (12 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:C901:_build_status_explanation",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 12
+    },
+    "ruff_complexity_noqa:src/issue_orchestrator/view_models/journey_projection.py:C901:blocked_explanation_for_event": {
+      "detail": "C901 line 796: `blocked_explanation_for_event` is too complex (12 > 10)",
+      "kind": "ruff_finding",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:C901:blocked_explanation_for_event",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "ruff_complexity_noqa",
+      "value": 12
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/adapters/github/tokens.py:25d30ad79690": {
+      "detail": "line 288: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/adapters/github/tokens.py:25d30ad79690",
+      "path": "src/issue_orchestrator/adapters/github/tokens.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/completion_review_exchange.py:09c229df1518": {
+      "detail": "line 568: # noqa: BLE001 - failure path must still halt visibly",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/completion_review_exchange.py:09c229df1518",
+      "path": "src/issue_orchestrator/control/completion_review_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/orchestrator_deps.py:2f6f1bafc1f2": {
+      "detail": "line 161: # noqa: ANN201 \u2014 return type is the protocol",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/orchestrator_deps.py:2f6f1bafc1f2",
+      "path": "src/issue_orchestrator/control/orchestrator_deps.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/planner.py:a79fa05e81cf": {
+      "detail": "line 986: # noqa: C901, PLR0912 \u2014 multi-phase issue scheduling",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/planner.py:a79fa05e81cf",
+      "path": "src/issue_orchestrator/control/planner.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/session_completion.py:2daa2bc8908a": {
+      "detail": "line 102: # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/session_completion.py:2daa2bc8908a",
+      "path": "src/issue_orchestrator/control/session_completion.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/session_controller.py:e023d178795a": {
+      "detail": "line 637: # noqa: BLE001 - terminal path must still surface timeout",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/session_controller.py:e023d178795a",
+      "path": "src/issue_orchestrator/control/session_controller.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/control/session_launcher.py:76e7b3f07c8a": {
+      "detail": "line 574: # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/control/session_launcher.py:76e7b3f07c8a",
+      "path": "src/issue_orchestrator/control/session_launcher.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/domain/logical_run_projection.py:fac5441686f1": {
+      "detail": "line 85: # noqa: C901",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/domain/logical_run_projection.py:fac5441686f1",
+      "path": "src/issue_orchestrator/domain/logical_run_projection.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/_auth_middleware.py:10cbf2f0a12f": {
+      "detail": "line 65: # noqa: BLE001 - never let logging crash on us",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/_auth_middleware.py:10cbf2f0a12f",
+      "path": "src/issue_orchestrator/entrypoints/_auth_middleware.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/_auth_middleware.py:6d1e2504aa94": {
+      "detail": "line 302: # noqa: BLE001 - tolerate malformed body",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/_auth_middleware.py:6d1e2504aa94",
+      "path": "src/issue_orchestrator/entrypoints/_auth_middleware.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:8d7ea4d51a87": {
+      "detail": "line 159: # noqa: PLR0402",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:8d7ea4d51a87",
+      "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1": {
+      "detail": "line 126: # noqa: ANN201",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1",
+      "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-362": {
+      "detail": "line 362: # noqa: ANN201",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-362",
+      "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli.py:244b2605a586": {
+      "detail": "line 59: # noqa: C901, PLR0912 - one branch per CLI override, inherent to config mapping",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py:244b2605a586",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli.py:5ad6aa0a508e": {
+      "detail": "line 203: # noqa: C901, PLR0912 - CLI entry point with config/logging/validation/startup phases",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py:5ad6aa0a508e",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli.py:705973639d1d": {
+      "detail": "line 823: # noqa: ARG001 - args unused but required for command signature",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py:705973639d1d",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_auth_commands.py:55cce074f62b": {
+      "detail": "line 59: # noqa: ARG001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_auth_commands.py:55cce074f62b",
+      "path": "src/issue_orchestrator/entrypoints/cli_auth_commands.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_auth_commands.py:55cce074f62b:line-89": {
+      "detail": "line 89: # noqa: ARG001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_auth_commands.py:55cce074f62b:line-89",
+      "path": "src/issue_orchestrator/entrypoints/cli_auth_commands.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_hook_commands.py:37e8c02f78ac": {
+      "detail": "line 14: # noqa: C901, PLR0912 - multi-step verification: config, git, GitHub, tmux, agents",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_hook_commands.py:37e8c02f78ac",
+      "path": "src/issue_orchestrator/entrypoints/cli_hook_commands.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_hook_commands.py:99bc51d48b64": {
+      "detail": "line 239: # noqa: C901, PLR0912 - multi-step setup with per-agent install, verify, and AI gate tests",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_hook_commands.py:99bc51d48b64",
+      "path": "src/issue_orchestrator/entrypoints/cli_hook_commands.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_support.py:c95fe2e32282": {
+      "detail": "line 78: # noqa: C901 - inherent complexity from multi-step setup with graceful error handling",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_support.py:c95fe2e32282",
+      "path": "src/issue_orchestrator/entrypoints/cli_support.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:3cc221926f72": {
+      "detail": "line 306: # noqa: C901 - distinct markdown templates for each status type",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:3cc221926f72",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_tools/coding_done.py:275d525b7908": {
+      "detail": "line 290: # noqa: C901, PLR0912",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py:275d525b7908",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:38e623ab26e6": {
+      "detail": "line 518: # noqa: C901, PLR0912 - interactive wizard with branches for each config option",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:38e623ab26e6",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:81ba8be2f806": {
+      "detail": "line 827: # noqa: C901, PLR0912 - interactive wizard with branches for detected state and config options",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:81ba8be2f806",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:89b18e56c124": {
+      "detail": "line 1194: # noqa: C901, PLR0912 - main wizard entry point with prerequisite checks, mode selection, and confirmation flow",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:89b18e56c124",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_utility_commands.py:1af101df7448": {
+      "detail": "line 53: # noqa: ARG001, C901 - demo flow with dry-run/live modes and feature showcases",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_utility_commands.py:1af101df7448",
+      "path": "src/issue_orchestrator/entrypoints/cli_utility_commands.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/cli_utility_commands.py:f26227dde58d": {
+      "detail": "line 277: # noqa: C901 - log parsing with pattern matching and filtering logic",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_utility_commands.py:f26227dde58d",
+      "path": "src/issue_orchestrator/entrypoints/cli_utility_commands.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/control_api.py:e60809303bc9": {
+      "detail": "line 511: # noqa: BLE001 \u2014 empty / malformed body",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api.py:e60809303bc9",
+      "path": "src/issue_orchestrator/entrypoints/control_api.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/control_api_issue_routes.py:1bc5ea1944a1": {
+      "detail": "line 127: # noqa: C901 - debug session with validation and setup phases",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_issue_routes.py:1bc5ea1944a1",
+      "path": "src/issue_orchestrator/entrypoints/control_api_issue_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:c24d27c0858f": {
+      "detail": "line 109: # noqa: C901, PLR0912 - startup orchestration spans validation and supervisor handoff",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:c24d27c0858f",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/e2e_worker.py:5ea3ff090dd5": {
+      "detail": "line 290: # noqa: C901, PLR0912 - CLI with argument parsing, test execution, quarantine handling, and retry logic",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/e2e_worker.py:5ea3ff090dd5",
+      "path": "src/issue_orchestrator/entrypoints/e2e_worker.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/mcp_server.py:25d30ad79690": {
+      "detail": "line 231: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:25d30ad79690",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/mcp_server.py:25d30ad79690:line-273": {
+      "detail": "line 273: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:25d30ad79690:line-273",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:67d607c38fdd": {
+      "detail": "line 1038: # noqa: C901, PLR0912 - story assembly pulls from multiple orchestrator-owned stores",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:67d607c38fdd",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_log_routes.py:7857defa8bbd": {
+      "detail": "line 90: # noqa: C901, PLR0912 - log parsing with format detection and streaming",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_log_routes.py:7857defa8bbd",
+      "path": "src/issue_orchestrator/entrypoints/web_log_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_log_routes.py:f34c141a56c0": {
+      "detail": "line 26: # noqa: C901 - log retrieval with multiple fallback paths",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_log_routes.py:f34c141a56c0",
+      "path": "src/issue_orchestrator/entrypoints/web_log_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_operator_routes.py:689789609654": {
+      "detail": "line 447: # noqa: BLE001 \u2014 malformed body \u2192 handled below",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_operator_routes.py:689789609654",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:c42b8e05cbaa": {
+      "detail": "line 320: # noqa: PLR0913",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:c42b8e05cbaa",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:c942653632d6": {
+      "detail": "line 159: # noqa: C901 - multi-step unblock with state transitions",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:c942653632d6",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_session_routes.py:275d525b7908": {
+      "detail": "line 807: # noqa: C901, PLR0912",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:275d525b7908",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_session_routes.py:275d525b7908:line-1062": {
+      "detail": "line 1062: # noqa: C901, PLR0912",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:275d525b7908:line-1062",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_session_routes.py:275d525b7908:line-970": {
+      "detail": "line 970: # noqa: C901, PLR0912",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:275d525b7908:line-970",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_session_routes.py:fac5441686f1": {
+      "detail": "line 886: # noqa: C901",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:fac5441686f1",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_session_routes.py:fac5441686f1:line-910": {
+      "detail": "line 910: # noqa: C901",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:fac5441686f1:line-910",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/agent_runner.py:25d30ad79690": {
+      "detail": "line 95: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner.py:25d30ad79690",
+      "path": "src/issue_orchestrator/execution/agent_runner.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-174": {
+      "detail": "line 174: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-174",
+      "path": "src/issue_orchestrator/execution/agent_runner.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-181": {
+      "detail": "line 181: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/agent_runner.py:25d30ad79690:line-181",
+      "path": "src/issue_orchestrator/execution/agent_runner.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/goal_pilot_store.py:b39ac95825dc": {
+      "detail": "line 567: # noqa: S608",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/goal_pilot_store.py:b39ac95825dc",
+      "path": "src/issue_orchestrator/execution/goal_pilot_store.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_exchange_pair_registry_inmemory.py:25d30ad79690": {
+      "detail": "line 213: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_exchange_pair_registry_inmemory.py:25d30ad79690",
+      "path": "src/issue_orchestrator/execution/persistent_exchange_pair_registry_inmemory.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_exchange_pair_registry_inmemory.py:25d30ad79690:line-223": {
+      "detail": "line 223: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_exchange_pair_registry_inmemory.py:25d30ad79690:line-223",
+      "path": "src/issue_orchestrator/execution/persistent_exchange_pair_registry_inmemory.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_review_exchange_runner.py:c42b8e05cbaa": {
+      "detail": "line 86: # noqa: PLR0913",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_review_exchange_runner.py:c42b8e05cbaa",
+      "path": "src/issue_orchestrator/execution/persistent_review_exchange_runner.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:25d30ad79690": {
+      "detail": "line 1119: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:25d30ad79690",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7": {
+      "detail": "line 3074: # noqa: E402",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3075": {
+      "detail": "line 3075: # noqa: E402",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3075",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa": {
+      "detail": "line 533: # noqa: PLR0913",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1199": {
+      "detail": "line 1199: # noqa: PLR0913",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1199",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1774": {
+      "detail": "line 1774: # noqa: PLR0913",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1774",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2147": {
+      "detail": "line 2147: # noqa: PLR0913",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2147",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2302": {
+      "detail": "line 2302: # noqa: PLR0913",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2302",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2912": {
+      "detail": "line 2912: # noqa: PLR0913",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2912",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/session_output_adapter.py:fac5441686f1": {
+      "detail": "line 1190: # noqa: C901",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/session_output_adapter.py:fac5441686f1",
+      "path": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/session_output_adapter.py:fbf272dccc45": {
+      "detail": "line 693: # noqa: ARG002 \u2014 kept for port signature symmetry",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/session_output_adapter.py:fbf272dccc45",
+      "path": "src/issue_orchestrator/execution/session_output_adapter.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/session_output_log_artifacts.py:fac5441686f1": {
+      "detail": "line 72: # noqa: C901",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/session_output_log_artifacts.py:fac5441686f1",
+      "path": "src/issue_orchestrator/execution/session_output_log_artifacts.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/subprocess_runner.py:25e1afa3f08e": {
+      "detail": "line 37: # noqa: ANN001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/subprocess_runner.py:25e1afa3f08e",
+      "path": "src/issue_orchestrator/execution/subprocess_runner.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/subprocess_runner.py:25e1afa3f08e:line-38": {
+      "detail": "line 38: # noqa: ANN001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/subprocess_runner.py:25e1afa3f08e:line-38",
+      "path": "src/issue_orchestrator/execution/subprocess_runner.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/thread_background_job_runner.py:829e3a8386e9": {
+      "detail": "line 64: # noqa: BLE001 \u2014 we capture every error for the caller",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/execution/thread_background_job_runner.py:829e3a8386e9",
+      "path": "src/issue_orchestrator/execution/thread_background_job_runner.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/config.py:dc81438567e5": {
+      "detail": "line 742: # noqa: C901, PLR0912 - serialization method handles many config fields",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/config.py:dc81438567e5",
+      "path": "src/issue_orchestrator/infra/config.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/e2e_db.py:4c844cf1a30c": {
+      "detail": "line 595: # noqa: S608 \u2014 table names are hardcoded literals",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/e2e_db.py:4c844cf1a30c",
+      "path": "src/issue_orchestrator/infra/e2e_db.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/e2e_db.py:b39ac95825dc": {
+      "detail": "line 1021: # noqa: S608",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/e2e_db.py:b39ac95825dc",
+      "path": "src/issue_orchestrator/infra/e2e_db.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/e2e_db.py:b39ac95825dc:line-1051": {
+      "detail": "line 1051: # noqa: S608",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/e2e_db.py:b39ac95825dc:line-1051",
+      "path": "src/issue_orchestrator/infra/e2e_db.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/supervisor.py:75126fe346b4": {
+      "detail": "line 425: # noqa: BLE001 \u2014 fall through to port kill",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/supervisor.py:75126fe346b4",
+      "path": "src/issue_orchestrator/infra/supervisor.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/supervisor.py:d8c41cf4ca93": {
+      "detail": "line 383: # noqa: BLE001 \u2014 fall through to signal kill",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/supervisor.py:d8c41cf4ca93",
+      "path": "src/issue_orchestrator/infra/supervisor.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/terminal_cleaning.py:867e5419445f": {
+      "detail": "line 416: # noqa: SIM115",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/terminal_cleaning.py:867e5419445f",
+      "path": "src/issue_orchestrator/infra/terminal_cleaning.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/terminal_recording.py:25d30ad79690": {
+      "detail": "line 287: # noqa: BLE001",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/terminal_recording.py:25d30ad79690",
+      "path": "src/issue_orchestrator/infra/terminal_recording.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/terminal_recording.py:867e5419445f": {
+      "detail": "line 66: # noqa: SIM115",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/terminal_recording.py:867e5419445f",
+      "path": "src/issue_orchestrator/infra/terminal_recording.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/infra/terminal_recording.py:867e5419445f:line-181": {
+      "detail": "line 181: # noqa: SIM115",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/infra/terminal_recording.py:867e5419445f:line-181",
+      "path": "src/issue_orchestrator/infra/terminal_recording.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_reader.py:ba0c74ed7b69": {
+      "detail": "line 21: # noqa: ARG002",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/ports/timeline_reader.py:ba0c74ed7b69",
+      "path": "src/issue_orchestrator/ports/timeline_reader.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69": {
+      "detail": "line 38: # noqa: ARG002",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69",
+      "path": "src/issue_orchestrator/ports/timeline_store.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-41": {
+      "detail": "line 41: # noqa: ARG002",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-41",
+      "path": "src/issue_orchestrator/ports/timeline_store.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-44": {
+      "detail": "line 44: # noqa: ARG002",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/ports/timeline_store.py:ba0c74ed7b69:line-44",
+      "path": "src/issue_orchestrator/ports/timeline_store.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/ports/timeline_writer.py:ba0c74ed7b69": {
+      "detail": "line 21: # noqa: ARG002",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/ports/timeline_writer.py:ba0c74ed7b69",
+      "path": "src/issue_orchestrator/ports/timeline_writer.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/timeline.py:0251acc0066c": {
+      "detail": "line 615: # noqa: C901, PLR0912 \u2014 event-type dispatch for detail extraction",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/timeline.py:0251acc0066c",
+      "path": "src/issue_orchestrator/timeline.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/view_models/dashboard.py:a95d0e6a4426": {
+      "detail": "line 606: # noqa: C901, PLR0912 \u2014 aggregates queue from multiple state sources",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:a95d0e6a4426",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/view_models/issue_detail.py:e4b028607423": {
+      "detail": "line 577: # noqa: C901 \u2014 maps blocking conditions to explanations",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:e4b028607423",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/view_models/issue_detail.py:f3a675013250": {
+      "detail": "line 425: # noqa: C901 \u2014 maps flow stages to status explanations",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:f3a675013250",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/view_models/journey_projection.py:18aab1d25ca9": {
+      "detail": "line 856: # noqa: C901 \u2014 orchestration entry point",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:18aab1d25ca9",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/view_models/journey_projection.py:b01adb1c5d5d": {
+      "detail": "line 796: # noqa: C901 \u2014 dispatches across blocking conditions",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:b01adb1c5d5d",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
     }
   },
   "version": 1

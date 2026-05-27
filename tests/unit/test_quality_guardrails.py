@@ -44,6 +44,47 @@ def _write_config(root: Path, *, max_lines: int = 2) -> None:
     )
 
 
+def _write_ruff_config(root: Path, *, ignore_noqa: bool = True) -> None:
+    config = root / "tools" / "quality_guardrails.yml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        textwrap.dedent(
+            f"""
+            version: 1
+            rules:
+              - id: ruff_complexity
+                type: ruff_findings
+                include:
+                  - src/**/*.py
+                select:
+                  - C901
+                ignore_noqa: {str(ignore_noqa).lower()}
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_noqa_config(root: Path) -> None:
+    config = root / "tools" / "quality_guardrails.yml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        textwrap.dedent(
+            """
+            version: 1
+            rules:
+              - id: noqa_suppressions
+                type: ruff_noqa_suppressions
+                include:
+                  - src/**/*.py
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _copy_runner(root: Path) -> None:
     tools_dir = root / "tools"
     tools_dir.mkdir(exist_ok=True)
@@ -196,6 +237,104 @@ def test_policy_terms_match_identifier_tokens_and_plurals(tmp_path: Path) -> Non
     assert result.returncode == 0, result.stderr
     baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
     assert baseline["metrics"]["policy_sites:src/pkg/control.py"]["value"] == 4
+
+
+def test_ruff_findings_are_tracked_and_ratchet_numeric_scores(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ruff_config(tmp_path)
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "def decide(value):\n"
+        + "".join(f"    if value == {index}:\n        return {index}\n" for index in range(10))
+        + "    return None\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+
+    target.write_text(
+        "def decide(value):\n"
+        + "".join(f"    if value == {index}:\n        return {index}\n" for index in range(11))
+        + "    return None\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--fail-on-new")
+
+    assert result.returncode == 2
+    assert "src/pkg/control.py [ruff_complexity] ruff_finding increased" in result.stderr
+    assert "11 -> 12" in result.stderr
+
+
+def test_ruff_findings_can_inventory_noqa_suppressed_debt(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ruff_config(tmp_path, ignore_noqa=True)
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "def decide(value):  # noqa: C901 - existing debt\n"
+        + "".join(f"    if value == {index}:\n        return {index}\n" for index in range(10))
+        + "    return None\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert baseline["metrics"]["ruff_complexity:src/pkg/control.py:C901:decide"]["value"] == 11
+
+
+def test_ruff_findings_respect_noqa_by_default(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ruff_config(tmp_path, ignore_noqa=False)
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "def decide(value):  # noqa: C901 - existing debt\n"
+        + "".join(f"    if value == {index}:\n        return {index}\n" for index in range(10))
+        + "    return None\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert baseline["metrics"] == {}
+
+
+def test_ruff_noqa_suppressions_are_ratchet_tracked(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_noqa_config(tmp_path)
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        'DOCS = "# noqa: ARG001 - docs only"\n'
+        "def existing(arg):  # noqa: ARG001 - existing signature\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert len(baseline["metrics"]) == 1
+    assert "docs only" not in next(iter(baseline["metrics"].values()))["detail"]
+
+    target.write_text(
+        'DOCS = "# noqa: ARG001 - docs only"\n'
+        "def existing(argument):  # noqa: ARG001 - existing signature\n"
+        "    return None\n"
+        "def added(arg):  # noqa: ARG001 - new bypass\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--fail-on-new")
+
+    assert result.returncode == 2
+    assert "src/pkg/control.py [noqa_suppressions] new ruff_noqa_suppression" in result.stderr
+    assert "new bypass" in result.stderr
+    assert "existing signature" not in result.stderr
 
 
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:

@@ -17,6 +17,31 @@ rules:
     exclude:
       - src/issue_orchestrator/infra/settings_schema.py
 
+  - id: ruff_complexity_noqa
+    type: ruff_findings
+    description: >
+      Ratchet Ruff's C901 McCabe complexity findings with noqa suppressions
+      ignored. Normal Ruff validation already blocks unsuppressed complexity
+      regressions; this guardrail inventories existing suppressed complexity
+      debt and fails PRs that make those functions more complex.
+    include:
+      - src/**/*.py
+      - packages/agent_runner/src/**/*.py
+    select:
+      - C901
+    ignore_noqa: true
+
+  - id: ruff_noqa_suppressions
+    type: ruff_noqa_suppressions
+    description: >
+      Ratchet Ruff suppressions themselves. A `# noqa` is an intentional
+      escape hatch from analyzer enforcement; existing suppressions are
+      baselined, but new suppressions must be explicitly accepted rather than
+      silently bypassing validation.
+    include:
+      - src/**/*.py
+      - packages/agent_runner/src/**/*.py
+
   - id: control_policy_branch_sites
     type: control_policy_branch_sites
     new_metric_min_value: 3

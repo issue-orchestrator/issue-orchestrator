@@ -406,13 +406,14 @@ target-version = "py311"
 # C901: cyclomatic complexity (default max: 10)
 # PLR0912: too many branches (default max: 12)
 # SLF001: private member access (access to _private members from outside class)
+# PGH004: blanket noqa suppressions
 # S608:   SQL injection via string-based query construction. Covered as a
 #         long-term ownership gate for security issue #6017 (F6) so the
 #         codebase never silently regresses to f-string SQL. Known-safe
 #         interpolations (allowlisted column names, dynamic IN-clause
 #         placeholders) are marked ``# noqa: S608`` with justification at
 #         the call site.
-select = ["C901", "PLR0912", "SLF001", "S608"]
+select = ["C901", "PLR0912", "PGH004", "SLF001", "S608"]
 
 [tool.ruff.lint.per-file-ignores]
 # Complexity rules (C901, PLR0912) are enforced for production code clarity, not test infrastructure.
