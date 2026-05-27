@@ -10,6 +10,7 @@ from issue_orchestrator.control.completion_record_validation import (
 )
 from issue_orchestrator.control.completion_result_artifacts import build_pr_body
 from issue_orchestrator.domain.models import CompletionOutcome, CompletionRecord, RequestedAction
+from issue_orchestrator.domain.runtime_identity import RuntimeIdentity
 from issue_orchestrator.infra.config import Config
 
 
@@ -79,6 +80,28 @@ def test_build_pr_body_omits_empty_optional_sections() -> None:
     assert "## Implementation" not in body
     assert "## Problems Encountered" not in body
     assert body.startswith("Closes #123")
+
+
+def test_build_pr_body_includes_runtime_identity_audit_when_supplied() -> None:
+    identity = RuntimeIdentity(
+        package_version="1.2.3",
+        source_commit_sha="abcdef1234567890abcdef1234567890abcdef12",
+    )
+
+    body = build_pr_body(_record(), issue_number=123, runtime_identity=identity)
+
+    assert "## Orchestration Audit" in body
+    assert "| Orchestrator version | `1.2.3` |" in body
+    assert "| Orchestrator commit | `abcdef1234567890abcdef1234567890abcdef12` |" in body
+
+
+def test_build_pr_body_runtime_identity_audit_handles_unknown_commit() -> None:
+    identity = RuntimeIdentity(package_version="1.2.3")
+
+    body = build_pr_body(_record(), issue_number=123, runtime_identity=identity)
+
+    assert "| Orchestrator version | `1.2.3` |" in body
+    assert "| Orchestrator commit | `unknown` |" in body
 
 
 def test_validate_worktree_state_rejects_protected_push_branch(tmp_path: Path) -> None:

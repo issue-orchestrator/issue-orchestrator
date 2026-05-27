@@ -43,6 +43,7 @@ from ..domain.models import (
 )
 from ..domain.events import EventBus, SessionEvent
 from ..domain.review_artifacts import review_artifacts_from_exchange_result
+from ..domain.runtime_identity import RuntimeIdentity
 from ..events import EventContext, EventName
 from ..ports import EventSink
 from ..ports.review_artifact_reader import (
@@ -451,6 +452,7 @@ class CompletionProcessor:
         background_job_supervisor: "BackgroundJobSupervisor | None" = None,
         review_exchange_canceller: ReviewExchangeCanceller | None = None,
         review_artifact_reader: ReviewArtifactReader | None = None,
+        runtime_identity: RuntimeIdentity | None = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -473,6 +475,7 @@ class CompletionProcessor:
             review_exchange_canceller: Issue-scoped lifecycle hook used when
                 the async review-exchange job reaches a terminal failure.
             review_artifact_reader: Reader for run-scoped review artifacts.
+            runtime_identity: Running orchestrator identity to stamp on PRs.
         """
         self.label_adapter = label_adapter
         self.pr_adapter = pr_adapter
@@ -520,6 +523,7 @@ class CompletionProcessor:
             git_adapter=git_adapter,
         )
         self._review_artifact_reader = review_artifact_reader or _MissingReviewArtifactReader()
+        self._runtime_identity = runtime_identity
 
     def _emit(
         self,
@@ -2131,7 +2135,11 @@ class CompletionProcessor:
 
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
-        pr_body = build_pr_body(record, issue_number)
+        pr_body = build_pr_body(
+            record,
+            issue_number,
+            runtime_identity=self._runtime_identity,
+        )
         exchange_mode, exchange_resolution_failed = self._review_exchange.resolve_create_pr_exchange_mode(
             exchange_mode=exchange_mode,
             agent_label=agent_label,

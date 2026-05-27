@@ -78,6 +78,7 @@ from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit
 from ..infra.repo_identity import state_dir
+from ..infra.runtime_identity import resolve_runtime_identity
 from ..ports.claim_manager import ClaimManager, NullClaimManager
 from ..domain.lease_config import LeaseConfig
 
@@ -454,6 +455,7 @@ def _create_completion_components(
         background_job_supervisor=background_job_supervisor,
         review_exchange_canceller=_cancel_review_exchange,
         review_artifact_reader=ManifestReviewArtifactReader(),
+        runtime_identity=resolve_runtime_identity(),
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -1115,6 +1117,7 @@ def build_orchestrator_for_testing(
         background_job_supervisor=background_job_supervisor,
         review_exchange_canceller=_cancel_review_exchange_for_testing,
         review_artifact_reader=ManifestReviewArtifactReader(),
+        runtime_identity=resolve_runtime_identity(),
     )
 
     # Create SessionController for testing (with optional validation gate)
