@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Iterable, Protocol
 
 from ..domain.branch_naming import extract_issue_number_from_branch
 from ..ports.pull_request_tracker import PRInfo
+from .issue_scope import IssueScopeDecision, evaluate_issue_scope
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -133,19 +134,45 @@ class ReviewScopeChecker:
             )
             return ReviewScopeResult(False, "issue_missing", issue_number, pr_number)
 
-        if self.require_open_issue and issue.state.lower() != "open":
-            self._log_skip(pr_number, issue_number, "linked issue is not open", issue.state)
-            return ReviewScopeResult(False, "issue_not_open", issue_number, pr_number, issue)
-
-        if filter_label and filter_label not in issue.labels:
-            self._log_skip(pr_number, issue_number, "missing filter label", filter_label)
-            return ReviewScopeResult(False, "missing_filter_label", issue_number, pr_number, issue)
-
-        if not issue_filter.apply([issue]):
-            self._log_skip(pr_number, issue_number, "excluded by label filter")
-            return ReviewScopeResult(False, "excluded_by_label_filter", issue_number, pr_number, issue)
+        decision = evaluate_issue_scope(
+            self.config,
+            issue,
+            require_open=self.require_open_issue,
+            include_milestone_filter=False,
+        )
+        if not decision.in_scope:
+            self._log_scope_decision(pr_number, issue_number, issue, decision)
+            return ReviewScopeResult(False, decision.code, issue_number, pr_number, issue)
 
         return ReviewScopeResult(True, "ok", issue_number, pr_number, issue)
+
+    def _log_scope_decision(
+        self,
+        pr_number: int,
+        issue_number: int,
+        issue: "Issue",
+        decision: IssueScopeDecision,
+    ) -> None:
+        message, detail = self._scope_log_args(issue, decision)
+        self._log_skip(pr_number, issue_number, message, detail)
+
+    def _scope_log_args(
+        self,
+        issue: "Issue",
+        decision: IssueScopeDecision,
+    ) -> tuple[str, str | None]:
+        values = {
+            "issue_not_open": ("linked issue is not open", issue.state),
+            "missing_filter_label": (
+                "missing filter label",
+                self.config.filtering.label,
+            ),
+            "excluded_by_label_filter": ("excluded by label filter", None),
+        }
+        args = values.get(decision.code)
+        if args is None:
+            return decision.detail or decision.code, None
+        return args
 
     def _log_skip(
         self,

@@ -47,6 +47,7 @@ DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
     "timeline.js",
     "diagnostics_actions.js",
     "shell_actions.js",
+    "hidden_issue_reset.js",
     "e2e_runtime.js",
     "e2e_triage.js",
     # ``e2e_canonical_payload.js`` provides the pure translator from

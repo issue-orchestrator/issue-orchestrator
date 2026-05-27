@@ -825,6 +825,37 @@ def test_bulk_reset_from_scratch_handler_uses_ui_action_contract() -> None:
     assert "/api/reset-retry" not in body
 
 
+def test_hidden_scratch_reset_handlers_use_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    preview_body = _function_body(js, "previewHiddenScratchReset")
+    execute_body = _function_body(js, "executeHiddenScratchReset")
+    assert "uiActionContract.buildHiddenScratchResetPreflightRequest" in preview_body
+    assert "uiActionContract.buildHiddenScratchResetExecuteRequest" in execute_body
+    assert "/api/reset-retry/hidden-scratch" not in preview_body
+    assert "/api/reset-retry/hidden-scratch" not in execute_body
+
+
+def test_hidden_scratch_reset_confirmation_discloses_skip_and_reset_boundary() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "executeHiddenScratchReset")
+    assert "DELETE local worktrees" in body
+    assert "DELETE remote branches" in body
+    assert "supersede open orchestrator PRs" in body
+    assert "Filtered-out and missing-agent issues are skipped without changes" in body
+    assert "Prior review approvals and validation artifacts will not be reused" in body
+    assert "NEW branches from base" in body
+
+
+def test_hidden_scratch_reset_modal_is_labelled_and_status_announced() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openHiddenScratchResetDialog")
+    assert "Reset Hidden Issues From Scratch" in body
+    assert 'for="hiddenScratchResetIssues"' in body
+    assert 'aria-describedby="hiddenScratchResetHelp"' in body
+    assert 'role="status" aria-live="polite"' in body
+    assert "Filtered-out and missing-agent issues are skipped without changes" in body
+
+
 def test_reset_from_scratch_confirmations_disclose_full_boundary() -> None:
     js = _read(DASHBOARD_JS)
     for fn_name in (
@@ -1111,6 +1142,15 @@ def test_compact_card_context_menu_action_mapping_is_column_consistent() -> None
 def test_context_menu_includes_reset_retry_from_scratch_label() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     assert "Reset and Retry From Scratch" in html
+
+
+def test_dashboard_menu_includes_hidden_scratch_reset_action() -> None:
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "hidden_issue_reset.js" in DASHBOARD_JS_CHUNKS
+    assert "openHiddenScratchResetDialog()" in html
+    assert "Reset Hidden Issues From Scratch" in html
+    assert 'aria-label="Close dialog"' in html
+    assert 'role="dialog" aria-modal="true" aria-labelledby="modalTitle"' in html
 
 
 def test_compact_menu_infers_column_id_from_parent_column() -> None:

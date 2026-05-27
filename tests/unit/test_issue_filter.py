@@ -173,6 +173,30 @@ class TestIssueLabelFilterApply:
 
         assert len(result) == 2
 
+    def test_exclusion_reason_for_exact_label(self):
+        """Filter exposes the exact-label exclusion detail for callers."""
+        f = IssueLabelFilter.from_config(exclude_labels=["test-data"])
+        issue = _make_issue(1, ["agent:web", "test-data"])
+
+        assert f.exclusion_reason(issue) == 'has excluded label "test-data"'
+
+    def test_exclusion_reason_for_prefix(self):
+        """Filter exposes the prefix exclusion detail for callers."""
+        f = IssueLabelFilter.from_config(exclude_label_prefixes=["io:e2e:"])
+        issue = _make_issue(1, ["agent:web", "io:e2e:isolated-4057"])
+
+        assert (
+            f.exclusion_reason(issue)
+            == 'has label "io:e2e:isolated-4057" matching excluded prefix "io:e2e:"'
+        )
+
+    def test_exclusion_reason_none_when_issue_passes(self):
+        """Filter returns no exclusion detail when an issue is retained."""
+        f = IssueLabelFilter.from_config(exclude_labels=["test-data"])
+        issue = _make_issue(1, ["agent:web"])
+
+        assert f.exclusion_reason(issue) is None
+
 
 class TestIssueLabelFilterRepr:
     """Tests for IssueLabelFilter.__repr__()."""
