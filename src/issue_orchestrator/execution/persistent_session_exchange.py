@@ -86,6 +86,7 @@ from ..domain.review_exchange_turn import (
     Role,
     TurnResultKind,
 )
+from ..domain import review_exchange_turn_artifacts as turn_artifacts
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path, log_context
@@ -115,7 +116,6 @@ from .persistent_round_runner import (
 )
 
 logger = logging.getLogger(__name__)
-
 
 _CODER_PROTOCOL_RETRY_LIMIT = 2
 
@@ -593,7 +593,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     run_id = run.run_id
     exchange_run_id = run_id
 
-    exchange_dir = run_dir / "review-exchange"
+    exchange_dir = turn_artifacts.review_exchange_dir(run_dir)
     exchange_dir.mkdir(parents=True, exist_ok=True)
     _write_review_exchange_manifest_header(
         session_output,
@@ -1381,21 +1381,6 @@ def _artifact_role(role: Role) -> AgentRole:
     raise ArtifactContractViolation("AgentRole", "value", f"unsupported role: {role}")
 
 
-def _turns_dir(exchange_dir: Path) -> Path:
-    turns_dir = exchange_dir / "turns"
-    turns_dir.mkdir(parents=True, exist_ok=True)
-    return turns_dir
-
-
-def _turn_artifact_stem(
-    *,
-    round_index: int,
-    role: Role,
-    attempt_index: int,
-) -> str:
-    return f"round-{round_index}-{role.value}-attempt-{attempt_index}"
-
-
 def _turn_prompt_path(
     exchange_dir: Path,
     *,
@@ -1403,12 +1388,14 @@ def _turn_prompt_path(
     role: Role,
     attempt_index: int,
 ) -> Path:
-    stem = _turn_artifact_stem(
+    return turn_artifacts.turn_artifact_path(
+        exchange_dir,
         round_index=round_index,
         role=role,
         attempt_index=attempt_index,
+        suffix="prompt.md",
+        create_dir=True,
     )
-    return _turns_dir(exchange_dir) / f"{stem}.prompt.md"
 
 
 def _role_prompt_inbox_path(response_file: Path) -> Path:
@@ -1552,12 +1539,14 @@ def _persist_turn_contract(
     suffix: str,
     fields: dict[str, object],
 ) -> Path:
-    stem = _turn_artifact_stem(
+    path = turn_artifacts.turn_artifact_path(
+        exchange_dir,
         round_index=round_index,
         role=role,
         attempt_index=attempt_index,
+        suffix=f"{suffix}.json",
+        create_dir=True,
     )
-    path = _turns_dir(exchange_dir) / f"{stem}.{suffix}.json"
     path.write_text(json.dumps(fields, indent=2, sort_keys=True), encoding="utf-8")
     return path
 
@@ -1574,16 +1563,16 @@ def _reviewer_prompt_with_artifact_contract(prompt: str, *, nit_policy: NitPolic
         "- The JSON must include a `decision` object with: "
         "verdict, risk, blocking_findings, nits, tests_reviewed, "
         "abstraction_review, nit_policy.\n"
-        "- Use stable IDs for findings and nits (`F1`, `F2`, `N1`, ...), "
-        "and include every ID as a heading or bullet in the markdown report.\n"
+        "- Put review content in markdown; JSON item entries may be ID-only.\n"
+        "- Use stable IDs (`F1`, `F2`, `N1`, ...), and include every JSON ID "
+        "as a heading or bullet in the markdown report.\n"
         "- Include `abstraction_review` with `status` set to `no_issues`, "
         "`changes_requested`, or `deferred`. Use `A1`, `A2`, ... findings "
         "when a bounded owner/port/command abstraction should be added. "
         "Use `deferred` only with `follow_up_issue_url`.\n"
         "- `approved` decisions must not include blocking findings. "
         "`approved` decisions must not carry "
-        "`abstraction_review.status=changes_requested`. "
-        "`changes_requested` decisions must include at least one blocking finding.\n"
+        "`abstraction_review.status=changes_requested`.\n"
         "- Review for the strongest bounded design, not merely for a working diff.\n"
         f"- The active nit policy for this coder is `{nit_policy}`. "
         "Classify nits honestly; the orchestrator decides whether to route them "
@@ -1618,14 +1607,23 @@ def _persist_reviewer_artifact_pair(
         response_text=reviewer.response_text,
         nit_policy=nit_policy,
     )
-    stem = _turn_artifact_stem(
-        round_index=round_index,
-        role=Role.REVIEWER,
-        attempt_index=1,
-    )
     return persist_review_artifact_pair(
-        report_path=_turns_dir(exchange_dir) / f"{stem}.{REVIEW_REPORT_FILENAME}",
-        decision_path=_turns_dir(exchange_dir) / f"{stem}.{REVIEW_DECISION_FILENAME}",
+        report_path=turn_artifacts.turn_artifact_path(
+            exchange_dir,
+            round_index=round_index,
+            role=Role.REVIEWER,
+            attempt_index=1,
+            suffix=REVIEW_REPORT_FILENAME,
+            create_dir=True,
+        ),
+        decision_path=turn_artifacts.turn_artifact_path(
+            exchange_dir,
+            round_index=round_index,
+            role=Role.REVIEWER,
+            attempt_index=1,
+            suffix=REVIEW_DECISION_FILENAME,
+            create_dir=True,
+        ),
         decision=decision,
         authored_report_path=authored_report_path,
     )
@@ -1635,7 +1633,10 @@ def _reviewer_response_for_addressable_nits(
     reviewer: ReviewExchangeResponse,
     decision: ReviewDecision,
 ) -> ReviewExchangeResponse:
-    nit_lines = "\n".join(f"- {item.id}: {item.title}" for item in decision.nits)
+    nit_lines = "\n".join(
+        f"- {item.id}: {item.title}" if item.title else f"- {item.id}"
+        for item in decision.nits
+    )
     feedback = (
         f"{reviewer.response_text}\n\n"
         "Reviewer approved the implementation, but this coder is configured "
@@ -1681,8 +1682,7 @@ def _finalize_reviewer_decision(
         reviewer = ReviewExchangeResponse(
             response_type="changes_requested",
             response_text=(
-                f"{validation_error}. Address the failing "
-                "checks and continue."
+                f"{validation_error}. Address the failing checks and continue."
             ),
             getting_closer=False,
             raw_json=None,
@@ -1986,7 +1986,7 @@ def _drive_rounds(  # noqa: PLR0913
             role=Role.CODER,
             require_validation=require_validation,
             run_dir=run_dir,
-            reviewer_feedback=reviewer.response_text,
+            reviewer_feedback=artifact_pair.report_path.read_text(encoding="utf-8"),
         )
         _persist_turn_packet(exchange_dir, coder_packet)
         coder_prompt_text = build_coder_prompt(coder_packet)
@@ -2421,9 +2421,7 @@ def _send_role_round(  # noqa: PLR0913
         })
         return None
 
-    typed_result = ReviewExchangeTurnResult.from_agent_dict(
-        parsed, raw_output=None,
-    )
+    typed_result = ReviewExchangeTurnResult.from_agent_dict(parsed, raw_output=None)
     result_path = _persist_turn_result(
         exchange_dir,
         round_index=cycle_index,
@@ -2519,8 +2517,10 @@ def _persist_turn_packet(
     failed exchange can be replayed/inspected from the on-disk state
     without walking the recording stream.
     """
-    path = _turns_dir(exchange_dir) / (
-        f"round-{packet.round_index}-{packet.role.value}.packet.json"
+    path = turn_artifacts.turn_packet_path(
+        exchange_dir,
+        round_index=packet.round_index,
+        role=packet.role,
     )
     path.write_text(
         json.dumps(packet.to_manifest_fields(), indent=2, sort_keys=True),
@@ -2542,12 +2542,14 @@ def _persist_turn_result(
     the packet (what the orchestrator gave the agent) and the result
     (what the orchestrator parsed from the agent's response) on disk.
     """
-    stem = _turn_artifact_stem(
+    path = turn_artifacts.turn_artifact_path(
+        exchange_dir,
         round_index=round_index,
         role=role,
         attempt_index=attempt_index,
+        suffix="result.json",
+        create_dir=True,
     )
-    path = _turns_dir(exchange_dir) / f"{stem}.result.json"
     path.write_text(
         json.dumps(result.to_manifest_fields(), indent=2, sort_keys=True),
         encoding="utf-8",
@@ -2819,9 +2821,7 @@ def _write_review_exchange_manifest_header(
     session_output.update_manifest(run_dir, header.to_manifest_fields())
 
 
-def _read_validation_facts(
-    path: Path | None,
-) -> tuple[str | None, bool | None]:
+def _read_validation_facts(path: Path | None) -> tuple[str | None, bool | None]:
     """Read ``(head_sha, passed)`` from a validation-record.json.
 
     Returns ``(None, None)`` when the path is None, missing, or

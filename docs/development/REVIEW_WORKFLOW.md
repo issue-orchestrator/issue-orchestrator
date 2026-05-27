@@ -55,10 +55,10 @@ Stops when: reviewer approves, `max_rounds` reached, or `max_no_progress` consec
 
 Before PR creation, each review exchange produces a paired artifact set:
 
-- `review-report.md`: human-readable review with blocker and nit IDs.
-- `review-decision.json`: strict machine-readable decision. This is the authoritative contract the orchestrator consumes.
+- `review-report.md`: human-readable review with blocker and nit IDs. The coder's next rework prompt receives this full markdown report.
+- `review-decision.json`: strict machine-readable decision. This is the authoritative routing/audit contract the orchestrator consumes.
 
-Both artifacts describe the same review item IDs. The markdown is for operators and PR comments; the JSON drives orchestration. Dashboard and E2E issue detail surfaces show the report as the primary review artifact action and keep the JSON available as a secondary/menu action.
+Both artifacts describe the same review item IDs. The markdown is the review content source for operators, PR comments, and coder rework. The JSON drives orchestration with verdict/risk/policy, report pointer and hash, and stable item IDs; it does not need to duplicate report rationale or suggested-change prose. Dashboard and E2E issue detail surfaces show the report as the primary review artifact action and keep the JSON available as a secondary/menu action.
 
 The decision JSON also carries an `abstraction_review` object. Reviewers must use it to say whether the change uses the right owner/port/command abstraction. If a bounded abstraction should be added in the same PR, reviewers set `abstraction_review.status` to `changes_requested` and include `A1`, `A2`, ... findings. An approved decision cannot carry required abstraction changes. If abstraction work is explicitly deferred, the reviewer must set `status` to `deferred` and include `follow_up_issue_url`.
 

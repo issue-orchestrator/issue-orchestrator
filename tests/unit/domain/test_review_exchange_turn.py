@@ -240,6 +240,7 @@ class TestBuildCoderPrompt:
         assert "prepush-check --dirty-only -v" in prompt
         assert "Tracked project files" in prompt
         assert ".issue-orchestrator/" in prompt
+        assert "Reviewer report:" in prompt
 
 
 # ---------------------------------------------------------------------------

@@ -42,10 +42,7 @@ from ..domain.models import (
     COMPLETION_RECORD_PATH,
 )
 from ..domain.events import EventBus, SessionEvent
-from ..domain.review_artifacts import (
-    REVIEW_REPORT_ARTIFACT,
-    review_artifacts_from_exchange_result,
-)
+from ..domain.review_artifacts import review_artifacts_from_exchange_result
 from ..events import EventContext, EventName
 from ..ports import EventSink
 from ..ports.review_artifact_reader import (
@@ -94,6 +91,10 @@ from .completion_types import (
 )
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
 from .review_exchange_contracts import ReviewExchangeCanceller
+from .review_exchange_pr_comment import (
+    GITHUB_COMMENT_BODY_LIMIT,
+    build_review_exchange_pr_comment_body,
+)
 from .test_skip_guard import scan_added_test_skip_guards
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
@@ -2295,13 +2296,20 @@ class CompletionProcessor:
         if self._config and self._config.review_exchange_require_validation:
             comment += "- Validation: required and passed\n"
         artifacts = review_artifacts_from_exchange_result(exchange_result)
-        report_body = self._review_report_comment_body(
+        review_separator = "\n\n---\n\n"
+        review_body_budget = GITHUB_COMMENT_BODY_LIMIT - len(
+            comment.rstrip() + review_separator
+        )
+        review_body = build_review_exchange_pr_comment_body(
             issue_number=issue_number,
             run_dir=run_dir,
+            exchange_dir=exchange_result.exchange_dir,
             artifacts=artifacts,
+            review_artifact_reader=self._review_artifact_reader,
+            max_chars=review_body_budget,
         )
-        if report_body:
-            comment = comment.rstrip() + "\n\n---\n\n" + report_body
+        if review_body:
+            comment = comment.rstrip() + review_separator + review_body
         comment_url = self.pr_adapter.add_comment(pr_number, comment)
         actions_taken.append(f"Posted review completion comment to PR #{pr_number}")
         self._emit_review_comment_added(
@@ -2311,37 +2319,6 @@ class CompletionProcessor:
             comment_body=comment,
             run_dir=run_dir,
         )
-
-    def _review_report_comment_body(
-        self,
-        *,
-        issue_number: int,
-        run_dir: Path | None,
-        artifacts: list[dict[str, str]],
-    ) -> str | None:
-        if run_dir is None:
-            return None
-        for artifact in artifacts:
-            if artifact.get("type") != REVIEW_REPORT_ARTIFACT:
-                continue
-            artifact_path = artifact.get("value")
-            if not artifact_path:
-                continue
-            try:
-                content = self._review_artifact_reader.read_review_artifact(
-                    ReviewArtifactReadCommand(
-                        issue_number=issue_number,
-                        run_dir=run_dir,
-                        artifact_path=artifact_path,
-                        artifact_type=REVIEW_REPORT_ARTIFACT,
-                    )
-                )
-            except FileNotFoundError:
-                continue
-            text = content.content.strip()
-            if text:
-                return text
-        return None
 
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         return self._review_exchange.resolve_review_exchange_mode(agent_label)
