@@ -374,6 +374,149 @@ class TestHistoryEndpoints:
             lm.reset_retry_scratch_pending,
         ]
 
+    def test_hidden_scratch_reset_preflight_marks_closed_in_scope_for_reopen(self):
+        """Hidden scratch reset preview should report closed in-scope issues without mutating."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "redo-poorly-reviewed"
+        issue = create_issue(
+            4057,
+            labels=["agent:web", "redo-poorly-reviewed"],
+        )
+        issue.state = "closed"
+        mock_orch.repository_host.get_issue.return_value = issue
+
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.post(
+            "/api/reset-retry/hidden-scratch/preflight",
+            json={"issues": [4057]},
+        )
+
+        assert response.status_code == 200
+        decision = response.json()["decisions"][0]
+        assert decision["issue"] == 4057
+        assert decision["eligible"] is True
+        assert decision["action"] == "reopen_and_reset"
+        assert decision["will_reopen"] is True
+        mock_orch.repository_host.update_issue_state.assert_not_called()
+
+    def test_hidden_scratch_reset_skips_filtered_issue_without_mutation(self):
+        """Filtered hidden issues should not be reopened or reset."""
+        from issue_orchestrator.control.maintenance import ResetResult
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.config.filtering.label = "redo-poorly-reviewed"
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.events = MagicMock()
+        issue = create_issue(4057, labels=["agent:web"])
+        issue.state = "closed"
+        mock_orch.repository_host.get_issue.return_value = issue
+
+        set_orchestrator(mock_orch)
+
+        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
+            reset_issue_mock.return_value = ResetResult(success=True, issue_number=4057)
+            client = TestClient(app)
+            response = client.post(
+                "/api/reset-retry/hidden-scratch",
+                json={"issues": [4057]},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["reset"] == []
+        assert payload["failed"] == []
+        assert payload["skipped"][0]["issue"] == 4057
+        assert "missing required filter label" in payload["skipped"][0]["reason"]
+        mock_orch.repository_host.update_issue_state.assert_not_called()
+        mock_orch.repository_host.get_issue_labels.assert_not_called()
+        mock_orch.deps.action_applier.apply.assert_not_called()
+        reset_issue_mock.assert_not_called()
+
+    def test_hidden_scratch_reset_skips_missing_agent_label(self):
+        """Hidden scratch reset should reject issues that cannot launch."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "redo-poorly-reviewed"
+        issue = create_issue(4057, labels=["redo-poorly-reviewed"])
+        mock_orch.repository_host.get_issue.return_value = issue
+
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.post(
+            "/api/reset-retry/hidden-scratch/preflight",
+            json={"issues": [4057]},
+        )
+
+        assert response.status_code == 200
+        decision = response.json()["decisions"][0]
+        assert decision["eligible"] is False
+        assert decision["action"] == "skipped"
+        assert "no agent:* label" in decision["reason"]
+        mock_orch.repository_host.update_issue_state.assert_not_called()
+
+    def test_hidden_scratch_reset_reopens_then_uses_existing_reset_path(self):
+        """Eligible closed hidden issues should reopen before normal scratch reset."""
+        from issue_orchestrator.control.maintenance import ResetResult
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.config.filtering.label = "redo-poorly-reviewed"
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
+        mock_orch.deps.events = MagicMock()
+        closed_issue = create_issue(
+            4057,
+            labels=["agent:web", "redo-poorly-reviewed", lm.blocked_failed],
+        )
+        closed_issue.state = "closed"
+        open_issue = create_issue(
+            4057,
+            labels=[
+                "agent:web",
+                "redo-poorly-reviewed",
+                lm.reset_retry_pending,
+                lm.reset_retry_scratch_pending,
+            ],
+        )
+        mock_orch.repository_host.get_issue.side_effect = [closed_issue, open_issue]
+
+        set_orchestrator(mock_orch)
+
+        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
+            reset_issue_mock.return_value = ResetResult(
+                success=True,
+                issue_number=4057,
+                deleted_worktree="/tmp/worktree-4057",
+                deleted_branch="4057-fix",
+                labels_removed=[lm.blocked_failed],
+            )
+            client = TestClient(app)
+            response = client.post(
+                "/api/reset-retry/hidden-scratch",
+                json={"issues": [4057]},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["skipped"] == []
+        assert payload["failed"] == []
+        assert payload["reopened"] == [4057]
+        assert payload["reset"][0]["issue"] == 4057
+        assert payload["reset"][0]["from_scratch"] is True
+        assert payload["reset"][0]["reopened"] is True
+        mock_orch.repository_host.update_issue_state.assert_called_once_with(4057, "open")
+        mock_orch.repository_host.get_issue_labels.assert_not_called()
+        assert reset_issue_mock.call_args.kwargs["from_scratch"] is True
+        assert "redo-poorly-reviewed" in reset_issue_mock.call_args.kwargs["current_labels"]
+        added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
+        assert lm.reset_retry_pending in added_labels
+        assert lm.reset_retry_scratch_pending in added_labels
+
     def test_reset_retry_from_scratch_clears_pending_review_rework_and_cleanup_state(self):
         """Scratch reset should remove stale in-memory PR/rework state before requeue."""
         from pathlib import Path

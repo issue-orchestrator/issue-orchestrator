@@ -10,6 +10,8 @@
     const ENDPOINTS = {
         UNBLOCK_RETRY: '/api/unblock-retry',
         RESET_RETRY: '/api/reset-retry',
+        HIDDEN_SCRATCH_RESET_PREFLIGHT: '/api/reset-retry/hidden-scratch/preflight',
+        HIDDEN_SCRATCH_RESET: '/api/reset-retry/hidden-scratch',
         BULK_RETRY: '/api/bulk-retry',
         BULK_DEPRIORITIZE: '/api/bulk-deprioritize',
         BULK_CANCEL_QUEUED: '/api/bulk-cancel-queued',
@@ -44,6 +46,24 @@
             endpoint: ENDPOINTS.RESET_RETRY,
             method: 'POST',
             body: { issues, from_scratch: fromScratch },
+        };
+    }
+
+    function buildHiddenScratchResetPreflightRequest(issueNumbers) {
+        const issues = normalizeIssueNumbers(issueNumbers);
+        return {
+            endpoint: ENDPOINTS.HIDDEN_SCRATCH_RESET_PREFLIGHT,
+            method: 'POST',
+            body: { issues },
+        };
+    }
+
+    function buildHiddenScratchResetExecuteRequest(issueNumbers) {
+        const issues = normalizeIssueNumbers(issueNumbers);
+        return {
+            endpoint: ENDPOINTS.HIDDEN_SCRATCH_RESET,
+            method: 'POST',
+            body: { issues },
         };
     }
 
@@ -192,6 +212,8 @@
         normalizeIssueNumbers,
         buildUnblockRequest,
         buildResetRetryRequest,
+        buildHiddenScratchResetPreflightRequest,
+        buildHiddenScratchResetExecuteRequest,
         buildBulkRetryRequest,
         buildBulkDeprioritizeRequest,
         buildBulkCancelQueuedRequest,
