@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 import tokenize
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +37,9 @@ _RUFF_NUMERIC_THRESHOLD = re.compile(r"\((\d+)\s*>\s*\d+\)")
 _RUFF_SYMBOL = re.compile(r"`([^`]+)`")
 _RUFF_NOQA = re.compile(r"#\s*noqa(?::|\b)")
 _SEMGREP_BIN_ENV = "QUALITY_GUARDRAILS_SEMGREP_BIN"
-_SEMGREP_TOOL_SPEC = "semgrep==1.163.0"
+_SEMGREP_VERSION = re.compile(r"\b(\d+\.\d+\.\d+)\b")
+_SEMGREP_PIN = re.compile(r"^semgrep==(?P<version>\d+\.\d+\.\d+)$")
+_SEMGREP_PROJECT = Path("tools/semgrep/pyproject.toml")
 
 
 @dataclass(frozen=True)
@@ -400,14 +403,69 @@ def _semgrep_config(root: Path, rule: Mapping[str, Any]) -> str:
     return raw_config
 
 
-def _semgrep_command_prefix() -> list[str]:
+def _semgrep_required_version(root: Path) -> str:
+    project_path = root / _SEMGREP_PROJECT
+    try:
+        data = tomllib.loads(project_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"Could not read Semgrep tool project at {_SEMGREP_PROJECT}: {exc}") from exc
+    dependencies = data.get("project", {}).get("dependencies", [])
+    for dependency in dependencies:
+        if not isinstance(dependency, str):
+            continue
+        match = _SEMGREP_PIN.match(dependency)
+        if match:
+            return match.group("version")
+    raise ValueError(f"Semgrep tool project must pin semgrep with `semgrep==X.Y.Z`: {_SEMGREP_PROJECT}")
+
+
+def _semgrep_default_binary(root: Path) -> Path | None:
+    candidates = [
+        root / ".venv-semgrep" / "bin" / "semgrep",
+        root / ".venv-semgrep" / "Scripts" / "semgrep.exe",
+    ]
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def _semgrep_command(root: Path) -> list[str]:
     configured = os.environ.get(_SEMGREP_BIN_ENV)
     if configured:
-        return [configured]
-    sibling = Path(sys.executable).with_name("semgrep")
-    if sibling.is_file():
-        return [str(sibling)]
-    return ["uv", "tool", "run", "--from", _SEMGREP_TOOL_SPEC, "semgrep"]
+        cmd = [configured]
+    else:
+        default_binary = _semgrep_default_binary(root)
+        if default_binary is None:
+            raise ValueError(
+                "Semgrep tool environment not found at .venv-semgrep. "
+                "Run `make semgrep-venv` or `make worktree-setup`."
+            )
+        cmd = [str(default_binary)]
+
+    _verify_semgrep_version(root, cmd, required_version=_semgrep_required_version(root))
+    return cmd
+
+
+def _verify_semgrep_version(root: Path, cmd: Sequence[str], *, required_version: str) -> None:
+    result = subprocess.run(
+        [*cmd, "--version"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"Semgrep version check failed with exit code {result.returncode}: {result.stderr.strip()}"
+        )
+    version_text = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+    match = _SEMGREP_VERSION.search(version_text)
+    if match is None:
+        raise ValueError(f"Could not determine Semgrep version from: {version_text!r}")
+    version = match.group(1)
+    if version != required_version:
+        raise ValueError(
+            f"Semgrep version mismatch: expected {required_version}, got {version}. "
+            "Run `make semgrep-venv` to install the locked tool version."
+        )
 
 
 def _run_semgrep_json(
@@ -420,7 +478,7 @@ def _run_semgrep_json(
         return []
 
     cmd = [
-        *_semgrep_command_prefix(),
+        *_semgrep_command(root),
         "scan",
         "--config",
         config,

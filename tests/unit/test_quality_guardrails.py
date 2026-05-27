@@ -89,8 +89,21 @@ def _write_noqa_config(root: Path) -> None:
 def _write_semgrep_config(root: Path) -> None:
     config = root / "tools" / "quality_guardrails.yml"
     semgrep_config = root / "tools" / "semgrep" / "rules.yml"
+    semgrep_project = root / "tools" / "semgrep" / "pyproject.toml"
     semgrep_config.parent.mkdir(parents=True, exist_ok=True)
     semgrep_config.write_text("rules: []\n", encoding="utf-8")
+    semgrep_project.write_text(
+        textwrap.dedent(
+            """
+            [project]
+            dependencies = [
+                "semgrep==1.163.0",
+            ]
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(
         textwrap.dedent(
@@ -109,8 +122,14 @@ def _write_semgrep_config(root: Path) -> None:
     )
 
 
-def _write_fake_semgrep(root: Path) -> Path:
-    fake = root / "fake-semgrep"
+def _write_fake_semgrep(
+    root: Path,
+    *,
+    version: str = "1.163.0",
+    relative_path: str = "fake-semgrep",
+) -> Path:
+    fake = root / relative_path
+    fake.parent.mkdir(parents=True, exist_ok=True)
     fake.write_text(
         textwrap.dedent(
             f"""
@@ -118,6 +137,9 @@ def _write_fake_semgrep(root: Path) -> Path:
             from pathlib import Path
             import sys
 
+            if sys.argv[1:] == ["--version"]:
+                print({version!r})
+                raise SystemExit(0)
             if "scan" not in sys.argv:
                 raise SystemExit("expected scan subcommand")
             sys.stdout.write(Path("semgrep-results.json").read_text(encoding="utf-8"))
@@ -463,6 +485,38 @@ def test_semgrep_findings_are_ratchet_tracked(tmp_path: Path) -> None:
     assert "line 3" not in result.stderr
 
 
+def test_semgrep_uses_locked_tool_environment_by_default(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_semgrep_config(tmp_path)
+    _write_fake_semgrep(tmp_path, relative_path=".venv-semgrep/bin/semgrep")
+    env = {key: value for key, value in os.environ.items() if key != "QUALITY_GUARDRAILS_SEMGREP_BIN"}
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def f():\n    return None\n", encoding="utf-8")
+    (tmp_path / "semgrep-results.json").write_text(
+        json.dumps({"results": []}),
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline", env=env)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_semgrep_missing_tool_environment_fails_fast(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_semgrep_config(tmp_path)
+    env = {key: value for key, value in os.environ.items() if key != "QUALITY_GUARDRAILS_SEMGREP_BIN"}
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def f():\n    return None\n", encoding="utf-8")
+
+    result = _run(tmp_path, "--update-baseline", env=env)
+
+    assert result.returncode == 1
+    assert "Semgrep tool environment not found at .venv-semgrep" in result.stderr
+
+
 def test_semgrep_errors_fail_fast(tmp_path: Path) -> None:
     _copy_runner(tmp_path)
     _write_semgrep_config(tmp_path)
@@ -480,6 +534,25 @@ def test_semgrep_errors_fail_fast(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "Semgrep reported errors" in result.stderr
+
+
+def test_semgrep_version_mismatch_fails_fast(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_semgrep_config(tmp_path)
+    fake_semgrep = _write_fake_semgrep(tmp_path, version="1.162.0")
+    env = {**os.environ, "QUALITY_GUARDRAILS_SEMGREP_BIN": str(fake_semgrep)}
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def f():\n    return None\n", encoding="utf-8")
+    (tmp_path / "semgrep-results.json").write_text(
+        json.dumps({"results": []}),
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline", env=env)
+
+    assert result.returncode == 1
+    assert "Semgrep version mismatch: expected 1.163.0, got 1.162.0" in result.stderr
 
 
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:

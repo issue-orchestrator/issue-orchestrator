@@ -4,7 +4,7 @@ This repository uses ratcheted quality guardrails for architecture and control-p
 
 The goal is not to pretend the current codebase has no debt. The goal is to make new debt visible, fail PRs that make tracked metrics worse, and then reduce the baseline through focused cleanup PRs.
 
-This grew out of the control-architecture discussion around issue #6362 and the follow-up decision to stop relying on longer agent prompts for quality. The intended model is mechanical: whole-repo ratchets for systemic drift, changed-code checks for local regressions, and later Semgrep/CodeQL-style rules once the repo-local metrics have proven useful.
+This grew out of the control-architecture discussion around issue #6362 and the follow-up decision to stop relying on longer agent prompts for quality. The intended model is mechanical: whole-repo ratchets for systemic drift, changed-code checks for local regressions, and analyzer-backed rules once repo-local metrics prove useful.
 
 ## Current Guardrails
 
@@ -28,7 +28,7 @@ These are proxies for the failure pattern captured in issue #6362: control polic
 
 Analyzer-backed rules use mature tools for source-language semantics and keep this repository's custom code limited to normalization and ratcheting. The Ruff complexity guardrail runs Ruff's C901 rule with `ignore_noqa` enabled so existing suppressed complexity debt is visible in the baseline. Normal `lint-complexity` still blocks unsuppressed Ruff complexity findings, and Ruff's `PGH004` rule blocks blanket `# noqa` suppressions.
 
-Semgrep-backed rules live under `tools/semgrep/`. Semgrep owns AST pattern matching for repo-specific invariants; `tools/quality_guardrails.py` only invokes Semgrep, normalizes its JSON findings, and ratchets the resulting metric IDs. The runner uses `QUALITY_GUARDRAILS_SEMGREP_BIN` when set, then `.venv/bin/semgrep` when installed, and otherwise falls back to the pinned isolated tool command `uv tool run --from semgrep==1.163.0 semgrep` so Semgrep's CLI dependencies do not constrain the main project lock. The first Semgrep rule tracks direct mutation of orchestrator runtime state collections so new sites cannot spread without explicit review and baseline acceptance.
+Semgrep-backed rules live under `tools/semgrep/`. Semgrep owns AST pattern matching for repo-specific invariants; `tools/quality_guardrails.py` only invokes Semgrep, normalizes its JSON findings, and ratchets the resulting metric IDs. Semgrep is installed from its own locked uv project into `.venv-semgrep` by `make semgrep-venv` and `make worktree-setup`, so Semgrep's CLI dependencies do not constrain the main project lock. The runner verifies the Semgrep binary reports the pinned version before collecting findings; `QUALITY_GUARDRAILS_SEMGREP_BIN` is only an override for tests or explicit local experiments and is subject to the same version check. The first Semgrep rule tracks direct mutation of orchestrator runtime state collections so new sites cannot spread without explicit review and baseline acceptance.
 
 The `noqa` suppression ratchet scans Python comment tokens, not raw source lines, so string literals that mention `# noqa` are ignored. Suppression metric IDs are based on the normalized suppression comment rather than the full line of code. Editing code before an unchanged `# noqa` comment should not create a new suppression metric; duplicate identical suppression comments in the same file fall back to a line-number suffix.
 
