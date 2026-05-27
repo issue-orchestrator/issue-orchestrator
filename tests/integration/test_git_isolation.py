@@ -7,6 +7,7 @@ These tests verify that:
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -14,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.adapters.worktree._worktree import install_hooks
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _clean_git_env() -> dict[str, str]:
@@ -180,6 +183,114 @@ class TestWorktreeConfigIsolation:
         assert wt2_hooks_path.returncode != 0 or not wt2_hooks_path.stdout.strip(), (
             f"Worktree2 unexpectedly has core.hooksPath: {wt2_hooks_path.stdout}"
         )
+
+    def test_install_hooks_preserves_prepare_commit_msg_for_worktree_commits(
+        self,
+        tmp_path: Path,
+    ):
+        """Agent worktrees keep the tracked DCO hook after hooksPath override."""
+        env = _clean_git_env()
+        main_repo = tmp_path / "main_repo"
+        main_repo.mkdir()
+        subprocess.run(
+            ["git", "init"],
+            cwd=main_repo,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Agent User"],
+            cwd=main_repo,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "agent@example.com"],
+            cwd=main_repo,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+        githooks = main_repo / ".githooks"
+        githooks.mkdir()
+        shutil.copy2(REPO_ROOT / ".githooks" / "prepare-commit-msg", githooks)
+        shutil.copy2(REPO_ROOT / ".githooks" / "applypatch-msg", githooks)
+        (githooks / "prepare-commit-msg").chmod(0o755)
+        (githooks / "applypatch-msg").chmod(0o755)
+        subprocess.run(
+            ["git", "config", "--local", "core.hooksPath", ".githooks"],
+            cwd=main_repo,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+        (main_repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "seed.txt"],
+            cwd=main_repo,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "seed"],
+            cwd=main_repo,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+
+        worktree_path = tmp_path / "worktree"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "agent-branch"],
+            cwd=main_repo,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+        install_hooks(worktree_path)
+        hooks_path_result = subprocess.run(
+            ["git", "rev-parse", "--git-path", "hooks"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        )
+        installed_hooks = Path(hooks_path_result.stdout.strip())
+        if not installed_hooks.is_absolute():
+            installed_hooks = worktree_path / installed_hooks
+        assert (installed_hooks / "prepare-commit-msg").exists()
+
+        (worktree_path / "agent.txt").write_text("agent\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "agent.txt"],
+            cwd=worktree_path,
+            capture_output=True,
+            check=True,
+            env=env,
+        )
+        result = subprocess.run(
+            ["git", "commit", "-m", "agent change"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+
+        message = subprocess.run(
+            ["git", "log", "-1", "--format=%B"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        ).stdout
+        assert "Signed-off-by: Agent User <agent@example.com>" in message
 
 
 class TestGitEnvIsolation:
