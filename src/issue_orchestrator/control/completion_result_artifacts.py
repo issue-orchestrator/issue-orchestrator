@@ -199,7 +199,11 @@ def build_pr_body(
     issue_number: int,
     runtime_identity: RuntimeIdentity | None = None,
 ) -> str:
-    """Build the PR body from the completion record."""
+    """Build the PR body from the completion record.
+
+    ``runtime_identity=None`` is for direct tests/helper callers. Production PR
+    creation injects a runtime identity so the audit section is always present.
+    """
     parts = [
         f"Closes #{issue_number}",
         "",

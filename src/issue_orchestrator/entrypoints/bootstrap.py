@@ -76,9 +76,8 @@ from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
-from ..infra import gh_audit
+from ..infra import gh_audit, runtime_identity
 from ..infra.repo_identity import state_dir
-from ..infra.runtime_identity import resolve_runtime_identity
 from ..ports.claim_manager import ClaimManager, NullClaimManager
 from ..domain.lease_config import LeaseConfig
 
@@ -445,9 +444,7 @@ def _create_completion_components(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, pair_registry,
-        ),
+        review_exchange_runner=PersistentReviewExchangeRunner(session_output, pair_registry),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -455,7 +452,7 @@ def _create_completion_components(
         background_job_supervisor=background_job_supervisor,
         review_exchange_canceller=_cancel_review_exchange,
         review_artifact_reader=ManifestReviewArtifactReader(),
-        runtime_identity=resolve_runtime_identity(),
+        runtime_identity=runtime_identity.resolve_runtime_identity(),
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -1107,9 +1104,7 @@ def build_orchestrator_for_testing(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, pair_registry_for_testing,
-        ),
+        review_exchange_runner=PersistentReviewExchangeRunner(session_output, pair_registry_for_testing),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -1117,7 +1112,7 @@ def build_orchestrator_for_testing(
         background_job_supervisor=background_job_supervisor,
         review_exchange_canceller=_cancel_review_exchange_for_testing,
         review_artifact_reader=ManifestReviewArtifactReader(),
-        runtime_identity=resolve_runtime_identity(),
+        runtime_identity=runtime_identity.resolve_runtime_identity(),
     )
 
     # Create SessionController for testing (with optional validation gate)
