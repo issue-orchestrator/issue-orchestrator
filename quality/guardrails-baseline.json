@@ -1273,20 +1273,20 @@
       "value": 835
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_handler.py": {
-      "detail": "1199 lines exceeds budget 800",
+      "detail": "1188 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/completion_handler.py",
       "path": "src/issue_orchestrator/control/completion_handler.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1199
+      "value": 1188
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_processor.py": {
-      "detail": "2436 lines exceeds budget 800",
+      "detail": "2421 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/completion_processor.py",
       "path": "src/issue_orchestrator/control/completion_processor.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2436
+      "value": 2421
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_review_exchange.py": {
       "detail": "1506 lines exceeds budget 800",
@@ -1345,12 +1345,12 @@
       "value": 865
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/bootstrap.py": {
-      "detail": "1235 lines exceeds budget 800",
+      "detail": "1233 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1235
+      "value": 1233
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/cli.py": {
       "detail": "964 lines exceeds budget 800",
@@ -2782,6 +2782,1478 @@
       "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-758",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "semgrep_owner_boundaries",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/contracts/public.py:issue-orchestrator.raw-public-seam-dict-return:eadc97fe03b2": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 170: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/contracts/public.py:issue-orchestrator.raw-public-seam-dict-return:eadc97fe03b2",
+      "path": "src/issue_orchestrator/contracts/public.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/contracts/run_manifest.py:issue-orchestrator.raw-public-seam-dict-return:650890d736aa": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 58: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/contracts/run_manifest.py:issue-orchestrator.raw-public-seam-dict-return:650890d736aa",
+      "path": "src/issue_orchestrator/contracts/run_manifest.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/contracts/run_manifest.py:issue-orchestrator.raw-public-seam-dict-return:c3e0cf11189d": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 71: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/contracts/run_manifest.py:issue-orchestrator.raw-public-seam-dict-return:c3e0cf11189d",
+      "path": "src/issue_orchestrator/contracts/run_manifest.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/contracts/ui_openapi_generator.py:issue-orchestrator.raw-public-seam-dict-return:95964f31000a": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 29: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/contracts/ui_openapi_generator.py:issue-orchestrator.raw-public-seam-dict-return:95964f31000a",
+      "path": "src/issue_orchestrator/contracts/ui_openapi_generator.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli.py:issue-orchestrator.raw-public-seam-dict-return:c9fa64172ec3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 33: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli.py:issue-orchestrator.raw-public-seam-dict-return:c9fa64172ec3",
+      "path": "src/issue_orchestrator/entrypoints/cli.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 47: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-119": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 119: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-119",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:issue-orchestrator.raw-public-seam-dict-return:219e7cea99c8": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 389: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:issue-orchestrator.raw-public-seam-dict-return:219e7cea99c8",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:issue-orchestrator.raw-public-seam-dict-return:4c4f8b78d23b": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 403: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:issue-orchestrator.raw-public-seam-dict-return:4c4f8b78d23b",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:issue-orchestrator.raw-public-seam-dict-return:dd6a7a4af89e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 53: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py:issue-orchestrator.raw-public-seam-dict-return:dd6a7a4af89e",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/agent_done.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/dirty_retry_budget.py:issue-orchestrator.raw-public-seam-dict-return:8bbc13f28d20": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 74: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/dirty_retry_budget.py:issue-orchestrator.raw-public-seam-dict-return:8bbc13f28d20",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/dirty_retry_budget.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:issue-orchestrator.raw-public-seam-dict-return:2dc82ad74354": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 75: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:issue-orchestrator.raw-public-seam-dict-return:2dc82ad74354",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:issue-orchestrator.raw-public-seam-dict-return:4951673d3137": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 518: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:issue-orchestrator.raw-public-seam-dict-return:4951673d3137",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:issue-orchestrator.raw-public-seam-dict-return:b8459489c72f": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 110: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:issue-orchestrator.raw-public-seam-dict-return:b8459489c72f",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:issue-orchestrator.raw-public-seam-dict-return:ea5f8ad909ea": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 49: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py:issue-orchestrator.raw-public-seam-dict-return:ea5f8ad909ea",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/setup_wizard_support.py:issue-orchestrator.raw-public-seam-dict-return:bd2bbdb40dff": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 112: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard_support.py:issue-orchestrator.raw-public-seam-dict-return:bd2bbdb40dff",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard_support.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py:issue-orchestrator.raw-public-seam-dict-return:17005772eae9": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 273: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py:issue-orchestrator.raw-public-seam-dict-return:17005772eae9",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py:issue-orchestrator.raw-public-seam-dict-return:48eb62295878": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 141: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py:issue-orchestrator.raw-public-seam-dict-return:48eb62295878",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py:issue-orchestrator.raw-public-seam-dict-return:6756b188429c": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 127: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py:issue-orchestrator.raw-public-seam-dict-return:6756b188429c",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-public-seam-dict-return:3c3de2053cd5": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 631: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-public-seam-dict-return:3c3de2053cd5",
+      "path": "src/issue_orchestrator/entrypoints/control_api.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_e2e_issue_creation.py:issue-orchestrator.raw-public-seam-dict-return:b5034bd9b656": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 11: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_e2e_issue_creation.py:issue-orchestrator.raw-public-seam-dict-return:b5034bd9b656",
+      "path": "src/issue_orchestrator/entrypoints/control_api_e2e_issue_creation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_e2e_runs.py:issue-orchestrator.raw-public-seam-dict-return:6c5d3349b378": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 481: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py:issue-orchestrator.raw-public-seam-dict-return:6c5d3349b378",
+      "path": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_e2e_runs.py:issue-orchestrator.raw-public-seam-dict-return:a60726673b69": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 465: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py:issue-orchestrator.raw-public-seam-dict-return:a60726673b69",
+      "path": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-public-seam-dict-return:34cd053bb160": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 69: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-public-seam-dict-return:34cd053bb160",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-public-seam-dict-return:3ea94dbe35dc": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 482: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-public-seam-dict-return:3ea94dbe35dc",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-public-seam-dict-return:43048e14e7c4": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 598: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-public-seam-dict-return:43048e14e7c4",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_repo_routes.py:issue-orchestrator.raw-public-seam-dict-return:b606094ef831": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 25: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_repo_routes.py:issue-orchestrator.raw-public-seam-dict-return:b606094ef831",
+      "path": "src/issue_orchestrator/entrypoints/control_api_repo_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_setup_routes.py:issue-orchestrator.raw-public-seam-dict-return:000ca73c2898": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 36: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_setup_routes.py:issue-orchestrator.raw-public-seam-dict-return:000ca73c2898",
+      "path": "src/issue_orchestrator/entrypoints/control_api_setup_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-public-seam-dict-return:8fdc4b39f814": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 84: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-public-seam-dict-return:8fdc4b39f814",
+      "path": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/e2e_affordances.py:issue-orchestrator.raw-public-seam-dict-return:46fd0201edce": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 164: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/e2e_affordances.py:issue-orchestrator.raw-public-seam-dict-return:46fd0201edce",
+      "path": "src/issue_orchestrator/entrypoints/e2e_affordances.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:0c0a28ed1d9f": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 323: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:0c0a28ed1d9f",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:0f48ec0dfd46": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 326: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:0f48ec0dfd46",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:0ff159f2d762": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 502: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:0ff159f2d762",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:1040bf09914d": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 478: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:1040bf09914d",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:108dfd3d21be": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 270: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:108dfd3d21be",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:1249b5433bd5": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 368: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:1249b5433bd5",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:2047587d778e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 459: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:2047587d778e",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:2891a09e4a78": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 296: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:2891a09e4a78",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:36d5da62cc52": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 403: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:36d5da62cc52",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:4552230c7216": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 371: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:4552230c7216",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:475bec4ed269": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 374: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:475bec4ed269",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:4b8daee2cf9e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 293: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:4b8daee2cf9e",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:51495fd6a18c": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 350: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:51495fd6a18c",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:537dae4c8520": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 344: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:537dae4c8520",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:587d136cf135": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 552: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:587d136cf135",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:7dcb59c7814c": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 267: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:7dcb59c7814c",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:802530749a3a": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 356: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:802530749a3a",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:81fc4f84bee5": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 543: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:81fc4f84bee5",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:82f8047d41f5": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 499: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:82f8047d41f5",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:8a630a0a6942": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 287: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:8a630a0a6942",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:90937fd1de35": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 537: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:90937fd1de35",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:93130419fe49": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 299: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:93130419fe49",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:9463f9391c60": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 496: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:9463f9391c60",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:95439a1906d8": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 534: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:95439a1906d8",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:aae9637dbbab": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 332: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:aae9637dbbab",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:aff953837c3e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 362: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:aff953837c3e",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:b1a87f00c718": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 410: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:b1a87f00c718",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:b29868a86395": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 378: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:b29868a86395",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:c78e460e3745": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 493: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:c78e460e3745",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:ca79732ad9de": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 451: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:ca79732ad9de",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:cc9192a91106": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 338: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:cc9192a91106",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:d417f9088f1a": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 522: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:d417f9088f1a",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:d7c77707c86b": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 433: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:d7c77707c86b",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:d93f3c61e6cc": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 221: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:d93f3c61e6cc",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:dd4b20b18837": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 540: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:dd4b20b18837",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:e2bd391967f3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 396: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:e2bd391967f3",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:e2e5ee2b7608": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 382: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:e2e5ee2b7608",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:ea32b2f866d5": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 528: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:ea32b2f866d5",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:eb6ff6232f1c": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 389: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:eb6ff6232f1c",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:f0c302f93711": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 531: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:f0c302f93711",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:f17bccb02fcf": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 290: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:f17bccb02fcf",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:f6624a3b26b9": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 525: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:f6624a3b26b9",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:fafd0c5893ab": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 510: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-public-seam-dict-return:fafd0c5893ab",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/setup_wizard_common.py:issue-orchestrator.raw-public-seam-dict-return:0cc5d152d8e9": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 811: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/setup_wizard_common.py:issue-orchestrator.raw-public-seam-dict-return:0cc5d152d8e9",
+      "path": "src/issue_orchestrator/entrypoints/setup_wizard_common.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/setup_wizard_common.py:issue-orchestrator.raw-public-seam-dict-return:0e43e11b2eee": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 788: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/setup_wizard_common.py:issue-orchestrator.raw-public-seam-dict-return:0e43e11b2eee",
+      "path": "src/issue_orchestrator/entrypoints/setup_wizard_common.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/setup_wizard_common.py:issue-orchestrator.raw-public-seam-dict-return:0f50d1d64458": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 849: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/setup_wizard_common.py:issue-orchestrator.raw-public-seam-dict-return:0f50d1d64458",
+      "path": "src/issue_orchestrator/entrypoints/setup_wizard_common.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/setup_wizard_common.py:issue-orchestrator.raw-public-seam-dict-return:68288580c61e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 904: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/setup_wizard_common.py:issue-orchestrator.raw-public-seam-dict-return:68288580c61e",
+      "path": "src/issue_orchestrator/entrypoints/setup_wizard_common.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:2c8132d72760": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 290: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:2c8132d72760",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:4b789746e92f": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 804: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:4b789746e92f",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:510e0ae54c9e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 781: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:510e0ae54c9e",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:5b7fd815797a": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 633: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:5b7fd815797a",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:5e60283a1453": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 145: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:5e60283a1453",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:8db9ebfbee16": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 257: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:8db9ebfbee16",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:8fc58ab76ea1": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 161: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:8fc58ab76ea1",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:9f1987586e5d": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 228: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:9f1987586e5d",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:d5b5b68d6d5c": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 649: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/timeline_presentation.py:issue-orchestrator.raw-public-seam-dict-return:d5b5b68d6d5c",
+      "path": "src/issue_orchestrator/entrypoints/timeline_presentation.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/tray.py:issue-orchestrator.raw-public-seam-dict-return:c9fa64172ec3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 121: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/tray.py:issue-orchestrator.raw-public-seam-dict-return:c9fa64172ec3",
+      "path": "src/issue_orchestrator/entrypoints/tray.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:0d5549bc1a17": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 242: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:0d5549bc1a17",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:1852a86d36cd": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 96: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:1852a86d36cd",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:1977d8f1db78": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 136: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:1977d8f1db78",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:2d83197620dd": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 205: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:2d83197620dd",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:423d8b1fa317": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 146: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py:issue-orchestrator.raw-public-seam-dict-return:423d8b1fa317",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:0053e706a9c2": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 1137: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:0053e706a9c2",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:0ecf3566a13d": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 331: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:0ecf3566a13d",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:16c1580818d4": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 63: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:16c1580818d4",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:1b7d283e7cc6": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 997: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:1b7d283e7cc6",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:3bf470483ee1": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 361: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:3bf470483ee1",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:41b9ae8bef5b": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 390: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:41b9ae8bef5b",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:437c0089aff9": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 113: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:437c0089aff9",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:4d2ed99ed526": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 443: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:4d2ed99ed526",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:70fe1bce2510": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 318: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:70fe1bce2510",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:9303de9de22d": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 976: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:9303de9de22d",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:98541749d2b0": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 244: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:98541749d2b0",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:a1c3269862d3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 216: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:a1c3269862d3",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:dbad3c075170": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 765: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py:issue-orchestrator.raw-public-seam-dict-return:dbad3c075170",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_operator_routes.py:issue-orchestrator.raw-public-seam-dict-return:7a57050f23a1": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 226: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_operator_routes.py:issue-orchestrator.raw-public-seam-dict-return:7a57050f23a1",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_operator_routes.py:issue-orchestrator.raw-public-seam-dict-return:8a841e4667a5": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 99: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_operator_routes.py:issue-orchestrator.raw-public-seam-dict-return:8a841e4667a5",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_read_model_routes.py:issue-orchestrator.raw-public-seam-dict-return:94dbc3d2350f": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 71: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_read_model_routes.py:issue-orchestrator.raw-public-seam-dict-return:94dbc3d2350f",
+      "path": "src/issue_orchestrator/entrypoints/web_read_model_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:33fef95c022e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 687: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:33fef95c022e",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:4f574a4a0533": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 665: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:4f574a4a0533",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:f6d5d3c29d66": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 571: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:f6d5d3c29d66",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_session_routes.py:issue-orchestrator.raw-public-seam-dict-return:8ca2d1f1f217": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 648: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:issue-orchestrator.raw-public-seam-dict-return:8ca2d1f1f217",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_session_routes.py:issue-orchestrator.raw-public-seam-dict-return:97fc2d6e3585": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 700: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:issue-orchestrator.raw-public-seam-dict-return:97fc2d6e3585",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_session_routes.py:issue-orchestrator.raw-public-seam-dict-return:bbf58bc6d871": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 530: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:issue-orchestrator.raw-public-seam-dict-return:bbf58bc6d871",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_session_routes.py:issue-orchestrator.raw-public-seam-dict-return:d35b54b6cb85": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 178: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py:issue-orchestrator.raw-public-seam-dict-return:d35b54b6cb85",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/events/context.py:issue-orchestrator.raw-public-seam-dict-return:4f6dc95017d2": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 70: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/events/context.py:issue-orchestrator.raw-public-seam-dict-return:4f6dc95017d2",
+      "path": "src/issue_orchestrator/events/context.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/events/context.py:issue-orchestrator.raw-public-seam-dict-return:7f10b330c34f": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 37: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/events/context.py:issue-orchestrator.raw-public-seam-dict-return:7f10b330c34f",
+      "path": "src/issue_orchestrator/events/context.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/events/context.py:issue-orchestrator.raw-public-seam-dict-return:ed0120ef6edf": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 53: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/events/context.py:issue-orchestrator.raw-public-seam-dict-return:ed0120ef6edf",
+      "path": "src/issue_orchestrator/events/context.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/events/fan_out_pipeline.py:issue-orchestrator.raw-public-seam-dict-return:58b20c384441": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 88: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/events/fan_out_pipeline.py:issue-orchestrator.raw-public-seam-dict-return:58b20c384441",
+      "path": "src/issue_orchestrator/events/fan_out_pipeline.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/events/stream.py:issue-orchestrator.raw-public-seam-dict-return:06b45690403c": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 138: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/events/stream.py:issue-orchestrator.raw-public-seam-dict-return:06b45690403c",
+      "path": "src/issue_orchestrator/events/stream.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:0579ce3b396e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 419: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:0579ce3b396e",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:0976b0ab4e58": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 338: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:0976b0ab4e58",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:0c758e2b773d": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 130: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:0c758e2b773d",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:12fac6ffbf62": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 87: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:12fac6ffbf62",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:2d910e65e4df": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 949: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:2d910e65e4df",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:42fb2992aac2": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 1000: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:42fb2992aac2",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:790732b4c317": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 901: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:790732b4c317",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:883d5723f8a3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 1013: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:883d5723f8a3",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 153: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:aba1a2ed9ce3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 977: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:aba1a2ed9ce3",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:d67dbd68090b": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 233: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:d67dbd68090b",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:f9bc5d7c98eb": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 449: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard.py:issue-orchestrator.raw-public-seam-dict-return:f9bc5d7c98eb",
+      "path": "src/issue_orchestrator/view_models/dashboard.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:02bca81591d1": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 382: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:02bca81591d1",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:2d7fe2801d5e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 441: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:2d7fe2801d5e",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:58ffe6d27764": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 173: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:58ffe6d27764",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:5d51ec4764e4": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 482: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:5d51ec4764e4",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:6b5c169c285b": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 351: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:6b5c169c285b",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:8f274fbb6551": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 95: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:8f274fbb6551",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:a035588f44d9": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 333: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:a035588f44d9",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:b2cecc06c9ed": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 28: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:b2cecc06c9ed",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:e63f03bcbc65": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 79: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:e63f03bcbc65",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:ecdf101cb241": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 130: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:ecdf101cb241",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:f245b7688643": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 366: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-public-seam-dict-return:f245b7688643",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:4af9d0459ed7": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 227: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:4af9d0459ed7",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:5647456bfb24": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 240: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:5647456bfb24",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:87d9c954581a": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 158: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:87d9c954581a",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:90594983c823": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 105: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:90594983c823",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:c74963bf2a3f": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 52: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:c74963bf2a3f",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:ca15d00ec169": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 205: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:ca15d00ec169",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:f815f65a1fa7": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 296: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_flow.py:issue-orchestrator.raw-public-seam-dict-return:f815f65a1fa7",
+      "path": "src/issue_orchestrator/view_models/dashboard_flow.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:12d6d6a8fbdc": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 490: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:12d6d6a8fbdc",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:52901821ad06": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 415: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:52901821ad06",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:6a6b77d2c8af": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 671: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:6a6b77d2c8af",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:6ff164e8c466": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 579: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:6ff164e8c466",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:93cda2e91319": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 657: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:93cda2e91319",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:967fb03feed3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 664: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:967fb03feed3",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:9d18f92f4762": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 514: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:9d18f92f4762",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 32: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-168": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 168: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-168",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-209": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 209: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:9d96609331e3:line-209",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:a5596fd2c585": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 628: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:a5596fd2c585",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:a6243e9f9e41": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 23: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:a6243e9f9e41",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:a99167f9823e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 292: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:a99167f9823e",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:b823313049a0": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 683: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:b823313049a0",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:c700c7fce7f0": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 422: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:c700c7fce7f0",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:e8055532146e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 474: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:e8055532146e",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:f8f148b55bbf": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 398: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dialogs.py:issue-orchestrator.raw-public-seam-dict-return:f8f148b55bbf",
+      "path": "src/issue_orchestrator/view_models/dialogs.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:026e34c39ad8": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 835: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:026e34c39ad8",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:2439b1d6ba64": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 296: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:2439b1d6ba64",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:2bad79568a9e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 182: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:2bad79568a9e",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:33ac123daf59": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 888: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:33ac123daf59",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:3b44ee34598b": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 252: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:3b44ee34598b",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:49e118ff9eee": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 389: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:49e118ff9eee",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:4e91191da8bf": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 62: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:4e91191da8bf",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:6c51f5807883": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 660: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:6c51f5807883",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:8f78405d61a2": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 239: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:8f78405d61a2",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:a2606de40d9a": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 998: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:a2606de40d9a",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:b28cd4d32aaa": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 956: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:b28cd4d32aaa",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:c9ebf30096da": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 328: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:c9ebf30096da",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:ce1c061c7a1e": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 195: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:ce1c061c7a1e",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:d1fec90c15cd": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 284: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:d1fec90c15cd",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:df299f2ccde4": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 728: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:df299f2ccde4",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:ea622017981d": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 147: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-return:ea622017981d",
+      "path": "src/issue_orchestrator/view_models/issue_detail.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/view_models/journey_projection.py:issue-orchestrator.raw-public-seam-dict-return:b983c7ef4803": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 645: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:issue-orchestrator.raw-public-seam-dict-return:b983c7ef4803",
+      "path": "src/issue_orchestrator/view_models/journey_projection.py",
+      "rule_id": "semgrep_typed_seams",
       "value": 1
     }
   },

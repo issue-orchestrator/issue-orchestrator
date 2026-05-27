@@ -52,6 +52,19 @@ rules:
     include:
       - src/issue_orchestrator/**/*.py
 
+  - id: semgrep_typed_seams
+    type: semgrep_findings
+    description: >
+      Ratchet raw public seam payload builders from Semgrep. Public API,
+      event, and view-model seams should move toward typed contracts/models
+      instead of new raw dict/list-of-dict return surfaces.
+    config: tools/semgrep/typed_seams.yml
+    include:
+      - src/issue_orchestrator/contracts/**/*.py
+      - src/issue_orchestrator/entrypoints/**/*.py
+      - src/issue_orchestrator/events/**/*.py
+      - src/issue_orchestrator/view_models/**/*.py
+
   - id: control_policy_branch_sites
     type: control_policy_branch_sites
     new_metric_min_value: 3
