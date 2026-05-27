@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
-from types import SimpleNamespace
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from .issue_scope import issue_scope_skip_detail
+
+if TYPE_CHECKING:
+    from ..infra.config import Config
+    from ..ports.issue import Issue
+    from ..ports.repository_host import RepositoryHost
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +29,7 @@ class HiddenScratchResetDecision:
     will_reopen: bool
     reason: str
 
-    def to_payload(self) -> dict[str, Any]:
+    def to_payload(self) -> dict[str, object]:
         return {
             "issue": self.issue,
             "title": self.title,
@@ -39,8 +45,8 @@ class HiddenScratchResetDecision:
 def preflight_hidden_scratch_reset_issues(
     *,
     issue_numbers: list[int],
-    repository_host: Any,
-    config: Any,
+    repository_host: "RepositoryHost",
+    config: "Config",
 ) -> list[HiddenScratchResetDecision]:
     decisions: list[HiddenScratchResetDecision] = []
     for number in issue_numbers:
@@ -61,17 +67,21 @@ def preflight_hidden_scratch_reset_issues(
 
 def preflight_hidden_scratch_reset_issue(
     number: int,
-    issue: Any | None,
-    config: Any,
+    issue: "Issue | None",
+    config: "Config",
 ) -> HiddenScratchResetDecision:
     if issue is None:
         return _skip(number, f"Issue #{number} not found")
 
-    marks = list(getattr(issue, "labels", []) or [])
-    current = str(getattr(issue, "state", "") or "open").lower()
-    title = getattr(issue, "title", None)
-    scope_issue = _copy_with_state(issue, "open") if current == "closed" else issue
-    scope_detail = _scope_skip_detail(config, scope_issue)
+    marks = list(issue.labels)
+    current = str(issue.state or "open").lower()
+    title = issue.title
+    scope_detail = issue_scope_skip_detail(
+        config,
+        issue,
+        require_open=False,
+        include_issue_number_filter=True,
+    )
     if scope_detail is not None:
         return HiddenScratchResetDecision(
             issue=number,
@@ -127,7 +137,7 @@ def preflight_hidden_scratch_reset_issue(
 
 def hidden_scratch_preflight_payload(
     decisions: list[HiddenScratchResetDecision],
-) -> dict[str, Any]:
+) -> dict[str, object]:
     eligible = [decision.issue for decision in decisions if decision.eligible]
     skipped = [decision.issue for decision in decisions if not decision.eligible]
     will_reopen = [decision.issue for decision in decisions if decision.will_reopen]
@@ -140,57 +150,8 @@ def hidden_scratch_preflight_payload(
     }
 
 
-def _copy_with_state(issue: Any, new_value: str) -> Any:
-    try:
-        return replace(issue, state=new_value)
-    except TypeError:
-        return SimpleNamespace(
-            number=getattr(issue, "number"),
-            title=getattr(issue, "title", None),
-            labels=list(getattr(issue, "labels", []) or []),
-            state=new_value,
-            milestone=getattr(issue, "milestone", None),
-            agent_type=getattr(issue, "agent_type", None),
-        )
-
-
-def _scope_skip_detail(config: Any, issue: Any) -> str | None:
-    marks = list(getattr(issue, "labels", []) or [])
-    scope_key = getattr(config.filtering, "label", None)
-    if scope_key and scope_key not in marks:
-        return f'missing required filter label "{scope_key}"'
-
-    milestones = config.get_filter_milestones()
-    current_milestone = getattr(issue, "milestone", None)
-    if milestones and current_milestone not in milestones:
-        current = current_milestone or "none"
-        return f'milestone "{current}" is not one of {", ".join(milestones)}'
-
-    excluded = [
-        mark for mark in marks
-        if mark in set(getattr(config.filtering, "exclude_labels", []) or [])
-    ]
-    if excluded:
-        return f'has excluded label "{excluded[0]}"'
-
-    prefixes = tuple(getattr(config.filtering, "exclude_label_prefixes", []) or ())
-    for mark in marks:
-        for prefix in prefixes:
-            if mark.startswith(prefix):
-                return f'has label "{mark}" matching excluded prefix "{prefix}"'
-
-    if not config.get_issue_filter().apply([issue]):
-        return "excluded by configured issue label filter"
-
-    target = getattr(config.filtering, "issue", None)
-    if target and issue.number != target:
-        return f"engine is scoped to issue #{target}"
-
-    return None
-
-
-def _agent_skip_detail(config: Any, issue: Any) -> str | None:
-    agent_marker = getattr(issue, "agent_type", None)
+def _agent_skip_detail(config: "Config", issue: "Issue") -> str | None:
+    agent_marker = issue.agent_type
     if not agent_marker:
         return f"Issue #{issue.number} has no agent:* label"
     if agent_marker not in config.agents:

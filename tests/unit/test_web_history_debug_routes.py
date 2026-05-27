@@ -484,11 +484,6 @@ class TestHistoryEndpoints:
             ],
         )
         mock_orch.repository_host.get_issue.side_effect = [closed_issue, open_issue]
-        mock_orch.repository_host.get_issue_labels.return_value = [
-            "agent:web",
-            "redo-poorly-reviewed",
-            lm.blocked_failed,
-        ]
 
         set_orchestrator(mock_orch)
 
@@ -515,6 +510,7 @@ class TestHistoryEndpoints:
         assert payload["reset"][0]["from_scratch"] is True
         assert payload["reset"][0]["reopened"] is True
         mock_orch.repository_host.update_issue_state.assert_called_once_with(4057, "open")
+        mock_orch.repository_host.get_issue_labels.assert_not_called()
         assert reset_issue_mock.call_args.kwargs["from_scratch"] is True
         assert "redo-poorly-reviewed" in reset_issue_mock.call_args.kwargs["current_labels"]
         added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]

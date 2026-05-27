@@ -13,6 +13,8 @@ import time
 import traceback
 from typing import TYPE_CHECKING
 
+from .issue_scope import issue_scope_skip_detail
+
 if TYPE_CHECKING:
     from ..infra.config import Config
     from ..domain.models import OrchestratorState
@@ -260,17 +262,7 @@ def clear_queue_shrink_confirmation(state: "OrchestratorState") -> None:
 
 def _matches_scope(config: "Config", issue: "Issue") -> bool:
     """Apply label/milestone/exclude-label scope checks for an issue."""
-    if issue.state.lower() == "closed":
-        return False
-    if config.filtering.label and config.filtering.label not in issue.labels:
-        return False
-    milestones = config.get_filter_milestones()
-    if milestones and issue.milestone not in milestones:
-        return False
-    issue_filter = config.get_issue_filter()
-    if not issue_filter.apply([issue]):
-        return False
-    return True
+    return issue_scope_skip_detail(config, issue) is None
 
 
 def _is_suspicious_shrink(prior_count: int, removed_count: int) -> bool:

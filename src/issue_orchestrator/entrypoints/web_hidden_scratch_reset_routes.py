@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import Any
@@ -15,7 +14,8 @@ from ..control.hidden_scratch_reset import (
     preflight_hidden_scratch_reset_issues,
 )
 from ..control.queue_cache import QueueCache
-from .web_retry_history_routes import _elapsed_ms, _reset_and_retry_issue
+from .web_issue_number_payload import parse_issue_numbers_payload
+from .web_retry_history_routes import elapsed_ms, reset_and_retry_issue
 from .web_session_context import WebOrchestratorDependency
 
 logger = logging.getLogger(__name__)
@@ -32,12 +32,12 @@ async def hidden_scratch_reset_preflight(
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    issue_numbers, error_response = await _parse_issue_numbers(request)
-    if error_response is not None:
-        return error_response
+    parsed = await parse_issue_numbers_payload(request)
+    if parsed.error_response is not None:
+        return parsed.error_response
 
     decisions = preflight_hidden_scratch_reset_issues(
-        issue_numbers=issue_numbers,
+        issue_numbers=parsed.issue_numbers,
         repository_host=orchestrator.repository_host,
         config=orchestrator.config,
     )
@@ -55,9 +55,9 @@ async def hidden_scratch_reset_and_retry(
 
     from ..control.maintenance import reset_issue
 
-    issue_numbers, error_response = await _parse_issue_numbers(request)
-    if error_response is not None:
-        return error_response
+    parsed = await parse_issue_numbers_payload(request)
+    if parsed.error_response is not None:
+        return parsed.error_response
 
     started = time.monotonic()
     state = orchestrator.state
@@ -68,7 +68,7 @@ async def hidden_scratch_reset_and_retry(
     queue_cache = QueueCache(config, state, deps.queue_cache_store)
 
     decisions = preflight_hidden_scratch_reset_issues(
-        issue_numbers=issue_numbers,
+        issue_numbers=parsed.issue_numbers,
         repository_host=repository_host,
         config=config,
     )
@@ -93,7 +93,7 @@ async def hidden_scratch_reset_and_retry(
             failed.append({"issue": decision.issue, "error": str(exc)})
             continue
 
-        success_payload, failure_payload = _reset_and_retry_issue(
+        success_payload, failure_payload = reset_and_retry_issue(
             issue_number=decision.issue,
             from_scratch=True,
             pending_label=lm.reset_retry_pending,
@@ -104,6 +104,7 @@ async def hidden_scratch_reset_and_retry(
             deps=deps,
             config=config,
             reset_issue_fn=reset_issue,
+            current_labels=decision.labels,
         )
         if success_payload is not None:
             success_payload["reopened"] = decision.will_reopen
@@ -127,12 +128,12 @@ async def hidden_scratch_reset_and_retry(
     logger.info(
         "[reset-retry] Hidden scratch reset complete: issues=%s reset=%s "
         "skipped=%s failed=%s reopened=%s duration_ms=%d",
-        issue_numbers,
+        parsed.issue_numbers,
         [result["issue"] for result in reset_results],
         [decision["issue"] for decision in skipped],
         [failure.get("issue") for failure in failed],
         reopened,
-        _elapsed_ms(started),
+        elapsed_ms(started),
     )
     return JSONResponse({
         "reset": reset_results,
@@ -142,42 +143,3 @@ async def hidden_scratch_reset_and_retry(
         "from_scratch": True,
         "refresh_triggered": False,
     })
-
-
-async def _parse_issue_numbers(request: Request) -> tuple[list[int], JSONResponse | None]:
-    try:
-        body = await request.json()
-    except (json.JSONDecodeError, ValueError):
-        return [], JSONResponse({"error": "Invalid JSON"}, status_code=400)
-
-    issue_numbers = body.get("issues", [])
-    if not issue_numbers or not isinstance(issue_numbers, list):
-        return [], JSONResponse(
-            {"error": "issues must be a non-empty list"},
-            status_code=400,
-        )
-    normalized = _normalize_issue_numbers(issue_numbers)
-    if not normalized:
-        return [], JSONResponse(
-            {"error": "issues must contain at least one positive issue number"},
-            status_code=400,
-        )
-    return normalized, None
-
-
-def _normalize_issue_numbers(values: list[Any]) -> list[int]:
-    numbers: list[int] = []
-    seen: set[int] = set()
-    for value in values:
-        number: int | None = None
-        if isinstance(value, bool):
-            number = None
-        elif isinstance(value, int):
-            number = value
-        elif isinstance(value, str) and value.strip().isdigit():
-            number = int(value.strip())
-        if number is None or number <= 0 or number in seen:
-            continue
-        numbers.append(number)
-        seen.add(number)
-    return numbers
