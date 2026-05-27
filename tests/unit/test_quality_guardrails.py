@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -85,6 +86,49 @@ def _write_noqa_config(root: Path) -> None:
     )
 
 
+def _write_semgrep_config(root: Path) -> None:
+    config = root / "tools" / "quality_guardrails.yml"
+    semgrep_config = root / "tools" / "semgrep" / "rules.yml"
+    semgrep_config.parent.mkdir(parents=True, exist_ok=True)
+    semgrep_config.write_text("rules: []\n", encoding="utf-8")
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        textwrap.dedent(
+            """
+            version: 1
+            rules:
+              - id: semgrep_owner
+                type: semgrep_findings
+                config: tools/semgrep/rules.yml
+                include:
+                  - src/**/*.py
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_fake_semgrep(root: Path) -> Path:
+    fake = root / "fake-semgrep"
+    fake.write_text(
+        textwrap.dedent(
+            f"""
+            #!{sys.executable}
+            from pathlib import Path
+            import sys
+
+            if "scan" not in sys.argv:
+                raise SystemExit("expected scan subcommand")
+            sys.stdout.write(Path("semgrep-results.json").read_text(encoding="utf-8"))
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return fake
+
+
 def _copy_runner(root: Path) -> None:
     tools_dir = root / "tools"
     tools_dir.mkdir(exist_ok=True)
@@ -92,10 +136,15 @@ def _copy_runner(root: Path) -> None:
     (tools_dir / "quality_guardrails.py").write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
 
 
-def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    root: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "tools/quality_guardrails.py", *args],
         cwd=root,
+        env=env,
         capture_output=True,
         text=True,
         check=False,
@@ -335,6 +384,102 @@ def test_ruff_noqa_suppressions_are_ratchet_tracked(tmp_path: Path) -> None:
     assert "src/pkg/control.py [noqa_suppressions] new ruff_noqa_suppression" in result.stderr
     assert "new bypass" in result.stderr
     assert "existing signature" not in result.stderr
+
+
+def test_semgrep_findings_are_ratchet_tracked(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_semgrep_config(tmp_path)
+    fake_semgrep = _write_fake_semgrep(tmp_path)
+    env = {**os.environ, "QUALITY_GUARDRAILS_SEMGREP_BIN": str(fake_semgrep)}
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def f(state):\n    state.pending_reviews.append(1)\n", encoding="utf-8")
+    (tmp_path / "semgrep-results.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "path": "src/pkg/control.py",
+                        "check_id": "issue-orchestrator.direct-runtime-state-mutation",
+                        "start": {"line": 2, "col": 5},
+                        "extra": {
+                            "message": "Route mutation through an owner.",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline", env=env).returncode == 0
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    matching_keys = [
+        key
+        for key in baseline["metrics"]
+        if key.startswith("semgrep_owner:src/pkg/control.py:issue-orchestrator.direct-runtime-state-mutation:")
+    ]
+    assert len(matching_keys) == 1
+    expected_key = matching_keys[0]
+    assert baseline["metrics"][expected_key]["value"] == 1
+
+    target.write_text(
+        "\n"
+        "def f(state):\n"
+        "    state.pending_reviews.append(1)\n"
+        "    state.pending_reviews.append(2)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "semgrep-results.json").write_text(
+        json.dumps(
+            {
+                "results": [
+                    {
+                        "path": "src/pkg/control.py",
+                        "check_id": "issue-orchestrator.direct-runtime-state-mutation",
+                        "start": {"line": 3, "col": 5},
+                        "extra": {
+                            "message": "Route mutation through an owner.",
+                        },
+                    },
+                    {
+                        "path": "src/pkg/control.py",
+                        "check_id": "issue-orchestrator.direct-runtime-state-mutation",
+                        "start": {"line": 4, "col": 5},
+                        "extra": {
+                            "message": "Route mutation through an owner.",
+                        },
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--fail-on-new", env=env)
+
+    assert result.returncode == 2
+    assert "src/pkg/control.py [semgrep_owner] new semgrep_finding" in result.stderr
+    assert "issue-orchestrator.direct-runtime-state-mutation" in result.stderr
+    assert "line 3" not in result.stderr
+
+
+def test_semgrep_errors_fail_fast(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_semgrep_config(tmp_path)
+    fake_semgrep = _write_fake_semgrep(tmp_path)
+    env = {**os.environ, "QUALITY_GUARDRAILS_SEMGREP_BIN": str(fake_semgrep)}
+    target = tmp_path / "src" / "pkg" / "control.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("def f():\n    return None\n", encoding="utf-8")
+    (tmp_path / "semgrep-results.json").write_text(
+        json.dumps({"results": [], "errors": [{"message": "bad pattern"}]}),
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline", env=env)
+
+    assert result.returncode == 1
+    assert "Semgrep reported errors" in result.stderr
 
 
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:

@@ -21,11 +21,14 @@ The first rule set tracks:
 - oversized control hotspots
 - Ruff C901 complexity findings, including existing `noqa`-suppressed debt
 - Ruff `noqa` suppressions themselves, so new analyzer bypasses require explicit acceptance
+- Semgrep owner-boundary findings for direct runtime-state mutation sites
 - branch sites that mention lifecycle/control vocabulary
 
 These are proxies for the failure pattern captured in issue #6362: control policy spreading across multiple owners, projections, and execution paths.
 
 Analyzer-backed rules use mature tools for source-language semantics and keep this repository's custom code limited to normalization and ratcheting. The Ruff complexity guardrail runs Ruff's C901 rule with `ignore_noqa` enabled so existing suppressed complexity debt is visible in the baseline. Normal `lint-complexity` still blocks unsuppressed Ruff complexity findings, and Ruff's `PGH004` rule blocks blanket `# noqa` suppressions.
+
+Semgrep-backed rules live under `tools/semgrep/`. Semgrep owns AST pattern matching for repo-specific invariants; `tools/quality_guardrails.py` only invokes Semgrep, normalizes its JSON findings, and ratchets the resulting metric IDs. The runner uses `QUALITY_GUARDRAILS_SEMGREP_BIN` when set, then `.venv/bin/semgrep` when installed, and otherwise falls back to the pinned isolated tool command `uv tool run --from semgrep==1.163.0 semgrep` so Semgrep's CLI dependencies do not constrain the main project lock. The first Semgrep rule tracks direct mutation of orchestrator runtime state collections so new sites cannot spread without explicit review and baseline acceptance.
 
 The `noqa` suppression ratchet scans Python comment tokens, not raw source lines, so string literals that mention `# noqa` are ignored. Suppression metric IDs are based on the normalized suppression comment rather than the full line of code. Editing code before an unchanged `# noqa` comment should not create a new suppression metric; duplicate identical suppression comments in the same file fall back to a line-number suffix.
 
