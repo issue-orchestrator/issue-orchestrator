@@ -1,0 +1,40 @@
+rules:
+  - id: issue-orchestrator.raw-semantic-vocabulary-literal
+    languages:
+      - python
+    severity: WARNING
+    message: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              {"status": "$VALUE", ...}
+          - pattern: |
+              {"state": "$VALUE", ...}
+          - pattern: |
+              {"reason": "$VALUE", ...}
+          - pattern: |
+              {"outcome": "$VALUE", ...}
+          - pattern: |
+              {"kind": "$VALUE", ...}
+          - pattern: |
+              {"phase": "$VALUE", ...}
+          - pattern: |
+              {"result": "$VALUE", ...}
+          - pattern: |
+              $PAYLOAD["status"] = "$VALUE"
+          - pattern: |
+              $PAYLOAD["state"] = "$VALUE"
+          - pattern: |
+              $PAYLOAD["reason"] = "$VALUE"
+          - pattern: |
+              $PAYLOAD["outcome"] = "$VALUE"
+          - pattern: |
+              $PAYLOAD["kind"] = "$VALUE"
+          - pattern: |
+              $PAYLOAD["phase"] = "$VALUE"
+          - pattern: |
+              $PAYLOAD["result"] = "$VALUE"
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: >-
+            ^(approved|changes_requested|completed|failed|blocked|needs_human|running|in_progress|pending|queued|paused|resumed|started|stopped|aborted|cancelled|canceled|timed_out|timeout|retry|retrying|requeued|superseded)$

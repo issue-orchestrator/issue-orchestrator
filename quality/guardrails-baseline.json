@@ -2784,6 +2784,198 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/control/goal_pilot.py:issue-orchestrator.raw-semantic-vocabulary-literal:4f153ebc3080": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 224: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/control/goal_pilot.py:issue-orchestrator.raw-semantic-vocabulary-literal:4f153ebc3080",
+      "path": "src/issue_orchestrator/control/goal_pilot.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-semantic-vocabulary-literal:037a76f4b4d2": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 628: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-semantic-vocabulary-literal:037a76f4b4d2",
+      "path": "src/issue_orchestrator/entrypoints/control_api.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-semantic-vocabulary-literal:3aee009a8b93": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 799: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-semantic-vocabulary-literal:3aee009a8b93",
+      "path": "src/issue_orchestrator/entrypoints/control_api.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-semantic-vocabulary-literal:46fc13f727e5": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 480: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-semantic-vocabulary-literal:46fc13f727e5",
+      "path": "src/issue_orchestrator/entrypoints/control_api.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-semantic-vocabulary-literal:dc672421eacc": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 618: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api.py:issue-orchestrator.raw-semantic-vocabulary-literal:dc672421eacc",
+      "path": "src/issue_orchestrator/entrypoints/control_api.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_e2e_runs.py:issue-orchestrator.raw-semantic-vocabulary-literal:60ba4b2daa4e": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 134: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py:issue-orchestrator.raw-semantic-vocabulary-literal:60ba4b2daa4e",
+      "path": "src/issue_orchestrator/entrypoints/control_api_e2e_runs.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:19f4b64cc878": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 727: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:19f4b64cc878",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:3cef082c3e66": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 238: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:3cef082c3e66",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:60ba4b2daa4e": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 166: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:60ba4b2daa4e",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:60ba4b2daa4e:line-406": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 406: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:60ba4b2daa4e:line-406",
+      "path": "src/issue_orchestrator/entrypoints/control_api_orchestrator_routes.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:1461c1f93cf0": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 201: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:1461c1f93cf0",
+      "path": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:4df0b6be0ac9": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 161: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:4df0b6be0ac9",
+      "path": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:65bf556bb01b": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 102: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:65bf556bb01b",
+      "path": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:cee36ddad73d": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 138: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:cee36ddad73d",
+      "path": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:e97074d6f435": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 227: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py:issue-orchestrator.raw-semantic-vocabulary-literal:e97074d6f435",
+      "path": "src/issue_orchestrator/entrypoints/control_api_shutdown_state.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-semantic-vocabulary-literal:9ec9ba881505": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 424: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/mcp_server.py:issue-orchestrator.raw-semantic-vocabulary-literal:9ec9ba881505",
+      "path": "src/issue_orchestrator/entrypoints/mcp_server.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/web_refresh_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:037a76f4b4d2": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 45: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_refresh_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:037a76f4b4d2",
+      "path": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/entrypoints/web_refresh_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:dc672421eacc": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 36: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/web_refresh_routes.py:issue-orchestrator.raw-semantic-vocabulary-literal:dc672421eacc",
+      "path": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/control_center_repo_status.py:issue-orchestrator.raw-semantic-vocabulary-literal:2076fd4c7681": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 139: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/execution/control_center_repo_status.py:issue-orchestrator.raw-semantic-vocabulary-literal:2076fd4c7681",
+      "path": "src/issue_orchestrator/execution/control_center_repo_status.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/control_center_repo_status.py:issue-orchestrator.raw-semantic-vocabulary-literal:607fb22d568b": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 164: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/execution/control_center_repo_status.py:issue-orchestrator.raw-semantic-vocabulary-literal:607fb22d568b",
+      "path": "src/issue_orchestrator/execution/control_center_repo_status.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/control_center_repo_status.py:issue-orchestrator.raw-semantic-vocabulary-literal:f7d9e1d39a74": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 143: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/execution/control_center_repo_status.py:issue-orchestrator.raw-semantic-vocabulary-literal:f7d9e1d39a74",
+      "path": "src/issue_orchestrator/execution/control_center_repo_status.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2130: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2647": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2647: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2647",
+      "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-semantic-vocabulary-literal:7b221c99035f": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 82: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/view_models/dashboard_e2e.py:issue-orchestrator.raw-semantic-vocabulary-literal:7b221c99035f",
+      "path": "src/issue_orchestrator/view_models/dashboard_e2e.py",
+      "rule_id": "semgrep_semantic_vocabulary",
+      "value": 1
+    },
     "semgrep_typed_seams:src/issue_orchestrator/contracts/public.py:issue-orchestrator.raw-public-seam-dict-return:eadc97fe03b2": {
       "detail": "issue-orchestrator.raw-public-seam-dict-return line 170: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
       "kind": "semgrep_finding",

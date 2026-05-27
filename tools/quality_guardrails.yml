@@ -65,6 +65,24 @@ rules:
       - src/issue_orchestrator/events/**/*.py
       - src/issue_orchestrator/view_models/**/*.py
 
+  - id: semgrep_semantic_vocabulary
+    type: semgrep_findings
+    description: >
+      Ratchet raw lifecycle/status vocabulary literals from Semgrep. New
+      status, state, reason, outcome, kind, phase, or result values should
+      route through typed enums, contracts, or named owner mappings instead
+      of adding another ad hoc string vocabulary site.
+    config: tools/semgrep/semantic_vocabulary.yml
+    include:
+      - src/issue_orchestrator/control/**/*.py
+      - src/issue_orchestrator/entrypoints/**/*.py
+      - src/issue_orchestrator/events/**/*.py
+      - src/issue_orchestrator/execution/**/*.py
+      - src/issue_orchestrator/infra/**/*.py
+      - src/issue_orchestrator/view_models/**/*.py
+    exclude:
+      - src/issue_orchestrator/infra/settings_schema.py
+
   - id: control_policy_branch_sites
     type: control_policy_branch_sites
     new_metric_min_value: 3
