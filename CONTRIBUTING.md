@@ -26,7 +26,11 @@ of the software.
 All commits must be signed off under the Developer Certificate of Origin 1.1:
 https://developercertificate.org/
 
-Add a sign-off by committing with `-s`:
+The repository's tracked `.githooks/prepare-commit-msg` hook automatically
+adds the sign-off for new commits from the author identity Git resolves for
+the commit. Configure git `user.name` and `user.email` for normal commits; the
+hook also follows explicit author identity used for patch and re-author flows.
+You can also add a sign-off explicitly by committing with `-s`:
 
 ```bash
 git commit -s -m "Describe the change"
@@ -42,11 +46,11 @@ The sign-off certifies that you wrote the contribution or otherwise have the
 right to submit it under the project license. Use the same name and email as
 the commit author whenever possible.
 
-If you already made an unsigned commit, fix it before opening or updating the
-pull request. Use `git commit --amend -s` when only the latest commit needs a
-sign-off. Use `git rebase --signoff origin/main` when every commit in a
-multi-commit branch needs a sign-off; it rewrites those branch commits and
-changes their SHAs.
+The hook signs only future commits. If you already made unsigned commits, fix
+them before opening or updating the pull request. Use `git commit --amend -s`
+when only the latest commit needs a sign-off. Use
+`git rebase --signoff origin/main` when every commit in a multi-commit branch
+needs a sign-off; it rewrites those branch commits and changes their SHAs.
 
 ```bash
 git commit --amend -s
