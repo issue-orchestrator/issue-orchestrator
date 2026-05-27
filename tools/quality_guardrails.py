@@ -10,9 +10,13 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import hashlib
+import io
 import json
 import re
+import subprocess
 import sys
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -27,6 +31,9 @@ _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 _TOKEN_RUN = re.compile(r"[A-Za-z0-9]+")
 _JS_POLICY_KEYWORD = re.compile(r"\b(if|while|switch|case)\b")
 _JS_PAREN_KEYWORDS = {"if", "switch", "while"}
+_RUFF_NUMERIC_THRESHOLD = re.compile(r"\((\d+)\s*>\s*\d+\)")
+_RUFF_SYMBOL = re.compile(r"`([^`]+)`")
+_RUFF_NOQA = re.compile(r"#\s*noqa(?::|\b)")
 
 
 @dataclass(frozen=True)
@@ -189,6 +196,193 @@ def _collect_file_line_budget(root: Path, rule: Mapping[str, Any]) -> list[Metri
                 new_metric_min_value=new_metric_min_value,
             )
         )
+
+    return metrics
+
+
+def _bool_field(rule: Mapping[str, Any], key: str, *, default: bool = False) -> bool:
+    value = rule.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"rule {rule.get('id', '<unknown>')} field {key!r} must be a boolean")
+    return value
+
+
+def _ruff_select(rule: Mapping[str, Any]) -> list[str]:
+    select = _patterns(rule, "select")
+    if not select:
+        raise ValueError(f"rule {rule.get('id', '<unknown>')} field 'select' must not be empty")
+    return select
+
+
+def _ruff_diagnostic_value(message: str) -> int:
+    match = _RUFF_NUMERIC_THRESHOLD.search(message)
+    if match:
+        return int(match.group(1))
+    return 1
+
+
+def _ruff_diagnostic_identifier(diagnostic: Mapping[str, Any]) -> str:
+    code = _required_string(diagnostic, "code")
+    message = _required_string(diagnostic, "message")
+    location = _required_mapping(diagnostic, "location")
+    row = _required_int(location, "row")
+    column = _required_int(location, "column")
+
+    symbol_match = _RUFF_SYMBOL.search(message)
+    if symbol_match:
+        symbol = re.sub(r"[^A-Za-z0-9_.-]+", "-", symbol_match.group(1)).strip("-")
+        if symbol:
+            return f"{code}:{symbol}"
+    return f"{code}:line-{row}:col-{column}"
+
+
+def _required_mapping(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    value = data.get(key)
+    if not isinstance(value, dict):
+        raise ValueError(f"Ruff diagnostic missing mapping field {key!r}")
+    return value
+
+
+def _required_string(data: Mapping[str, Any], key: str) -> str:
+    value = data.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Ruff diagnostic missing non-empty string field {key!r}")
+    return value
+
+
+def _required_int(data: Mapping[str, Any], key: str) -> int:
+    value = data.get(key)
+    if not isinstance(value, int):
+        raise ValueError(f"Ruff diagnostic missing integer field {key!r}")
+    return value
+
+
+def _diagnostic_rel_path(root: Path, diagnostic: Mapping[str, Any]) -> str:
+    raw_filename = _required_string(diagnostic, "filename")
+    path = Path(raw_filename)
+    if not path.is_absolute():
+        return path.as_posix()
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _run_ruff_json(
+    root: Path,
+    rel_paths: Sequence[str],
+    *,
+    select: Sequence[str],
+    ignore_noqa: bool,
+) -> list[Mapping[str, Any]]:
+    if not rel_paths:
+        return []
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "ruff",
+        "check",
+        "--output-format=json",
+        "--select",
+        ",".join(select),
+    ]
+    if ignore_noqa:
+        cmd.append("--ignore-noqa")
+    cmd.extend(rel_paths)
+
+    result = subprocess.run(cmd, cwd=root, capture_output=True, text=True, check=False)
+    if result.returncode not in {0, 1}:
+        raise ValueError(f"Ruff failed with exit code {result.returncode}: {result.stderr.strip()}")
+
+    try:
+        data = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Ruff emitted invalid JSON: {exc}") from exc
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise ValueError("Ruff JSON output must be a list of diagnostic objects")
+    return data
+
+
+def _collect_ruff_findings(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
+    rule_id = str(rule["id"])
+    select = _ruff_select(rule)
+    ignore_noqa = _bool_field(rule, "ignore_noqa")
+    new_metric_min_value = _new_metric_min_value(rule)
+    rel_paths = sorted(path.relative_to(root).as_posix() for path in _iter_included_files(root, rule))
+    diagnostics = _run_ruff_json(root, rel_paths, select=select, ignore_noqa=ignore_noqa)
+
+    seen: set[str] = set()
+    metrics: list[Metric] = []
+    for diagnostic in diagnostics:
+        rel_path = _diagnostic_rel_path(root, diagnostic)
+        location = _required_mapping(diagnostic, "location")
+        row = _required_int(location, "row")
+        code = _required_string(diagnostic, "code")
+        message = _required_string(diagnostic, "message")
+        identifier = _ruff_diagnostic_identifier(diagnostic)
+        metric_id = f"{rel_path}:{identifier}"
+        if metric_id in seen:
+            metric_id = f"{metric_id}:line-{row}"
+        seen.add(metric_id)
+        metrics.append(
+            Metric(
+                rule_id=rule_id,
+                kind="ruff_finding",
+                metric_id=metric_id,
+                value=_ruff_diagnostic_value(message),
+                path=rel_path,
+                detail=f"{code} line {row}: {message}",
+                new_metric_min_value=new_metric_min_value,
+            )
+        )
+
+    return metrics
+
+
+def _line_digest(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _iter_noqa_comments(path: Path) -> Iterable[tuple[int, str]]:
+    source = path.read_text(encoding="utf-8")
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for token in tokens:
+            if token.type != tokenize.COMMENT:
+                continue
+            if _RUFF_NOQA.search(token.string):
+                yield token.start[0], " ".join(token.string.strip().split())
+    except tokenize.TokenError as exc:
+        raise ValueError(f"Could not tokenize {path}: {exc}") from exc
+
+
+def _collect_ruff_noqa_suppressions(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
+    rule_id = str(rule["id"])
+    new_metric_min_value = _new_metric_min_value(rule)
+    metrics: list[Metric] = []
+    seen: set[str] = set()
+
+    for path in _iter_included_files(root, rule):
+        if path.suffix != ".py":
+            continue
+        rel_path = path.relative_to(root).as_posix()
+        for line_number, normalized in _iter_noqa_comments(path):
+            metric_id = f"{rel_path}:{_line_digest(normalized)}"
+            if metric_id in seen:
+                metric_id = f"{metric_id}:line-{line_number}"
+            seen.add(metric_id)
+            metrics.append(
+                Metric(
+                    rule_id=rule_id,
+                    kind="ruff_noqa_suppression",
+                    metric_id=metric_id,
+                    value=1,
+                    path=rel_path,
+                    detail=f"line {line_number}: {normalized}",
+                    new_metric_min_value=new_metric_min_value,
+                )
+            )
 
     return metrics
 
@@ -435,6 +629,8 @@ def collect_metrics(root: Path, config: Mapping[str, Any]) -> list[Metric]:
     collectors = {
         "file_line_budget": _collect_file_line_budget,
         "control_policy_branch_sites": _collect_control_policy_branch_sites,
+        "ruff_findings": _collect_ruff_findings,
+        "ruff_noqa_suppressions": _collect_ruff_noqa_suppressions,
     }
     metrics: list[Metric] = []
 
