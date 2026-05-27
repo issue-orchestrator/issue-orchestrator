@@ -22,6 +22,7 @@ wheels/
 
 # Virtual environments
 .venv/
+.venv-semgrep/
 venv/
 ENV/
 
@@ -81,6 +82,7 @@ Thumbs.db
 # Keep .issue-orchestrator/config/ tracked - it's project configuration
 .validate/
 .venv
+.venv-semgrep
 
 # MCP server config (local to each developer)
 .mcp.json

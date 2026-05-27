@@ -48,6 +48,14 @@ def _make_real_project_hook() -> str:
     return "#!/usr/bin/env bash\necho real-project-hook\nexit 0\n"
 
 
+def _make_project_prepare_commit_msg_hook() -> str:
+    return "#!/bin/sh\necho prepared >> \"$1\"\n"
+
+
+def _make_project_applypatch_msg_hook() -> str:
+    return "#!/bin/sh\nexec \"$(dirname \"$0\")/prepare-commit-msg\" \"$@\"\n"
+
+
 def _init_main_repo_with_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
     """Initialise a bare-ish main repo with a guardrailed .githooks/ and a worktree.
 
@@ -162,6 +170,27 @@ def test_install_hooks_in_guardrailed_worktree_does_not_recurse(tmp_path: Path) 
     pre_push = worktree_hooks / "pre-push"
     assert pre_push.exists()
     assert pre_push.stat().st_mode & stat.S_IXUSR
+
+
+def test_install_hooks_preserves_project_commit_message_hooks(
+    tmp_path: Path,
+) -> None:
+    main_repo, worktree_path, worktree_hooks = _init_main_repo_with_worktree(tmp_path)
+    prepare_commit_msg = main_repo / ".githooks" / "prepare-commit-msg"
+    applypatch_msg = main_repo / ".githooks" / "applypatch-msg"
+    prepare_commit_msg.write_text(_make_project_prepare_commit_msg_hook())
+    prepare_commit_msg.chmod(0o755)
+    applypatch_msg.write_text(_make_project_applypatch_msg_hook())
+    applypatch_msg.chmod(0o755)
+
+    install_hooks(worktree_path)
+
+    installed_prepare = worktree_hooks / "prepare-commit-msg"
+    installed_applypatch = worktree_hooks / "applypatch-msg"
+    assert installed_prepare.read_text() == _make_project_prepare_commit_msg_hook()
+    assert installed_applypatch.read_text() == _make_project_applypatch_msg_hook()
+    assert installed_prepare.stat().st_mode & stat.S_IXUSR
+    assert installed_applypatch.stat().st_mode & stat.S_IXUSR
 
 
 def test_install_hooks_quarantines_pre_existing_corrupt_project_hook(

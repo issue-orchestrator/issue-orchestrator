@@ -58,7 +58,9 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: uv sync --frozen --all-extras
+        run: |
+          uv sync --frozen --all-extras
+          make semgrep-venv
 
       - name: Install Playwright browsers
         run: .venv/bin/playwright install chromium
@@ -85,7 +87,9 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: uv sync --frozen --all-extras
+        run: |
+          uv sync --frozen --all-extras
+          make semgrep-venv
 
       - name: Run agent-backed validate
         run: |

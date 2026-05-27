@@ -19,11 +19,13 @@ logger = logging.getLogger(__name__)
 
 # Path to bundled hooks (in issue_orchestrator/hooks/, 3 levels up from this module)
 HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
+PROJECT_COMMIT_MESSAGE_HOOKS = ("prepare-commit-msg", "applypatch-msg")
 
 # Placeholder in the bundled pre-push template that we substitute with the
 # orchestrator's interpreter path at install time. See the comment in
 # ``hooks/pre-push`` for why baking the path beats env-var propagation.
 ORCHESTRATOR_PYTHON_PLACEHOLDER = "@@ORCHESTRATOR_PYTHON@@"
+
 
 def resolve_baked_python() -> str:
     """Return the shell-quoted interpreter literal for generated hooks.
@@ -102,7 +104,11 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
         ["config", "--local", "--get", "core.hooksPath"],
         check=False,
     )
-    custom_hooks_path = hooks_path_result.stdout.strip() if hooks_path_result.returncode == 0 else None
+    custom_hooks_path = (
+        hooks_path_result.stdout.strip()
+        if hooks_path_result.returncode == 0
+        else None
+    )
 
     # Always set per-worktree hooksPath so hooks live with the worktree.
     # Explicit GIT_DIR prevents symlink resolution from writing to another worktree config.
@@ -135,7 +141,13 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
         check=False,
         env=git_env,
     )
-    logger.info("Overriding core.hooksPath to %s for this worktree only (gitdir=%s)", hooks_dir, gitdir)
+    logger.info(
+        "Overriding core.hooksPath to %s for this worktree only (gitdir=%s)",
+        hooks_dir,
+        gitdir,
+    )
+
+    _install_project_commit_message_hooks(gitdir, custom_hooks_path, hooks_dir)
 
     project_hook = _resolve_project_pre_push_hook(gitdir, custom_hooks_path)
     dst_hook = hooks_dir / "pre-push"
@@ -151,6 +163,40 @@ def install_hooks(worktree_path: Path, pre_push_hook: Path | None = None) -> Non
     elif orchestrator_hook.exists():
         _install_orchestrator_pre_push(orchestrator_hook, dst_hook)
         logger.info("Installed orchestrator pre-push hook")
+
+
+def _project_hooks_base(gitdir: Path, custom_hooks_path: str | None) -> Path:
+    main_git_dir = gitdir.parent.parent
+    if custom_hooks_path:
+        return main_git_dir.parent / custom_hooks_path
+    return main_git_dir / "hooks"
+
+
+def _resolve_project_hook(
+    gitdir: Path,
+    custom_hooks_path: str | None,
+    hook_name: str,
+) -> Path | None:
+    candidate = _project_hooks_base(gitdir, custom_hooks_path) / hook_name
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def _install_project_commit_message_hooks(
+    gitdir: Path,
+    custom_hooks_path: str | None,
+    hooks_dir: Path,
+) -> None:
+    """Copy project commit-message hooks dropped by worktree hooksPath override."""
+    for hook_name in PROJECT_COMMIT_MESSAGE_HOOKS:
+        project_hook = _resolve_project_hook(gitdir, custom_hooks_path, hook_name)
+        if project_hook is None or not project_hook.is_file():
+            continue
+        dst_hook = hooks_dir / hook_name
+        shutil.copy2(project_hook, dst_hook)
+        dst_hook.chmod(0o755)
+        logger.info("Installed project %s hook in worktree", hook_name)
 
 
 def _resolve_project_pre_push_hook(
@@ -170,17 +216,11 @@ def _resolve_project_pre_push_hook(
     pre-push exists at all). Callers must treat ``None`` as "install only the
     orchestrator hook".
     """
-    main_git_dir = gitdir.parent.parent
-    if custom_hooks_path:
-        base = main_git_dir.parent / custom_hooks_path
-    else:
-        base = main_git_dir / "hooks"
-
-    candidate = base / "pre-push"
-    if not candidate.exists():
+    candidate = _resolve_project_hook(gitdir, custom_hooks_path, "pre-push")
+    if candidate is None:
         return None
     if _is_managed_pre_push(candidate):
-        real_project_hook = base / "pre-push.project"
+        real_project_hook = candidate.parent / "pre-push.project"
         if real_project_hook.exists():
             logger.debug(
                 "Repo pre-push is managed wrapper; using %s as project hook",
