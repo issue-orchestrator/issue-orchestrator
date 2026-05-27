@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -11,6 +11,7 @@ help:
 	@echo "Available targets:"
 	@echo "  venv                Create/recreate .venv with Python 3.14+ and install all deps"
 	@echo "  venv-fast           Reuse .venv when possible; install/sync deps (reliable + fast)"
+	@echo "  semgrep-venv        Sync locked Semgrep tool environment"
 	@echo "  worktree-setup      Full worktree setup: venv + vscode extensions + playwright"
 	@echo "  install             Install dev dependencies (assumes venv exists)"
 	@echo "  upgrade-deps        Update uv.lock after changing pyproject.toml"
@@ -74,6 +75,10 @@ export IO_VSCODE_TEST_CACHE_PATH ?= $(HOME)/.cache/issue-orchestrator/vscode-tes
 # uv command - prefer PATH, fall back to default install location
 UV := $(shell command -v uv 2>/dev/null || echo $(HOME)/.local/bin/uv)
 
+SEMGREP_PROJECT ?= tools/semgrep
+SEMGREP_VENV ?= .venv-semgrep
+SEMGREP_DEPS_MARKER ?= $(SEMGREP_VENV)/.deps-synced
+
 # Auto-install uv if not present (one-time per machine)
 ensure-uv:
 	@if [ ! -x "$(UV)" ]; then \
@@ -95,6 +100,7 @@ venv: ensure-uv
 	t2=$$(date +%s); \
 	touch .venv/.deps-synced; \
 	echo "venv pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) uv_venv=$$((t1-t0))s uv_sync=$$((t2-t1))s total=$$((t2-t0))s" >> $(SETUP_LOG)
+	@$(GMAKE) --no-print-directory semgrep-venv
 	@echo ""
 	@echo "Done! Activate with: source .venv/bin/activate"
 
@@ -115,8 +121,19 @@ venv-fast: ensure-uv
 	t2=$$(date +%s); \
 	touch .venv/.deps-synced; \
 	echo "venv-fast pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) uv_venv=$$((t1-t0))s uv_sync=$$((t2-t1))s total=$$((t2-t0))s" >> $(SETUP_LOG)
+	@$(GMAKE) --no-print-directory semgrep-venv
 	@echo ""
 	@echo "Done! Activate with: source .venv/bin/activate"
+
+semgrep-venv: ensure-uv
+	@if [ ! -f $(SEMGREP_DEPS_MARKER) ] || \
+		[ ! -x $(SEMGREP_VENV)/bin/semgrep ] || \
+		[ $(SEMGREP_PROJECT)/pyproject.toml -nt $(SEMGREP_DEPS_MARKER) ] || \
+		[ $(SEMGREP_PROJECT)/uv.lock -nt $(SEMGREP_DEPS_MARKER) ]; then \
+		echo "Syncing locked Semgrep tool environment..."; \
+		UV_PROJECT_ENVIRONMENT="$(CURDIR)/$(SEMGREP_VENV)" $(UV) sync --project $(SEMGREP_PROJECT) --frozen --no-install-project && \
+		touch $(SEMGREP_DEPS_MARKER); \
+	fi
 
 # Legacy pip-based venv for systems without uv
 venv-pip:
@@ -159,6 +176,7 @@ worktree-setup: venv-fast
 # Install/reinstall dependencies
 install: ensure-uv
 	$(UV) sync --frozen --all-extras
+	@$(GMAKE) --no-print-directory semgrep-venv
 	@touch .venv/.deps-synced
 
 # Update dependencies after changing pyproject.toml
@@ -174,6 +192,7 @@ else
 endif
 	@echo "Syncing dependencies..."
 	$(UV) sync --frozen --all-extras
+	@$(GMAKE) --no-print-directory semgrep-venv
 	@touch .venv/.deps-synced
 	@echo ""
 	@echo "Done! Commit uv.lock with your changes."
@@ -211,7 +230,7 @@ typecheck:
 LINT_IMPORTS ?= .venv/bin/lint-imports
 RUFF ?= .venv/bin/ruff
 
-lint-arch:
+lint-arch: semgrep-venv
 	$(call TIMED_RUN,lint-arch,\
 		$(LINT_IMPORTS) && \
 		$(PYTHON) tools/check_arch_guardrails.py src && \
@@ -219,11 +238,11 @@ lint-arch:
 		scripts/check_agents_md.sh && \
 		$(PYTHON) scripts/check_docs_md.py)
 
-quality-guardrails:
+quality-guardrails: semgrep-venv
 	$(call TIMED_RUN,quality-guardrails,\
 		$(PYTHON) tools/quality_guardrails.py --fail-on-new)
 
-quality-guardrails-stale:
+quality-guardrails-stale: semgrep-venv
 	$(call TIMED_RUN,quality-guardrails-stale,\
 		$(PYTHON) tools/quality_guardrails.py --check-stale)
 

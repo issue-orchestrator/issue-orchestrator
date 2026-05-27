@@ -1,0 +1,24 @@
+rules:
+  - id: issue-orchestrator.direct-runtime-state-mutation
+    languages:
+      - python
+    severity: WARNING
+    message: Route orchestrator runtime state collection mutations through an owner abstraction.
+    pattern-either:
+      - pattern: $STATE.active_sessions = $VALUE
+      - pattern: $STATE.pending_reviews = $VALUE
+      - pattern: $STATE.pending_reworks = $VALUE
+      - pattern: $STATE.pending_triage_reviews = $VALUE
+      - pattern: $STATE.pending_validation_retries = $VALUE
+      - pattern: $STATE.active_sessions.append(...)
+      - pattern: $STATE.pending_reviews.append(...)
+      - pattern: $STATE.pending_reworks.append(...)
+      - pattern: $STATE.pending_triage_reviews.append(...)
+      - pattern: $STATE.pending_validation_retries.append(...)
+      - pattern: $STATE.discovered_reviews.append(...)
+      - pattern: $STATE.discovered_reworks.append(...)
+      - pattern: $STATE.discovered_failures.append(...)
+      - pattern: $STATE.discovered_escalations.append(...)
+      - pattern: $STATE.pending_cleanups.append(...)
+      - pattern: $STATE.immediate_cleanups.append(...)
+      - pattern: $STATE.completed_today.append(...)

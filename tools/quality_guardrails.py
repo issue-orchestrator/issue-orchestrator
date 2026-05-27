@@ -13,9 +13,11 @@ import fnmatch
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
+import tomllib
 import tokenize
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,10 @@ _JS_PAREN_KEYWORDS = {"if", "switch", "while"}
 _RUFF_NUMERIC_THRESHOLD = re.compile(r"\((\d+)\s*>\s*\d+\)")
 _RUFF_SYMBOL = re.compile(r"`([^`]+)`")
 _RUFF_NOQA = re.compile(r"#\s*noqa(?::|\b)")
+_SEMGREP_BIN_ENV = "QUALITY_GUARDRAILS_SEMGREP_BIN"
+_SEMGREP_VERSION = re.compile(r"\b(\d+\.\d+\.\d+)\b")
+_SEMGREP_PIN = re.compile(r"^semgrep==(?P<version>\d+\.\d+\.\d+)$")
+_SEMGREP_PROJECT = Path("tools/semgrep/pyproject.toml")
 
 
 @dataclass(frozen=True)
@@ -239,21 +245,21 @@ def _ruff_diagnostic_identifier(diagnostic: Mapping[str, Any]) -> str:
 def _required_mapping(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     value = data.get(key)
     if not isinstance(value, dict):
-        raise ValueError(f"Ruff diagnostic missing mapping field {key!r}")
+        raise ValueError(f"diagnostic missing mapping field {key!r}")
     return value
 
 
 def _required_string(data: Mapping[str, Any], key: str) -> str:
     value = data.get(key)
     if not isinstance(value, str) or not value:
-        raise ValueError(f"Ruff diagnostic missing non-empty string field {key!r}")
+        raise ValueError(f"diagnostic missing non-empty string field {key!r}")
     return value
 
 
 def _required_int(data: Mapping[str, Any], key: str) -> int:
     value = data.get(key)
     if not isinstance(value, int):
-        raise ValueError(f"Ruff diagnostic missing integer field {key!r}")
+        raise ValueError(f"diagnostic missing integer field {key!r}")
     return value
 
 
@@ -383,6 +389,187 @@ def _collect_ruff_noqa_suppressions(root: Path, rule: Mapping[str, Any]) -> list
                     new_metric_min_value=new_metric_min_value,
                 )
             )
+
+    return metrics
+
+
+def _semgrep_config(root: Path, rule: Mapping[str, Any]) -> str:
+    raw_config = rule.get("config")
+    if not isinstance(raw_config, str) or not raw_config:
+        raise ValueError(f"rule {rule.get('id', '<unknown>')} field 'config' must be a non-empty string")
+    config_path = root / raw_config
+    if not config_path.is_file():
+        raise ValueError(f"Semgrep config not found: {raw_config}")
+    return raw_config
+
+
+def _semgrep_required_version(root: Path) -> str:
+    project_path = root / _SEMGREP_PROJECT
+    try:
+        data = tomllib.loads(project_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"Could not read Semgrep tool project at {_SEMGREP_PROJECT}: {exc}") from exc
+    dependencies = data.get("project", {}).get("dependencies", [])
+    for dependency in dependencies:
+        if not isinstance(dependency, str):
+            continue
+        match = _SEMGREP_PIN.match(dependency)
+        if match:
+            return match.group("version")
+    raise ValueError(f"Semgrep tool project must pin semgrep with `semgrep==X.Y.Z`: {_SEMGREP_PROJECT}")
+
+
+def _semgrep_default_binary(root: Path) -> Path | None:
+    candidates = [
+        root / ".venv-semgrep" / "bin" / "semgrep",
+        root / ".venv-semgrep" / "Scripts" / "semgrep.exe",
+    ]
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def _semgrep_command(root: Path) -> list[str]:
+    configured = os.environ.get(_SEMGREP_BIN_ENV)
+    if configured:
+        cmd = [configured]
+    else:
+        default_binary = _semgrep_default_binary(root)
+        if default_binary is None:
+            raise ValueError(
+                "Semgrep tool environment not found at .venv-semgrep. "
+                "Run `make semgrep-venv` or `make worktree-setup`."
+            )
+        cmd = [str(default_binary)]
+
+    _verify_semgrep_version(root, cmd, required_version=_semgrep_required_version(root))
+    return cmd
+
+
+def _verify_semgrep_version(root: Path, cmd: Sequence[str], *, required_version: str) -> None:
+    result = subprocess.run(
+        [*cmd, "--version"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"Semgrep version check failed with exit code {result.returncode}: {result.stderr.strip()}"
+        )
+    version_text = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
+    match = _SEMGREP_VERSION.search(version_text)
+    if match is None:
+        raise ValueError(f"Could not determine Semgrep version from: {version_text!r}")
+    version = match.group(1)
+    if version != required_version:
+        raise ValueError(
+            f"Semgrep version mismatch: expected {required_version}, got {version}. "
+            "Run `make semgrep-venv` to install the locked tool version."
+        )
+
+
+def _run_semgrep_json(
+    root: Path,
+    rel_paths: Sequence[str],
+    *,
+    config: str,
+) -> list[Mapping[str, Any]]:
+    if not rel_paths:
+        return []
+
+    cmd = [
+        *_semgrep_command(root),
+        "scan",
+        "--config",
+        config,
+        "--json",
+        "--metrics=off",
+        "--disable-version-check",
+        "--no-rewrite-rule-ids",
+        "--quiet",
+        *rel_paths,
+    ]
+    result = subprocess.run(cmd, cwd=root, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise ValueError(f"Semgrep failed with exit code {result.returncode}: {result.stderr.strip()}")
+
+    try:
+        data = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Semgrep emitted invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("Semgrep JSON output must be an object")
+    errors = data.get("errors", []) or []
+    if errors:
+        raise ValueError(f"Semgrep reported errors: {errors!r}")
+    findings = data.get("results", []) or []
+    if not isinstance(findings, list) or not all(isinstance(item, dict) for item in findings):
+        raise ValueError("Semgrep JSON field 'results' must be a list of finding objects")
+    return findings
+
+
+def _semgrep_source_digest(root: Path, rel_path: str, line: int) -> str:
+    path = root / rel_path
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if line < 1 or line > len(lines):
+        raise ValueError(f"{rel_path}: Semgrep finding line {line} is outside file bounds")
+    normalized = " ".join(lines[line - 1].strip().split())
+    return _line_digest(normalized)
+
+
+def _semgrep_finding_identifier(root: Path, rel_path: str, finding: Mapping[str, Any]) -> str:
+    check_id = _required_string(finding, "check_id")
+    start = _required_mapping(finding, "start")
+    line = _required_int(start, "line")
+    return f"{check_id}:{_semgrep_source_digest(root, rel_path, line)}"
+
+
+def _semgrep_rel_path(root: Path, finding: Mapping[str, Any]) -> str:
+    raw_path = _required_string(finding, "path")
+    path = Path(raw_path)
+    if not path.is_absolute():
+        return path.as_posix()
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _collect_semgrep_findings(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
+    rule_id = str(rule["id"])
+    config = _semgrep_config(root, rule)
+    new_metric_min_value = _new_metric_min_value(rule)
+    rel_paths = sorted(path.relative_to(root).as_posix() for path in _iter_included_files(root, rule))
+    findings = _run_semgrep_json(root, rel_paths, config=config)
+
+    seen: set[str] = set()
+    metrics: list[Metric] = []
+    for finding in findings:
+        rel_path = _semgrep_rel_path(root, finding)
+        start = _required_mapping(finding, "start")
+        line = _required_int(start, "line")
+        check_id = _required_string(finding, "check_id")
+        extra = finding.get("extra", {}) or {}
+        if not isinstance(extra, dict):
+            raise ValueError("Semgrep finding field 'extra' must be a mapping when present")
+        message = extra.get("message", "")
+        if not isinstance(message, str):
+            raise ValueError("Semgrep finding extra.message must be a string when present")
+        metric_id = f"{rel_path}:{_semgrep_finding_identifier(root, rel_path, finding)}"
+        if metric_id in seen:
+            metric_id = f"{metric_id}:line-{line}"
+        seen.add(metric_id)
+        metrics.append(
+            Metric(
+                rule_id=rule_id,
+                kind="semgrep_finding",
+                metric_id=metric_id,
+                value=1,
+                path=rel_path,
+                detail=f"{check_id} line {line}: {message}".rstrip(),
+                new_metric_min_value=new_metric_min_value,
+            )
+        )
 
     return metrics
 
@@ -631,6 +818,7 @@ def collect_metrics(root: Path, config: Mapping[str, Any]) -> list[Metric]:
         "control_policy_branch_sites": _collect_control_policy_branch_sites,
         "ruff_findings": _collect_ruff_findings,
         "ruff_noqa_suppressions": _collect_ruff_noqa_suppressions,
+        "semgrep_findings": _collect_semgrep_findings,
     }
     metrics: list[Metric] = []
 

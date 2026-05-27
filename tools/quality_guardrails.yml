@@ -42,6 +42,16 @@ rules:
       - src/**/*.py
       - packages/agent_runner/src/**/*.py
 
+  - id: semgrep_owner_boundaries
+    type: semgrep_findings
+    description: >
+      Ratchet repo-specific owner-boundary findings from Semgrep. Semgrep owns
+      Python AST pattern matching; this guardrail only normalizes and ratchets
+      the findings so new runtime-state mutation sites cannot spread silently.
+    config: tools/semgrep/owner_boundaries.yml
+    include:
+      - src/issue_orchestrator/**/*.py
+
   - id: control_policy_branch_sites
     type: control_policy_branch_sites
     new_metric_min_value: 3
