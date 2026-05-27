@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
@@ -22,6 +22,7 @@ from ..control.retry_history_state import RetryHistoryState
 from ..events import EventName
 from ..history import latest_history_entries_by_issue
 from ..ports.event_sink import make_trace_event
+from .web_issue_number_payload import parse_issue_numbers_payload
 from .web_session_context import WebOrchestratorDependency
 
 if TYPE_CHECKING:
@@ -247,18 +248,12 @@ async def reset_and_retry(
     # reset_issue pulls in maintenance dependencies only needed by this endpoint.
     from ..control.maintenance import reset_issue
 
-    try:
-        body = await request.json()
-    except (json.JSONDecodeError, ValueError):
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    parsed = await parse_issue_numbers_payload(request)
+    if parsed.error_response is not None:
+        return parsed.error_response
 
-    issue_numbers = body.get("issues", [])
-    from_scratch = bool(body.get("from_scratch", False))
-    if not issue_numbers or not isinstance(issue_numbers, list):
-        return JSONResponse(
-            {"error": "issues must be a non-empty list"},
-            status_code=400,
-        )
+    issue_numbers = parsed.issue_numbers
+    from_scratch = bool(parsed.body.get("from_scratch", False))
     request_started_at = time.monotonic()
     logger.debug(
         "[reset-retry] Request received: issues=%s from_scratch=%s count=%d",
@@ -280,7 +275,7 @@ async def reset_and_retry(
     scratch_pending_label = lm.reset_retry_scratch_pending
 
     for issue_number in issue_numbers:
-        success_payload, failure_payload = _reset_and_retry_issue(
+        success_payload, failure_payload = reset_and_retry_issue(
             issue_number=issue_number,
             from_scratch=from_scratch,
             pending_label=pending_label,
@@ -307,7 +302,7 @@ async def reset_and_retry(
         [result["issue"] for result in reset_results],
         [failure.get("issue") for failure in failed],
         from_scratch,
-        _elapsed_ms(request_started_at),
+        elapsed_ms(request_started_at),
     )
     return JSONResponse({
         "reset": reset_results,
@@ -317,7 +312,7 @@ async def reset_and_retry(
     })
 
 
-def _reset_and_retry_issue(  # noqa: PLR0913
+def reset_and_retry_issue(  # noqa: PLR0913
     *,
     issue_number: int,
     from_scratch: bool,
@@ -329,6 +324,7 @@ def _reset_and_retry_issue(  # noqa: PLR0913
     deps: Any,
     config: Any,
     reset_issue_fn: Callable[..., "ResetResult"],
+    current_labels: Sequence[str] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     # AddLabelAction is lazy for the same reason as RemoveLabelAction above.
     from ..control.actions import AddLabelAction
@@ -350,14 +346,24 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             deps=deps,
         )
 
-        labels_started_at = time.monotonic()
-        current_labels = repository_host.get_issue_labels(issue_number)
-        logger.debug(
-            "[reset-retry] Current labels fetched: issue=%d labels=%s duration_ms=%d",
-            issue_number,
-            current_labels,
-            _elapsed_ms(labels_started_at),
-        )
+        provided_marks = current_labels
+        if provided_marks is None:
+            labels_started_at = time.monotonic()
+            current_marks = repository_host.get_issue_labels(issue_number)
+            logger.debug(
+                "[reset-retry] Current labels fetched: issue=%d labels=%s "
+                "duration_ms=%d",
+                issue_number,
+                current_marks,
+                elapsed_ms(labels_started_at),
+            )
+        else:
+            current_marks = list(provided_marks)
+            logger.debug(
+                "[reset-retry] Current labels reused: issue=%d labels=%s",
+                issue_number,
+                current_marks,
+            )
         reset_started_at = time.monotonic()
         result = reset_issue_fn(
             issue_number=issue_number,
@@ -366,7 +372,7 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             working_copy=deps.working_copy,
             action_applier=deps.action_applier,
             label_manager=deps.label_manager,
-            current_labels=current_labels,
+            current_labels=current_marks,
             session_history=state.session_history,
             completed_today=state.completed_today,
             label_store=deps.label_store,
@@ -384,7 +390,7 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             result.superseded_prs or [],
             result.deleted_branches or [],
             result.timeline_events_deleted,
-            _elapsed_ms(reset_started_at),
+            elapsed_ms(reset_started_at),
         )
         if not result.success:
             return None, _make_reset_failure(
@@ -456,7 +462,7 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             "duration_ms=%d",
             issue_number,
             from_scratch,
-            _elapsed_ms(issue_started_at),
+            elapsed_ms(issue_started_at),
         )
         return success, None
     except Exception as exc:
@@ -603,7 +609,7 @@ def _enqueue_reset_retry_issue(
             outcome.updated,
             priority_inserted,
             len(state.cached_queue_issues),
-            _elapsed_ms(enqueue_started_at),
+            elapsed_ms(enqueue_started_at),
         )
         return None
 
@@ -617,7 +623,7 @@ def _enqueue_reset_retry_issue(
         outcome.status.value,
         list(refreshed_issue.labels),
         len(state.cached_queue_issues),
-        _elapsed_ms(enqueue_started_at),
+        elapsed_ms(enqueue_started_at),
     )
     return _make_reset_failure(
         issue_number,
@@ -711,5 +717,5 @@ def _make_reset_failure(
     }
 
 
-def _elapsed_ms(started_at: float) -> int:
+def elapsed_ms(started_at: float) -> int:
     return int((time.monotonic() - started_at) * 1000)
