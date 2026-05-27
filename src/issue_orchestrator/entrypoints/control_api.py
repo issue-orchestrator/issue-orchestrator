@@ -891,8 +891,8 @@ async def control_center_ui(request: Request) -> HTMLResponse:
             status_code=500,
         )
 
-    from .. import __version__
-    from ..infra.static_version import STATIC_VERSION_TOKEN, resolve_cc_commit_sha
+    from ..infra.runtime_identity import resolve_runtime_identity
+    from ..infra.static_version import STATIC_VERSION_TOKEN
 
     # Sidebar SHA: resolve from the package install location, not
     # ``Path.cwd()``. Operators frequently launch the cc from outside
@@ -901,10 +901,10 @@ async def control_center_ui(request: Request) -> HTMLResponse:
     # picked up a recent merge. The package-relative resolver finds
     # the source repo when running from a development checkout and
     # cleanly returns ``None`` for non-source installs.
-    commit_sha = resolve_cc_commit_sha()
-    commit_short = commit_sha[:7] if commit_sha else "unknown"
+    runtime_identity = resolve_runtime_identity()
+    commit_short = runtime_identity.source_commit_short or "unknown"
     content = template_path.read_text()
-    content = content.replace("{{ version }}", __version__)
+    content = content.replace("{{ version }}", runtime_identity.package_version)
     content = content.replace("{{ commit_sha }}", commit_short)
     # Cache-buster for ``/static/*`` URLs: every cc restart produces a
     # new token (commit SHA when running from source; process-start
