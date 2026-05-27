@@ -141,10 +141,13 @@ class ReviewExchangeTurnPacket:
     last_coder_text: str | None = None
     last_reviewer_text: str | None = None
     reviewer_feedback: str | None = None
-    """The coder's packet carries the reviewer's prior-round feedback
-    here. Distinct from ``last_reviewer_text`` (the reviewer's prior
-    round) because the coder's prompt phrases the feedback differently
-    and a future reorder shouldn't conflate the two."""
+    """The coder's packet carries the reviewer's prior-round report here.
+
+    The persisted manifest field keeps its historical ``reviewer_feedback``
+    name, but the value is the full ``review-report.md`` text. This is
+    distinct from ``last_reviewer_text`` because that remains the
+    reviewer's one-line JSON summary for reviewer-to-reviewer context.
+    """
 
     def to_manifest_fields(self) -> dict[str, Any]:
         """Render to a JSON-safe dict for artifact persistence.

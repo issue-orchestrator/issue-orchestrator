@@ -11,9 +11,12 @@ When done, produce the paired review artifacts:
 1. Write a human-readable markdown review to `$ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE`.
 2. Write **exactly one line of JSON** to `$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE`.
 
-The markdown is for humans. The JSON is the no-nonsense orchestration contract.
-Use stable IDs (`F1`, `F2`, `N1`, ...) for findings and nits, and include every
-ID in both artifacts.
+The markdown report is the review content source for humans and the coder's
+next rework prompt. The JSON is the no-nonsense orchestration contract. Use
+stable IDs (`F1`, `F2`, `N1`, ...) for findings and nits, and include every
+JSON ID in the markdown report. JSON finding/nit/abstraction entries may be
+ID-only objects or ID strings; put rationale and suggested changes in the
+markdown report.
 
 The `decision.abstraction_review` object is required. Use it to state whether
 the change uses the right owner/port/command abstraction. If a bounded
@@ -28,7 +31,7 @@ the required follow-up issue already exists, and include `follow_up_issue_url`.
 
 **Request changes:**
 ```json
-{"response_type":"changes_requested","getting_closer":true,"response_text":"Fix X, Y, Z.","decision":{"verdict":"changes_requested","risk":"medium","blocking_findings":[{"id":"F1","title":"Fix X"}],"nits":[],"tests_reviewed":[],"abstraction_review":{"status":"changes_requested","findings":[{"id":"A1","title":"Route this through the existing command/port owner"}]},"nit_policy":"surface"}}
+{"response_type":"changes_requested","getting_closer":true,"response_text":"See review report for F1 and A1.","decision":{"verdict":"changes_requested","risk":"medium","blocking_findings":[{"id":"F1"}],"nits":[],"tests_reviewed":[],"abstraction_review":{"status":"changes_requested","findings":[{"id":"A1"}]},"nit_policy":"surface"}}
 ```
 
 **Disagree with the approach:**
@@ -43,7 +46,7 @@ the required follow-up issue already exists, and include `follow_up_issue_url`.
 - **DO NOT** call `coding-done`. You are the reviewer, not the coder.
 - `approved` JSON must not carry blocking findings.
 - `approved` JSON must not carry `abstraction_review.status="changes_requested"`.
-- `changes_requested` JSON must carry at least one blocking finding.
+- `changes_requested` JSON should carry the blocking IDs introduced in the report.
 - `deferred` abstraction reviews must include `follow_up_issue_url`.
 - Review for the strongest bounded design, not merely for a working diff. Missing bounded owner/port/command abstraction work is a `Design Smell` or `Correctness Risk`, not a nit.
 - Nits are non-blocking. Classify them honestly; the orchestrator decides whether the coder must address them before PR creation.

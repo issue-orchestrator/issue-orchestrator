@@ -36,20 +36,31 @@ class ReviewItem:
     """One blocking finding or nit in the machine decision."""
 
     id: str
-    title: str
+    title: str | None = None
     location: str | None = None
     rationale: str | None = None
     suggested_change: str | None = None
 
     @classmethod
-    def from_mapping(cls, data: Any, *, fallback_prefix: str, index: int) -> "ReviewItem":
+    def from_mapping(
+        cls, data: Any, *, fallback_prefix: str, index: int
+    ) -> "ReviewItem":
         if not isinstance(data, dict):
             text = str(data).strip() or "Unspecified review item"
+            if (
+                text.startswith(fallback_prefix)
+                and text[len(fallback_prefix) :].isdigit()
+            ):
+                return cls(id=text)
             return cls(id=f"{fallback_prefix}{index}", title=text)
         raw_id = data.get("id")
-        item_id = str(raw_id).strip() if isinstance(raw_id, str) and raw_id.strip() else f"{fallback_prefix}{index}"
+        item_id = (
+            str(raw_id).strip()
+            if isinstance(raw_id, str) and raw_id.strip()
+            else f"{fallback_prefix}{index}"
+        )
         raw_title = data.get("title") or data.get("summary") or data.get("rationale")
-        title = str(raw_title).strip() if raw_title is not None else "Unspecified review item"
+        title = str(raw_title).strip() if raw_title is not None else None
         return cls(
             id=item_id,
             title=title,
@@ -59,7 +70,9 @@ class ReviewItem:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"id": self.id, "title": self.title}
+        payload: dict[str, Any] = {"id": self.id}
+        if self.title:
+            payload["title"] = self.title
         if self.location:
             payload["location"] = self.location
         if self.rationale:
@@ -85,7 +98,10 @@ class AbstractionReview:
                 raise ValueError("decision.abstraction_review is required")
             return cls()
         status = _coerce_abstraction_review_status(data.get("status"))
-        findings = _items(data.get("findings"), fallback_prefix="A")
+        findings = _items(
+            _first_present(data, "findings", "finding_ids"),
+            fallback_prefix="A",
+        )
         rationale = _optional_str(data.get("rationale")) or ""
         follow_up_issue_url = _optional_str(data.get("follow_up_issue_url"))
         if status == "changes_requested" and not findings:
@@ -164,9 +180,16 @@ class ReviewDecision:
             data = payload if isinstance(payload, dict) else {}
 
         verdict = _coerce_verdict(data.get("verdict"), response_type)
-        blocking = _items(data.get("blocking_findings"), fallback_prefix="F")
-        nits = _items(data.get("nits"), fallback_prefix="N")
-        if verdict == "changes_requested" and not blocking:
+        blocking = _items(
+            _first_present(data, "blocking_findings", "blocking_finding_ids"),
+            fallback_prefix="F",
+        )
+        nits = _items(_first_present(data, "nits", "nit_ids"), fallback_prefix="N")
+        if (
+            verdict == "changes_requested"
+            and not blocking
+            and not has_structured_decision
+        ):
             blocking = (
                 ReviewItem(
                     id="F1",
@@ -199,7 +222,9 @@ class ReviewDecision:
                     "verdict",
                     "risk",
                     "blocking_findings",
+                    "blocking_finding_ids",
                     "nits",
+                    "nit_ids",
                     "tests_reviewed",
                     "abstraction_review",
                     "nit_policy",
@@ -230,10 +255,13 @@ class ReviewDecision:
 
     def validate(self) -> None:
         if self.verdict == "approved" and self.blocking_findings:
-            raise ValueError("approved review decision must not carry blocking_findings")
-        if self.verdict == "changes_requested" and not self.blocking_findings:
-            raise ValueError("changes_requested review decision requires blocking_findings")
-        if self.verdict == "approved" and self.abstraction_review.status == "changes_requested":
+            raise ValueError(
+                "approved review decision must not carry blocking_findings"
+            )
+        if (
+            self.verdict == "approved"
+            and self.abstraction_review.status == "changes_requested"
+        ):
             raise ValueError(
                 "approved review decision must not carry abstraction changes_requested"
             )
@@ -422,7 +450,8 @@ def _read_authored_report(path: Path | None) -> str | None:
 
 
 def _render_item(item: ReviewItem) -> list[str]:
-    lines = [f"### {item.id}. {item.title}", ""]
+    heading = f"### {item.id}. {item.title}" if item.title else f"### {item.id}"
+    lines = [heading, ""]
     if item.location:
         lines.append(f"- Location: `{item.location}`")
     if item.rationale:
@@ -493,6 +522,13 @@ def _items(value: Any, *, fallback_prefix: str) -> tuple[ReviewItem, ...]:
         ReviewItem.from_mapping(item, fallback_prefix=fallback_prefix, index=index)
         for index, item in enumerate(value, start=1)
     )
+
+
+def _first_present(data: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in data:
+            return data[key]
+    return None
 
 
 def _string_tuple(value: Any) -> tuple[str, ...]:

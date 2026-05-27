@@ -73,6 +73,74 @@ def test_changes_requested_legacy_payload_synthesizes_blocker(tmp_path):
     assert decision.abstraction_review.status == "no_issues"
 
 
+def test_slim_decision_ids_are_valid_without_content_fields(tmp_path):
+    report = tmp_path / "authored.md"
+    report.write_text(
+        (
+            "# Review\n\n"
+            "## F1\n\nFix the behavior described here.\n\n"
+            "## N1\n\nTighten the wording.\n\n"
+            "## A1\n\nRoute the policy through the owner abstraction.\n"
+        ),
+        encoding="utf-8",
+    )
+    decision = ReviewDecision.from_agent_payload(
+        {
+            "decision": {
+                "verdict": "changes_requested",
+                "risk": "medium",
+                "blocking_finding_ids": ["F1"],
+                "nit_ids": ["N1"],
+                "abstraction_review": {
+                    "status": "changes_requested",
+                    "finding_ids": ["A1"],
+                },
+            }
+        },
+        response_type="changes_requested",
+        response_text="See report.",
+        nit_policy="surface",
+    )
+
+    pair = persist_review_artifact_pair(
+        report_path=tmp_path / "review-report.md",
+        decision_path=tmp_path / "review-decision.json",
+        decision=decision,
+        authored_report_path=report,
+    )
+    payload = json.loads(pair.decision_path.read_text(encoding="utf-8"))
+
+    assert payload["blocking_findings"] == [{"id": "F1"}]
+    assert payload["nits"] == [{"id": "N1"}]
+    assert payload["abstraction_review"]["findings"] == [{"id": "A1"}]
+
+
+def test_structured_changes_requested_may_omit_blocking_findings(tmp_path):
+    decision = ReviewDecision.from_agent_payload(
+        {
+            "decision": {
+                "verdict": "changes_requested",
+                "risk": "medium",
+                "abstraction_review": _no_issues_abstraction(),
+            }
+        },
+        response_type="changes_requested",
+        response_text="See report.",
+        nit_policy="surface",
+    )
+
+    pair = persist_review_artifact_pair(
+        report_path=tmp_path / "review-report.md",
+        decision_path=tmp_path / "review-decision.json",
+        decision=decision,
+        authored_report_path=None,
+    )
+    payload = json.loads(pair.decision_path.read_text(encoding="utf-8"))
+
+    assert payload["blocking_findings"] == []
+    assert "No blocking findings." in pair.report_path.read_text(encoding="utf-8")
+
+
 def test_structured_decision_requires_abstraction_review():
     with pytest.raises(ValueError, match="abstraction_review is required"):
         ReviewDecision.from_agent_payload(

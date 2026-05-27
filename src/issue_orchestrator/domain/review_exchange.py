@@ -111,7 +111,7 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
 
     Consumes a ``ReviewExchangeTurnPacket`` with
     ``role == Role.CODER`` and ``reviewer_feedback`` set. Runner is
-    expected to copy the most-recent reviewer response_text into the
+    expected to copy the most-recent persisted reviewer report into the
     packet's ``reviewer_feedback`` slot.
     """
     from .review_exchange_turn import Role
@@ -126,7 +126,7 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
     return (
         f"You are the coder in a review exchange for issue #{packet.issue_number}: {packet.issue_title}.\n"
         f"Round {packet.round_index}.\n"
-        "Review the feedback below and update the worktree accordingly.\n"
+        "Review the full reviewer report below and update the worktree accordingly.\n"
         "\n"
         "Steps:\n"
         "1. Make the requested changes (or prepare a disagreement).\n"
@@ -140,7 +140,7 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "still be committed or removed.\n"
         "\n"
         f"Session output dir: {packet.run_dir}\n"
-        f"\nReviewer feedback:\n{packet.reviewer_feedback}\n"
+        f"\nReviewer report:\n{packet.reviewer_feedback}\n"
         "\n"
         "After coding-done succeeds, write your JSON response to "
         "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"

@@ -4,7 +4,9 @@ You are participating in an automated coder↔reviewer exchange.
 
 ## How to respond
 
-Read the task-specific prompt file for what to fix.
+Read the task-specific prompt file for what to fix. Rework prompts include the
+reviewer's full current-round markdown report; treat that report as the source
+of review details.
 
 1. **Make the requested changes** in the worktree.
 2. **Commit your changes** - the working tree must be clean.

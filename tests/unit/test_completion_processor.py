@@ -33,6 +33,9 @@ from issue_orchestrator.control.completion_processor import (
     PRAdapter,
     GitAdapter,
 )
+from issue_orchestrator.control.review_exchange_pr_comment import (
+    GITHUB_COMMENT_BODY_LIMIT,
+)
 from issue_orchestrator.control.background_job_supervisor import BackgroundJobSupervisor
 from issue_orchestrator.control.pre_publish_gate import PrePublishGateResult
 from issue_orchestrator.execution.review_artifact_reader import ManifestReviewArtifactReader
@@ -800,6 +803,177 @@ class TestReviewExchangeExecution:
         assert "✅ Review completed via via-local-loop loop." in review_comment
         assert "# Stray Review Report" not in review_comment
         assert "Do not include." not in review_comment
+
+    def test_review_completion_comment_includes_cumulative_exchange_transcript(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """The final PR comment should answer what happened in each exchange turn."""
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+            review_artifact_reader=ManifestReviewArtifactReader(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        worktree = worktree_with_completion(record)
+        review_exchange_run = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260218-030046Z__review-exchange-123"
+        )
+        turns_dir = review_exchange_run / "review-exchange" / "turns"
+        turns_dir.mkdir(parents=True)
+        round_1_report = turns_dir / "round-1-reviewer-attempt-1.review-report.md"
+        round_1_report.write_text("# Review Round 1\n\nF1 details.\n", encoding="utf-8")
+        (turns_dir / "round-1-reviewer-attempt-1.result.json").write_text(
+            json.dumps({"kind": "changes_requested", "response_text": "Reviewer summary 1"}),
+            encoding="utf-8",
+        )
+        (turns_dir / "round-1-coder-attempt-1.result.json").write_text(
+            json.dumps({"kind": "ok", "response_text": "Coder fixed F1."}),
+            encoding="utf-8",
+        )
+        round_2_report = turns_dir / "round-2-reviewer-attempt-1.review-report.md"
+        round_2_report.write_text("# Review Round 2\n\nApproved final.\n", encoding="utf-8")
+        (turns_dir / "round-2-reviewer-attempt-1.result.json").write_text(
+            json.dumps({"kind": "ok", "response_text": "Approved."}),
+            encoding="utf-8",
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="ok",
+                rounds=2,
+                reason="reviewer_ok",
+                exchange_dir=review_exchange_run / "review-exchange",
+                summary={
+                    "artifacts": [
+                        {
+                            "type": "review_report",
+                            "label": "Review report",
+                            "value": str(round_2_report),
+                            "render_mode": "markdown",
+                        }
+                    ]
+                },
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is True
+        review_comment = mock_pr_adapter.add_comment.call_args.args[1]
+        assert "## Review Exchange Transcript" in review_comment
+        assert review_comment.index("### Round 1 Reviewer") < review_comment.index(
+            "### Round 1 Coder"
+        )
+        assert review_comment.index("### Round 1 Coder") < review_comment.index(
+            "### Round 2 Reviewer"
+        )
+        assert "# Review Round 1" in review_comment
+        assert "F1 details." in review_comment
+        assert "Coder fixed F1." in review_comment
+        assert "# Review Round 2" in review_comment
+        assert "Approved final." in review_comment
+
+    def test_review_completion_comment_truncates_cumulative_exchange_transcript(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """The generated PR comment must stay under GitHub's body limit."""
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+            review_artifact_reader=ManifestReviewArtifactReader(),
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        worktree = worktree_with_completion(record)
+        review_exchange_run = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260218-030047Z__review-exchange-123"
+        )
+        turns_dir = review_exchange_run / "review-exchange" / "turns"
+        turns_dir.mkdir(parents=True)
+        report = turns_dir / "round-1-reviewer-attempt-1.review-report.md"
+        report.write_text("# Review Round 1\n\n" + ("x" * 80_000), encoding="utf-8")
+        (turns_dir / "round-1-reviewer-attempt-1.result.json").write_text(
+            json.dumps({"kind": "ok", "response_text": "Approved."}),
+            encoding="utf-8",
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="ok",
+                rounds=1,
+                reason="reviewer_ok",
+                exchange_dir=review_exchange_run / "review-exchange",
+                summary={
+                    "artifacts": [
+                        {
+                            "type": "review_report",
+                            "label": "Review report",
+                            "value": str(report),
+                            "render_mode": "markdown",
+                        }
+                    ]
+                },
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is True
+        review_comment = mock_pr_adapter.add_comment.call_args.args[1]
+        assert len(review_comment) <= GITHUB_COMMENT_BODY_LIMIT
+        assert "Review exchange transcript truncated" in review_comment
+        assert "Full per-turn artifacts remain" in review_comment
 
     def test_local_loop_failure_emits_review_changes_requested_trace_event(
         self,

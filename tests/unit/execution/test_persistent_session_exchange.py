@@ -52,6 +52,7 @@ class _FakeSession:
         *,
         completion_path: Path | None = None,
         validation_output_dir: Path | None = None,
+        review_report_path: Path | None = None,
         log_writer: Any = None,
     ) -> None:
         self.role = role
@@ -68,6 +69,7 @@ class _FakeSession:
         # stays correct as path layout evolves.
         self.completion_path = completion_path
         self.validation_output_dir = validation_output_dir
+        self.review_report_path = review_report_path
         # ``log_writer`` exists on the production PersistentSession so
         # ``_attach_slice_mirror`` / ``_detach_slice_mirror`` can wire
         # the per-session slice into the role's PTY writer.
@@ -226,10 +228,12 @@ def _patch_persistent_runner(
         state["opened"].append(role)
         completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
         validation_env = env.get("ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR")
+        review_report_env = env.get("ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE")
         return _FakeSession(
             role,
             completion_path=Path(completion_env) if completion_env else None,
             validation_output_dir=Path(validation_env) if validation_env else None,
+            review_report_path=Path(review_report_env) if review_report_env else None,
             log_writer=writer,
         )
 
@@ -249,6 +253,12 @@ def _patch_persistent_runner(
         head = response_script[role].pop(0)
         if isinstance(head, Exception):
             raise head
+        authored_report_text = head.pop("_authored_report_text", None)
+        if role == "reviewer" and authored_report_text is not None:
+            report_path = session.review_report_path
+            assert report_path is not None
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(str(authored_report_text), encoding="utf-8")
         # Stub the coder's completion artifact write so the protocol
         # guardrail in pse._validate_coder_completion has the file it expects.
         should_write_completion = write_coder_completion
@@ -359,6 +369,11 @@ class TestPersistentSessionExchangeHappyPath:
         assert round_completed[0].data["review_decision_verdict"] == "approved"
         assert round_completed[0].data["review_nit_policy"] == "surface"
         assert round_completed[0].data["review_abstraction_status"] == "no_issues"
+        round_artifacts = round_completed[0].data["artifacts"]
+        assert {
+            artifact["type"]: artifact["render_mode"]
+            for artifact in round_artifacts
+        } == {"review_report": "markdown", "review_decision": "json"}
         assert completed[0].data["review_decision_verdict"] == "approved"
         assert completed[0].data["review_nit_policy"] == "surface"
         assert completed[0].data["review_abstraction_status"] == "no_issues"
@@ -386,7 +401,24 @@ class TestPersistentSessionExchangeHappyPath:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "Fix typo", "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "See review report.",
+                        "getting_closer": True,
+                        "decision": {
+                            "verdict": "changes_requested",
+                            "risk": "medium",
+                            "blocking_findings": [{"id": "F1"}],
+                            "nits": [],
+                            "abstraction_review": {"status": "no_issues", "findings": []},
+                            "nit_policy": "surface",
+                        },
+                        "_authored_report_text": (
+                            "# Review\n\n"
+                            "## F1\n\n"
+                            "Fix the typo in the persisted report path.\n"
+                        ),
+                    },
                     {"response_type": "ok", "response_text": "All good", "getting_closer": True},
                 ],
                 "coder": [
@@ -422,6 +454,21 @@ class TestPersistentSessionExchangeHappyPath:
         assert sorted(state["opened"]) == ["coder", "reviewer"]
         assert state["registry"].released == []
         assert len(state["registry"].acquired) == 1
+        assert outcome.exchange_dir is not None
+        turns_dir = outcome.exchange_dir / "turns"
+        report_text = (
+            turns_dir / "round-1-reviewer-attempt-1.review-report.md"
+        ).read_text(encoding="utf-8")
+        coder_packet = json.loads((turns_dir / "round-1-coder.packet.json").read_text())
+        assert coder_packet["reviewer_feedback"] == report_text
+        coder_prompt = next(
+            prompt
+            for role, prompt, _notice in state["prompt_inboxes_seen"]
+            if role == "coder"
+        )
+        assert "Reviewer report:" in coder_prompt
+        assert "Fix the typo in the persisted report path." in coder_prompt
+        assert "Reviewer feedback:" not in coder_prompt
 
     def test_address_nits_policy_routes_approval_through_coder_rework(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -931,14 +978,16 @@ class TestTurnArtifactsPersisted:
         assert r1_review_result.getting_closer is True
 
         # Round 1 coder packet: typed, role CODER, reviewer_feedback
-        # carries the round-1 reviewer text (the runner copies the
-        # most-recent reviewer response into the coder packet).
+        # carries the persisted round-1 reviewer report text.
         r1_coder_packet = ReviewExchangeTurnPacket.from_manifest(
             json.loads((turns_dir / "round-1-coder.packet.json").read_text())
         )
+        r1_report_text = (
+            turns_dir / "round-1-reviewer-attempt-1.review-report.md"
+        ).read_text(encoding="utf-8")
         assert r1_coder_packet is not None
         assert r1_coder_packet.role is Role.CODER
-        assert r1_coder_packet.reviewer_feedback == "Fix typo"
+        assert r1_coder_packet.reviewer_feedback == r1_report_text
 
         # Round 1 coder result: ok.
         r1_coder_result = ReviewExchangeTurnResult.from_manifest(
