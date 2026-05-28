@@ -169,6 +169,21 @@ ignore_imports = [
 ]
 
 [[tool.importlinter.contracts]]
+name = "Control and observation must not import adapters directly"
+type = "forbidden"
+source_modules = [
+  "issue_orchestrator.control",
+  "issue_orchestrator.observation",
+]
+forbidden_modules = ["issue_orchestrator.adapters"]
+allow_indirect_imports = true
+# Existing diagnostics debt. New adapter imports in control/observation are blocked;
+# remove this exception when session log lookup is routed through a port/owner.
+ignore_imports = [
+  "issue_orchestrator.control.session_completion_diagnostics -> issue_orchestrator.adapters.session_log.registry",
+]
+
+[[tool.importlinter.contracts]]
 name = "Orchestrator must not import execution directly"
 type = "forbidden"
 source_modules = ["issue_orchestrator.infra.orchestrator"]
