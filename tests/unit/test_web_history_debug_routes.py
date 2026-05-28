@@ -366,6 +366,7 @@ class TestHistoryEndpoints:
         added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
         assert lm.reset_retry_pending in added_labels
         assert lm.reset_retry_scratch_pending in added_labels
+        assert lm.fresh_lifecycle_rerun not in added_labels
         event_arg = mock_orch.deps.events.publish.call_args.args[0]
         assert event_arg.data["from_scratch"] is True
         assert event_arg.data["source"] == "web.reset-retry"
@@ -399,6 +400,7 @@ class TestHistoryEndpoints:
         assert decision["eligible"] is True
         assert decision["action"] == "reopen_and_reset"
         assert decision["will_reopen"] is True
+        assert response.json()["rerun_intent"] == "fresh_lifecycle"
         mock_orch.repository_host.update_issue_state.assert_not_called()
 
     def test_hidden_scratch_reset_skips_filtered_issue_without_mutation(self):
@@ -516,6 +518,9 @@ class TestHistoryEndpoints:
         added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
         assert lm.reset_retry_pending in added_labels
         assert lm.reset_retry_scratch_pending in added_labels
+        assert lm.fresh_lifecycle_rerun in added_labels
+        assert lm.fresh_lifecycle_rerun in payload["reset"][0]["pending_labels"]
+        assert payload["rerun_intent"] == "fresh_lifecycle"
 
     def test_reset_retry_from_scratch_clears_pending_review_rework_and_cleanup_state(self):
         """Scratch reset should remove stale in-memory PR/rework state before requeue."""

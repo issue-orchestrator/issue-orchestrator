@@ -75,6 +75,9 @@ class TestNamedProperties:
     def test_reset_retry_scratch_pending(self, lm: LabelManager) -> None:
         assert lm.reset_retry_scratch_pending == "reset-retry-scratch-pending"
 
+    def test_fresh_lifecycle_rerun(self, lm: LabelManager) -> None:
+        assert lm.fresh_lifecycle_rerun == "fresh-lifecycle-rerun"
+
     def test_blocked(self, lm: LabelManager) -> None:
         assert lm.blocked == "blocked"
 
@@ -138,6 +141,9 @@ class TestNamedPropertiesPrefixed:
 
     def test_reset_retry_scratch_pending(self, plm: LabelManager) -> None:
         assert plm.reset_retry_scratch_pending == "bot:reset-retry-scratch-pending"
+
+    def test_fresh_lifecycle_rerun(self, plm: LabelManager) -> None:
+        assert plm.fresh_lifecycle_rerun == "bot:fresh-lifecycle-rerun"
 
     def test_io_claimed(self, plm: LabelManager) -> None:
         assert plm.io_claimed == "bot:io:claimed"

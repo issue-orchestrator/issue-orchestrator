@@ -88,6 +88,12 @@ class LabelManager:
                 LabelCategory.LIFECYCLE,
                 "Reset + retry from scratch pending launch",
             ),
+            LabelEntry(
+                "fresh_lifecycle_rerun",
+                "fresh-lifecycle-rerun",
+                LabelCategory.LIFECYCLE,
+                "Fresh coding, validation, and review lifecycle rerun",
+            ),
             LabelEntry("blocked", config.label_blocked, LabelCategory.BLOCKING, "Blocked"),
             LabelEntry("blocked_failed", "blocked-failed", LabelCategory.BLOCKING, "Failed run"),
             LabelEntry("publish_failed", "publish-failed", LabelCategory.BLOCKING, "Publishing failed"),
@@ -150,6 +156,10 @@ class LabelManager:
     @property
     def reset_retry_scratch_pending(self) -> str:
         return self._resolved["reset_retry_scratch_pending"]
+
+    @property
+    def fresh_lifecycle_rerun(self) -> str:
+        return self._resolved["fresh_lifecycle_rerun"]
 
     @property
     def blocked_failed(self) -> str:

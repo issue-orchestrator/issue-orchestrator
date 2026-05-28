@@ -11,7 +11,7 @@ function openHiddenScratchResetDialog() {
     if (menu) menu.classList.remove('visible');
     hiddenScratchPreviewedIssueIds = [];
     hiddenScratchEligibleIssueIds = [];
-    openModal('Reset Hidden Issues From Scratch', `
+    openModal('Rerun Hidden Issues From Scratch', `
         <form id="hiddenScratchResetForm" class="hidden-scratch-reset-form">
             <label class="prefs-row hidden-scratch-reset-field" for="hiddenScratchResetIssues">
                 Issue numbers
@@ -21,7 +21,7 @@ function openHiddenScratchResetDialog() {
                 Closed eligible issues are reopened before reset. Filtered-out and missing-agent issues are skipped without changes.
             </div>
             <div class="hidden-scratch-reset-warning">
-                This uses the full reset-from-scratch boundary: delete local worktrees, delete remote branches, remove orchestrator labels, supersede open orchestrator PRs, and force new branches from base.
+                This uses the full reset-from-scratch boundary and a fresh lifecycle rerun: delete local worktrees, delete remote branches, remove orchestrator labels, supersede open orchestrator PRs, force new branches from base, and rerun coding, validation, and review under current conditions.
             </div>
             <div class="hidden-scratch-reset-actions">
                 <button type="button" class="issue-action-btn" onclick="closeModal()">Cancel</button>
@@ -188,12 +188,12 @@ async function executeHiddenScratchReset() {
         renderHiddenScratchResetMessage('No eligible issues to reset.', 'warning');
         return;
     }
-    const confirmMsg = `Reset ${hiddenScratchEligibleIssueIds.length} hidden issue(s) from scratch?\n\nThis will DELETE local worktrees, DELETE remote branches, remove orchestrator labels, and supersede open orchestrator PRs.\n\nClosed eligible issues will be reopened first. Filtered-out and missing-agent issues are skipped without changes.\n\nPrior review approvals and validation artifacts will not be reused. Next launch will force NEW branches from base (main), not prior issue branch history.`;
+    const confirmMsg = `Rerun ${hiddenScratchEligibleIssueIds.length} hidden issue(s) from scratch?\n\nThis will DELETE local worktrees, DELETE remote branches, remove orchestrator labels, and supersede open orchestrator PRs.\n\nClosed eligible issues will be reopened first. Filtered-out and missing-agent issues are skipped without changes.\n\nPrior review approvals and validation artifacts will not be reused. Next launch will force NEW branches from base (main), not prior issue branch history, and rerun coding, validation, and review under current repo, orchestrator, and prompt conditions.`;
     const confirmBtn = document.getElementById('hiddenScratchResetConfirmBtn');
     if (!await showConfirm(confirmMsg, confirmBtn)) return;
 
     setHiddenScratchResetBusy(true);
-    renderHiddenScratchResetMessage('Resetting eligible issues from scratch...', 'info');
+    renderHiddenScratchResetMessage('Rerunning eligible issues from scratch...', 'info');
     try {
         const req = uiActionContract.buildHiddenScratchResetExecuteRequest(hiddenScratchPreviewedIssueIds);
         const res = await fetch(req.endpoint, {
@@ -212,7 +212,7 @@ async function executeHiddenScratchReset() {
         const skippedCount = Array.isArray(data.skipped) ? data.skipped.length : 0;
         const failedCount = Array.isArray(data.failed) ? data.failed.length : 0;
         const toastType = failedCount > 0 ? 'warning' : 'success';
-        showToast(`Hidden scratch reset: ${doneCount} reset, ${skippedCount} skipped, ${failedCount} failed`, toastType);
+        showToast(`Hidden rerun: ${doneCount} queued, ${skippedCount} skipped, ${failedCount} failed`, toastType);
         if (doneCount > 0) await refreshViewModel();
     } catch (err) {
         console.error('Hidden scratch reset failed:', err);
