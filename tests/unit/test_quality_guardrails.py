@@ -122,6 +122,66 @@ def _write_semgrep_config(root: Path) -> None:
     )
 
 
+def _write_ui_openapi_config(root: Path) -> None:
+    config = root / "tools" / "quality_guardrails.yml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        textwrap.dedent(
+            """
+            version: 1
+            rules:
+              - id: ui_openapi_routes
+                type: ui_openapi_routes
+                schema: docs/api/ui-openapi.json
+                route_include:
+                  - src/**/*.py
+                browser_route_include:
+                  - src/**/web*.py
+                browser_path_prefixes:
+                  - /api/
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_ui_openapi_schema(root: Path, paths: dict[str, dict[str, str]]) -> None:
+    schema_paths: dict[str, dict[str, object]] = {}
+    components: dict[str, dict[str, object]] = {}
+    for url_path, operations in paths.items():
+        schema_paths[url_path] = {}
+        for method, component in operations.items():
+            components.setdefault(component, {"type": "object", "additionalProperties": False})
+            schema_paths[url_path][method.lower()] = {
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": f"#/components/schemas/{component}"}
+                            }
+                        }
+                    }
+                }
+            }
+
+    schema_path = root / "docs" / "api" / "ui-openapi.json"
+    schema_path.parent.mkdir(parents=True, exist_ok=True)
+    schema_path.write_text(
+        json.dumps(
+            {
+                "openapi": "3.1.0",
+                "info": {"title": "UI", "version": "0"},
+                "paths": schema_paths,
+                "components": {"schemas": components},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _write_fake_semgrep(
     root: Path,
     *,
@@ -553,6 +613,77 @@ def test_semgrep_version_mismatch_fails_fast(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "Semgrep version mismatch: expected 1.163.0, got 1.162.0" in result.stderr
+
+
+def test_ui_openapi_routes_ratchet_uncontracted_browser_routes(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {"/api/typed": {"get": "TypedPayload"}})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/api/typed', response_model=TypedPayload)\n"
+        "def typed():\n"
+        "    return {}\n"
+        "@router.post('/api/raw')\n"
+        "def raw():\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert "ui_openapi_routes:uncontracted:POST /api/raw" in baseline["metrics"]
+    assert "ui_openapi_routes:response-model:GET /api/typed" not in baseline["metrics"]
+
+
+def test_ui_openapi_routes_block_response_model_drift(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {"/api/typed": {"get": "TypedPayload"}})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/api/typed', response_model=TypedPayload)\n"
+        "def typed():\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/api/typed')\n"
+        "def typed():\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--fail-on-new")
+
+    assert result.returncode == 2
+    assert "ui_openapi_response_model_drift" in result.stderr
+    assert "response_model=TypedPayload" in result.stderr
+
+
+def test_ui_openapi_routes_report_schema_routes_without_fastapi_route(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {"/api/missing": {"get": "MissingPayload"}})
+    (tmp_path / "src" / "app").mkdir(parents=True)
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert "ui_openapi_routes:missing:GET /api/missing" in baseline["metrics"]
 
 
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:

@@ -24,6 +24,7 @@ The first rule set tracks:
 - Semgrep owner-boundary findings for direct runtime-state mutation sites
 - Semgrep typed-seam findings for raw dict/list-of-dict public payload return and parameter surfaces
 - Semgrep semantic-vocabulary findings for raw lifecycle/status string literals
+- UI OpenAPI route drift: contracted browser endpoints must exist and use the generated response model, while legacy uncontracted dashboard routes are ratcheted so new browser JSON routes cannot bypass `docs/api/ui-openapi.json` silently
 - branch sites that mention lifecycle/control vocabulary
 
 These are proxies for the failure pattern captured in issue #6362: control policy spreading across multiple owners, projections, and execution paths.
@@ -39,6 +40,8 @@ The `noqa` suppression ratchet scans Python comment tokens, not raw source lines
 Lifecycle/control vocabulary is matched on lexical tokens and configured phrases, not raw substrings. For example, `statusCode`, `sessionState`, `session_state`, and `review-exchange` can match configured terms, while unrelated tokens such as `prestatus` do not.
 
 JavaScript branch-site scanning uses a lightweight lexical pass rather than a full parser. It ignores comments and string literals when finding branch keywords, then checks multi-line `if`/`while`/`switch` conditions and `case` clauses for configured control terms. Vendored JavaScript bundles are excluded from this repo-local architecture metric.
+
+UI OpenAPI route scanning reads `docs/api/ui-openapi.json` and FastAPI route decorators under `src/issue_orchestrator/entrypoints/`. If a schema path is removed from the server or stops naming the generated `response_model`, the check fails as new drift. Existing dashboard `/api/*` routes not yet represented in OpenAPI are tracked as baseline debt; adding another uncontracted browser JSON route fails until the endpoint is added to the schema or the ratchet is explicitly accepted.
 
 ## Ratchet Model
 

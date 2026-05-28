@@ -40,6 +40,8 @@ _SEMGREP_BIN_ENV = "QUALITY_GUARDRAILS_SEMGREP_BIN"
 _SEMGREP_VERSION = re.compile(r"\b(\d+\.\d+\.\d+)\b")
 _SEMGREP_PIN = re.compile(r"^semgrep==(?P<version>\d+\.\d+\.\d+)$")
 _SEMGREP_PROJECT = Path("tools/semgrep/pyproject.toml")
+_HTTP_ROUTE_METHODS = {"delete", "get", "patch", "post", "put"}
+_UI_OPENAPI_COMPONENT_PREFIX = "#/components/schemas/"
 
 
 @dataclass(frozen=True)
@@ -106,6 +108,23 @@ class StaleBaselineEntry:
 class GuardrailResult:
     violations: list[RatchetViolation]
     stale_entries: list[StaleBaselineEntry]
+
+
+@dataclass(frozen=True)
+class RouteOperation:
+    method: str
+    url_path: str
+    file_path: str
+    line: int
+    response_model: str | None
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.method, self.url_path
+
+    @property
+    def metric_id(self) -> str:
+        return _route_metric_id(self.method, self.url_path)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -808,6 +827,227 @@ def _collect_control_policy_branch_sites(root: Path, rule: Mapping[str, Any]) ->
     return metrics
 
 
+def _route_metric_id(method: str, url_path: str) -> str:
+    return f"{method.upper()} {url_path}"
+
+
+def _matches_patterns(rel_path: str, patterns: Sequence[str]) -> bool:
+    return any(fnmatch.fnmatch(rel_path, pattern) for pattern in patterns)
+
+
+def _route_literal_path(call: ast.Call) -> str | None:
+    if call.args and isinstance(call.args[0], ast.Constant) and isinstance(call.args[0].value, str):
+        return call.args[0].value
+    for keyword in call.keywords:
+        if keyword.arg == "path" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+            return keyword.value.value
+    return None
+
+
+def _expr_model_name(expr: ast.AST) -> str:
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Attribute):
+        return expr.attr
+    return ast.unparse(expr)
+
+
+def _response_model_name(call: ast.Call) -> str | None:
+    for keyword in call.keywords:
+        if keyword.arg == "response_model":
+            return _expr_model_name(keyword.value)
+    return None
+
+
+def _iter_route_operations(root: Path, rule: Mapping[str, Any]) -> Iterable[RouteOperation]:
+    include = _patterns(rule, "route_include")
+    exclude = _patterns(rule, "route_exclude")
+    route_rule = {"id": rule["id"], "include": include, "exclude": exclude}
+
+    for path in _iter_included_files(root, route_rule):
+        if path.suffix != ".py":
+            continue
+        rel_path = path.relative_to(root).as_posix()
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel_path)
+        except SyntaxError as exc:
+            raise ValueError(f"{rel_path}: syntax error while collecting UI OpenAPI routes: {exc}") from exc
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call):
+                    continue
+                if not isinstance(decorator.func, ast.Attribute):
+                    continue
+                method = decorator.func.attr.lower()
+                if method not in _HTTP_ROUTE_METHODS:
+                    continue
+                url_path = _route_literal_path(decorator)
+                if url_path is None:
+                    continue
+                yield RouteOperation(
+                    method=method,
+                    url_path=url_path,
+                    file_path=rel_path,
+                    line=decorator.lineno,
+                    response_model=_response_model_name(decorator),
+                )
+
+
+def _schema_component_name(schema: Mapping[str, Any], *, schema_path: str, route_key: str) -> str:
+    ref = schema.get("$ref")
+    if not isinstance(ref, str) or not ref.startswith(_UI_OPENAPI_COMPONENT_PREFIX):
+        raise ValueError(f"{schema_path}: {route_key} 200 application/json schema must be a component $ref")
+    component = ref.removeprefix(_UI_OPENAPI_COMPONENT_PREFIX)
+    if not component:
+        raise ValueError(f"{schema_path}: {route_key} component $ref is empty")
+    return component
+
+
+def _ui_openapi_response_schema(operation: Mapping[str, Any], *, schema_path: str, route_key: str) -> Mapping[str, Any]:
+    responses = operation.get("responses")
+    if not isinstance(responses, dict):
+        raise ValueError(f"{schema_path}: {route_key} operation missing responses mapping")
+    response = responses.get("200")
+    if not isinstance(response, dict):
+        raise ValueError(f"{schema_path}: {route_key} operation missing 200 response")
+    content = response.get("content")
+    if not isinstance(content, dict):
+        raise ValueError(f"{schema_path}: {route_key} 200 response missing content mapping")
+    json_content = content.get("application/json")
+    if not isinstance(json_content, dict):
+        raise ValueError(f"{schema_path}: {route_key} 200 response missing application/json content")
+    schema = json_content.get("schema")
+    if not isinstance(schema, dict):
+        raise ValueError(f"{schema_path}: {route_key} application/json content missing schema")
+    return schema
+
+
+def _load_ui_openapi_operations(root: Path, rule: Mapping[str, Any]) -> dict[tuple[str, str], str]:
+    schema_rel = rule.get("schema")
+    if not isinstance(schema_rel, str) or not schema_rel:
+        raise ValueError(f"rule {rule.get('id', '<unknown>')} field 'schema' must be a non-empty string")
+    schema_path = root / schema_rel
+    try:
+        data = json.loads(schema_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{schema_rel}: invalid JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{schema_rel} must contain a JSON object")
+    paths = data.get("paths")
+    if not isinstance(paths, dict):
+        raise ValueError(f"{schema_rel} missing paths mapping")
+
+    operations: dict[tuple[str, str], str] = {}
+    for url_path, raw_methods in paths.items():
+        if not isinstance(url_path, str) or not isinstance(raw_methods, dict):
+            raise ValueError(f"{schema_rel}: paths entries must map string paths to operation mappings")
+        for method, operation in raw_methods.items():
+            method_name = str(method).lower()
+            if method_name not in _HTTP_ROUTE_METHODS:
+                continue
+            if not isinstance(operation, dict):
+                raise ValueError(f"{schema_rel}: {_route_metric_id(method_name, url_path)} operation must be a mapping")
+            route_key = _route_metric_id(method_name, url_path)
+            schema = _ui_openapi_response_schema(operation, schema_path=schema_rel, route_key=route_key)
+            operations[(method_name, url_path)] = _schema_component_name(
+                schema,
+                schema_path=schema_rel,
+                route_key=route_key,
+            )
+    return operations
+
+
+def _path_prefixes(rule: Mapping[str, Any], key: str) -> list[str]:
+    prefixes = _patterns(rule, key)
+    if not prefixes:
+        raise ValueError(f"rule {rule.get('id', '<unknown>')} field {key!r} must not be empty")
+    return prefixes
+
+
+def _is_browser_route(route: RouteOperation, rule: Mapping[str, Any]) -> bool:
+    browser_route_include = _patterns(rule, "browser_route_include")
+    prefixes = _path_prefixes(rule, "browser_path_prefixes")
+    return _matches_patterns(route.file_path, browser_route_include) and any(
+        route.url_path.startswith(prefix) for prefix in prefixes
+    )
+
+
+def _collect_ui_openapi_routes(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
+    rule_id = str(rule["id"])
+    new_metric_min_value = _new_metric_min_value(rule)
+    schema_rel = str(rule["schema"])
+    schema_operations = _load_ui_openapi_operations(root, rule)
+    routes = list(_iter_route_operations(root, rule))
+    routes_by_key: dict[tuple[str, str], list[RouteOperation]] = {}
+    for route in routes:
+        routes_by_key.setdefault(route.key, []).append(route)
+
+    metrics: list[Metric] = []
+
+    for (method, url_path), expected_model in sorted(schema_operations.items(), key=lambda item: item[0]):
+        route_key = _route_metric_id(method, url_path)
+        matching_routes = routes_by_key.get((method, url_path), [])
+        if not matching_routes:
+            metrics.append(
+                Metric(
+                    rule_id=rule_id,
+                    kind="ui_openapi_missing_route",
+                    metric_id=f"missing:{route_key}",
+                    value=1,
+                    path=schema_rel,
+                    detail=f"{route_key} exists in {schema_rel} but no FastAPI route was found",
+                    new_metric_min_value=new_metric_min_value,
+                )
+            )
+            continue
+
+        if any(route.response_model == expected_model for route in matching_routes):
+            continue
+        actual_models = ", ".join(
+            sorted({route.response_model or "<missing>" for route in matching_routes})
+        )
+        primary_route = matching_routes[0]
+        metrics.append(
+            Metric(
+                rule_id=rule_id,
+                kind="ui_openapi_response_model_drift",
+                metric_id=f"response-model:{route_key}",
+                value=1,
+                path=primary_route.file_path,
+                detail=(
+                    f"{route_key} must use response_model={expected_model} "
+                    f"from {schema_rel}; found {actual_models}"
+                ),
+                new_metric_min_value=new_metric_min_value,
+            )
+        )
+
+    for route in sorted(routes, key=lambda item: (item.file_path, item.line, item.method, item.url_path)):
+        if not _is_browser_route(route, rule):
+            continue
+        if route.key in schema_operations:
+            continue
+        metrics.append(
+            Metric(
+                rule_id=rule_id,
+                kind="ui_openapi_uncontracted_route",
+                metric_id=f"uncontracted:{route.metric_id}",
+                value=1,
+                path=route.file_path,
+                detail=(
+                    f"{route.metric_id} is a browser-facing JSON route absent from {schema_rel}; "
+                    "add it to the UI OpenAPI contract or explicitly accept the ratchet"
+                ),
+                new_metric_min_value=new_metric_min_value,
+            )
+        )
+
+    return metrics
+
+
 def collect_metrics(root: Path, config: Mapping[str, Any]) -> list[Metric]:
     rules = config.get("rules", []) or []
     if not isinstance(rules, list):
@@ -819,6 +1059,7 @@ def collect_metrics(root: Path, config: Mapping[str, Any]) -> list[Metric]:
         "ruff_findings": _collect_ruff_findings,
         "ruff_noqa_suppressions": _collect_ruff_noqa_suppressions,
         "semgrep_findings": _collect_semgrep_findings,
+        "ui_openapi_routes": _collect_ui_openapi_routes,
     }
     metrics: list[Metric] = []
 
