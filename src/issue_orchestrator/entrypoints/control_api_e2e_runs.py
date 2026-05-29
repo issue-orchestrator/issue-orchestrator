@@ -360,7 +360,7 @@ async def e2e_run_details(
         )
 
 
-@control_e2e_runs_router.get("/control/e2e/run/{run_id}/timeline")
+@control_e2e_runs_router.get("/control/e2e/run/{run_id}/timeline", response_model=E2ERunTimelinePayload)
 async def e2e_run_timeline_endpoint(
     run_id: int,
     deps: ControlApiE2EDependency,

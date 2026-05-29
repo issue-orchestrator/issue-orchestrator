@@ -209,12 +209,12 @@
       "value": 13
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/queue_cache.py": {
-      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "detail": "1 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/queue_cache.py",
       "path": "src/issue_orchestrator/control/queue_cache.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 2
+      "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/reconciliation.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
@@ -241,12 +241,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/review_scope.py": {
-      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "detail": "1 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/review_scope.py",
       "path": "src/issue_orchestrator/control/review_scope.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 2
+      "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/review_validity.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -2073,7 +2073,7 @@
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:c42b8e05cbaa": {
-      "detail": "line 320: # noqa: PLR0913",
+      "detail": "line 315: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:c42b8e05cbaa",
       "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
@@ -2081,7 +2081,7 @@
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:c942653632d6": {
-      "detail": "line 159: # noqa: C901 - multi-step unblock with state transitions",
+      "detail": "line 160: # noqa: C901 - multi-step unblock with state transitions",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:c942653632d6",
       "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
@@ -4385,7 +4385,7 @@
       "value": 1
     },
     "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_read_model_routes.py:issue-orchestrator.raw-public-seam-dict-parameter:5da25c5c7973": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 87: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
+      "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 77: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/entrypoints/web_read_model_routes.py:issue-orchestrator.raw-public-seam-dict-parameter:5da25c5c7973",
       "path": "src/issue_orchestrator/entrypoints/web_read_model_routes.py",
@@ -4393,7 +4393,7 @@
       "value": 1
     },
     "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_read_model_routes.py:issue-orchestrator.raw-public-seam-dict-return:94dbc3d2350f": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-return line 71: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 61: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/entrypoints/web_read_model_routes.py:issue-orchestrator.raw-public-seam-dict-return:94dbc3d2350f",
       "path": "src/issue_orchestrator/entrypoints/web_read_model_routes.py",
@@ -4401,7 +4401,7 @@
       "value": 1
     },
     "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:33fef95c022e": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-return line 687: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 693: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:33fef95c022e",
       "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
@@ -4409,7 +4409,7 @@
       "value": 1
     },
     "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:4f574a4a0533": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-return line 665: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 671: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:4f574a4a0533",
       "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
@@ -4417,7 +4417,7 @@
       "value": 1
     },
     "semgrep_typed_seams:src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:f6d5d3c29d66": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-return line 571: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 577: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py:issue-orchestrator.raw-public-seam-dict-return:f6d5d3c29d66",
       "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
@@ -5814,6 +5814,478 @@
       "metric_id": "src/issue_orchestrator/view_models/journey_projection.py:issue-orchestrator.raw-public-seam-dict-return:b983c7ef4803",
       "path": "src/issue_orchestrator/view_models/journey_projection.py",
       "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/blocked-issues": {
+      "detail": "GET /api/blocked-issues is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/blocked-issues",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/config": {
+      "detail": "GET /api/config is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/config",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/debug": {
+      "detail": "GET /api/debug is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/debug",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/dependency-problems": {
+      "detail": "GET /api/dependency-problems is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/dependency-problems",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/doctor": {
+      "detail": "GET /api/doctor is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/doctor",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/events": {
+      "detail": "GET /api/events is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/events",
+      "path": "src/issue_orchestrator/entrypoints/web.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/excluded-issues": {
+      "detail": "GET /api/excluded-issues is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/excluded-issues",
+      "path": "src/issue_orchestrator/entrypoints/web_status_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/failure-diagnosis/{issue_number}": {
+      "detail": "GET /api/failure-diagnosis/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/failure-diagnosis/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/history": {
+      "detail": "GET /api/history is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/history",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/info": {
+      "detail": "GET /api/info is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/info",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/log/local/{issue_number}": {
+      "detail": "GET /api/log/local/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/log/local/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_log_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/log/{issue_number}": {
+      "detail": "GET /api/log/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/log/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_log_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/milestones": {
+      "detail": "GET /api/milestones is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/milestones",
+      "path": "src/issue_orchestrator/entrypoints/web_settings_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/publish-jobs": {
+      "detail": "GET /api/publish-jobs is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/publish-jobs",
+      "path": "src/issue_orchestrator/entrypoints/web_status_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/claude-log/{issue_number}": {
+      "detail": "GET /api/session/claude-log/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/claude-log/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/manifest/{issue_number}": {
+      "detail": "GET /api/session/manifest/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/manifest/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/orchestrator-log/{issue_number}": {
+      "detail": "GET /api/session/orchestrator-log/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/orchestrator-log/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/phases/{issue_number}": {
+      "detail": "GET /api/session/phases/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/phases/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/prompt/{issue_number}": {
+      "detail": "GET /api/session/prompt/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/prompt/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/review-artifact/{issue_number}": {
+      "detail": "GET /api/session/review-artifact/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/review-artifact/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/review-transcript/{issue_number}": {
+      "detail": "GET /api/session/review-transcript/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/review-transcript/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/terminal-recording/{issue_number}": {
+      "detail": "GET /api/session/terminal-recording/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/terminal-recording/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/session/worktree/{issue_number}": {
+      "detail": "GET /api/session/worktree/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/session/worktree/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/settings": {
+      "detail": "GET /api/settings is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/settings",
+      "path": "src/issue_orchestrator/entrypoints/web_settings_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/sse-token": {
+      "detail": "GET /api/sse-token is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/sse-token",
+      "path": "src/issue_orchestrator/entrypoints/web.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/stale-issues": {
+      "detail": "GET /api/stale-issues is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/stale-issues",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/status": {
+      "detail": "GET /api/status is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/status",
+      "path": "src/issue_orchestrator/entrypoints/web_status_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:GET /api/timeline/{issue_number}": {
+      "detail": "GET /api/timeline/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:GET /api/timeline/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/bulk-cancel-queued": {
+      "detail": "POST /api/bulk-cancel-queued is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/bulk-cancel-queued",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/bulk-deprioritize": {
+      "detail": "POST /api/bulk-deprioritize is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/bulk-deprioritize",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/bulk-kill": {
+      "detail": "POST /api/bulk-kill is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/bulk-kill",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/bulk-retry": {
+      "detail": "POST /api/bulk-retry is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/bulk-retry",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/finder/{issue_number}": {
+      "detail": "POST /api/finder/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/finder/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/focus/{issue_number}": {
+      "detail": "POST /api/focus/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/focus/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/history/clear": {
+      "detail": "POST /api/history/clear is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/history/clear",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/history/dismiss/{issue_number}": {
+      "detail": "POST /api/history/dismiss/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/history/dismiss/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/host/open-path": {
+      "detail": "POST /api/host/open-path is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/host/open-path",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/host/reveal-worktree/{issue_number}": {
+      "detail": "POST /api/host/reveal-worktree/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/host/reveal-worktree/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/issues": {
+      "detail": "POST /api/issues is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/issues",
+      "path": "src/issue_orchestrator/entrypoints/web_settings_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/issues/{issue_number}/audit": {
+      "detail": "POST /api/issues/{issue_number}/audit is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/issues/{issue_number}/audit",
+      "path": "src/issue_orchestrator/entrypoints/web_diagnostics_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/issues/{issue_number}/refresh": {
+      "detail": "POST /api/issues/{issue_number}/refresh is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/issues/{issue_number}/refresh",
+      "path": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/issues/{issue_number}/retry-publish": {
+      "detail": "POST /api/issues/{issue_number}/retry-publish is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/issues/{issue_number}/retry-publish",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/kill/{issue_number}": {
+      "detail": "POST /api/kill/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/kill/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/open-file": {
+      "detail": "POST /api/open-file is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/open-file",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/pause": {
+      "detail": "POST /api/pause is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/pause",
+      "path": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/prompt/{agent_type}": {
+      "detail": "POST /api/prompt/{agent_type} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/prompt/{agent_type}",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/refresh": {
+      "detail": "POST /api/refresh is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/refresh",
+      "path": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/refresh/visibility": {
+      "detail": "POST /api/refresh/visibility is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/refresh/visibility",
+      "path": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/reset-retry": {
+      "detail": "POST /api/reset-retry is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/reset-retry",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/reset-retry/hidden-scratch": {
+      "detail": "POST /api/reset-retry/hidden-scratch is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/reset-retry/hidden-scratch",
+      "path": "src/issue_orchestrator/entrypoints/web_hidden_scratch_reset_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/reset-retry/hidden-scratch/preflight": {
+      "detail": "POST /api/reset-retry/hidden-scratch/preflight is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/reset-retry/hidden-scratch/preflight",
+      "path": "src/issue_orchestrator/entrypoints/web_hidden_scratch_reset_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/resume": {
+      "detail": "POST /api/resume is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/resume",
+      "path": "src/issue_orchestrator/entrypoints/web_refresh_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/retry/{issue_number}": {
+      "detail": "POST /api/retry/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/retry/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/send/{issue_number}": {
+      "detail": "POST /api/send/{issue_number} is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/send/{issue_number}",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/settings": {
+      "detail": "POST /api/settings is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/settings",
+      "path": "src/issue_orchestrator/entrypoints/web_settings_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/shutdown": {
+      "detail": "POST /api/shutdown is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/shutdown",
+      "path": "src/issue_orchestrator/entrypoints/web_operator_routes.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/test/cleanup": {
+      "detail": "POST /api/test/cleanup is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/test/cleanup",
+      "path": "src/issue_orchestrator/entrypoints/web.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/test/create": {
+      "detail": "POST /api/test/create is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/test/create",
+      "path": "src/issue_orchestrator/entrypoints/web.py",
+      "rule_id": "ui_openapi_routes",
+      "value": 1
+    },
+    "ui_openapi_routes:uncontracted:POST /api/unblock-retry": {
+      "detail": "POST /api/unblock-retry is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
+      "kind": "ui_openapi_uncontracted_route",
+      "metric_id": "uncontracted:POST /api/unblock-retry",
+      "path": "src/issue_orchestrator/entrypoints/web_retry_history_routes.py",
+      "rule_id": "ui_openapi_routes",
       "value": 1
     }
   },

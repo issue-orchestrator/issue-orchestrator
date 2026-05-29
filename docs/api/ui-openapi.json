@@ -40,6 +40,41 @@
         }
       }
     },
+    "/api/view-model-snapshot": {
+      "get": {
+        "summary": "Get dashboard view model and rendered rows",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {"type": "integer", "minimum": 1},
+            "required": false
+          },
+          {
+            "name": "e2e_page",
+            "in": "query",
+            "schema": {"type": "integer", "minimum": 1},
+            "required": false
+          },
+          {
+            "name": "tab",
+            "in": "query",
+            "schema": {"type": "string"},
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard view model and rendered rows",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ViewModelSnapshotPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/issue-rows": {
       "get": {
         "summary": "Get rendered issue rows",
@@ -552,6 +587,17 @@
         "additionalProperties": false,
         "required": ["rows", "active_tab", "count"],
         "properties": {
+          "rows": {"type": "array", "items": {"$ref": "#/components/schemas/IssueRowPayload"}},
+          "active_tab": {"type": "string"},
+          "count": {"type": "integer"}
+        }
+      },
+      "ViewModelSnapshotPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["view_model", "rows", "active_tab", "count"],
+        "properties": {
+          "view_model": {"$ref": "#/components/schemas/DashboardViewModelPayload"},
           "rows": {"type": "array", "items": {"$ref": "#/components/schemas/IssueRowPayload"}},
           "active_tab": {"type": "string"},
           "count": {"type": "integer"}
