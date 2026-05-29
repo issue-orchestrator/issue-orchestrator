@@ -46,6 +46,7 @@ from .completion_action_planner import (
     critical_processing_errors,
     has_review_exchange_errors,
 )
+from .fresh_rerun_no_pr import final_actions_after_review_exchange
 from .reconciliation import build_expected_for_mutation
 from .session_run_resolution import resolve_session_run_dir
 from pathlib import Path
@@ -302,13 +303,12 @@ class CompletionHandler:
                 pr_url=pr_url,
             )
         )
-        if review_exchange_completed and pr_url:
-            completion_actions.append(AddLabelAction(
-                issue_number=session.issue.number,
-                label=self._lm.pr_pending,
-                reason="review exchange completed - awaiting merge",
-                expected=build_expected_for_mutation(),
-            ))
+        done = status == SessionStatus.COMPLETED
+        completion_actions.extend(final_actions_after_review_exchange(
+            session=session, done=done, pr_url=pr_url,
+            approved=review_exchange_completed,
+            session_output=self._session_output, pending_label=self._lm.pr_pending,
+        ))
         completion_actions = tuple(completion_actions)
 
         if status in (
