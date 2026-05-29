@@ -95,3 +95,6 @@ Thumbs.db
 
 # Worktrees for development
 worktrees/
+
+# Local generated documentation previews
+.preview/

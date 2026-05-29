@@ -6,10 +6,6 @@ The goal is not to make agents trusted maintainers. The goal is to let agents co
 
 Issue-Orchestrator works best when the project already has named architecture, enforced validation, code review, human-sized issues, and human merge authority.
 
-> **Start here:** [A Software Engineering Control Plane for Agentic Development](docs/journeys/software-engineering-control-plane.md)
->
-> **▶ 2-minute walkthrough:** _video coming soon_
-
 ![Issue-Orchestrator turns GitHub issues into a visible control surface for agent work.](docs/images/control-plane-carousel/slide1-dashboard.png)
 
 ## What it does
@@ -51,8 +47,6 @@ Issue-Orchestrator does not know what "good" means for your codebase. Your proje
 - **Guardrails:** AI hooks, git hooks, credential scoping, validation records, publish gates, and human merge authority.
 - **Operational control:** isolated worktrees, bounded review/rework, crash recovery, reconciliation before mutation, transcripts, diagnostics, and artifacts.
 - **Ongoing improvement:** agents can help draft tests, guardrails, coverage gates, ADRs, issue breakdowns, and failure triage summaries. Humans decide what is good enough to enforce.
-
-For the product thesis, see [A Software Engineering Control Plane for Agentic Development](docs/journeys/software-engineering-control-plane.md) and [Guardrails & Safety Model](docs/design/guardrails.md).
 
 ## Design principles
 

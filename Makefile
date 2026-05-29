@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -45,6 +45,7 @@ help:
 	@echo "  test-vscode         Run VS Code extension tests (local only, skipped in CI)"
 	@echo "  install-vscode-extensions      Install VS Code extension dev dependencies"
 	@echo "  playwright-install  Install Playwright browser binaries"
+	@echo "  preview-readme      Render README through GitHub Markdown API to .preview/README.html"
 	@echo "  test                Run all tests"
 	@echo "  validate            Fast local validation: typecheck + lint + unit + simulated-core + integration-core + web-ui smoke"
 	@echo "  validate-pr         Cache-aware required PR gate; seeds/reuses pre-push validation"
@@ -178,6 +179,9 @@ install: ensure-uv
 	$(UV) sync --frozen --all-extras
 	@$(GMAKE) --no-print-directory semgrep-venv
 	@touch .venv/.deps-synced
+
+preview-readme:
+	$(SYSTEM_PYTHON) scripts/preview_markdown.py README.md --output .preview/README.html
 
 # Update dependencies after changing pyproject.toml
 # Usage: make upgrade-deps           - re-resolve after pyproject.toml changes
