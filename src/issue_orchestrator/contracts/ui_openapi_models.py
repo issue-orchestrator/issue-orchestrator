@@ -995,6 +995,13 @@ class ValidationPassedPayload(BaseModel):
     kind: Literal['passed']
     record_path: str
 
+class ViewModelSnapshotPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    active_tab: str
+    count: int
+    rows: list[IssueRowPayload]
+    view_model: DashboardViewModelPayload
+
 CodingAttemptPayload: TypeAlias = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload
 
 E2EFailureEvidencePayload: TypeAlias = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload

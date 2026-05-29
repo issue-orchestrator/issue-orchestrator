@@ -987,6 +987,13 @@ export interface ValidationPassedPayload {
   record_path: string;
 }
 
+export interface ViewModelSnapshotPayload {
+  active_tab: string;
+  count: number;
+  rows: IssueRowPayload[];
+  view_model: DashboardViewModelPayload;
+}
+
 export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload;
 
 export type E2EFailureEvidencePayload = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload;
