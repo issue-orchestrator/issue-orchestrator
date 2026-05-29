@@ -113,17 +113,22 @@ class GuardrailResult:
 @dataclass(frozen=True)
 class RouteOperation:
     method: str
-    url_path: str
+    url_path: str | None
     file_path: str
     line: int
     response_model: str | None
+    path_expression: str
 
     @property
     def key(self) -> tuple[str, str]:
+        if self.url_path is None:
+            raise ValueError("dynamic route path has no stable OpenAPI key")
         return self.method, self.url_path
 
     @property
     def metric_id(self) -> str:
+        if self.url_path is None:
+            return f"{self.method.upper()} {self.file_path}:{self.line}"
         return _route_metric_id(self.method, self.url_path)
 
 
@@ -844,6 +849,15 @@ def _route_literal_path(call: ast.Call) -> str | None:
     return None
 
 
+def _route_path_expression(call: ast.Call) -> str:
+    if call.args:
+        return ast.unparse(call.args[0])
+    for keyword in call.keywords:
+        if keyword.arg == "path":
+            return ast.unparse(keyword.value)
+    return "<missing>"
+
+
 def _expr_model_name(expr: ast.AST) -> str:
     if isinstance(expr, ast.Name):
         return expr.id
@@ -885,14 +899,13 @@ def _iter_route_operations(root: Path, rule: Mapping[str, Any]) -> Iterable[Rout
                 if method not in _HTTP_ROUTE_METHODS:
                     continue
                 url_path = _route_literal_path(decorator)
-                if url_path is None:
-                    continue
                 yield RouteOperation(
                     method=method,
                     url_path=url_path,
                     file_path=rel_path,
                     line=decorator.lineno,
                     response_model=_response_model_name(decorator),
+                    path_expression=_route_path_expression(decorator),
                 )
 
 
@@ -970,9 +983,11 @@ def _path_prefixes(rule: Mapping[str, Any], key: str) -> list[str]:
 def _is_browser_route(route: RouteOperation, rule: Mapping[str, Any]) -> bool:
     browser_route_include = _patterns(rule, "browser_route_include")
     prefixes = _path_prefixes(rule, "browser_path_prefixes")
-    return _matches_patterns(route.file_path, browser_route_include) and any(
-        route.url_path.startswith(prefix) for prefix in prefixes
-    )
+    if not _matches_patterns(route.file_path, browser_route_include):
+        return False
+    if route.url_path is None:
+        return True
+    return any(route.url_path.startswith(prefix) for prefix in prefixes)
 
 
 def _collect_ui_openapi_routes(root: Path, rule: Mapping[str, Any]) -> list[Metric]:
@@ -983,6 +998,8 @@ def _collect_ui_openapi_routes(root: Path, rule: Mapping[str, Any]) -> list[Metr
     routes = list(_iter_route_operations(root, rule))
     routes_by_key: dict[tuple[str, str], list[RouteOperation]] = {}
     for route in routes:
+        if route.url_path is None:
+            continue
         routes_by_key.setdefault(route.key, []).append(route)
 
     metrics: list[Metric] = []
@@ -1025,8 +1042,25 @@ def _collect_ui_openapi_routes(root: Path, rule: Mapping[str, Any]) -> list[Metr
             )
         )
 
-    for route in sorted(routes, key=lambda item: (item.file_path, item.line, item.method, item.url_path)):
+    for route in sorted(routes, key=lambda item: (item.file_path, item.line, item.method, item.url_path or "")):
         if not _is_browser_route(route, rule):
+            continue
+        if route.url_path is None:
+            metrics.append(
+                Metric(
+                    rule_id=rule_id,
+                    kind="ui_openapi_dynamic_route_path",
+                    metric_id=f"dynamic-path:{route.metric_id}",
+                    value=1,
+                    path=route.file_path,
+                    detail=(
+                        f"{route.method.upper()} route at line {route.line} uses dynamic path "
+                        f"{route.path_expression!r}; browser-facing routes must use string literals "
+                        "so the UI OpenAPI guardrail can compare them"
+                    ),
+                    new_metric_min_value=new_metric_min_value,
+                )
+            )
             continue
         if route.key in schema_operations:
             continue

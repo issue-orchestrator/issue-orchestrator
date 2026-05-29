@@ -686,6 +686,53 @@ def test_ui_openapi_routes_report_schema_routes_without_fastapi_route(tmp_path: 
     assert "ui_openapi_routes:missing:GET /api/missing" in baseline["metrics"]
 
 
+def test_ui_openapi_routes_track_dynamic_browser_route_paths(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {})
+    target = tmp_path / "src" / "app" / "web_routes.py"
+    target.parent.mkdir(parents=True)
+    assert _run(tmp_path, "--update-baseline").returncode == 0
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "API_DYNAMIC = '/api/dynamic'\n"
+        "@router.get(API_DYNAMIC)\n"
+        "def dynamic():\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--fail-on-new")
+
+    assert result.returncode == 2
+    assert "ui_openapi_dynamic_route_path" in result.stderr
+    assert "dynamic path 'API_DYNAMIC'" in result.stderr
+
+
+def test_ui_openapi_routes_ignore_dynamic_non_browser_route_paths(tmp_path: Path) -> None:
+    _copy_runner(tmp_path)
+    _write_ui_openapi_config(tmp_path)
+    _write_ui_openapi_schema(tmp_path, {})
+    target = tmp_path / "src" / "app" / "control_routes.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "CONTROL_DYNAMIC = '/control/dynamic'\n"
+        "@router.get(CONTROL_DYNAMIC)\n"
+        "def dynamic():\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+
+    result = _run(tmp_path, "--update-baseline")
+
+    assert result.returncode == 0, result.stderr
+    baseline = json.loads((tmp_path / "quality" / "guardrails-baseline.json").read_text(encoding="utf-8"))
+    assert baseline["metrics"] == {}
+
+
 def test_decrease_does_not_fail_and_stale_baseline_is_ignored(tmp_path: Path) -> None:
     _copy_runner(tmp_path)
     _write_config(tmp_path, max_lines=20)
