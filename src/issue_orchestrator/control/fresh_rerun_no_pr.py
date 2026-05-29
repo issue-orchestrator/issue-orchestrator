@@ -12,10 +12,10 @@ from ..ports.session_output import SessionOutput
 from .actions import Action, AddCommentAction, AddLabelAction, CloseIssueAction
 from .completion_pr_collision import is_no_commits_error
 from .reconciliation import build_expected_for_mutation
+from .review_exchange_modes import is_final_review_exchange_mode
 
 logger = logging.getLogger(__name__)
 
-_FINAL_EXCHANGE_MODES = frozenset({"via-mcp", "via-local-loop"})
 _NO_PR_COMMENT = (
     "**Fresh Lifecycle Rerun Complete**\n\n"
     "The rerun completed coding verification, validation, and fresh review "
@@ -26,7 +26,7 @@ _NO_PR_COMMENT = (
 )
 
 
-def recover_fresh_rerun_no_pr(
+def try_recover_fresh_rerun_no_pr(
     session_output: SessionOutput,
     worktree: Path,
     session_name: str | None,
@@ -41,7 +41,7 @@ def recover_fresh_rerun_no_pr(
     """Treat approved fresh reruns with no commits as successful no-PR work."""
     eligible = (
         action == RequestedAction.CREATE_PR
-        and exchange_mode in _FINAL_EXCHANGE_MODES
+        and is_final_review_exchange_mode(exchange_mode)
         and bool(exchange_result)
         and is_no_commits_error(error)
         and _has_fresh_rerun_intent(session_output, worktree, session_name)

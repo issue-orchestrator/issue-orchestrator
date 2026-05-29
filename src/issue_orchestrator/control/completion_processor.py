@@ -90,7 +90,7 @@ from .completion_types import (
     ProcessingResult,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
-from .fresh_rerun_no_pr import recover_fresh_rerun_no_pr
+from .fresh_rerun_no_pr import try_recover_fresh_rerun_no_pr
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
 from .review_exchange_contracts import ReviewExchangeCanceller
 from .review_exchange_pr_comment import (
@@ -1848,7 +1848,7 @@ class CompletionProcessor:
                 exchange_result=exchange_result,
             )
         except Exception as e:
-            recovered = recover_fresh_rerun_no_pr(
+            recovered = try_recover_fresh_rerun_no_pr(
                 self.session_output, worktree, session_name, action, e,
                 exchange_mode, exchange_result, actions_taken, issue_number, branch,
             )
@@ -2225,7 +2225,7 @@ class CompletionProcessor:
                 review_exchange_completed=review_exchange_completed,
             )
 
-        reason = "PR creation returned no result"
+        reason = "PR creation returned no result"  # Future no-raise PR failure guard.
         errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
         logger.error("PR creation returned None for #%d: %s", issue_number, reason)
         self._emit_publish_failed(
