@@ -4,24 +4,34 @@ Issue-Orchestrator is a control plane for AI-assisted software work. It takes Gi
 
 The goal is not to make agents trusted maintainers. The goal is to let agents contribute bounded work while the project keeps authority over quality. Agents produce changes; the orchestrator decides whether those changes move forward, go back to rework, or need a human.
 
+It's not magical. You have to buy into a certain way of doing things. You need
+- an architecture that you can name and tools to enforce compliance
+- code reviews for all development
+- tests which must run successfully for all pull requests
+- agents that create new tests for all new work
+- work defined in GitHub issues, optionally organized into milestones
+- humans approving final merging.
+
+Given this approach, the Issue-Orchestrator can help you sustainably manage large development efforts. It does this by turning GitHub issues into bounded, reviewable execution runs. It does this by:
+
+- claiming eligible GitHub issues and routes them to configured agent types.
+- creating an isolated git worktree per issue so agents can work concurrently without sharing dirty state.
+- launching coding, review, rework, or triage sessions through provider adapters.
+- Requiring agents to finish through structured `coding-done` / `reviewer-done` completion commands.
+- treating completion as untrusted input, then runs validation, review, reconciliation, and publish gates.
+- storing validation records keyed to the current commit so progress depends on the code that was actually checked.
+- runing reviewer agents and bounded rework loops before code is publish-ready.
+- using GitHub labels and observed worktree state as crash-safe external truth.
+- surfacing timelines, structured events, validation artifacts, diagnostics, transcripts, and session replay for debugging.
+
 > **▶ 2-minute walkthrough:** _video coming soon_
 >
 > **Core thesis:** read [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md).
 > For the design backstory, see [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md).
 
-## What it does
 
-Issue-Orchestrator turns GitHub issues into bounded, reviewable execution runs:
 
-- Claims eligible GitHub issues and routes them to configured agent types.
-- Creates an isolated git worktree per issue so agents can work concurrently without sharing dirty state.
-- Launches coding, review, rework, or triage sessions through provider adapters.
-- Requires agents to finish through structured `coding-done` / `reviewer-done` completion commands.
-- Treats completion as untrusted input, then runs validation, review, reconciliation, and publish gates.
-- Stores validation records keyed to the current commit so progress depends on the code that was actually checked.
-- Runs reviewer agents and bounded rework loops before code is publish-ready.
-- Uses GitHub labels and observed worktree state as crash-safe external truth.
-- Surfaces timelines, structured events, validation artifacts, diagnostics, transcripts, and session replay for debugging.
+
 
 ```mermaid
 flowchart LR
@@ -37,7 +47,6 @@ flowchart LR
   PR --> YOU["Human merge"]
 ```
 
-The default review exchange runs locally before PR creation. Draft-PR mode can create a draft PR earlier for GitHub-based review, but the authority is the same: no passing validation, no approved review, no publish-ready PR.
 
 ## Project quality contract
 
@@ -49,7 +58,6 @@ Issue-Orchestrator does not know what "good" means for your codebase. Your proje
 - **Operational control:** isolated worktrees, bounded review/rework, crash recovery, reconciliation before mutation, transcripts, diagnostics, and artifacts.
 - **Ongoing improvement:** agents can help draft tests, guardrails, coverage gates, ADRs, issue breakdowns, and failure triage summaries. Humans decide what is good enough to enforce.
 
-For the product thesis, see [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md) and [Guardrails & Safety Model](docs/design/guardrails.md).
 
 ## Design principles
 
@@ -152,9 +160,11 @@ If you want your AI assistant to drive the setup for you, use the [Agent-Guided 
 
 ## Project status
 
-**Beta** - Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. The E2E test runner is newer and still maturing. Goal Pilot is a planned feature, not yet implemented. APIs may change.
+**Beta** - Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. Longer running scheduled E2E tests run on a schedule.. Goal Pilot is a planned feature, not yet implemented. APIs may change.
 
-~100K lines of Python, a large automated test suite, and architecture decision records.
+Distributed issue claiming exists, but it is lightly tested and should be treated as experimental.
+
+There is a large set of automated tests for unit, integration and e2e.
 
 ## Documentation
 
