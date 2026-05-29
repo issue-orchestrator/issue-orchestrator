@@ -489,6 +489,92 @@ class TestReviewExchangeExecution:
         )
         mock_label_adapter.add_label.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("create_pr_error", "manifest", "expected_error"),
+        [
+            pytest.param(
+                RuntimeError("connection reset"),
+                {"rerun_intent": "fresh_lifecycle"},
+                "connection reset",
+                id="different-error",
+            ),
+            pytest.param(
+                RuntimeError("No commits between main and issue-123"),
+                None,
+                "Cannot create PR: no commits between main and issue-123",
+                id="no-commits-without-fresh-manifest",
+            ),
+        ],
+    )
+    def test_unrecovered_create_pr_failure_after_review_fails_loudly(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+        create_pr_error: RuntimeError,
+        manifest: dict[str, object] | None,
+        expected_error: str,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+                RequestedAction.POST_COMMENT,
+            ],
+            comment_body="Should not be posted after PR creation failure.",
+        )
+        worktree = worktree_with_completion(record)
+        if manifest is not None:
+            run_dir = worktree / ".issue-orchestrator" / "sessions" / record.session_id
+            (run_dir / "manifest.json").write_text(json.dumps(manifest))
+        mock_git_adapter.default_branch.return_value = "main"
+        mock_pr_adapter.create_pr.side_effect = create_pr_error
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(status="ok", rounds=1, reason="reviewer_ok")
+        )
+        processor._emit_publish_failed = MagicMock()  # noqa: SLF001
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is False
+        assert result.errors is not None
+        assert any(expected_error in error for error in result.errors)
+        processor._emit_publish_failed.assert_called_once()  # noqa: SLF001
+        emit_kwargs = processor._emit_publish_failed.call_args.kwargs  # noqa: SLF001
+        assert emit_kwargs["issue_number"] == 123
+        assert emit_kwargs["stage"] == RequestedAction.CREATE_PR.value
+        assert expected_error in emit_kwargs["error"]
+        # Failure diagnostics still post; the requested success comment must not.
+        comments = [
+            call_args.args[1] for call_args in mock_pr_adapter.add_comment.call_args_list
+        ]
+        assert "Should not be posted after PR creation failure." not in comments
+        assert any("Orchestrator Processing Failed" in comment for comment in comments)
+        mock_label_adapter.add_label.assert_not_called()
+
     def test_existing_pr_reuse_does_not_bypass_local_loop_review(
         self,
         tmp_path,

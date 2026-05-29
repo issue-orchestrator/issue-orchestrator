@@ -43,6 +43,21 @@ class CompletionGitAdapter(Protocol):
     def list_branch_names(self, worktree: Path) -> list[str]: ...
 
 
+class NoCommitsBetweenError(RuntimeError):
+    """Raised when GitHub rejects PR creation because base and head match."""
+
+    def __init__(self, *, base: str, head: str) -> None:
+        self.base = base
+        self.head = head
+        super().__init__(
+            f"Cannot create PR: no commits between {base} and {head}. "
+            "Possible causes: (1) agent didn't make any changes, "
+            "(2) work already merged via another PR, "
+            "(3) commits lost during rebase. "
+            "Human review required."
+        )
+
+
 def create_pr_with_collision_handling(
     *,
     pr_adapter: CompletionPrAdapter,
@@ -59,12 +74,13 @@ def create_pr_with_collision_handling(
     draft: bool,
 ) -> PRInfo | None:
     """Create a PR, switching to a suffixed branch when a prior PR owns the branch."""
+    base = base_branch()
     try:
         return pr_adapter.create_pr(
             title=pr_title,
             body=pr_body,
             head=branch,
-            base=base_branch(),
+            base=base,
             draft=draft,
         )
     except Exception as exc:
@@ -77,21 +93,20 @@ def create_pr_with_collision_handling(
                 actions_taken=actions_taken,
                 skip_hooks=skip_hooks,
             )
-            return pr_adapter.create_pr(
-                title=pr_title,
-                body=pr_body,
-                head=new_branch,
-                base=base_branch(),
-                draft=draft,
-            )
-        if is_no_commits_error(exc):
-            raise RuntimeError(
-                f"Cannot create PR: no commits between {base_branch()} and {branch}. "
-                "Possible causes: (1) agent didn't make any changes, "
-                "(2) work already merged via another PR, "
-                "(3) commits lost during rebase. "
-                "Human review required."
-            )
+            try:
+                return pr_adapter.create_pr(
+                    title=pr_title,
+                    body=pr_body,
+                    head=new_branch,
+                    base=base,
+                    draft=draft,
+                )
+            except Exception as retry_exc:
+                if _is_raw_no_commits_error(retry_exc):
+                    raise NoCommitsBetweenError(base=base, head=new_branch) from retry_exc
+                raise
+        if _is_raw_no_commits_error(exc):
+            raise NoCommitsBetweenError(base=base, head=branch) from exc
         raise
 
 
@@ -195,7 +210,12 @@ def is_pr_collision_error(error: Exception) -> bool:
 
 
 def is_no_commits_error(error: Exception) -> bool:
-    """Detect GitHub 422 'No commits between base and branch' error."""
+    """Return whether a PR creation failure was normalized as no commits."""
+    return isinstance(error, NoCommitsBetweenError)
+
+
+def _is_raw_no_commits_error(error: Exception) -> bool:
+    """Detect the raw GitHub 422 message at the adapter boundary."""
     message = str(error).lower()
     return "no commits between" in message
 

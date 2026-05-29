@@ -1795,11 +1795,10 @@ class CompletionProcessor:
                 continue
             if result.halt:
                 logger.warning(
-                    "Halting remaining actions for issue #%d due to push failure",
+                    "Halting remaining actions for issue #%d due to action failure",
                     issue_number,
                 )
                 break
-
         return branch, pr_url, review_exchange_completed
 
     def _execute_action_with_observability(
@@ -1873,6 +1872,7 @@ class CompletionProcessor:
                     stage=action.value,
                     error=str(e),
                 )
+                return self._ActionResult(branch=branch, halt=True)
             return None
         finally:
             action_duration = time.monotonic() - action_start
@@ -2224,8 +2224,8 @@ class CompletionProcessor:
                 pr_url=pr.url,
                 review_exchange_completed=review_exchange_completed,
             )
-
-        reason = "PR creation returned no result"  # Future no-raise PR failure guard.
+        # Route None-without-raise through publish-failed observability, not a generic failure.
+        reason = "PR creation returned no result"
         errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
         logger.error("PR creation returned None for #%d: %s", issue_number, reason)
         self._emit_publish_failed(
@@ -2234,7 +2234,7 @@ class CompletionProcessor:
             error=reason,
             branch=branch,
         )
-        return self._ActionResult(branch=branch)
+        return self._ActionResult(branch=branch, halt=True)
 
     def _reuse_existing_pr_if_available(
         self,

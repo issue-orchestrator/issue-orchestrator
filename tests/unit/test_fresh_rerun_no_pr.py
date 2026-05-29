@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from issue_orchestrator.control.completion_pr_collision import NoCommitsBetweenError
 from issue_orchestrator.control.fresh_rerun_no_pr import (
     try_recover_fresh_rerun_no_pr,
 )
@@ -26,7 +27,7 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
             RequestedAction.POST_COMMENT,
             "via-local-loop",
             ReviewExchangeOutcome(status="ok", rounds=1, reason="reviewer_ok"),
-            RuntimeError("No commits between main and issue-123"),
+            NoCommitsBetweenError(base="main", head="issue-123"),
             {"rerun_intent": "fresh_lifecycle"},
             "issue-123",
             id="wrong-action",
@@ -35,7 +36,7 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
             RequestedAction.CREATE_PR,
             "via-draft-pr",
             ReviewExchangeOutcome(status="ok", rounds=1, reason="reviewer_ok"),
-            RuntimeError("No commits between main and issue-123"),
+            NoCommitsBetweenError(base="main", head="issue-123"),
             {"rerun_intent": "fresh_lifecycle"},
             "issue-123",
             id="non-final-exchange-mode",
@@ -44,7 +45,7 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
             RequestedAction.CREATE_PR,
             "via-local-loop",
             None,
-            RuntimeError("No commits between main and issue-123"),
+            NoCommitsBetweenError(base="main", head="issue-123"),
             {"rerun_intent": "fresh_lifecycle"},
             "issue-123",
             id="review-not-completed",
@@ -62,7 +63,7 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
             RequestedAction.CREATE_PR,
             "via-local-loop",
             ReviewExchangeOutcome(status="ok", rounds=1, reason="reviewer_ok"),
-            RuntimeError("No commits between main and issue-123"),
+            NoCommitsBetweenError(base="main", head="issue-123"),
             {},
             "issue-123",
             id="not-fresh-rerun",
@@ -71,7 +72,7 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
             RequestedAction.CREATE_PR,
             "via-local-loop",
             ReviewExchangeOutcome(status="ok", rounds=1, reason="reviewer_ok"),
-            RuntimeError("No commits between main and issue-123"),
+            NoCommitsBetweenError(base="main", head="issue-123"),
             {"rerun_intent": "fresh_lifecycle"},
             None,
             id="missing-session-name",
