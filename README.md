@@ -46,7 +46,7 @@ Behind that view, each issue moves through an explicit state machine backed by G
 
 One of those artifacts is a replayable coding session:
 
-![Session replay](docs/images/ui-session.png)
+![Coding session replay showing terminal output, playback controls, and a summary of the agent's completed work and tests.](docs/images/ui-session.png)
 
 Session recordings let you see exactly what an agent did: terminal output rendered in an emulator replay. This is useful for debugging failures, auditing completion claims, and understanding why an issue moved to rework or needs-human.
 
