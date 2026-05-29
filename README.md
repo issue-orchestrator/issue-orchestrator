@@ -4,10 +4,13 @@ Issue-Orchestrator is a control plane for AI-assisted software work. It takes Gi
 
 The goal is not to make agents trusted maintainers. The goal is to let agents contribute bounded work while the project keeps authority over quality. Agents produce changes; the orchestrator decides whether those changes move forward, go back to rework, or need a human.
 
-> **▶ 2-minute walkthrough:** _video coming soon_
+Issue-Orchestrator works best when the project already has named architecture, enforced validation, code review, human-sized issues, and human merge authority.
+
+> **Start here:** [A Software Engineering Control Plane for Agentic Development](docs/journeys/software-engineering-control-plane.md)
 >
-> **Core thesis:** read [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md).
-> For the design backstory, see [Making Agentic Development Sustainable](docs/design/sustainable-agentic-development.md).
+> **▶ 2-minute walkthrough:** _video coming soon_
+
+![Issue-Orchestrator turns GitHub issues into a visible control surface for agent work.](docs/images/control-plane-carousel/slide1-dashboard.png)
 
 ## What it does
 
@@ -49,7 +52,7 @@ Issue-Orchestrator does not know what "good" means for your codebase. Your proje
 - **Operational control:** isolated worktrees, bounded review/rework, crash recovery, reconciliation before mutation, transcripts, diagnostics, and artifacts.
 - **Ongoing improvement:** agents can help draft tests, guardrails, coverage gates, ADRs, issue breakdowns, and failure triage summaries. Humans decide what is good enough to enforce.
 
-For the product thesis, see [No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md) and [Guardrails & Safety Model](docs/design/guardrails.md).
+For the product thesis, see [A Software Engineering Control Plane for Agentic Development](docs/journeys/software-engineering-control-plane.md) and [Guardrails & Safety Model](docs/design/guardrails.md).
 
 ## Design principles
 
@@ -154,6 +157,8 @@ If you want your AI assistant to drive the setup for you, use the [Agent-Guided 
 
 **Beta** - Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. The E2E test runner is newer and still maturing. Goal Pilot is a planned feature, not yet implemented. APIs may change.
 
+Distributed issue claiming exists, but is lightly tested and should be treated as experimental.
+
 ~100K lines of Python, a large automated test suite, and architecture decision records.
 
 ## License and contributions
@@ -177,7 +182,7 @@ Pick the path that fits:
 
 - **[Getting Started](docs/journeys/getting-started.md)** - Install, configure, run your first issue
 - **[Agent-Guided Onboarding](docs/journeys/agent-guided-onboarding.md)** - Let an AI assistant drive setup and first-run validation
-- **[No Free Lunch for Coding Agents](docs/journeys/no-free-lunch.md)** - Why the engineering contract matters more than the issue runner
+- **[A Software Engineering Control Plane for Agentic Development](docs/journeys/software-engineering-control-plane.md)** - The public thesis and visual walkthrough
 - **[Developing](docs/journeys/developing.md)** - Dev setup, conventions, testing, how to make changes
 
 Reference docs:

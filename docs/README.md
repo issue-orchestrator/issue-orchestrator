@@ -4,6 +4,7 @@
 
 Getting started with Issue Orchestrator:
 
+- [A Software Engineering Control Plane for Agentic Development](journeys/software-engineering-control-plane.md) - Public thesis and visual walkthrough
 - [Installation](user/installation.md)
 - [Quickstart](user/quickstart.md)
 - [Tutorial](user/tutorial.md) - Hands-on walkthrough
@@ -50,7 +51,6 @@ System design and decision records:
 
 ## Design
 
-- [Making Agentic Development Sustainable](design/sustainable-agentic-development.md) - Design backstory for enforceable architecture and deterministic workflow
 - [Goal Pilot Design](design/goal-pilot.md) - Goal Pilot architecture and design
 - [Blocked Issues UX Ideas](design/blocked-issues-ux-ideas.md) - UX improvement brainstorm
 
