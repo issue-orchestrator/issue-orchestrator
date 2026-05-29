@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Orchestrator Logo: Conductor baton with motion arcs -->
+
+  <!-- Motion arcs (representing orchestration of multiple agents) -->
+  <path d="M 32 90 Q 64 60, 96 90" fill="none" stroke="#6366f1" stroke-width="3" stroke-linecap="round" opacity="0.4"/>
+  <path d="M 38 80 Q 64 55, 90 80" fill="none" stroke="#6366f1" stroke-width="3" stroke-linecap="round" opacity="0.6"/>
+  <path d="M 44 70 Q 64 50, 84 70" fill="none" stroke="#6366f1" stroke-width="3" stroke-linecap="round" opacity="0.8"/>
+
+  <!-- Agent dots -->
+  <circle cx="32" cy="96" r="6" fill="#22c55e"/>
+  <circle cx="64" cy="96" r="6" fill="#22c55e"/>
+  <circle cx="96" cy="96" r="6" fill="#22c55e"/>
+
+  <!-- Conductor's baton -->
+  <line x1="40" y1="55" x2="88" y2="25" stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="88" cy="25" r="4" fill="#1e293b"/>
+
+  <!-- Hand/grip -->
+  <ellipse cx="38" cy="58" rx="8" ry="5" fill="#1e293b" transform="rotate(-30 38 58)"/>
+</svg>
