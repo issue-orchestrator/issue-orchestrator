@@ -14,6 +14,7 @@ from ..control.hidden_scratch_reset import (
     preflight_hidden_scratch_reset_issues,
 )
 from ..control.queue_cache import QueueCache
+from ..domain.fresh_lifecycle_rerun import FRESH_LIFECYCLE_RERUN_INTENT
 from .web_issue_number_payload import parse_issue_numbers_payload
 from .web_retry_history_routes import elapsed_ms, reset_and_retry_issue
 from .web_session_context import WebOrchestratorDependency
@@ -105,6 +106,7 @@ async def hidden_scratch_reset_and_retry(
             config=config,
             reset_issue_fn=reset_issue,
             current_labels=decision.labels,
+            extra_pending_labels=[lm.fresh_lifecycle_rerun],
         )
         if success_payload is not None:
             success_payload["reopened"] = decision.will_reopen
@@ -141,5 +143,6 @@ async def hidden_scratch_reset_and_retry(
         "skipped": skipped,
         "reopened": reopened,
         "from_scratch": True,
+        "rerun_intent": FRESH_LIFECYCLE_RERUN_INTENT,
         "refresh_triggered": False,
     })

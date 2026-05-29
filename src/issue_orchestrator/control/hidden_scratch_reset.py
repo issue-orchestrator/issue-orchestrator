@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..domain.fresh_lifecycle_rerun import FRESH_LIFECYCLE_RERUN_INTENT
 from .issue_scope import issue_scope_skip_detail
 
 if TYPE_CHECKING:
@@ -147,6 +148,7 @@ def hidden_scratch_preflight_payload(
         "skipped": skipped,
         "will_reopen": will_reopen,
         "from_scratch": True,
+        "rerun_intent": FRESH_LIFECYCLE_RERUN_INTENT,
     }
 
 

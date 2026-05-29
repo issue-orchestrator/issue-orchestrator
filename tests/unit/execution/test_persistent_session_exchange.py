@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 
 from issue_orchestrator.domain.models import AgentConfig
+from issue_orchestrator.domain.fresh_lifecycle_rerun import FRESH_LIFECYCLE_RERUN_INTENT
 from issue_orchestrator.domain.review_artifacts import ReviewDecision
 from issue_orchestrator.domain.review_exchange import ReviewExchangeResponse
 from issue_orchestrator.events import EventContext, EventName
@@ -388,6 +389,52 @@ class TestPersistentSessionExchangeHappyPath:
         assert not (
             reviewer_wt / ".issue-orchestrator" / "review-exchange-turn-prompt.md"
         ).exists()
+
+    def test_fresh_lifecycle_rerun_context_reaches_reviewer_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        parent_run = session_output.start_run(coder_wt, "coding-1", issue_number=42)
+        session_output.update_manifest(
+            parent_run.run_dir,
+            {"rerun_intent": FRESH_LIFECYCLE_RERUN_INTENT},
+        )
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [{"response_type": "ok", "response_text": "Looks good", "getting_closer": True}],
+                "coder": [],
+            },
+        )
+
+        pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            parent_session_name="coding-1",
+        )
+
+        reviewer_prompt = next(
+            prompt
+            for role, prompt, _notice in state["prompt_inboxes_seen"]
+            if role == "reviewer"
+        )
+        assert "Fresh lifecycle rerun:" in reviewer_prompt
+        assert "Perform a fresh review even if the diff is small or unchanged" in reviewer_prompt
 
     def test_two_round_exchange_changes_then_ok(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

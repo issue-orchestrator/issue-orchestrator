@@ -844,16 +844,18 @@ def test_hidden_scratch_reset_confirmation_discloses_skip_and_reset_boundary() -
     assert "Filtered-out and missing-agent issues are skipped without changes" in body
     assert "Prior review approvals and validation artifacts will not be reused" in body
     assert "NEW branches from base" in body
+    assert "rerun coding, validation, and review under current repo" in body
 
 
 def test_hidden_scratch_reset_modal_is_labelled_and_status_announced() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "openHiddenScratchResetDialog")
-    assert "Reset Hidden Issues From Scratch" in body
+    assert "Rerun Hidden Issues From Scratch" in body
     assert 'for="hiddenScratchResetIssues"' in body
     assert 'aria-describedby="hiddenScratchResetHelp"' in body
     assert 'role="status" aria-live="polite"' in body
     assert "Filtered-out and missing-agent issues are skipped without changes" in body
+    assert "fresh lifecycle rerun" in body
 
 
 def test_reset_from_scratch_confirmations_disclose_full_boundary() -> None:
@@ -1148,7 +1150,7 @@ def test_dashboard_menu_includes_hidden_scratch_reset_action() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     assert "hidden_issue_reset.js" in DASHBOARD_JS_CHUNKS
     assert "openHiddenScratchResetDialog()" in html
-    assert "Reset Hidden Issues From Scratch" in html
+    assert "Rerun Hidden Issues From Scratch" in html
     assert 'aria-label="Close dialog"' in html
     assert 'role="dialog" aria-modal="true" aria-labelledby="modalTitle"' in html
 

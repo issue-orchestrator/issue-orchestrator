@@ -15,9 +15,7 @@ removing it after. Between rounds the caller may inject a
 worktree to the coder's branch tip.
 
 This module owns the round-loop semantics — validation gating,
-no-progress termination, event emission. PR 2f (the dispatch flip) wires
-it into ``CompletionReviewExchange`` and adds the worktree lifecycle
-that surrounds it.
+no-progress termination, and event emission.
 """
 
 from __future__ import annotations
@@ -100,6 +98,7 @@ from ..ports import (
     make_trace_event,
 )
 from ..ports.session_output import SessionOutput
+from .fresh_lifecycle_rerun_state import parent_has_rerun
 from .persistent_exchange_pair_registry_inmemory import (
     InMemoryPersistentExchangePairRegistry,
     PersistentExchangePair,
@@ -592,6 +591,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     run_dir = run.run_dir
     run_id = run.run_id
     exchange_run_id = run_id
+    fresh_lifecycle_rerun = parent_has_rerun(session_output, coder_worktree_path, parent_session_name)
 
     exchange_dir = turn_artifacts.review_exchange_dir(run_dir)
     exchange_dir.mkdir(parents=True, exist_ok=True)
@@ -909,7 +909,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             reviewer_timeout_seconds=reviewer_agent.timeout_minutes * 60,
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
-            require_validation=require_validation,
+            require_validation=require_validation, fresh_lifecycle_rerun=fresh_lifecycle_rerun,
             nit_policy=_coerce_runtime_nit_policy(nit_policy),
             coder_provider=_agent_provider(coder_agent),
             reviewer_provider=_agent_provider(reviewer_agent),
@@ -1795,7 +1795,7 @@ def _drive_rounds(  # noqa: PLR0913
     reviewer_timeout_seconds: float,
     max_rounds: int,
     max_no_progress: int,
-    require_validation: bool,
+    require_validation: bool, fresh_lifecycle_rerun: bool,
     nit_policy: NitPolicy,
     coder_provider: AgentProvider,
     reviewer_provider: AgentProvider,
@@ -1819,7 +1819,7 @@ def _drive_rounds(  # noqa: PLR0913
             round_index=round_index,
             role=Role.REVIEWER,
             require_validation=require_validation,
-            run_dir=run_dir,
+            run_dir=run_dir, fresh_lifecycle_rerun=fresh_lifecycle_rerun,
             prompt_files=prompt_files,
             last_coder_text=last_coder_text,
             last_reviewer_text=last_reviewer_text,
@@ -1985,7 +1985,7 @@ def _drive_rounds(  # noqa: PLR0913
             round_index=round_index,
             role=Role.CODER,
             require_validation=require_validation,
-            run_dir=run_dir,
+            run_dir=run_dir, fresh_lifecycle_rerun=fresh_lifecycle_rerun,
             reviewer_feedback=artifact_pair.report_path.read_text(encoding="utf-8"),
         )
         _persist_turn_packet(exchange_dir, coder_packet)

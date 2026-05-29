@@ -135,6 +135,7 @@ class ReviewExchangeTurnPacket:
     role: Role
     require_validation: bool
     run_dir: Path
+    fresh_lifecycle_rerun: bool = False
     prompt_files: ReviewExchangePromptFiles = field(
         default_factory=ReviewExchangePromptFiles,
     )
@@ -164,6 +165,8 @@ class ReviewExchangeTurnPacket:
             "require_validation": self.require_validation,
             "run_dir": str(self.run_dir),
         }
+        if self.fresh_lifecycle_rerun:
+            manifest["fresh_lifecycle_rerun"] = True
         prompt_files = self.prompt_files.to_manifest_fields()
         if prompt_files:
             manifest["prompt_files"] = prompt_files
@@ -197,6 +200,7 @@ class ReviewExchangeTurnPacket:
         role_raw = manifest.get("role")
         require_validation = manifest.get("require_validation")
         run_dir_raw = manifest.get("run_dir")
+        fresh_lifecycle_rerun = manifest.get("fresh_lifecycle_rerun", False)
         if not isinstance(issue_number, int):
             return None
         if not isinstance(issue_title, str):
@@ -213,6 +217,8 @@ class ReviewExchangeTurnPacket:
             return None
         if not isinstance(run_dir_raw, str) or not run_dir_raw:
             return None
+        if not isinstance(fresh_lifecycle_rerun, bool):
+            return None
         last_coder_text = manifest.get("last_coder_text")
         last_reviewer_text = manifest.get("last_reviewer_text")
         reviewer_feedback = manifest.get("reviewer_feedback")
@@ -228,6 +234,7 @@ class ReviewExchangeTurnPacket:
             role=role,
             require_validation=require_validation,
             run_dir=Path(run_dir_raw),
+            fresh_lifecycle_rerun=fresh_lifecycle_rerun,
             prompt_files=prompt_files,
             last_coder_text=last_coder_text if isinstance(last_coder_text, str) else None,
             last_reviewer_text=last_reviewer_text if isinstance(last_reviewer_text, str) else None,
