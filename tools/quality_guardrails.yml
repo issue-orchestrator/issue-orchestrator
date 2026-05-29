@@ -83,6 +83,20 @@ rules:
     exclude:
       - src/issue_orchestrator/infra/settings_schema.py
 
+  - id: ui_openapi_routes
+    type: ui_openapi_routes
+    description: >
+      Ratchet browser-facing dashboard routes that are not backed by the UI
+      OpenAPI contract, and hard-fail drift where a contracted route is missing
+      or no longer uses the generated response model.
+    schema: docs/api/ui-openapi.json
+    route_include:
+      - src/issue_orchestrator/entrypoints/**/*.py
+    browser_route_include:
+      - src/issue_orchestrator/entrypoints/web*.py
+    browser_path_prefixes:
+      - /api/
+
   - id: control_policy_branch_sites
     type: control_policy_branch_sites
     new_metric_min_value: 3

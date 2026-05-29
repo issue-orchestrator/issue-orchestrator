@@ -10,12 +10,11 @@ from typing import Any
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict
 
 from ..contracts.ui_openapi_models import (
     DashboardViewModelPayload,
-    IssueRowPayload,
     IssueRowsPayload,
+    ViewModelSnapshotPayload,
 )
 from ..view_models.dashboard import build_dashboard_view_model
 from .web_session_context import WebOrchestratorDependency
@@ -24,16 +23,6 @@ from .web_templates import get_templates
 logger = logging.getLogger(__name__)
 
 web_read_model_router = APIRouter()
-
-
-class ViewModelSnapshotPayload(BaseModel):
-    """Combined view-model + rendered rows from a single snapshot."""
-
-    model_config = ConfigDict(extra="forbid")
-    view_model: DashboardViewModelPayload
-    rows: list[IssueRowPayload]
-    active_tab: str
-    count: int
 
 
 @dataclass(frozen=True)
