@@ -674,12 +674,45 @@ class TestLaunchIssueSession:
         assert manifest["reset_from_scratch"] is True
         assert manifest["review_cache_boundary"] == "scratch_reset"
         assert manifest["review_cache_boundary_started_at"] == manifest["started_at"]
+        assert "rerun_intent" not in manifest
+        assert "Fresh lifecycle rerun:" not in result.session.original_prompt
 
         actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
         assert any(
             isinstance(a, RemoveLabelAction)
             and a.issue_number == sample_issue.number
             and a.label == scratch_label
+            for a in actions
+        )
+
+    def test_issue_launch_fresh_lifecycle_rerun_records_manifest_and_prompt_context(
+        self,
+        launcher_bundle,
+        sample_issue,
+        mock_events,
+    ):
+        """Fresh lifecycle rerun label should become metadata and prompt context."""
+        scratch_label = launcher_bundle.launcher._lm.reset_retry_scratch_pending  # noqa: SLF001
+        rerun_label = launcher_bundle.launcher._lm.fresh_lifecycle_rerun  # noqa: SLF001
+        sample_issue.labels = [*sample_issue.labels, scratch_label, rerun_label]
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert result.session is not None
+        assert "Fresh lifecycle rerun:" in result.session.original_prompt
+        assert "If no code changes are needed" in result.session.original_prompt
+        started = next(e for e in mock_events.events if str(e.name) == "session.started")
+        run_dir = Path(started.data["run_dir"])
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert manifest["rerun_intent"] == "fresh_lifecycle"
+        assert started.data["rerun_intent"] == "fresh_lifecycle"
+
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        assert any(
+            isinstance(a, RemoveLabelAction)
+            and a.issue_number == sample_issue.number
+            and a.label == rerun_label
             for a in actions
         )
 

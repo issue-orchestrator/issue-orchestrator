@@ -46,6 +46,7 @@ from ..domain.models import (
     TaskKind,
     get_completion_path,
 )
+from . import fresh_lifecycle_session_launch as fresh_rerun
 from .worktree_context import WorktreeContext
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_manifest import TriageManifest
@@ -643,6 +644,7 @@ class SessionLauncher:
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
         from_scratch_pending = self._lm.reset_retry_scratch_pending in issue.labels
+        fresh_lifecycle_rerun = fresh_rerun.is_enabled(issue.labels, self._lm.fresh_lifecycle_rerun)
         scratch_branch_name: str | None = None
         if from_scratch_pending:
             scratch_branch_name = f"{issue.number}-scratch-{int(time.time())}"
@@ -718,13 +720,9 @@ class SessionLauncher:
                 agent_config,
                 extra_provider_args=extra_args,
             ),
+            **fresh_rerun.metadata(fresh_lifecycle_rerun),
         })
-        if from_scratch_pending:
-            ctx.update_manifest({
-                "reset_from_scratch": True,
-                "review_cache_boundary": "scratch_reset",
-                "review_cache_boundary_started_at": run.started_at,
-            })
+        fresh_rerun.apply_manifest(ctx.update_manifest, from_scratch_pending, run.started_at, fresh_lifecycle_rerun)
 
         # For triage sessions, prepare manifest with PRs to review
         triage_manifest: TriageManifest | None = None
@@ -801,6 +799,7 @@ class SessionLauncher:
             issue_number=issue.number,
             context="launch_clear_reset_retry_scratch_pending_coding",
         )
+        fresh_rerun.clear_label(self._apply_actions, issue.number, self._lm.fresh_lifecycle_rerun, fresh_lifecycle_rerun)
 
         # Add in-progress label
         step_start = time.time()
@@ -865,12 +864,13 @@ class SessionLauncher:
             worktree=worktree_path,
             existing_work=existing_work,
         )
+        rendered_prompt = fresh_rerun.prompt(rendered_prompt, enabled=fresh_lifecycle_rerun)
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
-        base_command = agent_config.get_command(
+        base_command = agent_config.get_command_for_prompt(
+            rendered_prompt,
             issue_number=issue.number,
             issue_title=issue.title,
             worktree=worktree_path,
-            existing_work=existing_work,
             task_kind=TaskKind.CODE.value,
             extra_provider_args=extra_args,
         )
@@ -955,7 +955,6 @@ class SessionLauncher:
             issue.agent_type, total_time
         )
 
-        # Emit trace event
         full_completion_path = (worktree_path / completion_path).resolve()
         session_started_payload: SessionStartedEventPayload = {
             "issue_number": issue.number,
@@ -973,6 +972,7 @@ class SessionLauncher:
         }
         if from_scratch_pending:
             session_started_payload["review_cache_boundary_started_at"] = run.started_at
+        fresh_rerun.apply_event_metadata(session_started_payload, fresh_lifecycle_rerun)
         self.events.publish(make_session_started_event(session_started_payload))
 
         # State machine transitions

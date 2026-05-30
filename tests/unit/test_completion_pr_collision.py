@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.control.completion_pr_collision import (
+    NoCommitsBetweenError,
+    create_pr_with_collision_handling,
     get_open_pr_for_issue,
     is_no_commits_error,
     is_pr_collision_error,
@@ -75,14 +79,58 @@ class FakePrAdapter:
         ]
 
 
+class FailingPrAdapter(FakePrAdapter):
+    def __init__(self, error: Exception) -> None:
+        super().__init__([])
+        self._error = error
+
+    def create_pr(
+        self,
+        title: str,
+        body: str,
+        head: str,
+        base: str = "main",
+        draft: bool | None = None,
+    ) -> PRInfo:
+        raise self._error
+
+
 def test_pr_collision_error_detection_matches_github_message() -> None:
     assert is_pr_collision_error(Exception("Validation Failed: pull request already exists"))
     assert not is_pr_collision_error(Exception("Validation Failed: bad base branch"))
 
 
-def test_no_commits_error_detection_matches_github_message() -> None:
-    assert is_no_commits_error(Exception("No commits between main and feature"))
+def test_no_commits_error_detection_requires_structured_error() -> None:
+    assert is_no_commits_error(NoCommitsBetweenError(base="main", head="feature"))
+    assert not is_no_commits_error(Exception("No commits between main and feature"))
     assert not is_no_commits_error(Exception("Pull request already exists"))
+
+
+def test_create_pr_normalizes_github_no_commits_message(tmp_path: Path) -> None:
+    actions_taken: list[str] = []
+
+    with pytest.raises(NoCommitsBetweenError) as exc_info:
+        create_pr_with_collision_handling(
+            pr_adapter=FailingPrAdapter(
+                RuntimeError("Validation Failed: No commits between main and feature")
+            ),
+            git_adapter=FakeGitAdapter([]),
+            base_branch=lambda: "main",
+            pr_collision_strategy="reuse_open",
+            worktree=tmp_path,
+            pr_title="Title",
+            pr_body="Body",
+            branch="feature",
+            issue_number=123,
+            actions_taken=actions_taken,
+            skip_hooks=False,
+            draft=False,
+        )
+
+    assert is_no_commits_error(exc_info.value)
+    assert exc_info.value.base == "main"
+    assert exc_info.value.head == "feature"
+    assert actions_taken == []
 
 
 def test_pr_matches_issue_by_branch_or_title() -> None:

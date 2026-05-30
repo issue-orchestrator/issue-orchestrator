@@ -17,7 +17,12 @@ from .completion_failure_reporting import (
     build_processing_failure_comment,
     write_failure_diagnostic,
 )
-from .completion_types import ProcessingResult, REVIEW_EXCHANGE_ERROR_PREFIX
+from .completion_types import (
+    ERROR_PREFIX_CREATE_PR,
+    ERROR_PREFIX_PUSH,
+    ProcessingResult,
+    REVIEW_EXCHANGE_ERROR_PREFIX,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +56,13 @@ def build_processing_result(
     cleanup_completion_record_fn: Callable[[Path, str | None, int], None],
 ) -> ProcessingResult:
     """Build final processing result and handle completion diagnostics."""
+    has_publish_error = any(
+        error.startswith((ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR))
+        for error in errors
+    )
     success = len(errors) == 0 or (
-        RequestedAction.PUSH_BRANCH in record.requested_actions
+        not has_publish_error
+        and RequestedAction.PUSH_BRANCH in record.requested_actions
         and "Pushed branch to remote" in actions_taken
     )
     if any(error.startswith(REVIEW_EXCHANGE_ERROR_PREFIX) for error in errors):

@@ -90,6 +90,7 @@ from .completion_types import (
     ProcessingResult,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
+from .fresh_rerun_no_pr import try_recover_fresh_rerun_no_pr
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
 from .review_exchange_contracts import ReviewExchangeCanceller
 from .review_exchange_pr_comment import (
@@ -1652,8 +1653,7 @@ class CompletionProcessor:
         """Execute all requested actions from completion record.
 
         Returns:
-            Tuple of (final_branch, pr_url, review_exchange_completed, deferred,
-            early_result).
+            Tuple of (final_branch, pr_url, review_exchange_completed, deferred, early_result).
             When ``deferred`` is True the review exchange is running in the
             background — callers must NOT treat the completion as finished.
         """
@@ -1795,11 +1795,10 @@ class CompletionProcessor:
                 continue
             if result.halt:
                 logger.warning(
-                    "Halting remaining actions for issue #%d due to push failure",
+                    "Halting remaining actions for issue #%d due to action failure",
                     issue_number,
                 )
                 break
-
         return branch, pr_url, review_exchange_completed
 
     def _execute_action_with_observability(
@@ -1848,6 +1847,12 @@ class CompletionProcessor:
                 exchange_result=exchange_result,
             )
         except Exception as e:
+            recovered = try_recover_fresh_rerun_no_pr(
+                self.session_output, worktree, session_name, action, e,
+                exchange_mode, exchange_result, actions_taken, issue_number, branch,
+            )
+            if recovered:
+                return self._ActionResult(branch=branch, review_exchange_completed=True)
             logger.exception(
                 "Exception executing action %s for #%d: %s",
                 action.value,
@@ -1867,6 +1872,7 @@ class CompletionProcessor:
                     stage=action.value,
                     error=str(e),
                 )
+                return self._ActionResult(branch=branch, halt=True)
             return None
         finally:
             action_duration = time.monotonic() - action_start
@@ -2218,13 +2224,7 @@ class CompletionProcessor:
                 pr_url=pr.url,
                 review_exchange_completed=review_exchange_completed,
             )
-
-        # PR creation returned None without raising — route through the same
-        # observability channel as the exception path. Today all known
-        # failure modes inside create_pr_with_collision_handling raise, so
-        # this is defense-in-depth against a future refactor that ever
-        # returns None (previously that silently yielded
-        # "Push or PR creation failed" with no diagnostics).
+        # Route None-without-raise through publish-failed observability, not a generic failure.
         reason = "PR creation returned no result"
         errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
         logger.error("PR creation returned None for #%d: %s", issue_number, reason)
@@ -2234,7 +2234,7 @@ class CompletionProcessor:
             error=reason,
             branch=branch,
         )
-        return self._ActionResult(branch=branch)
+        return self._ActionResult(branch=branch, halt=True)
 
     def _reuse_existing_pr_if_available(
         self,

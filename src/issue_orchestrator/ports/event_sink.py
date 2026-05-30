@@ -71,6 +71,7 @@ class RunScopedEventPayload(TypedDict):
     review_exchange_mode: NotRequired[str]
     reset_from_scratch: NotRequired[bool]
     review_cache_boundary_started_at: NotRequired[str]
+    rerun_intent: NotRequired[str]
     review_cache_summary_path: NotRequired[str]
     review_cache_validation_record_path: NotRequired[str]
     review_cache_head_sha: NotRequired[str]

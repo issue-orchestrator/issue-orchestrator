@@ -325,6 +325,7 @@ def reset_and_retry_issue(  # noqa: PLR0913
     config: Any,
     reset_issue_fn: Callable[..., "ResetResult"],
     current_labels: Sequence[str] | None = None,
+    extra_pending_labels: Sequence[str] = (),
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     # AddLabelAction is lazy for the same reason as RemoveLabelAction above.
     from ..control.actions import AddLabelAction
@@ -405,6 +406,7 @@ def reset_and_retry_issue(  # noqa: PLR0913
             from_scratch=from_scratch,
             pending_label=pending_label,
             scratch_pending_label=scratch_pending_label,
+            extra_pending_labels=extra_pending_labels,
         )
         pending_label_error = _apply_reset_retry_pending_labels(
             issue_number=issue_number,
@@ -547,10 +549,12 @@ def _pending_labels_for_retry(
     from_scratch: bool,
     pending_label: str,
     scratch_pending_label: str,
+    extra_pending_labels: Sequence[str] = (),
 ) -> list[str]:
     labels = [pending_label]
     if from_scratch:
         labels.append(scratch_pending_label)
+    labels.extend(label for label in extra_pending_labels if label not in labels)
     return labels
 
 

@@ -174,6 +174,7 @@ class TestSessionLauncherClaimAcquisition:
                 mock_config.agents = {"test-agent": MagicMock(
                     timeout_minutes=30,
                     get_command=lambda **kwargs: "test-command",
+                    get_command_for_prompt=lambda *args, **kwargs: "test-command",
                     provider=None,
                 )}
                 mock_config.setup_worktree = []
