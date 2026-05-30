@@ -110,6 +110,52 @@
         }
       }
     },
+    "/api/reset-retry/fresh-lifecycle-rerun/preflight": {
+      "post": {
+        "summary": "Preview fresh lifecycle rerun decisions",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/IssueNumbersRequestPayload"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Fresh lifecycle rerun preflight decisions",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/FreshLifecycleRerunPreflightPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reset-retry/fresh-lifecycle-rerun": {
+      "post": {
+        "summary": "Execute fresh lifecycle rerun from scratch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/IssueNumbersRequestPayload"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Fresh lifecycle rerun execution result",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/FreshLifecycleRerunExecutePayload"}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/dialog/info": {
       "get": {
         "summary": "Get about dialog",
@@ -590,6 +636,153 @@
           "rows": {"type": "array", "items": {"$ref": "#/components/schemas/IssueRowPayload"}},
           "active_tab": {"type": "string"},
           "count": {"type": "integer"}
+        }
+      },
+      "IssueNumbersRequestPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issues"],
+        "properties": {
+          "issues": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {"type": "integer", "minimum": 1},
+                {"type": "string", "pattern": "^[0-9]+$"}
+              ]
+            }
+          }
+        }
+      },
+      "FreshLifecycleRerunDecisionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue",
+          "title",
+          "state",
+          "labels",
+          "eligible",
+          "action",
+          "will_reopen",
+          "reason"
+        ],
+        "properties": {
+          "issue": {"type": "integer"},
+          "title": {"type": ["string", "null"]},
+          "state": {"type": ["string", "null"]},
+          "labels": {"type": "array", "items": {"type": "string"}},
+          "eligible": {"type": "boolean"},
+          "action": {"type": "string"},
+          "will_reopen": {"type": "boolean"},
+          "reason": {"type": "string"}
+        }
+      },
+      "FreshLifecycleRerunPreflightPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decisions",
+          "eligible",
+          "skipped",
+          "will_reopen",
+          "from_scratch",
+          "rerun_intent"
+        ],
+        "properties": {
+          "decisions": {"type": "array", "items": {"$ref": "#/components/schemas/FreshLifecycleRerunDecisionPayload"}},
+          "eligible": {"type": "array", "items": {"type": "integer"}},
+          "skipped": {"type": "array", "items": {"type": "integer"}},
+          "will_reopen": {"type": "array", "items": {"type": "integer"}},
+          "from_scratch": {"type": "boolean"},
+          "rerun_intent": {"const": "fresh_lifecycle"}
+        }
+      },
+      "FreshLifecycleRerunResetResultPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue",
+          "deleted_worktree",
+          "deleted_branch",
+          "deleted_branches",
+          "superseded_prs",
+          "timeline_events_deleted",
+          "labels_removed",
+          "pending_label",
+          "pending_labels",
+          "from_scratch",
+          "queued_now",
+          "reopened"
+        ],
+        "properties": {
+          "issue": {"type": "integer"},
+          "deleted_worktree": {"type": ["string", "null"]},
+          "deleted_branch": {"type": ["string", "null"]},
+          "deleted_branches": {"type": ["array", "null"], "items": {"type": "string"}},
+          "superseded_prs": {"type": ["array", "null"], "items": {"type": "integer"}},
+          "timeline_events_deleted": {"type": ["integer", "null"]},
+          "labels_removed": {"type": ["array", "null"], "items": {"type": "string"}},
+          "pending_label": {"type": "string"},
+          "pending_labels": {"type": "array", "items": {"type": "string"}},
+          "from_scratch": {"type": "boolean"},
+          "queued_now": {"type": "boolean"},
+          "reopened": {"type": "boolean"}
+        }
+      },
+      "FreshLifecycleRerunResetFailurePartialPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deleted_worktree",
+          "deleted_branch",
+          "deleted_branches",
+          "superseded_prs",
+          "timeline_events_deleted",
+          "labels_removed"
+        ],
+        "properties": {
+          "deleted_worktree": {"type": ["string", "null"]},
+          "deleted_branch": {"type": ["string", "null"]},
+          "deleted_branches": {"type": ["array", "null"], "items": {"type": "string"}},
+          "superseded_prs": {"type": ["array", "null"], "items": {"type": "integer"}},
+          "timeline_events_deleted": {"type": ["integer", "null"]},
+          "labels_removed": {"type": ["array", "null"], "items": {"type": "string"}},
+          "pending_labels": {"type": "array", "items": {"type": "string"}},
+          "from_scratch": {"type": "boolean"}
+        }
+      },
+      "FreshLifecycleRerunFailurePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue", "error"],
+        "properties": {
+          "issue": {"type": "integer"},
+          "error": {"type": "string"},
+          "reopened": {"type": "boolean"},
+          "partial": {"$ref": "#/components/schemas/FreshLifecycleRerunResetFailurePartialPayload"}
+        }
+      },
+      "FreshLifecycleRerunExecutePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reset",
+          "failed",
+          "skipped",
+          "reopened",
+          "from_scratch",
+          "rerun_intent",
+          "refresh_triggered"
+        ],
+        "properties": {
+          "reset": {"type": "array", "items": {"$ref": "#/components/schemas/FreshLifecycleRerunResetResultPayload"}},
+          "failed": {"type": "array", "items": {"$ref": "#/components/schemas/FreshLifecycleRerunFailurePayload"}},
+          "skipped": {"type": "array", "items": {"$ref": "#/components/schemas/FreshLifecycleRerunDecisionPayload"}},
+          "reopened": {"type": "array", "items": {"type": "integer"}},
+          "from_scratch": {"type": "boolean"},
+          "rerun_intent": {"const": "fresh_lifecycle"},
+          "refresh_triggered": {"type": "boolean"}
         }
       },
       "ViewModelSnapshotPayload": {

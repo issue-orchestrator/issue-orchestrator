@@ -37,7 +37,7 @@ from .timeline_presentation import (
     _timeline_event_requires_run_dir,
 )
 from .web_diagnostics_routes import install_web_diagnostics_dependencies, web_diagnostics_router
-from .web_hidden_scratch_reset_routes import web_hidden_scratch_reset_router
+from .web_fresh_lifecycle_rerun_routes import web_fresh_lifecycle_rerun_router
 from .web_issue_detail_routes import web_issue_detail_router
 from .web_log_routes import web_log_router
 from .web_operator_routes import install_web_operator_dependencies, web_operator_router
@@ -317,7 +317,7 @@ app.include_router(web_log_router)
 app.include_router(web_operator_router)
 app.include_router(web_diagnostics_router)
 app.include_router(web_retry_history_router)
-app.include_router(web_hidden_scratch_reset_router)
+app.include_router(web_fresh_lifecycle_rerun_router)
 app.include_router(web_session_router)
 app.include_router(web_issue_detail_router)
 

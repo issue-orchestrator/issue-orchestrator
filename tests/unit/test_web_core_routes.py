@@ -24,8 +24,8 @@ class TestWebRouteRegistration:
             "/api/history",
             "/api/retry/{issue_number}",
             "/api/reset-retry",
-            "/api/reset-retry/hidden-scratch/preflight",
-            "/api/reset-retry/hidden-scratch",
+            "/api/reset-retry/fresh-lifecycle-rerun/preflight",
+            "/api/reset-retry/fresh-lifecycle-rerun",
         ]:
             assert route_paths.count(path) == 1
 

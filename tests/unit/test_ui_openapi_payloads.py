@@ -21,7 +21,10 @@ from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from issue_orchestrator.contracts.ui_openapi_models import (
     E2ERunDetailPayload,
     E2ERunTimelinePayload,
+    FreshLifecycleRerunExecutePayload,
+    FreshLifecycleRerunPreflightPayload,
     IssueDetailActionPayload,
+    IssueNumbersRequestPayload,
     ViewModelSnapshotPayload,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -120,6 +123,109 @@ def _schema_error_messages(errors: list[JsonSchemaValidationError]) -> str:
         messages.append(error.message)
         pending.extend(error.context)
     return "\n".join(messages)
+
+
+def test_fresh_lifecycle_rerun_request_payload_matches_ui_openapi() -> None:
+    payload = {"issues": [4057, "4058"]}
+
+    IssueNumbersRequestPayload.model_validate(payload)
+    _validator("IssueNumbersRequestPayload").validate(payload)
+
+
+def test_fresh_lifecycle_rerun_preflight_payload_matches_ui_openapi() -> None:
+    payload = {
+        "decisions": [
+            {
+                "issue": 4057,
+                "title": "Review old implementation",
+                "state": "closed",
+                "labels": ["agent:web", "redo-poorly-reviewed"],
+                "eligible": True,
+                "action": "reopen_and_reset",
+                "will_reopen": True,
+                "reason": "Closed issue will be reopened before reset from scratch",
+            },
+            {
+                "issue": 4058,
+                "title": None,
+                "state": None,
+                "labels": [],
+                "eligible": False,
+                "action": "skipped",
+                "will_reopen": False,
+                "reason": "Issue #4058 not found",
+            },
+        ],
+        "eligible": [4057],
+        "skipped": [4058],
+        "will_reopen": [4057],
+        "from_scratch": True,
+        "rerun_intent": "fresh_lifecycle",
+    }
+
+    FreshLifecycleRerunPreflightPayload.model_validate(payload)
+    _validator("FreshLifecycleRerunPreflightPayload").validate(payload)
+
+
+def test_fresh_lifecycle_rerun_execute_payload_matches_ui_openapi() -> None:
+    payload = {
+        "reset": [
+            {
+                "issue": 4057,
+                "deleted_worktree": "/tmp/worktree-4057",
+                "deleted_branch": "4057-fix",
+                "deleted_branches": ["4057-fix"],
+                "superseded_prs": [6391],
+                "timeline_events_deleted": 8,
+                "labels_removed": ["blocked-failed"],
+                "pending_label": "reset-retry-pending",
+                "pending_labels": [
+                    "reset-retry-pending",
+                    "reset-retry-scratch-pending",
+                    "fresh-lifecycle-rerun",
+                ],
+                "from_scratch": True,
+                "queued_now": True,
+                "reopened": True,
+            }
+        ],
+        "failed": [
+            {
+                "issue": 4059,
+                "error": "label add failed",
+                "reopened": False,
+                "partial": {
+                    "deleted_worktree": None,
+                    "deleted_branch": None,
+                    "deleted_branches": None,
+                    "superseded_prs": None,
+                    "timeline_events_deleted": None,
+                    "labels_removed": None,
+                    "pending_labels": ["reset-retry-pending"],
+                    "from_scratch": True,
+                },
+            }
+        ],
+        "skipped": [
+            {
+                "issue": 4058,
+                "title": "Out of scope",
+                "state": "closed",
+                "labels": ["agent:web"],
+                "eligible": False,
+                "action": "skipped",
+                "will_reopen": False,
+                "reason": "Issue #4058 is outside this engine's scope after reopen",
+            }
+        ],
+        "reopened": [4057],
+        "from_scratch": True,
+        "rerun_intent": "fresh_lifecycle",
+        "refresh_triggered": False,
+    }
+
+    FreshLifecycleRerunExecutePayload.model_validate(payload)
+    _validator("FreshLifecycleRerunExecutePayload").validate(payload)
 
 
 def _e2e_timeline_event(**overrides: object) -> dict[str, object]:

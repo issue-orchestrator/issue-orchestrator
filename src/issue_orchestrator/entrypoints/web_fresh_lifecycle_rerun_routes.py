@@ -1,4 +1,4 @@
-"""Dashboard hidden issue scratch-reset routes."""
+"""Dashboard fresh lifecycle rerun routes."""
 
 from __future__ import annotations
 
@@ -9,9 +9,13 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ..control.hidden_scratch_reset import (
-    hidden_scratch_preflight_payload,
-    preflight_hidden_scratch_reset_issues,
+from ..contracts.ui_openapi_models import (
+    FreshLifecycleRerunExecutePayload,
+    FreshLifecycleRerunPreflightPayload,
+)
+from ..control.fresh_lifecycle_rerun import (
+    fresh_lifecycle_rerun_preflight_payload,
+    preflight_fresh_lifecycle_rerun_issues,
 )
 from ..control.queue_cache import QueueCache
 from ..domain.fresh_lifecycle_rerun import FRESH_LIFECYCLE_RERUN_INTENT
@@ -21,15 +25,18 @@ from .web_session_context import WebOrchestratorDependency
 
 logger = logging.getLogger(__name__)
 
-web_hidden_scratch_reset_router = APIRouter()
+web_fresh_lifecycle_rerun_router = APIRouter()
 
 
-@web_hidden_scratch_reset_router.post("/api/reset-retry/hidden-scratch/preflight")
-async def hidden_scratch_reset_preflight(
+@web_fresh_lifecycle_rerun_router.post(
+    "/api/reset-retry/fresh-lifecycle-rerun/preflight",
+    response_model=FreshLifecycleRerunPreflightPayload,
+)
+async def fresh_lifecycle_rerun_preflight(
     request: Request,
     orchestrator: WebOrchestratorDependency,
-) -> JSONResponse:
-    """Preview hidden issue reset-from-scratch decisions without mutation."""
+) -> FreshLifecycleRerunPreflightPayload | JSONResponse:
+    """Preview fresh lifecycle rerun decisions without mutation."""
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -37,20 +44,25 @@ async def hidden_scratch_reset_preflight(
     if parsed.error_response is not None:
         return parsed.error_response
 
-    decisions = preflight_hidden_scratch_reset_issues(
+    decisions = preflight_fresh_lifecycle_rerun_issues(
         issue_numbers=parsed.issue_numbers,
         repository_host=orchestrator.repository_host,
         config=orchestrator.config,
     )
-    return JSONResponse(hidden_scratch_preflight_payload(decisions))
+    return FreshLifecycleRerunPreflightPayload.model_validate(
+        fresh_lifecycle_rerun_preflight_payload(decisions)
+    )
 
 
-@web_hidden_scratch_reset_router.post("/api/reset-retry/hidden-scratch")
-async def hidden_scratch_reset_and_retry(
+@web_fresh_lifecycle_rerun_router.post(
+    "/api/reset-retry/fresh-lifecycle-rerun",
+    response_model=FreshLifecycleRerunExecutePayload,
+)
+async def fresh_lifecycle_rerun_and_retry(
     request: Request,
     orchestrator: WebOrchestratorDependency,
-) -> JSONResponse:
-    """Reset hidden issues from scratch after scope-safe preflight."""
+) -> FreshLifecycleRerunExecutePayload | JSONResponse:
+    """Reset issues from scratch after scope-safe fresh lifecycle rerun preflight."""
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -68,7 +80,7 @@ async def hidden_scratch_reset_and_retry(
     lm = deps.label_manager
     queue_cache = QueueCache(config, state, deps.queue_cache_store)
 
-    decisions = preflight_hidden_scratch_reset_issues(
+    decisions = preflight_fresh_lifecycle_rerun_issues(
         issue_numbers=parsed.issue_numbers,
         repository_host=repository_host,
         config=config,
@@ -86,7 +98,7 @@ async def hidden_scratch_reset_and_retry(
                 reopened.append(decision.issue)
         except Exception as exc:
             logger.error(
-                "[reset-retry] Failed to reopen hidden issue #%d: %s",
+                "[reset-retry] Failed to reopen fresh lifecycle rerun issue #%d: %s",
                 decision.issue,
                 exc,
                 exc_info=True,
@@ -118,7 +130,7 @@ async def hidden_scratch_reset_and_retry(
             continue
         failed.append({
             "issue": decision.issue,
-            "error": "Unknown hidden scratch reset failure",
+            "error": "Unknown fresh lifecycle rerun failure",
             "reopened": decision.will_reopen,
         })
 
@@ -128,7 +140,7 @@ async def hidden_scratch_reset_and_retry(
         if not decision.eligible
     ]
     logger.info(
-        "[reset-retry] Hidden scratch reset complete: issues=%s reset=%s "
+        "[reset-retry] Fresh lifecycle rerun complete: issues=%s reset=%s "
         "skipped=%s failed=%s reopened=%s duration_ms=%d",
         parsed.issue_numbers,
         [result["issue"] for result in reset_results],
@@ -137,12 +149,14 @@ async def hidden_scratch_reset_and_retry(
         reopened,
         elapsed_ms(started),
     )
-    return JSONResponse({
-        "reset": reset_results,
-        "failed": failed,
-        "skipped": skipped,
-        "reopened": reopened,
-        "from_scratch": True,
-        "rerun_intent": FRESH_LIFECYCLE_RERUN_INTENT,
-        "refresh_triggered": False,
-    })
+    return FreshLifecycleRerunExecutePayload.model_validate(
+        {
+            "reset": reset_results,
+            "failed": failed,
+            "skipped": skipped,
+            "reopened": reopened,
+            "from_scratch": True,
+            "rerun_intent": FRESH_LIFECYCLE_RERUN_INTENT,
+            "refresh_triggered": False,
+        }
+    )

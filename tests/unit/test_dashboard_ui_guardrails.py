@@ -825,19 +825,22 @@ def test_bulk_reset_from_scratch_handler_uses_ui_action_contract() -> None:
     assert "/api/reset-retry" not in body
 
 
-def test_hidden_scratch_reset_handlers_use_ui_action_contract() -> None:
+def test_fresh_lifecycle_rerun_handlers_use_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
-    preview_body = _function_body(js, "previewHiddenScratchReset")
-    execute_body = _function_body(js, "executeHiddenScratchReset")
-    assert "uiActionContract.buildHiddenScratchResetPreflightRequest" in preview_body
-    assert "uiActionContract.buildHiddenScratchResetExecuteRequest" in execute_body
-    assert "/api/reset-retry/hidden-scratch" not in preview_body
-    assert "/api/reset-retry/hidden-scratch" not in execute_body
+    preview_body = _function_body(js, "previewFreshLifecycleRerun")
+    execute_body = _function_body(js, "executeFreshLifecycleRerun")
+    assert "uiActionContract.buildFreshLifecycleRerunPreflightRequest" in preview_body
+    assert "uiActionContract.buildFreshLifecycleRerunExecuteRequest" in execute_body
+    assert "/api/reset-retry/fresh-lifecycle-rerun" not in preview_body
+    assert "/api/reset-retry/fresh-lifecycle-rerun" not in execute_body
 
 
-def test_hidden_scratch_reset_confirmation_discloses_skip_and_reset_boundary() -> None:
+def test_fresh_lifecycle_rerun_confirmation_discloses_skip_and_reset_boundary() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "executeHiddenScratchReset")
+    body = _function_body(js, "executeFreshLifecycleRerun")
+    assert "with a fresh lifecycle" in body
+    assert "Fresh lifecycle rerun ${" not in body
+    assert "hidden issue(s)" not in body
     assert "DELETE local worktrees" in body
     assert "DELETE remote branches" in body
     assert "supersede open orchestrator PRs" in body
@@ -847,12 +850,16 @@ def test_hidden_scratch_reset_confirmation_discloses_skip_and_reset_boundary() -
     assert "rerun coding, validation, and review under current repo" in body
 
 
-def test_hidden_scratch_reset_modal_is_labelled_and_status_announced() -> None:
+def test_fresh_lifecycle_rerun_modal_is_labelled_and_status_announced() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "openHiddenScratchResetDialog")
-    assert "Rerun Hidden Issues From Scratch" in body
-    assert 'for="hiddenScratchResetIssues"' in body
-    assert 'aria-describedby="hiddenScratchResetHelp"' in body
+    body = _function_body(js, "openFreshLifecycleRerunDialog")
+    assert "Fresh Lifecycle Rerun From Scratch" in body
+    assert "Rerun Hidden Issues From Scratch" not in body
+    assert "Enter any issue numbers to rerun" in body
+    assert "before the rerun starts" in body
+    assert "before reset" not in body
+    assert 'for="freshLifecycleRerunIssues"' in body
+    assert 'aria-describedby="freshLifecycleRerunHelp"' in body
     assert 'role="status" aria-live="polite"' in body
     assert "Filtered-out and missing-agent issues are skipped without changes" in body
     assert "fresh lifecycle rerun" in body
@@ -1146,11 +1153,12 @@ def test_context_menu_includes_reset_retry_from_scratch_label() -> None:
     assert "Reset and Retry From Scratch" in html
 
 
-def test_dashboard_menu_includes_hidden_scratch_reset_action() -> None:
+def test_dashboard_menu_includes_fresh_lifecycle_rerun_action() -> None:
     html = _read(DASHBOARD_TEMPLATE)
-    assert "hidden_issue_reset.js" in DASHBOARD_JS_CHUNKS
-    assert "openHiddenScratchResetDialog()" in html
-    assert "Rerun Hidden Issues From Scratch" in html
+    assert "fresh_lifecycle_rerun.js" in DASHBOARD_JS_CHUNKS
+    assert "openFreshLifecycleRerunDialog()" in html
+    assert "Fresh Lifecycle Rerun From Scratch" in html
+    assert "Rerun Hidden Issues From Scratch" not in html
     assert 'aria-label="Close dialog"' in html
     assert 'role="dialog" aria-modal="true" aria-labelledby="modalTitle"' in html
 

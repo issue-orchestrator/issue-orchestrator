@@ -10,8 +10,8 @@
     const ENDPOINTS = {
         UNBLOCK_RETRY: '/api/unblock-retry',
         RESET_RETRY: '/api/reset-retry',
-        HIDDEN_SCRATCH_RESET_PREFLIGHT: '/api/reset-retry/hidden-scratch/preflight',
-        HIDDEN_SCRATCH_RESET: '/api/reset-retry/hidden-scratch',
+        FRESH_LIFECYCLE_RERUN_PREFLIGHT: '/api/reset-retry/fresh-lifecycle-rerun/preflight',
+        FRESH_LIFECYCLE_RERUN: '/api/reset-retry/fresh-lifecycle-rerun',
         BULK_RETRY: '/api/bulk-retry',
         BULK_DEPRIORITIZE: '/api/bulk-deprioritize',
         BULK_CANCEL_QUEUED: '/api/bulk-cancel-queued',
@@ -49,19 +49,19 @@
         };
     }
 
-    function buildHiddenScratchResetPreflightRequest(issueNumbers) {
+    function buildFreshLifecycleRerunPreflightRequest(issueNumbers) {
         const issues = normalizeIssueNumbers(issueNumbers);
         return {
-            endpoint: ENDPOINTS.HIDDEN_SCRATCH_RESET_PREFLIGHT,
+            endpoint: ENDPOINTS.FRESH_LIFECYCLE_RERUN_PREFLIGHT,
             method: 'POST',
             body: { issues },
         };
     }
 
-    function buildHiddenScratchResetExecuteRequest(issueNumbers) {
+    function buildFreshLifecycleRerunExecuteRequest(issueNumbers) {
         const issues = normalizeIssueNumbers(issueNumbers);
         return {
-            endpoint: ENDPOINTS.HIDDEN_SCRATCH_RESET,
+            endpoint: ENDPOINTS.FRESH_LIFECYCLE_RERUN,
             method: 'POST',
             body: { issues },
         };
@@ -212,8 +212,8 @@
         normalizeIssueNumbers,
         buildUnblockRequest,
         buildResetRetryRequest,
-        buildHiddenScratchResetPreflightRequest,
-        buildHiddenScratchResetExecuteRequest,
+        buildFreshLifecycleRerunPreflightRequest,
+        buildFreshLifecycleRerunExecuteRequest,
         buildBulkRetryRequest,
         buildBulkDeprioritizeRequest,
         buildBulkCancelQueuedRequest,

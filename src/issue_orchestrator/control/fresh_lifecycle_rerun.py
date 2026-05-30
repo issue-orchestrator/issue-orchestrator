@@ -1,4 +1,4 @@
-"""Hidden issue scratch-reset preflight decisions."""
+"""Fresh lifecycle rerun preflight decisions."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class HiddenScratchResetDecision:
-    """Preflight result for one hidden issue scratch-reset request."""
+class FreshLifecycleRerunDecision:
+    """Preflight result for one fresh lifecycle rerun request."""
 
     issue: int
     title: str | None
@@ -43,34 +43,34 @@ class HiddenScratchResetDecision:
         }
 
 
-def preflight_hidden_scratch_reset_issues(
+def preflight_fresh_lifecycle_rerun_issues(
     *,
     issue_numbers: list[int],
     repository_host: "RepositoryHost",
     config: "Config",
-) -> list[HiddenScratchResetDecision]:
-    decisions: list[HiddenScratchResetDecision] = []
+) -> list[FreshLifecycleRerunDecision]:
+    decisions: list[FreshLifecycleRerunDecision] = []
     for number in issue_numbers:
         try:
             issue = repository_host.get_issue(number)
         except Exception as exc:
             logger.error(
-                "[reset-retry] Failed hidden scratch preflight for issue #%d: %s",
+                "[reset-retry] Failed fresh lifecycle rerun preflight for issue #%d: %s",
                 number,
                 exc,
                 exc_info=True,
             )
             decisions.append(_skip(number, f"Unable to fetch issue: {exc}"))
             continue
-        decisions.append(preflight_hidden_scratch_reset_issue(number, issue, config))
+        decisions.append(preflight_fresh_lifecycle_rerun_issue(number, issue, config))
     return decisions
 
 
-def preflight_hidden_scratch_reset_issue(
+def preflight_fresh_lifecycle_rerun_issue(
     number: int,
     issue: "Issue | None",
     config: "Config",
-) -> HiddenScratchResetDecision:
+) -> FreshLifecycleRerunDecision:
     if issue is None:
         return _skip(number, f"Issue #{number} not found")
 
@@ -84,7 +84,7 @@ def preflight_hidden_scratch_reset_issue(
         include_issue_number_filter=True,
     )
     if scope_detail is not None:
-        return HiddenScratchResetDecision(
+        return FreshLifecycleRerunDecision(
             issue=number,
             title=title,
             state=current,
@@ -102,7 +102,7 @@ def preflight_hidden_scratch_reset_issue(
 
     agent_detail = _agent_skip_detail(config, issue)
     if agent_detail is not None:
-        return HiddenScratchResetDecision(
+        return FreshLifecycleRerunDecision(
             issue=number,
             title=title,
             state=current,
@@ -114,7 +114,7 @@ def preflight_hidden_scratch_reset_issue(
         )
 
     if current == "closed":
-        return HiddenScratchResetDecision(
+        return FreshLifecycleRerunDecision(
             issue=number,
             title=title,
             state=current,
@@ -124,7 +124,7 @@ def preflight_hidden_scratch_reset_issue(
             will_reopen=True,
             reason="Closed issue will be reopened before reset from scratch",
         )
-    return HiddenScratchResetDecision(
+    return FreshLifecycleRerunDecision(
         issue=number,
         title=title,
         state=current,
@@ -136,8 +136,8 @@ def preflight_hidden_scratch_reset_issue(
     )
 
 
-def hidden_scratch_preflight_payload(
-    decisions: list[HiddenScratchResetDecision],
+def fresh_lifecycle_rerun_preflight_payload(
+    decisions: list[FreshLifecycleRerunDecision],
 ) -> dict[str, object]:
     eligible = [decision.issue for decision in decisions if decision.eligible]
     skipped = [decision.issue for decision in decisions if not decision.eligible]
@@ -161,8 +161,8 @@ def _agent_skip_detail(config: "Config", issue: "Issue") -> str | None:
     return None
 
 
-def _skip(number: int, reason: str) -> HiddenScratchResetDecision:
-    return HiddenScratchResetDecision(
+def _skip(number: int, reason: str) -> FreshLifecycleRerunDecision:
+    return FreshLifecycleRerunDecision(
         issue=number,
         title=None,
         state=None,

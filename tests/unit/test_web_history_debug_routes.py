@@ -375,8 +375,8 @@ class TestHistoryEndpoints:
             lm.reset_retry_scratch_pending,
         ]
 
-    def test_hidden_scratch_reset_preflight_marks_closed_in_scope_for_reopen(self):
-        """Hidden scratch reset preview should report closed in-scope issues without mutating."""
+    def test_fresh_lifecycle_rerun_preflight_marks_closed_in_scope_for_reopen(self):
+        """Fresh lifecycle rerun preview should report closed in-scope issues without mutating."""
         mock_orch = create_mock_orchestrator()
         mock_orch.config.filtering.label = "redo-poorly-reviewed"
         issue = create_issue(
@@ -390,7 +390,7 @@ class TestHistoryEndpoints:
 
         client = TestClient(app)
         response = client.post(
-            "/api/reset-retry/hidden-scratch/preflight",
+            "/api/reset-retry/fresh-lifecycle-rerun/preflight",
             json={"issues": [4057]},
         )
 
@@ -403,8 +403,8 @@ class TestHistoryEndpoints:
         assert response.json()["rerun_intent"] == "fresh_lifecycle"
         mock_orch.repository_host.update_issue_state.assert_not_called()
 
-    def test_hidden_scratch_reset_skips_filtered_issue_without_mutation(self):
-        """Filtered hidden issues should not be reopened or reset."""
+    def test_fresh_lifecycle_rerun_skips_filtered_issue_without_mutation(self):
+        """Filtered issues should not be reopened or reset."""
         from issue_orchestrator.control.maintenance import ResetResult
 
         mock_orch = create_mock_orchestrator()
@@ -423,7 +423,7 @@ class TestHistoryEndpoints:
             reset_issue_mock.return_value = ResetResult(success=True, issue_number=4057)
             client = TestClient(app)
             response = client.post(
-                "/api/reset-retry/hidden-scratch",
+                "/api/reset-retry/fresh-lifecycle-rerun",
                 json={"issues": [4057]},
             )
 
@@ -438,8 +438,8 @@ class TestHistoryEndpoints:
         mock_orch.deps.action_applier.apply.assert_not_called()
         reset_issue_mock.assert_not_called()
 
-    def test_hidden_scratch_reset_skips_missing_agent_label(self):
-        """Hidden scratch reset should reject issues that cannot launch."""
+    def test_fresh_lifecycle_rerun_skips_missing_agent_label(self):
+        """Fresh lifecycle rerun should reject issues that cannot launch."""
         mock_orch = create_mock_orchestrator()
         mock_orch.config.filtering.label = "redo-poorly-reviewed"
         issue = create_issue(4057, labels=["redo-poorly-reviewed"])
@@ -449,7 +449,7 @@ class TestHistoryEndpoints:
 
         client = TestClient(app)
         response = client.post(
-            "/api/reset-retry/hidden-scratch/preflight",
+            "/api/reset-retry/fresh-lifecycle-rerun/preflight",
             json={"issues": [4057]},
         )
 
@@ -460,8 +460,8 @@ class TestHistoryEndpoints:
         assert "no agent:* label" in decision["reason"]
         mock_orch.repository_host.update_issue_state.assert_not_called()
 
-    def test_hidden_scratch_reset_reopens_then_uses_existing_reset_path(self):
-        """Eligible closed hidden issues should reopen before normal scratch reset."""
+    def test_fresh_lifecycle_rerun_reopens_then_uses_existing_reset_path(self):
+        """Eligible closed issues should reopen before normal scratch reset."""
         from issue_orchestrator.control.maintenance import ResetResult
 
         mock_orch = create_mock_orchestrator()
@@ -499,7 +499,7 @@ class TestHistoryEndpoints:
             )
             client = TestClient(app)
             response = client.post(
-                "/api/reset-retry/hidden-scratch",
+                "/api/reset-retry/fresh-lifecycle-rerun",
                 json={"issues": [4057]},
             )
 

@@ -415,6 +415,69 @@ export interface FailedE2ETestExecutionPayload {
   started_at: string;
 }
 
+export interface FreshLifecycleRerunDecisionPayload {
+  action: string;
+  eligible: boolean;
+  issue: number;
+  labels: string[];
+  reason: string;
+  state: string | null;
+  title: string | null;
+  will_reopen: boolean;
+}
+
+export interface FreshLifecycleRerunExecutePayload {
+  failed: FreshLifecycleRerunFailurePayload[];
+  from_scratch: boolean;
+  refresh_triggered: boolean;
+  reopened: number[];
+  rerun_intent: "fresh_lifecycle";
+  reset: FreshLifecycleRerunResetResultPayload[];
+  skipped: FreshLifecycleRerunDecisionPayload[];
+}
+
+export interface FreshLifecycleRerunFailurePayload {
+  error: string;
+  issue: number;
+  partial?: FreshLifecycleRerunResetFailurePartialPayload;
+  reopened?: boolean;
+}
+
+export interface FreshLifecycleRerunPreflightPayload {
+  decisions: FreshLifecycleRerunDecisionPayload[];
+  eligible: number[];
+  from_scratch: boolean;
+  rerun_intent: "fresh_lifecycle";
+  skipped: number[];
+  will_reopen: number[];
+}
+
+export interface FreshLifecycleRerunResetFailurePartialPayload {
+  deleted_branch: string | null;
+  deleted_branches: string[] | null;
+  deleted_worktree: string | null;
+  from_scratch?: boolean;
+  labels_removed: string[] | null;
+  pending_labels?: string[];
+  superseded_prs: number[] | null;
+  timeline_events_deleted: number | null;
+}
+
+export interface FreshLifecycleRerunResetResultPayload {
+  deleted_branch: string | null;
+  deleted_branches: string[] | null;
+  deleted_worktree: string | null;
+  from_scratch: boolean;
+  issue: number;
+  labels_removed: string[] | null;
+  pending_label: string;
+  pending_labels: string[];
+  queued_now: boolean;
+  reopened: boolean;
+  superseded_prs: number[] | null;
+  timeline_events_deleted: number | null;
+}
+
 export interface InfoDialogPayload {
   rows: DialogRowPayload[];
   title: string;
@@ -531,6 +594,10 @@ export interface IssueLifecyclePayload {
   diagnostics: TimelineDiagnosticPayload[];
   issue_number: number;
   title: string;
+}
+
+export interface IssueNumbersRequestPayload {
+  issues: number | string[];
 }
 
 export interface IssueRowPayload {

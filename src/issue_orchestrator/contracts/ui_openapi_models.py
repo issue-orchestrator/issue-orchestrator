@@ -425,6 +425,69 @@ class FailedE2ETestExecutionPayload(BaseModel):
     nodeid: str
     started_at: str
 
+class FreshLifecycleRerunDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str
+    eligible: bool
+    issue: int
+    labels: list[str]
+    reason: str
+    state: str | None
+    title: str | None
+    will_reopen: bool
+
+class FreshLifecycleRerunExecutePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    failed: list[FreshLifecycleRerunFailurePayload]
+    from_scratch: bool
+    refresh_triggered: bool
+    reopened: list[int]
+    rerun_intent: Literal['fresh_lifecycle']
+    reset: list[FreshLifecycleRerunResetResultPayload]
+    skipped: list[FreshLifecycleRerunDecisionPayload]
+
+class FreshLifecycleRerunFailurePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    error: str
+    issue: int
+    partial: FreshLifecycleRerunResetFailurePartialPayload | None = None
+    reopened: bool | None = None
+
+class FreshLifecycleRerunPreflightPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decisions: list[FreshLifecycleRerunDecisionPayload]
+    eligible: list[int]
+    from_scratch: bool
+    rerun_intent: Literal['fresh_lifecycle']
+    skipped: list[int]
+    will_reopen: list[int]
+
+class FreshLifecycleRerunResetFailurePartialPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    deleted_branch: str | None
+    deleted_branches: list[str] | None
+    deleted_worktree: str | None
+    from_scratch: bool | None = None
+    labels_removed: list[str] | None
+    pending_labels: list[str] | None = None
+    superseded_prs: list[int] | None
+    timeline_events_deleted: int | None
+
+class FreshLifecycleRerunResetResultPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    deleted_branch: str | None
+    deleted_branches: list[str] | None
+    deleted_worktree: str | None
+    from_scratch: bool
+    issue: int
+    labels_removed: list[str] | None
+    pending_label: str
+    pending_labels: list[str]
+    queued_now: bool
+    reopened: bool
+    superseded_prs: list[int] | None
+    timeline_events_deleted: int | None
+
 class InfoDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rows: list[DialogRowPayload]
@@ -541,6 +604,10 @@ class IssueLifecyclePayload(BaseModel):
     diagnostics: list[TimelineDiagnosticPayload]
     issue_number: int
     title: str
+
+class IssueNumbersRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issues: list[int | str]
 
 class IssueRowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
