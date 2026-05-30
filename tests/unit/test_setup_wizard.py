@@ -1892,9 +1892,10 @@ class TestOfferReadinessAssessment:
         prompter = MockPrompter([True])
 
         def boom(*_args, **_kwargs):
-            # A real launch failure (missing binary, bad interpreter, perms)
-            # surfaces as OSError — e.g. gemini's dead-node-shebang case.
-            raise OSError("bad interpreter")
+            # ANY exception from the launch chain — OSError (missing binary, bad
+            # interpreter), or an unexpected one (e.g. a bad runner contract) —
+            # must drop to "could not launch", never propagate.
+            raise RuntimeError("unexpected launcher failure")
 
         # Must not raise — readiness is advisory and cannot block setup.
         readiness_launch_module.offer_readiness_assessment(

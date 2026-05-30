@@ -10,11 +10,12 @@ This is intentionally broader than the orchestrated provider registry
 and its ``build_command`` carries automation flags (``--full-auto``,
 ``bypassPermissions``) that are wrong for a human-supervised, conversational
 assessment. Readiness is a person at a terminal driving an interactive session,
-so detection here is by executable name and covers agents that are not
-orchestration providers (gemini, cursor).
+so detection here is by executable name and can cover agents that are not
+orchestration providers (e.g. gemini).
 """
 
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,12 @@ from ...execution.interactive_launch import run_interactive
 from .setup_wizard_support import Prompter
 
 # Known interactive agent CLIs, in preference order. Each seeds an interactive
-# session from a single positional prompt argument (verified for claude/codex;
-# `codex --help`: "[PROMPT] Optional user prompt to start the session").
-READINESS_AGENT_CLIS: tuple[str, ...] = ("claude", "codex", "gemini", "cursor")
+# session from a single positional prompt argument — verified live for
+# claude/codex/gemini (`codex --help`: "[PROMPT] Optional user prompt to start
+# the session"). Cursor's agent CLI is `cursor-agent`, NOT the `cursor` editor
+# launcher (which would open the prompt as a file path); it is left out until
+# verified live.
+READINESS_AGENT_CLIS: tuple[str, ...] = ("claude", "codex", "gemini")
 
 
 def readiness_skill_path() -> Path:
@@ -63,20 +67,24 @@ def build_readiness_command(executable: str, prompt: str) -> list[str]:
     return [executable, prompt]
 
 
-def ensure_readiness_skill_in_repo(repo_path: Path) -> Path:
-    """Copy the packaged skill into the target repo and return the in-repo path.
+def copy_skill_to_workspace(repo_path: Path) -> Path:
+    """Copy the skill into a fresh temp dir *inside* the repo; return that dir.
 
-    Agents sandbox file reads to their workspace: gemini hard-refuses paths
-    outside the repo, and codex in a read-only sandbox does the same. Pointing
-    them at the orchestrator's packaged path (outside the target repo) therefore
-    works only for claude. Placing the skill inside the repo being assessed makes
-    the explicit-path launch work uniformly across claude, codex, gemini, and
-    cursor. Idempotent; refreshed each run so it tracks the packaged version.
+    Two constraints drive this:
+
+    - **Workspace sandbox.** Agents sandbox file reads to their workspace —
+      gemini hard-refuses paths outside the repo, and codex in a read-only
+      sandbox does the same — so the skill must live inside the repo being
+      assessed, not at the orchestrator's packaged path.
+    - **No writes before the apply gate.** Readiness runs at the top of the
+      wizard, before the "changes applied only after approval" gate. The copy
+      therefore goes to a unique temp dir that ``run_readiness_assessment``
+      removes once the session ends, leaving no residue if the user later
+      declines setup.
     """
-    destination = repo_path / ".issue-orchestrator" / "readiness" / "SKILL.md"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(readiness_skill_path(), destination)
-    return destination
+    workspace_dir = Path(tempfile.mkdtemp(prefix=".io-readiness-", dir=repo_path))
+    shutil.copyfile(readiness_skill_path(), workspace_dir / "SKILL.md")
+    return workspace_dir
 
 
 def run_readiness_assessment(
@@ -84,21 +92,24 @@ def run_readiness_assessment(
     repo_path: Path,
     *,
     runner=run_interactive,
-    ensure_skill=ensure_readiness_skill_in_repo,
+    prepare_workspace=copy_skill_to_workspace,
 ) -> int:
-    """Launch the readiness assessment interactively and return the exit code.
+    """Launch the readiness assessment interactively and return its exit code.
 
-    The skill is first copied into the target repo so every agent can read it
-    from within its workspace sandbox. The session then inherits the parent's
-    stdin/stdout/stderr so the user drives it directly; the wizard resumes when
-    the session ends. ``runner``/``ensure_skill`` are injectable so tests
-    exercise the wiring without spawning a process or touching disk.
+    The skill is copied into a temp dir inside the target repo so every agent
+    can read it from within its workspace sandbox, and the copy is removed once
+    the session ends so nothing is left behind before the wizard's apply gate.
+    The session inherits the parent's stdin/stdout/stderr so the user drives it
+    directly; the wizard resumes when it exits. ``runner``/``prepare_workspace``
+    are injectable so tests exercise the wiring without spawning a process.
     """
-    skill_path = ensure_skill(repo_path)
-    prompt = build_readiness_prompt(skill_path, repo_path)
-    command = build_readiness_command(executable, prompt)
-    result = runner(command, cwd=str(repo_path))
-    return result.returncode
+    workspace_dir = prepare_workspace(repo_path)
+    try:
+        prompt = build_readiness_prompt(workspace_dir / "SKILL.md", repo_path)
+        command = build_readiness_command(executable, prompt)
+        return runner(command, cwd=str(repo_path))
+    finally:
+        shutil.rmtree(workspace_dir, ignore_errors=True)
 
 
 def offer_readiness_assessment(
@@ -139,7 +150,7 @@ def offer_readiness_assessment(
     clis = available_clis()
     if not clis:
         prompter.print(
-            "\n  No agent CLI (claude/codex/gemini/cursor) found on PATH — skipping."
+            "\n  No agent CLI (claude/codex/gemini) found on PATH — skipping."
         )
         prompter.print(
             f"  To run it later, point your agent at: {readiness_skill_path()}"
@@ -157,7 +168,9 @@ def offer_readiness_assessment(
     prompter.print("  The wizard resumes when the session ends.\n")
     try:
         launcher(executable, target_path)
-    except OSError as exc:
+    except Exception as exc:
+        # Readiness is advisory: no launch failure (missing binary, bad
+        # interpreter, unexpected agent argv, ...) may ever block setup.
         prompter.print(f"\n  ⚠ Could not launch {executable}: {exc}")
         prompter.print(
             f"  Run it manually by pointing your agent at: {readiness_skill_path()}"

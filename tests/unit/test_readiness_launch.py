@@ -1,7 +1,7 @@
 """Unit tests for the readiness-assessment launcher (producer side)."""
 
+import shutil
 from pathlib import Path
-from types import SimpleNamespace
 
 import issue_orchestrator.entrypoints.cli_tools.readiness_launch as readiness_launch
 from issue_orchestrator.entrypoints.cli_tools.readiness_launch import (
@@ -47,43 +47,49 @@ def test_available_readiness_clis_filters_and_orders(monkeypatch) -> None:
         lambda exe: f"/usr/bin/{exe}" if exe in present else None,
     )
 
-    # Preference order is claude, codex, gemini, cursor → codex/cursor dropped.
+    # Preference order is claude, codex, gemini → codex dropped (not present).
     assert available_readiness_clis() == ["claude", "gemini"]
 
 
-def test_ensure_readiness_skill_in_repo_copies_into_workspace(tmp_path) -> None:
-    """The skill is copied inside the repo so sandboxed agents can read it."""
-    dest = readiness_launch.ensure_readiness_skill_in_repo(tmp_path)
+def test_copy_skill_to_workspace_creates_temp_copy_inside_repo(tmp_path) -> None:
+    """The skill is copied into a temp dir inside the repo (workspace sandbox)."""
+    workspace = readiness_launch.copy_skill_to_workspace(tmp_path)
 
-    assert dest == tmp_path / ".issue-orchestrator" / "readiness" / "SKILL.md"
-    assert dest.is_file()
-    # Content matches the packaged source.
-    assert dest.read_text() == readiness_skill_path().read_text()
-    # Idempotent — a second call does not raise.
-    readiness_launch.ensure_readiness_skill_in_repo(tmp_path)
+    assert workspace.parent == tmp_path  # temp dir lives inside the repo
+    assert workspace.name.startswith(".io-readiness-")
+    skill = workspace / "SKILL.md"
+    assert skill.is_file()
+    assert skill.read_text() == readiness_skill_path().read_text()
+
+    shutil.rmtree(workspace)  # run_readiness_assessment owns cleanup in practice
 
 
-def test_run_readiness_assessment_invokes_runner_interactively() -> None:
-    """The launcher copies the skill in, builds the argv, and returns the code."""
-    calls: list[tuple] = []
+def test_run_readiness_assessment_returns_exit_code_and_cleans_up(tmp_path) -> None:
+    """Returns the runner's int exit code directly and removes the temp copy."""
+    repo = tmp_path
+    workspace = repo / ".io-readiness-fixed"
+
+    def prepare(_repo):
+        workspace.mkdir()
+        (workspace / "SKILL.md").write_text("rubric")
+        return workspace
+
+    seen = {}
 
     def fake_runner(command, cwd):
-        calls.append((command, cwd))
-        return SimpleNamespace(returncode=0)
+        seen["command"] = command
+        seen["cwd"] = cwd
+        # The skill copy must exist *during* the session.
+        seen["skill_present"] = (workspace / "SKILL.md").is_file()
+        return 7  # an int, matching run_interactive's documented contract
 
-    repo = Path("/work/myrepo")
-    in_repo_skill = repo / ".issue-orchestrator" / "readiness" / "SKILL.md"
     code = run_readiness_assessment(
-        "claude",
-        repo,
-        runner=fake_runner,
-        ensure_skill=lambda _repo: in_repo_skill,  # avoid touching disk
+        "claude", repo, runner=fake_runner, prepare_workspace=prepare
     )
 
-    assert code == 0
-    assert len(calls) == 1
-    command, cwd = calls[0]
-    assert command[0] == "claude"
-    # The prompt points at the in-repo copy, not the packaged path.
-    assert str(in_repo_skill) in command[1]
-    assert cwd == str(repo)
+    assert code == 7  # returned directly — no `.returncode` access (was the bug)
+    assert seen["cwd"] == str(repo)
+    assert seen["command"][0] == "claude"
+    assert str(workspace / "SKILL.md") in seen["command"][1]
+    assert seen["skill_present"] is True
+    assert not workspace.exists()  # temp copy cleaned up when the session ends
