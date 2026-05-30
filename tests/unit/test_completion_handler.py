@@ -29,6 +29,7 @@ from issue_orchestrator.control.actions import (
     AddLabelAction,
     RemoveLabelAction,
     AddCommentAction,
+    CloseIssueAction,
     ActionType,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -1177,6 +1178,38 @@ class TestLabelActionGeneration:
 
         add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
         assert any(action.label == "pr-pending" for action in add_labels)
+
+    def test_fresh_lifecycle_no_pr_completion_comments_and_closes_issue(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(number=365)
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_worktree, session.terminal_id)
+        session_output.update_manifest(run.run_dir, {"rerun_intent": "fresh_lifecycle"})
+        handler = make_handler(config, session_output=session_output)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            review_exchange_completed=True,
+        )
+
+        comments = [a for a in result.actions if isinstance(a, AddCommentAction)]
+        closes = [a for a in result.actions if isinstance(a, CloseIssueAction)]
+        assert any(
+            "Fresh Lifecycle Rerun Complete" in action.comment for action in comments
+        )
+        assert len(closes) == 1
+        assert closes[0].issue_number == 365
+        assert (
+            closes[0].reason
+            == "fresh lifecycle rerun completed without publishable changes"
+        )
+        assert any(
+            isinstance(action, RemoveLabelAction) and action.label == "in-progress"
+            for action in result.actions
+        )
 
     def test_needs_run_audit_label_writes_audit_and_flips_labels(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
