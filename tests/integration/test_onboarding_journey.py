@@ -155,6 +155,10 @@ def test_local_onboarding_smoke_journey(tmp_path: Path, monkeypatch: pytest.Monk
     ), patch(
         "issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host",
         return_value=Mock(),
+    ), patch(
+        # Readiness is an interactive, CLI-dependent step with its own tests;
+        # this journey verifies the config/guardrail flow, so skip the offer.
+        "issue_orchestrator.entrypoints.cli_tools.setup_wizard.offer_readiness_assessment",
     ):
         run_wizard(target_path=repo, prompter=prompter)
 
