@@ -30,9 +30,11 @@ from .setup_wizard_support import (
     detect_repo as _detect_repo,
     fetch_github_labels as _fetch_github_labels,
     print_changes_summary as _print_changes_summary,
+    prompt_worktree_setup_commands,
     scan_existing_repo as _scan_existing_repo,
     setup_ai_providers,
 )
+from .readiness_launch import offer_readiness_assessment
 
 # Schema metadata for defaults/labels/hints
 from ...infra.settings_schema import get_setup_fields
@@ -687,19 +689,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
                 prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
 
     # Worktree setup commands
-    prompter.print("\n--- Worktree Setup Commands ---")
-    prompter.print(
-        "Commands to run in each new worktree after creation (e.g., install deps)."
-    )
-    prompter.print("Examples:")
-    prompter.print("  npm install")
-    prompter.print("  pip install -e '.[dev]'")
-    prompter.print("  make setup")
-    setup_input = prompter.input(
-        "Setup commands (comma-separated, or empty to skip)", ""
-    )
-    if setup_input.strip():
-        setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
+    setup_cmds = prompt_worktree_setup_commands(prompter)
+    if setup_cmds:
         worktrees_config["setup"] = setup_cmds
 
     _prompt_claude_session_interactions(config, prompter)
@@ -1030,21 +1021,9 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                     prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
 
     # Worktree setup commands (if not already configured)
-    worktrees_cfg = config.get("worktrees", {})
-    if "setup" not in worktrees_cfg:
-        prompter.print("\n--- Worktree Setup Commands ---")
-        prompter.print(
-            "Commands to run in each new worktree after creation (e.g., install deps)."
-        )
-        prompter.print("Examples:")
-        prompter.print("  npm install")
-        prompter.print("  pip install -e '.[dev]'")
-        prompter.print("  make setup")
-        setup_input = prompter.input(
-            "Setup commands (comma-separated, or empty to skip)", ""
-        )
-        if setup_input.strip():
-            setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
+    if "setup" not in config.get("worktrees", {}):
+        setup_cmds = prompt_worktree_setup_commands(prompter)
+        if setup_cmds:
             wt_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
             wt_config["setup"] = setup_cmds
 
@@ -1286,6 +1265,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     prompter.print("  1. Ask questions about your project configuration")
     prompter.print("  2. Show a summary of all changes")
     prompter.print("  3. Apply changes only after your approval")
+
+    # Optional readiness assessment before configuring (soft advisory, never blocks)
+    offer_readiness_assessment(prompter, target_path, dry_run=dry_run)
 
     # Choose mode
     prompter.print("\n" + "-" * 50)
@@ -1648,6 +1630,10 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
 
     if _config_uses_claude_code(config):
         _print_claude_code_next_steps(prompter, config)
+
+    prompter.print(
+        "\n  Re-run the readiness assessment anytime with: issue-orchestrator setup"
+    )
 
     prompter.print("\n  Advanced features (enable in config later):")
     prompter.print(

@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="io-browser-auth-required" content="{{ browser_auth_required }}">
+    <meta name="io-csrf-token" content="{{ csrf_token }}">
     <title>Settings - Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/logo.svg">
     <style>
@@ -462,6 +464,10 @@
         </footer>
     </div>
 
+    <!-- Installs the authenticated-fetch wrapper that reads the CSRF token
+         from the meta tag above and attaches X-CSRF-Token to mutating
+         requests (Save / Create issue). Must load before those POSTs fire. -->
+    <script src="/static/js/browser_auth.js"></script>
     <script src="/static/js/theme_resolution.js"></script>
     <script src="/static/js/embedded_nav.js"></script>
     <script>

@@ -3038,3 +3038,63 @@ def test_recent_e2e_runs_builder_emits_typed_payload() -> None:
     # Empty command + pytest_args=['-v'] should fall back to
     # ``pytest -v`` for display.
     assert second.command_summary == "pytest -v"
+
+
+# ---------------------------------------------------------------------------
+# CSRF bootstrap parity across every full HTML page
+# ---------------------------------------------------------------------------
+#
+# Every top-level HTML page served behind dashboard/Control-Center auth must
+# bootstrap the shared browser-auth adapter, or its mutating fetches (Save,
+# Resume, Create issue, ...) go out with no ``X-CSRF-Token`` header and the
+# auth gate rejects them with ``missing or invalid csrf token``. This is the
+# bug that hit the settings page. Rather than rely on each new page
+# remembering the three pieces, this guardrail auto-discovers every full-page
+# template and asserts the bootstrap is present — so the next page added
+# cannot silently regress.
+
+TEMPLATES_DIR = ROOT / "src" / "issue_orchestrator" / "templates"
+
+# A full page declares ``<!doctype html>`` as its first markup. Anchoring at
+# the file start (rather than a loose substring match) keeps a fragment that
+# merely *mentions* a doctype in a comment or example from being misclassified
+# as a full page that must carry the CSRF meta tags.
+_DOCTYPE_AT_START = re.compile(r"^\s*<!doctype html>", re.IGNORECASE)
+
+
+def _full_page_templates() -> list[Path]:
+    """Every template that is a complete HTML document (not a fragment)."""
+    return sorted(
+        p
+        for p in TEMPLATES_DIR.glob("*.html")
+        if _DOCTYPE_AT_START.match(p.read_text(encoding="utf-8"))
+    )
+
+
+def test_every_full_page_template_bootstraps_csrf_auth() -> None:
+    pages = _full_page_templates()
+    # Sanity: discovery actually found the known pages, so an empty glob
+    # can't make this test vacuously pass.
+    names = {p.name for p in pages}
+    assert {"dashboard.html", "settings.html", "control_center.html"} <= names, names
+
+    for page in pages:
+        html = page.read_text(encoding="utf-8")
+        assert 'name="io-csrf-token"' in html, (
+            f"{page.name} is a full HTML page but has no io-csrf-token meta tag; "
+            "mutating fetches will fail CSRF. Bootstrap it like dashboard.html."
+        )
+        assert 'name="io-browser-auth-required"' in html, (
+            f"{page.name} is missing the io-browser-auth-required meta tag."
+        )
+        assert "browser_auth.js" in html, (
+            f"{page.name} does not load browser_auth.js, so the authenticated-"
+            "fetch wrapper that attaches X-CSRF-Token is never installed."
+        )
+
+
+def test_issue_row_fragment_is_not_treated_as_a_full_page() -> None:
+    # Pins the fragment/full-page distinction the guardrail relies on: a
+    # partial rendered into an already-bootstrapped page must NOT be required
+    # to carry its own CSRF meta tags.
+    assert ISSUE_ROW_TEMPLATE not in _full_page_templates()

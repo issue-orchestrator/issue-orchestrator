@@ -149,17 +149,14 @@ async def dashboard(request: Request, orchestrator: WebOrchestratorDependency) -
     — the TestClient default) we render the dashboard directly, which
     keeps every non-auth unit test working.
     """
-    from ..infra import browser_session
-    from ._auth_middleware import render_login_page
+    from ._auth_middleware import resolve_browser_page_auth
     from .web import get_configured_dashboard_admin_token
 
-    admin_token = get_configured_dashboard_admin_token()
-    csrf_token: str | None = None
-    if admin_token is not None:
-        session_id = request.cookies.get(browser_session.SESSION_COOKIE)
-        if not session_id or not browser_session.session_is_valid(session_id):
-            return render_login_page(action_url="/login")
-        csrf_token = browser_session.get_csrf_token(session_id)
+    page_auth = resolve_browser_page_auth(
+        request, auth_enabled=get_configured_dashboard_admin_token() is not None
+    )
+    if isinstance(page_auth, HTMLResponse):
+        return page_auth
 
     request_start = time.time()
 
@@ -194,8 +191,8 @@ async def dashboard(request: Request, orchestrator: WebOrchestratorDependency) -
     html = await asyncio.to_thread(
         template.render,
         **view_model.template_context(),
-        browser_auth_required="1" if admin_token is not None else "0",
-        csrf_token=csrf_token or "",
+        browser_auth_required=page_auth.browser_auth_required,
+        csrf_token=page_auth.csrf_token,
         flash_debug=flash_debug,
     )
     render_elapsed = time.time() - render_start
