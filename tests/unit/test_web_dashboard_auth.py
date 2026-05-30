@@ -158,6 +158,70 @@ def test_fake_auth_dashboard_mode_catches_missing_csrf(
     assert with_csrf.status_code not in (401, 403), with_csrf.text
 
 
+def test_authenticated_settings_page_renders_csrf_meta_and_browser_auth_script(
+    logged_in_dashboard_client: TestClient,
+) -> None:
+    """The settings page must bootstrap the same browser auth adapter as
+    the dashboard. Without the CSRF meta tag and ``browser_auth.js`` the
+    ``Save Changes`` POST to ``/api/settings`` carries no ``X-CSRF-Token``
+    header and the auth gate rejects it with
+    ``missing or invalid csrf token``.
+    """
+    session_id = logged_in_dashboard_client.cookies.get(browser_session.SESSION_COOKIE)
+    assert session_id
+    csrf = browser_session.get_csrf_token(session_id)
+    assert csrf
+
+    resp = logged_in_dashboard_client.get("/settings")
+
+    assert resp.status_code == 200
+    assert '<meta name="io-browser-auth-required" content="1">' in resp.text
+    assert f'<meta name="io-csrf-token" content="{csrf}">' in resp.text
+    assert '<script src="/static/js/browser_auth.js"></script>' in resp.text
+    # The auth wrapper must install before the page's other scripts so it
+    # is in place before any Save / Create-issue POST fires.
+    assert resp.text.index('/static/js/browser_auth.js') < resp.text.index(
+        '/static/js/theme_resolution.js'
+    )
+
+
+def test_unauthenticated_settings_page_renders_login(
+    auth_enabled_dashboard_client: TestClient,
+) -> None:
+    """An anonymous visitor to ``/settings`` gets the login form (like
+    ``/``), not a raw 401 JSON — the page is public so its handler can
+    own the unauthenticated fallback.
+    """
+    resp = auth_enabled_dashboard_client.get("/settings")
+
+    assert resp.status_code == 200
+    assert "Sign in" in resp.text
+    assert 'action="/login"' in resp.text
+
+
+def test_settings_post_without_csrf_is_rejected_with_csrf_accepted(
+    logged_in_dashboard_client: TestClient,
+    fake_browser_auth,
+) -> None:
+    """``POST /api/settings`` is gated by the CSRF check. This is the
+    exact request the settings ``Save`` button issues; the regression
+    being fixed is that it had no way to send the token.
+    """
+    missing_csrf = logged_in_dashboard_client.post("/api/settings", json={})
+    assert missing_csrf.status_code == 403
+    assert "csrf" in missing_csrf.json()["error"].lower()
+
+    with_csrf = logged_in_dashboard_client.post(
+        "/api/settings",
+        json={},
+        headers=fake_browser_auth.csrf_headers(logged_in_dashboard_client),
+    )
+    # Passes the CSRF gate; the test app has no orchestrator wired, so the
+    # handler returns 503 rather than 401/403 — what matters is that auth
+    # no longer blocks the save.
+    assert with_csrf.status_code not in (401, 403), with_csrf.text
+
+
 # ---------------------------------------------------------------------------
 # Login flow + session cookie
 # ---------------------------------------------------------------------------

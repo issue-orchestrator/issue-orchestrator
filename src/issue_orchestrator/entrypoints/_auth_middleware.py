@@ -280,6 +280,52 @@ and configuration.</p>
     return HTMLResponse(content)
 
 
+@dataclass(frozen=True)
+class BrowserPageAuth:
+    """Browser-auth template context for a top-level HTML page.
+
+    ``csrf_token`` and ``browser_auth_required`` map directly onto the
+    ``io-csrf-token`` / ``io-browser-auth-required`` meta tags that
+    ``browser_auth.js`` reads to attach ``X-CSRF-Token`` to mutating
+    fetches.
+    """
+
+    csrf_token: str
+    browser_auth_required: str
+
+
+def resolve_browser_page_auth(
+    request: Request, *, auth_enabled: bool
+) -> BrowserPageAuth | HTMLResponse:
+    """Resolve the browser-auth context for a public top-level HTML page.
+
+    Returns a ``BrowserPageAuth`` to render into the page, or a login
+    ``HTMLResponse`` to short-circuit when auth is enabled but the caller
+    has no valid session.
+
+    Public HTML pages (the dashboard ``/``, ``/settings``, and the Control
+    Center ``/``) bypass the middleware gate so an anonymous visitor sees
+    the login form instead of a raw 401 JSON; that makes each page handler
+    responsible for the same CSRF-bootstrap decision. Routing every such
+    page through this one helper keeps the rule single-owned so the
+    surfaces cannot drift apart.
+
+    ``auth_enabled`` is whether the surface's auth gate is active. Each
+    surface computes it from its own token set (the dashboard has only an
+    admin token; the Control API also has an agent-callback token), so it
+    is passed in rather than derived here.
+    """
+    if not auth_enabled:
+        return BrowserPageAuth(csrf_token="", browser_auth_required="0")
+    session_id = request.cookies.get(browser_session.SESSION_COOKIE)
+    if not session_id or not browser_session.session_is_valid(session_id):
+        return render_login_page(action_url="/login")
+    return BrowserPageAuth(
+        csrf_token=browser_session.get_csrf_token(session_id) or "",
+        browser_auth_required="1",
+    )
+
+
 async def handle_login_post(
     request: Request, admin_token: str | None
 ) -> Response:

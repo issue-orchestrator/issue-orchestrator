@@ -97,12 +97,14 @@ if STATIC_DIR.exists():
 
 _dashboard_admin_token: str | None = None
 
-# ``/`` (the main dashboard HTML) is public so that anonymous visitors
-# can be redirected to the login form — the dashboard handler itself
-# checks for a valid session and 303s to ``/login`` when auth is
-# enabled but the caller has no cookie.
+# ``/`` and ``/settings`` (top-level HTML pages) are public so that
+# anonymous visitors can be shown the login form — each page handler
+# itself checks for a valid session and renders the login form when
+# auth is enabled but the caller has no cookie. Their mutating
+# ``/api/*`` endpoints stay gated, so no data is exposed.
 _DASHBOARD_UNAUTHENTICATED_PATHS: frozenset[str] = frozenset({
     "/",
+    "/settings",
     "/login",
     "/favicon.ico",
 })
