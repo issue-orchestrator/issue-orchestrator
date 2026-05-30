@@ -542,6 +542,10 @@ class IssueLifecyclePayload(BaseModel):
     issue_number: int
     title: str
 
+class IssueNumbersRequestPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issues: list[int]
+
 class IssueRowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     html: str
@@ -753,6 +757,60 @@ class RecentE2ERunSummaryPayload(BaseModel):
 class RecentE2ERunsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     runs: list[RecentE2ERunSummaryPayload]
+
+class RetrospectiveReviewDecisionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str
+    agent_label: str | None
+    eligible: bool
+    issue: int = Field(..., ge=1, strict=True)
+    labels: list[str]
+    prior_pr_number: int | None = Field(..., ge=1)
+    prior_pr_url: str | None
+    reason: str
+    state: str | None
+    title: str | None
+    trigger_label: str | None
+    will_reopen: bool
+
+class RetrospectiveReviewExecutePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    failed: list[RetrospectiveReviewFailurePayload]
+    queued: list[RetrospectiveReviewQueuedPayload]
+    refresh_triggered: bool
+    skipped: list[RetrospectiveReviewDecisionPayload]
+    trigger_label: str
+    workflow: Literal['retrospective_review']
+
+class RetrospectiveReviewFailurePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    error: str
+    issue: int = Field(..., ge=1, strict=True)
+
+class RetrospectiveReviewPreflightPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decisions: list[RetrospectiveReviewDecisionPayload]
+    eligible: list[int]
+    skipped: list[int]
+    trigger_label: str
+    will_reopen: list[int]
+    workflow: Literal['retrospective_review']
+
+class RetrospectiveReviewQueuedPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: str
+    agent_label: str | None
+    eligible: bool
+    issue: int = Field(..., ge=1, strict=True)
+    labels: list[str]
+    prior_pr_number: int | None = Field(..., ge=1)
+    prior_pr_url: str | None
+    queued: bool
+    reason: str
+    state: str | None
+    title: str | None
+    trigger_label: str | None
+    will_reopen: bool
 
 class ReviewApprovedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

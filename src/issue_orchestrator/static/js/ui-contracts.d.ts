@@ -533,6 +533,10 @@ export interface IssueLifecyclePayload {
   title: string;
 }
 
+export interface IssueNumbersRequestPayload {
+  issues: number[];
+}
+
 export interface IssueRowPayload {
   html: string;
   issue_number?: number | string | null;
@@ -743,6 +747,60 @@ export interface RecentE2ERunSummaryPayload {
 
 export interface RecentE2ERunsPayload {
   runs: RecentE2ERunSummaryPayload[];
+}
+
+export interface RetrospectiveReviewDecisionPayload {
+  action: string;
+  agent_label: string | null;
+  eligible: boolean;
+  issue: number;
+  labels: string[];
+  prior_pr_number: number | null;
+  prior_pr_url: string | null;
+  reason: string;
+  state: string | null;
+  title: string | null;
+  trigger_label: string | null;
+  will_reopen: boolean;
+}
+
+export interface RetrospectiveReviewExecutePayload {
+  failed: RetrospectiveReviewFailurePayload[];
+  queued: RetrospectiveReviewQueuedPayload[];
+  refresh_triggered: boolean;
+  skipped: RetrospectiveReviewDecisionPayload[];
+  trigger_label: string;
+  workflow: "retrospective_review";
+}
+
+export interface RetrospectiveReviewFailurePayload {
+  error: string;
+  issue: number;
+}
+
+export interface RetrospectiveReviewPreflightPayload {
+  decisions: RetrospectiveReviewDecisionPayload[];
+  eligible: number[];
+  skipped: number[];
+  trigger_label: string;
+  will_reopen: number[];
+  workflow: "retrospective_review";
+}
+
+export interface RetrospectiveReviewQueuedPayload {
+  action: string;
+  agent_label: string | null;
+  eligible: boolean;
+  issue: number;
+  labels: string[];
+  prior_pr_number: number | null;
+  prior_pr_url: string | null;
+  queued: boolean;
+  reason: string;
+  state: string | null;
+  title: string | null;
+  trigger_label: string | null;
+  will_reopen: boolean;
 }
 
 export interface ReviewApprovedPayload {

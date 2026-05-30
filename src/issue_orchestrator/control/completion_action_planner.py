@@ -154,7 +154,7 @@ class CompletionActionPlanner:
             "issue-"
         ) or session.terminal_id.startswith("rework-"):
             return "coding"
-        if session.terminal_id.startswith("review-"):
+        if session.terminal_id.startswith(("review-", "retrospective-review-")):
             return "review"
         return None
 

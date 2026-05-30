@@ -25,6 +25,7 @@ from issue_orchestrator.control.actions import (
     ReconcileHistoryEntryAction,
     SupersedePullRequestAction,
     CloseIssueAction,
+    SetIssueStateAction,
 )
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.control.session_manager import SessionType
@@ -236,6 +237,41 @@ class TestRemoveLabelAction:
         assert result.success
         assert result.details["no_op"] is True
         mock_labels.remove_label.assert_not_called()
+
+
+class TestSetIssueStateAction:
+    """Tests for SET_ISSUE_STATE action."""
+
+    def test_set_issue_state_opens_issue(self, applier, mock_repository_host):
+        action = SetIssueStateAction(
+            issue_number=365,
+            state="open",
+            reason="retrospective review requested coder rework",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert result.details["issue_number"] == 365
+        assert result.details["state"] == "open"
+        mock_repository_host.update_issue_state.assert_called_once_with(365, "open")
+
+    def test_set_issue_state_failure_returns_action_result(
+        self,
+        applier,
+        mock_repository_host,
+    ):
+        mock_repository_host.update_issue_state.side_effect = RuntimeError("api error")
+        action = SetIssueStateAction(issue_number=365, state="open")
+
+        result = applier.apply(action)
+
+        assert not result.success
+        assert "api error" in result.error
+
+    def test_set_issue_state_rejects_invalid_state(self):
+        with pytest.raises(ValueError, match="state must be 'open' or 'closed'"):
+            SetIssueStateAction(issue_number=365, state="reopened")
 
 
 class TestReconcileHistoryEntryAction:
@@ -1706,6 +1742,7 @@ class TestClaimGateAudit:
         ActionType.ADD_COMMENT,
         ActionType.SUPERSEDE_PR,
         ActionType.CLOSE_ISSUE,
+        ActionType.SET_ISSUE_STATE,
         ActionType.ESCALATE_TO_HUMAN,
         ActionType.QUEUE_REVIEW,
     }
@@ -1715,7 +1752,7 @@ class TestClaimGateAudit:
     # - LAUNCH_VALIDATION_RETRY: does its own claim acquisition in session_launcher
     # - STOP_SESSION: local terminal operation (killing sessions)
     # - CREATE_WORKTREE / REMOVE_WORKTREE: local filesystem only
-    # - QUEUE_REWORK / QUEUE_TRIAGE: local state operations
+    # - QUEUE_RETROSPECTIVE_REVIEW / QUEUE_REWORK / QUEUE_TRIAGE: local state operations
     # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
     # - CLEANUP_SESSION: post-completion cleanup
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
@@ -1726,6 +1763,7 @@ class TestClaimGateAudit:
         ActionType.STOP_SESSION,
         ActionType.CREATE_WORKTREE,
         ActionType.REMOVE_WORKTREE,
+        ActionType.QUEUE_RETROSPECTIVE_REVIEW,
         ActionType.QUEUE_REWORK,
         ActionType.QUEUE_TRIAGE,
         ActionType.CREATE_TRIAGE_ISSUE,
@@ -1759,6 +1797,7 @@ class TestClaimGateAudit:
             ActionType.ADD_COMMENT: "_apply_add_comment",
             ActionType.SUPERSEDE_PR: "_apply_supersede_pr",
             ActionType.CLOSE_ISSUE: "_apply_close_issue",
+            ActionType.SET_ISSUE_STATE: "_apply_set_issue_state",
             ActionType.ESCALATE_TO_HUMAN: "_apply_escalate",
             ActionType.QUEUE_REVIEW: "_apply_queue_review",
         }

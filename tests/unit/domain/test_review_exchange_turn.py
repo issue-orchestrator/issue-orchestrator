@@ -39,7 +39,6 @@ class TestReviewExchangeTurnPacketRoundTrip:
             role=Role.REVIEWER,
             require_validation=True,
             run_dir=Path("/wt/.issue-orchestrator/sessions/r1"),
-            fresh_lifecycle_rerun=True,
             prompt_files=ReviewExchangePromptFiles(
                 validation_record=Path(
                     "/wt/.issue-orchestrator/sessions/r1/validation.json",
@@ -53,7 +52,6 @@ class TestReviewExchangeTurnPacketRoundTrip:
             original.to_manifest_fields(),
         )
         assert recovered == original
-        assert recovered.fresh_lifecycle_rerun is True
 
     def test_coder_packet_with_reviewer_feedback_round_trip(self) -> None:
         original = ReviewExchangeTurnPacket(
@@ -89,7 +87,6 @@ class TestReviewExchangeTurnPacketRoundTrip:
         assert "last_reviewer_text" not in fields
         assert "reviewer_feedback" not in fields
         assert "prompt_files" not in fields
-        assert "fresh_lifecycle_rerun" not in fields
 
     @pytest.mark.parametrize("missing_key", [
         "issue_number",
@@ -211,23 +208,6 @@ class TestBuildReviewerPrompt:
         assert "do NOT run build, test, or validation commands" in prompt
         assert "./gradlew" in prompt
 
-    def test_fresh_lifecycle_rerun_context_tells_reviewer_to_review_no_diff(self) -> None:
-        packet = ReviewExchangeTurnPacket(
-            issue_number=42,
-            issue_title="Make it right",
-            round_index=1,
-            role=Role.REVIEWER,
-            require_validation=False,
-            run_dir=Path("/wt/.issue-orchestrator/sessions/review-exchange-run"),
-            fresh_lifecycle_rerun=True,
-        )
-
-        prompt = build_reviewer_prompt(packet)
-
-        assert "Fresh lifecycle rerun:" in prompt
-        assert "Perform a fresh review even if the diff is small or unchanged" in prompt
-        assert "nothing to review" in prompt
-
     def test_validation_required_without_injected_record_fails_fast(self) -> None:
         packet = ReviewExchangeTurnPacket(
             issue_number=42,
@@ -261,25 +241,6 @@ class TestBuildCoderPrompt:
         assert "Tracked project files" in prompt
         assert ".issue-orchestrator/" in prompt
         assert "Reviewer report:" in prompt
-
-    def test_fresh_lifecycle_rerun_context_tells_coder_to_verify_no_change(self) -> None:
-        packet = ReviewExchangeTurnPacket(
-            issue_number=42,
-            issue_title="Make it right",
-            round_index=1,
-            role=Role.CODER,
-            require_validation=True,
-            run_dir=Path("/wt/.issue-orchestrator/sessions/review-exchange-run"),
-            fresh_lifecycle_rerun=True,
-            reviewer_feedback="Verify the current implementation.",
-        )
-
-        prompt = build_coder_prompt(packet)
-
-        assert "Fresh lifecycle rerun:" in prompt
-        assert "Treat the issue as active work" in prompt
-        assert "If no code changes are needed" in prompt
-
 
 # ---------------------------------------------------------------------------
 # ReviewExchangeTurnResult.from_agent_dict — every parser branch

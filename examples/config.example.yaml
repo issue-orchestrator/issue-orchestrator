@@ -146,6 +146,11 @@ review:
   run_audit:
     min_runtime_minutes: 20      # 0 disables auto-audit; label-triggered audits still work
     on_timeout: true             # Capture a run audit whenever a session times out
+  retrospective:
+    enabled: false               # Review existing implementations before coder rework
+    trigger_label: "retrospective-review"
+    reviewed_label: "retrospective-reviewed"
+    changes_requested_label: "retrospective-changes-requested"
   exchange:
     mode: "via-local-loop"       # via-local-loop, via-draft-pr, via-mcp (auto optional)
     probe:

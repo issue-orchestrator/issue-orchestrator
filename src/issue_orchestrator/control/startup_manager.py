@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 from ..domain.models import (
     OrchestratorState,
+    PendingRetrospectiveReview,
     PendingReview,
     PendingTriageReview,
     PendingValidationRetry,
@@ -50,6 +51,7 @@ from .action_applier import ActionApplier
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
+from .retrospective_review import discover_retrospective_review_issues
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
@@ -220,6 +222,10 @@ class StartupManager:
         if self.config.code_review_agent and self.config.code_review_label:
             with self._phase("recover_pending_reviews", timings):
                 await self._recover_pending_reviews(state, issue_branches)
+
+        if self.config.retrospective_review_enabled:
+            with self._phase("recover_pending_retrospective_reviews", timings):
+                self._recover_pending_retrospective_reviews(state)
 
         # Step 8: Recover awaiting-merge dashboard history
         with self._phase("recover_pr_pending_history", timings):
@@ -612,6 +618,39 @@ class StartupManager:
 
         if state.pending_triage_reviews:
             print(f"  Found {len(state.pending_triage_reviews)} triage review(s) to process")
+
+    def _recover_pending_retrospective_reviews(self, state: OrchestratorState) -> None:
+        """Recover trigger-labeled existing-work review requests on startup."""
+
+        already = {
+            review.issue_number for review in state.pending_retrospective_reviews
+        } | {
+            session.issue.number
+            for session in state.active_sessions
+            if session.terminal_id.startswith("retrospective-review-")
+        }
+        discovered = discover_retrospective_review_issues(
+            repository_host=self.repository_host,
+            config=self.config,
+            already_issue_numbers=already,
+        )
+        for review in discovered:
+            state.pending_retrospective_reviews.append(
+                PendingRetrospectiveReview(
+                    issue_key=self.repository_host.create_issue_key(review.issue_number),
+                    issue_number=review.issue_number,
+                    issue_title=review.issue_title,
+                    agent_label=review.agent_label,
+                    trigger_label=review.trigger_label,
+                    prior_pr_number=review.prior_pr_number,
+                    prior_pr_url=review.prior_pr_url,
+                )
+            )
+        if discovered:
+            logger.info(
+                "[startup] Recovered %d retrospective review request(s)",
+                len(discovered),
+            )
 
     def _recover_pending_validation_retries(
         self,

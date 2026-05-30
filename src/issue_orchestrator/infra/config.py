@@ -272,6 +272,10 @@ class Config:
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
     review_run_audit_min_runtime_minutes: int = 20  # 0 disables automatic run audits
     review_run_audit_on_timeout: bool = True
+    retrospective_review_enabled: bool = False
+    retrospective_review_trigger_label: str = "retrospective-review"
+    retrospective_reviewed_label: str = "retrospective-reviewed"
+    retrospective_changes_requested_label: str = "retrospective-changes-requested"
 
     # Review exchange mode (via-mcp, via-local-loop, or via-draft-pr review)
     review_exchange_mode: str = "via-local-loop"
@@ -630,6 +634,12 @@ class Config:
                 "code_review_label": self.code_review_label,
                 "code_reviewed_label": self.code_reviewed_label,
                 "run_audit": self._runtime_run_audit_dict(),
+                "retrospective": {
+                    "enabled": self.retrospective_review_enabled,
+                    "trigger_label": self.retrospective_review_trigger_label,
+                    "reviewed_label": self.retrospective_reviewed_label,
+                    "changes_requested_label": self.retrospective_changes_requested_label,
+                },
                 "exchange": self._runtime_exchange_dict(),
                 "nits": {
                     "default_policy": self.review_nits_default_policy,
@@ -977,6 +987,18 @@ class Config:
             review_dict.setdefault("run_audit", {})["min_runtime_minutes"] = self.review_run_audit_min_runtime_minutes
         if self.review_run_audit_on_timeout is not True:
             review_dict.setdefault("run_audit", {})["on_timeout"] = self.review_run_audit_on_timeout
+        if (
+            self.retrospective_review_enabled
+            or self.retrospective_review_trigger_label != "retrospective-review"
+            or self.retrospective_reviewed_label != "retrospective-reviewed"
+            or self.retrospective_changes_requested_label != "retrospective-changes-requested"
+        ):
+            review_dict["retrospective"] = {
+                "enabled": self.retrospective_review_enabled,
+                "trigger_label": self.retrospective_review_trigger_label,
+                "reviewed_label": self.retrospective_reviewed_label,
+                "changes_requested_label": self.retrospective_changes_requested_label,
+            }
         if self.review_nits_default_policy != "surface" or self.review_nits_by_agent:
             nits_dict: dict[str, object] = {
                 "default_policy": self.review_nits_default_policy,
@@ -1316,14 +1338,8 @@ class Config:
             errors.append(
                 "validation.publish.dirty_check must be one of: tracked, unstaged, all, off"
             )
-        valid_nit_policies = {"ignore", "surface", "address"}
-        if self.review_nits_default_policy not in valid_nit_policies:
-            errors.append("review.nits.default_policy must be one of: ignore, surface, address")
-        for agent_label, policy in self.review_nits_by_agent.items():
-            if policy not in valid_nit_policies:
-                errors.append(
-                    f"review.nits.by_agent.{agent_label} must be one of: ignore, surface, address"
-                )
+        errors.extend(self._validate_review_nit_policy_config())
+        errors.extend(self._validate_retrospective_review_config())
         if (
             self.review_enabled
             and self.review_exchange_require_validation
@@ -1333,6 +1349,46 @@ class Config:
                 "validation.quick.cmd must be configured when review.exchange.loop.require_validation is true"
             )
 
+        return errors
+
+    def _validate_review_nit_policy_config(self) -> list[str]:
+        """Validate review nit policy settings."""
+
+        errors: list[str] = []
+        valid_nit_policies = {"ignore", "surface", "address"}
+        if self.review_nits_default_policy not in valid_nit_policies:
+            errors.append("review.nits.default_policy must be one of: ignore, surface, address")
+        for agent_label, policy in self.review_nits_by_agent.items():
+            if policy not in valid_nit_policies:
+                errors.append(
+                    f"review.nits.by_agent.{agent_label} must be one of: ignore, surface, address"
+                )
+        return errors
+
+    def _validate_retrospective_review_config(self) -> list[str]:
+        """Validate review-first existing-implementation rerun settings."""
+
+        if not self.retrospective_review_enabled:
+            return []
+
+        errors: list[str] = []
+        if not self.code_review_agent:
+            errors.append("review.retrospective.enabled requires review.default to be configured")
+        elif self.code_review_agent not in self.agents:
+            errors.append(
+                f"review.default '{self.code_review_agent}' not found in agents for retrospective review. "
+                f"Available: {list(self.agents.keys())}"
+            )
+        for attr, yaml_path in (
+            (self.retrospective_review_trigger_label, "review.retrospective.trigger_label"),
+            (self.retrospective_reviewed_label, "review.retrospective.reviewed_label"),
+            (
+                self.retrospective_changes_requested_label,
+                "review.retrospective.changes_requested_label",
+            ),
+        ):
+            if not str(attr or "").strip():
+                errors.append(f"{yaml_path} must be non-empty when retrospective review is enabled")
         return errors
 
     def validate_unknown_fields(self) -> list[tuple[str, str]]:

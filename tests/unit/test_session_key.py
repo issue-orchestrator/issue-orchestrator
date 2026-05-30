@@ -26,10 +26,17 @@ class TestTaskKind:
         assert TaskKind.REVIEW.value == "review"
         assert TaskKind.REWORK.value == "rework"
         assert TaskKind.TRIAGE.value == "triage"
+        assert TaskKind.RETROSPECTIVE_REVIEW.value == "retrospective-review"
 
     def test_task_kind_all_members(self):
-        """TaskKind has exactly 4 members."""
-        assert len(TaskKind) == 4
+        """TaskKind has exactly the expected members."""
+        assert set(TaskKind) == {
+            TaskKind.CODE,
+            TaskKind.REVIEW,
+            TaskKind.REWORK,
+            TaskKind.TRIAGE,
+            TaskKind.RETROSPECTIVE_REVIEW,
+        }
 
 
 class TestSessionKeyEquality:
@@ -157,6 +164,10 @@ class TestSessionKeyStableId:
         assert SessionKey(issue=issue, task=TaskKind.REVIEW).stable_id() == "review:M1-011"
         assert SessionKey(issue=issue, task=TaskKind.REWORK).stable_id() == "rework:M1-011"
         assert SessionKey(issue=issue, task=TaskKind.TRIAGE).stable_id() == "triage:M1-011"
+        assert (
+            SessionKey(issue=issue, task=TaskKind.RETROSPECTIVE_REVIEW).stable_id()
+            == "retrospective-review:M1-011"
+        )
 
 
 class TestSessionKeyStr:

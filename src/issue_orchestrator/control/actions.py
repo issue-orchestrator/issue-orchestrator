@@ -52,6 +52,7 @@ class ActionType(Enum):
     ADD_COMMENT = "add_comment"
     SUPERSEDE_PR = "supersede_pr"
     CLOSE_ISSUE = "close_issue"
+    SET_ISSUE_STATE = "set_issue_state"
 
     # Worktree operations
     CREATE_WORKTREE = "create_worktree"
@@ -59,6 +60,7 @@ class ActionType(Enum):
 
     # Queue operations
     QUEUE_REVIEW = "queue_review"
+    QUEUE_RETROSPECTIVE_REVIEW = "queue_retrospective_review"
     QUEUE_REWORK = "queue_rework"
     QUEUE_TRIAGE = "queue_triage"
 
@@ -198,6 +200,20 @@ class QueueReviewAction(Action):
 
 
 @dataclass(frozen=True)
+class QueueRetrospectiveReviewAction(Action):
+    """Queue an issue for review of its existing implementation."""
+
+    issue_number: int = 0
+    issue_title: str = ""
+    agent_label: str = ""
+    trigger_label: str = ""
+    issue_key: str = ""
+    prior_pr_number: int | None = None
+    prior_pr_url: str | None = None
+    action_type: ActionType = field(default=ActionType.QUEUE_RETROSPECTIVE_REVIEW, init=False)
+
+
+@dataclass(frozen=True)
 class QueueReworkAction(Action):
     """Queue an issue for rework."""
 
@@ -294,6 +310,19 @@ class CloseIssueAction(Action):
 
     issue_number: int = 0
     action_type: ActionType = field(default=ActionType.CLOSE_ISSUE, init=False)
+
+
+@dataclass(frozen=True)
+class SetIssueStateAction(Action):
+    """Set an issue's open/closed state through the repository host."""
+
+    issue_number: int = 0
+    state: str = "open"
+    action_type: ActionType = field(default=ActionType.SET_ISSUE_STATE, init=False)
+
+    def __post_init__(self) -> None:
+        if self.state not in {"open", "closed"}:
+            raise ValueError("SetIssueStateAction state must be 'open' or 'closed'")
 
 
 @dataclass(frozen=True)

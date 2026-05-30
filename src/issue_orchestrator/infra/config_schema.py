@@ -215,6 +215,12 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "max_consecutive_review_exchange_failures": LEAF,
         "reviewer_feedback_cache_minutes": LEAF,
         "keep_current_approach_label": LEAF,
+        "retrospective": _leaf_keys(
+            "enabled",
+            "trigger_label",
+            "reviewed_label",
+            "changes_requested_label",
+        ),
         "run_audit": _leaf_keys("min_runtime_minutes", "on_timeout"),
         "nits": _leaf_keys("default_policy", "by_agent"),
         "exchange": {

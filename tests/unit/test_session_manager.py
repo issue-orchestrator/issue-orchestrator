@@ -110,6 +110,11 @@ class TestSessionRef:
         ref = SessionRef(session_type=SessionType.REVIEW, number=456)
         assert ref.name == "review-456"
 
+    def test_name_property_for_retrospective_review(self):
+        """Test name property for retrospective review session."""
+        ref = SessionRef(session_type=SessionType.RETROSPECTIVE_REVIEW, number=365)
+        assert ref.name == "retrospective-review-365"
+
     def test_name_property_for_rework(self):
         """Test name property for rework session."""
         ref = SessionRef(session_type=SessionType.REWORK, number=789)
@@ -126,6 +131,12 @@ class TestSessionRef:
         ref = SessionRef.from_name("review-456")
         assert ref.session_type == SessionType.REVIEW
         assert ref.number == 456
+
+    def test_from_name_parses_retrospective_review(self):
+        """Test parsing retrospective review session name."""
+        ref = SessionRef.from_name("retrospective-review-365")
+        assert ref.session_type == SessionType.RETROSPECTIVE_REVIEW
+        assert ref.number == 365
 
     def test_from_name_parses_rework(self):
         """Test parsing rework session name."""
@@ -154,6 +165,12 @@ class TestSessionRef:
         ref = SessionRef.for_review(100)
         assert ref.session_type == SessionType.REVIEW
         assert ref.number == 100
+
+    def test_for_retrospective_review_factory(self):
+        """Test for_retrospective_review factory method."""
+        ref = SessionRef.for_retrospective_review(365)
+        assert ref.session_type == SessionType.RETROSPECTIVE_REVIEW
+        assert ref.number == 365
 
     def test_for_rework_factory(self):
         """Test for_rework factory method."""

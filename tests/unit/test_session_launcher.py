@@ -53,6 +53,7 @@ from issue_orchestrator.domain.models import (
     SessionStatus,
     AgentConfig,
     PendingReview,
+    PendingRetrospectiveReview,
     PendingRework,
     PendingTriageReview,
     PendingValidationRetry,
@@ -66,6 +67,7 @@ from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
 from issue_orchestrator.domain.state_machines.review_machine import ReviewStateMachine, ReviewState
+from issue_orchestrator.events import EventName
 from issue_orchestrator.ports import (
     WorktreeInfo,
     CommitInfo,
@@ -178,6 +180,7 @@ class MockWorktreeManager:
             "repo_root": repo_root,
             "issue_number": issue_number,
             "issue_title": issue_title,
+            "enforce_hooks": enforce_hooks,
             "base_branch": base_branch,
             "seed_ref": seed_ref,
             "branch_name": branch_name,
@@ -674,45 +677,12 @@ class TestLaunchIssueSession:
         assert manifest["reset_from_scratch"] is True
         assert manifest["review_cache_boundary"] == "scratch_reset"
         assert manifest["review_cache_boundary_started_at"] == manifest["started_at"]
-        assert "rerun_intent" not in manifest
-        assert "Fresh lifecycle rerun:" not in result.session.original_prompt
 
         actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
         assert any(
             isinstance(a, RemoveLabelAction)
             and a.issue_number == sample_issue.number
             and a.label == scratch_label
-            for a in actions
-        )
-
-    def test_issue_launch_fresh_lifecycle_rerun_records_manifest_and_prompt_context(
-        self,
-        launcher_bundle,
-        sample_issue,
-        mock_events,
-    ):
-        """Fresh lifecycle rerun label should become metadata and prompt context."""
-        scratch_label = launcher_bundle.launcher._lm.reset_retry_scratch_pending  # noqa: SLF001
-        rerun_label = launcher_bundle.launcher._lm.fresh_lifecycle_rerun  # noqa: SLF001
-        sample_issue.labels = [*sample_issue.labels, scratch_label, rerun_label]
-
-        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
-
-        assert result.success is True
-        assert result.session is not None
-        assert "Fresh lifecycle rerun:" in result.session.original_prompt
-        assert "If no code changes are needed" in result.session.original_prompt
-        started = next(e for e in mock_events.events if str(e.name) == "session.started")
-        run_dir = Path(started.data["run_dir"])
-        manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert manifest["rerun_intent"] == "fresh_lifecycle"
-        assert started.data["rerun_intent"] == "fresh_lifecycle"
-
-        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
-        assert any(
-            isinstance(a, RemoveLabelAction)
-            and a.issue_number == sample_issue.number
-            and a.label == rerun_label
             for a in actions
         )
 
@@ -1160,6 +1130,80 @@ class TestLaunchReviewSession:
             result = session_launcher.launch_review_session(review, active_sessions=[])
 
             assert result.success is True
+
+
+class TestLaunchRetrospectiveReviewSession:
+    """Tests for review-first existing-implementation sessions."""
+
+    def test_successful_launch_records_review_first_identity(
+        self,
+        launcher_bundle,
+        mock_events,
+        mock_worktree_manager,
+    ):
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"),
+            issue_number=365,
+            issue_title="Review old implementation",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            prior_pr_number=512,
+            prior_pr_url="https://github.com/test/repo/pull/512",
+        )
+
+        result = launcher_bundle.launcher.launch_retrospective_review_session(
+            review,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        assert result.session is not None
+        assert result.session.terminal_id == "retrospective-review-365"
+        assert result.session.key.task == TaskKind.RETROSPECTIVE_REVIEW
+        assert result.session.pr_number == 512
+        assert result.session.issue.labels == [
+            "agent:web",
+            "agent:reviewer",
+            "lack-of-review-redo",
+        ]
+        assert "RETROSPECTIVE REVIEW MODE" in result.session.original_prompt
+        assert "issue #365" in result.session.original_prompt
+        assert "Prior orchestrator PR: #512" in result.session.original_prompt
+
+        create_call = mock_worktree_manager.create_calls[0]
+        assert create_call["issue_number"] == 365
+        assert create_call["enforce_hooks"] is False
+        reuse_options = create_call["reuse_options"]
+        assert reuse_options is not None
+        assert reuse_options.allow_remote_branch_delete is False
+
+        event = next(e for e in mock_events.events if str(e.name) == str(EventName.REVIEW_STARTED))
+        assert event.data["task"] == TaskKind.RETROSPECTIVE_REVIEW.value
+        assert event.data["prior_pr_number"] == 512
+        assert event.data["source_agent"] == "agent:web"
+
+    def test_keeps_queued_when_retrospective_terminal_already_running(
+        self,
+        launcher_bundle,
+    ):
+        launcher_bundle.session_exists_override[0] = (
+            lambda name: name == "retrospective-review-365"
+        )
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"),
+            issue_number=365,
+            issue_title="Review old implementation",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+        )
+
+        result = launcher_bundle.launcher.launch_retrospective_review_session(
+            review,
+            active_sessions=[],
+        )
+
+        assert result.success is False
+        assert result.keep_queued is True
 
 
 # =============================================================================
@@ -1899,6 +1943,10 @@ class TestSessionLauncherCallback:
             calls.append(("review", n))
             return None
 
+        def retrospective_fn(n):
+            calls.append(("retrospective", n))
+            return None
+
         def rework_fn(n):
             calls.append(("rework", n))
             return None
@@ -1907,10 +1955,35 @@ class TestSessionLauncherCallback:
             calls.append(("triage", n))
             return None
 
-        session_launcher_callback(SessionType.ISSUE, 123, issue_fn, review_fn, rework_fn, triage_fn)
-        session_launcher_callback(SessionType.REVIEW, 456, issue_fn, review_fn, rework_fn, triage_fn)
+        session_launcher_callback(
+            SessionType.ISSUE,
+            123,
+            issue_fn,
+            review_fn,
+            retrospective_fn,
+            rework_fn,
+            triage_fn,
+        )
+        session_launcher_callback(
+            SessionType.REVIEW,
+            456,
+            issue_fn,
+            review_fn,
+            retrospective_fn,
+            rework_fn,
+            triage_fn,
+        )
+        session_launcher_callback(
+            SessionType.RETROSPECTIVE_REVIEW,
+            789,
+            issue_fn,
+            review_fn,
+            retrospective_fn,
+            rework_fn,
+            triage_fn,
+        )
 
-        assert calls == [("issue", 123), ("review", 456)]
+        assert calls == [("issue", 123), ("review", 456), ("retrospective", 789)]
 
     def test_unknown_session_type_fails_fast(self):
         """Unknown session types should not silently no-op."""
@@ -1922,6 +1995,7 @@ class TestSessionLauncherCallback:
             session_launcher_callback(
                 cast(SessionType, object()),
                 123,
+                launch_fn,
                 launch_fn,
                 launch_fn,
                 launch_fn,
@@ -2638,6 +2712,80 @@ class TestHandleSessionCompletion:
         assert calls == ["process_completion", "kill", "actions"]
         assert state.active_sessions == []
         assert state.completed_today == [123]
+
+    def test_retrospective_changes_requested_queues_coder_rework(
+        self,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """Review-first changes_requested hands the issue to coder rework."""
+        issue = Issue(
+            number=365,
+            title="Review existing work",
+            labels=["agent:web", "agent:reviewer", "lack-of-review-redo"],
+        )
+        session = Session(
+            key=SessionKey(
+                issue=FakeIssueKey("365"),
+                task=TaskKind.RETROSPECTIVE_REVIEW,
+            ),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="retrospective-review-365",
+            worktree_path=tmp_path / "worktree",
+            branch_name="365-review",
+            agent_label="agent:reviewer",
+        )
+        state = OrchestratorState(active_sessions=[session])
+        completion_detail = {
+            "outcome": "review_changes_requested",
+            "review_issues": "Add regression tests before approving.",
+        }
+
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.return_value = MagicMock(
+            actions=[],
+            history_entry=SessionHistoryEntry(
+                issue_number=365,
+                title="Review existing work",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=4,
+            ),
+            should_defer_cleanup=False,
+            pending_cleanup=None,
+            should_queue_review=False,
+            pr_url=None,
+            pr_number=None,
+        )
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.find_run_dir.return_value = None
+
+        handle_session_completion(
+            session=session,
+            status=SessionStatus.COMPLETED,
+            state=state,
+            completion_handler=mock_completion_handler,
+            action_applier=MagicMock(),
+            observer=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=lambda _name: None,
+            config=MagicMock(),
+            session_output=session_output,
+            completion_detail=completion_detail,
+        )
+
+        assert len(state.pending_reworks) == 1
+        rework = state.pending_reworks[0]
+        assert rework.issue_number == 365
+        assert rework.agent_type == "agent:web"
+        assert rework.source == "retrospective_review"
+        assert rework.feedback == "Add regression tests before approving."
+        mock_completion_handler.process_completion.assert_called_once()
+        assert (
+            mock_completion_handler.process_completion.call_args.kwargs["completion_detail"]
+            == completion_detail
+        )
 
     def test_finished_session_already_gone_does_not_warn(
         self,

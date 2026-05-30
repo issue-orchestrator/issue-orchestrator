@@ -1126,6 +1126,25 @@ class PendingReview:
         return self._issue_number
 
 
+@dataclass
+class PendingRetrospectiveReview:
+    """An issue queued for review of its existing implementation.
+
+    This is review-first lifecycle work: a reviewer audits the implementation
+    already present in the base branch or prior orchestrator PR. Approval
+    records the review; changes requested hands the issue to a coder rework
+    cycle that will create a normal PR.
+    """
+
+    issue_key: "IssueKey"
+    issue_number: int
+    issue_title: str
+    agent_label: str
+    trigger_label: str
+    prior_pr_number: int | None = None
+    prior_pr_url: str | None = None
+
+
 @dataclass(frozen=True)
 class DiscoveredReview:
     """A PR discovered from session completion, pending Planner decision.
@@ -1139,6 +1158,19 @@ class DiscoveredReview:
     branch_name: str
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
     issue_key: str = ""  # stable_id; falls back to str(issue_number) when empty
+
+
+@dataclass(frozen=True)
+class DiscoveredRetrospectiveReview:
+    """A trigger-labeled issue discovered for retrospective review."""
+
+    issue_number: int
+    issue_title: str
+    agent_label: str
+    trigger_label: str
+    issue_key: str = ""
+    prior_pr_number: int | None = None
+    prior_pr_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1659,6 +1691,7 @@ class OrchestratorState:
     session_history: list[SessionHistoryEntry] = field(default_factory=list)  # This session's history
     issues_started_count: int = 0  # Total issues started this session (for max_issues_to_start)
     pending_reviews: list[PendingReview] = field(default_factory=list)  # PRs waiting for code review
+    pending_retrospective_reviews: list[PendingRetrospectiveReview] = field(default_factory=list)  # Existing implementations waiting for review
     pending_reworks: list[PendingRework] = field(default_factory=list)  # PRs needing rework after review
     pending_triage_reviews: list["PendingTriageReview"] = field(default_factory=list)  # Triage batch reviews waiting
     pending_cleanups: list[PendingCleanup] = field(default_factory=list)  # Sessions awaiting cleanup after review
@@ -1679,6 +1712,7 @@ class OrchestratorState:
     dependency_problems: dict[int, "DependencyProblem"] = field(default_factory=dict)  # Issues blocked by dependencies (to migrate: dict[IssueKey, ...])
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
+    discovered_retrospective_reviews: list[DiscoveredRetrospectiveReview] = field(default_factory=list)  # Existing implementation reviews from labels/UI
     discovered_awaiting_merge_reconciliations: list[DiscoveredAwaitingMergeReconciliation] = field(default_factory=list)  # Awaiting-merge history transitions from scans
     discovered_awaiting_merge_drifts: list[DiscoveredAwaitingMergeDrift] = field(default_factory=list)  # Open issues whose pr-pending label drifted from PR state
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
@@ -1727,6 +1761,18 @@ class OrchestratorState:
     last_tick_started_at: float = 0.0  # Epoch seconds; 0 if no tick has started
     last_tick_completed_at: float = 0.0  # Epoch seconds; 0 if no tick has completed
     current_tick_phase: str = ""  # Non-empty only while a tick is mid-flight
+
+    def queue_pending_rework(self, rework: PendingRework) -> bool:
+        """Queue coder rework if the issue is not already waiting for rework."""
+
+        issue_number = rework.resolve_issue_number()
+        if issue_number is not None and any(
+            existing.resolve_issue_number() == issue_number
+            for existing in self.pending_reworks
+        ):
+            return False
+        self.pending_reworks.extend([rework])
+        return True
 
 
 @dataclass

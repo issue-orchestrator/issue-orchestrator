@@ -16,6 +16,10 @@ not MECHANICS (how to do it). Mechanics live in execution adapters.
 
 from .decision_base import WorkflowDecision
 from .review_workflow import ReviewWorkflow, ReviewDecision
+from .retrospective_review_workflow import (
+    RetrospectiveReviewDecision,
+    RetrospectiveReviewWorkflow,
+)
 from .rework_workflow import ReworkWorkflow, ReworkDecision
 from .triage_workflow import TriageWorkflow, TriageDecision
 
@@ -23,6 +27,8 @@ __all__ = [
     "WorkflowDecision",
     "ReviewWorkflow",
     "ReviewDecision",
+    "RetrospectiveReviewWorkflow",
+    "RetrospectiveReviewDecision",
     "ReworkWorkflow",
     "ReworkDecision",
     "TriageWorkflow",

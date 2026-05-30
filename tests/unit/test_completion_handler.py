@@ -29,7 +29,7 @@ from issue_orchestrator.control.actions import (
     AddLabelAction,
     RemoveLabelAction,
     AddCommentAction,
-    CloseIssueAction,
+    SetIssueStateAction,
     ActionType,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -1179,37 +1179,77 @@ class TestLabelActionGeneration:
         add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
         assert any(action.label == "pr-pending" for action in add_labels)
 
-    def test_fresh_lifecycle_no_pr_completion_comments_and_closes_issue(
+    def test_retrospective_review_approval_flips_issue_labels(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        issue = make_issue(number=365)
-        session = create_test_session(issue, agent_config, tmp_worktree)
-        session_output = FileSystemSessionOutput()
-        run = session_output.start_run(tmp_worktree, session.terminal_id)
-        session_output.update_manifest(run.run_dir, {"rerun_intent": "fresh_lifecycle"})
-        handler = make_handler(config, session_output=session_output)
+        issue = make_issue(
+            number=365,
+            labels=[
+                "agent:web",
+                "agent:reviewer",
+                "lack-of-review-redo",
+                "retrospective-changes-requested",
+            ],
+        )
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="retrospective-review-365",
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+        )
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        config.retrospective_reviewed_label = "retrospective-reviewed"
+        config.retrospective_changes_requested_label = "retrospective-changes-requested"
+        handler = make_handler(config)
 
         result = handler.process_completion(
             session,
             SessionStatus.COMPLETED,
-            review_exchange_completed=True,
+            completion_detail={"outcome": "review_approved"},
         )
 
-        comments = [a for a in result.actions if isinstance(a, AddCommentAction)]
-        closes = [a for a in result.actions if isinstance(a, CloseIssueAction)]
-        assert any(
-            "Fresh Lifecycle Rerun Complete" in action.comment for action in comments
+        removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
+        added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        assert "lack-of-review-redo" in removed
+        assert "retrospective-changes-requested" in removed
+        assert "retrospective-reviewed" in added
+        assert not any(isinstance(a, SetIssueStateAction) for a in result.actions)
+
+    def test_retrospective_review_changes_requested_reopens_for_rework(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(
+            number=365,
+            labels=["agent:web", "agent:reviewer", "lack-of-review-redo"],
         )
-        assert len(closes) == 1
-        assert closes[0].issue_number == 365
-        assert (
-            closes[0].reason
-            == "fresh lifecycle rerun completed without publishable changes"
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="retrospective-review-365",
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
         )
-        assert any(
-            isinstance(action, RemoveLabelAction) and action.label == "in-progress"
-            for action in result.actions
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        config.retrospective_reviewed_label = "retrospective-reviewed"
+        config.retrospective_changes_requested_label = "retrospective-changes-requested"
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            completion_detail={"outcome": "review_changes_requested"},
         )
+
+        removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
+        added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        state_actions = [a for a in result.actions if isinstance(a, SetIssueStateAction)]
+        assert "lack-of-review-redo" in removed
+        assert "retrospective-reviewed" in removed
+        assert "retrospective-changes-requested" in added
+        assert len(state_actions) == 1
+        assert state_actions[0].issue_number == 365
+        assert state_actions[0].state == "open"
 
     def test_needs_run_audit_label_writes_audit_and_flips_labels(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path

@@ -31,8 +31,10 @@ def test_scan_pending_pr_work_loads_issue_branches_once_and_reuses_map() -> None
     state = SimpleNamespace(
         pending_reviews=[],
         pending_reworks=[],
+        pending_retrospective_reviews=[],
         active_sessions=[],
         discovered_reviews=[],
+        discovered_retrospective_reviews=[],
         discovered_awaiting_merge_reconciliations=[],
         discovered_awaiting_merge_drifts=[],
         discovered_awaiting_merge_escalations=[],
@@ -76,8 +78,10 @@ def test_scan_pending_pr_work_appends_post_publish_validation_reworks() -> None:
     state = SimpleNamespace(
         pending_reviews=[],
         pending_reworks=[],
+        pending_retrospective_reviews=[],
         active_sessions=[],
         discovered_reviews=[],
+        discovered_retrospective_reviews=[],
         discovered_awaiting_merge_reconciliations=[],
         discovered_awaiting_merge_drifts=[],
         discovered_awaiting_merge_escalations=[],

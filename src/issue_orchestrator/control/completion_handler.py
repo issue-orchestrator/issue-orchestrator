@@ -40,13 +40,12 @@ from ..domain.models import (
 from ..domain.session_key import TaskKind
 from ..ports import EventSink,  make_trace_event, RepositoryHost, Issue
 from ..ports.session_output import SessionOutput
-from .actions import Action, AddLabelAction, RemoveLabelAction
+from .actions import Action, AddLabelAction, RemoveLabelAction, SetIssueStateAction
 from .completion_action_planner import (
     CompletionActionPlanner,
     critical_processing_errors,
     has_review_exchange_errors,
 )
-from .fresh_rerun_no_pr import final_actions_after_review_exchange
 from .reconciliation import build_expected_for_mutation
 from .session_run_resolution import resolve_session_run_dir
 from pathlib import Path
@@ -303,12 +302,20 @@ class CompletionHandler:
                 pr_url=pr_url,
             )
         )
-        done = status == SessionStatus.COMPLETED
-        completion_actions.extend(final_actions_after_review_exchange(
-            session=session, done=done, pr_url=pr_url,
-            approved=review_exchange_completed,
-            session_output=self._session_output, pending_label=self._lm.pr_pending,
-        ))
+        completion_actions.extend(
+            self._review_exchange_completion_actions(
+                session,
+                pr_url=pr_url,
+                review_exchange_completed=review_exchange_completed,
+            )
+        )
+        completion_actions.extend(
+            self._retrospective_review_completion_actions(
+                session,
+                status,
+                completion_detail or {},
+            )
+        )
         completion_actions = tuple(completion_actions)
 
         if status in (
@@ -522,6 +529,9 @@ class CompletionHandler:
         if status != SessionStatus.COMPLETED:
             return pr_url, pr_number, prs
 
+        if session.key.task == TaskKind.RETROSPECTIVE_REVIEW:
+            return None, None, None
+
         if pr_url_hint:
             return self._fetch_pr_info_from_hint(session, pr_url_hint)
 
@@ -667,8 +677,9 @@ class CompletionHandler:
         detail: dict[str, Any],
     ) -> None:
         """Emit events for a completed session (coding/rework only)."""
-        # Review sessions get their events from _publish_review_outcome()
-        if session.key.task == TaskKind.REVIEW:
+        # Review sessions get their events from _publish_review_outcome().
+        # Retrospective review sessions complete through label/state actions.
+        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
             return
 
         agent = session.agent_label
@@ -1026,7 +1037,11 @@ class CompletionHandler:
         Returns:
             Tuple of (should_defer, pending_cleanup)
         """
-        is_work_session = not session.terminal_id.startswith(("review-", "rework-"))
+        is_work_session = session.key.task not in {
+            TaskKind.REVIEW,
+            TaskKind.RETROSPECTIVE_REVIEW,
+            TaskKind.REWORK,
+        }
         should_defer = False
         pending_cleanup = None
 
@@ -1071,7 +1086,10 @@ class CompletionHandler:
         Note: This returns True even for dry-run PRs (so pr-pending label gets added).
         The actual review queuing is controlled by the planner, which skips dry-run PRs.
         """
-        is_review_session = session.terminal_id.startswith("review-")
+        is_review_session = session.key.task in {
+            TaskKind.REVIEW,
+            TaskKind.RETROSPECTIVE_REVIEW,
+        }
         if review_exchange_completed:
             logger.info(
                 "[REVIEW] Review exchange completed - skipping PR review queue",
@@ -1096,6 +1114,91 @@ class CompletionHandler:
             logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
 
         return False
+
+    def _review_exchange_completion_actions(
+        self,
+        session: Session,
+        *,
+        pr_url: str | None,
+        review_exchange_completed: bool,
+    ) -> tuple[Action, ...]:
+        """Return label actions after an approved local review exchange."""
+
+        if not review_exchange_completed or not pr_url:
+            return ()
+        if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
+            return ()
+        return (
+            AddLabelAction(
+                issue_number=session.issue.number,
+                label=self._lm.pr_pending,
+                reason="review exchange completed - awaiting merge",
+                expected=build_expected_for_mutation(),
+            ),
+        )
+
+    def _retrospective_review_completion_actions(
+        self,
+        session: Session,
+        status: SessionStatus,
+        detail: dict[str, Any],
+    ) -> tuple[Action, ...]:
+        """Return label/state actions for retrospective review outcomes."""
+
+        if session.key.task != TaskKind.RETROSPECTIVE_REVIEW:
+            return ()
+        if status != SessionStatus.COMPLETED:
+            return ()
+
+        outcome = str(detail.get("outcome") or "")
+        issue_number = session.issue.number
+        if outcome == "review_approved":
+            return (
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=self.config.retrospective_review_trigger_label,
+                    reason="retrospective review approved - clearing trigger",
+                ),
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=self.config.retrospective_changes_requested_label,
+                    reason="retrospective review approved - clearing stale changes request",
+                ),
+                AddLabelAction(
+                    issue_number=issue_number,
+                    label=self.config.retrospective_reviewed_label,
+                    reason="retrospective review approved existing implementation",
+                ),
+            )
+        if outcome == "review_changes_requested":
+            return (
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=self.config.retrospective_review_trigger_label,
+                    reason="retrospective review requested changes - clearing trigger",
+                ),
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=self.config.retrospective_reviewed_label,
+                    reason="retrospective review requested changes - clearing reviewed marker",
+                ),
+                AddLabelAction(
+                    issue_number=issue_number,
+                    label=self.config.retrospective_changes_requested_label,
+                    reason="retrospective review requested coder rework",
+                ),
+                SetIssueStateAction(
+                    issue_number=issue_number,
+                    state="open",
+                    reason="retrospective review requested coder rework",
+                ),
+            )
+        logger.warning(
+            "[retrospective-review] Completed issue #%d without a recognized review outcome: %s",
+            issue_number,
+            outcome or "(missing)",
+        )
+        return ()
 
     def _enrich_manifest_runtime(
         self,

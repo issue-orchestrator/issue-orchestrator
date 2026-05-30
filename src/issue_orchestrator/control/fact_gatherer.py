@@ -145,6 +145,7 @@ class FactGatherer:
             issues=tuple(issues),
             active_sessions=tuple(state.active_sessions),
             pending_reviews=tuple(state.pending_reviews),
+            pending_retrospective_reviews=tuple(state.pending_retrospective_reviews),
             pending_reworks=tuple(state.pending_reworks),
             pending_triage=tuple(state.pending_triage_reviews),
             pending_validation_retries=tuple(state.pending_validation_retries),
@@ -153,6 +154,9 @@ class FactGatherer:
             issues_started_count=state.issues_started_count,
             max_issues_to_start=self.config.filtering.max_to_start if self.config.filtering.max_to_start > 0 else None,
             discovered_reviews=tuple(state.discovered_reviews),
+            discovered_retrospective_reviews=tuple(
+                state.discovered_retrospective_reviews
+            ),
             discovered_awaiting_merge_reconciliations=tuple(
                 state.discovered_awaiting_merge_reconciliations
             ),

@@ -110,6 +110,52 @@
         }
       }
     },
+    "/api/retrospective-review/preflight": {
+      "post": {
+        "summary": "Preview retrospective review queue decisions",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/IssueNumbersRequestPayload"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Retrospective review preflight",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RetrospectiveReviewPreflightPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/retrospective-review": {
+      "post": {
+        "summary": "Queue retrospective reviews",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/IssueNumbersRequestPayload"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Retrospective review queue result",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/RetrospectiveReviewExecutePayload"}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/dialog/info": {
       "get": {
         "summary": "Get about dialog",
@@ -2112,6 +2158,115 @@
           {"$ref": "#/components/schemas/E2ESuiteTimelineContainerPayload"}
         ],
         "discriminator": {"propertyName": "kind"}
+      },
+      "IssueNumbersRequestPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issues"],
+        "properties": {
+          "issues": {"type": "array", "items": {"type": "integer", "minimum": 1}}
+        }
+      },
+      "RetrospectiveReviewDecisionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue",
+          "title",
+          "state",
+          "labels",
+          "eligible",
+          "action",
+          "reason",
+          "agent_label",
+          "trigger_label",
+          "will_reopen",
+          "prior_pr_number",
+          "prior_pr_url"
+        ],
+        "properties": {
+          "issue": {"type": "integer", "minimum": 1},
+          "title": {"type": ["string", "null"]},
+          "state": {"type": ["string", "null"]},
+          "labels": {"type": "array", "items": {"type": "string"}},
+          "eligible": {"type": "boolean"},
+          "action": {"type": "string"},
+          "reason": {"type": "string"},
+          "agent_label": {"type": ["string", "null"]},
+          "trigger_label": {"type": ["string", "null"]},
+          "will_reopen": {"type": "boolean"},
+          "prior_pr_number": {"type": ["integer", "null"], "minimum": 1},
+          "prior_pr_url": {"type": ["string", "null"]}
+        }
+      },
+      "RetrospectiveReviewQueuedPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue",
+          "title",
+          "state",
+          "labels",
+          "eligible",
+          "action",
+          "reason",
+          "agent_label",
+          "trigger_label",
+          "will_reopen",
+          "prior_pr_number",
+          "prior_pr_url",
+          "queued"
+        ],
+        "properties": {
+          "issue": {"type": "integer", "minimum": 1},
+          "title": {"type": ["string", "null"]},
+          "state": {"type": ["string", "null"]},
+          "labels": {"type": "array", "items": {"type": "string"}},
+          "eligible": {"type": "boolean"},
+          "action": {"type": "string"},
+          "reason": {"type": "string"},
+          "agent_label": {"type": ["string", "null"]},
+          "trigger_label": {"type": ["string", "null"]},
+          "will_reopen": {"type": "boolean"},
+          "prior_pr_number": {"type": ["integer", "null"], "minimum": 1},
+          "prior_pr_url": {"type": ["string", "null"]},
+          "queued": {"type": "boolean"}
+        }
+      },
+      "RetrospectiveReviewFailurePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue", "error"],
+        "properties": {
+          "issue": {"type": "integer", "minimum": 1},
+          "error": {"type": "string"}
+        }
+      },
+      "RetrospectiveReviewPreflightPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["decisions", "eligible", "skipped", "will_reopen", "workflow", "trigger_label"],
+        "properties": {
+          "decisions": {"type": "array", "items": {"$ref": "#/components/schemas/RetrospectiveReviewDecisionPayload"}},
+          "eligible": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+          "skipped": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+          "will_reopen": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+          "workflow": {"const": "retrospective_review"},
+          "trigger_label": {"type": "string"}
+        }
+      },
+      "RetrospectiveReviewExecutePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["queued", "failed", "skipped", "workflow", "trigger_label", "refresh_triggered"],
+        "properties": {
+          "queued": {"type": "array", "items": {"$ref": "#/components/schemas/RetrospectiveReviewQueuedPayload"}},
+          "failed": {"type": "array", "items": {"$ref": "#/components/schemas/RetrospectiveReviewFailurePayload"}},
+          "skipped": {"type": "array", "items": {"$ref": "#/components/schemas/RetrospectiveReviewDecisionPayload"}},
+          "workflow": {"const": "retrospective_review"},
+          "trigger_label": {"type": "string"},
+          "refresh_triggered": {"type": "boolean"}
+        }
       },
       "E2EIssueAffordancePayload": {
         "type": "object",

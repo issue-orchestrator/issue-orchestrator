@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from ..domain.models import (
     Issue,
     PendingReview,
+    PendingRetrospectiveReview,
     PendingRework,
     PendingTriageReview,
     PendingValidationRetry,
@@ -49,6 +50,39 @@ def orchestrator_launch_review_session(
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         session_name = f"review-{review.pr_number}"
+        restored = session_restorer.restore_known_terminal(
+            issue_number=review.issue_number,
+            session_name=session_name,
+            is_review=True,
+            already_tracked=state.active_sessions,
+        )
+        if restored:
+            append_unique_active_sessions(state.active_sessions, restored)
+            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
+        else:
+            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
+    return result.session if result.success else None
+
+
+def orchestrator_launch_retrospective_review_session(
+    review: PendingRetrospectiveReview,
+    state: "OrchestratorState",
+    session_launcher: SessionLauncher,
+    session_restorer: "SessionRestorer",
+) -> Optional[Session]:
+    """Launch a retrospective review session and update orchestrator queues."""
+    result = session_launcher.launch_retrospective_review_session(
+        review,
+        state.active_sessions,
+    )
+    state.pending_retrospective_reviews = [
+        r for r in state.pending_retrospective_reviews
+        if r.issue_number != review.issue_number
+    ]
+    if result.success and result.session:
+        append_unique_active_sessions(state.active_sessions, [result.session])
+    elif result.keep_queued:
+        session_name = f"retrospective-review-{review.issue_number}"
         restored = session_restorer.restore_known_terminal(
             issue_number=review.issue_number,
             session_name=session_name,
@@ -141,6 +175,7 @@ def session_launcher_callback(
     number: int,
     launch_issue_fn: Callable[[int], Optional[Session]],
     launch_review_fn: Callable[[int], Optional[Session]],
+    launch_retrospective_review_fn: Callable[[int], Optional[Session]],
     launch_rework_fn: Callable[[int], Optional[Session]],
     launch_triage_fn: Callable[[int], Optional[Session]],
 ) -> Optional[Session]:
@@ -150,6 +185,7 @@ def session_launcher_callback(
     handlers = {
         SessionType.ISSUE: launch_issue_fn,
         SessionType.REVIEW: launch_review_fn,
+        SessionType.RETROSPECTIVE_REVIEW: launch_retrospective_review_fn,
         SessionType.REWORK: launch_rework_fn,
         SessionType.TRIAGE: launch_triage_fn,
     }

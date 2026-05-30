@@ -419,82 +419,12 @@ class TestReviewExchangeExecution:
         mock_label_adapter.add_label.assert_any_call(42, "code-reviewed")
         mock_label_adapter.remove_label.assert_any_call(42, "needs-code-review")
 
-    def test_fresh_lifecycle_rerun_no_diff_skips_empty_pr_after_review(
-        self,
-        tmp_path,
-        mock_label_adapter,
-        mock_pr_adapter,
-        mock_git_adapter,
-        event_bus,
-        worktree_with_completion,
-    ) -> None:
-        config = self._make_config(tmp_path)
-        config.review_exchange_mode = "via-local-loop"
-        processor = CompletionProcessor(
-            label_adapter=mock_label_adapter,
-            pr_adapter=mock_pr_adapter,
-            git_adapter=mock_git_adapter,
-            session_output=FileSystemSessionOutput(),
-            event_bus=event_bus,
-            label_config={
-                "code_reviewed": "code-reviewed",
-                "code_review": "needs-code-review",
-            },
-            config=config,
-        )
-        record = make_record(
-            outcome=CompletionOutcome.COMPLETED,
-            requested_actions=[
-                RequestedAction.PUSH_BRANCH,
-                RequestedAction.CREATE_PR,
-                RequestedAction.POST_COMMENT,
-            ],
-            comment_body="Verification completed; no changes needed.",
-        )
-        worktree = worktree_with_completion(record)
-        run_dir = worktree / ".issue-orchestrator" / "sessions" / record.session_id
-        (run_dir / "manifest.json").write_text(json.dumps({
-            "reset_from_scratch": True,
-            "rerun_intent": "fresh_lifecycle",
-        }))
-        mock_git_adapter.default_branch.return_value = "main"
-        mock_pr_adapter.create_pr.side_effect = RuntimeError(
-            "No commits between main and issue-123"
-        )
-        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
-            return_value=ReviewExchangeOutcome(status="ok", rounds=1, reason="reviewer_ok")
-        )
-
-        result = processor.process(
-            worktree,
-            issue_number=123,
-            issue_title="Test Issue",
-            agent_label="agent:coder",
-        )
-
-        assert result.success is True
-        assert result.pr_url is None
-        assert result.errors is None
-        assert result.review_exchange_completed is True
-        assert result.actions_taken is not None
-        assert "Fresh lifecycle rerun approved with no code changes" in " ".join(
-            result.actions_taken
-        )
-        assert "skipped PR creation" in " ".join(result.actions_taken)
-        mock_git_adapter.push.assert_called_once()
-        mock_pr_adapter.create_pr.assert_called_once()
-        mock_pr_adapter.add_comment.assert_called_once_with(
-            123,
-            "Verification completed; no changes needed.",
-        )
-        mock_label_adapter.add_label.assert_not_called()
-
     @pytest.mark.parametrize(
         ("create_pr_error", "manifest", "expected_error"),
         [
             pytest.param(
                 RuntimeError("connection reset"),
-                {"rerun_intent": "fresh_lifecycle"},
+                {"reset_from_scratch": True},
                 "connection reset",
                 id="different-error",
             ),

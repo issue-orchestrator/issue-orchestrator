@@ -74,6 +74,7 @@ from .actions import (
     AddCommentAction,
     SupersedePullRequestAction,
     CloseIssueAction,
+    SetIssueStateAction,
     CreateTriageIssueAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
@@ -248,6 +249,7 @@ class ActionApplier:
             ActionType.STOP_SESSION: self._apply_stop_session,
             # Queue operations - IO is handled here, state update by orchestrator
             ActionType.QUEUE_REVIEW: self._apply_queue_review,
+            ActionType.QUEUE_RETROSPECTIVE_REVIEW: self._apply_queue_operation,
             ActionType.QUEUE_REWORK: self._apply_queue_operation,
             ActionType.QUEUE_TRIAGE: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
@@ -260,6 +262,7 @@ class ActionApplier:
             ActionType.ADD_COMMENT: self._apply_add_comment,
             ActionType.SUPERSEDE_PR: self._apply_supersede_pr,
             ActionType.CLOSE_ISSUE: self._apply_close_issue,
+            ActionType.SET_ISSUE_STATE: self._apply_set_issue_state,
             # History operations
             ActionType.RECONCILE_HISTORY_ENTRY: self._apply_reconcile_history_entry,
         }
@@ -493,6 +496,33 @@ class ActionApplier:
         except Exception as e:
             logger.error(
                 issue_log(action.issue_number, "Failed to close issue: %s"),
+                e,
+            )
+            return ActionResult.fail(action, str(e), issue_number=action.issue_number)
+
+    def _apply_set_issue_state(self, action: Action) -> ActionResult:
+        """Set an issue's open/closed state through the repository host."""
+        assert isinstance(action, SetIssueStateAction)
+        assert self.repository_host is not None, "repository_host required for set_issue_state"
+
+        self._require_expected(action, action.issue_number)
+        self._verify_claim_before_write(action, action.issue_number)
+
+        try:
+            self.repository_host.update_issue_state(action.issue_number, action.state)
+            logger.info(
+                issue_log(action.issue_number, "Issue state set to %s"),
+                action.state,
+            )
+            return ActionResult.ok(
+                action,
+                issue_number=action.issue_number,
+                state=action.state,
+            )
+        except Exception as e:
+            logger.error(
+                issue_log(action.issue_number, "Failed to set issue state to %s: %s"),
+                action.state,
                 e,
             )
             return ActionResult.fail(action, str(e), issue_number=action.issue_number)
@@ -1344,6 +1374,8 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
 
     def _determine_session_type(self, session_name: str) -> SessionType:
         """Determine session type from session name."""
+        if session_name.startswith("retrospective-review-"):
+            return SessionType.RETROSPECTIVE_REVIEW
         if session_name.startswith("review-"):
             return SessionType.REVIEW
         if session_name.startswith("rework-"):

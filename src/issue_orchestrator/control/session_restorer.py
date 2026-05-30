@@ -26,7 +26,7 @@ from ..ports.session_runner import DiscoveredSession
 
 logger = logging.getLogger(__name__)
 
-_CANONICAL_SESSION_PREFIXES = ("issue-", "review-", "rework-", "triage-")
+_CANONICAL_SESSION_PREFIXES = ("issue-", "review-", "retrospective-review-", "rework-", "triage-")
 _REVIEW_SESSION_RE = re.compile(r"^review-(\d+)$")
 _REVIEW_TITLE_RE = re.compile(r"\bReview PR #(\d+)\b")
 
@@ -149,7 +149,7 @@ class SessionRestorer:
 
         # Determine session type and session_name
         restored_pr_number: int | None = None
-        if is_review:
+        if is_review and not session_name.startswith("retrospective-review-"):
             match = _REVIEW_SESSION_RE.match(session_name)
             restored_pr_number = int(match.group(1)) if match else issue_number
 
@@ -195,7 +195,10 @@ class SessionRestorer:
 
         # Create session with domain identity
         issue_key = GitHubIssueKey(repo=self.config.repo, external_id=str(issue_number))
-        task_kind = TaskKind.REVIEW if is_review else TaskKind.CODE
+        if session_name.startswith("retrospective-review-"):
+            task_kind = TaskKind.RETROSPECTIVE_REVIEW
+        else:
+            task_kind = TaskKind.REVIEW if is_review else TaskKind.CODE
         session_key = SessionKey(issue=issue_key, task=task_kind)
         # Use the agent type from issue labels, or the first available agent as fallback
         agent_label_val = issue_obj.agent_type or next(iter(self.config.agents.keys()), "unknown")
