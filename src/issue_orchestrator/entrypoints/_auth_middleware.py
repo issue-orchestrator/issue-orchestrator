@@ -284,14 +284,20 @@ and configuration.</p>
 class BrowserPageAuth:
     """Browser-auth template context for a top-level HTML page.
 
-    ``csrf_token`` and ``browser_auth_required`` map directly onto the
-    ``io-csrf-token`` / ``io-browser-auth-required`` meta tags that
-    ``browser_auth.js`` reads to attach ``X-CSRF-Token`` to mutating
-    fetches.
+    Renders straight into the ``io-csrf-token`` / ``io-browser-auth-required``
+    meta tags that ``browser_auth.js`` reads to attach ``X-CSRF-Token`` to
+    mutating fetches. ``auth_required`` is the typed source of truth;
+    ``browser_auth_required`` is its meta-tag string form so callers render
+    directly without re-deriving ``"1"``/``"0"`` at each site.
     """
 
     csrf_token: str
-    browser_auth_required: str
+    auth_required: bool
+
+    @property
+    def browser_auth_required(self) -> str:
+        """``content`` value for the ``io-browser-auth-required`` meta tag."""
+        return "1" if self.auth_required else "0"
 
 
 def resolve_browser_page_auth(
@@ -316,13 +322,13 @@ def resolve_browser_page_auth(
     is passed in rather than derived here.
     """
     if not auth_enabled:
-        return BrowserPageAuth(csrf_token="", browser_auth_required="0")
+        return BrowserPageAuth(csrf_token="", auth_required=False)
     session_id = request.cookies.get(browser_session.SESSION_COOKIE)
     if not session_id or not browser_session.session_is_valid(session_id):
         return render_login_page(action_url="/login")
     return BrowserPageAuth(
         csrf_token=browser_session.get_csrf_token(session_id) or "",
-        browser_auth_required="1",
+        auth_required=True,
     )
 
 

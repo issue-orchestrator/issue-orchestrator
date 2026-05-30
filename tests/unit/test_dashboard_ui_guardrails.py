@@ -3055,13 +3055,19 @@ def test_recent_e2e_runs_builder_emits_typed_payload() -> None:
 
 TEMPLATES_DIR = ROOT / "src" / "issue_orchestrator" / "templates"
 
+# A full page declares ``<!doctype html>`` as its first markup. Anchoring at
+# the file start (rather than a loose substring match) keeps a fragment that
+# merely *mentions* a doctype in a comment or example from being misclassified
+# as a full page that must carry the CSRF meta tags.
+_DOCTYPE_AT_START = re.compile(r"^\s*<!doctype html>", re.IGNORECASE)
+
 
 def _full_page_templates() -> list[Path]:
     """Every template that is a complete HTML document (not a fragment)."""
     return sorted(
         p
         for p in TEMPLATES_DIR.glob("*.html")
-        if "<!doctype html>" in p.read_text(encoding="utf-8").lower()
+        if _DOCTYPE_AT_START.match(p.read_text(encoding="utf-8"))
     )
 
 
