@@ -2,8 +2,6 @@
 
 Archived copy of the former design backstory essay. The active public narrative is now [A Software Engineering Control Plane for Agentic Development](../../journeys/software-engineering-control-plane.md).
 
-This essay is the design backstory behind Issue-Orchestrator's enforcement model. For the concise product thesis, read [No Free Lunch for Coding Agents](../../journeys/no-free-lunch.md).
-
 The short version: AI agents are good at finishing bounded tasks, but they are not automatically good at maintaining systems. Task completion without enforced architecture, validation, and review slowly erodes a codebase.
 
 I wanted to be able to give my agentic helpers a list of tasks and still keep the system well-architected, validated, and reviewable over time. Prompting and exhortation were not enough. The design lesson was enforcement.
@@ -164,6 +162,6 @@ This layer is explicitly experimental and advisory. Execution remains strictly c
 
 ## Relationship to the Core Thesis
 
-This essay is background, not the canonical product thesis. [No Free Lunch for Coding Agents](../../journeys/no-free-lunch.md) states the public contract: agents contribute work, while the system decides whether that work advances.
+This essay is background, not the canonical product thesis. [A Software Engineering Control Plane for Agentic Development](../../journeys/software-engineering-control-plane.md) states the public contract: agents contribute work, while the system decides whether that work advances.
 
 This document preserves the design path that led there: enforce architecture mechanically, make workflow deterministic, externalize task management, and leave humans with merge authority.

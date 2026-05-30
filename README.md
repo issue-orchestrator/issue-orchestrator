@@ -68,6 +68,12 @@ Agents cannot merge PRs. Humans merge. Validation runs automatically before code
 
 It is a poor fit for one-off prompt-and-patch work, repos without CI or branch protection, or projects that have not decided what standards agents should be held to.
 
+## Is your repo ready?
+
+The orchestrator works best on repos with basic discipline: PR-required branches, CI that gates merge, architecture you can name, tests at public boundaries, and a culture of adding tests when you add code. Under-disciplined repos burn cycles fixing CI, fighting flaky tests, and rediscovering layer boundaries.
+
+To assess a target repo before scaling agent work, ask your AI assistant to use the [`readiness` skill](.claude/skills/readiness/SKILL.md). Request read-only mode if you want the assessment limited to static inspection and read-only API calls.
+
 ## Quickstart
 
 ```bash
