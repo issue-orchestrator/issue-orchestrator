@@ -4,6 +4,7 @@ import shutil
 
 import pytest
 import issue_orchestrator.entrypoints.cli_tools.setup_wizard as setup_wizard_module
+import issue_orchestrator.entrypoints.cli_tools.readiness_launch as readiness_launch_module
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -1452,7 +1453,8 @@ class TestRunWizard:
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
             with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host", return_value=Mock()):
-                run_wizard(target_path=target, prompter=prompter)
+                with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.offer_readiness_assessment"):
+                    run_wizard(target_path=target, prompter=prompter)
 
         # Verify files were created
         assert (target / ".issue-orchestrator.yaml").exists() or any("apply" in msg.lower() for msg in prompter.printed)
@@ -1513,8 +1515,9 @@ class TestRunWizard:
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
             with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host", return_value=Mock()):
-                with pytest.raises(SystemExit):
-                    run_wizard(target_path=target, prompter=prompter)
+                with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.offer_readiness_assessment"):
+                    with pytest.raises(SystemExit):
+                        run_wizard(target_path=target, prompter=prompter)
 
     @patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.check_prerequisites")
     @patch("os.chdir")
@@ -1595,8 +1598,9 @@ class TestRunWizard:
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value=None):
             with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard._get_repository_host", return_value=Mock()):
-                with pytest.raises(SystemExit):
-                    run_wizard(target_path=target, prompter=prompter)
+                with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.offer_readiness_assessment"):
+                    with pytest.raises(SystemExit):
+                        run_wizard(target_path=target, prompter=prompter)
 
 
 class TestFileCollector:
@@ -1805,3 +1809,99 @@ class TestDryRunMode:
         assert any("CHANGES" in msg for msg in prompter.printed)
         # Should suggest running without --dry-run
         assert any("without --dry-run" in msg for msg in prompter.printed)
+
+
+class TestOfferReadinessAssessment:
+    """Handler-side tests for the optional readiness step (soft, never blocks)."""
+
+    def test_runs_when_accepted_single_cli(self, tmp_path) -> None:
+        prompter = MockPrompter([True])  # yes_no -> run
+        launcher = Mock(return_value=0)
+
+        readiness_launch_module.offer_readiness_assessment(
+            prompter,
+            tmp_path,
+            available_clis=lambda: ["claude"],
+            launcher=launcher,
+        )
+
+        launcher.assert_called_once_with("claude", tmp_path)
+        assert any("Launching claude" in m for m in prompter.printed)
+        assert any("Continuing setup" in m for m in prompter.printed)
+
+    def test_skipped_when_declined(self, tmp_path) -> None:
+        prompter = MockPrompter([False])
+        launcher = Mock()
+
+        readiness_launch_module.offer_readiness_assessment(
+            prompter,
+            tmp_path,
+            available_clis=lambda: ["claude"],
+            launcher=launcher,
+        )
+
+        launcher.assert_not_called()
+        assert any("Skipped" in m for m in prompter.printed)
+        assert any("SKILL.md" in m for m in prompter.printed)
+
+    def test_prompts_choice_with_multiple_clis(self, tmp_path) -> None:
+        prompter = MockPrompter([True, "codex"])  # yes_no, then choice
+        launcher = Mock(return_value=0)
+
+        readiness_launch_module.offer_readiness_assessment(
+            prompter,
+            tmp_path,
+            available_clis=lambda: ["claude", "codex"],
+            launcher=launcher,
+        )
+
+        launcher.assert_called_once_with("codex", tmp_path)
+        assert "Which agent?" in prompter.questions_asked
+
+    def test_no_cli_prints_pointer(self, tmp_path) -> None:
+        prompter = MockPrompter([])
+        launcher = Mock()
+
+        readiness_launch_module.offer_readiness_assessment(
+            prompter,
+            tmp_path,
+            available_clis=lambda: [],
+            launcher=launcher,
+        )
+
+        launcher.assert_not_called()
+        assert any("No agent CLI" in m for m in prompter.printed)
+        assert any("SKILL.md" in m for m in prompter.printed)
+
+    def test_dry_run_is_noop(self, tmp_path) -> None:
+        prompter = MockPrompter([])
+        launcher = Mock()
+
+        readiness_launch_module.offer_readiness_assessment(
+            prompter,
+            tmp_path,
+            dry_run=True,
+            available_clis=lambda: ["claude"],
+            launcher=launcher,
+        )
+
+        launcher.assert_not_called()
+        assert prompter.printed == []
+
+    def test_launch_failure_never_blocks(self, tmp_path) -> None:
+        prompter = MockPrompter([True])
+
+        def boom(*_args, **_kwargs):
+            # A real launch failure (missing binary, bad interpreter, perms)
+            # surfaces as OSError — e.g. gemini's dead-node-shebang case.
+            raise OSError("bad interpreter")
+
+        # Must not raise — readiness is advisory and cannot block setup.
+        readiness_launch_module.offer_readiness_assessment(
+            prompter,
+            tmp_path,
+            available_clis=lambda: ["claude"],
+            launcher=boom,
+        )
+
+        assert any("Could not launch" in m for m in prompter.printed)

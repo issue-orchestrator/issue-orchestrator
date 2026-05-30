@@ -287,3 +287,24 @@ def setup_ai_providers(prompter: Prompter) -> None:
                 )
         else:
             prompter.print("  Skipped (no key provided)\n")
+
+
+def prompt_worktree_setup_commands(prompter: Prompter) -> list[str]:
+    """Prompt for per-worktree setup commands; returns [] if none provided.
+
+    Shared by the new-project and existing-project wizard flows.
+    """
+    prompter.print("\n--- Worktree Setup Commands ---")
+    prompter.print(
+        "Commands to run in each new worktree after creation (e.g., install deps)."
+    )
+    prompter.print("Examples:")
+    prompter.print("  npm install")
+    prompter.print("  pip install -e '.[dev]'")
+    prompter.print("  make setup")
+    setup_input = prompter.input(
+        "Setup commands (comma-separated, or empty to skip)", ""
+    )
+    if not setup_input.strip():
+        return []
+    return [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
