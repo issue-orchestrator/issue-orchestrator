@@ -69,7 +69,7 @@ from ._auth_middleware import (
     handle_login_post,
     install_access_log_redaction,
     issue_sse_token_response,
-    render_login_page,
+    resolve_browser_page_auth,
 )
 from .brand_assets import read_logo_svg
 from .control_api_goal_pilot_routes import control_goal_pilot_router
@@ -875,14 +875,11 @@ async def control_center_ui(request: Request) -> HTMLResponse:
     mint a valid session for anyone who hit ``/``, letting any local
     process turn an anonymous visit into admin-equivalent API access.
     """
-    auth_disabled = _admin_token is None and _agent_callback_token is None
-    existing_session = request.cookies.get(browser_session.SESSION_COOKIE)
-    csrf_token: str | None = None
-    if existing_session:
-        csrf_token = browser_session.get_csrf_token(existing_session)
-    if csrf_token is None and not auth_disabled:
+    auth_enabled = not (_admin_token is None and _agent_callback_token is None)
+    page_auth = resolve_browser_page_auth(request, auth_enabled=auth_enabled)
+    if isinstance(page_auth, HTMLResponse):
         # No valid session and auth is active — show login form.
-        return render_login_page(action_url="/login")
+        return page_auth
 
     template_path = _TEMPLATES_DIR / "control_center.html"
     if not template_path.exists():
@@ -912,8 +909,8 @@ async def control_center_ui(request: Request) -> HTMLResponse:
     # automatically instead of the operator hard-reloading. See
     # PR #6263 for the incident this prevents.
     content = content.replace("{{ static_version }}", STATIC_VERSION_TOKEN)
-    content = content.replace("{{ browser_auth_required }}", "0" if auth_disabled else "1")
-    content = content.replace("{{ csrf_token }}", csrf_token or "")
+    content = content.replace("{{ browser_auth_required }}", page_auth.browser_auth_required)
+    content = content.replace("{{ csrf_token }}", page_auth.csrf_token)
     # Render the dev-mode banner only when the operator has
     # explicitly disabled auth (``--dev-no-auth`` /
     # ``ISSUE_ORCHESTRATOR_DEV_NO_AUTH=1``). In the normal
@@ -921,7 +918,7 @@ async def control_center_ui(request: Request) -> HTMLResponse:
     # session cookie, so no banner is needed.
     content = content.replace(
         "{{ dev_no_auth_banner }}",
-        _DEV_NO_AUTH_BANNER_HTML if auth_disabled else "",
+        _DEV_NO_AUTH_BANNER_HTML if not auth_enabled else "",
     )
     # Server-render the flash diagnostic probe as a parser-blocking
     # <script> tag only when ?debug=flash is in the URL. The

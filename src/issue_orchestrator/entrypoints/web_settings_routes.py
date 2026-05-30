@@ -20,8 +20,27 @@ web_settings_router = APIRouter()
 
 
 @web_settings_router.get("/settings", response_class=HTMLResponse)
-async def settings_page(orchestrator: WebOrchestratorDependency) -> HTMLResponse:
-    """Render the settings page."""
+async def settings_page(
+    request: Request, orchestrator: WebOrchestratorDependency
+) -> HTMLResponse:
+    """Render the settings page.
+
+    Resolves the browser session's CSRF token (when dashboard auth is
+    enabled) and hands it to the template so ``browser_auth.js`` can
+    attach ``X-CSRF-Token`` to the ``POST /api/settings`` save. Without
+    this the save fetch carries no CSRF header and the auth gate rejects
+    it with ``missing or invalid csrf token``. Mirrors the dashboard
+    root handler in ``web_read_model_routes.py``.
+    """
+    from ._auth_middleware import resolve_browser_page_auth
+    from .web import get_configured_dashboard_admin_token
+
+    page_auth = resolve_browser_page_auth(
+        request, auth_enabled=get_configured_dashboard_admin_token() is not None
+    )
+    if isinstance(page_auth, HTMLResponse):
+        return page_auth
+
     templates = get_templates()
     template = templates.get_template("settings.html")
 
@@ -38,6 +57,8 @@ async def settings_page(orchestrator: WebOrchestratorDependency) -> HTMLResponse
         values=values_dump,
         tabs_for_js=tabs_for_js,
         schemas_for_js=schemas,
+        csrf_token=page_auth.csrf_token,
+        browser_auth_required=page_auth.browser_auth_required,
     )
     return HTMLResponse(content=html)
 
