@@ -409,7 +409,7 @@ class OrchestratorSupport:
     def _handle_queue_retrospective_review(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueRetrospectiveReviewAction
         a = cast(QueueRetrospectiveReviewAction, action)
-        if any(r.issue_number == a.issue_number for r in self.state.pending_retrospective_reviews):
+        if self.state.has_pending_or_active_retrospective_review(a.issue_number):
             return
         self.state.pending_retrospective_reviews.append(
             PendingRetrospectiveReview(

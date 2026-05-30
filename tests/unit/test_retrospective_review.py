@@ -11,6 +11,7 @@ from issue_orchestrator.control.retrospective_review import (
     find_orchestrator_pr_for_issue,
     preflight_retrospective_review_issue,
     queue_retrospective_review_request,
+    retrospective_review_preflight_payload,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -109,11 +110,58 @@ def test_preflight_closed_issue_queues_review_without_reopen_or_filter_gate() ->
 
     assert decision.eligible is True
     assert decision.action == "queue_review"
-    assert decision.will_reopen is False
     assert decision.prior_pr_number == 512
     assert decision.reason == (
         "Closed issue will stay closed unless retrospective review requests changes"
     )
+
+
+def test_preflight_payload_includes_all_decision_fields() -> None:
+    config = make_config()
+    repo = FakeRepositoryHost()
+    issue = make_issue(
+        labels=["agent:web", "lack-of-review-redo", "blocked-failed"],
+        state="closed",
+    )
+    repo.issues[365] = issue
+    repo.prs_by_issue[365] = [
+        SimpleNamespace(
+            number=512,
+            url="https://github.com/owner/repo/pull/512",
+            body=f"{ORCHESTRATOR_PR_MARKER}\n",
+        )
+    ]
+
+    decision = preflight_retrospective_review_issue(365, issue, repo, config)
+    payload = retrospective_review_preflight_payload(
+        [decision],
+        trigger_label=config.retrospective_review_trigger_label,
+    )
+
+    assert payload == {
+        "decisions": [
+            {
+                "issue": 365,
+                "title": "Issue 365",
+                "state": "closed",
+                "labels": ["agent:web", "lack-of-review-redo", "blocked-failed"],
+                "eligible": True,
+                "action": "queue_review",
+                "reason": (
+                    "Closed issue will stay closed unless retrospective review "
+                    "requests changes"
+                ),
+                "agent_label": "agent:web",
+                "trigger_label": "lack-of-review-redo",
+                "prior_pr_number": 512,
+                "prior_pr_url": "https://github.com/owner/repo/pull/512",
+            }
+        ],
+        "eligible": [365],
+        "skipped": [],
+        "workflow": "retrospective_review",
+        "trigger_label": "lack-of-review-redo",
+    }
 
 
 def test_preflight_skips_issue_without_agent_label() -> None:
@@ -152,10 +200,49 @@ def test_queue_retrospective_review_request_is_idempotent() -> None:
     assert queued.trigger_label == "lack-of-review-redo"
 
 
+def test_queue_retrospective_review_request_preserves_all_pending_fields() -> None:
+    config = make_config()
+    repo = FakeRepositoryHost()
+    issue = make_issue()
+    repo.issues[365] = issue
+    repo.prs_by_issue[365] = [
+        SimpleNamespace(
+            number=512,
+            url="https://github.com/owner/repo/pull/512",
+            body=f"{ORCHESTRATOR_PR_MARKER}\n",
+        )
+    ]
+    decision = preflight_retrospective_review_issue(365, issue, repo, config)
+    state = OrchestratorState()
+
+    assert queue_retrospective_review_request(
+        state=state,
+        repository_host=repo,
+        decision=decision,
+    ) is True
+
+    assert len(state.pending_retrospective_reviews) == 1
+    queued = state.pending_retrospective_reviews[0]
+    assert queued.issue_key == FakeIssueKey("365")
+    assert queued.issue_number == 365
+    assert queued.issue_title == "Issue 365"
+    assert queued.agent_label == "agent:web"
+    assert queued.trigger_label == "lack-of-review-redo"
+    assert queued.prior_pr_number == 512
+    assert queued.prior_pr_url == "https://github.com/owner/repo/pull/512"
+
+
 def test_discover_retrospective_review_issues_scans_trigger_label_across_states() -> None:
     config = make_config()
     repo = FakeRepositoryHost()
     repo.issues[365] = make_issue(labels=["agent:web", "lack-of-review-redo"])
+    repo.prs_by_issue[365] = [
+        SimpleNamespace(
+            number=512,
+            url="https://github.com/owner/repo/pull/512",
+            body=f"{ORCHESTRATOR_PR_MARKER}\n",
+        )
+    ]
     repo.issues[366] = make_issue(
         366,
         labels=["agent:unknown", "lack-of-review-redo"],
@@ -170,6 +257,12 @@ def test_discover_retrospective_review_issues_scans_trigger_label_across_states(
     )
 
     assert [item.issue_number for item in discovered] == [365]
+    assert discovered[0].issue_title == "Issue 365"
+    assert discovered[0].agent_label == "agent:web"
+    assert discovered[0].trigger_label == "lack-of-review-redo"
+    assert discovered[0].issue_key == "365"
+    assert discovered[0].prior_pr_number == 512
+    assert discovered[0].prior_pr_url == "https://github.com/owner/repo/pull/512"
     assert repo.list_calls == [
         {
             "labels": ["lack-of-review-redo"],

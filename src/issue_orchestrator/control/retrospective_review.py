@@ -40,7 +40,6 @@ class RetrospectiveReviewIssueDecision:
     reason: str
     agent_label: str | None = None
     trigger_label: str | None = None
-    will_reopen: bool = False
     prior_pr_number: int | None = None
     prior_pr_url: str | None = None
 
@@ -55,7 +54,6 @@ class RetrospectiveReviewIssueDecision:
             "reason": self.reason,
             "agent_label": self.agent_label,
             "trigger_label": self.trigger_label,
-            "will_reopen": self.will_reopen,
             "prior_pr_number": self.prior_pr_number,
             "prior_pr_url": self.prior_pr_url,
         }
@@ -139,7 +137,6 @@ def preflight_retrospective_review_issue(
         ),
         agent_label=issue.agent_type,
         trigger_label=trigger_label,
-        will_reopen=False,
         prior_pr_number=prior_pr_number,
         prior_pr_url=prior_pr_url,
     )
@@ -158,7 +155,6 @@ def retrospective_review_preflight_payload(
         "decisions": [decision.to_payload() for decision in decisions],
         "eligible": eligible,
         "skipped": skipped,
-        "will_reopen": [],
         "workflow": "retrospective_review",
         "trigger_label": trigger_label,
     }
@@ -175,20 +171,7 @@ def queue_retrospective_review_request(
     if not decision.eligible or not decision.agent_label or not decision.trigger_label:
         return False
     issue_number = decision.issue
-    already_queued = any(
-        review.issue_number == issue_number
-        for review in state.pending_retrospective_reviews
-    )
-    already_discovered = any(
-        review.issue_number == issue_number
-        for review in state.discovered_retrospective_reviews
-    )
-    already_active = any(
-        session.issue.number == issue_number
-        and session.terminal_id.startswith("retrospective-review-")
-        for session in state.active_sessions
-    )
-    if already_queued or already_discovered or already_active:
+    if state.has_in_flight_retrospective_review(issue_number):
         return False
 
     state.pending_retrospective_reviews.append(
@@ -317,7 +300,6 @@ def _decision_skip(
         reason=reason,
         agent_label=issue.agent_type,
         trigger_label=trigger_label,
-        will_reopen=False,
     )
 
 

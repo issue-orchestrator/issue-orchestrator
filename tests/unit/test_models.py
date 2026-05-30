@@ -9,7 +9,9 @@ from issue_orchestrator.domain.models import (
     SessionStatus,
     IssueStatus,
     AgentConfig,
+    DiscoveredRetrospectiveReview,
     OrchestratorState,
+    PendingRetrospectiveReview,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -503,6 +505,72 @@ class TestOrchestratorState:
         assert state.completed_today == []
         assert state.paused is False
         assert state.priority_queue == []
+        assert state.pending_retrospective_reviews == []
+        assert state.discovered_retrospective_reviews == []
+        assert state.retrospective_review_in_flight_issue_numbers() == set()
+        assert state.pending_or_active_retrospective_review_issue_numbers() == set()
+        assert state.has_in_flight_retrospective_review(365) is False
+        assert state.has_pending_or_active_retrospective_review(365) is False
+
+    def test_retrospective_review_in_flight_numbers_cover_all_sources(
+        self,
+        sample_agent_config,
+    ):
+        """Retrospective review duplicate checks include queued, discovered, and active work."""
+        active_issue = Issue(number=367, title="Active", labels=["agent:web"])
+        active_session = Session(
+            key=_make_session_key(367, TaskKind.RETROSPECTIVE_REVIEW),
+            issue=active_issue,
+            agent_config=sample_agent_config,
+            terminal_id="retrospective-review-367",
+            worktree_path=Path("/tmp/work367"),
+            branch_name="issue-367",
+        )
+        restored_legacy_issue = Issue(number=368, title="Restored", labels=["agent:web"])
+        restored_legacy_session = Session(
+            key=_make_session_key(368, TaskKind.CODE),
+            issue=restored_legacy_issue,
+            agent_config=sample_agent_config,
+            terminal_id="retrospective-review-368",
+            worktree_path=Path("/tmp/work368"),
+            branch_name="issue-368",
+        )
+        state = OrchestratorState(
+            active_sessions=[active_session, restored_legacy_session],
+            pending_retrospective_reviews=[
+                PendingRetrospectiveReview(
+                    issue_key=FakeIssueKey("365"),
+                    issue_number=365,
+                    issue_title="Pending",
+                    agent_label="agent:web",
+                    trigger_label="lack-of-review-redo",
+                )
+            ],
+            discovered_retrospective_reviews=[
+                DiscoveredRetrospectiveReview(
+                    issue_number=366,
+                    issue_title="Discovered",
+                    agent_label="agent:web",
+                    trigger_label="lack-of-review-redo",
+                    issue_key="366",
+                )
+            ],
+        )
+
+        assert state.retrospective_review_in_flight_issue_numbers() == {
+            365,
+            366,
+            367,
+            368,
+        }
+        assert state.pending_or_active_retrospective_review_issue_numbers() == {
+            365,
+            367,
+            368,
+        }
+        assert state.has_in_flight_retrospective_review(366) is True
+        assert state.has_pending_or_active_retrospective_review(366) is False
+        assert state.has_in_flight_retrospective_review(369) is False
 
     def test_orchestrator_state_with_data(self, sample_agent_config, sample_issues):
         """Test orchestrator state with populated data."""

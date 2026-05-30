@@ -1246,9 +1246,47 @@ class TestLabelActionGeneration:
         state_actions = [a for a in result.actions if isinstance(a, SetIssueStateAction)]
         assert "lack-of-review-redo" in removed
         assert "retrospective-reviewed" in removed
+        assert "needs-rework" in removed
         assert "retrospective-changes-requested" in added
         assert len(state_actions) == 1
         assert state_actions[0].issue_number == 365
+        assert state_actions[0].state == "open"
+
+    def test_retrospective_review_changes_requested_without_coder_escalates_to_human(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(
+            number=365,
+            labels=["agent:reviewer", "lack-of-review-redo"],
+        )
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="retrospective-review-365",
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+        )
+        session.agent_label = "agent:reviewer"
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        config.retrospective_reviewed_label = "retrospective-reviewed"
+        config.retrospective_changes_requested_label = "retrospective-changes-requested"
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            completion_detail={"outcome": "review_changes_requested"},
+        )
+
+        added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
+        comments = [a.comment for a in result.actions if isinstance(a, AddCommentAction)]
+        state_actions = [a for a in result.actions if isinstance(a, SetIssueStateAction)]
+        assert "needs-rework" in removed
+        assert "retrospective-changes-requested" in added
+        assert "needs-human" in added
+        assert any("could not resolve a coder `agent:*` label" in comment for comment in comments)
+        assert len(state_actions) == 1
         assert state_actions[0].state == "open"
 
     def test_needs_run_audit_label_writes_audit_and_flips_labels(

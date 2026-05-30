@@ -89,7 +89,7 @@ function renderRetrospectiveReviewPreflight(payload) {
     const skipped = decisions.filter((decision) => !decision.eligible).map((decision) => Number(decision.issue));
     retrospectiveReviewEligibleIssueIds = eligible;
     const summaryType = skipped.length ? 'warning' : 'success';
-    const summary = `${eligible.length} eligible | ${skipped.length} skipped | 0 will reopen`;
+    const summary = `${eligible.length} eligible | ${skipped.length} skipped`;
     const confirmDisabled = eligible.length === 0 ? ' disabled' : '';
     const results = document.getElementById('retrospectiveReviewResults');
     if (!results) return;

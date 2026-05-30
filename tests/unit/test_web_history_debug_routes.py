@@ -377,17 +377,28 @@ class TestHistoryEndpoints:
 
     def test_retrospective_review_preflight_keeps_closed_issue_closed(self):
         """Retrospective review preview should not plan reopen/reset mutations."""
+        from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER
+
         mock_orch = create_mock_orchestrator()
         mock_orch.config.retrospective_review_enabled = True
         mock_orch.config.code_review_agent = "agent:reviewer"
         mock_orch.config.retrospective_review_trigger_label = "lack-of-review-redo"
+        mock_orch.config.retrospective_reviewed_label = "lack-of-review-reviewed"
+        mock_orch.config.retrospective_changes_requested_label = "lack-of-review-needs-work"
         issue = create_issue(
             4057,
-            labels=["agent:web"],
+            title="Previously completed implementation",
+            labels=["agent:web", "lack-of-review-redo", "blocked-failed"],
         )
         issue.state = "closed"
         mock_orch.repository_host.get_issue.return_value = issue
-        mock_orch.repository_host.get_prs_for_issue.return_value = []
+        mock_orch.repository_host.get_prs_for_issue.return_value = [
+            SimpleNamespace(
+                number=812,
+                url="https://github.com/owner/repo/pull/812",
+                body=f"{ORCHESTRATOR_PR_MARKER}\n",
+            )
+        ]
 
         set_orchestrator(mock_orch)
 
@@ -398,12 +409,30 @@ class TestHistoryEndpoints:
         )
 
         assert response.status_code == 200
-        decision = response.json()["decisions"][0]
-        assert decision["issue"] == 4057
-        assert decision["eligible"] is True
-        assert decision["action"] == "queue_review"
-        assert decision["will_reopen"] is False
-        assert response.json()["trigger_label"] == "lack-of-review-redo"
+        assert response.json() == {
+            "decisions": [
+                {
+                    "issue": 4057,
+                    "title": "Previously completed implementation",
+                    "state": "closed",
+                    "labels": ["agent:web", "lack-of-review-redo", "blocked-failed"],
+                    "eligible": True,
+                    "action": "queue_review",
+                    "reason": (
+                        "Closed issue will stay closed unless retrospective review "
+                        "requests changes"
+                    ),
+                    "agent_label": "agent:web",
+                    "trigger_label": "lack-of-review-redo",
+                    "prior_pr_number": 812,
+                    "prior_pr_url": "https://github.com/owner/repo/pull/812",
+                }
+            ],
+            "eligible": [4057],
+            "skipped": [],
+            "workflow": "retrospective_review",
+            "trigger_label": "lack-of-review-redo",
+        }
         mock_orch.repository_host.update_issue_state.assert_not_called()
 
     def test_retrospective_review_allows_filtered_issue_without_reopening(self):
@@ -469,6 +498,8 @@ class TestHistoryEndpoints:
 
     def test_retrospective_review_execute_applies_label_without_resetting(self):
         """Eligible issues get the review trigger label and in-memory review queue only."""
+        from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER
+
         mock_orch = create_mock_orchestrator()
         lm = LabelManager(mock_orch.config)
         mock_orch.config.retrospective_review_enabled = True
@@ -484,7 +515,13 @@ class TestHistoryEndpoints:
         )
         closed_issue.state = "closed"
         mock_orch.repository_host.get_issue.return_value = closed_issue
-        mock_orch.repository_host.get_prs_for_issue.return_value = []
+        mock_orch.repository_host.get_prs_for_issue.return_value = [
+            SimpleNamespace(
+                number=812,
+                url="https://github.com/owner/repo/pull/812",
+                body=f"{ORCHESTRATOR_PR_MARKER}\n",
+            )
+        ]
         mock_orch.repository_host.create_issue_key.return_value = FakeIssueKey("4057")
 
         set_orchestrator(mock_orch)
@@ -501,6 +538,10 @@ class TestHistoryEndpoints:
         assert payload["failed"] == []
         assert payload["queued"][0]["issue"] == 4057
         assert payload["queued"][0]["queued"] is True
+        assert payload["queued"][0]["prior_pr_number"] == 812
+        assert payload["queued"][0]["prior_pr_url"] == "https://github.com/owner/repo/pull/812"
+        assert payload["queued"][0]["labels"] == ["agent:web", lm.blocked_failed]
+        assert payload["queued"][0]["state"] == "closed"
         assert payload["trigger_label"] == "lack-of-review-redo"
         mock_orch.repository_host.update_issue_state.assert_not_called()
         mock_orch.repository_host.get_issue_labels.assert_not_called()
@@ -508,8 +549,13 @@ class TestHistoryEndpoints:
         assert "lack-of-review-redo" in added_labels
         assert len(mock_orch.state.pending_retrospective_reviews) == 1
         queued = mock_orch.state.pending_retrospective_reviews[0]
+        assert queued.issue_key == FakeIssueKey("4057")
         assert queued.issue_number == 4057
+        assert queued.issue_title == "Test Issue"
         assert queued.agent_label == "agent:web"
+        assert queued.trigger_label == "lack-of-review-redo"
+        assert queued.prior_pr_number == 812
+        assert queued.prior_pr_url == "https://github.com/owner/repo/pull/812"
 
     def test_reset_retry_from_scratch_clears_pending_review_rework_and_cleanup_state(self):
         """Scratch reset should remove stale in-memory PR/rework state before requeue."""

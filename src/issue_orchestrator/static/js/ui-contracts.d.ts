@@ -761,7 +761,6 @@ export interface RetrospectiveReviewDecisionPayload {
   state: string | null;
   title: string | null;
   trigger_label: string | null;
-  will_reopen: boolean;
 }
 
 export interface RetrospectiveReviewExecutePayload {
@@ -783,7 +782,6 @@ export interface RetrospectiveReviewPreflightPayload {
   eligible: number[];
   skipped: number[];
   trigger_label: string;
-  will_reopen: number[];
   workflow: "retrospective_review";
 }
 
@@ -800,7 +798,6 @@ export interface RetrospectiveReviewQueuedPayload {
   state: string | null;
   title: string | null;
   trigger_label: string | null;
-  will_reopen: boolean;
 }
 
 export interface ReviewApprovedPayload {

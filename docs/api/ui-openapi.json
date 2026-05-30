@@ -2180,7 +2180,6 @@
           "reason",
           "agent_label",
           "trigger_label",
-          "will_reopen",
           "prior_pr_number",
           "prior_pr_url"
         ],
@@ -2194,7 +2193,6 @@
           "reason": {"type": "string"},
           "agent_label": {"type": ["string", "null"]},
           "trigger_label": {"type": ["string", "null"]},
-          "will_reopen": {"type": "boolean"},
           "prior_pr_number": {"type": ["integer", "null"], "minimum": 1},
           "prior_pr_url": {"type": ["string", "null"]}
         }
@@ -2212,7 +2210,6 @@
           "reason",
           "agent_label",
           "trigger_label",
-          "will_reopen",
           "prior_pr_number",
           "prior_pr_url",
           "queued"
@@ -2227,7 +2224,6 @@
           "reason": {"type": "string"},
           "agent_label": {"type": ["string", "null"]},
           "trigger_label": {"type": ["string", "null"]},
-          "will_reopen": {"type": "boolean"},
           "prior_pr_number": {"type": ["integer", "null"], "minimum": 1},
           "prior_pr_url": {"type": ["string", "null"]},
           "queued": {"type": "boolean"}
@@ -2245,12 +2241,11 @@
       "RetrospectiveReviewPreflightPayload": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["decisions", "eligible", "skipped", "will_reopen", "workflow", "trigger_label"],
+        "required": ["decisions", "eligible", "skipped", "workflow", "trigger_label"],
         "properties": {
           "decisions": {"type": "array", "items": {"$ref": "#/components/schemas/RetrospectiveReviewDecisionPayload"}},
           "eligible": {"type": "array", "items": {"type": "integer", "minimum": 1}},
           "skipped": {"type": "array", "items": {"type": "integer", "minimum": 1}},
-          "will_reopen": {"type": "array", "items": {"type": "integer", "minimum": 1}},
           "workflow": {"const": "retrospective_review"},
           "trigger_label": {"type": "string"}
         }

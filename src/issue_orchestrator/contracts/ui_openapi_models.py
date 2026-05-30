@@ -771,7 +771,6 @@ class RetrospectiveReviewDecisionPayload(BaseModel):
     state: str | None
     title: str | None
     trigger_label: str | None
-    will_reopen: bool
 
 class RetrospectiveReviewExecutePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -793,7 +792,6 @@ class RetrospectiveReviewPreflightPayload(BaseModel):
     eligible: list[int]
     skipped: list[int]
     trigger_label: str
-    will_reopen: list[int]
     workflow: Literal['retrospective_review']
 
 class RetrospectiveReviewQueuedPayload(BaseModel):
@@ -810,7 +808,6 @@ class RetrospectiveReviewQueuedPayload(BaseModel):
     state: str | None
     title: str | None
     trigger_label: str | None
-    will_reopen: bool
 
 class ReviewApprovedPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

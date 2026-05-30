@@ -37,7 +37,7 @@ from ..ports.label_set import LabelSet
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
-from ..domain.models import Session
+from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
 from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
@@ -1374,7 +1374,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
 
     def _determine_session_type(self, session_name: str) -> SessionType:
         """Determine session type from session name."""
-        if session_name.startswith("retrospective-review-"):
+        if session_name.startswith(RETROSPECTIVE_REVIEW_TERMINAL_PREFIX):
             return SessionType.RETROSPECTIVE_REVIEW
         if session_name.startswith("review-"):
             return SessionType.REVIEW

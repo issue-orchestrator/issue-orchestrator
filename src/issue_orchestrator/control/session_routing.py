@@ -24,7 +24,7 @@ from ..infra.config import Config
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
 from .active_sessions import append_unique_active_sessions
 from .session_launcher import SessionLauncher
-from .session_manager import SessionManager
+from .session_manager import SessionManager, SessionRef
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -82,7 +82,7 @@ def orchestrator_launch_retrospective_review_session(
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
-        session_name = f"retrospective-review-{review.issue_number}"
+        session_name = SessionRef.for_retrospective_review(review.issue_number).name
         restored = session_restorer.restore_known_terminal(
             issue_number=review.issue_number,
             session_name=session_name,

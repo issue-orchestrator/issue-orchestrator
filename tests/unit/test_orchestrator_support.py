@@ -56,6 +56,7 @@ from issue_orchestrator.domain.models import (
     PendingCleanup,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredRetrospectiveReview,
     DiscoveredReview,
     DiscoveredRework,
     DiscoveredEscalation,
@@ -1461,6 +1462,100 @@ class TestUpdateStateAfterAction:
 
         # Should NOT have added duplicate
         assert len(support_with_state.state.pending_reviews) == 1
+
+    def test_queue_retrospective_review_adds_to_pending_reviews(
+        self,
+        support_with_state,
+    ):
+        """QUEUE_RETROSPECTIVE_REVIEW action adds PendingRetrospectiveReview to state."""
+        from issue_orchestrator.control.actions import QueueRetrospectiveReviewAction
+
+        action = QueueRetrospectiveReviewAction(
+            issue_number=42,
+            issue_title="Review existing work",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            issue_key="42",
+        )
+        result = MagicMock(success=True, details={})
+
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert len(support_with_state.state.pending_retrospective_reviews) == 1
+        review = support_with_state.state.pending_retrospective_reviews[0]
+        assert review.issue_number == 42
+        assert review.agent_label == "agent:web"
+        assert review.trigger_label == "lack-of-review-redo"
+
+    def test_queue_retrospective_review_skips_issue_already_in_flight(
+        self,
+        support_with_state,
+    ):
+        """QUEUE_RETROSPECTIVE_REVIEW uses the centralized in-flight guard."""
+        from issue_orchestrator.control.actions import QueueRetrospectiveReviewAction
+
+        issue = Issue(number=42, title="Active review", labels=["agent:web"])
+        support_with_state.state.active_sessions.append(
+            Session(
+                key=SessionKey(
+                    issue=FakeIssueKey("42"),
+                    task=TaskKind.RETROSPECTIVE_REVIEW,
+                ),
+                issue=issue,
+                agent_config=AgentConfig(prompt_path=Path("/tmp/prompt.md")),
+                terminal_id="retrospective-review-42",
+                worktree_path=Path("/tmp/work42"),
+                branch_name="issue-42",
+            )
+        )
+        action = QueueRetrospectiveReviewAction(
+            issue_number=42,
+            issue_title="Review existing work",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            issue_key="42",
+        )
+        result = MagicMock(success=True, details={})
+
+        # noqa: SLF001 - Testing duplicate detection behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert support_with_state.state.pending_retrospective_reviews == []
+
+    def test_queue_retrospective_review_promotes_discovered_fact(
+        self,
+        support_with_state,
+    ):
+        """Discovered retrospective review facts are the source, not a duplicate."""
+        from issue_orchestrator.control.actions import QueueRetrospectiveReviewAction
+
+        support_with_state.state.discovered_retrospective_reviews.append(
+            DiscoveredRetrospectiveReview(
+                issue_number=42,
+                issue_title="Review existing work",
+                agent_label="agent:web",
+                trigger_label="lack-of-review-redo",
+                issue_key="42",
+            )
+        )
+        action = QueueRetrospectiveReviewAction(
+            issue_number=42,
+            issue_title="Review existing work",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            issue_key="42",
+        )
+        result = MagicMock(success=True, details={})
+
+        # noqa: SLF001 - Testing discovered fact to pending queue transition.
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert len(support_with_state.state.pending_retrospective_reviews) == 1
+        assert (
+            support_with_state.state.pending_retrospective_reviews[0].issue_number
+            == 42
+        )
 
     def test_queue_rework_adds_to_pending_reworks(self, support_with_state, mock_repository_host):
         """QUEUE_REWORK action adds PendingRework to state."""

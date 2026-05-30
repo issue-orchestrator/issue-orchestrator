@@ -11,7 +11,13 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ..domain.issue_key import GitHubIssueKey, IssueKey
-from ..domain.models import PendingRework, Session, SessionStatus
+from ..domain.models import (
+    PendingRework,
+    Session,
+    SessionStatus,
+    is_retrospective_review_session,
+    resolve_retrospective_coder_agent,
+)
 from ..domain.session_key import TaskKind
 from ..events import EventName
 from ..infra.config import Config
@@ -107,7 +113,11 @@ def _queue_rework_after_retrospective_changes(
     state: "OrchestratorState",
     completion_detail: dict[str, Any] | None,
 ) -> None:
-    """Queue coder rework when a retrospective review requests changes."""
+    """Queue coder rework when a retrospective review requests changes.
+
+    Label/state effects for the same outcome live in CompletionHandler; this
+    function owns only the in-memory rework queue transition.
+    """
 
     if session.key.task != TaskKind.RETROSPECTIVE_REVIEW:
         return
@@ -118,14 +128,7 @@ def _queue_rework_after_retrospective_changes(
         return
     issue_number = session.issue.number
 
-    coder_agent = next(
-        (
-            label
-            for label in session.issue.labels
-            if label.startswith("agent:") and label != session.agent_label
-        ),
-        session.issue.agent_type or "",
-    )
+    coder_agent = resolve_retrospective_coder_agent(session.issue, session.agent_label)
     if not coder_agent:
         logger.warning(
             "[retrospective-review] Cannot queue rework for issue #%d: missing coder agent label",
@@ -205,7 +208,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     name = session.terminal_id
     entity = (
         "retrospective-review"
-        if name.startswith("retrospective-review-")
+        if is_retrospective_review_session(session)
         else "review"
         if name.startswith("review-")
         else "rework"

@@ -649,14 +649,15 @@ def test_restart_recovery_uses_labels_not_memory(scenario_repo: Path):
         .run()
 
     restarted = ctx.restart()
-    from .conftest import run_until
 
-    run_until(
-        restarted.orch,
-        lambda: bool(restarted.orch.state.active_sessions) or bool(restarted.orch.state.pending_reviews),
-        max_ticks=8,
-    )
-    assert bool(restarted.orch.state.active_sessions) or bool(restarted.orch.state.pending_reviews)
+    for _ in range(3):
+        restarted.orch.tick()
+
+    issue = restarted.repo_host.get_issue(ctx.issue_number)
+    assert issue is not None
+    assert "pr-pending" in issue.labels
+    assert restarted.orch.state.active_sessions == []
+    assert restarted.orch.state.pending_reviews == []
 
 
 @pytest.mark.simulated_review_outcome(

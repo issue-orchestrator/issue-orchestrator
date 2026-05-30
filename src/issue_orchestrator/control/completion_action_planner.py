@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from ..domain.models import Session, SessionStatus
+from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
 from ..domain.triage_manifest import TriageManifest
 from ..infra.config import Config
 from ..ports import RepositoryHost
@@ -154,7 +154,9 @@ class CompletionActionPlanner:
             "issue-"
         ) or session.terminal_id.startswith("rework-"):
             return "coding"
-        if session.terminal_id.startswith(("review-", "retrospective-review-")):
+        if session.terminal_id.startswith(
+            ("review-", RETROSPECTIVE_REVIEW_TERMINAL_PREFIX)
+        ):
             return "review"
         return None
 

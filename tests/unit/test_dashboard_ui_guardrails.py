@@ -857,6 +857,13 @@ def test_retrospective_review_modal_is_labelled_and_status_announced() -> None:
     assert "reviewer audit of the existing implementation" in body
 
 
+def test_retrospective_review_summary_does_not_show_dead_reopen_count() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderRetrospectiveReviewPreflight")
+    assert "0 will reopen" not in body
+    assert "will reopen" not in body
+
+
 def test_reset_from_scratch_confirmations_disclose_full_boundary() -> None:
     js = _read(DASHBOARD_JS)
     for fn_name in (

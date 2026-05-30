@@ -67,7 +67,7 @@ from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
-from .session_manager import SessionManager
+from .session_manager import SessionManager, SessionRef
 from .session_launch_types import ClaimAcquisitionResult, LaunchResult
 from .session_rework_launcher import (
     ReworkLaunchDependencies,
@@ -1610,7 +1610,7 @@ class SessionLauncher:
         if result := self._check_provider_circuit(agent_config.provider, review.issue_number):
             return result
 
-        session_name = f"retrospective-review-{review.issue_number}"
+        session_name = SessionRef.for_retrospective_review(review.issue_number).name
         if any(s.terminal_id == session_name for s in active_sessions):
             log_transition(
                 "retrospective-review",

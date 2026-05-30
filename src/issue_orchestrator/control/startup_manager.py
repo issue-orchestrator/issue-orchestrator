@@ -622,17 +622,10 @@ class StartupManager:
     def _recover_pending_retrospective_reviews(self, state: OrchestratorState) -> None:
         """Recover trigger-labeled existing-work review requests on startup."""
 
-        already = {
-            review.issue_number for review in state.pending_retrospective_reviews
-        } | {
-            session.issue.number
-            for session in state.active_sessions
-            if session.terminal_id.startswith("retrospective-review-")
-        }
         discovered = discover_retrospective_review_issues(
             repository_host=self.repository_host,
             config=self.config,
-            already_issue_numbers=already,
+            already_issue_numbers=state.retrospective_review_in_flight_issue_numbers(),
         )
         for review in discovered:
             state.pending_retrospective_reviews.append(

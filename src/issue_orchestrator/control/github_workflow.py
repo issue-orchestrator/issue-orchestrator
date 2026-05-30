@@ -204,20 +204,11 @@ class GitHubWorkflow:
 
     def scan_retrospective_review_issues(self, state: "OrchestratorState") -> None:
         """Discover trigger-labeled issues for review-first existing-work audits."""
-        already = {
-            r.issue_number for r in state.pending_retrospective_reviews
-        } | {
-            r.issue_number for r in state.discovered_retrospective_reviews
-        } | {
-            s.issue.number
-            for s in state.active_sessions
-            if s.terminal_id.startswith("retrospective-review-")
-        }
         state.discovered_retrospective_reviews.extend(
             discover_retrospective_review_issues(
                 repository_host=self.repository_host,
                 config=self.config,
-                already_issue_numbers=already,
+                already_issue_numbers=state.retrospective_review_in_flight_issue_numbers(),
             )
         )
 

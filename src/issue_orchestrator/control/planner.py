@@ -32,9 +32,8 @@ from ..domain.models import (
     CompletionOutcome,
     TriageFacts,
     ObservedCompletion,
+    active_retrospective_review_issue_numbers,
 )
-from ..domain.session_key import TaskKind
-
 if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -407,11 +406,9 @@ class Planner:
             review.issue_number
             for review in snapshot.pending_retrospective_reviews
         }
-        active_retrospective_issue_numbers = {
-            session.issue.number
-            for session in snapshot.active_sessions
-            if session.key.task == TaskKind.RETROSPECTIVE_REVIEW
-        }
+        active_retrospective_issue_numbers = active_retrospective_review_issue_numbers(
+            snapshot.active_sessions
+        )
 
         for review in snapshot.discovered_retrospective_reviews:
             if review.issue_number in queued_issue_numbers:
