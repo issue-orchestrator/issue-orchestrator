@@ -11,7 +11,14 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ..domain.issue_key import GitHubIssueKey, IssueKey
-from ..domain.models import Session, SessionStatus
+from ..domain.models import (
+    PendingRework,
+    Session,
+    SessionStatus,
+    is_retrospective_review_session,
+    resolve_retrospective_coder_agent,
+)
+from ..domain.session_key import TaskKind
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink
@@ -99,6 +106,54 @@ def _terminate_finished_session(
         )
 
 
+def _queue_rework_after_retrospective_changes(
+    *,
+    session: Session,
+    status: SessionStatus,
+    state: "OrchestratorState",
+    completion_detail: dict[str, Any] | None,
+) -> None:
+    """Queue coder rework when a retrospective review requests changes.
+
+    Label/state effects for the same outcome live in CompletionHandler; this
+    function owns only the in-memory rework queue transition.
+    """
+
+    if session.key.task != TaskKind.RETROSPECTIVE_REVIEW:
+        return
+    if status != SessionStatus.COMPLETED:
+        return
+    detail = completion_detail or {}
+    if detail.get("outcome") != "review_changes_requested":
+        return
+    issue_number = session.issue.number
+
+    coder_agent = resolve_retrospective_coder_agent(session.issue, session.agent_label)
+    if not coder_agent:
+        logger.warning(
+            "[retrospective-review] Cannot queue rework for issue #%d: missing coder agent label",
+            issue_number,
+        )
+        return
+    queued = state.queue_pending_rework(
+        PendingRework(
+            issue_key=session.key.issue,
+            agent_type=coder_agent,
+            rework_cycle=1,
+            issue_number=issue_number,
+            pr_number=session.pr_number,
+            source="retrospective_review",
+            feedback=str(detail.get("review_issues") or detail.get("review_summary") or ""),
+        )
+    )
+    if not queued:
+        return
+    logger.info(
+        "[retrospective-review] Queued coder rework for issue #%d after changes requested",
+        issue_number,
+    )
+
+
 def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
     session: Session,
     status: SessionStatus,
@@ -151,7 +206,15 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     from ..domain.models import DiscoveredReview, DiscoveredFailure, PendingValidationRetry
 
     name = session.terminal_id
-    entity = "review" if name.startswith("review-") else ("rework" if name.startswith("rework-") else "issue")
+    entity = (
+        "retrospective-review"
+        if is_retrospective_review_session(session)
+        else "review"
+        if name.startswith("review-")
+        else "rework"
+        if name.startswith("rework-")
+        else "issue"
+    )
     log_transition(entity, session.issue.number, "ACTIVE", status.value.upper(), f"runtime={session.runtime_minutes}min")
 
     # Remove by session name, NOT issue number - multiple sessions can share an issue number
@@ -233,6 +296,13 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             session.issue.number,
             status.value,
         )
+
+    _queue_rework_after_retrospective_changes(
+        session=session,
+        status=status,
+        state=state,
+        completion_detail=completion_detail,
+    )
 
     # Observer handles session-level cleanup (kill sessions, close tabs)
     observer.handle_completion(session, status)

@@ -24,14 +24,14 @@ test('buildResetRetryRequest returns canonical endpoint and payload', () => {
     assert.deepEqual(req.body, { issues: [10, 11], from_scratch: false });
 });
 
-test('hidden scratch reset requests return canonical endpoints and payloads', () => {
-    const preflight = uiActionContract.buildHiddenScratchResetPreflightRequest([10, '11', 'x']);
-    assert.equal(preflight.endpoint, '/api/reset-retry/hidden-scratch/preflight');
+test('retrospective review requests return canonical endpoints and payloads', () => {
+    const preflight = uiActionContract.buildRetrospectiveReviewPreflightRequest([10, '11', 'x']);
+    assert.equal(preflight.endpoint, '/api/retrospective-review/preflight');
     assert.equal(preflight.method, 'POST');
     assert.deepEqual(preflight.body, { issues: [10, 11] });
 
-    const execute = uiActionContract.buildHiddenScratchResetExecuteRequest([10, '11', 'x']);
-    assert.equal(execute.endpoint, '/api/reset-retry/hidden-scratch');
+    const execute = uiActionContract.buildRetrospectiveReviewExecuteRequest([10, '11', 'x']);
+    assert.equal(execute.endpoint, '/api/retrospective-review');
     assert.equal(execute.method, 'POST');
     assert.deepEqual(execute.body, { issues: [10, 11] });
 });

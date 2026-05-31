@@ -34,6 +34,7 @@ class SessionType(Enum):
 
     ISSUE = "issue"
     REVIEW = "review"
+    RETROSPECTIVE_REVIEW = "retrospective-review"
     REWORK = "rework"
     TRIAGE = "triage"
 
@@ -67,7 +68,7 @@ class SessionRef:
         Raises:
             ValueError: If session name format is invalid
         """
-        match = re.match(r"^(issue|review|rework|triage)-(\d+)$", session_name)
+        match = re.match(r"^(issue|review|retrospective-review|rework|triage)-(\d+)$", session_name)
         if not match:
             raise ValueError(f"Invalid session name format: {session_name}")
         session_type = SessionType(match.group(1))
@@ -83,6 +84,11 @@ class SessionRef:
     def for_review(cls, pr_number: int) -> "SessionRef":
         """Create a session reference for a review."""
         return cls(session_type=SessionType.REVIEW, number=pr_number)
+
+    @classmethod
+    def for_retrospective_review(cls, issue_number: int) -> "SessionRef":
+        """Create a session reference for a retrospective review."""
+        return cls(session_type=SessionType.RETROSPECTIVE_REVIEW, number=issue_number)
 
     @classmethod
     def for_rework(cls, issue_number: int) -> "SessionRef":

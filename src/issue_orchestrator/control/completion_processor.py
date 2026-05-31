@@ -90,7 +90,6 @@ from .completion_types import (
     ProcessingResult,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
-from .fresh_rerun_no_pr import try_recover_fresh_rerun_no_pr
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
 from .review_exchange_contracts import ReviewExchangeCanceller
 from .review_exchange_pr_comment import (
@@ -1847,12 +1846,6 @@ class CompletionProcessor:
                 exchange_result=exchange_result,
             )
         except Exception as e:
-            recovered = try_recover_fresh_rerun_no_pr(
-                self.session_output, worktree, session_name, action, e,
-                exchange_mode, exchange_result, actions_taken, issue_number, branch,
-            )
-            if recovered:
-                return self._ActionResult(branch=branch, review_exchange_completed=True)
             logger.exception(
                 "Exception executing action %s for #%d: %s",
                 action.value,

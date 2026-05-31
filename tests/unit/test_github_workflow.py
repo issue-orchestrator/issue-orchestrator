@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -7,7 +6,7 @@ import pytest
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
 from issue_orchestrator.control.awaiting_merge_reconciler import AwaitingMergeReconciliationResult
-from issue_orchestrator.domain.models import DiscoveredRework
+from issue_orchestrator.domain.models import DiscoveredRework, OrchestratorState
 from issue_orchestrator.events import EventContext
 from issue_orchestrator.infra.config import Config
 
@@ -28,20 +27,7 @@ def test_scan_pending_pr_work_loads_issue_branches_once_and_reuses_map() -> None
         label_sync=None,
         event_context=EventContext(),
     )
-    state = SimpleNamespace(
-        pending_reviews=[],
-        pending_reworks=[],
-        active_sessions=[],
-        discovered_reviews=[],
-        discovered_awaiting_merge_reconciliations=[],
-        discovered_awaiting_merge_drifts=[],
-        discovered_awaiting_merge_escalations=[],
-        discovered_reworks=[],
-        discovered_escalations=[],
-        session_history=[],
-        issue_refresh_timestamps={},
-        issue_last_refreshed_at={},
-    )
+    state = OrchestratorState()
 
     workflow.scan_pending_pr_work(state)
 
@@ -73,20 +59,7 @@ def test_scan_pending_pr_work_appends_post_publish_validation_reworks() -> None:
         label_sync=None,
         event_context=EventContext(),
     )
-    state = SimpleNamespace(
-        pending_reviews=[],
-        pending_reworks=[],
-        active_sessions=[],
-        discovered_reviews=[],
-        discovered_awaiting_merge_reconciliations=[],
-        discovered_awaiting_merge_drifts=[],
-        discovered_awaiting_merge_escalations=[],
-        discovered_reworks=[],
-        discovered_escalations=[],
-        session_history=[],
-        issue_refresh_timestamps={},
-        issue_last_refreshed_at={},
-    )
+    state = OrchestratorState()
     discovered = DiscoveredRework(
         issue_number=42,
         pr_number=1042,

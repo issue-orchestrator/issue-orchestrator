@@ -441,6 +441,7 @@ def _build_status_explanation(  # noqa: C901 — maps flow stages to status expl
         kind_label = {
             "code": "Code session",
             "review": "Code review",
+            "retrospective-review": "Retrospective review",
             "rework": "Rework session",
             "triage": "Triage review",
         }.get(ctx.active_task_kind or "", "Session")

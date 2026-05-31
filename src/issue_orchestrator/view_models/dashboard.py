@@ -450,12 +450,18 @@ def _pending_issue_numbers(state) -> dict[str, set[int]]:
     pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
         r.issue_number for r in state.discovered_reviews
     }
+    pending_retrospective_numbers = {
+        r.issue_number for r in state.pending_retrospective_reviews
+    } | {
+        r.issue_number for r in state.discovered_retrospective_reviews
+    }
     pending_rework_numbers = {r.issue_number for r in state.pending_reworks} | {
         r.issue_number for r in state.discovered_reworks
     }
     pending_triage_numbers = {r.issue_number for r in state.pending_triage_reviews}
     return {
         "review": pending_review_numbers,
+        "retrospective_review": pending_retrospective_numbers,
         "rework": pending_rework_numbers,
         "triage": pending_triage_numbers,
     }
@@ -506,6 +512,10 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
         seen_issues.add(session.issue.number)
         if session.key.task == TaskKind.REVIEW:
             flow_stage = "review"
+        elif session.key.task == TaskKind.RETROSPECTIVE_REVIEW:
+            flow_stage = "review"
+            phase = "Retro review"
+            status_reason = f"Reviewing existing implementation for {runtime} min"
         elif session.key.task == TaskKind.REWORK:
             flow_stage = "rework"
         elif session.key.task == TaskKind.TRIAGE:
@@ -665,6 +675,10 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             flow_stage = "rework"
         elif issue.number in pending_numbers["triage"]:
             flow_stage = "triage"
+        elif issue.number in pending_numbers["retrospective_review"]:
+            flow_stage = "review"
+            detail_label = "Retro review queued"
+            status_reason = "Waiting for review of existing implementation"
         elif issue.number in pending_numbers["review"] or lm.is_pr_pending(issue.labels):
             flow_stage = "review"
         elif lm.is_in_progress(issue.labels):
@@ -946,6 +960,55 @@ def _build_pending_validation_retry_items(state, config) -> list[dict[str, Any]]
     return blocked_items
 
 
+def _build_pending_retrospective_review_items(
+    state,
+    config,
+    seen_issues: set[int],
+    *,
+    lm: LabelManager,
+) -> tuple[list[dict[str, Any]], set[int]]:
+    items: list[dict[str, Any]] = []
+    for review in state.pending_retrospective_reviews:
+        if review.issue_number in seen_issues:
+            continue
+        seen_issues.add(review.issue_number)
+        label_fields, display_title = _issue_label_fields(
+            review.issue_number,
+            review.issue_title,
+        )
+        flow_steps = flow_steps_for("review")
+        labels = [review.agent_label, review.trigger_label]
+        items.append({
+            "issue_number": review.issue_number,
+            **label_fields,
+            "title": display_title,
+            "agent_type": review.agent_label.replace("agent:", ""),
+            "status": "queue",
+            "status_reason": "Waiting for retrospective review",
+            "detail_label": "Retro review queued",
+            "detail_reason": "Review existing implementation before coder rework",
+            "time": "",
+            "action": "open",
+            "action_icon": "↗",
+            "action_hint": "Click to open issue on GitHub",
+            "url": issue_url_for(config, review.issue_number),
+            "issue_url": issue_url_for(config, review.issue_number),
+            "pr_url": review.prior_pr_url or "",
+            "has_terminal": False,
+            "worktree_path": "",
+            "flow_stage": "review",
+            "flow_stage_label": flow_stage_label(flow_steps, "review"),
+            "flow_steps": flow_steps,
+            "blocked_summary": None,
+            "queue_wait_reason": "Waiting: retrospective review queued",
+            "merge_pending": False,
+            "dependency_blocked": False,
+            "orchestrator_labels": _display_labels(labels, lm),
+            **_refresh_meta(state, config, review.issue_number),
+        })
+    return items, seen_issues
+
+
 def _merge_blocked_items(
     scope_blocked: list[dict[str, Any]],
     history_blocked: list[dict[str, Any]],
@@ -1118,6 +1181,13 @@ def build_dashboard_view_model(
         queue_items, queue_total, seen_issues = _build_queue_items(
             state, config, seen_issues, pending_numbers, lm=lm,
         )
+        retrospective_queue_items, seen_issues = _build_pending_retrospective_review_items(
+            state,
+            config,
+            seen_issues,
+            lm=lm,
+        )
+        queue_items.extend(retrospective_queue_items)
         queue_order = {
             issue_number: index
             for index, item in enumerate(queue_items)

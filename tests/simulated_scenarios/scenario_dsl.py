@@ -86,6 +86,7 @@ class Scenario:
     issue_number: int = 1
     issue_title: str = "Simulated scenario issue"
     issue_labels: list[str] = field(default_factory=lambda: ["simulated-scenario", "agent:coder"])
+    issue_state: str = "open"
 
     coder_command: str | None = None
     reviewer_command: str | None = None
@@ -110,13 +111,22 @@ class Scenario:
     _lease_renewer_override: object | None = field(default=None, init=False)
     _runner_override: object | None = field(default=None, init=False)
 
-    def issue(self, *, number: int | None = None, title: str | None = None, labels: list[str] | None = None) -> Scenario:
+    def issue(
+        self,
+        *,
+        number: int | None = None,
+        title: str | None = None,
+        labels: list[str] | None = None,
+        state: str | None = None,
+    ) -> Scenario:
         if number is not None:
             self.issue_number = number
         if title is not None:
             self.issue_title = title
         if labels is not None:
             self.issue_labels = labels
+        if state is not None:
+            self.issue_state = state
         return self
 
     def coder(self, command: str) -> Scenario:
@@ -497,6 +507,30 @@ class Scenario:
                     assert manifest.get(key) == value, f"run manifest {key} != {value}"
         return self._add_expectation(_assert)
 
+    def expect_session_prompt_contains(
+        self,
+        text: str,
+        *,
+        session_name_prefix: str | None = None,
+    ) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            worktree = ctx.worktree
+            assert worktree is not None
+            manifest = _latest_run_manifest(
+                worktree,
+                session_name_prefix=session_name_prefix,
+            )
+            assert manifest is not None, "run manifest.json not found"
+            prompt_path = manifest.get("session_prompt_path")
+            assert isinstance(prompt_path, str) and prompt_path
+            prompt_file = Path(prompt_path)
+            if not prompt_file.is_absolute():
+                prompt_file = worktree / prompt_file
+            assert prompt_file.exists(), f"session prompt missing: {prompt_file}"
+            prompt_text = prompt_file.read_text(encoding="utf-8")
+            assert text in prompt_text
+        return self._add_expectation(_assert)
+
     def run(self) -> ScenarioContext:
         if not self.coder_command or not self.reviewer_command:
             raise AssertionError("coder and reviewer commands must be set")
@@ -517,6 +551,7 @@ class Scenario:
             number=self.issue_number,
             title=self.issue_title,
             labels=self.issue_labels,
+            state=self.issue_state,
         )
         orch, repo_host, events, timeline_reader = build_orchestrator(
             self.repo_root,

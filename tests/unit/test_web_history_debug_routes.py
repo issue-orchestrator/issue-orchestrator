@@ -366,7 +366,7 @@ class TestHistoryEndpoints:
         added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
         assert lm.reset_retry_pending in added_labels
         assert lm.reset_retry_scratch_pending in added_labels
-        assert lm.fresh_lifecycle_rerun not in added_labels
+        assert lm.retrospective_review not in added_labels
         event_arg = mock_orch.deps.events.publish.call_args.args[0]
         assert event_arg.data["from_scratch"] is True
         assert event_arg.data["source"] == "web.reset-retry"
@@ -375,81 +375,117 @@ class TestHistoryEndpoints:
             lm.reset_retry_scratch_pending,
         ]
 
-    def test_hidden_scratch_reset_preflight_marks_closed_in_scope_for_reopen(self):
-        """Hidden scratch reset preview should report closed in-scope issues without mutating."""
+    def test_retrospective_review_preflight_keeps_closed_issue_closed(self):
+        """Retrospective review preview should not plan reopen/reset mutations."""
+        from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER
+
         mock_orch = create_mock_orchestrator()
-        mock_orch.config.filtering.label = "redo-poorly-reviewed"
+        mock_orch.config.retrospective_review_enabled = True
+        mock_orch.config.code_review_agent = "agent:reviewer"
+        mock_orch.config.retrospective_review_trigger_label = "lack-of-review-redo"
+        mock_orch.config.retrospective_reviewed_label = "lack-of-review-reviewed"
+        mock_orch.config.retrospective_changes_requested_label = "lack-of-review-needs-work"
         issue = create_issue(
             4057,
-            labels=["agent:web", "redo-poorly-reviewed"],
+            title="Previously completed implementation",
+            labels=["agent:web", "lack-of-review-redo", "blocked-failed"],
         )
         issue.state = "closed"
         mock_orch.repository_host.get_issue.return_value = issue
+        mock_orch.repository_host.get_prs_for_issue.return_value = [
+            SimpleNamespace(
+                number=812,
+                url="https://github.com/owner/repo/pull/812",
+                body=f"{ORCHESTRATOR_PR_MARKER}\n",
+            )
+        ]
 
         set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post(
-            "/api/reset-retry/hidden-scratch/preflight",
+            "/api/retrospective-review/preflight",
             json={"issues": [4057]},
         )
 
         assert response.status_code == 200
-        decision = response.json()["decisions"][0]
-        assert decision["issue"] == 4057
-        assert decision["eligible"] is True
-        assert decision["action"] == "reopen_and_reset"
-        assert decision["will_reopen"] is True
-        assert response.json()["rerun_intent"] == "fresh_lifecycle"
+        assert response.json() == {
+            "decisions": [
+                {
+                    "issue": 4057,
+                    "title": "Previously completed implementation",
+                    "state": "closed",
+                    "labels": ["agent:web", "lack-of-review-redo", "blocked-failed"],
+                    "eligible": True,
+                    "action": "queue_review",
+                    "reason": (
+                        "Closed issue will stay closed unless retrospective review "
+                        "requests changes"
+                    ),
+                    "agent_label": "agent:web",
+                    "trigger_label": "lack-of-review-redo",
+                    "prior_pr_number": 812,
+                    "prior_pr_url": "https://github.com/owner/repo/pull/812",
+                }
+            ],
+            "eligible": [4057],
+            "skipped": [],
+            "workflow": "retrospective_review",
+            "trigger_label": "lack-of-review-redo",
+        }
         mock_orch.repository_host.update_issue_state.assert_not_called()
 
-    def test_hidden_scratch_reset_skips_filtered_issue_without_mutation(self):
-        """Filtered hidden issues should not be reopened or reset."""
-        from issue_orchestrator.control.maintenance import ResetResult
-
+    def test_retrospective_review_allows_filtered_issue_without_reopening(self):
+        """Normal queue filtering must not block explicit retrospective review."""
         mock_orch = create_mock_orchestrator()
         lm = LabelManager(mock_orch.config)
+        mock_orch.config.retrospective_review_enabled = True
+        mock_orch.config.code_review_agent = "agent:reviewer"
+        mock_orch.config.retrospective_review_trigger_label = "lack-of-review-redo"
         mock_orch.config.filtering.label = "redo-poorly-reviewed"
         mock_orch.deps.label_manager = lm
         mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
         mock_orch.deps.events = MagicMock()
         issue = create_issue(4057, labels=["agent:web"])
         issue.state = "closed"
         mock_orch.repository_host.get_issue.return_value = issue
+        mock_orch.repository_host.get_prs_for_issue.return_value = []
+        mock_orch.repository_host.create_issue_key.return_value = FakeIssueKey("4057")
 
         set_orchestrator(mock_orch)
 
-        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
-            reset_issue_mock.return_value = ResetResult(success=True, issue_number=4057)
-            client = TestClient(app)
-            response = client.post(
-                "/api/reset-retry/hidden-scratch",
-                json={"issues": [4057]},
-            )
+        client = TestClient(app)
+        response = client.post(
+            "/api/retrospective-review",
+            json={"issues": [4057]},
+        )
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["reset"] == []
         assert payload["failed"] == []
-        assert payload["skipped"][0]["issue"] == 4057
-        assert "missing required filter label" in payload["skipped"][0]["reason"]
+        assert payload["skipped"] == []
+        assert payload["queued"][0]["issue"] == 4057
+        assert payload["queued"][0]["queued"] is True
         mock_orch.repository_host.update_issue_state.assert_not_called()
         mock_orch.repository_host.get_issue_labels.assert_not_called()
-        mock_orch.deps.action_applier.apply.assert_not_called()
-        reset_issue_mock.assert_not_called()
+        added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
+        assert "lack-of-review-redo" in added_labels
+        assert mock_orch.state.pending_retrospective_reviews[0].issue_number == 4057
 
-    def test_hidden_scratch_reset_skips_missing_agent_label(self):
-        """Hidden scratch reset should reject issues that cannot launch."""
+    def test_retrospective_review_skips_missing_agent_label(self):
+        """Retrospective review should reject issues that cannot launch."""
         mock_orch = create_mock_orchestrator()
-        mock_orch.config.filtering.label = "redo-poorly-reviewed"
-        issue = create_issue(4057, labels=["redo-poorly-reviewed"])
+        mock_orch.config.retrospective_review_enabled = True
+        mock_orch.config.code_review_agent = "agent:reviewer"
+        issue = create_issue(4057, labels=[])
         mock_orch.repository_host.get_issue.return_value = issue
 
         set_orchestrator(mock_orch)
 
         client = TestClient(app)
         response = client.post(
-            "/api/reset-retry/hidden-scratch/preflight",
+            "/api/retrospective-review/preflight",
             json={"issues": [4057]},
         )
 
@@ -460,67 +496,66 @@ class TestHistoryEndpoints:
         assert "no agent:* label" in decision["reason"]
         mock_orch.repository_host.update_issue_state.assert_not_called()
 
-    def test_hidden_scratch_reset_reopens_then_uses_existing_reset_path(self):
-        """Eligible closed hidden issues should reopen before normal scratch reset."""
-        from issue_orchestrator.control.maintenance import ResetResult
+    def test_retrospective_review_execute_applies_label_without_resetting(self):
+        """Eligible issues get the review trigger label and in-memory review queue only."""
+        from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER
 
         mock_orch = create_mock_orchestrator()
         lm = LabelManager(mock_orch.config)
-        mock_orch.config.filtering.label = "redo-poorly-reviewed"
+        mock_orch.config.retrospective_review_enabled = True
+        mock_orch.config.code_review_agent = "agent:reviewer"
+        mock_orch.config.retrospective_review_trigger_label = "lack-of-review-redo"
         mock_orch.deps.label_manager = lm
         mock_orch.deps.action_applier = MagicMock()
         mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
         mock_orch.deps.events = MagicMock()
         closed_issue = create_issue(
             4057,
-            labels=["agent:web", "redo-poorly-reviewed", lm.blocked_failed],
+            labels=["agent:web", lm.blocked_failed],
         )
         closed_issue.state = "closed"
-        open_issue = create_issue(
-            4057,
-            labels=[
-                "agent:web",
-                "redo-poorly-reviewed",
-                lm.reset_retry_pending,
-                lm.reset_retry_scratch_pending,
-            ],
-        )
-        mock_orch.repository_host.get_issue.side_effect = [closed_issue, open_issue]
+        mock_orch.repository_host.get_issue.return_value = closed_issue
+        mock_orch.repository_host.get_prs_for_issue.return_value = [
+            SimpleNamespace(
+                number=812,
+                url="https://github.com/owner/repo/pull/812",
+                body=f"{ORCHESTRATOR_PR_MARKER}\n",
+            )
+        ]
+        mock_orch.repository_host.create_issue_key.return_value = FakeIssueKey("4057")
 
         set_orchestrator(mock_orch)
 
-        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
-            reset_issue_mock.return_value = ResetResult(
-                success=True,
-                issue_number=4057,
-                deleted_worktree="/tmp/worktree-4057",
-                deleted_branch="4057-fix",
-                labels_removed=[lm.blocked_failed],
-            )
-            client = TestClient(app)
-            response = client.post(
-                "/api/reset-retry/hidden-scratch",
-                json={"issues": [4057]},
-            )
+        client = TestClient(app)
+        response = client.post(
+            "/api/retrospective-review",
+            json={"issues": [4057]},
+        )
 
         assert response.status_code == 200
         payload = response.json()
         assert payload["skipped"] == []
         assert payload["failed"] == []
-        assert payload["reopened"] == [4057]
-        assert payload["reset"][0]["issue"] == 4057
-        assert payload["reset"][0]["from_scratch"] is True
-        assert payload["reset"][0]["reopened"] is True
-        mock_orch.repository_host.update_issue_state.assert_called_once_with(4057, "open")
+        assert payload["queued"][0]["issue"] == 4057
+        assert payload["queued"][0]["queued"] is True
+        assert payload["queued"][0]["prior_pr_number"] == 812
+        assert payload["queued"][0]["prior_pr_url"] == "https://github.com/owner/repo/pull/812"
+        assert payload["queued"][0]["labels"] == ["agent:web", lm.blocked_failed]
+        assert payload["queued"][0]["state"] == "closed"
+        assert payload["trigger_label"] == "lack-of-review-redo"
+        mock_orch.repository_host.update_issue_state.assert_not_called()
         mock_orch.repository_host.get_issue_labels.assert_not_called()
-        assert reset_issue_mock.call_args.kwargs["from_scratch"] is True
-        assert "redo-poorly-reviewed" in reset_issue_mock.call_args.kwargs["current_labels"]
         added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
-        assert lm.reset_retry_pending in added_labels
-        assert lm.reset_retry_scratch_pending in added_labels
-        assert lm.fresh_lifecycle_rerun in added_labels
-        assert lm.fresh_lifecycle_rerun in payload["reset"][0]["pending_labels"]
-        assert payload["rerun_intent"] == "fresh_lifecycle"
+        assert "lack-of-review-redo" in added_labels
+        assert len(mock_orch.state.pending_retrospective_reviews) == 1
+        queued = mock_orch.state.pending_retrospective_reviews[0]
+        assert queued.issue_key == FakeIssueKey("4057")
+        assert queued.issue_number == 4057
+        assert queued.issue_title == "Test Issue"
+        assert queued.agent_label == "agent:web"
+        assert queued.trigger_label == "lack-of-review-redo"
+        assert queued.prior_pr_number == 812
+        assert queued.prior_pr_url == "https://github.com/owner/repo/pull/812"
 
     def test_reset_retry_from_scratch_clears_pending_review_rework_and_cleanup_state(self):
         """Scratch reset should remove stale in-memory PR/rework state before requeue."""

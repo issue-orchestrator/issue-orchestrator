@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 from .config import Config
 from ..ports.issue import Issue
-from ..domain.models import Session, SessionStatus, OrchestratorState, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER, PublishJobResult
+from ..domain.models import Session, SessionStatus, OrchestratorState, PendingRetrospectiveReview, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER, PublishJobResult
 from ..observation.observer import SessionObserver
 from ..control.scheduler import Scheduler
 from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -43,6 +43,7 @@ from ..control.session_completion import (
 from ..control.session_launcher import SessionLauncher
 from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
+    orchestrator_launch_retrospective_review_session as _launch_retrospective_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
     orchestrator_launch_validation_retry_session as _launch_validation_retry_session,
     launch_triage_session as _launch_triage_session,
@@ -243,9 +244,12 @@ class Orchestrator:
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str: return get_session_name(number, session_type)
     def _get_worktree_path(self, issue_number: int, agent_config: AgentConfig) -> Path: return get_worktree_path(self.config, issue_number, agent_config)
-    def session_launcher_callback(self, session_type: "SessionType", number: int) -> Optional[Session]: return _session_launcher_callback(session_type, number, self._launch_issue_by_number, self._launch_review_by_number, self._launch_rework_by_number, self._launch_triage_by_number)
+    def session_launcher_callback(self, session_type: "SessionType", number: int) -> Optional[Session]: return _session_launcher_callback(session_type, number, self._launch_issue_by_number, self._launch_review_by_number, self._launch_retrospective_review_by_number, self._launch_rework_by_number, self._launch_triage_by_number)
     def _launch_issue_by_number(self, n: int) -> Optional[Session]: return _gw_launch_issue_by_number(n, self.state.cached_queue_issues, self.launch_session, lambda: setattr(self.state, 'issues_started_count', self.state.issues_started_count + 1))
     def _launch_review_by_number(self, n: int) -> Optional[Session]: return _ch_launch_review_by_number(n, self.state.pending_reviews, self.launch_review_session)
+    def _launch_retrospective_review_by_number(self, n: int) -> Optional[Session]:
+        review = next((r for r in self.state.pending_retrospective_reviews if r.issue_number == n), None)
+        return self.launch_retrospective_review_session(review) if review else None
     def _launch_rework_by_number(self, n: int) -> Optional[Session]: return _ch_launch_rework_by_number(n, self.state.pending_reworks, self.launch_rework_session)
     def launch_validation_retry_by_number(self, n: int) -> Optional[Session]:
         retry = next((r for r in self.state.pending_validation_retries if r.issue_number == n), None)
@@ -1175,6 +1179,7 @@ class Orchestrator:
     @property
     def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.deps.events, self.deps.repository_host, self.deps.fact_gatherer, self.deps.pr_scanner, self.deps.label_sync, self._event_context, self.deps.label_manager)
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
+    def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]: return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def _launch_triage_session(self, triage: PendingTriageReview) -> None: _launch_triage_session(triage, self.config, self.launch_session)
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)
     def _recover_orphaned_cleanups(self) -> None: self._plan_applier.recover_orphaned_cleanups()

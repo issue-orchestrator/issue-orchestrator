@@ -26,6 +26,9 @@ from issue_orchestrator.infra.orchestrator import Orchestrator
 from issue_orchestrator.infra.repo_identity import state_dir
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.planner import Planner
+from issue_orchestrator.control.workflows.retrospective_review_workflow import (
+    RetrospectiveReviewWorkflow,
+)
 from issue_orchestrator.control.workflows.review_workflow import ReviewWorkflow
 from issue_orchestrator.control.workflows.rework_workflow import ReworkWorkflow
 
@@ -724,6 +727,10 @@ def build_orchestrator(
         config=config,
         scheduler=scheduler,
         review_workflow=ReviewWorkflow(config=config, events=composite_events),
+        retrospective_review_workflow=RetrospectiveReviewWorkflow(
+            config=config,
+            events=composite_events,
+        ),
         rework_workflow=ReworkWorkflow(config=config, events=composite_events),
     )
 

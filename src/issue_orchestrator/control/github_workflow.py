@@ -24,9 +24,15 @@ if TYPE_CHECKING:
 
 from ..infra.config import Config
 from ..events import EventName, EventContext
-from ..domain.models import DiscoveredReview, DiscoveredRework, DiscoveredEscalation, DependencyProblem
+from ..domain.models import (
+    DiscoveredReview,
+    DiscoveredRework,
+    DiscoveredEscalation,
+    DependencyProblem,
+)
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
+from .retrospective_review import discover_retrospective_review_issues
 from .review_scope import ReviewScopeChecker
 
 logger = logging.getLogger(__name__)
@@ -163,6 +169,7 @@ class GitHubWorkflow:
         issue_branches = self.pr_scanner.load_issue_branches()
         self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
         self.scan_needs_rework_prs(state, issue_branches=issue_branches)
+        self.scan_retrospective_review_issues(state)
         result = AwaitingMergeReconciler(
             self.repository_host,
             label_manager=self.label_manager,
@@ -194,6 +201,16 @@ class GitHubWorkflow:
                 "Discovered %d post-publish escalation(s)",
                 result.escalation_discovered,
             )
+
+    def scan_retrospective_review_issues(self, state: "OrchestratorState") -> None:
+        """Discover trigger-labeled issues for review-first existing-work audits."""
+        state.discovered_retrospective_reviews.extend(
+            discover_retrospective_review_issues(
+                repository_host=self.repository_host,
+                config=self.config,
+                already_issue_numbers=state.retrospective_review_in_flight_issue_numbers(),
+            )
+        )
 
     def update_dependency_problems(
         self,

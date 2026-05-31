@@ -38,6 +38,7 @@ class TaskKind(Enum):
 
     CODE = "code"        # Working on an issue (writing code)
     REVIEW = "review"    # Reviewing a PR
+    RETROSPECTIVE_REVIEW = "retrospective-review"  # Reviewing existing merged work
     REWORK = "rework"    # Fixing issues found in review
     TRIAGE = "triage"    # Triaging failed reviews
 

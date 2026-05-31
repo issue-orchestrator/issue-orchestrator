@@ -33,6 +33,7 @@ from issue_orchestrator.domain.models import (
     Session,
     SessionStatus,
     PendingReview,
+    PendingRetrospectiveReview,
     PendingRework,
     PendingTriageReview,
     PendingValidationRetry,
@@ -41,6 +42,7 @@ from issue_orchestrator.domain.models import (
     CompletionOutcome,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredRetrospectiveReview,
     RequestedAction,
     ObservedCompletion,
     SessionIdentity,
@@ -462,6 +464,78 @@ class TestPlanReviews:
         review_actions = [a for a in plan.actions if a.session_type == SessionType.REVIEW]
         assert len(review_actions) == 1
         assert review_actions[0].number == 100
+
+    def test_plans_retrospective_reviews_when_workflow_configured(self):
+        """Planner uses RetrospectiveReviewWorkflow for review-first launches."""
+        config = make_config(
+            code_review_agent="agent:reviewer",
+            retrospective_review_enabled=True,
+        )
+        scheduler = Scheduler(config)
+        pending = PendingRetrospectiveReview(
+            issue_key=FakeIssueKey(name="365"),
+            issue_number=365,
+            issue_title="Review existing work",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+        )
+
+        mock_workflow = Mock()
+        mock_workflow.is_configured.return_value = True
+        mock_decision = Mock()
+        mock_decision.should_launch = True
+        mock_decision.skip_reason = None
+        mock_decision.reviews_to_launch = [pending]
+        mock_workflow.should_launch_reviews.return_value = mock_decision
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            retrospective_review_workflow=mock_workflow,
+        )
+
+        plan = planner.plan(make_snapshot(pending_retrospective_reviews=[pending]))
+
+        launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert len(launch_actions) == 1
+        assert launch_actions[0].session_type == SessionType.RETROSPECTIVE_REVIEW
+        assert launch_actions[0].number == 365
+
+    def test_discovered_retrospective_review_queues_and_blocks_code_launch(self):
+        """Trigger-labeled issues queue retrospective review instead of coding."""
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        issue = make_issue(365, labels=["agent:web", "lack-of-review-redo"])
+        discovered = DiscoveredRetrospectiveReview(
+            issue_number=365,
+            issue_title="Review existing work",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            issue_key="365",
+            prior_pr_number=512,
+            prior_pr_url="https://github.com/test/repo/pull/512",
+        )
+
+        plan = planner.plan(
+            make_snapshot(
+                issues=[issue],
+                discovered_retrospective_reviews=[discovered],
+            )
+        )
+
+        queue_actions = plan.actions_of_type(ActionType.QUEUE_RETROSPECTIVE_REVIEW)
+        launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert len(queue_actions) == 1
+        assert queue_actions[0].issue_number == 365
+        assert queue_actions[0].prior_pr_number == 512
+        assert launch_actions == []
+        assert any(
+            skipped.item_type == "issue"
+            and skipped.number == 365
+            and skipped.reason == "pending retrospective review"
+            for skipped in plan.skipped
+        )
 
 
 class TestPlanHelpers:

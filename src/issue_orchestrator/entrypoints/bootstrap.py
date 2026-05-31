@@ -72,7 +72,7 @@ from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..execution.review_artifact_reader import ManifestReviewArtifactReader
 from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
 from ..control.dependency_evaluator import DependencyEvaluator
-from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
+from ..control.workflows import ReviewWorkflow, RetrospectiveReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
@@ -328,6 +328,7 @@ def _create_planner(
     label_sync = LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager) if github else None
 
     review_workflow = ReviewWorkflow(config=config, events=events)
+    retrospective_review_workflow = RetrospectiveReviewWorkflow(config=config, events=events)
     rework_workflow = ReworkWorkflow(config=config, events=events, label_manager=label_manager)
     triage_workflow = TriageWorkflow(config=config, events=events)
 
@@ -336,6 +337,7 @@ def _create_planner(
         scheduler=scheduler,
         dependency_evaluator=dependency_evaluator,
         review_workflow=review_workflow,
+        retrospective_review_workflow=retrospective_review_workflow,
         rework_workflow=rework_workflow,
         triage_workflow=triage_workflow,
         provider_resilience=provider_resilience,
