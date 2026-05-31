@@ -10,8 +10,8 @@
     const ENDPOINTS = {
         UNBLOCK_RETRY: '/api/unblock-retry',
         RESET_RETRY: '/api/reset-retry',
-        HIDDEN_SCRATCH_RESET_PREFLIGHT: '/api/reset-retry/hidden-scratch/preflight',
-        HIDDEN_SCRATCH_RESET: '/api/reset-retry/hidden-scratch',
+        RETROSPECTIVE_REVIEW_PREFLIGHT: '/api/retrospective-review/preflight',
+        RETROSPECTIVE_REVIEW: '/api/retrospective-review',
         BULK_RETRY: '/api/bulk-retry',
         BULK_DEPRIORITIZE: '/api/bulk-deprioritize',
         BULK_CANCEL_QUEUED: '/api/bulk-cancel-queued',
@@ -49,19 +49,19 @@
         };
     }
 
-    function buildHiddenScratchResetPreflightRequest(issueNumbers) {
+    function buildRetrospectiveReviewPreflightRequest(issueNumbers) {
         const issues = normalizeIssueNumbers(issueNumbers);
         return {
-            endpoint: ENDPOINTS.HIDDEN_SCRATCH_RESET_PREFLIGHT,
+            endpoint: ENDPOINTS.RETROSPECTIVE_REVIEW_PREFLIGHT,
             method: 'POST',
             body: { issues },
         };
     }
 
-    function buildHiddenScratchResetExecuteRequest(issueNumbers) {
+    function buildRetrospectiveReviewExecuteRequest(issueNumbers) {
         const issues = normalizeIssueNumbers(issueNumbers);
         return {
-            endpoint: ENDPOINTS.HIDDEN_SCRATCH_RESET,
+            endpoint: ENDPOINTS.RETROSPECTIVE_REVIEW,
             method: 'POST',
             body: { issues },
         };
@@ -212,8 +212,8 @@
         normalizeIssueNumbers,
         buildUnblockRequest,
         buildResetRetryRequest,
-        buildHiddenScratchResetPreflightRequest,
-        buildHiddenScratchResetExecuteRequest,
+        buildRetrospectiveReviewPreflightRequest,
+        buildRetrospectiveReviewExecuteRequest,
         buildBulkRetryRequest,
         buildBulkDeprioritizeRequest,
         buildBulkCancelQueuedRequest,

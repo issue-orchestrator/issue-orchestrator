@@ -708,6 +708,61 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.keep_current_approach_label",
         },
     )
+    retrospective_enabled: bool = Field(
+        False,
+        title="Enable Retrospective Reviews",
+        description="Enable review-first audits for existing implementations",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "When enabled, issues carrying the retrospective trigger label are reviewed before any coder rework is launched.",
+            "section": "Retrospective Review Workflow",
+            "config_attr": "retrospective_review_enabled",
+            "yaml_path": "review.retrospective.enabled",
+            "summary": {
+                "section": "review",
+                "format": SUMMARY_BOOLEAN_FLAG,
+                "label": "retrospective",
+                "true_value": "enabled",
+                "false_value": "disabled",
+            },
+        },
+    )
+    retrospective_trigger_label: str = Field(
+        "retrospective-review",
+        title="Retrospective Trigger Label",
+        description="Issue label that queues review of an existing implementation",
+        json_schema_extra={
+            "doc_examples": ["retrospective-review", "lack-of-review-redo"],
+            "doc_notes": "This label is the source of truth for review-first reruns. It may be applied to open or closed issues.",
+            "section": "Retrospective Review Workflow",
+            "config_attr": "retrospective_review_trigger_label",
+            "yaml_path": "review.retrospective.trigger_label",
+        },
+    )
+    retrospective_reviewed_label: str = Field(
+        "retrospective-reviewed",
+        title="Retrospective Reviewed Label",
+        description="Issue label added after retrospective review approval",
+        json_schema_extra={
+            "doc_examples": ["retrospective-reviewed"],
+            "doc_notes": "Added to the issue when the reviewer approves the existing implementation.",
+            "section": "Retrospective Review Workflow",
+            "config_attr": "retrospective_reviewed_label",
+            "yaml_path": "review.retrospective.reviewed_label",
+        },
+    )
+    retrospective_changes_requested_label: str = Field(
+        "retrospective-changes-requested",
+        title="Retrospective Changes Requested Label",
+        description="Issue label added when retrospective review asks for coder rework",
+        json_schema_extra={
+            "doc_examples": ["retrospective-changes-requested"],
+            "doc_notes": "Added before the issue enters the normal coder rework and PR review lifecycle.",
+            "section": "Retrospective Review Workflow",
+            "config_attr": "retrospective_changes_requested_label",
+            "yaml_path": "review.retrospective.changes_requested_label",
+        },
+    )
     run_audit_min_runtime_minutes: int = Field(
         20,
         title="Auto Run Audit Threshold (minutes)",

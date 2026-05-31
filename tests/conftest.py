@@ -266,13 +266,20 @@ class MockGitHubAdapter:
 
     def get_issue_labels(self, issue_number: int) -> list[str]:
         """Get labels for an issue."""
-        return list(self.labels.get(issue_number, set()))
+        return sorted(self.labels.get(issue_number, set()))
+
+    def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
+        """Get fresh labels for an issue."""
+        return self.get_issue_labels(issue_number)
 
     # LabelManager methods
     def add_label(self, issue_number: int, label: str) -> None:
         """Add a label to an issue."""
         self.add_label_calls.append((issue_number, label))
         self.labels.setdefault(issue_number, set()).add(label)
+        issue = self.get_issue(issue_number)
+        if issue is not None and label not in issue.labels:
+            issue.labels.append(label)
         pr = self.get_pr(issue_number)
         if pr and label not in pr.labels:
             pr.labels.append(label)
@@ -281,6 +288,9 @@ class MockGitHubAdapter:
         """Remove a label from an issue."""
         self.remove_label_calls.append((issue_number, label))
         self.labels.get(issue_number, set()).discard(label)
+        issue = self.get_issue(issue_number)
+        if issue is not None and label in issue.labels:
+            issue.labels.remove(label)
         pr = self.get_pr(issue_number)
         if pr and label in pr.labels:
             pr.labels.remove(label)
@@ -431,6 +441,11 @@ class MockGitHubAdapter:
             if entry.get("number") == milestone:
                 issue.milestone = entry.get("title")
                 return
+
+    def update_issue_state(self, issue_number: int, state: str) -> None:
+        issue = self.get_issue(issue_number)
+        if issue is not None:
+            issue.state = state
 
 
 @pytest.fixture

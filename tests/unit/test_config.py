@@ -1336,6 +1336,10 @@ agents:
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         assert config.review_run_audit_min_runtime_minutes == 20
         assert config.review_run_audit_on_timeout is True
+        assert config.retrospective_review_enabled is False
+        assert config.retrospective_review_trigger_label == "retrospective-review"
+        assert config.retrospective_reviewed_label == "retrospective-reviewed"
+        assert config.retrospective_changes_requested_label == "retrospective-changes-requested"
         # triage review defaults (all None when not configured)
         assert config.triage_review_agent is None
         assert config.triage_review_label is None
@@ -1441,6 +1445,11 @@ review:
   run_audit:
     min_runtime_minutes: 30
     on_timeout: false
+  retrospective:
+    enabled: true
+    trigger_label: lack-of-review-redo
+    reviewed_label: lack-of-review-reviewed
+    changes_requested_label: lack-of-review-needs-work
   keep_current_approach_label: reviewer-keep-current-approach
   triage_review_agent: agent:triage
   triage_reviewed_label: triage-reviewed
@@ -1464,10 +1473,66 @@ review:
         assert config.review_nits_by_agent == {"agent:coder": "ignore"}
         assert config.review_run_audit_min_runtime_minutes == 30
         assert config.review_run_audit_on_timeout is False
+        assert config.retrospective_review_enabled is True
+        assert config.retrospective_review_trigger_label == "lack-of-review-redo"
+        assert config.retrospective_reviewed_label == "lack-of-review-reviewed"
+        assert config.retrospective_changes_requested_label == "lack-of-review-needs-work"
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         assert config.triage_review_agent == "agent:triage"
         assert config.triage_reviewed_label == "triage-reviewed"
         assert config.triage_review_threshold == 5
+
+    def test_retrospective_review_requires_default_reviewer(self, tmp_path):
+        """Retrospective review cannot run without a reviewer agent."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:coder:
+    prompt: /tmp/prompt.txt
+
+review:
+  retrospective:
+    enabled: true
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        errors = config.validate()
+        assert any("review.retrospective.enabled requires review.default" in e for e in errors)
+
+    def test_retrospective_review_validates_non_empty_labels(self, tmp_path):
+        """Retrospective labels are source-of-truth state and must be explicit."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:coder:
+    prompt: /tmp/prompt.txt
+  agent:reviewer:
+    prompt: /tmp/prompt.txt
+
+review:
+  default: agent:reviewer
+  retrospective:
+    enabled: true
+    trigger_label: ""
+    reviewed_label: ""
+    changes_requested_label: ""
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        errors = config.validate()
+        assert any("review.retrospective.trigger_label" in e for e in errors)
+        assert any("review.retrospective.reviewed_label" in e for e in errors)
+        assert any("review.retrospective.changes_requested_label" in e for e in errors)
 
     def test_review_workflow_partial_config(self, tmp_path):
         """Test loading review workflow with partial config (code review only)."""
@@ -3284,6 +3349,47 @@ agents:
         result = config.to_dict()
 
         assert "review" not in result or "max_rework_cycles" not in result["review"]
+
+    def test_to_dict_includes_retrospective_review_settings(self, tmp_path):
+        """Retrospective review labels round-trip through saved config."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+  agent:reviewer:
+    prompt: {prompt_file}
+
+review:
+  default: agent:reviewer
+  retrospective:
+    enabled: true
+    trigger_label: lack-of-review-redo
+    reviewed_label: lack-of-review-reviewed
+    changes_requested_label: lack-of-review-needs-work
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        assert result["review"]["retrospective"] == {
+            "enabled": True,
+            "trigger_label": "lack-of-review-redo",
+            "reviewed_label": "lack-of-review-reviewed",
+            "changes_requested_label": "lack-of-review-needs-work",
+        }
 
     def test_to_dict_sqlite_backup_settings(self, tmp_path):
         """Test to_dict includes sqlite_backup settings when non-default."""

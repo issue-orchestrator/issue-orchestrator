@@ -1522,7 +1522,7 @@ class SessionController:
     @staticmethod
     def _build_completion_detail(record: "CompletionRecord") -> dict[str, Any]:
         """Extract curated fields from CompletionRecord for trace events."""
-        detail: dict[str, Any] = {}
+        detail: dict[str, Any] = {"outcome": record.outcome.value}
         for key in (
             "implementation",
             "problems",

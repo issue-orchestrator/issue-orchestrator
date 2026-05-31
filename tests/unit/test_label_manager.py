@@ -39,6 +39,9 @@ class _StubConfig:
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
     code_review_label: str | None = None
     code_reviewed_label: str | None = None
+    retrospective_review_trigger_label: str = "retrospective-review"
+    retrospective_reviewed_label: str = "retrospective-reviewed"
+    retrospective_changes_requested_label: str = "retrospective-changes-requested"
 
 
 @pytest.fixture
@@ -75,8 +78,10 @@ class TestNamedProperties:
     def test_reset_retry_scratch_pending(self, lm: LabelManager) -> None:
         assert lm.reset_retry_scratch_pending == "reset-retry-scratch-pending"
 
-    def test_fresh_lifecycle_rerun(self, lm: LabelManager) -> None:
-        assert lm.fresh_lifecycle_rerun == "fresh-lifecycle-rerun"
+    def test_retrospective_review(self, lm: LabelManager) -> None:
+        assert lm.retrospective_review == "retrospective-review"
+        assert lm.retrospective_reviewed == "retrospective-reviewed"
+        assert lm.retrospective_changes_requested == "retrospective-changes-requested"
 
     def test_blocked(self, lm: LabelManager) -> None:
         assert lm.blocked == "blocked"
@@ -142,8 +147,10 @@ class TestNamedPropertiesPrefixed:
     def test_reset_retry_scratch_pending(self, plm: LabelManager) -> None:
         assert plm.reset_retry_scratch_pending == "bot:reset-retry-scratch-pending"
 
-    def test_fresh_lifecycle_rerun(self, plm: LabelManager) -> None:
-        assert plm.fresh_lifecycle_rerun == "bot:fresh-lifecycle-rerun"
+    def test_retrospective_review(self, plm: LabelManager) -> None:
+        assert plm.retrospective_review == "bot:retrospective-review"
+        assert plm.retrospective_reviewed == "bot:retrospective-reviewed"
+        assert plm.retrospective_changes_requested == "bot:retrospective-changes-requested"
 
     def test_io_claimed(self, plm: LabelManager) -> None:
         assert plm.io_claimed == "bot:io:claimed"

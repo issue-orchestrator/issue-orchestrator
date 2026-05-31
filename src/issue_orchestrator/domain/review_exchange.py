@@ -20,11 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .fresh_lifecycle_rerun import (
-    coder_fresh_lifecycle_rerun_context,
-    reviewer_fresh_lifecycle_rerun_context,
-)
-
 if TYPE_CHECKING:
     from .review_exchange_turn import ReviewExchangeTurnPacket
 
@@ -91,13 +86,9 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         prior += f"\nCoder response:\n{packet.last_coder_text}\n"
     if packet.last_reviewer_text:
         prior += f"\nPrevious review feedback:\n{packet.last_reviewer_text}\n"
-    rerun_context = ""
-    if packet.fresh_lifecycle_rerun:
-        rerun_context = f"{reviewer_fresh_lifecycle_rerun_context()}\n\n"
     return (
         f"You are the reviewer in a coder↔reviewer exchange for issue #{packet.issue_number}: {packet.issue_title}.\n"
         f"Round {packet.round_index}.\n"
-        f"{rerun_context}"
         f"{validation_note}\n"
         "Review the current worktree changes.\n"
         "Consider:\n"
@@ -132,13 +123,9 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         raise ValueError(
             "build_coder_prompt requires packet.reviewer_feedback to be set"
         )
-    rerun_context = ""
-    if packet.fresh_lifecycle_rerun:
-        rerun_context = f"{coder_fresh_lifecycle_rerun_context()}\n\n"
     return (
         f"You are the coder in a review exchange for issue #{packet.issue_number}: {packet.issue_title}.\n"
         f"Round {packet.round_index}.\n"
-        f"{rerun_context}"
         "Review the full reviewer report below and update the worktree accordingly.\n"
         "\n"
         "Steps:\n"

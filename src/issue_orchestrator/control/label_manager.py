@@ -89,10 +89,22 @@ class LabelManager:
                 "Reset + retry from scratch pending launch",
             ),
             LabelEntry(
-                "fresh_lifecycle_rerun",
-                "fresh-lifecycle-rerun",
+                "retrospective_review",
+                config.retrospective_review_trigger_label,
                 LabelCategory.LIFECYCLE,
-                "Fresh coding, validation, and review lifecycle rerun",
+                "Retrospective review requested",
+            ),
+            LabelEntry(
+                "retrospective_reviewed",
+                config.retrospective_reviewed_label,
+                LabelCategory.INFORMATIONAL,
+                "Retrospective review approved",
+            ),
+            LabelEntry(
+                "retrospective_changes_requested",
+                config.retrospective_changes_requested_label,
+                LabelCategory.LIFECYCLE,
+                "Retrospective review changes requested",
             ),
             LabelEntry("blocked", config.label_blocked, LabelCategory.BLOCKING, "Blocked"),
             LabelEntry("blocked_failed", "blocked-failed", LabelCategory.BLOCKING, "Failed run"),
@@ -158,8 +170,16 @@ class LabelManager:
         return self._resolved["reset_retry_scratch_pending"]
 
     @property
-    def fresh_lifecycle_rerun(self) -> str:
-        return self._resolved["fresh_lifecycle_rerun"]
+    def retrospective_review(self) -> str:
+        return self._resolved["retrospective_review"]
+
+    @property
+    def retrospective_reviewed(self) -> str:
+        return self._resolved["retrospective_reviewed"]
+
+    @property
+    def retrospective_changes_requested(self) -> str:
+        return self._resolved["retrospective_changes_requested"]
 
     @property
     def blocked_failed(self) -> str:

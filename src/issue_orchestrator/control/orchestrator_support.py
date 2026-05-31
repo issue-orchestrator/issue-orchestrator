@@ -45,6 +45,7 @@ from .session_history import (
 from .transition_log import log_transition
 from ..domain.models import (
     BLOCKED_HISTORY_STATUSES,
+    PendingRetrospectiveReview,
     PendingReview, PendingRework, PendingTriageReview,
 )
 
@@ -180,6 +181,7 @@ class OrchestratorSupport:
     def clear_discovered_facts(self) -> None:
         for attr in (
             "discovered_reviews",
+            "discovered_retrospective_reviews",
             "discovered_awaiting_merge_reconciliations",
             "discovered_awaiting_merge_drifts",
             "discovered_reworks",
@@ -348,6 +350,7 @@ class OrchestratorSupport:
             ActionType.CREATE_TRIAGE_ISSUE: self._handle_create_triage_issue,
             ActionType.CLEANUP_SESSION: self._handle_cleanup_session,
             ActionType.QUEUE_REVIEW: self._handle_queue_review,
+            ActionType.QUEUE_RETROSPECTIVE_REVIEW: self._handle_queue_retrospective_review,
             ActionType.QUEUE_REWORK: self._handle_queue_rework,
             ActionType.QUEUE_TRIAGE: self._handle_queue_triage,
         }
@@ -402,6 +405,30 @@ class OrchestratorSupport:
         )
         log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
         self.get_review_machine(a.pr_number, a.issue_number)
+
+    def _handle_queue_retrospective_review(self, action: "Action", result: "ActionResult") -> None:
+        from .actions import QueueRetrospectiveReviewAction
+        a = cast(QueueRetrospectiveReviewAction, action)
+        if self.state.has_pending_or_active_retrospective_review(a.issue_number):
+            return
+        self.state.pending_retrospective_reviews.append(
+            PendingRetrospectiveReview(
+                issue_key=self.repository_host.create_issue_key(a.issue_number),
+                issue_number=a.issue_number,
+                issue_title=a.issue_title,
+                agent_label=a.agent_label,
+                trigger_label=a.trigger_label,
+                prior_pr_number=a.prior_pr_number,
+                prior_pr_url=a.prior_pr_url,
+            )
+        )
+        log_transition(
+            "retrospective-review",
+            a.issue_number,
+            "CREATED",
+            "QUEUED",
+            "from trigger label",
+        )
 
     def _handle_queue_rework(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueReworkAction
@@ -481,6 +508,7 @@ def pause_issue_for_reconciliation(
 def clear_discovered_facts(state: "OrchestratorState") -> None:
     """Clear discovered facts from state - moved per method table."""
     state.discovered_reviews.clear()
+    state.discovered_retrospective_reviews.clear()
     state.discovered_awaiting_merge_reconciliations.clear()
     state.discovered_awaiting_merge_drifts.clear()
     state.discovered_reworks.clear()

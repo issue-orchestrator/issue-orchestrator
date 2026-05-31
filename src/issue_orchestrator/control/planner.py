@@ -32,8 +32,8 @@ from ..domain.models import (
     CompletionOutcome,
     TriageFacts,
     ObservedCompletion,
+    active_retrospective_review_issue_numbers,
 )
-
 if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -43,6 +43,8 @@ from .provider_availability import ProviderAvailabilityPolicy
 from .workflows import (
     ReviewWorkflow,
     ReviewDecision,
+    RetrospectiveReviewWorkflow,
+    RetrospectiveReviewDecision,
     ReworkWorkflow,
     ReworkDecision,
     TriageWorkflow,
@@ -56,6 +58,7 @@ from .actions import (
     LaunchSessionAction,
     LaunchValidationRetryAction,
     QueueReviewAction,
+    QueueRetrospectiveReviewAction,
     QueueReworkAction,
     QueueTriageAction,
     CreateTriageIssueAction,
@@ -98,6 +101,7 @@ class Planner:
         scheduler: Scheduler,
         dependency_evaluator: Optional[DependencyEvaluator] = None,
         review_workflow: Optional[ReviewWorkflow] = None,
+        retrospective_review_workflow: Optional[RetrospectiveReviewWorkflow] = None,
         rework_workflow: Optional[ReworkWorkflow] = None,
         triage_workflow: Optional[TriageWorkflow] = None,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
@@ -118,6 +122,7 @@ class Planner:
         self.scheduler = scheduler
         self.dependency_evaluator = self._align_dependency_evaluator(dependency_evaluator)
         self.review_workflow = review_workflow
+        self.retrospective_review_workflow = retrospective_review_workflow
         self.rework_workflow = rework_workflow
         self.triage_workflow = triage_workflow
         self.provider_resilience = provider_resilience
@@ -191,6 +196,10 @@ class Planner:
         queue_actions = self._plan_discovered_reviews(snapshot)
         actions.extend(queue_actions)
 
+        # 1b2. Queue retrospective reviews from trigger labels/UI requests
+        retrospective_queue_actions = self._plan_discovered_retrospective_reviews(snapshot)
+        actions.extend(retrospective_queue_actions)
+
         # 1c. Queue discovered reworks from scans
         rework_queue_actions = self._plan_discovered_reworks(snapshot)
         actions.extend(rework_queue_actions)
@@ -223,19 +232,37 @@ class Planner:
         history_reconciliation_actions = self._plan_awaiting_merge_reconciliations(snapshot)
         actions.extend(history_reconciliation_actions)
 
-        # === PHASE 2: Session launch actions (consume capacity) ===
+        launch_actions, launch_skipped = self._plan_session_launches(
+            snapshot,
+            plan_context,
+        )
+        actions.extend(launch_actions)
+        skipped.extend(launch_skipped)
 
-        # Calculate available capacity
+        return Plan(actions=tuple(actions), skipped=tuple(skipped))
+
+    def _plan_session_launches(
+        self,
+        snapshot: OrchestratorSnapshot,
+        plan_context: PlanContext,
+    ) -> tuple[list[Action], list[SkippedItem]]:
+        """Plan capacity-consuming session launches in priority order."""
+        actions: list[Action] = []
+        skipped: list[SkippedItem] = []
         capacity = self.config.max_concurrent_sessions - snapshot.active_count
         if capacity <= 0:
-            logger.debug("Planner: no capacity available (active=%d, max=%d)",
-                        snapshot.active_count, self.config.max_concurrent_sessions)
-            # Still return queue actions even if no capacity for launches
-            return Plan(actions=tuple(actions), skipped=tuple(skipped))
+            logger.debug(
+                "Planner: no capacity available (active=%d, max=%d)",
+                snapshot.active_count,
+                self.config.max_concurrent_sessions,
+            )
+            return actions, skipped
 
-        # PRIORITY ORDER: Reviews > Reworks > Validation Retries > Triage > New Issues
-        # This ensures completed work (PRs) gets reviewed before starting new work
+        # PRIORITY ORDER: Reviews > Retrospective Reviews > Reworks >
+        # Validation Retries > Triage > New Issues.
+        # This ensures completed work gets reviewed before starting new work.
         review_launch_count = 0
+        retrospective_review_launch_count = 0
         rework_launch_count = 0
         validation_retry_launch_count = 0
         triage_launch_count = 0
@@ -247,6 +274,18 @@ class Planner:
             skipped.extend(review_skipped)
             capacity -= len(review_actions)
             review_launch_count = len(review_actions)
+
+        # 2b. Plan retrospective review launches
+        if capacity > 0 and self.retrospective_review_workflow:
+            retrospective_actions, retrospective_skipped = self._plan_retrospective_reviews(
+                snapshot,
+                capacity,
+                plan_context,
+            )
+            actions.extend(retrospective_actions)
+            skipped.extend(retrospective_skipped)
+            capacity -= len(retrospective_actions)
+            retrospective_review_launch_count = len(retrospective_actions)
 
         # 3. Plan rework launches
         if capacity > 0 and self.rework_workflow:
@@ -285,6 +324,7 @@ class Planner:
         if capacity > 0:
             pending_work_planned = (
                 review_launch_count
+                + retrospective_review_launch_count
                 + rework_launch_count
                 + validation_retry_launch_count
                 + triage_launch_count
@@ -292,9 +332,10 @@ class Planner:
             if pending_work_planned:
                 logger.info(
                     "Planner: pending work consumed %d slot(s) "
-                    "(reviews=%d, reworks=%d, validation_retries=%d, triage=%d), "
+                    "(reviews=%d, retrospective_reviews=%d, reworks=%d, validation_retries=%d, triage=%d), "
                     "%d slot(s) remain for issues",
                     pending_work_planned, review_launch_count,
+                    retrospective_review_launch_count,
                     rework_launch_count, validation_retry_launch_count,
                     triage_launch_count, capacity,
                 )
@@ -302,7 +343,7 @@ class Planner:
             actions.extend(issue_actions)
             skipped.extend(issue_skipped)
 
-        return Plan(actions=tuple(actions), skipped=tuple(skipped))
+        return actions, skipped
 
     def _plan_discovered_reviews(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan queue actions for discovered reviews from session completions.
@@ -349,6 +390,45 @@ class Planner:
                     logger.debug("Planner: no code_review_agent - skipping review queue for PR #%d", review.pr_number)
             else:
                 logger.debug("Planner: PR #%d already queued, skipping", review.pr_number)
+
+        return actions
+
+    def _plan_discovered_retrospective_reviews(
+        self,
+        snapshot: OrchestratorSnapshot,
+    ) -> list[Action]:
+        """Plan queue actions for trigger-labeled retrospective reviews."""
+        actions: list[Action] = []
+        if not snapshot.discovered_retrospective_reviews:
+            return actions
+
+        queued_issue_numbers = {
+            review.issue_number
+            for review in snapshot.pending_retrospective_reviews
+        }
+        active_retrospective_issue_numbers = active_retrospective_review_issue_numbers(
+            snapshot.active_sessions
+        )
+
+        for review in snapshot.discovered_retrospective_reviews:
+            if review.issue_number in queued_issue_numbers:
+                continue
+            if review.issue_number in active_retrospective_issue_numbers:
+                continue
+            actions.append(QueueRetrospectiveReviewAction(
+                issue_number=review.issue_number,
+                issue_title=review.issue_title,
+                agent_label=review.agent_label,
+                trigger_label=review.trigger_label,
+                issue_key=review.issue_key or str(review.issue_number),
+                prior_pr_number=review.prior_pr_number,
+                prior_pr_url=review.prior_pr_url,
+                reason="retrospective review trigger label discovered",
+            ))
+            logger.debug(
+                "Planner: queuing retrospective review for issue #%d",
+                review.issue_number,
+            )
 
         return actions
 
@@ -1062,6 +1142,12 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         # to prevent launching a code session for an issue that already has review/rework work.
         issues_with_reviews = {r.issue_number for r in snapshot.discovered_reviews}
         issues_with_reviews.update(r.issue_number for r in snapshot.pending_reviews)
+        issues_with_retrospective_reviews = {
+            r.issue_number for r in snapshot.discovered_retrospective_reviews
+        }
+        issues_with_retrospective_reviews.update(
+            r.issue_number for r in snapshot.pending_retrospective_reviews
+        )
         issues_with_reworks = {r.issue_number for r in snapshot.discovered_reworks}
         issues_with_reworks.update(
             n for r in snapshot.pending_reworks if (n := r.resolve_issue_number()) is not None
@@ -1069,6 +1155,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         excluded_issues = (
             snapshot.active_issue_numbers |
             issues_with_reviews |
+            issues_with_retrospective_reviews |
             issues_with_reworks |
             snapshot.failed_this_cycle |  # Skip issues that failed until cache refresh
             snapshot.session_history_issue_numbers  # Skip issues with completed sessions
@@ -1089,6 +1176,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending review"))
                 logger.info(issue_log(issue.number, "Skipped: reason=pending_review"))
                 skip_reason_by_issue[issue.number] = "pending_review"
+            elif issue.number in issues_with_retrospective_reviews:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending retrospective review"))
+                logger.info(issue_log(issue.number, "Skipped: reason=pending_retrospective_review"))
+                skip_reason_by_issue[issue.number] = "pending_retrospective_review"
             elif issue.number in issues_with_reworks:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending rework"))
                 logger.info(issue_log(issue.number, "Skipped: reason=pending_rework"))
@@ -1273,6 +1364,69 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     command="",  # Orchestrator will fill in
                     working_dir="",  # Orchestrator will fill in
                     reason=f"review queued for PR #{review.pr_number}",
+                ))
+
+        return actions, skipped
+
+    def _plan_retrospective_reviews(
+        self,
+        snapshot: OrchestratorSnapshot,
+        capacity: int,
+        plan_context: PlanContext,
+    ) -> tuple[list[Action], list[SkippedItem]]:
+        """Plan which retrospective reviews to launch."""
+        actions: list[Action] = []
+        skipped: list[SkippedItem] = []
+        workflow = self.retrospective_review_workflow
+        if not workflow or not workflow.is_configured():
+            return actions, skipped
+
+        decision: RetrospectiveReviewDecision = workflow.should_launch_reviews(
+            pending_reviews=list(snapshot.pending_retrospective_reviews),
+            active_session_count=snapshot.active_count,
+            paused=snapshot.paused,
+        )
+        if decision.skip_reason:
+            for review in snapshot.pending_retrospective_reviews:
+                skipped.append(SkippedItem(
+                    item_type="retrospective_review",
+                    number=review.issue_number,
+                    reason=decision.skip_reason,
+                ))
+            return actions, skipped
+
+        if decision.should_launch:
+            for review in decision.reviews_to_launch[:capacity]:
+                reviewer_label = self.config.get_reviewer_for_agent(review.agent_label)
+                provider = (
+                    self.provider_policy.provider_for_agent_label(reviewer_label)
+                    if self.provider_policy
+                    else None
+                )
+                if provider and self.provider_policy and self.provider_policy.is_open(provider):
+                    self._record_provider_skip(
+                        issue_number=review.issue_number,
+                        item_type="retrospective_review",
+                        item_number=review.issue_number,
+                        provider=provider,
+                        actions=actions,
+                        skipped=skipped,
+                        plan_context=plan_context,
+                    )
+                    continue
+                logger.info(
+                    issue_log(
+                        review.issue_number,
+                        "Selected for session: type=retrospective-review slots_available=%d",
+                    ),
+                    capacity,
+                )
+                actions.append(LaunchSessionAction(
+                    session_type=SessionType.RETROSPECTIVE_REVIEW,
+                    number=review.issue_number,
+                    command="",
+                    working_dir="",
+                    reason=f"retrospective review queued for issue #{review.issue_number}",
                 ))
 
         return actions, skipped

@@ -406,6 +406,21 @@ def load_review_section(config: "Config", review_section: dict) -> None:
         "keep_current_approach_label",
         "reviewer-keep-current-approach",
     )
+    retrospective_section = review_section.get("retrospective", {})
+    if isinstance(retrospective_section, dict):
+        config.retrospective_review_enabled = retrospective_section.get("enabled", False)
+        config.retrospective_review_trigger_label = retrospective_section.get(
+            "trigger_label",
+            "retrospective-review",
+        )
+        config.retrospective_reviewed_label = retrospective_section.get(
+            "reviewed_label",
+            "retrospective-reviewed",
+        )
+        config.retrospective_changes_requested_label = retrospective_section.get(
+            "changes_requested_label",
+            "retrospective-changes-requested",
+        )
     run_audit_section = review_section.get("run_audit", {})
     if isinstance(run_audit_section, dict):
         config.review_run_audit_min_runtime_minutes = run_audit_section.get(

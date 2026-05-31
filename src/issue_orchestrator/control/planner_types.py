@@ -13,9 +13,11 @@ from ..domain.models import (
     DiscoveredEscalation,
     DiscoveredFailure,
     DiscoveredReview,
+    DiscoveredRetrospectiveReview,
     DiscoveredRework,
     ObservedCompletion,
     PendingReview,
+    PendingRetrospectiveReview,
     PendingRework,
     PendingTriageReview,
     PendingValidationRetry,
@@ -43,12 +45,14 @@ class OrchestratorSnapshot:
     pending_reworks: tuple[PendingRework, ...]
     pending_triage: tuple[PendingTriageReview, ...]
     paused: bool
+    pending_retrospective_reviews: tuple[PendingRetrospectiveReview, ...] = field(default_factory=tuple)
     pending_validation_retries: tuple[PendingValidationRetry, ...] = field(default_factory=tuple)
     priority_queue: tuple[int, ...] = field(default_factory=tuple)
     issues_started_count: int = 0
     max_issues_to_start: Optional[int] = None
     # Discovered facts for Planner-centric queue management
     discovered_reviews: tuple[DiscoveredReview, ...] = field(default_factory=tuple)
+    discovered_retrospective_reviews: tuple[DiscoveredRetrospectiveReview, ...] = field(default_factory=tuple)
     discovered_awaiting_merge_reconciliations: tuple[
         DiscoveredAwaitingMergeReconciliation, ...
     ] = field(default_factory=tuple)
@@ -91,6 +95,7 @@ class OrchestratorSnapshot:
         state: "OrchestratorState",
         max_issues_to_start: Optional[int] = None,
         discovered_reviews: Sequence[DiscoveredReview] = (),
+        discovered_retrospective_reviews: Sequence[DiscoveredRetrospectiveReview] = (),
         discovered_awaiting_merge_reconciliations: Sequence[
             DiscoveredAwaitingMergeReconciliation
         ] = (),
@@ -133,6 +138,7 @@ class OrchestratorSnapshot:
             issues=tuple(issues),
             active_sessions=tuple(state.active_sessions),
             pending_reviews=tuple(state.pending_reviews),
+            pending_retrospective_reviews=tuple(state.pending_retrospective_reviews),
             pending_reworks=tuple(state.pending_reworks),
             pending_triage=tuple(state.pending_triage_reviews),
             pending_validation_retries=tuple(state.pending_validation_retries),
@@ -141,6 +147,7 @@ class OrchestratorSnapshot:
             issues_started_count=state.issues_started_count,
             max_issues_to_start=max_issues_to_start,
             discovered_reviews=tuple(discovered_reviews),
+            discovered_retrospective_reviews=tuple(discovered_retrospective_reviews),
             discovered_awaiting_merge_reconciliations=tuple(
                 discovered_awaiting_merge_reconciliations
             ),

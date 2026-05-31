@@ -39,6 +39,7 @@ from ..domain.models import (
     AgentConfig,
     Issue,
     PendingReview,
+    PendingRetrospectiveReview,
     PendingRework,
     PendingValidationRetry,
     Session,
@@ -46,7 +47,6 @@ from ..domain.models import (
     TaskKind,
     get_completion_path,
 )
-from . import fresh_lifecycle_session_launch as fresh_rerun
 from .worktree_context import WorktreeContext
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_manifest import TriageManifest
@@ -67,7 +67,7 @@ from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
-from .session_manager import SessionManager
+from .session_manager import SessionManager, SessionRef
 from .session_launch_types import ClaimAcquisitionResult, LaunchResult
 from .session_rework_launcher import (
     ReworkLaunchDependencies,
@@ -77,6 +77,7 @@ from .session_review_support import (
     build_review_existing_work,
     review_launch_validity,
 )
+from .retrospective_review import build_retrospective_review_existing_work
 from .session_worktree_diagnostics import (
     build_worktree_error_comment,
     write_worktree_diagnostic,
@@ -644,7 +645,6 @@ class SessionLauncher:
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
         from_scratch_pending = self._lm.reset_retry_scratch_pending in issue.labels
-        fresh_lifecycle_rerun = fresh_rerun.is_enabled(issue.labels, self._lm.fresh_lifecycle_rerun)
         scratch_branch_name: str | None = None
         if from_scratch_pending:
             scratch_branch_name = f"{issue.number}-scratch-{int(time.time())}"
@@ -720,9 +720,13 @@ class SessionLauncher:
                 agent_config,
                 extra_provider_args=extra_args,
             ),
-            **fresh_rerun.metadata(fresh_lifecycle_rerun),
         })
-        fresh_rerun.apply_manifest(ctx.update_manifest, from_scratch_pending, run.started_at, fresh_lifecycle_rerun)
+        if from_scratch_pending:
+            ctx.update_manifest({
+                "reset_from_scratch": True,
+                "review_cache_boundary": "scratch_reset",
+                "review_cache_boundary_started_at": run.started_at,
+            })
 
         # For triage sessions, prepare manifest with PRs to review
         triage_manifest: TriageManifest | None = None
@@ -799,7 +803,6 @@ class SessionLauncher:
             issue_number=issue.number,
             context="launch_clear_reset_retry_scratch_pending_coding",
         )
-        fresh_rerun.clear_label(self._apply_actions, issue.number, self._lm.fresh_lifecycle_rerun, fresh_lifecycle_rerun)
 
         # Add in-progress label
         step_start = time.time()
@@ -864,7 +867,6 @@ class SessionLauncher:
             worktree=worktree_path,
             existing_work=existing_work,
         )
-        rendered_prompt = fresh_rerun.prompt(rendered_prompt, enabled=fresh_lifecycle_rerun)
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command_for_prompt(
             rendered_prompt,
@@ -972,7 +974,6 @@ class SessionLauncher:
         }
         if from_scratch_pending:
             session_started_payload["review_cache_boundary_started_at"] = run.started_at
-        fresh_rerun.apply_event_metadata(session_started_payload, fresh_lifecycle_rerun)
         self.events.publish(make_session_started_event(session_started_payload))
 
         # State machine transitions
@@ -1585,6 +1586,277 @@ class SessionLauncher:
 
         # State machine transition
         self._trigger_review_state_transition(review.pr_number, review.issue_number)
+
+        return LaunchResult(session, True)
+
+    def launch_retrospective_review_session(
+        self,
+        review: PendingRetrospectiveReview,
+        active_sessions: list[Session],
+    ) -> LaunchResult:
+        """Launch a reviewer session to audit an existing implementation."""
+        agent_label = (
+            self.config.get_reviewer_for_agent(review.agent_label)
+            if review.agent_label
+            else self.config.code_review_agent
+        )
+        if not agent_label:
+            return LaunchResult(None, False, "No code review agent configured")
+
+        agent_config = self.config.agents.get(agent_label)
+        if not agent_config:
+            return LaunchResult(None, False, f"No agent config for {agent_label}")
+
+        if result := self._check_provider_circuit(agent_config.provider, review.issue_number):
+            return result
+
+        session_name = SessionRef.for_retrospective_review(review.issue_number).name
+        if any(s.terminal_id == session_name for s in active_sessions):
+            log_transition(
+                "retrospective-review",
+                review.issue_number,
+                "QUEUED",
+                "SKIP",
+                "already in active_sessions",
+            )
+            return LaunchResult(None, False, "Already in active sessions")
+
+        if self._session_exists(session_name):
+            log_transition(
+                "retrospective-review",
+                review.issue_number,
+                "QUEUED",
+                "SKIP",
+                "terminal session already running",
+            )
+            return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
+
+        if not self.config.repo:
+            return LaunchResult(None, False, "No repo configured")
+
+        issue_key = review.issue_key
+        session_key = SessionKey(issue=issue_key, task=TaskKind.RETROSPECTIVE_REVIEW)
+        log_transition(
+            "retrospective-review",
+            review.issue_number,
+            "QUEUED",
+            "LAUNCHING",
+            "no conflicts",
+        )
+        logger.info(
+            "[launch] Retrospective review identity: issue=%s issue_key=%s prior_pr=%s "
+            "agent=%s source_agent=%s session=%s",
+            review.issue_number,
+            issue_key,
+            review.prior_pr_number,
+            agent_label,
+            review.agent_label,
+            session_name,
+            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+        )
+
+        ctx = WorktreeContext.create(
+            worktree_manager=self._worktree_manager,
+            config=self.config,
+            events=self.events,
+            session_output=self._session_output,
+            issue_number=review.issue_number,
+            issue_title=f"Review Existing Implementation #{review.issue_number}",
+            session_name=session_name,
+            agent_label=agent_label,
+            branch_name=None,
+            enforce_hooks=False,
+            reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
+            phase_name="retrospective-review-1",
+        )
+
+        if ctx.error:
+            log_transition(
+                "retrospective-review",
+                review.issue_number,
+                "LAUNCHING",
+                "BLOCKED",
+                "worktree preparation failed",
+            )
+            logger.error(
+                issue_log(
+                    review.issue_number,
+                    "BLOCKED: worktree preparation failed for retrospective review: %s",
+                ),
+                ctx.error,
+            )
+            write_worktree_diagnostic(ctx.error)
+            self._apply_actions([
+                AddLabelAction(
+                    issue_number=review.issue_number,
+                    label=self._lm.needs_human,
+                    reason="retrospective review worktree preparation failed",
+                ),
+                AddCommentAction(
+                    number=review.issue_number,
+                    comment=build_worktree_error_comment(ctx.error),
+                    reason="retrospective review worktree preparation failed",
+                ),
+            ], context="worktree_prepare_retrospective_review")
+            self.events.publish(make_trace_event(
+                EventName.ISSUE_NEEDS_HUMAN,
+                {
+                    "issue_number": review.issue_number,
+                    "reason": str(ctx.error),
+                    "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+                },
+            ))
+            return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
+
+        worktree_path = ctx.worktree_path
+        worktree_info = ctx.worktree_info
+        run = ctx.run
+
+        ctx.write_worktree_note()
+        ctx.write_session_identity({
+            "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+            "issue_key": issue_key.stable_id(),
+            "session_key": session_key.stable_id(),
+            "agent": agent_label,
+            "source_agent": review.agent_label,
+            "trigger_label": review.trigger_label,
+            "prior_pr_number": review.prior_pr_number,
+            "prior_pr_url": review.prior_pr_url,
+            **self._session_identity_launch_metadata(
+                agent_config,
+                extra_provider_args=None,
+            ),
+        })
+
+        self._clear_interrupted_retry_guard_label(
+            issue_number=review.issue_number,
+            mode="review",
+            context="launch_clear_interrupted_guard_retrospective_review",
+        )
+        self._clear_reset_retry_pending_label(
+            issue_number=review.issue_number,
+            context="launch_clear_reset_retry_pending_retrospective_review",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=review.issue_number,
+            context="launch_clear_reset_retry_scratch_pending_retrospective_review",
+        )
+
+        existing_work = build_retrospective_review_existing_work(review)
+        if worktree_info.rebase_failed:
+            existing_work = (
+                f"{existing_work}\n\nWARNING: This review worktree could not be "
+                "rebased onto main due to merge conflicts. Include that risk in "
+                "your verdict."
+            )
+        prompt_pr_number = review.prior_pr_number or review.issue_number
+        issue_title = (
+            f"Review Existing Implementation #{review.issue_number}: "
+            f"{review.issue_title}"
+        )
+        rendered_prompt = agent_config.render_initial_prompt(
+            issue_number=review.issue_number,
+            issue_title=issue_title,
+            worktree=worktree_path,
+            pr_number=prompt_pr_number,
+            existing_work=existing_work,
+        )
+        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
+        base_command = agent_config.get_command_for_prompt(
+            rendered_prompt,
+            issue_number=review.issue_number,
+            issue_title=issue_title,
+            worktree=worktree_path,
+            pr_number=prompt_pr_number,
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+        )
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
+        completion_path = get_completion_path(agent_label, run_dir=run.run_dir.name)
+        self._session_output.update_manifest(
+            run.run_dir,
+            {
+                "completion_path": completion_path,
+                "session_prompt_path": prompt_path,
+            },
+        )
+        env_exports = self._build_session_env(
+            completion_path=completion_path,
+            session_id=run.session_name,
+            agent_label=agent_label,
+            issue_number=review.issue_number,
+            run_dir=run.run_dir,
+            worktree_path=worktree_path,
+        )
+        command = f"{env_exports} && {base_command}"
+        logger.info(
+            "[launch] Retrospective review command: issue=%s session=%s worktree=%s "
+            "completion=%s command=%s",
+            review.issue_number,
+            session_name,
+            worktree_path,
+            completion_path,
+            command,
+        )
+
+        session_created = self._create_session(session_name, command, worktree_path, issue_title)
+        logger.info(
+            "[launch] Retrospective review create result: issue=%s session=%s created=%s",
+            review.issue_number,
+            session_name,
+            session_created,
+        )
+        if not session_created:
+            log_transition(
+                "retrospective-review",
+                review.issue_number,
+                "LAUNCHING",
+                "FAILED",
+                "session creation failed",
+            )
+            return LaunchResult(None, False, "Failed to create terminal session")
+
+        pseudo_issue = Issue(
+            number=review.issue_number,
+            title=issue_title,
+            labels=[review.agent_label, agent_label, review.trigger_label],
+        )
+        session = Session(
+            key=session_key,
+            issue=pseudo_issue,
+            agent_config=agent_config,
+            terminal_id=session_name,
+            worktree_path=worktree_path,
+            branch_name=ctx.branch_name,
+            completion_path=completion_path,
+            run_dir=run.run_dir,
+            agent_label=agent_label,
+            pr_number=review.prior_pr_number,
+            original_prompt=rendered_prompt,
+        )
+
+        log_transition(
+            "retrospective-review",
+            review.issue_number,
+            "LAUNCHING",
+            "ACTIVE",
+            "session launched",
+        )
+        full_completion_path = (worktree_path / completion_path).resolve()
+        self.events.publish(make_run_scoped_event(EventName.REVIEW_STARTED, {
+            "issue_number": review.issue_number,
+            "prior_pr_number": review.prior_pr_number,
+            "prior_pr_url": review.prior_pr_url,
+            "agent": agent_label,
+            "source_agent": review.agent_label,
+            "task": TaskKind.RETROSPECTIVE_REVIEW.value,
+            "session_name": session_name,
+            "run_id": run.run_id,
+            "run_dir": str(run.run_dir),
+            "completion_path": completion_path,
+            "completion_path_absolute": str(full_completion_path),
+            "session_prompt_path": prompt_path,
+            "trigger_label": review.trigger_label,
+        }))
 
         return LaunchResult(session, True)
 
