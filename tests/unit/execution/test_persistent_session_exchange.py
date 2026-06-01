@@ -309,6 +309,88 @@ def _patch_persistent_runner(
 
 
 # ---------------------------------------------------------------------------
+# Artifact-freshness owner
+# ---------------------------------------------------------------------------
+
+
+class TestRoleAttemptWorkspace:
+    """The per-role artifact-freshness owner.
+
+    These assert the owner's contract directly: every process attempt of a
+    role turn starts from a clean workspace, so a side artifact written by a
+    process that then died (reviewer ``review-report.md`` / coder
+    ``completion-coder.json``) cannot be paired or validated against a later,
+    respawned attempt's response. ``_send_role_round`` calls
+    ``prepare_for_attempt`` before every attempt (initial, coder protocol
+    retry, and respawn retry), so clearing here is what makes the respawn path
+    safe — see
+    ``test_process_exit_before_response_respawns_in_place_and_advances`` for
+    the respawn path that routes through this owner.
+    """
+
+    def test_prepare_clears_response_inbox_and_reviewer_report(
+        self, tmp_path: Path,
+    ) -> None:
+        response = tmp_path / "review-response.json"
+        report = tmp_path / "review-report.md"
+        response.write_text("{}", encoding="utf-8")
+        report.write_text("STALE report from a dead reviewer process", encoding="utf-8")
+        inbox = pse._role_prompt_inbox_path(response)  # noqa: SLF001
+        inbox.write_text("stale prompt", encoding="utf-8")
+
+        workspace = pse._RoleAttemptWorkspace(  # noqa: SLF001
+            response_file=response,
+            side_artifact_paths=(report,),
+        )
+        workspace.prepare_for_attempt()
+
+        assert not response.exists()
+        assert not inbox.exists()
+        assert not report.exists(), (
+            "a stale reviewer report from a dead pre-retry process must be "
+            "cleared before a fresh attempt so it is not paired with the "
+            "respawned review decision"
+        )
+
+    def test_prepare_clears_response_inbox_and_coder_completion(
+        self, tmp_path: Path,
+    ) -> None:
+        response = tmp_path / "review-response.json"
+        completion = tmp_path / "completion-coder.json"
+        response.write_text("{}", encoding="utf-8")
+        completion.write_text('{"outcome": "completed"}', encoding="utf-8")
+        inbox = pse._role_prompt_inbox_path(response)  # noqa: SLF001
+        inbox.write_text("stale prompt", encoding="utf-8")
+
+        workspace = pse._RoleAttemptWorkspace(  # noqa: SLF001
+            response_file=response,
+            side_artifact_paths=(completion,),
+        )
+        workspace.prepare_for_attempt()
+
+        assert not response.exists()
+        assert not inbox.exists()
+        assert not completion.exists(), (
+            "a stale coder completion from a dead pre-retry process must be "
+            "cleared so it cannot satisfy the respawned coder turn's protocol "
+            "guardrail"
+        )
+
+    def test_prepare_is_idempotent_when_artifacts_absent(
+        self, tmp_path: Path,
+    ) -> None:
+        response = tmp_path / "review-response.json"
+        workspace = pse._RoleAttemptWorkspace(  # noqa: SLF001
+            response_file=response,
+            side_artifact_paths=(tmp_path / "absent-side-artifact.md",),
+        )
+        # The first attempt of a turn runs against an empty workspace; the
+        # reset must be a no-op rather than raising.
+        workspace.prepare_for_attempt()
+        assert not response.exists()
+
+
+# ---------------------------------------------------------------------------
 # Happy paths
 # ---------------------------------------------------------------------------
 
