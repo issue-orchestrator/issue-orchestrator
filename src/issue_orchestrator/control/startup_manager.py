@@ -637,6 +637,7 @@ class StartupManager:
                     trigger_label=review.trigger_label,
                     prior_pr_number=review.prior_pr_number,
                     prior_pr_url=review.prior_pr_url,
+                    issue_labels=review.issue_labels,
                 )
             )
         if discovered:

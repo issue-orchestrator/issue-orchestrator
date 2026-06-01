@@ -210,6 +210,7 @@ class QueueRetrospectiveReviewAction(Action):
     issue_key: str = ""
     prior_pr_number: int | None = None
     prior_pr_url: str | None = None
+    issue_labels: tuple[str, ...] = ()
     action_type: ActionType = field(default=ActionType.QUEUE_RETROSPECTIVE_REVIEW, init=False)
 
 

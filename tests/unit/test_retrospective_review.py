@@ -203,7 +203,7 @@ def test_queue_retrospective_review_request_is_idempotent() -> None:
 def test_queue_retrospective_review_request_preserves_all_pending_fields() -> None:
     config = make_config()
     repo = FakeRepositoryHost()
-    issue = make_issue()
+    issue = make_issue(labels=["agent:web", "lack-of-review-redo", "blocked-failed"])
     repo.issues[365] = issue
     repo.prs_by_issue[365] = [
         SimpleNamespace(
@@ -230,6 +230,9 @@ def test_queue_retrospective_review_request_preserves_all_pending_fields() -> No
     assert queued.trigger_label == "lack-of-review-redo"
     assert queued.prior_pr_number == 512
     assert queued.prior_pr_url == "https://github.com/owner/repo/pull/512"
+    # Real issue labels are captured so the launched session can clear blocking
+    # labels at completion (the session otherwise only knows synthetic labels).
+    assert queued.issue_labels == ("agent:web", "lack-of-review-redo", "blocked-failed")
 
 
 def test_discover_retrospective_review_issues_scans_trigger_label_across_states() -> None:
@@ -263,6 +266,7 @@ def test_discover_retrospective_review_issues_scans_trigger_label_across_states(
     assert discovered[0].issue_key == "365"
     assert discovered[0].prior_pr_number == 512
     assert discovered[0].prior_pr_url == "https://github.com/owner/repo/pull/512"
+    assert discovered[0].issue_labels == ("agent:web", "lack-of-review-redo")
     assert repo.list_calls == [
         {
             "labels": ["lack-of-review-redo"],

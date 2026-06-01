@@ -46,6 +46,10 @@ from issue_orchestrator.control.session_routing import (
     get_session_machine,
 )
 from issue_orchestrator.control.actions import ActionResult, AddLabelAction, RemoveLabelAction
+from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.retrospective_review_completion import (
+    retrospective_review_completion_actions,
+)
 from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import (
     Issue,
@@ -1181,6 +1185,57 @@ class TestLaunchRetrospectiveReviewSession:
         assert event.data["task"] == TaskKind.RETROSPECTIVE_REVIEW.value
         assert event.data["prior_pr_number"] == 512
         assert event.data["source_agent"] == "agent:web"
+
+    def test_launch_then_completion_clears_real_blocking_labels(
+        self,
+        launcher_bundle,
+    ):
+        """Production path: a blocked, trigger-labeled issue is queued with its
+        real labels, launched, then approved — and the completion must clear the
+        blocking labels. Regression guard proving issue_labels reach
+        session.issue.labels (the synthetic pseudo-issue used to drop them, so
+        get_blocking returned empty and no RemoveLabelAction was generated).
+        """
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"),
+            issue_number=365,
+            issue_title="Review old implementation",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            issue_labels=(
+                "agent:web",
+                "lack-of-review-redo",
+                "blocked",
+                "blocked-failed",
+            ),
+        )
+
+        result = launcher_bundle.launcher.launch_retrospective_review_session(
+            review,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        session = result.session
+        # The launched session must carry the issue's real blocking labels...
+        assert "blocked" in session.issue.labels
+        assert "blocked-failed" in session.issue.labels
+
+        # ...so completion policy actually generates the removals in production.
+        config = launcher_bundle.launcher.config
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        config.retrospective_reviewed_label = "retrospective-reviewed"
+        config.retrospective_changes_requested_label = "retrospective-changes-requested"
+        actions = retrospective_review_completion_actions(
+            session=session,
+            status=SessionStatus.COMPLETED,
+            detail={"outcome": "review_approved"},
+            config=config,
+            label_manager=LabelManager(config),
+        )
+        removed = [a.label for a in actions if isinstance(a, RemoveLabelAction)]
+        assert "blocked" in removed
+        assert "blocked-failed" in removed
 
     def test_keeps_queued_when_retrospective_terminal_already_running(
         self,

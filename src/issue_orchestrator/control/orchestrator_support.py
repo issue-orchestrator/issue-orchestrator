@@ -419,7 +419,7 @@ class OrchestratorSupport:
                 agent_label=a.agent_label,
                 trigger_label=a.trigger_label,
                 prior_pr_number=a.prior_pr_number,
-                prior_pr_url=a.prior_pr_url,
+                prior_pr_url=a.prior_pr_url, issue_labels=a.issue_labels,
             )
         )
         log_transition(
