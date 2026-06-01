@@ -1120,6 +1120,10 @@ class TestTurnArtifactsPersisted:
         session_output = FileSystemSessionOutput()
         sink = _Sink()
 
+        # A dead process is now respawned + retried once before the
+        # exchange gives up, so it takes two consecutive process-exit
+        # failures (the initial turn + its one respawn retry) to reach
+        # the terminal reviewer_no_completion path this test pins.
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
@@ -1129,7 +1133,13 @@ class TestTurnArtifactsPersisted:
                         failure_reason=(
                             RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE
                         ),
-                    )
+                    ),
+                    PersistentRoundError(
+                        "Agent exited unexpectedly (code=0) before responding",
+                        failure_reason=(
+                            RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE
+                        ),
+                    ),
                 ],
                 "coder": [],
             },
@@ -1179,6 +1189,172 @@ class TestTurnArtifactsPersisted:
         assert reviewer_sidecar.chapters[-1].label == (
             "Round 1 reviewer exited before responding"
         )
+
+    def test_process_exit_before_response_respawns_in_place_and_advances(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Round-2 reviewer one-shot exit → respawn in place, retry, advance.
+
+        Regression for #6360 and the live traces on tixmeup #289 / #286: a
+        one-shot reviewer that exits cleanly (code=0) between rounds used to
+        route through ``reviewer_no_completion``, releasing the whole pair and
+        restarting the review in a fresh worktree at round 1. The role is now
+        respawned in place (same worktree / recording / response paths) and the
+        *same* round-2 turn is retried, so the exchange keeps going.
+        """
+        from issue_orchestrator.domain.review_exchange_failures import (
+            RoundFailureReason,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    # Round 1: changes requested → coder reworks.
+                    {"response_type": "changes_requested", "response_text": "Fix typo", "getting_closer": True},
+                    # Round 2: the one-shot reviewer exited cleanly before
+                    # responding. Expect an in-place respawn + retry...
+                    PersistentRoundError(
+                        "Agent exited unexpectedly (code=0) before responding",
+                        failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
+                    ),
+                    # ...which the respawned reviewer answers.
+                    {"response_type": "ok", "response_text": "All good", "getting_closer": True},
+                ],
+                "coder": [
+                    {"response_type": "ok", "response_text": "Fixed typo", "getting_closer": None},
+                ],
+            },
+        )
+
+        # Count reviewer-worktree creations: the bug created a *fresh* worktree
+        # on recovery (release + re-spawn). An in-place respawn must reuse the
+        # existing one, so the factory is called exactly once.
+        worktree_calls: list[Path] = []
+
+        def _reviewer_worktree_factory() -> Path:
+            worktree_calls.append(reviewer_wt)
+            return reviewer_wt
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=_reviewer_worktree_factory,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            events=sink,
+            event_context=EventContext(),
+        )
+
+        # The exchange completed normally at round 2 — it did NOT bail to
+        # reviewer_no_completion / restart at round 1.
+        assert outcome.status == "ok"
+        assert outcome.reason == "reviewer_ok"
+        assert outcome.rounds == 2
+
+        # The respawn reused the existing reviewer worktree — no fresh worktree
+        # was created (the crux of #6360).
+        assert len(worktree_calls) == 1
+
+        # The reviewer was respawned in place: opened once at pair spawn, then
+        # once more for the retry. The coder was never respawned.
+        assert state["opened"].count("reviewer") == 2
+        assert state["opened"].count("coder") == 1
+
+        # The pair was NOT released for a reviewer no-completion.
+        assert (
+            42, "review-exchange-reviewer_no_completion",
+        ) not in state["registry"].released
+
+        # A successful respawn-retry is not surfaced as a terminal role
+        # timeout — only the warning log records the respawn.
+        assert [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+        ] == []
+
+        # The reviewer's two surfaced verdicts are the round-1 changes_requested
+        # and the round-2 OK produced by the respawned process.
+        reviewer_feedback = [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK
+            and evt.data["role"] == "reviewer"
+        ]
+        assert [evt.data["response_type"] for evt in reviewer_feedback] == [
+            "changes_requested",
+            "ok",
+        ]
+        assert reviewer_feedback[-1].data["round_index"] == 2
+
+    def test_role_timeout_does_not_respawn_the_process(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A genuine timeout must NOT respawn — the process is alive.
+
+        Respawn recovery is scoped to dead/unusable processes
+        (``is_process_unusable_failure``). A ``TIMEOUT`` means the agent is
+        running but slow/stuck; respawning would kill a working process and
+        could mask a hang, so the exchange must fall straight through to
+        ``reviewer_no_completion`` as before.
+        """
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [PersistentRoundTimeoutError("simulated 60s timeout")],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.reason == "reviewer_no_completion"
+        # The reviewer was opened exactly once — no respawn on timeout.
+        assert state["opened"].count("reviewer") == 1
+        assert state["registry"].released == [
+            (42, "review-exchange-reviewer_no_completion")
+        ]
 
     def test_coder_timeout_persists_no_completion_result_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
