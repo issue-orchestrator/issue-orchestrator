@@ -63,6 +63,29 @@ class PRInfo:
     status_check_rollup: StatusCheckRollupState | None = None
 
 
+@dataclass(frozen=True)
+class PRRef:
+    """Lightweight pull-request reference sourced directly from a search result.
+
+    Carries only the fields GitHub's ``/search/issues`` response provides
+    without a per-PR fetch: ``number``, ``url``, ``title``, ``body``. Use this
+    for cheap "which PR is this" lookups — e.g. matching the orchestrator body
+    marker — where a full :class:`PRInfo` is not needed. Resolving a list of
+    refs costs one search call regardless of how many PRs match, versus the
+    one-fetch-per-candidate that :meth:`PullRequestTracker.get_prs_for_issue`
+    pays to hydrate full ``PRInfo`` objects.
+
+    The head ``branch``, ``mergeable_state``, and check-rollup of a full
+    ``PRInfo`` are intentionally absent here — needing them is the signal to
+    use ``get_prs_for_issue``/``get_pr`` instead.
+    """
+
+    number: int
+    url: str
+    title: str
+    body: str
+
+
 class PullRequestTracker(Protocol):
     """Protocol for pull request tracking operations.
 
@@ -106,6 +129,22 @@ class PullRequestTracker(Protocol):
         Returns:
             A list of PRInfo objects for PRs associated with the issue.
             Returns empty list if no matching PRs found.
+
+        Raises:
+            RepositoryError: If there's an error accessing the data source.
+        """
+        ...
+
+    def search_pr_refs_for_issue(self, issue_number: int) -> list["PRRef"]:
+        """Return lightweight PR references for an issue using a single search.
+
+        Same association rule as :meth:`get_prs_for_issue` (head branch starts
+        with the issue number, or the PR references ``#issue_number``), but does
+        NOT hydrate each candidate with a per-PR ``GET`` — it maps the search
+        result items directly to :class:`PRRef`. This is one GitHub call
+        regardless of how many PRs match, intended for body/marker matching
+        where the full ``PRInfo`` (head branch, mergeable state, check rollup)
+        is not needed. Returns PRs in any state.
 
         Raises:
             RepositoryError: If there's an error accessing the data source.

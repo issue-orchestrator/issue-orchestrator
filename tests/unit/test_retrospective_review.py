@@ -29,16 +29,13 @@ class FakeRepositoryHost:
         self.issues: dict[int, Issue] = {}
         self.prs_by_issue: dict[int, list[SimpleNamespace]] = {}
         self.list_calls: list[dict[str, object]] = []
+        self.search_pr_refs_calls: list[int] = []
 
     def get_issue(self, issue_number: int) -> Issue | None:
         return self.issues.get(issue_number)
 
-    def get_prs_for_issue(
-        self,
-        issue_number: int,
-        state: str = "open",
-    ) -> list[SimpleNamespace]:
-        assert state == "all"
+    def search_pr_refs_for_issue(self, issue_number: int) -> list[SimpleNamespace]:
+        self.search_pr_refs_calls.append(issue_number)
         return self.prs_by_issue.get(issue_number, [])
 
     def create_issue_key(self, issue_number: int) -> FakeIssueKey:
@@ -264,9 +261,14 @@ def test_discover_retrospective_review_issues_scans_trigger_label_across_states(
     assert discovered[0].agent_label == "agent:web"
     assert discovered[0].trigger_label == "lack-of-review-redo"
     assert discovered[0].issue_key == "365"
-    assert discovered[0].prior_pr_number == 512
-    assert discovered[0].prior_pr_url == "https://github.com/owner/repo/pull/512"
     assert discovered[0].issue_labels == ("agent:web", "lack-of-review-redo")
+    # Discovery does NOT resolve the prior orchestrator PR — that is an optional
+    # prompt hint resolved lazily at launch. Discovery cost must stay O(1) GitHub
+    # calls (one label list), independent of issue/PR count, so it can run on
+    # every startup recovery and per-tick scan without fanning out.
+    assert discovered[0].prior_pr_number is None
+    assert discovered[0].prior_pr_url is None
+    assert repo.search_pr_refs_calls == []
     assert repo.list_calls == [
         {
             "labels": ["lack-of-review-redo"],
@@ -274,6 +276,43 @@ def test_discover_retrospective_review_issues_scans_trigger_label_across_states(
             "limit": config.filtering.fetch_limit,
         }
     ]
+
+
+def test_discover_retrospective_review_issues_github_call_budget_is_constant() -> None:
+    """Startup-timing regression guard.
+
+    Discovery once resolved the prior PR per issue by searching for and
+    hydrating every candidate PR, so its GitHub-call count was
+    O(issues x PRs-per-issue) — which made startup recovery (and the per-tick
+    scan) take ~30s for a repo with a backlog of trigger-labeled issues. This
+    pins the cost to a single label query, independent of how many issues match
+    and how many PRs each one has. We assert on call counts (deterministic),
+    not wall-clock (flaky), because call count is the actual regression signal.
+    """
+    config = make_config()
+    repo = FakeRepositoryHost()
+    issue_count, prs_per_issue = 20, 10
+    for n in range(400, 400 + issue_count):
+        repo.issues[n] = make_issue(n, labels=["agent:web", "lack-of-review-redo"])
+        repo.prs_by_issue[n] = [
+            SimpleNamespace(
+                number=1000 + n * 10 + k,
+                url=f"https://github.com/owner/repo/pull/{1000 + n * 10 + k}",
+                body=f"{ORCHESTRATOR_PR_MARKER}\n" if k == 0 else "manual",
+            )
+            for k in range(prs_per_issue)
+        ]
+
+    discovered = discover_retrospective_review_issues(
+        repository_host=repo,
+        config=config,
+        already_issue_numbers=set(),
+    )
+
+    assert len(discovered) == issue_count
+    # One label list, regardless of the 20 issues x 10 PRs = 200 PRs present.
+    assert len(repo.list_calls) == 1
+    assert repo.search_pr_refs_calls == []
 
 
 def test_find_orchestrator_pr_for_issue_requires_signature() -> None:

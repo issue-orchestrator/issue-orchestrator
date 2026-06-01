@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
-from ...ports.pull_request_tracker import PRInfo, StatusCheckRollupState
+from ...ports.pull_request_tracker import PRInfo, PRRef, StatusCheckRollupState
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .errors import GitHubHttpError, GitHubTransportError
@@ -768,6 +768,41 @@ class GitHubAdapter:
         for pr_info in pr_infos:
             self._adapter_cache.cache_pr_info(pr_info)
         return pr_infos
+
+    def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
+        """Return lightweight PR refs for an issue from a single search.
+
+        Unlike ``get_prs_for_issue``, this does NOT issue a ``GET /pulls/N`` per
+        candidate — the orchestrator body marker lives in fields the search
+        response already returns (``number``, ``html_url``, ``body``), so one
+        search call answers "which PRs reference this issue" without hydration.
+        """
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.GH_READ,
+            issue_key=str(issue_number),
+            scope=gh_audit.AuditScope.UNKNOWN,
+        ):
+            items = self._client.get_prs_for_issue(issue_number)
+        refs: list[PRRef] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            raw_number = item.get("number")
+            if not raw_number:
+                continue
+            try:
+                number = int(raw_number)
+            except (TypeError, ValueError):
+                continue
+            refs.append(
+                PRRef(
+                    number=number,
+                    url=item.get("html_url") or item.get("url", "") or "",
+                    title=item.get("title", "") or "",
+                    body=item.get("body", "") or "",
+                )
+            )
+        return refs
 
     def get_pr(self, pr_number: int) -> PRInfo | None:
         """Get a specific pull request by number.

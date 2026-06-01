@@ -53,6 +53,7 @@ from issue_orchestrator.control.retrospective_review_completion import (
 from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import (
     Issue,
+    ORCHESTRATOR_PR_MARKER,
     Session,
     SessionStatus,
     AgentConfig,
@@ -81,7 +82,7 @@ from issue_orchestrator.ports import (
     NullManifestDownloader,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
-from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -119,6 +120,7 @@ class MockRepositoryHost:
         self.pr_reviews: dict[int, list[dict]] = {}  # pr_number -> reviews
         self.add_label_calls: list[tuple[int, str]] = []
         self.remove_label_calls: list[tuple[int, str]] = []
+        self.search_pr_refs_calls: list[int] = []
 
     def add_label(self, issue_number: int, label: str) -> None:
         self.add_label_calls.append((issue_number, label))
@@ -130,6 +132,13 @@ class MockRepositoryHost:
 
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
+
+    def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
+        self.search_pr_refs_calls.append(issue_number)
+        return [
+            PRRef(number=pr.number, url=pr.url, title=pr.title, body=pr.body)
+            for pr in self.prs.get(issue_number, [])
+        ]
 
     def get_pr(self, pr_number: int) -> PRInfo | None:
         for prs in self.prs.values():
@@ -1185,6 +1194,89 @@ class TestLaunchRetrospectiveReviewSession:
         assert event.data["task"] == TaskKind.RETROSPECTIVE_REVIEW.value
         assert event.data["prior_pr_number"] == 512
         assert event.data["source_agent"] == "agent:web"
+
+    def test_unset_prior_pr_is_resolved_lazily_at_launch(
+        self,
+        launcher_bundle,
+        mock_repo_host,
+        mock_events,
+    ):
+        """Discovery leaves prior_pr unset; the launcher resolves it here with a
+        single search-only lookup (no per-PR hydration) for the one issue being
+        launched, and the resolved PR flows into the prompt and launch event."""
+        mock_repo_host.prs[365] = [
+            PRInfo(
+                number=511,
+                title="Manual PR",
+                url="https://github.com/test/repo/pull/511",
+                branch="365-manual",
+                body="hand-written, no marker",
+                state="closed",
+                labels=[],
+            ),
+            PRInfo(
+                number=512,
+                title="Orchestrator PR",
+                url="https://github.com/test/repo/pull/512",
+                branch="365-scratch",
+                body=f"{ORCHESTRATOR_PR_MARKER}\nGenerated work.",
+                state="closed",
+                labels=[],
+            ),
+        ]
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"),
+            issue_number=365,
+            issue_title="Review old implementation",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            # prior_pr_number / prior_pr_url intentionally unset (discovery default).
+        )
+
+        result = launcher_bundle.launcher.launch_retrospective_review_session(
+            review,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        # Resolved to the orchestrator-signed PR, not the manual one...
+        assert result.session.pr_number == 512
+        assert "Prior orchestrator PR: #512" in result.session.original_prompt
+        # ...and back-filled onto the pending review so the dashboard/events see it.
+        assert review.prior_pr_number == 512
+        assert review.prior_pr_url == "https://github.com/test/repo/pull/512"
+        event = next(
+            e for e in mock_events.events if str(e.name) == str(EventName.REVIEW_STARTED)
+        )
+        assert event.data["prior_pr_number"] == 512
+        # Exactly one cheap search call — no fan-out, no per-PR hydration.
+        assert mock_repo_host.search_pr_refs_calls == [365]
+
+    def test_preset_prior_pr_skips_lookup_at_launch(
+        self,
+        launcher_bundle,
+        mock_repo_host,
+    ):
+        """When the UI preflight/queue path already resolved the prior PR, the
+        launcher must not search again."""
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"),
+            issue_number=365,
+            issue_title="Review old implementation",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            prior_pr_number=512,
+            prior_pr_url="https://github.com/test/repo/pull/512",
+        )
+
+        result = launcher_bundle.launcher.launch_retrospective_review_session(
+            review,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        assert result.session.pr_number == 512
+        assert mock_repo_host.search_pr_refs_calls == []
 
     def test_launch_then_completion_clears_real_blocking_labels(
         self,

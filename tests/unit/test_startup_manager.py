@@ -1,6 +1,7 @@
 """Unit tests for StartupManager."""
 
 import json
+from pathlib import Path
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -1211,3 +1212,51 @@ class TestStartupGitHubCallBudget:
         assert any(
             "Queue cache inconsistency" in r.message for r in caplog.records
         ), caplog.text
+
+
+class TestRetrospectiveRecoveryCallBudget:
+    """Startup-timing regression guard for retrospective-review recovery.
+
+    The ``recover_pending_retrospective_reviews`` startup phase once spent ~29s
+    because it resolved each trigger-labeled issue's prior PR by searching for
+    and hydrating every candidate PR — O(issues x PRs) serial GitHub calls. This
+    drives the real ``StartupManager._recover_pending_retrospective_reviews`` and
+    pins its GitHub-call budget to a single label query, independent of how many
+    issues match and how many PRs each has. We assert call counts (deterministic)
+    rather than wall-clock (flaky) because call count is the actual regression.
+    """
+
+    def _enable_retrospective(self, config) -> None:
+        config.retrospective_review_enabled = True
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        config.code_review_agent = "agent:reviewer"
+        config.agents = {
+            "agent:web": AgentConfig(prompt_path=Path("/tmp/web.md")),
+            "agent:reviewer": AgentConfig(prompt_path=Path("/tmp/reviewer.md")),
+        }
+
+    def test_recovery_call_budget_is_constant(
+        self, startup_manager, mock_repository_host, sample_state
+    ):
+        self._enable_retrospective(startup_manager.config)
+        issue_count = 25
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=n,
+                title=f"Issue {n}",
+                labels=["agent:web", "lack-of-review-redo"],
+                state="closed",
+                repo="owner/repo",
+            )
+            for n in range(400, 400 + issue_count)
+        ]
+
+        startup_manager._recover_pending_retrospective_reviews(sample_state)
+
+        assert len(sample_state.pending_retrospective_reviews) == issue_count
+        # Discovery's source of truth is the trigger label: exactly one list call...
+        mock_repository_host.list_issues.assert_called_once()
+        # ...and ZERO prior-PR searches, no matter how many issues are recovered.
+        mock_repository_host.search_pr_refs_for_issue.assert_not_called()
+        mock_repository_host.get_prs_for_issue.assert_not_called()
+        mock_repository_host.get_pr.assert_not_called()

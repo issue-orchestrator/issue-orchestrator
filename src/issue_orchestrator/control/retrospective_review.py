@@ -222,10 +222,11 @@ def discover_retrospective_review_issues(
                 agent_label or "(none)",
             )
             continue
-        prior_pr_number, prior_pr_url = find_orchestrator_pr_for_issue(
-            repository_host,
-            issue.number,
-        )
+        # The prior orchestrator PR is an optional prompt hint, not part of
+        # discovery's source-of-truth (the trigger label). Resolving it here
+        # would fan out into a PR search per discovered issue on every startup
+        # AND every per-tick scan. It is resolved lazily, for the single issue
+        # being launched, in SessionLauncher.launch_retrospective_review_session.
         discovered.append(
             DiscoveredRetrospectiveReview(
                 issue_number=issue.number,
@@ -233,8 +234,6 @@ def discover_retrospective_review_issues(
                 agent_label=agent_label,
                 trigger_label=trigger_label,
                 issue_key=issue.key.stable_id(),
-                prior_pr_number=prior_pr_number,
-                prior_pr_url=prior_pr_url,
                 issue_labels=tuple(issue.labels),
             )
         )
@@ -269,13 +268,38 @@ def find_orchestrator_pr_for_issue(
     repository_host: "RepositoryHost",
     issue_number: int,
 ) -> tuple[int | None, str | None]:
-    """Return the first PR for an issue with the orchestrator signature."""
+    """Return the first PR for an issue carrying the orchestrator signature.
 
-    prs = repository_host.get_prs_for_issue(issue_number, state="all")
-    for pr in prs:
-        if ORCHESTRATOR_PR_MARKER in (pr.body or ""):
-            return pr.number, pr.url
+    The marker lives in the PR body, which the search response already returns,
+    so this uses the search-only ``search_pr_refs_for_issue`` lookup (one
+    GitHub call, no per-candidate hydration) rather than ``get_prs_for_issue``.
+    The prior PR is an optional prompt hint; it is resolved lazily at launch,
+    not eagerly during discovery — see ``discover_retrospective_review_issues``.
+    """
+
+    for ref in repository_host.search_pr_refs_for_issue(issue_number):
+        if ORCHESTRATOR_PR_MARKER in (ref.body or ""):
+            return ref.number, ref.url
     return None, None
+
+
+def resolve_prior_pr_for_launch(
+    review: PendingRetrospectiveReview,
+    repository_host: "RepositoryHost",
+) -> None:
+    """Lazily populate a queued review's prior orchestrator PR at launch time.
+
+    Discovery deliberately leaves ``prior_pr`` unset so startup recovery and the
+    per-tick scan stay at O(1) GitHub calls; the prior PR is only an optional
+    prompt hint, so it is resolved here for the single issue actually launching.
+    No-op when already populated (e.g. the UI preflight/queue path resolved it).
+    """
+
+    if review.prior_pr_number is not None:
+        return
+    review.prior_pr_number, review.prior_pr_url = find_orchestrator_pr_for_issue(
+        repository_host, review.issue_number
+    )
 
 
 def _agent_skip_detail(config: "Config", issue: "Issue") -> str | None:
