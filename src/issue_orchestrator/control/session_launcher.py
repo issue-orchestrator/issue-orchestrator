@@ -77,7 +77,10 @@ from .session_review_support import (
     build_review_existing_work,
     review_launch_validity,
 )
-from .retrospective_review import build_retrospective_review_existing_work
+from .retrospective_review import (
+    build_retrospective_review_existing_work,
+    resolve_prior_pr_for_launch,
+)
 from .session_worktree_diagnostics import (
     build_worktree_error_comment,
     write_worktree_diagnostic,
@@ -320,6 +323,30 @@ class SessionLauncher:
             ),
         ]
         self._apply_actions(actions, context=context)
+
+    def _clear_launch_retry_guards(
+        self, *, issue_number: int, mode: str, suffix: str
+    ) -> None:
+        """Clear every relaunch retry/reset guard label at a launch boundary.
+
+        Single owner for the guard-clear policy shared by all launch paths
+        (coding, validation-retry, review, retrospective-review), which each
+        otherwise repeated the same three calls. ``suffix`` distinguishes the
+        per-path audit context.
+        """
+        self._clear_interrupted_retry_guard_label(
+            issue_number=issue_number,
+            mode=mode,
+            context=f"launch_clear_interrupted_guard_{suffix}",
+        )
+        self._clear_reset_retry_pending_label(
+            issue_number=issue_number,
+            context=f"launch_clear_reset_retry_pending_{suffix}",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=issue_number,
+            context=f"launch_clear_reset_retry_scratch_pending_{suffix}",
+        )
 
     def _build_session_env(
         self,
@@ -790,18 +817,10 @@ class SessionLauncher:
                 return LaunchResult(None, False, f"Setup commands failed: {e}")
 
         # New coding attempt starts now; clear interrupted retry guard.
-        self._clear_interrupted_retry_guard_label(
+        self._clear_launch_retry_guards(
             issue_number=issue.number,
             mode="coding",
-            context="launch_clear_interrupted_guard_coding",
-        )
-        self._clear_reset_retry_pending_label(
-            issue_number=issue.number,
-            context="launch_clear_reset_retry_pending_coding",
-        )
-        self._clear_reset_retry_scratch_pending_label(
-            issue_number=issue.number,
-            context="launch_clear_reset_retry_scratch_pending_coding",
+            suffix="coding",
         )
 
         # Add in-progress label
@@ -1089,18 +1108,10 @@ class SessionLauncher:
         if setup_failure := self._run_validation_retry_setup(issue, worktree_path, claim):
             return setup_failure
 
-        self._clear_interrupted_retry_guard_label(
+        self._clear_launch_retry_guards(
             issue_number=issue.number,
             mode="coding",
-            context="launch_clear_interrupted_guard_validation_retry",
-        )
-        self._clear_reset_retry_pending_label(
-            issue_number=issue.number,
-            context="launch_clear_reset_retry_pending_validation_retry",
-        )
-        self._clear_reset_retry_scratch_pending_label(
-            issue_number=issue.number,
-            context="launch_clear_reset_retry_scratch_pending_validation_retry",
+            suffix="validation_retry",
         )
 
         label_ok = self._apply_actions([
@@ -1447,18 +1458,10 @@ class SessionLauncher:
             ),
         })
         # New review attempt starts now; clear interrupted retry guard.
-        self._clear_interrupted_retry_guard_label(
+        self._clear_launch_retry_guards(
             issue_number=review.issue_number,
             mode="review",
-            context="launch_clear_interrupted_guard_review",
-        )
-        self._clear_reset_retry_pending_label(
-            issue_number=review.issue_number,
-            context="launch_clear_reset_retry_pending_review",
-        )
-        self._clear_reset_retry_scratch_pending_label(
-            issue_number=review.issue_number,
-            context="launch_clear_reset_retry_scratch_pending_review",
+            suffix="review",
         )
 
         logger.info(
@@ -1634,6 +1637,11 @@ class SessionLauncher:
         if not self.config.repo:
             return LaunchResult(None, False, "No repo configured")
 
+        # Resolve the prior orchestrator PR now that we know the launch will
+        # proceed — lazily, for this one issue, so discovery (startup recovery
+        # and the per-tick scan) stays free of per-issue PR searches.
+        resolve_prior_pr_for_launch(review, self.repository_host)
+
         issue_key = review.issue_key
         session_key = SessionKey(issue=issue_key, task=TaskKind.RETROSPECTIVE_REVIEW)
         log_transition(
@@ -1728,18 +1736,10 @@ class SessionLauncher:
             ),
         })
 
-        self._clear_interrupted_retry_guard_label(
+        self._clear_launch_retry_guards(
             issue_number=review.issue_number,
             mode="review",
-            context="launch_clear_interrupted_guard_retrospective_review",
-        )
-        self._clear_reset_retry_pending_label(
-            issue_number=review.issue_number,
-            context="launch_clear_reset_retry_pending_retrospective_review",
-        )
-        self._clear_reset_retry_scratch_pending_label(
-            issue_number=review.issue_number,
-            context="launch_clear_reset_retry_scratch_pending_retrospective_review",
+            suffix="retrospective_review",
         )
 
         existing_work = build_retrospective_review_existing_work(review)

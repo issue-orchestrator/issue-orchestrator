@@ -392,7 +392,7 @@ class TestHistoryEndpoints:
         )
         issue.state = "closed"
         mock_orch.repository_host.get_issue.return_value = issue
-        mock_orch.repository_host.get_prs_for_issue.return_value = [
+        mock_orch.repository_host.search_pr_refs_for_issue.return_value = [
             SimpleNamespace(
                 number=812,
                 url="https://github.com/owner/repo/pull/812",
@@ -515,7 +515,7 @@ class TestHistoryEndpoints:
         )
         closed_issue.state = "closed"
         mock_orch.repository_host.get_issue.return_value = closed_issue
-        mock_orch.repository_host.get_prs_for_issue.return_value = [
+        mock_orch.repository_host.search_pr_refs_for_issue.return_value = [
             SimpleNamespace(
                 number=812,
                 url="https://github.com/owner/repo/pull/812",

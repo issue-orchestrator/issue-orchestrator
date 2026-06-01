@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
-from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -219,6 +219,7 @@ class MockGitHubAdapter:
         self.remove_label_calls: list[tuple] = []
         self.list_issues_calls: list[dict] = []
         self.get_prs_calls: list[dict] = []
+        self.search_pr_refs_calls: list[int] = []
 
     # IssueRepository methods
     def list_issues(
@@ -325,6 +326,15 @@ class MockGitHubAdapter:
                 if branch.startswith(prefix) or f"#{issue_number}" in pr.title:
                     result.append(pr)
         return result
+
+    def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
+        """Lightweight refs for an issue (any state), mirroring the real
+        adapter's search-only lookup — no per-PR hydration."""
+        self.search_pr_refs_calls.append(issue_number)
+        return [
+            PRRef(number=pr.number, url=pr.url, title=pr.title, body=pr.body)
+            for pr in self.get_prs_for_issue(issue_number, state="all")
+        ]
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List all PRs."""
