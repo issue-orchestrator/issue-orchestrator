@@ -1289,6 +1289,116 @@ class TestLabelActionGeneration:
         assert len(state_actions) == 1
         assert state_actions[0].state == "open"
 
+    def test_retrospective_review_approval_clears_blocking_labels(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(
+            number=365,
+            labels=[
+                "agent:web",
+                "agent:reviewer",
+                "lack-of-review-redo",
+                "blocked",
+                "blocked-failed",
+            ],
+        )
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="retrospective-review-365",
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+        )
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        config.retrospective_reviewed_label = "retrospective-reviewed"
+        config.retrospective_changes_requested_label = "retrospective-changes-requested"
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            completion_detail={"outcome": "review_approved"},
+        )
+
+        removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
+        added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        # An approved retrospective review unblocks the issue.
+        assert "blocked" in removed
+        assert "blocked-failed" in removed
+        assert "retrospective-reviewed" in added
+
+    def test_retrospective_review_changes_requested_clears_blocking_labels(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(
+            number=365,
+            labels=["agent:web", "agent:reviewer", "lack-of-review-redo", "blocked"],
+        )
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="retrospective-review-365",
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+        )
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        config.retrospective_reviewed_label = "retrospective-reviewed"
+        config.retrospective_changes_requested_label = "retrospective-changes-requested"
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            completion_detail={"outcome": "review_changes_requested"},
+        )
+
+        removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
+        added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        state_actions = [a for a in result.actions if isinstance(a, SetIssueStateAction)]
+        # Changes-requested reopens for rework and must not leave the issue blocked.
+        assert "blocked" in removed
+        assert "retrospective-changes-requested" in added
+        assert state_actions and state_actions[0].state == "open"
+
+    def test_retrospective_review_needs_human_clears_prior_blocking_keeps_needs_human(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(
+            number=365,
+            labels=[
+                "agent:reviewer",
+                "lack-of-review-redo",
+                "blocked-failed",
+                "needs-human",
+            ],
+        )
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="retrospective-review-365",
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+        )
+        session.agent_label = "agent:reviewer"
+        config.retrospective_review_trigger_label = "lack-of-review-redo"
+        config.retrospective_reviewed_label = "retrospective-reviewed"
+        config.retrospective_changes_requested_label = "retrospective-changes-requested"
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            completion_detail={"outcome": "review_changes_requested"},
+        )
+
+        removed = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
+        added = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        # Prior blocking labels are cleared, but the human escalation re-asserts
+        # needs-human as the terminal blocked state (no remove/re-add churn).
+        assert "blocked-failed" in removed
+        assert "needs-human" in added
+        assert "needs-human" not in removed
+
     def test_needs_run_audit_label_writes_audit_and_flips_labels(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

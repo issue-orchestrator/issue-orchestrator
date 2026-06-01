@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 from ..domain.models import (
     Session,
@@ -44,8 +44,18 @@ def retrospective_review_completion_actions(
 
     outcome = str(detail.get("outcome") or "")
     issue_number = session.issue.number
+    # A completed retrospective review supersedes any prior blocked state: the
+    # existing implementation has now been audited, so the issue must not keep
+    # carrying blocking labels. We clear the same blocking set that retry uses
+    # to unblock an issue (LabelManager.get_blocking).
+    blocking_labels = label_manager.get_blocking(session.issue.labels)
+    unblock_actions = _remove_label_actions(
+        issue_number,
+        blocking_labels,
+        reason="retrospective review completed - issue is no longer blocked",
+    )
     if outcome == "review_approved":
-        return (
+        return unblock_actions + (
             RemoveLabelAction(
                 issue_number=issue_number,
                 label=config.retrospective_review_trigger_label,
@@ -67,10 +77,11 @@ def retrospective_review_completion_actions(
         if coder_agent is None:
             return _retrospective_review_needs_human_actions(
                 issue_number=issue_number,
+                blocking_labels=blocking_labels,
                 config=config,
                 label_manager=label_manager,
             )
-        return (
+        return unblock_actions + (
             RemoveLabelAction(
                 issue_number=issue_number,
                 label=config.retrospective_review_trigger_label,
@@ -103,9 +114,24 @@ def retrospective_review_completion_actions(
     return ()
 
 
+def _remove_label_actions(
+    issue_number: int,
+    labels: Sequence[str],
+    *,
+    reason: str,
+) -> tuple[Action, ...]:
+    """Build idempotent RemoveLabelActions for each label in *labels*."""
+
+    return tuple(
+        RemoveLabelAction(issue_number=issue_number, label=label, reason=reason)
+        for label in labels
+    )
+
+
 def _retrospective_review_needs_human_actions(
     *,
     issue_number: int,
+    blocking_labels: Sequence[str],
     config: "Config",
     label_manager: "LabelManager",
 ) -> tuple[Action, ...]:
@@ -113,7 +139,15 @@ def _retrospective_review_needs_human_actions(
         "retrospective review requested changes but no coder agent label "
         "was available"
     )
-    return (
+    # This outcome re-blocks the issue for a human via needs_human below, so
+    # clear any *other* prior blocking labels but leave needs_human for the
+    # AddLabelAction to (re)assert as the terminal blocked state.
+    clear_prior_blocking = _remove_label_actions(
+        issue_number,
+        [label for label in blocking_labels if label != label_manager.needs_human],
+        reason=f"{reason} - clearing prior blocking labels",
+    )
+    return clear_prior_blocking + (
         RemoveLabelAction(
             issue_number=issue_number,
             label=config.retrospective_review_trigger_label,
