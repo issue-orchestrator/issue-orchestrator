@@ -1251,7 +1251,12 @@ class TestRetrospectiveRecoveryCallBudget:
             for n in range(400, 400 + issue_count)
         ]
 
-        startup_manager._recover_pending_retrospective_reviews(sample_state)
+        # Exercise the private startup recovery hook directly: it is the exact
+        # phase whose GitHub-call budget regressed (~29s at startup), so it is
+        # the intentional regression boundary. The public run_startup() entry
+        # would dilute the budget assertion across unrelated phases that also
+        # call list_issues.
+        startup_manager._recover_pending_retrospective_reviews(sample_state)  # noqa: SLF001
 
         assert len(sample_state.pending_retrospective_reviews) == issue_count
         # Discovery's source of truth is the trigger label: exactly one list call...
