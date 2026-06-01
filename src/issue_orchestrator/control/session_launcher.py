@@ -1818,7 +1818,7 @@ class SessionLauncher:
         pseudo_issue = Issue(
             number=review.issue_number,
             title=issue_title,
-            labels=[review.agent_label, agent_label, review.trigger_label],
+            labels=list(dict.fromkeys([*review.issue_labels, review.agent_label, agent_label, review.trigger_label])),
         )
         session = Session(
             key=session_key,

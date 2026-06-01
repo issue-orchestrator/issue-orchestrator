@@ -183,6 +183,7 @@ def queue_retrospective_review_request(
             trigger_label=decision.trigger_label,
             prior_pr_number=decision.prior_pr_number,
             prior_pr_url=decision.prior_pr_url,
+            issue_labels=tuple(decision.labels),
         )
     )
     return True
@@ -234,6 +235,7 @@ def discover_retrospective_review_issues(
                 issue_key=issue.key.stable_id(),
                 prior_pr_number=prior_pr_number,
                 prior_pr_url=prior_pr_url,
+                issue_labels=tuple(issue.labels),
             )
         )
     return discovered

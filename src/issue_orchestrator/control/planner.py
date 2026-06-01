@@ -423,6 +423,7 @@ class Planner:
                 issue_key=review.issue_key or str(review.issue_number),
                 prior_pr_number=review.prior_pr_number,
                 prior_pr_url=review.prior_pr_url,
+                issue_labels=review.issue_labels,
                 reason="retrospective review trigger label discovered",
             ))
             logger.debug(

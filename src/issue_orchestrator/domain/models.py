@@ -1178,6 +1178,10 @@ class PendingRetrospectiveReview:
     trigger_label: str
     prior_pr_number: int | None = None
     prior_pr_url: str | None = None
+    # The issue's real labels, captured at discovery. Carried through launch so
+    # completion policy (e.g. clearing blocking labels) sees the true state —
+    # the launched session otherwise only knows synthetic agent/trigger labels.
+    issue_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1206,6 +1210,7 @@ class DiscoveredRetrospectiveReview:
     issue_key: str = ""
     prior_pr_number: int | None = None
     prior_pr_url: str | None = None
+    issue_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
