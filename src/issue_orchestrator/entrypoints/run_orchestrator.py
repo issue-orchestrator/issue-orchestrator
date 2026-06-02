@@ -211,12 +211,14 @@ def _install_shutdown_signal_handlers(
     orchestrator: Any,
     trigger_server_shutdown: Any,
 ) -> None:
-    """Wire SIGTERM/SIGINT to a graceful shutdown, recording the *real* sender.
+    """Attach graceful shutdown to the signal consumer, recording the *real* sender.
 
-    The signals are blocked process-wide at the entry point (see
-    ``block_shutdown_signals`` in ``main``); here we start the consumer that
-    logs *who* sent the signal — its pid, uid, and resolved command line, via
-    POSIX ``sigwaitinfo`` — before requesting shutdown. This replaces the old
+    Signals are blocked process-wide and the consumer is started at the entry
+    point (``block_shutdown_signals`` + ``begin_shutdown_watch`` in ``main``);
+    now that the loop exists, this attaches the graceful callback so a signal
+    runs ``orchestrator.request_shutdown()`` on the loop instead of forcing the
+    startup-window exit. The consumer logs *who* sent the signal — its pid, uid,
+    and resolved command line, via POSIX ``sigwaitinfo`` — replacing the old
     handler that could only log ``os.getppid()`` (the parent), which is not the
     sender and repeatedly misled diagnosis of external kills. On platforms that
     can't report the sender, an honest asyncio fallback is used. See
@@ -334,13 +336,19 @@ def main() -> int:
     )
 
     # Block SIGTERM/SIGINT process-wide BEFORE any thread is created, so the
-    # dedicated sigwaitinfo consumer (started in run()) can read the *sender*
-    # of a shutdown signal. Doing this here — the earliest point — ensures
-    # threads spawned during orchestrator build inherit the block and can't
-    # take the signal first. See infra.shutdown_signals.
-    from ..infra.shutdown_signals import block_shutdown_signals
+    # dedicated sigwaitinfo consumer can read the *sender* of a shutdown signal.
+    # Doing this here — the earliest point — ensures threads spawned during
+    # orchestrator build inherit the block and can't take the signal first.
+    # Then start the consumer IMMEDIATELY: blocking without a running consumer
+    # would leave a signal delivered during config load / build_orchestrator()
+    # pending, so a slow or hung startup couldn't be stopped with SIGTERM
+    # (only SIGKILL). begin_shutdown_watch closes that window — a startup signal
+    # is attributed and forces exit; run() later attaches graceful shutdown.
+    # See infra.shutdown_signals.
+    from ..infra.shutdown_signals import begin_shutdown_watch, block_shutdown_signals
     if block_shutdown_signals():
-        logger.debug("Shutdown signals blocked for sender-attributed handling")
+        begin_shutdown_watch()
+        logger.debug("Shutdown signals blocked; early sender-attributed watcher started")
 
     # Change to repo root
     os.chdir(args.repo_root)

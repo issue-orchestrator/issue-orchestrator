@@ -12,10 +12,14 @@ POSIX *does* report the sender via ``siginfo.si_pid`` — but only through
 
 1. blocks SIGTERM/SIGINT process-wide (``block_shutdown_signals``, called once at
    the entry point before any threads start, so every thread inherits the block
-   and the signals stay pending), and
-2. consumes them on a dedicated thread via ``signal.sigwaitinfo``, logging the
-   real sender pid/uid and resolved command line, then runs the caller's
-   shutdown callback on the event loop.
+   and the signals stay pending),
+2. starts the consumer immediately (``begin_shutdown_watch``) so the window
+   before the event loop exists stays stoppable — a signal there is attributed
+   and forces exit rather than hanging until startup completes, and
+3. once the loop is live, attaches the graceful callback
+   (``install_attributed_shutdown``): the consumer dequeues signals on a
+   dedicated thread via ``signal.sigwaitinfo``, logs the real sender pid/uid +
+   resolved command line, then runs the caller's shutdown callback on the loop.
 
 On platforms without ``sigwaitinfo``/``pthread_sigmask`` (e.g. Windows) it falls
 back to asyncio signal handlers — still honest: the fallback message states the
@@ -37,6 +41,10 @@ logger = logging.getLogger(__name__)
 # Signals that mean "shut down". SIGTERM is what supervisors/`kill` send;
 # SIGINT is Ctrl+C in a foreground terminal.
 _SHUTDOWN_SIGNALS: tuple[signal.Signals, ...] = (signal.SIGTERM, signal.SIGINT)
+
+# Exit code when a signal forces termination during the startup window (before
+# the orchestrator/loop exist). 0: an operator-requested stop is not a failure.
+_STARTUP_SIGNAL_EXIT_CODE = 0
 
 
 def supports_sender_attribution() -> bool:
@@ -91,29 +99,118 @@ def format_shutdown_signal_log(signum: int, sender_pid: int, sender_uid: int) ->
     )
 
 
+class _GracefulTarget:
+    """Where an attributed shutdown signal is routed.
+
+    Before the event loop and orchestrator exist there is nothing to stop
+    gracefully, so a signal in that window is logged (with its sender, by the
+    consumer) and then forces an immediate process exit — keeping a slow or hung
+    startup stoppable with SIGTERM instead of leaving the *blocked* signal pending
+    until the build finishes (which would force an operator to escalate to
+    SIGKILL). Once ``attach`` is called from ``run()`` — when the loop is live —
+    signals route to the graceful callback on that loop.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._on_shutdown: Callable[[], None] | None = None
+
+    def attach(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        on_shutdown: Callable[[], None],
+    ) -> None:
+        with self._lock:
+            self._loop = loop
+            self._on_shutdown = on_shutdown
+
+    def dispatch(self) -> None:
+        with self._lock:
+            loop = self._loop
+            on_shutdown = self._on_shutdown
+        if loop is not None and on_shutdown is not None:
+            loop.call_soon_threadsafe(on_shutdown)
+            return
+        # Startup window: no loop yet, nothing to unwind gracefully. The sender
+        # was just logged; exit now so SIGTERM still stops a slow/hung engine
+        # build rather than being swallowed by the process-wide signal block.
+        # (logging flushes per-emit, so the sender line is already written.)
+        logger.warning(
+            "Shutdown signal arrived before the orchestrator was ready; exiting "
+            "now — no graceful shutdown is possible yet, but a slow/hung startup "
+            "stays stoppable with SIGTERM."
+        )
+        _force_exit(_STARTUP_SIGNAL_EXIT_CODE)
+
+
+def _force_exit(code: int) -> None:
+    """Terminate the whole process from a non-main thread (test seam)."""
+    os._exit(code)
+
+
+# Process-singleton consumer state. Signals are inherently process-global, and
+# the entry point starts the consumer early in ``main`` (``begin_shutdown_watch``)
+# but only learns the loop + graceful callback later in ``run``
+# (``install_attributed_shutdown``) — so the routing target and the
+# "is the watch thread started" flag live here rather than being threaded through.
+_target = _GracefulTarget()
+_watch_started = False
+_watch_lock = threading.Lock()
+
+
+def begin_shutdown_watch() -> bool:
+    """Start the ``sigwaitinfo`` consumer EARLY, right after blocking signals.
+
+    Closes the window that blocking opens: with SIGTERM/SIGINT blocked
+    process-wide but no consumer running yet, a signal delivered during config
+    load or ``build_orchestrator`` would stay pending — the engine couldn't be
+    stopped without SIGKILL. Starting the consumer here means a startup-window
+    signal is attributed and forces exit (see ``_GracefulTarget.dispatch``).
+
+    Returns ``False`` on platforms using the asyncio fallback: there signals are
+    never blocked, so the OS default still stops a hung startup, and the consumer
+    is installed later in ``install_attributed_shutdown``.
+    """
+    if not supports_sender_attribution():
+        return False
+    _ensure_watch_thread()
+    return True
+
+
 def install_attributed_shutdown(
     *,
     loop: asyncio.AbstractEventLoop,
     on_shutdown: Callable[[], None],
 ) -> None:
-    """Detect SIGTERM/SIGINT and run ``on_shutdown`` on ``loop``.
+    """Route SIGTERM/SIGINT to ``on_shutdown`` on ``loop``, naming the sender.
 
-    If ``block_shutdown_signals`` could block the signals on this platform, a
-    daemon thread dequeues them with ``sigwaitinfo`` and logs the real sender.
-    Otherwise it installs asyncio handlers with an honest "sender not reported"
-    message. ``on_shutdown`` always runs on the event loop thread (the same place
-    the old asyncio handler ran), so callers can touch loop state safely.
+    On the ``sigwaitinfo`` path this attaches the loop + callback to the consumer
+    that ``begin_shutdown_watch`` already started (and starts it if, for some
+    reason, it was not) — so before this call a signal forces an attributed
+    startup exit, and after it a signal runs ``on_shutdown`` gracefully on the
+    loop. On platforms without ``sigwaitinfo`` it installs asyncio handlers with
+    an honest "sender not reported" message. ``on_shutdown`` always runs on the
+    event loop thread, so callers can touch loop state safely.
     """
     if supports_sender_attribution():
-        _start_sigwait_thread(loop, on_shutdown)
+        _target.attach(loop, on_shutdown)
+        _ensure_watch_thread()
     else:
         _install_asyncio_fallback(loop, on_shutdown)
 
 
-def _start_sigwait_thread(
-    loop: asyncio.AbstractEventLoop,
-    on_shutdown: Callable[[], None],
-) -> None:
+def _ensure_watch_thread() -> None:
+    """Start the single sigwait consumer thread, at most once per process."""
+    global _watch_started
+    with _watch_lock:
+        if _watch_started:
+            return
+        _watch_started = True
+    _start_sigwait_thread(_target)
+
+
+def _start_sigwait_thread(target: _GracefulTarget) -> None:
     sigset = set(_SHUTDOWN_SIGNALS)
 
     def _watch() -> None:
@@ -134,7 +231,7 @@ def _start_sigwait_thread(
                 "%s",
                 format_shutdown_signal_log(info.si_signo, info.si_pid, info.si_uid),
             )
-            loop.call_soon_threadsafe(on_shutdown)
+            target.dispatch()
 
     threading.Thread(target=_watch, name="shutdown-signal-watch", daemon=True).start()
 

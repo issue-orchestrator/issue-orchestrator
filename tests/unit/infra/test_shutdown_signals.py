@@ -92,14 +92,62 @@ def test_sigwait_thread_logs_sender_and_triggers(monkeypatch, caplog) -> None:
             cb()
             fired.set()
 
+    target = ss._GracefulTarget()  # noqa: SLF001 — exercises the private dispatch path
+    target.attach(_Loop(), lambda: None)
     with caplog.at_level(logging.WARNING):
-        ss._start_sigwait_thread(_Loop(), lambda: None)  # noqa: SLF001 — exercises the private sigwait dispatch path directly
+        ss._start_sigwait_thread(target)  # noqa: SLF001 — exercises the private sigwait dispatch path directly
         assert fired.wait(timeout=5), "on_shutdown was not dispatched"
 
     # Leave `gate` unset: the daemon thread stays parked (and dies with the
     # process) rather than looping back to a torn-down monkeypatch.
     assert "from pid=424242" in caplog.text
     assert "SIGTERM" in caplog.text
+
+
+def test_graceful_target_routes_to_loop_after_attach() -> None:
+    """Once attached, dispatch schedules the callback on the loop (graceful path)."""
+    scheduled: list = []
+
+    class _Loop:
+        def call_soon_threadsafe(self, cb):  # noqa: ANN001
+            scheduled.append(cb)
+
+    sentinel = lambda: None  # noqa: E731
+    target = ss._GracefulTarget()  # noqa: SLF001
+    target.attach(_Loop(), sentinel)
+    target.dispatch()
+
+    assert scheduled == [sentinel]  # graceful: callback handed to the loop, not exit
+
+
+def test_graceful_target_forces_exit_in_startup_window(monkeypatch, caplog) -> None:
+    """Before a loop is attached, a signal forces an attributed process exit.
+
+    Regression for the startup window (reviewer P2 on PR #6452): blocking
+    SIGTERM/SIGINT without a running consumer left a signal pending until
+    ``build_orchestrator`` finished, so a slow/hung startup could only be killed
+    with SIGKILL. The consumer must instead stop the process here so the engine
+    stays stoppable with SIGTERM.
+    """
+    exited: list[int] = []
+    monkeypatch.setattr(ss, "_force_exit", lambda code: exited.append(code))
+
+    target = ss._GracefulTarget()  # noqa: SLF001 — unattached == startup window
+    with caplog.at_level(logging.WARNING):
+        target.dispatch()
+
+    assert exited == [ss._STARTUP_SIGNAL_EXIT_CODE]  # noqa: SLF001
+    assert "before the orchestrator was ready" in caplog.text
+
+
+def test_begin_shutdown_watch_returns_false_when_unsupported(monkeypatch) -> None:
+    """On the asyncio-fallback platform, no early consumer is started.
+
+    Signals aren't blocked there, so the OS default already stops a hung startup;
+    the consumer installs later in ``install_attributed_shutdown``.
+    """
+    monkeypatch.setattr(ss, "supports_sender_attribution", lambda: False)
+    assert ss.begin_shutdown_watch() is False
 
 
 # Child process: block the signals, install the attributed handler, log to a
@@ -162,3 +210,68 @@ def test_sigwaitinfo_captures_real_sender(tmp_path: Path) -> None:
         f"expected captured sender pid {os.getpid()}; log was:\n{logged}"
     )
     assert "SIGTERM" in logged
+
+
+# Child process for the STARTUP-WINDOW regression: block signals + start the
+# early consumer, then simulate a slow/hung orchestrator build by waiting WITHOUT
+# ever attaching a graceful target. A SIGTERM in this window must still stop the
+# process — before the fix it stayed pending until build completed.
+_STARTUP_WINDOW_CHILD = textwrap.dedent(
+    """
+    import logging, sys, time
+    from issue_orchestrator.infra import shutdown_signals as ss
+
+    logging.basicConfig(filename=sys.argv[1], level=logging.WARNING,
+                        format="%(message)s")
+    assert ss.block_shutdown_signals() is True
+    assert ss.begin_shutdown_watch() is True
+    print("READY", flush=True)
+    # Never attach a graceful target: stand in for a slow/hung build.
+    time.sleep(30)
+    print("NOT_STOPPED", flush=True)  # must never be reached
+    """
+)
+
+
+@pytest.mark.skipif(
+    not ss.supports_sender_attribution(),
+    reason="signal-sender capture requires POSIX sigwaitinfo (unavailable on macOS)",
+)
+def test_startup_window_signal_still_stops_process(tmp_path: Path) -> None:
+    """A SIGTERM during the pre-loop startup window stops the process promptly.
+
+    Regression for PR #6452 reviewer P2: with signals blocked but no consumer
+    yet, the signal stayed pending and a hung startup needed SIGKILL. Now the
+    early consumer attributes it and forces exit.
+    """
+    log_file = tmp_path / "startup_child.log"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _STARTUP_WINDOW_CHILD, str(log_file)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        deadline = time.time() + 15
+        line = ""
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if "READY" in line:
+                break
+        assert "READY" in line, "child never became ready"
+        time.sleep(0.3)  # let the watcher enter sigwaitinfo
+
+        os.kill(proc.pid, signal.SIGTERM)
+        # Before the fix this stayed pending and the child slept the full 30s.
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+    assert proc.returncode == ss._STARTUP_SIGNAL_EXIT_CODE, (  # noqa: SLF001
+        f"startup-window SIGTERM did not stop the process cleanly; rc={proc.returncode}"
+    )
+    logged = log_file.read_text(encoding="utf-8")
+    assert f"from pid={os.getpid()}" in logged  # sender attributed
+    assert "before the orchestrator was ready" in logged  # took the startup-exit path
