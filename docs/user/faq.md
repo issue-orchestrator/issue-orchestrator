@@ -188,3 +188,19 @@ A: They are three recovery actions with increasing blast radius. Pick the lighte
 | **Reset & retry from scratch** | The clean-room option: deletes the local worktree, **supersedes any open PRs**, **deletes the issue's remote branches**, **removes all orchestrator labels**, and **clears the issue's saved labels, session history, and timeline**. The issue returns to a pristine "never attempted" state and the agent redoes it from zero on a fresh branch. | You want to throw the prior attempt away entirely — its approach was wrong, or its PR/branch should be invalidated. |
 
 Rule of thumb: **preserve work → Retry; bad local tree → Reset & retry; invalidate PRs/branches and start clean → from scratch.** Avoid "from scratch" when the branch holds work you want to keep (it will be discarded), and avoid "Reset & retry" if you need to preserve local commits (its hard-reset step can discard them).
+
+**Q25: In what order does the orchestrator pick up issues?**
+A: There are two levels.
+
+**By work type** (highest priority first): Reviews → Retrospective reviews → Reworks → Validation retries → Triage → **New issues**. Completed work is reviewed/reworked before new coding starts, so a new issue only launches with whatever capacity is left after the higher tiers.
+
+**Among ready new issues**, by this composite key (the first difference decides):
+
+1. **Milestone** — `milestones.sort` (default `milestone_number`: ascending by the number in the milestone name, so `M5` before `M6`; an issue with no milestone sorts last). An explicit `milestones.order` list overrides this.
+2. **Priority tier** — taken from an optional `[P<n>-nnn]` **title prefix** (`P0` is highest … `P9` lowest). Issues without that prefix all get `scheduling.default_priority_tier` (default `1`).
+3. **Sequence** — the `nnn` from that title prefix.
+4. **Issue number** — ascending, as the final tie-breaker.
+
+An issue is only *eligible* in the first place once its `Depends-on:` dependencies are closed (see Q22).
+
+**Gotcha:** the `priority:high` / `priority:medium` / `priority:low` **labels do not affect this order** — they exist for human/triage organization. Scheduling priority comes from the milestone and the `[P<n>-nnn]` title prefix, not the labels. So two issues in the same milestone with no `[P…]` prefix run in **issue-number order**, regardless of their priority labels — a newer issue (higher number) runs later even if it's labeled `priority:high`.
