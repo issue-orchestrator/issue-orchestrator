@@ -62,6 +62,49 @@ def get_repo_log_path(repo_root: Path | str) -> Path:
     return log_dir / "orchestrator.log"
 
 
+def get_control_center_log_path() -> Path:
+    """Global, repo-independent log file for the Control Center process.
+
+    The Control Center manages orchestrators across many repos and has no single
+    ``repo_root``, so its log lives under the user's home. Without it, the CC's
+    supervisor records (start/stop/kill of orchestrator instances) only reach
+    stderr — the terminal it was launched from — and are lost the moment that
+    terminal closes, making cross-repo orchestrator lifecycle events impossible
+    to reconstruct after the fact.
+    """
+    log_dir = Path.home() / ".issue-orchestrator" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "control-center.log"
+
+
+def add_rotating_file_handler(log_file: Path, *, level: int) -> bool:
+    """Attach a daily-rotating file handler to the root logger.
+
+    Idempotent: a second call for the same file is a no-op. Returns ``True`` if a
+    handler was added, ``False`` if one for this file already existed.
+    """
+    root = logging.getLogger()
+    target = str(log_file)
+    for existing in root.handlers:
+        if (
+            isinstance(existing, TimedRotatingFileHandler)
+            and getattr(existing, "baseFilename", None) == target
+        ):
+            return False
+    handler = TimedRotatingFileHandler(
+        log_file, when="midnight", backupCount=7, encoding="utf-8"
+    )
+    handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    root.addHandler(handler)
+    return True
+
+
 class ContextFormatter(logging.Formatter):
     """Formatter that includes context fields from extra= if present."""
 
