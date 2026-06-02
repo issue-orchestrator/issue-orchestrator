@@ -26,7 +26,7 @@ Under the dashboard, each Running issue is an enforced workflow, not an agent fr
 
 ## Project quality contract
 
-Issue-Orchestrator does not know what "good" means for your codebase. Your project brings the engineering standard; the orchestrator makes that standard hard for agents to ignore.
+Issue-Orchestrator does not know what "good" means for your codebase. Your project brings the engineering standard; the orchestrator makes that standard enforceable inside the agent workflow.
 
 - **Work shape:** milestones, right-sized GitHub issues, dependencies, labels, and reviewable pull requests.
 - **Quality standard:** tests, linting, type checks, coverage gates, architecture checks, complexity checks, review criteria, CI, and branch protection.
@@ -95,7 +95,7 @@ If you want your AI assistant to drive the setup for you, use the [Agent-Guided 
 
 ## Project status
 
-**Beta** - Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. Some integrations are newer and still maturing. APIs may change.
+**Early beta** - Core orchestration, guardrails, review workflow, and the web dashboard are stable and in daily use. External setup is usable but still being hardened; some integrations are newer and APIs may change.
 
 Issue-Orchestrator dogfoods the same discipline it expects from target repos: hexagonal architecture, import-linter and AST guardrails, ADRs, and a large automated test suite. See [Issue-Orchestrator Internal Architecture](docs/architecture/internal-architecture.md) for the implementation architecture.
 
