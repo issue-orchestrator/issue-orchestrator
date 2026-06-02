@@ -59,7 +59,12 @@ def stale_e2e_orchestrator_processes(
     return stale_processes
 
 
-def kill_stale_e2e_orchestrators(*, run: CommandRunner = subprocess.run) -> int:
+def kill_stale_e2e_orchestrators(
+    *,
+    run: CommandRunner = subprocess.run,
+    current_pid: int | None = None,
+    pid_exists: PidExists | None = None,
+) -> int:
     """Terminate stale E2E-owned orchestrator processes.
 
     This deliberately avoids broad process-name matching. Repository engines
@@ -85,7 +90,11 @@ def kill_stale_e2e_orchestrators(*, run: CommandRunner = subprocess.run) -> int:
         return 0
 
     killed = 0
-    for process in stale_e2e_orchestrator_processes(str(ps_result.stdout or "")):
+    for process in stale_e2e_orchestrator_processes(
+        str(ps_result.stdout or ""),
+        current_pid=current_pid,
+        pid_exists=pid_exists,
+    ):
         try:
             kill_result = run(["kill", str(process.pid)], capture_output=True, check=False)
         except OSError as exc:

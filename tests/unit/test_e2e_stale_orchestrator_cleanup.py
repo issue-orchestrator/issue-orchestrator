@@ -135,7 +135,11 @@ def test_kill_cleanup_only_kills_selected_processes() -> None:
             return subprocess.CompletedProcess(args, 0, stdout=ps_output, stderr="")
         return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
 
-    killed = kill_stale_e2e_orchestrators(run=fake_run)
+    killed = kill_stale_e2e_orchestrators(
+        run=fake_run,
+        current_pid=3255,
+        pid_exists=lambda pid: False,
+    )
 
     assert killed == 1
     assert calls == [
