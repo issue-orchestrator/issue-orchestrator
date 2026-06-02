@@ -179,6 +179,25 @@ def _start_tray_icon(url: str) -> Any | None:
         return None
 
 
+def _setup_control_center_file_log(log_level: int) -> None:
+    """Persist the Control Center's log to a file — not just stderr / the
+    launching terminal — so its supervisor records (starting, stopping, and
+    killing orchestrator instances) survive the terminal closing and stay
+    attributable after the fact.
+    """
+    from ..infra.logging_config import (
+        add_rotating_file_handler,
+        get_control_center_log_path,
+    )
+
+    try:
+        cc_log_path = get_control_center_log_path()
+        if add_rotating_file_handler(cc_log_path, level=log_level):
+            logger.info("Control Center logging to %s", cc_log_path)
+    except OSError as exc:
+        logger.warning("Could not set up Control Center file log: %s", exc)
+
+
 def main() -> int:
     """Run the standalone control center server."""
     # NOTE: Cannot use signal.signal(signal.SIGCHLD, signal.SIG_IGN) to auto-reap
@@ -269,6 +288,8 @@ def main() -> int:
     )
     # Suppress httpx INFO logging (polls orchestrator status every 3s)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+    _setup_control_center_file_log(log_level)
 
     # Clean up stale repos from registry (e.g., deleted directories, old test paths)
     from ..infra.repo_registry import cleanup_stale_repos

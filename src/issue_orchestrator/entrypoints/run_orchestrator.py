@@ -19,7 +19,6 @@ import asyncio
 import atexit
 import logging
 import os
-import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -212,38 +211,27 @@ def _install_shutdown_signal_handlers(
     orchestrator: Any,
     trigger_server_shutdown: Any,
 ) -> None:
-    """Install asyncio-safe per-signal handlers on the running loop.
+    """Wire SIGTERM/SIGINT to a graceful shutdown, recording the *real* sender.
 
-    Per-signal handlers so the log can name *which* signal arrived,
-    not just "a shutdown signal". Posix doesn't give us the sender
-    PID through asyncio's signal API, but recording our own PPID
-    at signal time helps narrow it down — if the parent process
-    died (PPID became 1), the child got reaped; if PPID matches a
-    cc/launcher process the user can correlate manually. Without
-    this, an operator reading the log later can't tell SIGTERM
-    (typical from a supervisor.stop / kill) apart from SIGINT
-    (typical Ctrl+C in the foreground terminal).
+    The signals are blocked process-wide at the entry point (see
+    ``block_shutdown_signals`` in ``main``); here we start the consumer that
+    logs *who* sent the signal — its pid, uid, and resolved command line, via
+    POSIX ``sigwaitinfo`` — before requesting shutdown. This replaces the old
+    handler that could only log ``os.getppid()`` (the parent), which is not the
+    sender and repeatedly misled diagnosis of external kills. On platforms that
+    can't report the sender, an honest asyncio fallback is used. See
+    ``infra.shutdown_signals``.
     """
-    def make_handler(sig: signal.Signals):
-        def handle_signal() -> None:
-            try:
-                ppid = os.getppid()
-            except OSError:
-                ppid = -1
-            logger.warning(
-                "Received %s (signum=%d) from ppid=%d; requesting shutdown. "
-                "Operators: prefer POST /api/shutdown with a 'reason' so the "
-                "source is recorded — signal-based shutdowns can't be attributed "
-                "to a caller.",
-                sig.name, int(sig), ppid,
-            )
-            orchestrator.request_shutdown()
-            trigger_server_shutdown()
-        return handle_signal
+    from ..infra.shutdown_signals import install_attributed_shutdown
 
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, make_handler(sig))
+    def _on_shutdown() -> None:
+        orchestrator.request_shutdown()
+        trigger_server_shutdown()
+
+    install_attributed_shutdown(
+        loop=asyncio.get_running_loop(),
+        on_shutdown=_on_shutdown,
+    )
 
 
 async def run(
@@ -344,6 +332,15 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+    # Block SIGTERM/SIGINT process-wide BEFORE any thread is created, so the
+    # dedicated sigwaitinfo consumer (started in run()) can read the *sender*
+    # of a shutdown signal. Doing this here — the earliest point — ensures
+    # threads spawned during orchestrator build inherit the block and can't
+    # take the signal first. See infra.shutdown_signals.
+    from ..infra.shutdown_signals import block_shutdown_signals
+    if block_shutdown_signals():
+        logger.debug("Shutdown signals blocked for sender-attributed handling")
 
     # Change to repo root
     os.chdir(args.repo_root)

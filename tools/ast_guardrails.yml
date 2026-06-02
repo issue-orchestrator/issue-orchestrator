@@ -59,6 +59,7 @@ allow_prefixes:
   - src/issue_orchestrator/adapters/worktree/_worktree.py
   - src/issue_orchestrator/infra/hooks/hooks.py
   - src/issue_orchestrator/infra/supervisor.py  # Supervisor manages orchestrator subprocesses
+  - src/issue_orchestrator/infra/shutdown_signals.py  # Resolves signal-sender command line via `ps` for attribution
   - src/issue_orchestrator/infra/ai_diagnose.py  # AI diagnosis invokes claude
   - src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py
   - src/issue_orchestrator/entrypoints/cli_tools/coding_done.py  # CLI tool runs git status in agent worktree
