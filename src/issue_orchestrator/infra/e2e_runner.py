@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Optional
 from .config_models import E2EExecutionSpec
 from .e2e_db import E2EDB
 from .e2e_worktree import ensure_e2e_worktree
+from .shutdown_signals import child_signal_reset_preexec
 
 if TYPE_CHECKING:
     from .config import E2EConfig
@@ -279,6 +280,9 @@ class E2ERunnerManager:
             stdout=log_file_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            # stop() stops this worker via SIGTERM, so it must not inherit the
+            # orchestrator's blocked SIGTERM/SIGINT mask. See infra.shutdown_signals.
+            preexec_fn=child_signal_reset_preexec(),
         )
         # Note: log_file_handle stays open - subprocess inherits it and will close on exit
 
@@ -464,6 +468,9 @@ class E2ERunnerManager:
             stdout=log_file_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            # stop() stops this worker via SIGTERM, so it must not inherit the
+            # orchestrator's blocked SIGTERM/SIGINT mask. See infra.shutdown_signals.
+            preexec_fn=child_signal_reset_preexec(),
         )
         # Note: log_file_handle stays open - subprocess inherits it and will close on exit
 

@@ -23,6 +23,7 @@ from issue_orchestrator.execution.agent_runner_types import (
     AgentSpec,
     _format_command_for_log,
 )
+from issue_orchestrator.infra.shutdown_signals import unblock_shutdown_signals_in_child
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +46,16 @@ def _agent_preexec() -> None:
     NOTE: Do NOT use this with pexpect/ptyprocess — use ``_pty_preexec``
     instead.  ``os.setpgrp()`` makes the child a process group leader, which
     causes ptyprocess's ``os.setsid()`` to fail with EPERM.
+
+    Also resets the shutdown-signal mask (see
+    ``unblock_shutdown_signals_in_child``): the orchestrator blocks SIGTERM/SIGINT
+    process-wide for sender attribution, and the agent — which is later stopped
+    via ``killpg(pgid, SIGTERM)`` — must not inherit that block.
     """
     os.setpgrp()
     signal.signal(signal.SIGTTIN, signal.SIG_IGN)
     signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    unblock_shutdown_signals_in_child()
 
 
 def _pty_preexec() -> None:
@@ -58,9 +65,14 @@ def _pty_preexec() -> None:
     ptyprocess already calls ``os.setsid()`` which creates a new session and
     process group.  Calling ``setpgrp()`` before ``setsid()`` would make the
     child a process group leader, causing ``setsid()`` to fail with EPERM.
+
+    Also resets the shutdown-signal mask (see
+    ``unblock_shutdown_signals_in_child``) so the agent does not inherit the
+    orchestrator's process-wide SIGTERM/SIGINT block.
     """
     signal.signal(signal.SIGTTIN, signal.SIG_IGN)
     signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    unblock_shutdown_signals_in_child()
 
 
 class BaseAgentRunner(ABC):
