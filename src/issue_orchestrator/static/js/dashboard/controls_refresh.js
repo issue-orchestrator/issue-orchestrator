@@ -236,25 +236,40 @@ function saveGitHubUsagePrefs(prefs) {
     }));
 }
 
+function getGitHubUsageWidgets() {
+    return [
+        {
+            wrap: document.getElementById('ghUsageWrap'),
+            panel: document.getElementById('ghUsagePanel'),
+            pill: document.getElementById('ghUsagePill'),
+        },
+        {
+            wrap: document.getElementById('ghUsageWrapEmbedded'),
+            panel: document.getElementById('ghUsagePanelEmbedded'),
+            pill: document.getElementById('ghUsagePillEmbedded'),
+        },
+    ].filter(widget => widget.wrap && widget.panel && widget.pill);
+}
+
 function applyGitHubUsagePrefs() {
     const prefs = getGitHubUsagePrefs();
-    const wrap = document.getElementById('ghUsageWrap');
-    const panel = document.getElementById('ghUsagePanel');
-    const pill = document.getElementById('ghUsagePill');
-    if (!wrap || !panel || !pill) return;
+    const widgets = getGitHubUsageWidgets();
+    if (!widgets.length) return;
     const desiredDisplay = prefs.hidden ? 'none' : '';
     const desiredVisible = !prefs.hidden && prefs.expanded;
     const desiredExpandedAttr = desiredVisible ? 'true' : 'false';
     // Same-value writes still trigger style invalidation and (for class
     // toggles) MutationObserver. Guard each so this function — invoked on
     // every refresh — doesn't contribute to the periodic header flash.
-    if (wrap.style.display !== desiredDisplay) wrap.style.display = desiredDisplay;
-    if (panel.classList.contains('visible') !== desiredVisible) {
-        panel.classList.toggle('visible', desiredVisible);
-    }
-    if (pill.getAttribute('aria-expanded') !== desiredExpandedAttr) {
-        pill.setAttribute('aria-expanded', desiredExpandedAttr);
-    }
+    widgets.forEach(({ wrap, panel, pill }) => {
+        if (wrap.style.display !== desiredDisplay) wrap.style.display = desiredDisplay;
+        if (panel.classList.contains('visible') !== desiredVisible) {
+            panel.classList.toggle('visible', desiredVisible);
+        }
+        if (pill.getAttribute('aria-expanded') !== desiredExpandedAttr) {
+            pill.setAttribute('aria-expanded', desiredExpandedAttr);
+        }
+    });
 }
 
 function toggleGitHubUsagePanel() {
@@ -275,6 +290,29 @@ function setGitHubUsageHidden(hidden) {
     applyGitHubUsagePrefs();
 }
 
+function focusPreferredGitHubUsagePill() {
+    const embedded = typeof isEmbedded !== 'undefined' && isEmbedded;
+    const preferredId = embedded ? 'ghUsagePillEmbedded' : 'ghUsagePill';
+    const fallbackId = embedded ? 'ghUsagePill' : 'ghUsagePillEmbedded';
+    const pill = document.getElementById(preferredId) || document.getElementById(fallbackId);
+    if (!pill || typeof pill.focus !== 'function') return;
+    try {
+        pill.focus({ preventScroll: true });
+    } catch (_) {
+        pill.focus();
+    }
+}
+
+function showGitHubUsage() {
+    const prefs = getGitHubUsagePrefs();
+    prefs.hidden = false;
+    prefs.expanded = true;
+    saveGitHubUsagePrefs(prefs);
+    applyGitHubUsagePrefs();
+    hideSettingsMenu();
+    focusPreferredGitHubUsagePill();
+}
+
 function renderGitHubUsage() {
     const usage = window.dashboardData?.githubUsage || {};
     const rate = usage.last_rate_limit_from_headers || {};
@@ -283,12 +321,6 @@ function renderGitHubUsage() {
     const callsPerMinute = Number(usage.calls_per_minute || 0);
     const totalCalls = Number(usage.total_calls || 0);
     const errors = Number(usage.errors || 0);
-    const summary = document.getElementById('ghUsageSummary');
-    const cpmEl = document.getElementById('ghUsageCallsPerMinute');
-    const totalEl = document.getElementById('ghUsageTotalCalls');
-    const errEl = document.getElementById('ghUsageErrors');
-    const limitEl = document.getElementById('ghUsageRateLimit');
-    const resetEl = document.getElementById('ghUsageReset');
 
     // Same-value textContent writes replace the underlying text node and
     // fire a childList MutationObserver event, which on every periodic
@@ -297,23 +329,24 @@ function renderGitHubUsage() {
     const setText = (el, value) => {
         if (el && el.textContent !== value) el.textContent = value;
     };
+    const setTextForIds = (ids, value) => {
+        ids.forEach((id) => setText(document.getElementById(id), value));
+    };
 
-    setText(summary, `${callsPerMinute}/min`);
-    setText(cpmEl, callsPerMinute.toLocaleString());
-    setText(totalEl, totalCalls.toLocaleString());
-    setText(errEl, errors.toLocaleString());
-    if (limitEl) {
-        let limitText;
-        if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
-            const used = Number.isFinite(Number(rate.used)) ? Number(rate.used) : Math.max(0, limit - remaining);
-            const resource = rate.resource ? ` (${String(rate.resource)})` : '';
-            limitText = `${used.toLocaleString()} used · ${remaining.toLocaleString()} left${resource}`;
-        } else {
-            limitText = 'No rate header yet';
-        }
-        setText(limitEl, limitText);
+    setTextForIds(['ghUsageSummary', 'ghUsageSummaryEmbedded'], `${callsPerMinute}/min`);
+    setTextForIds(['ghUsageCallsPerMinute', 'ghUsageCallsPerMinuteEmbedded'], callsPerMinute.toLocaleString());
+    setTextForIds(['ghUsageTotalCalls', 'ghUsageTotalCallsEmbedded'], totalCalls.toLocaleString());
+    setTextForIds(['ghUsageErrors', 'ghUsageErrorsEmbedded'], errors.toLocaleString());
+    let limitText;
+    if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
+        const used = Number.isFinite(Number(rate.used)) ? Number(rate.used) : Math.max(0, limit - remaining);
+        const resource = rate.resource ? ` (${String(rate.resource)})` : '';
+        limitText = `${used.toLocaleString()} used · ${remaining.toLocaleString()} left${resource}`;
+    } else {
+        limitText = 'No rate header yet';
     }
-    setText(resetEl, formatResetLabel(Number(rate.reset || 0)));
+    setTextForIds(['ghUsageRateLimit', 'ghUsageRateLimitEmbedded'], limitText);
+    setTextForIds(['ghUsageReset', 'ghUsageResetEmbedded'], formatResetLabel(Number(rate.reset || 0)));
 }
 
 function updateRefreshStatusFromViewModel(vm) {
