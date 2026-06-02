@@ -20,6 +20,30 @@ class RoundFailureReason(str, enum.Enum):
     UNKNOWN = "unknown"
 
 
+# Reasons that mean the role's *process* is dead or unusable for the next
+# prompt — the turn itself can be retried by respawning a fresh process in the
+# same worktree (the one-shot reviewer that exits cleanly between rounds is the
+# canonical case). This is deliberately narrower than "the round failed":
+#   - TIMEOUT / INVALID_RESPONSE: the process is alive and responded, just not
+#     usefully. Respawning would kill a working process and could mask a stuck
+#     agent, so these are NOT recoverable by respawn.
+#   - NO_COMPLETION / ROUND_ERROR / UNKNOWN: ambiguous; not safe to auto-retry.
+PROCESS_UNUSABLE_FAILURE_REASONS: frozenset[RoundFailureReason] = frozenset({
+    RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
+    RoundFailureReason.SESSION_CLOSED,
+    RoundFailureReason.PROMPT_WRITE_FAILED,
+})
+
+
+def is_process_unusable_failure(reason: Any) -> bool:
+    """True when a round failed because the role process is dead/unusable.
+
+    These failures are recoverable by respawning the role in place and
+    retrying the same turn; see ``PROCESS_UNUSABLE_FAILURE_REASONS``.
+    """
+    return coerce_round_failure_reason(reason) in PROCESS_UNUSABLE_FAILURE_REASONS
+
+
 @dataclass(frozen=True)
 class RoundFailurePresentation:
     """Human text for one round-failure reason across all surfaces."""

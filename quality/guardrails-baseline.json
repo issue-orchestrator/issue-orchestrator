@@ -785,12 +785,12 @@
       "value": 6
     },
     "control_policy_branch_sites:src/issue_orchestrator/execution/persistent_session_exchange.py": {
-      "detail": "13 branch site(s) mention lifecycle/control terms",
+      "detail": "14 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 13
+      "value": 14
     },
     "control_policy_branch_sites:src/issue_orchestrator/execution/run_evidence.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -1457,12 +1457,12 @@
       "value": 910
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/persistent_session_exchange.py": {
-      "detail": "3072 lines exceeds budget 800",
+      "detail": "3199 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 3072
+      "value": 3199
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/session_output_adapter.py": {
       "detail": "1641 lines exceeds budget 800",
@@ -2201,7 +2201,7 @@
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:25d30ad79690": {
-      "detail": "line 1116: # noqa: BLE001",
+      "detail": "line 1141: # noqa: BLE001",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:25d30ad79690",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
@@ -2209,65 +2209,65 @@
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7": {
-      "detail": "line 3071: # noqa: E402",
+      "detail": "line 3198: # noqa: E402",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3072": {
-      "detail": "line 3072: # noqa: E402",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3199": {
+      "detail": "line 3199: # noqa: E402",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3072",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3199",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa": {
-      "detail": "line 531: # noqa: PLR0913",
+      "detail": "line 541: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1196": {
-      "detail": "line 1196: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1269": {
+      "detail": "line 1269: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1196",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1269",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1771": {
-      "detail": "line 1771: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1844": {
+      "detail": "line 1844: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1771",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1844",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2144": {
-      "detail": "line 2144: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2228": {
+      "detail": "line 2228: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2144",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2228",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2299": {
-      "detail": "line 2299: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2381": {
+      "detail": "line 2381: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2299",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2381",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2909": {
-      "detail": "line 2909: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-3050": {
+      "detail": "line 3050: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2909",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-3050",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
@@ -2969,17 +2969,17 @@
       "value": 1
     },
     "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549": {
-      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2127: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2211: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "semgrep_semantic_vocabulary",
       "value": 1
     },
-    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2644": {
-      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2644: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2785": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2785: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2644",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2785",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "semgrep_semantic_vocabulary",
       "value": 1
