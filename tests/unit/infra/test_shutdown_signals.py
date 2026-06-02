@@ -275,3 +275,80 @@ def test_startup_window_signal_still_stops_process(tmp_path: Path) -> None:
     logged = log_file.read_text(encoding="utf-8")
     assert f"from pid={os.getpid()}" in logged  # sender attributed
     assert "before the orchestrator was ready" in logged  # took the startup-exit path
+
+
+def test_child_signal_reset_preexec_matches_platform() -> None:
+    """The preexec helper is a real callable where we block, None otherwise."""
+    result = ss.child_signal_reset_preexec()
+    if ss.supports_sender_attribution():
+        assert result is ss.unblock_shutdown_signals_in_child
+    else:
+        assert result is None  # nothing was blocked, so passing it is a no-op
+
+
+def test_unblock_in_child_is_noop_when_not_blocked(monkeypatch) -> None:
+    """Calling the unblock helper on a non-blocking platform never raises."""
+    monkeypatch.setattr(ss, "supports_sender_attribution", lambda: False)
+    ss.unblock_shutdown_signals_in_child()  # must be a safe no-op
+
+
+# Child for the SUBPROCESS-INHERITANCE regression (PR #6452 reviewer P1):
+# block signals in the child (as the orchestrator does), then prove a grandchild
+# spawned with the reset preexec is killable by SIGTERM, while one WITHOUT it
+# inherits the block and ignores SIGTERM (needs SIGKILL). Exit 0 only if both hold.
+_MASK_INHERIT_CHILD = textwrap.dedent(
+    """
+    import signal, subprocess, sys, time
+    from issue_orchestrator.infra import shutdown_signals as ss
+
+    assert ss.block_shutdown_signals() is True
+
+    # (1) WITH reset: SIGTERM must terminate the grandchild normally.
+    g = subprocess.Popen(["sleep", "30"], preexec_fn=ss.child_signal_reset_preexec())
+    time.sleep(0.4)
+    g.send_signal(signal.SIGTERM)
+    try:
+        rc = g.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        g.kill(); g.wait(); print("RESET_FAILED", flush=True); sys.exit(1)
+    if rc != -signal.SIGTERM:
+        print("RESET_BAD_RC=%r" % rc, flush=True); sys.exit(2)
+
+    # (2) Control: WITHOUT reset the grandchild inherits the block and must
+    # ignore SIGTERM (so wait times out and we fall back to SIGKILL).
+    g2 = subprocess.Popen(["sleep", "30"])
+    time.sleep(0.4)
+    g2.send_signal(signal.SIGTERM)
+    try:
+        rc2 = g2.wait(timeout=2)
+        print("CONTROL_DIED_rc=%r" % rc2, flush=True); sys.exit(3)
+    except subprocess.TimeoutExpired:
+        g2.kill(); g2.wait()  # expected: SIGTERM was ignored
+
+    print("OK", flush=True)
+    """
+)
+
+
+@pytest.mark.skipif(
+    not ss.supports_sender_attribution(),
+    reason="signal-mask blocking only applies where sigwaitinfo is available (not macOS)",
+)
+def test_child_does_not_inherit_blocked_signal_mask() -> None:
+    """Children spawned after block_shutdown_signals() are still SIGTERM-stoppable.
+
+    Regression for PR #6452 reviewer P1: the process-wide block leaked into
+    subprocesses (agent sessions, commands), so they ignored SIGTERM and needed
+    SIGKILL. The reset preexec restores normal termination; the control arm shows
+    the block really would be inherited without it.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-c", _MASK_INHERIT_CHILD],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, (
+        f"mask-inheritance regression; stdout={proc.stdout!r} stderr={proc.stderr!r}"
+    )
+    assert "OK" in proc.stdout

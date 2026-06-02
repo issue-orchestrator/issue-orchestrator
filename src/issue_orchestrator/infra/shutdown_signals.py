@@ -68,6 +68,38 @@ def block_shutdown_signals() -> bool:
     return True
 
 
+def unblock_shutdown_signals_in_child() -> None:
+    """Reset the shutdown-signal mask in a forked child, before ``exec``.
+
+    ``block_shutdown_signals`` blocks SIGTERM/SIGINT process-wide so the
+    ``sigwaitinfo`` consumer can read the sender. POSIX children inherit that
+    mask, and Python's ``subprocess`` does NOT reset it (``restore_signals`` only
+    restores signal *dispositions*, not the mask) — so without this, processes
+    the orchestrator launches (agent sessions, validation commands, …) inherit
+    the block and ignore a normal SIGTERM, needing SIGKILL. In particular the
+    agent kill path is ``killpg(pgid, SIGTERM)`` → grace → SIGKILL, so a blocked
+    agent would always burn the grace period and be force-killed. Safe to call
+    from ``preexec_fn`` (``pthread_sigmask`` is async-signal-safe). No-op where
+    the signals were never blocked.
+    """
+    if not supports_sender_attribution():
+        return
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, set(_SHUTDOWN_SIGNALS))
+
+
+def child_signal_reset_preexec() -> Callable[[], None] | None:
+    """A ``preexec_fn`` that resets the shutdown-signal mask, or ``None``.
+
+    Returns ``None`` when the signals were never blocked (e.g. macOS, Windows),
+    so a spawn site can pass it straight through as ``preexec_fn=...`` without
+    forcing fork+exec or tripping platforms that reject ``preexec_fn``. On the
+    blocking platform it returns ``unblock_shutdown_signals_in_child``.
+    """
+    if not supports_sender_attribution():
+        return None
+    return unblock_shutdown_signals_in_child
+
+
 def describe_sender(pid: int) -> str:
     """Best-effort command line for a sender pid (it may already be gone)."""
     if pid <= 0:
