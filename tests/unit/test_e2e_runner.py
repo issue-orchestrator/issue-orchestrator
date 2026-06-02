@@ -235,6 +235,30 @@ class TestWorktreeIsolation:
         popen_call = popen_mock.call_args
         assert popen_call.kwargs["cwd"] == e2e_worktree_path
 
+    def test_start_resets_blocked_signal_mask_in_worker(
+        self,
+        manager: E2ERunnerManager,
+        mock_popen,
+        tmp_path: Path,
+    ):
+        """The worker spawn must reset the orchestrator's blocked signal mask.
+
+        Regression for PR #6452 P1: E2E workers are stopped via SIGTERM in
+        ``E2ERunnerManager.stop``, so they must not inherit the orchestrator's
+        process-wide SIGTERM/SIGINT block — otherwise graceful stop is skipped
+        and the worker is force-killed. Asserts the manager's own spawn path
+        wires the reset preexec (KeyError here if it is ever dropped), not just
+        that the generic helper exists.
+        """
+        from issue_orchestrator.infra.shutdown_signals import child_signal_reset_preexec
+
+        popen_mock, _ = mock_popen
+        manager.start(
+            repo_root=tmp_path, orchestrator_id="test-orch", pytest_args=["tests/e2e"]
+        )
+
+        assert popen_mock.call_args.kwargs["preexec_fn"] is child_signal_reset_preexec()
+
     def test_start_repo_root_arg_points_to_worktree(
         self,
         manager: E2ERunnerManager,
