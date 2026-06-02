@@ -6,6 +6,7 @@ import logging
 import subprocess
 from pathlib import Path
 
+from ..infra.shutdown_signals import child_signal_reset_preexec
 from ..ports.command_runner import CommandResult
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,10 @@ class LocalCommandRunner:
                 timeout=timeout_seconds,
                 env=env,
                 shell=shell,
+                # Children must not inherit the orchestrator's blocked
+                # SIGTERM/SIGINT mask (None where signals were never blocked, so
+                # this is a no-op on macOS/Windows). See infra.shutdown_signals.
+                preexec_fn=child_signal_reset_preexec(),
             )
             return CommandResult(
                 returncode=result.returncode,

@@ -72,11 +72,19 @@ class RetrospectiveReviewWorkflow:
             return RetrospectiveReviewDecision.skip("No capacity")
 
         to_launch = list(pending_reviews)[:available]
+        # Log the concrete issue numbers, not just counts: when the queue churns
+        # (an issue completes and the freed slot pulls the next one in), this is
+        # the single line that answers "which issue just launched, and what's
+        # still waiting" without cross-referencing completion/launch timestamps.
+        deferred = [r.issue_number for r in list(pending_reviews)[available:]]
         logger.info(
-            "Retrospective review launch decision: launching=%s pending=%s capacity=%s",
+            "Retrospective review launch decision: launching=%s pending=%s capacity=%s "
+            "launch_issues=%s deferred_issues=%s",
             len(to_launch),
             len(pending_reviews),
             available,
+            [r.issue_number for r in to_launch],
+            deferred,
         )
         return RetrospectiveReviewDecision.launch(to_launch, available)
 

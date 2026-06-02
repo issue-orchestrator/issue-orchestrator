@@ -15,10 +15,6 @@ At exchange end, ``close_session`` sends ``SIGTERM`` to the agent's
 process group and waits for it to exit. Closing the master fd alone is
 not reliable — the spike showed Claude-shaped TUIs do not always exit
 cleanly on stdin EOF.
-
-This module is intentionally focused: spawn → drive rounds → terminate.
-Wiring into ``control/review_exchange_loop.py`` lands in a follow-up so
-the diff is reviewable in pieces.
 """
 
 from __future__ import annotations
@@ -45,6 +41,7 @@ from ..domain.review_exchange_failures import (
     RoundFailureReason,
     round_failure_reason_value,
 )
+from ..infra.shutdown_signals import child_signal_reset_preexec
 from ..infra.terminal_recording import MirroredTerminalRecordingWriter
 
 logger = logging.getLogger(__name__)
@@ -168,6 +165,8 @@ def open_persistent_session(
             stdout=slave_fd,
             stderr=slave_fd,
             start_new_session=True,
+            # Don't inherit the blocked SIGTERM mask (agent is SIGTERM-stopped).
+            preexec_fn=child_signal_reset_preexec(),
         )
     except Exception:
         os.close(master_fd)

@@ -66,7 +66,10 @@ from ..domain.review_exchange import (
     build_coder_prompt,
     build_reviewer_prompt,
 )
-from ..domain.review_exchange_failures import round_failure_chapter_label
+from ..domain.review_exchange_failures import (
+    is_process_unusable_failure,
+    round_failure_chapter_label,
+)
 from ..domain.review_artifacts import (
     NitPolicy,
     REVIEW_DECISION_FILENAME,
@@ -116,6 +119,13 @@ from .persistent_round_runner import (
 logger = logging.getLogger(__name__)
 
 _CODER_PROTOCOL_RETRY_LIMIT = 2
+
+# How many times a single role turn may respawn-and-retry after the role
+# process is found dead/unusable (e.g. a one-shot reviewer that exited cleanly
+# between rounds). One retry is enough for the one-shot-exit case; bounding it
+# prevents an infinite respawn loop if the prompt itself deterministically
+# crashes the agent before it can respond.
+_MAX_ROLE_RESPAWN_RETRIES = 1
 
 
 class _PairRecordingContractErrorKind(str, enum.Enum):
@@ -1090,13 +1100,28 @@ class _RoleSessionOwner:
         session = self._current_session()
         if session.is_live:
             return session
+        return self._respawn(trigger="session is not live before next prompt")
 
+    def respawn(self) -> PersistentSession:
+        """Force-replace the role process with a fresh one in the same worktree.
+
+        Used after a round failed because the process is dead/unusable (see
+        ``is_process_unusable_failure``). Unlike ``ensure_live``, this does not
+        consult ``is_live`` — the round-runner already observed the failure,
+        which can race ahead of ``proc.poll()`` (e.g. a prompt-write failure
+        where the handle still looks open).
+        """
+        return self._respawn(trigger="process unusable after round failure")
+
+    def _respawn(self, *, trigger: str) -> PersistentSession:
+        session = self._current_session()
         exit_code = session.proc.poll()
         logger.warning(
-            "[REVIEW_EXCHANGE] %s session is not live before next prompt; "
-            "respawning role process issue=%s session_name=%s previous_pid=%d "
-            "exit_code=%s closed=%s response_file=%s recording_path=%s worktree=%s",
+            "[REVIEW_EXCHANGE] %s %s; respawning role process issue=%s "
+            "session_name=%s previous_pid=%d exit_code=%s closed=%s "
+            "response_file=%s recording_path=%s worktree=%s",
             self.spec.role.value,
+            trigger,
             self.spec.issue_number,
             self.spec.session_name,
             session.proc.pid,
@@ -1167,6 +1192,54 @@ class _RoleSessionOwner:
             self.pair.reviewer_session = session
             return
         raise RuntimeError(f"unsupported review-exchange role: {self.spec.role}")
+
+
+@dataclass(frozen=True)
+class _RoleAttemptWorkspace:
+    """Owns the on-disk artifact freshness for one role's turn.
+
+    A single role turn may run more than one process attempt: the initial
+    send, a coder protocol retry, or an in-place respawn after the process
+    died (see :func:`_send_role_round`). Every attempt must start from a clean
+    artifact workspace, or the exchange can pair/validate a side artifact
+    written by a now-dead process against the response JSON produced by a
+    later one.
+
+    The pair-scoped paths are stable across rounds and attempts, so a process
+    can write its side artifact — a reviewer ``review-report.md`` or a coder
+    ``completion-coder.json`` — and then exit *before* writing the response
+    JSON. A respawned process would then produce only the response JSON, and
+    the exchange would consume the dead process's stale side artifact (e.g.
+    publish a report from attempt A with a decision from attempt B, or let a
+    coder advance without having run ``coding-done`` this attempt).
+
+    Centralizing the reset here — instead of scattering role-specific cleanup
+    across the round loop plus a respawn special case — keeps artifact
+    freshness under one owner. The caller constructs this with the role's
+    pieces up front; :func:`_send_role_round` calls
+    :meth:`prepare_for_attempt` before every attempt and never inspects role
+    names or filenames itself.
+
+    For the coder, clearing the completion artifact is what makes a respawned
+    turn unable to ride a dead attempt's validation: validation is only
+    mirrored into pair scope from a completion produced during the turn (see
+    :meth:`_PairValidationMirror.refresh_from_completion`), and a missing
+    completion fails the protocol guardrail outright.
+    """
+
+    response_file: Path
+    side_artifact_paths: tuple[Path, ...]
+
+    def prepare_for_attempt(self) -> None:
+        """Clear the response, prompt inbox, and role side artifacts.
+
+        Idempotent: every path is unlinked with ``missing_ok`` so a fresh
+        first attempt and a respawn retry take the identical code path.
+        """
+        self.response_file.unlink(missing_ok=True)
+        _clear_role_prompt_inbox(self.response_file)
+        for path in self.side_artifact_paths:
+            path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1805,6 +1878,22 @@ def _drive_rounds(  # noqa: PLR0913
     last_reviewer_text: str | None = None
     last_coder_text: str | None = None
 
+    # One artifact-freshness owner per role, constructed here where the
+    # pair-scoped paths are known. Every send attempt (initial, coder
+    # protocol retry, in-place respawn) resets through these so a dead
+    # process's side artifact can never be paired with a later attempt's
+    # response. Reviewer side artifact: the authored review report. Coder
+    # side artifact: the completion record (which also gates validation
+    # freshness — see _RoleAttemptWorkspace).
+    reviewer_workspace = _RoleAttemptWorkspace(
+        response_file=reviewer_response,
+        side_artifact_paths=(reviewer_report_path,),
+    )
+    coder_workspace = _RoleAttemptWorkspace(
+        response_file=coder_response,
+        side_artifact_paths=(coder_completion_path,),
+    )
+
     for round_index in range(1, max_rounds + 1):
         if before_reviewer_round is not None:
             before_reviewer_round(round_index)
@@ -1883,12 +1972,11 @@ def _drive_rounds(  # noqa: PLR0913
             "prompt_chars": len(reviewer_prompt_text),
             "artifact_refs": _event_artifact_refs(reviewer_started.artifact_refs()),
         })
-        reviewer_report_path.unlink(missing_ok=True)
         reviewer = _send_role_round(
-            session=reviewer_session_owner.ensure_live(),
+            owner=reviewer_session_owner,
+            workspace=reviewer_workspace,
             role=Role.REVIEWER,
             turn_started=reviewer_started,
-            response_file=reviewer_response,
             recording_path=reviewer_recording,
             prompt=reviewer_prompt_text,
             timeout_seconds=reviewer_timeout_seconds,
@@ -2042,16 +2130,11 @@ def _drive_rounds(  # noqa: PLR0913
                 decision_result=decision_result,
             ),
         )
-        # Clear the previous turn's completion artifact so a stale file
-        # from round N-1 cannot satisfy round N's protocol guardrail —
-        # the guardrail must observe an artifact freshly written during
-        # *this* round's coding-done invocation.
-        _clear_coder_completion(coder_completion_path)
         coder = _send_role_round(
-            session=coder_session_owner.ensure_live(),
+            owner=coder_session_owner,
+            workspace=coder_workspace,
             role=Role.CODER,
             turn_started=coder_started,
-            response_file=coder_response,
             recording_path=coder_recording,
             prompt=coder_prompt_text,
             timeout_seconds=coder_timeout_seconds,
@@ -2080,6 +2163,7 @@ def _drive_rounds(  # noqa: PLR0913
         coder, protocol_outcome = _enforce_coder_protocol(
             session_output=session_output,
             coder_session_owner=coder_session_owner,
+            coder_workspace=coder_workspace,
             coder=coder,
             reviewer=reviewer,
             coder_provider=coder_provider,
@@ -2145,6 +2229,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     *,
     session_output: SessionOutput,
     coder_session_owner: _RoleSessionOwner,
+    coder_workspace: _RoleAttemptWorkspace,
     coder: ReviewExchangeResponse,
     reviewer: ReviewExchangeResponse,
     coder_provider: AgentProvider,
@@ -2242,14 +2327,11 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             "protocol_retry": True,
             "artifact_refs": _event_artifact_refs(retry_started.artifact_refs()),
         })
-        # Same freshness invariant as the initial turn: drop any file
-        # left over from the previous attempt before the retry runs.
-        _clear_coder_completion(coder_completion_path)
         retry_response = _send_role_round(
-            session=coder_session_owner.ensure_live(),
+            owner=coder_session_owner,
+            workspace=coder_workspace,
             role=Role.CODER,
             turn_started=retry_started,
-            response_file=coder_response,
             recording_path=coder_recording,
             prompt=retry_prompt,
             timeout_seconds=coder_timeout_seconds,
@@ -2298,10 +2380,10 @@ def _enforce_coder_protocol(  # noqa: PLR0913
 
 def _send_role_round(  # noqa: PLR0913
     *,
-    session: PersistentSession,
+    owner: _RoleSessionOwner,
+    workspace: _RoleAttemptWorkspace,
     role: Role,
     turn_started: ReviewerTurnStarted | CoderTurnStarted,
-    response_file: Path,
     recording_path: Path,
     prompt: str,
     timeout_seconds: float,
@@ -2314,19 +2396,33 @@ def _send_role_round(  # noqa: PLR0913
     session_name: str,
     emit: Callable[[EventName, dict[str, Any]], None],
     mirror: _RoleSliceMirror,
+    _respawn_retries: int = 0,
 ) -> ReviewExchangeResponse | None:
     """Send one role's round prompt and convert the response to a domain object.
 
     Returns ``None`` if the role timed out or died — the caller emits
     REVIEW_EXCHANGE_ROLE_TIMEOUT and bails out of the exchange.
 
+    If the round fails because the role *process* is dead/unusable (e.g. a
+    one-shot reviewer that exited cleanly between rounds), the role is
+    respawned in place via ``owner`` and the same turn is retried — up to
+    ``_MAX_ROLE_RESPAWN_RETRIES`` times — before giving up. This keeps the
+    exchange on the same worktree and advances to the next required turn
+    instead of tearing the pair down and restarting at round 1.
+
+    Every attempt — initial, coder protocol retry, and respawn retry — first
+    resets ``workspace`` so a dead process's side artifact (reviewer report or
+    coder completion) can never be paired with a later attempt's response.
+
     Persists the per-attempt parsed result as a session artifact under
     ``<exchange_dir>/turns/round-<n>-<role>-attempt-<m>.result.json``
     for replay and diagnostics.
     """
+    session = owner.ensure_live()
+    workspace.prepare_for_attempt()
     role_value = role.value
     attempt_index = turn_started.scope.attempt_index.value
-    prompt_inbox_path = _write_role_prompt_inbox(response_file, prompt)
+    prompt_inbox_path = _write_role_prompt_inbox(workspace.response_file, prompt)
     pty_notice = _build_prompt_inbox_notice(
         role=role,
         round_index=cycle_index,
@@ -2337,7 +2433,7 @@ def _send_role_round(  # noqa: PLR0913
         parsed = send_round(
             session,
             prompt=pty_notice,
-            response_file=response_file,
+            response_file=workspace.response_file,
             timeout_seconds=timeout_seconds,
             # Tag heartbeat/diagnostic logs with role + cycle so an
             # interleaved coder + reviewer log is decodable without
@@ -2358,10 +2454,55 @@ def _send_role_round(  # noqa: PLR0913
             attempt_index,
             failure_reason,
             session.proc.pid,
-            response_file,
+            workspace.response_file,
             recording_path,
             exc,
         )
+        # The role process is dead/unusable (e.g. a one-shot reviewer that
+        # exited cleanly between rounds). Respawn it in place — same worktree,
+        # recording, response/completion/validation paths — and retry the same
+        # turn rather than tearing the whole pair down and restarting round 1.
+        if (
+            is_process_unusable_failure(failure_reason)
+            and _respawn_retries < _MAX_ROLE_RESPAWN_RETRIES
+        ):
+            logger.warning(
+                "[REVIEW_EXCHANGE] %s round %d had a dead/unusable process "
+                "(reason=%s pid=%d); respawning in place and retrying the same "
+                "turn (retry %d/%d) issue=%s session_name=%s",
+                role_value,
+                cycle_index,
+                failure_reason,
+                session.proc.pid,
+                _respawn_retries + 1,
+                _MAX_ROLE_RESPAWN_RETRIES,
+                issue_number,
+                session_name,
+                extra=log_context(
+                    issue_key=f"issue-{issue_number}",
+                    session_id=session_name,
+                ),
+            )
+            owner.respawn()
+            return _send_role_round(
+                owner=owner,
+                workspace=workspace,
+                role=role,
+                turn_started=turn_started,
+                recording_path=recording_path,
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+                session_output=session_output,
+                run_dir=run_dir,
+                exchange_dir=exchange_dir,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                cycle_index=cycle_index,
+                session_name=session_name,
+                emit=emit,
+                mirror=mirror,
+                _respawn_retries=_respawn_retries + 1,
+            )
         # The typed result artifact must exist on the failure path
         # too — this is the case operators most need to inspect, and
         # an asymmetric "result.json only on the happy path" contract
@@ -2441,7 +2582,7 @@ def _send_role_round(  # noqa: PLR0913
         response.response_type,
         exit_code is None,
         exit_code,
-        response_file,
+        workspace.response_file,
     )
     _record_chapter(
         session_output=session_output,
@@ -3013,20 +3154,6 @@ def _validation_record_error(
             f"{current_head_sha[:12]}"
         )
     return None
-
-
-def _clear_coder_completion(completion_path: Path) -> None:
-    """Unlink any prior coder completion artifact so the protocol guardrail
-    observes only the file freshly written during the current turn.
-
-    Without this, ``_validate_coder_completion`` sees a stale artifact
-    from an earlier round and accepts a coder that skipped coding-done
-    on this turn entirely. The active runner avoids this because each
-    round spawns a fresh coder process whose env points at a per-round
-    path; the persistent runner shares the path across rounds — and
-    across exchanges, in B2 — so we have to invalidate explicitly.
-    """
-    completion_path.unlink(missing_ok=True)
 
 
 def _validate_coder_completion(

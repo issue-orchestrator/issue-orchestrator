@@ -177,3 +177,30 @@ A: Watch out for these:
 | `Depends-on: 123` | **Silently ignored** — bare numbers without `#` or `M` prefix don't match | `Depends-on: #123` |
 
 The brackets `[...]` are only used in the **title prefix** (e.g., `[M2-010] Fix bug`). In `Depends-on:` lines, always write the external ID bare: `Depends-on: M2-010`.
+
+**Q24: A failed/blocked issue offers Retry, Reset & retry, and Reset & retry from scratch — what's the difference?**
+A: All three re-queue the issue; they differ in how much state they tear down first (increasing blast radius).
+
+| Action | What it does | Use when |
+|---|---|---|
+| **Retry** | Clears the blocking label and re-queues. It does **not** delete the worktree or branch up front — but it does **not** preserve all work either: on relaunch the worktree is refreshed onto the base branch, which **discards uncommitted changes** and, if the rebase onto `main` fails, **hard-resets to `origin/<base>` (dropping local commits)**. Cleanly-rebasing committed work survives; uncommitted or conflicting work does not. | A transient failure (crash, flaky tooling) where the committed work on the branch is fine to continue from. |
+| **Reset & retry** | Tears down local **and** remote state before re-queueing: **deletes the worktree**, **deletes the issue's local and remote branches**, **removes all orchestrator-owned labels**, and **clears the saved label persistence and session/completed-today history**. It does **not** supersede open PRs or clear the timeline — so an open PR is left behind with its branch deleted (orphaned). | The attempt is a write-off and you want the branch rebuilt from base, with no open PR that needs closing cleanly. |
+| **Reset & retry from scratch** | Everything *Reset & retry* does, **plus** it **supersedes (comments + closes) any open PRs** and **clears the timeline / pending-review state**, and it runs strictly (any failed teardown step aborts loudly instead of being best-effort). The issue returns to a pristine "never attempted" state; a future attempt starts from a fresh branch off the base. | You want the prior attempt fully invalidated — including its open PR closed — and a clean-room redo. |
+
+Rule of thumb: **Retry** resumes on the same branch (but uncommitted/conflicting local changes are dropped on relaunch); **Reset & retry** discards the local attempt and rebuilds the branch (note it orphans an open PR by deleting its branch); **Reset & retry from scratch** also closes open PRs and wipes history/timeline. Note that **both reset variants delete the worktree and the remote branch** — the difference is that "from scratch" additionally supersedes PRs and clears the timeline, and fails loudly rather than best-effort.
+
+**Q25: In what order does the orchestrator pick up issues?**
+A: There are two levels.
+
+**By work type** (highest priority first): Reviews → Retrospective reviews → Reworks → Validation retries → Triage → **New issues**. Completed work is reviewed/reworked before new coding starts, so a new issue only launches with whatever capacity is left after the higher tiers.
+
+**Among ready new issues**, by this composite key (the first difference decides):
+
+1. **Milestone** — `milestones.sort` (default `milestone_number`: ascending by the number in the milestone name, so `M5` before `M6`; an issue with no milestone sorts last). An explicit `milestones.order` list overrides this.
+2. **Priority tier** — taken from an optional `[P<n>-nnn]` **title prefix** (`P0` is highest … `P9` lowest). Issues without that prefix all get `scheduling.default_priority_tier` (default `1`).
+3. **Sequence** — the `nnn` from that title prefix.
+4. **Issue number** — ascending, as the final tie-breaker.
+
+An issue is only *eligible* in the first place once its `Depends-on:` dependencies are closed (see Q22).
+
+**Gotcha:** the `priority:high` / `priority:medium` / `priority:low` **labels do not affect this order** — they exist for human/triage organization. Scheduling priority comes from the milestone and the `[P<n>-nnn]` title prefix, not the labels. So two issues in the same milestone with no `[P…]` prefix run in **issue-number order**, regardless of their priority labels — a newer issue (higher number) runs later even if it's labeled `priority:high`.
