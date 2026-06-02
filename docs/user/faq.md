@@ -177,3 +177,14 @@ A: Watch out for these:
 | `Depends-on: 123` | **Silently ignored** — bare numbers without `#` or `M` prefix don't match | `Depends-on: #123` |
 
 The brackets `[...]` are only used in the **title prefix** (e.g., `[M2-010] Fix bug`). In `Depends-on:` lines, always write the external ID bare: `Depends-on: M2-010`.
+
+**Q24: A failed/blocked issue offers Retry, Reset & retry, and Reset & retry from scratch — what's the difference?**
+A: They are three recovery actions with increasing blast radius. Pick the lightest one that fits: the wrong one either discards good work or carries a bad state forward.
+
+| Action | What it does | Use when |
+|---|---|---|
+| **Retry** | Removes the blocking label and re-queues the issue. **Keeps** the worktree, branch, commits, and uncommitted work — the agent resumes from the current state. | The failure was transient (a crash, flaky tooling, a recoverable hiccup) and the existing work is fine to continue from. |
+| **Reset & retry** | Cleans **local** state — the worktree is reset onto the base branch (discard uncommitted changes, rebase onto `main`, hard-reset to `origin/<base>` if the rebase fails) — then re-queues. Does **not** touch open PRs, remote branches, or saved history. | The local worktree is in a bad state (merge conflicts, leftover junk, a stale branch) but the remote/PR state is fine. |
+| **Reset & retry from scratch** | The clean-room option: deletes the local worktree, **supersedes any open PRs**, **deletes the issue's remote branches**, **removes all orchestrator labels**, and **clears the issue's saved labels, session history, and timeline**. The issue returns to a pristine "never attempted" state and the agent redoes it from zero on a fresh branch. | You want to throw the prior attempt away entirely — its approach was wrong, or its PR/branch should be invalidated. |
+
+Rule of thumb: **preserve work → Retry; bad local tree → Reset & retry; invalidate PRs/branches and start clean → from scratch.** Avoid "from scratch" when the branch holds work you want to keep (it will be discarded), and avoid "Reset & retry" if you need to preserve local commits (its hard-reset step can discard them).
