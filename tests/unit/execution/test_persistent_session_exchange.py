@@ -253,6 +253,11 @@ def _patch_persistent_runner(
         head = response_script[role].pop(0)
         if isinstance(head, Exception):
             raise head
+        # A dict entry may carry ``_raise`` to model a process that writes its
+        # side artifact(s) for this turn and *then* exits before producing the
+        # response JSON — the stale-side-artifact case the respawn retry must
+        # not consume. Side artifacts below are written first, then we raise.
+        raise_after = head.pop("_raise", None)
         authored_report_text = head.pop("_authored_report_text", None)
         if role == "reviewer" and authored_report_text is not None:
             report_path = session.review_report_path
@@ -301,6 +306,8 @@ def _patch_persistent_runner(
                 }),
                 encoding="utf-8",
             )
+        if raise_after is not None:
+            raise raise_after
         return head
 
     monkeypatch.setattr(pse, "open_persistent_session", _open)
@@ -1385,6 +1392,152 @@ class TestTurnArtifactsPersisted:
             "ok",
         ]
         assert reviewer_feedback[-1].data["round_index"] == 2
+
+    def test_respawn_does_not_consume_stale_coder_completion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A coder completion written by a dead pre-retry process must not
+        satisfy the *respawned* coder turn's protocol guardrail.
+
+        End-to-end regression for the #6429 review: combines a real respawn
+        with a stale side artifact. Attempt A writes ``completion-coder.json``
+        and then dies before the response JSON; the respawned coder returns a
+        response but never runs coding-done. The workspace reset on the respawn
+        attempt clears attempt A's completion, so the turn fails the protocol
+        guardrail instead of advancing on the stale artifact. (Without the
+        reset, the stale completion would satisfy the guardrail and the
+        exchange would advance.)
+        """
+        from issue_orchestrator.domain.review_exchange_failures import (
+            RoundFailureReason,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {"response_type": "changes_requested", "response_text": "Fix", "getting_closer": True},
+                ],
+                "coder": [
+                    # Attempt A writes completion-coder.json (script True) then
+                    # exits before the response JSON.
+                    {"_raise": PersistentRoundError(
+                        "Agent exited unexpectedly (code=0) before responding",
+                        failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
+                    )},
+                    # Respawn + the two protocol retries each respond without
+                    # running coding-done (no completion written).
+                    {"response_type": "ok", "response_text": "no coding-done"},
+                    {"response_type": "ok", "response_text": "no coding-done"},
+                    {"response_type": "ok", "response_text": "no coding-done"},
+                ],
+            },
+            coder_completion_script=[True, False, False, False],
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.status == "error"
+        assert outcome.reason == "coder_protocol_error"
+        # The coder process was respawned in place (opened at spawn + respawn).
+        assert state["opened"].count("coder") >= 2
+
+    def test_respawn_does_not_pair_stale_reviewer_report(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A review report authored by a dead pre-retry process must not be
+        paired with the *respawned* reviewer's decision.
+
+        End-to-end regression for the #6429 review. Attempt A writes a stale
+        ``review-report.md`` then dies before the response JSON; the respawned
+        reviewer approves but writes no report. The workspace reset clears the
+        stale report, so the persisted turn report is synthesized from the
+        respawned decision rather than carrying the dead process's content.
+        """
+        from issue_orchestrator.domain.review_exchange_failures import (
+            RoundFailureReason,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        stale_marker = "STALE-REPORT-FROM-DEAD-REVIEWER-PROCESS"
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    # Attempt A authors a stale report, then exits before the
+                    # response JSON.
+                    {
+                        "_authored_report_text": f"# {stale_marker}\n",
+                        "_raise": PersistentRoundError(
+                            "Agent exited unexpectedly (code=0) before responding",
+                            failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
+                        ),
+                    },
+                    # Respawn approves but writes no report.
+                    {"response_type": "ok", "response_text": "Looks good", "getting_closer": True},
+                ],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.status == "ok"
+        assert state["opened"].count("reviewer") >= 2
+        assert outcome.exchange_dir is not None
+        report_text = (
+            outcome.exchange_dir / "turns"
+            / "round-1-reviewer-attempt-1.review-report.md"
+        ).read_text(encoding="utf-8")
+        assert stale_marker not in report_text, (
+            "the dead reviewer process's stale report must not be paired with "
+            "the respawned reviewer's decision"
+        )
 
     def test_role_timeout_does_not_respawn_the_process(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
