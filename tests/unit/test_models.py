@@ -157,6 +157,76 @@ class TestAgentConfig:
         assert config.model == "sonnet"
         assert config.timeout_minutes == 45
 
+    def test_resolve_launch_provider_prefers_explicit_provider(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(
+            prompt_path=prompt_file, provider="codex", ai_system="claude-code",
+        )
+        assert config.resolve_launch_provider() == "codex"
+
+    def test_resolve_launch_provider_falls_back_to_ai_system(self, tmp_path):
+        """An ai_system-only agent must launch its REAL agent, not the legacy
+        claude template — classification and launch must agree (the
+        real-codex exchange smoke test caught an ai_system="codex" reviewer
+        silently booting print-mode claude and hanging the round)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(prompt_path=prompt_file, ai_system="codex")
+        assert config.resolve_launch_provider() == "codex"
+
+    def test_resolve_launch_provider_honors_custom_command_override(self, tmp_path):
+        """A custom command template is an intentional override (exchange
+        stub agents set one alongside a real ai_system) — it must keep
+        template-based launching."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(
+            prompt_path=prompt_file, ai_system="codex", command="python -u stub.py",
+        )
+        assert config.resolve_launch_provider() is None
+
+    def test_resolve_launch_provider_none_when_nothing_configured(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(prompt_path=prompt_file)
+        assert config.resolve_launch_provider() is None
+
+    def test_provider_command_omits_claude_default_model_for_codex(self, tmp_path):
+        """The untouched model default ("sonnet") is claude vocabulary; it
+        must not be forwarded to codex (``--model sonnet`` gets a 400 from
+        the codex backend and the TUI idles for the whole round timeout —
+        caught live by the real-codex exchange smoke test)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(prompt_path=prompt_file, provider="codex")
+        command = config.get_command(
+            issue_number=1, issue_title="t", worktree=tmp_path,
+        )
+        assert "--model" not in command
+
+    def test_provider_command_forwards_explicit_model_for_codex(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(
+            prompt_path=prompt_file, provider="codex", model="gpt-5-codex",
+        )
+        command = config.get_command(
+            issue_number=1, issue_title="t", worktree=tmp_path,
+        )
+        assert "--model gpt-5-codex" in command
+
+    def test_provider_command_keeps_default_model_for_claude(self, tmp_path):
+        """claude-code owns the "sonnet" default — forwarding it is correct
+        and preserves existing behavior."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(prompt_path=prompt_file, provider="claude-code")
+        command = config.get_command(
+            issue_number=1, issue_title="t", worktree=tmp_path,
+        )
+        assert "--model sonnet" in command
+
     def test_get_command_template_includes_system_prompt_variable(self, tmp_path):
         """Test custom command path includes {system_prompt} with completion command docs."""
         prompt_file = tmp_path / "prompt.md"

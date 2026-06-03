@@ -112,9 +112,9 @@ from .persistent_round_runner import (
     close_persistent_session,
     open_persistent_session,
     persistent_round_failure_reason,
-    recording_event_count,
     send_round,
 )
+from .recording_contract import recording_event_count
 
 logger = logging.getLogger(__name__)
 
@@ -1297,7 +1297,7 @@ def _open_role_session(  # noqa: PLR0913
     bootstrap_agent = AgentConfig(
         prompt_path=agent.prompt_path,
         prompt_relative=agent.prompt_relative,
-        provider=agent.provider,
+        provider=agent.resolve_launch_provider(),
         model=agent.model,
         timeout_minutes=agent.timeout_minutes,
         provider_args=dict(agent.provider_args),

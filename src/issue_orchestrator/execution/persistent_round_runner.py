@@ -4,9 +4,9 @@ Replaces the single-shot ``interactive_round`` flow for review-exchange
 agents. One agent process is attached to a master/slave PTY pair at
 exchange start and stays alive across all rounds. Each round:
 
-  - ``send_round`` deletes any stale response file, writes the prompt
-    plus a newline to the master fd, polls until the response file
-    appears (or timeout), and returns the parsed response.
+  - ``send_round`` deletes any stale response file, writes the prompt to
+    the master fd, then submits it with a standalone ``\r`` (Enter) once
+    the echo settles (see ``send_round``), and polls for the response file.
   - PTY output is captured continuously into a single recording — the
     session viewer plays one ``terminal-recording.jsonl`` per role
     spanning the whole exchange, instead of N per-phase files.
@@ -19,8 +19,6 @@ cleanly on stdin EOF.
 
 from __future__ import annotations
 
-import base64
-import binascii
 import fcntl
 import json
 import logging
@@ -52,6 +50,9 @@ _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
 _DEFAULT_RESPONSE_DRAIN_SECONDS = 0.1
 _DEFAULT_TERMINATE_GRACE_SECONDS = 5.0
 _DEFAULT_PTY_WRITE_TIMEOUT_SECONDS = 30.0
+# Echo-settle window between writing the prompt text and the standalone
+# Enter ("\r") that submits it — see the two-write contract in send_round.
+_ENTER_SETTLE_QUIET_SECONDS = 0.3
 
 # Heartbeat cadence for the ``send_round`` poll loop. Without this, a
 # wedged agent shows up as 17 minutes of total log silence (#6160 e2e
@@ -227,23 +228,7 @@ def _write_full(
         try:
             n = os.write(fd, payload[written:])
         except BlockingIOError:
-            _drain_during_write_backoff(drain_output)
-            if current - last_heartbeat >= heartbeat_seconds:
-                logger.info(
-                    "[send_round] waiting for PTY write role=%s pid=%s fd=%d "
-                    "elapsed=%.1fs deadline_in=%.1fs written=%d remaining=%d",
-                    label,
-                    pid if pid is not None else "n/a",
-                    fd,
-                    current - started_at,
-                    deadline - current,
-                    written,
-                    len(payload) - written,
-                )
-                last_heartbeat = current
-            sleep(backoff)
-            backoff = min(backoff * 2, 0.1)
-            continue
+            n = 0  # kernel buffer momentarily full — same backoff as a 0-byte write
         except OSError as exc:
             raise PersistentRoundError(
                 f"Could not write prompt to PTY fd={fd} role={label}: {exc}",
@@ -331,6 +316,63 @@ def _write_prompt_with_timeout_diagnostics(
         raise
 
 
+def _submit_prompt_with_enter(
+    session: PersistentSession,
+    payload: bytes,
+    *,
+    response_file: Path,
+    write_deadline: float,
+    now: Callable[[], float],
+    sleep: Callable[[float], None],
+    label: str,
+    timeout_seconds: float,
+    write_timeout_seconds: float,
+) -> tuple[int, dict[str, Any] | None]:
+    """Write the prompt, let the echo settle, then submit with a standalone Enter.
+
+    Two-write contract (TestPromptSubmissionTerminator; do NOT regress to a
+    single batched write or to ``\\n``): ``\\n`` never submits to a raw-mode
+    TUI (the tixmeup #277/#290 hang), and codex treats a ``\\r`` batched with
+    the prompt text as a literal newline in its input box — only an Enter
+    arriving as its own write after the echo settles submits. claude accepts
+    either form.
+
+    Returns ``(bytes_written, recovered_response)``. ``recovered_response``
+    is non-None when the agent answered from the prompt write alone and
+    exited before the Enter landed (one-shot agents: the dead PTY raises on
+    the Enter write). The response file is authoritative — the same tolerance
+    as the poll loop's exited-after-answering path.
+    """
+    written = _write_prompt_with_timeout_diagnostics(
+        session, payload,
+        response_file=response_file, write_deadline=write_deadline,
+        now=now, sleep=sleep, role_label=label,
+        timeout_seconds=timeout_seconds,
+        write_timeout_seconds=write_timeout_seconds,
+    )
+    _drain_pty_output_until_quiet(
+        session, quiet_seconds=_ENTER_SETTLE_QUIET_SECONDS, now=now, sleep=sleep,
+    )
+    try:
+        written += _write_prompt_with_timeout_diagnostics(
+            session, b"\r",
+            response_file=response_file, write_deadline=write_deadline,
+            now=now, sleep=sleep, role_label=label,
+            timeout_seconds=timeout_seconds,
+            write_timeout_seconds=write_timeout_seconds,
+        )
+    except PersistentRoundError:
+        recovered = _try_read_response(response_file)
+        if recovered is None:
+            raise
+        logger.info(
+            "[send_round] enter write failed but agent already answered "
+            "role=%s pid=%d", label, session.proc.pid,
+        )
+        return written, recovered
+    return written, None
+
+
 def send_round(
     session: PersistentSession,
     *,
@@ -376,7 +418,7 @@ def send_round(
     if write_timeout_seconds <= 0:
         raise ValueError("write_timeout_seconds must be positive")
     label = role_label or f"pid={session.proc.pid}"
-    payload = (prompt + "\n").encode("utf-8")
+    payload = prompt.encode("utf-8")
     started_at = now()
     logger.info(
         "[send_round] start role=%s pid=%d response_file=%s prompt_bytes=%d "
@@ -387,24 +429,55 @@ def send_round(
 
     response_file.unlink(missing_ok=True)
     write_deadline = started_at + min(timeout_seconds, write_timeout_seconds)
-    written = _write_prompt_with_timeout_diagnostics(
-        session,
-        payload,
-        response_file=response_file,
-        write_deadline=write_deadline,
-        now=now,
-        sleep=sleep,
-        role_label=label,
+    written, recovered = _submit_prompt_with_enter(
+        session, payload,
+        response_file=response_file, write_deadline=write_deadline,
+        now=now, sleep=sleep, label=label,
         timeout_seconds=timeout_seconds,
         write_timeout_seconds=write_timeout_seconds,
     )
+    if recovered is not None:
+        return recovered
     write_elapsed = now() - started_at
     logger.info(
         "[send_round] prompt written role=%s bytes=%d in %.3fs",
         label, written, write_elapsed,
     )
+    return _wait_for_round_response(
+        session,
+        response_file=response_file,
+        started_at=started_at,
+        deadline=started_at + timeout_seconds,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        response_drain_seconds=response_drain_seconds,
+        now=now,
+        sleep=sleep,
+        label=label,
+    )
 
-    deadline = started_at + timeout_seconds
+
+def _wait_for_round_response(
+    session: PersistentSession,
+    *,
+    response_file: Path,
+    started_at: float,
+    deadline: float,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+    response_drain_seconds: float,
+    now: Callable[[], float],
+    sleep: Callable[[float], None],
+    label: str,
+) -> dict[str, Any]:
+    """Poll until the response file parses as JSON, the agent exits, or the
+    deadline expires.
+
+    An agent that exits is given one final response-file read — one-shot
+    agents legitimately answer and then terminate. Exit without a valid
+    response distinguishes "invalid JSON left behind" from "never answered"
+    via the round failure reason, which drives the respawn logic upstream.
+    """
     last_heartbeat = now()
     poll_iter = 0
     bytes_drained_total = 0
@@ -576,133 +649,6 @@ def close_persistent_session(
         if session.log_writer is not None:
             session.log_writer.close()
     return session.proc.returncode
-
-
-class CorruptRecordingError(RuntimeError):
-    """Raised when a recording file contains lines that aren't valid events.
-
-    The chapter sidecar's recording offset is consumed by the session
-    viewer to scrub into the raw replay stream, so a wrong-but-plausible
-    count is worse than a loud failure. If the recording has been
-    corrupted (truncated mid-write, accidentally overwritten, mixed with
-    non-recording content), surface that loudly rather than silently
-    producing chapter offsets that point at noise.
-    """
-
-
-def recording_event_count(
-    recording_path: Path,
-    *,
-    require_recording: bool = True,
-) -> int:
-    """Return the current number of events in a JSONL recording.
-
-    Used by chapter-sidecar writers to capture the current position in
-    the role's recording stream at boundary moments. Because this number
-    is recorded into chapters.json and the session viewer scrubs to it,
-    a wrong-but-plausible offset is worse than a loud failure.
-
-    Each non-blank line is parsed as a JSON object with at minimum an
-    ``event_type`` string field — anything else raises
-    ``CorruptRecordingError``. The contract this enforces matches what
-    ``TerminalRecordingWriter`` produces: every event carries
-    ``event_type`` plus optional payload fields.
-
-    By default, raises ``FileNotFoundError`` if the recording is absent —
-    in the persistent-session path the recording is created when the PTY
-    writer is constructed at session open, so a missing file means wrong
-    path or failed capture, not "no events yet." Bootstrap and test paths
-    that genuinely operate before any recording exists must opt out by
-    passing ``require_recording=False``.
-    """
-    if not recording_path.exists():
-        if require_recording:
-            raise FileNotFoundError(
-                f"Recording not found at {recording_path}; cannot compute event count"
-            )
-        return 0
-    count = 0
-    with recording_path.open("r", encoding="utf-8") as handle:
-        for lineno, raw in enumerate(handle, start=1):
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError as exc:
-                raise CorruptRecordingError(
-                    f"Malformed JSON at {recording_path}:{lineno}: {exc.msg}"
-                ) from exc
-            _validate_recording_event_shape(event, recording_path, lineno)
-            count += 1
-    return count
-
-
-def _validate_recording_event_shape(
-    event: object, recording_path: Path, lineno: int,
-) -> None:
-    """Enforce the TerminalRecordingEvent contract on one parsed line.
-
-    The chapter offset that ``recording_event_count`` produces is consumed
-    by the session viewer's replay (``static/js/dashboard/session_replay.js``)
-    which only applies ``resize`` events with integer rows/cols and
-    ``output`` events with ``data_b64``. Anything outside that shape would
-    advance the chapter offset past events the viewer cannot faithfully
-    replay, so reject it loudly here.
-    """
-    where = f"{recording_path}:{lineno}"
-    if not isinstance(event, dict):
-        raise CorruptRecordingError(
-            f"Recording event at {where} is not a JSON object"
-        )
-    _require_int_field(event, "schema_version", where)
-    _require_int_field(event, "offset_ms", where)
-    event_type = event.get("event_type")
-    if not isinstance(event_type, str) or not event_type:
-        raise CorruptRecordingError(
-            f"Recording event at {where} missing event_type"
-        )
-    if event_type == "output":
-        data_b64 = event.get("data_b64")
-        if not isinstance(data_b64, str) or not data_b64:
-            raise CorruptRecordingError(
-                f"output event at {where} missing usable data_b64"
-            )
-        # The browser-side replay decoder calls atob() on this value
-        # (static/js/dashboard/session_replay.js); a string that's
-        # non-empty but not actually base64 would crash the player at
-        # scrub time. Validate decodability here so chapter offsets
-        # never point at output events the viewer can't render.
-        try:
-            base64.b64decode(data_b64, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise CorruptRecordingError(
-                f"output event at {where} has data_b64 that is not valid base64: {exc}"
-            ) from exc
-    elif event_type == "resize":
-        _require_int_field(event, "rows", where, error_label="resize event")
-        _require_int_field(event, "cols", where, error_label="resize event")
-    else:
-        raise CorruptRecordingError(
-            f"Recording event at {where} has unsupported event_type={event_type!r}"
-        )
-
-
-def _require_int_field(
-    event: dict[str, Any], key: str, where: str, *, error_label: str = "Recording event",
-) -> int:
-    """Read an integer field or raise CorruptRecordingError with a useful message.
-
-    Centralizes the get + isinstance + raise pattern so individual call
-    sites read like declarations of what the schema requires rather than
-    untyped dict pokes followed by isinstance narrowing.
-    """
-    value = event.get(key)
-    if not isinstance(value, int):
-        raise CorruptRecordingError(
-            f"{error_label} at {where} missing integer {key}"
-        )
-    return value
 
 
 def _drain_pty_output(session: PersistentSession) -> int:

@@ -60,6 +60,30 @@ def _interactive_review_agent_command(*, include_initial_prompt_arg: bool = Fals
     return " ".join(parts)
 
 
+def _codex_ready() -> bool:
+    """Real interactive codex available: CLI on PATH and authenticated.
+
+    ``codex login status`` exits 0 when logged in; any failure (missing
+    binary, not logged in, network-down auth check) skips the live test
+    rather than failing it on machines without codex.
+    """
+    import shutil
+
+    if shutil.which("codex") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["codex", "login", "status"],
+            capture_output=True, text=True, timeout=15,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+_CODEX_READY = _codex_ready()
+
+
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(
         ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
@@ -109,7 +133,19 @@ def _make_review_exchange_runner(
     )
 
 
-def _make_config(tmp_path: Path, agent: AgentConfig) -> Config:
+def _make_config(
+    tmp_path: Path,
+    agent: AgentConfig,
+    *,
+    reviewer_agent: AgentConfig | None = None,
+) -> Config:
+    """Config with a stub coder and (by default) the same stub reviewer.
+
+    ``reviewer_agent`` swaps in a distinct reviewer ``AgentConfig`` — e.g. the
+    real-codex smoke test registers a reviewer with ``ai_system="codex"`` and
+    no ``command`` override so the exchange builds the production interactive
+    codex invocation itself.
+    """
     config = Config()
     config.repo_root = tmp_path
     config.repo = "local/test"
@@ -119,7 +155,7 @@ def _make_config(tmp_path: Path, agent: AgentConfig) -> Config:
     config.review_exchange_require_validation = False
     config.agents = {
         "agent:backend": agent,
-        "agent:reviewer": agent,
+        "agent:reviewer": reviewer_agent if reviewer_agent is not None else agent,
     }
     config.code_review_agent = "agent:reviewer"
     config.control_api_port = None
@@ -452,6 +488,105 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
     assert spawn_records
     assert all(record["initial_prompt_present"] for record in spawn_records)
     assert all(record["initial_prompt_contains_wait"] for record in spawn_records)
+
+
+@pytest.mark.skipif(not _CODEX_READY, reason="codex CLI not installed or not logged in")
+def test_real_interactive_codex_reviewer_round_trips_through_exchange(
+    tmp_path: Path,
+) -> None:
+    """LIVE smoke: REAL interactive codex as the reviewer through the REAL
+    exchange loop — the seams no stub covers:
+
+      - the production ``build_reviewer_prompt`` output driving real codex,
+      - the exchange-built provider command (no ``command`` override),
+      - codex booting in the exchange-created reviewer worktree with the
+        ``workspace-write`` sandbox writing the exchange's response path,
+      - real codex emitting protocol-valid verdict JSON the exchange parses.
+
+    The verdict itself is the LLM's judgment and is deliberately NOT pinned:
+    the assertions accept any protocol-valid outcome. What must hold is the
+    protocol round-trip — a parsed reviewer verdict, and no mechanics
+    failure (``reviewer_no_completion`` is exactly how the tixmeup
+    #277/#290 submit hang and any codex-side protocol breakage surface).
+    If codex requests changes, the stub coder responds and round 2 also
+    exercises ``send_round`` injection into real codex through the exchange.
+    """
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    # Coder = scripted stub (it only runs if real codex requests changes;
+    # the fixture's coder role responds ok by default, no env needed).
+    coder = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="claude-code",
+        timeout_minutes=1,
+        command=_interactive_review_agent_command(),
+    )
+    # Reviewer = REAL codex: ai_system only, no command override, so the
+    # exchange builds the production interactive invocation itself.
+    # Low reasoning effort keeps the live review fast; the model is left
+    # unset on purpose — the claude-vocabulary field default must NOT leak
+    # into the codex invocation (the second bug this smoke test caught).
+    reviewer = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="codex",
+        timeout_minutes=10,
+        provider_args={"reasoning_effort": "low"},
+    )
+    config = _make_config(tmp_path, coder, reviewer_agent=reviewer)
+
+    captured_events: list[TraceEvent] = []
+
+    class _Sink:
+        def publish(self, event):
+            captured_events.append(event)
+
+    session_output = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=session_output,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_make_review_exchange_runner(session_output),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    outcome = cre.run_review_exchange_loop(
+        worktree=coder_wt,
+        issue_number=4062,
+        issue_title="Real interactive codex reviewer smoke",
+        session_name="issue-4062",
+        agent_label="agent:backend",
+        on_started=lambda _run_dir: None,
+        events=_Sink(),
+        event_context=EventContext(),
+    )
+
+    round_completed = [
+        evt for evt in captured_events
+        if evt.event_type == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
+    ]
+    assert round_completed, (
+        f"real codex never completed a reviewer round-trip: {outcome}"
+    )
+    valid_verdicts = {"ok", "changes_requested"}
+    for evt in round_completed:
+        assert evt.data["reviewer_response_type"] in valid_verdicts, (
+            "real codex produced a non-protocol verdict: "
+            f"{evt.data['reviewer_response_type']!r}"
+        )
+    # Mechanics must not fail; the LLM's verdict routing may end either way.
+    mechanics_failures = {
+        "reviewer_no_completion",
+        "coder_no_completion",
+        "coder_protocol_error",
+    }
+    assert outcome.reason not in mechanics_failures, (
+        f"exchange mechanics failed with real codex: {outcome}"
+    )
+    assert outcome.rounds >= 1
 
 
 def test_one_shot_reviewer_respawns_after_addressable_nits(

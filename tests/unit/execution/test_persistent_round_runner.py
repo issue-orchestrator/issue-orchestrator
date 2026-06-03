@@ -22,15 +22,14 @@ from typing import Callable
 import pytest
 
 from issue_orchestrator.execution.persistent_round_runner import (
-    CorruptRecordingError,
     PersistentRoundError,
     PersistentRoundTimeoutError,
     close_persistent_session,
     open_persistent_session,
     persistent_round_failure_reason,
-    recording_event_count,
     send_round,
 )
+from issue_orchestrator.execution.recording_contract import recording_event_count
 
 
 # ---------------------------------------------------------------------------
@@ -662,131 +661,161 @@ class TestWriteFullHandlesNonBlockingPtyWrites:
         assert "0 bytes accepted before timeout" in messages
 
 
+
 # ---------------------------------------------------------------------------
-# Recording event count
+# Prompt submission — the tixmeup #277/#290 root cause.
+#
+# A persistent agent TUI reads stdin in RAW mode, where Enter is the carriage
+# return (\r); a line feed (\n) is just a literal newline in the input box and
+# does NOT submit. Worse, codex's TUI treats even a \r BATCHED into the same
+# write as the prompt text as a literal newline — the prompt renders into the
+# box but is never submitted and the round hangs to its full timeout. The
+# contract send_round must honor: write the prompt text, let the echo settle,
+# then write a standalone \r (a real Enter keypress). claude accepts either
+# form; codex requires the separate Enter.
+#
+# The stub below faithfully models the raw-mode agent: it puts its stdin in
+# raw mode and only "submits" the accumulated line on \r, treating \n as a
+# literal. This reproduces the real-agent behavior deterministically (no
+# agent CLI needed), so the regression is guarded in plain unit runs; an
+# end-to-end check against real claude + codex lives in
+# tests/integration/test_live_agent_chain.py.
 # ---------------------------------------------------------------------------
 
+_RAW_MODE_SUBMIT_STUB = textwrap.dedent(r"""
+    import json, os, sys, tty
+    from pathlib import Path
 
-class TestRecordingEventCount:
-    def test_default_raises_for_missing_recording(self, tmp_path: Path) -> None:
-        """Per session-replay contract: a missing recording when one is
-        expected is a caller bug, not a zero-event signal that would
-        produce wrong-but-plausible chapter offsets."""
-        with pytest.raises(FileNotFoundError):
-            recording_event_count(tmp_path / "absent.jsonl")
+    resp = Path(os.environ["STUB_RESPONSE_FILE"])
+    tty.setraw(sys.stdin.fileno())  # Enter == \r; \n is a literal newline (no submit)
+    # Signal that raw mode is active and we are reading, so the test only sends
+    # the prompt afterwards — otherwise the PTY's default ICRNL would translate
+    # the \r to \n before raw mode took effect and the distinction would be lost.
+    Path(os.environ["STUB_READY_FILE"]).write_text("1", encoding="utf-8")
+    buf = b""
+    while True:
+        ch = os.read(0, 1)
+        if not ch:
+            break
+        if ch == b"\r":                 # Enter -> submit the accumulated line
+            line = buf.decode("utf-8", "replace").strip()
+            buf = b""
+            if not line:
+                continue
+            resp.parent.mkdir(parents=True, exist_ok=True)
+            resp.write_text(json.dumps({"submitted": line}), encoding="utf-8")
+        else:                            # \n and everything else -> literal input, NOT a submit
+            buf += ch
+""").strip()
 
-    def test_explicit_opt_out_returns_zero_for_missing(self, tmp_path: Path) -> None:
-        """Bootstrap and test paths that genuinely have no recording yet
-        opt out of the existence check."""
-        assert recording_event_count(
-            tmp_path / "absent.jsonl",
-            require_recording=False,
-        ) == 0
 
-    def test_counts_valid_recording_events_skipping_blank_lines(self, tmp_path: Path) -> None:
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"event_type":"resize","offset_ms":0,"rows":40,"cols":120}\n\n'
-            '{"schema_version":1,"event_type":"output","offset_ms":12,"data_b64":"aGk="}\n  \n'
-            '{"schema_version":1,"event_type":"output","offset_ms":99,"data_b64":"YnllCg=="}\n',
-            encoding="utf-8",
+def _write_raw_mode_stub(tmp_path: Path) -> Path:
+    path = tmp_path / "raw_mode_stub.py"
+    path.write_text(_RAW_MODE_SUBMIT_STUB, encoding="utf-8")
+    return path
+
+
+class TestPromptSubmissionTerminator:
+    def test_enter_is_a_separate_write_from_the_prompt(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Unit guard on the two-write submit contract: the prompt text is
+        written with NO terminator batched in, then the Enter ("\\r") arrives
+        as its own write. codex's TUI treats a \\r batched with the prompt as
+        a literal newline inside its input box (the prompt renders but never
+        submits — the tixmeup #277/#290 hang class), and \\n never submits to
+        any raw-mode TUI. Validated against real claude + codex in
+        tests/integration/test_live_agent_chain.py."""
+        from issue_orchestrator.execution import persistent_round_runner as prr
+
+        writes: list[bytes] = []
+
+        def fake_write_full(_fd: int, payload: bytes, **_kwargs: object) -> int:
+            writes.append(payload)
+            if len(writes) == 2:
+                raise PersistentRoundTimeoutError("stop after the Enter write")
+            return len(payload)
+
+        monkeypatch.setattr(prr, "_write_full", fake_write_full)
+
+        class _Proc:
+            pid = 1
+
+            def poll(self) -> None:
+                return None
+
+        session = prr.PersistentSession(proc=_Proc(), master_fd=99)  # type: ignore[arg-type]
+        clock = _FakeClock()
+        with pytest.raises(PersistentRoundTimeoutError):
+            send_round(
+                session, prompt="hello", response_file=tmp_path / "r.json",
+                timeout_seconds=5, now=clock.now, sleep=clock.make_sleeper(),
+            )
+        assert writes[0] == b"hello", "prompt write must carry no terminator"
+        assert writes[1] == b"\r", "submit must be a standalone Enter write"
+
+    def test_carriage_return_submits_to_a_raw_mode_agent(self, tmp_path: Path) -> None:
+        """End-to-end over a real PTY: a raw-mode agent (Enter == \\r) receives
+        and submits the prompt, so send_round gets its response."""
+        stub = _write_raw_mode_stub(tmp_path)
+        response_file = tmp_path / "response.json"
+        ready_file = tmp_path / "raw-ready"
+        session = open_persistent_session(
+            command=[sys.executable, "-u", str(stub)],
+            working_dir=tmp_path,
+            env=_stub_env(response_file, STUB_READY_FILE=str(ready_file)),
         )
-        assert recording_event_count(path) == 3
+        try:
+            _wait_until(ready_file.exists)  # raw mode active before we send
+            r = send_round(
+                session, prompt="round-1", response_file=response_file,
+                timeout_seconds=5, poll_interval_seconds=0.02,
+            )
+        finally:
+            close_persistent_session(session)
+        assert r == {"submitted": "round-1"}
 
-    def test_raises_on_malformed_json_line(self, tmp_path: Path) -> None:
-        """A corrupt recording must surface loudly — the offset feeds into
-        chapters.json and the session viewer scrubs to it. A wrong-but-
-        plausible count is worse than a loud failure."""
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"event_type":"output","offset_ms":0,"data_b64":"aGk="}\n'
-            "not-json\n",
-            encoding="utf-8",
+    def test_newline_terminator_would_not_submit_to_a_raw_mode_agent(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Proves the fix is load-bearing: regress the Enter keystroke to the
+        legacy \\n and the same raw-mode agent never submits -> send_round
+        times out (the original tixmeup #277/#290 hang)."""
+        from issue_orchestrator.execution import persistent_round_runner as prr
+
+        orig_write_full = prr._write_full  # noqa: SLF001
+
+        def lf_write_full(fd: int, payload: bytes, **kwargs: object) -> int:
+            if payload == b"\r":  # regress the Enter write to the buggy \n
+                payload = b"\n"
+            return orig_write_full(fd, payload, **kwargs)
+
+        monkeypatch.setattr(prr, "_write_full", lf_write_full)
+
+        stub = _write_raw_mode_stub(tmp_path)
+        response_file = tmp_path / "response.json"
+        ready_file = tmp_path / "raw-ready"
+        session = open_persistent_session(
+            command=[sys.executable, "-u", str(stub)],
+            working_dir=tmp_path,
+            env=_stub_env(response_file, STUB_READY_FILE=str(ready_file)),
         )
-        with pytest.raises(CorruptRecordingError, match="Malformed JSON"):
-            recording_event_count(path)
-
-    def test_raises_when_event_is_not_an_object(self, tmp_path: Path) -> None:
-        path = tmp_path / "rec.jsonl"
-        path.write_text('"just a string"\n', encoding="utf-8")
-        with pytest.raises(CorruptRecordingError, match="not a JSON object"):
-            recording_event_count(path)
-
-    def test_raises_when_event_type_missing(self, tmp_path: Path) -> None:
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"offset_ms":0,"data_b64":"aGk="}\n', encoding="utf-8",
-        )
-        with pytest.raises(CorruptRecordingError, match="missing event_type"):
-            recording_event_count(path)
-
-    def test_raises_when_schema_version_missing(self, tmp_path: Path) -> None:
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"event_type":"output","offset_ms":0,"data_b64":"aGk="}\n', encoding="utf-8",
-        )
-        with pytest.raises(CorruptRecordingError, match="schema_version"):
-            recording_event_count(path)
-
-    def test_raises_when_offset_ms_missing(self, tmp_path: Path) -> None:
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"event_type":"output","data_b64":"aGk="}\n',
-            encoding="utf-8",
-        )
-        with pytest.raises(CorruptRecordingError, match="offset_ms"):
-            recording_event_count(path)
-
-    def test_raises_when_output_event_lacks_data_b64(self, tmp_path: Path) -> None:
-        """Replay can't render an output event without payload bytes — that
-        line must not advance the chapter offset."""
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"event_type":"output","offset_ms":0}\n',
-            encoding="utf-8",
-        )
-        with pytest.raises(CorruptRecordingError, match="data_b64"):
-            recording_event_count(path)
-
-    def test_raises_when_resize_event_lacks_rows(self, tmp_path: Path) -> None:
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"event_type":"resize","offset_ms":0,"cols":120}\n',
-            encoding="utf-8",
-        )
-        with pytest.raises(CorruptRecordingError, match="missing integer rows"):
-            recording_event_count(path)
-
-    def test_raises_when_resize_event_lacks_cols(self, tmp_path: Path) -> None:
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"event_type":"resize","offset_ms":0,"rows":40}\n',
-            encoding="utf-8",
-        )
-        with pytest.raises(CorruptRecordingError, match="missing integer cols"):
-            recording_event_count(path)
-
-    def test_raises_when_output_data_b64_is_not_valid_base64(self, tmp_path: Path) -> None:
-        """An output event whose ``data_b64`` is non-empty but not actually
-        base64 will crash the browser replay decoder at scrub time, so it
-        must not advance the chapter offset."""
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"event_type":"output","offset_ms":0,'
-            '"data_b64":"@@@@"}\n',
-            encoding="utf-8",
-        )
-        with pytest.raises(CorruptRecordingError, match="not valid base64"):
-            recording_event_count(path)
-
-    def test_raises_on_unsupported_event_type(self, tmp_path: Path) -> None:
-        path = tmp_path / "rec.jsonl"
-        path.write_text(
-            '{"schema_version":1,"event_type":"junk","offset_ms":0}\n',
-            encoding="utf-8",
-        )
-        with pytest.raises(CorruptRecordingError, match="unsupported event_type"):
-            recording_event_count(path)
+        try:
+            _wait_until(ready_file.exists)
+            # A plain advancing fake clock (not a jump-to-expiry sleeper): the
+            # echo-settle drain between the two writes also consumes ``sleep``
+            # calls, and a jump there would expire the round before the \n
+            # Enter regression was ever written to the agent.
+            clock = _FakeClock()
+            with pytest.raises(PersistentRoundTimeoutError):
+                send_round(
+                    session, prompt="round-1", response_file=response_file,
+                    timeout_seconds=1.0, poll_interval_seconds=0.02,
+                    now=clock.now, sleep=clock.make_sleeper(),
+                )
+        finally:
+            close_persistent_session(session)
+        assert not response_file.exists()
 
 
 # ---------------------------------------------------------------------------
