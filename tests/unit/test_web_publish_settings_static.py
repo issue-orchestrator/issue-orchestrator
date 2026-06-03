@@ -375,6 +375,9 @@ class TestSettingsEndpoints:
                 data = response.json()
                 assert "error" in data
                 assert "errors" in data
+                assert data["errors"] == [
+                    {"name": "Test Check", "detail": "Validation failed"}
+                ]
 
                 # Verify config was reverted
                 assert mock_orch.config.max_concurrent_sessions == original_value
@@ -439,6 +442,9 @@ class TestSettingsEndpoints:
             assert response.status_code == 400
             data = response.json()
             assert "error" in data
+            assert data["errors"]
+            assert data["errors"][0]["name"] == "max_concurrent_sessions"
+            assert data["errors"][0]["detail"]
         finally:
             web._orchestrator = None
 
@@ -621,14 +627,25 @@ class TestSettingsEndpoints:
         # Shared helper must be loaded before the inline script.
         assert '<script src="/static/js/theme_resolution.js"></script>' in html
         assert '<script src="/static/js/embedded_nav.js"></script>' in html
+        assert '<script src="/static/js/settings_save_errors.js"></script>' in html
         assert html.index('/static/js/theme_resolution.js') < html.index(
             '/static/js/embedded_nav.js'
+        )
+        assert html.index('/static/js/embedded_nav.js') < html.index(
+            '/static/js/settings_save_errors.js'
+        )
+        assert html.index("el.setAttribute('role'") < html.index(
+            "el.textContent = message"
+        )
+        assert html.index("el.setAttribute('aria-live'") < html.index(
+            "el.textContent = message"
         )
         # Back link and Cancel must delegate to the helper.
         assert 'id="backToDashboardLink"' in html
         assert 'id="cancelSettingsBtn"' in html
         assert 'onclick="cancelSettings()"' in html
         assert "window.embeddedNav.buildHref('/', window.location.search)" in html
+        assert "window.settingsSaveErrors.formatSaveErrorMessage" in html
         assert "const SCHEMA_TABS = [" in html
         assert "const SCHEMA_FIELDS = {" in html
         assert "const SCHEMA_TABS = [&#34;" not in html
