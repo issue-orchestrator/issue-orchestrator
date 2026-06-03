@@ -634,6 +634,12 @@ class TestSettingsEndpoints:
         assert html.index('/static/js/embedded_nav.js') < html.index(
             '/static/js/settings_save_errors.js'
         )
+        assert html.index("el.setAttribute('role'") < html.index(
+            "el.textContent = message"
+        )
+        assert html.index("el.setAttribute('aria-live'") < html.index(
+            "el.textContent = message"
+        )
         # Back link and Cancel must delegate to the helper.
         assert 'id="backToDashboardLink"' in html
         assert 'id="cancelSettingsBtn"' in html

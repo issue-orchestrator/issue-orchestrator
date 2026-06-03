@@ -578,10 +578,10 @@
 
         function showStatus(message, type) {
             const el = document.getElementById('statusMessage');
-            el.textContent = message;
-            el.className = 'status-message visible ' + type;
             el.setAttribute('role', type === 'error' ? 'alert' : 'status');
             el.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+            el.textContent = message;
+            el.className = 'status-message visible ' + type;
 
             if (type === 'success') {
                 setTimeout(() => {
