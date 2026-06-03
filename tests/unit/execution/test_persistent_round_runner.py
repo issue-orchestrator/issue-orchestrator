@@ -790,6 +790,150 @@ class TestRecordingEventCount:
 
 
 # ---------------------------------------------------------------------------
+# Prompt submission terminator — the tixmeup #277/#290 root cause.
+#
+# A persistent Claude-style TUI reads stdin in RAW mode, where Enter is the
+# carriage return (\r); a line feed (\n) is just a literal newline in the
+# input box and does NOT submit. So a prompt terminated with \n renders into
+# the box but is never submitted — the agent idles and the round hangs to its
+# full timeout. send_round must terminate with \r.
+#
+# The stub below faithfully models that raw-mode agent: it puts its stdin in
+# raw mode and only "submits" the accumulated line on \r, treating \n as a
+# literal. This reproduces the real-claude behavior deterministically (no
+# agent CLI needed), so the regression is guarded in plain unit runs; an
+# end-to-end check against real claude + codex lives in
+# tests/integration/test_send_round_real_agent.py.
+# ---------------------------------------------------------------------------
+
+_RAW_MODE_SUBMIT_STUB = textwrap.dedent(r"""
+    import json, os, sys, tty
+    from pathlib import Path
+
+    resp = Path(os.environ["STUB_RESPONSE_FILE"])
+    tty.setraw(sys.stdin.fileno())  # Enter == \r; \n is a literal newline (no submit)
+    # Signal that raw mode is active and we are reading, so the test only sends
+    # the prompt afterwards — otherwise the PTY's default ICRNL would translate
+    # the \r to \n before raw mode took effect and the distinction would be lost.
+    Path(os.environ["STUB_READY_FILE"]).write_text("1", encoding="utf-8")
+    buf = b""
+    while True:
+        ch = os.read(0, 1)
+        if not ch:
+            break
+        if ch == b"\r":                 # Enter -> submit the accumulated line
+            line = buf.decode("utf-8", "replace").strip()
+            buf = b""
+            if not line:
+                continue
+            resp.parent.mkdir(parents=True, exist_ok=True)
+            resp.write_text(json.dumps({"submitted": line}), encoding="utf-8")
+        else:                            # \n and everything else -> literal input, NOT a submit
+            buf += ch
+""").strip()
+
+
+def _write_raw_mode_stub(tmp_path: Path) -> Path:
+    path = tmp_path / "raw_mode_stub.py"
+    path.write_text(_RAW_MODE_SUBMIT_STUB, encoding="utf-8")
+    return path
+
+
+class TestPromptSubmissionTerminator:
+    def test_send_round_terminates_prompt_with_carriage_return_not_newline(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Unit guard on the fix: the injected payload ends with \\r, not \\n."""
+        from issue_orchestrator.execution import persistent_round_runner as prr
+
+        captured: dict[str, bytes] = {}
+
+        def fake_write_full(_fd: int, payload: bytes, **_kwargs: object) -> int:
+            captured["payload"] = payload
+            raise PersistentRoundTimeoutError("stop after capture")
+
+        monkeypatch.setattr(prr, "_write_full", fake_write_full)
+
+        class _Proc:
+            pid = 1
+
+            def poll(self) -> None:
+                return None
+
+        session = prr.PersistentSession(proc=_Proc(), master_fd=99)  # type: ignore[arg-type]
+        clock = _FakeClock()
+        with pytest.raises(PersistentRoundTimeoutError):
+            send_round(
+                session, prompt="hello", response_file=tmp_path / "r.json",
+                timeout_seconds=5, now=clock.now, sleep=clock.make_sleeper(),
+            )
+        assert captured["payload"].endswith(b"\r")
+        assert b"\n" not in captured["payload"]
+
+    def test_carriage_return_submits_to_a_raw_mode_agent(self, tmp_path: Path) -> None:
+        """End-to-end over a real PTY: a raw-mode agent (Enter == \\r) receives
+        and submits the prompt, so send_round gets its response."""
+        stub = _write_raw_mode_stub(tmp_path)
+        response_file = tmp_path / "response.json"
+        ready_file = tmp_path / "raw-ready"
+        session = open_persistent_session(
+            command=[sys.executable, "-u", str(stub)],
+            working_dir=tmp_path,
+            env=_stub_env(response_file, STUB_READY_FILE=str(ready_file)),
+        )
+        try:
+            _wait_until(ready_file.exists)  # raw mode active before we send
+            r = send_round(
+                session, prompt="round-1", response_file=response_file,
+                timeout_seconds=5, poll_interval_seconds=0.02,
+            )
+        finally:
+            close_persistent_session(session)
+        assert r == {"submitted": "round-1"}
+
+    def test_newline_terminator_would_not_submit_to_a_raw_mode_agent(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Proves the fix is load-bearing: force the legacy \\n terminator and
+        the same raw-mode agent never submits -> send_round times out (the
+        original tixmeup #277/#290 hang)."""
+        from issue_orchestrator.execution import persistent_round_runner as prr
+
+        orig_write_full = prr._write_full
+
+        def lf_write_full(fd: int, payload: bytes, **kwargs: object) -> int:
+            if payload.endswith(b"\r"):  # regress the terminator to the buggy \n
+                payload = payload[:-1] + b"\n"
+            return orig_write_full(fd, payload, **kwargs)
+
+        monkeypatch.setattr(prr, "_write_full", lf_write_full)
+
+        stub = _write_raw_mode_stub(tmp_path)
+        response_file = tmp_path / "response.json"
+        ready_file = tmp_path / "raw-ready"
+        session = open_persistent_session(
+            command=[sys.executable, "-u", str(stub)],
+            working_dir=tmp_path,
+            env=_stub_env(response_file, STUB_READY_FILE=str(ready_file)),
+        )
+        try:
+            _wait_until(ready_file.exists)
+            clock = _FakeClock()
+            jump = clock.make_sleeper(on_sleep=lambda _: clock.__setattr__(
+                "value", max(clock.value, 100.0)
+            ))
+            with pytest.raises(PersistentRoundTimeoutError):
+                send_round(
+                    session, prompt="round-1", response_file=response_file,
+                    timeout_seconds=1.0, poll_interval_seconds=0.02,
+                    now=clock.now, sleep=jump,
+                )
+        finally:
+            close_persistent_session(session)
+        assert not response_file.exists()
+
+
+# ---------------------------------------------------------------------------
 # Close
 # ---------------------------------------------------------------------------
 

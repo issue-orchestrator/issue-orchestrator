@@ -20,6 +20,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -28,6 +29,11 @@ import pytest
 
 from issue_orchestrator.execution.agent_runner import AgentRunner
 from issue_orchestrator.execution.agent_runner_types import AgentSpec
+from issue_orchestrator.execution.persistent_round_runner import (
+    close_persistent_session,
+    open_persistent_session,
+    send_round,
+)
 
 
 def _decoded_output(path: Path) -> str:
@@ -329,3 +335,127 @@ class TestLiveAgentChain:
             f"exit_code={result.exit_code}, timed_out={result.timed_out}. "
             f"Log:\n{raw_log}"
         )
+
+    # ------------------------------------------------------------------
+    # Layer 5: THE PERSISTENT PATH — open_persistent_session + send_round.
+    #
+    # This is the review-exchange path (a long-lived interactive claude driven
+    # across rounds by injecting prompts on its PTY), distinct from the -p
+    # one-shot layers above. It is where the tixmeup #277/#290 hang lived:
+    # send_round used to terminate prompts with "\n", which a raw-mode TUI does
+    # NOT treat as Enter, so the prompt rendered into the input box but was
+    # never submitted and the round hung. send_round now submits with "\r".
+    # This proves the fix against REAL claude across TWO rounds (the exact
+    # scenario that hung), which no stub can establish.
+    # ------------------------------------------------------------------
+
+    def test_persistent_send_round_two_rounds_real_claude(self) -> None:
+        # Run under the repo worktree (a trusted git repo) so the interactive
+        # first-run "trust this folder?" dialog never blocks — mirrors
+        # production, where review-exchange worktrees are trusted. /tmp would
+        # trigger that dialog for an interactive session.
+        repo_root = Path(__file__).resolve().parents[2]
+        work_dir = Path(tempfile.mkdtemp(prefix=".live-send-round-", dir=repo_root))
+        response_file = work_dir / "review-response.json"
+        system_prompt = (
+            "You are an automated review-exchange test agent. Every time you "
+            "receive a message, immediately use the Bash tool to run exactly:\n"
+            '  printf \'{"response_type":"ok"}\' > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"\n'
+            "then keep waiting for the next message. Do not exit on your own."
+        )
+        # Scrub CLAUDECODE so the nested-session guard does not block claude
+        # when these tests run inside a Claude Code session (same as the
+        # auth probe above).
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env["PATH"] = self._venv_path_prefix()
+        env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] = str(response_file)
+
+        session = open_persistent_session(
+            command=[
+                "claude", "--model", "haiku",
+                "--permission-mode", "bypassPermissions",
+                "--append-system-prompt", system_prompt,
+            ],
+            working_dir=work_dir,
+            env=env,
+        )
+        try:
+            # Let claude boot to its idle input prompt (trusted dir -> no dialog).
+            from issue_orchestrator.execution.persistent_round_runner import (
+                _drain_pty_output,
+            )
+            boot_deadline = time.monotonic() + 25
+            while time.monotonic() < boot_deadline:
+                _drain_pty_output(session)
+                if session.proc.poll() is not None:
+                    pytest.fail(f"claude exited during boot, code={session.proc.poll()}")
+                time.sleep(0.3)
+
+            for n in (1, 2):
+                response_file.unlink(missing_ok=True)
+                result = send_round(
+                    session,
+                    prompt=f"round {n}: respond now",
+                    response_file=response_file,
+                    timeout_seconds=60,
+                    poll_interval_seconds=0.3,
+                    role_label=f"coder@round-{n}",
+                )
+                assert result == {"response_type": "ok"}, (
+                    f"round {n} not answered — a \\r-terminated prompt must "
+                    f"submit to real claude. Got: {result}"
+                )
+                assert session.proc.poll() is None, (
+                    f"claude exited after round {n}"
+                )
+        finally:
+            close_persistent_session(session)
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    def test_persistent_send_round_real_codex(self) -> None:
+        """The reviewer agent is codex; the \\r submit terminator must work for
+        it too. codex is one-shot (it exits after its turn and is respawned in
+        production), so only its first round is exercised here."""
+        if shutil.which("codex") is None:
+            pytest.skip("codex CLI not installed")
+        repo_root = Path(__file__).resolve().parents[2]
+        work_dir = Path(tempfile.mkdtemp(prefix=".live-codex-", dir=repo_root))
+        response_file = work_dir / "review-response.json"
+        system_prompt = (
+            "You are an automated test agent. When you receive a message, "
+            "immediately run the shell command:\n"
+            '  printf \'{"response_type":"ok"}\' > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"\n'
+            "then wait. Do not exit on your own."
+        )
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] = str(response_file)
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundError,
+            _drain_pty_output,
+        )
+
+        session = open_persistent_session(
+            command=["codex", "exec", "--full-auto", "--sandbox", "workspace-write", system_prompt],
+            working_dir=work_dir,
+            env=env,
+        )
+        try:
+            boot_deadline = time.monotonic() + 8
+            while time.monotonic() < boot_deadline:
+                _drain_pty_output(session)
+                time.sleep(0.2)
+            result = send_round(
+                session,
+                prompt="respond now",
+                response_file=response_file,
+                timeout_seconds=60,
+                poll_interval_seconds=0.3,
+                role_label="reviewer@round-1",
+            )
+            assert result == {"response_type": "ok"}
+        except PersistentRoundError as exc:
+            # codex is one-shot; if it already exited there is nothing to drive.
+            pytest.skip(f"codex did not stay interactive for a round: {exc}")
+        finally:
+            close_persistent_session(session)
+            shutil.rmtree(work_dir, ignore_errors=True)

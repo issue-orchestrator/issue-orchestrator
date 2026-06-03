@@ -5,8 +5,8 @@ agents. One agent process is attached to a master/slave PTY pair at
 exchange start and stays alive across all rounds. Each round:
 
   - ``send_round`` deletes any stale response file, writes the prompt
-    plus a newline to the master fd, polls until the response file
-    appears (or timeout), and returns the parsed response.
+    plus a carriage return (``\r`` = Enter, not ``\n``; see ``send_round``)
+    to the master fd, polls until the response file appears, returns it.
   - PTY output is captured continuously into a single recording — the
     session viewer plays one ``terminal-recording.jsonl`` per role
     spanning the whole exchange, instead of N per-phase files.
@@ -376,7 +376,8 @@ def send_round(
     if write_timeout_seconds <= 0:
         raise ValueError("write_timeout_seconds must be positive")
     label = role_label or f"pid={session.proc.pid}"
-    payload = (prompt + "\n").encode("utf-8")
+    # Submit with "\r" (Enter), not "\n": a raw-mode TUI never submits on "\n" so the round hangs (#277/#290; guarded by TestPromptSubmissionTerminator). Do NOT revert.
+    payload = (prompt + "\r").encode("utf-8")
     started_at = now()
     logger.info(
         "[send_round] start role=%s pid=%d response_file=%s prompt_bytes=%d "
