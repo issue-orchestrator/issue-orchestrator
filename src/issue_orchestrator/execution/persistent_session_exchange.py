@@ -1297,7 +1297,7 @@ def _open_role_session(  # noqa: PLR0913
     bootstrap_agent = AgentConfig(
         prompt_path=agent.prompt_path,
         prompt_relative=agent.prompt_relative,
-        provider=agent.provider,
+        provider=agent.resolve_launch_provider(),
         model=agent.model,
         timeout_minutes=agent.timeout_minutes,
         provider_args=dict(agent.provider_args),

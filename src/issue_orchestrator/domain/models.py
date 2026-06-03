@@ -864,6 +864,30 @@ class AgentConfig:
             rendered_prompt = f"IMPORTANT: {existing_work}\n\n{rendered_prompt}"
         return rendered_prompt
 
+    def resolve_launch_provider(self) -> Optional[str]:
+        """Provider identity for building a LAUNCH command.
+
+        ``provider`` wins. An explicitly configured ``command`` (anything
+        other than the field default) is an intentional override and keeps
+        template-based launching — exchange stub agents configure a custom
+        ``command`` alongside a real ``ai_system``. Otherwise ``ai_system``
+        resolves: it shares the provider-registry vocabulary
+        (``claude-code``, ``codex``).
+
+        Exists because session CLASSIFICATION (``provider or ai_system``,
+        see ``persistent_session_exchange._agent_provider``) and command
+        BUILDING (``provider`` only, else the legacy ``claude -p`` template)
+        resolved differently: an ``ai_system="codex"`` reviewer with no
+        ``provider`` was classified as codex but silently launched as
+        print-mode claude, which renders nothing and hangs the round to its
+        full timeout (caught by the real-codex exchange smoke test).
+        """
+        if self.provider:
+            return self.provider
+        if self.command != type(self).__dataclass_fields__["command"].default:
+            return None
+        return self.ai_system
+
     def get_command(
         self,
         issue_number: int,
@@ -1028,7 +1052,19 @@ class AgentConfig:
             prompt = f"{completion_with_prompt_ref}\n\n---\n\n{prompt}"
 
         # Build the command (returns list[str])
-        cmd_list = provider.build_command(prompt=prompt, model=self.model, **kwargs)
+        model: Optional[str] = self.model
+        if (
+            model == type(self).__dataclass_fields__["model"].default
+            and self.provider != "claude-code"
+        ):
+            # The field default ("sonnet") is claude vocabulary. Forwarding
+            # it to another provider sends e.g. ``codex --model sonnet``,
+            # which the codex backend rejects (400) and the TUI then idles
+            # for the whole round timeout — caught live by the real-codex
+            # exchange smoke test. An untouched default is "no explicit
+            # choice": let the provider use its own default model.
+            model = None
+        cmd_list = provider.build_command(prompt=prompt, model=model, **kwargs)
 
         # Convert to shell-safe string
         return shlex.join(cmd_list)
