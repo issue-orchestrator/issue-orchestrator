@@ -783,7 +783,7 @@ class TestPromptSubmissionTerminator:
         times out (the original tixmeup #277/#290 hang)."""
         from issue_orchestrator.execution import persistent_round_runner as prr
 
-        orig_write_full = prr._write_full
+        orig_write_full = prr._write_full  # noqa: SLF001
 
         def lf_write_full(fd: int, payload: bytes, **kwargs: object) -> int:
             if payload == b"\r":  # regress the Enter write to the buggy \n
