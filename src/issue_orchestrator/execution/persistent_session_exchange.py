@@ -112,9 +112,9 @@ from .persistent_round_runner import (
     close_persistent_session,
     open_persistent_session,
     persistent_round_failure_reason,
-    recording_event_count,
     send_round,
 )
+from .recording_contract import recording_event_count
 
 logger = logging.getLogger(__name__)
 
