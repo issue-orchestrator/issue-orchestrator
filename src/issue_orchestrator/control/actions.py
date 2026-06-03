@@ -196,6 +196,7 @@ class QueueReviewAction(Action):
     code_review_label: str = ""  # Label to add (e.g., needs-code-review)
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
+    issue_labels: tuple[str, ...] = ()
     action_type: ActionType = field(default=ActionType.QUEUE_REVIEW, init=False)
 
 

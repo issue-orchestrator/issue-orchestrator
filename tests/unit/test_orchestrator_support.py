@@ -1423,6 +1423,7 @@ class TestUpdateStateAfterAction:
             pr_number=100,
             pr_url="https://github.com/test/repo/pull/100",
             branch_name="issue-42",
+            issue_labels=("agent:web", "verbose"),
         )
         result = MagicMock(success=True, details={})
 
@@ -1434,6 +1435,7 @@ class TestUpdateStateAfterAction:
         review = support_with_state.state.pending_reviews[0]
         assert review.pr_number == 100
         assert review.branch_name == "issue-42"
+        assert review.issue_labels == ("agent:web", "verbose")
 
     def test_queue_review_skips_duplicate(self, support_with_state, mock_repository_host):
         """QUEUE_REVIEW action skips if PR already in pending_reviews."""

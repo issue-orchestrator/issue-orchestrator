@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
-import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -44,162 +44,20 @@ from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.ports import TraceEvent
 
 
-_STUB_AGENT_SOURCE = textwrap.dedent("""
-    import json
-    import os
-    import select
-    import sys
-    import time
-    from pathlib import Path
+_INTERACTIVE_REVIEW_AGENT = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "interactive_review_agent.py"
+)
 
-    response_file = Path(os.environ["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
-    completion_path_rel = os.environ["ISSUE_ORCHESTRATOR_COMPLETION_PATH"]
-    review_report_file = os.environ.get("ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE")
-    role = os.environ.get("ISSUE_ORCHESTRATOR_AGENT_LABEL", "")
-    spawn_log = os.environ.get("STUB_SPAWN_LOG")
-    if spawn_log:
-        spawn_log_path = Path(spawn_log)
-        spawn_log_path.parent.mkdir(parents=True, exist_ok=True)
-        with spawn_log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"role": role, "pid": os.getpid()}) + "\\n")
 
-    # Reviewer outcomes are scripted per-round via env so a single stub
-    # script drives ok / changes_requested / multi-round / max-rounds
-    # scenarios. Default: ``ok`` every round.
-    raw_outcomes = os.environ.get("STUB_REVIEWER_OUTCOMES", "ok").strip()
-    reviewer_script = [
-        token.strip() or "ok" for token in raw_outcomes.split(",")
+def _interactive_review_agent_command(*, include_initial_prompt_arg: bool = False) -> str:
+    parts = [
+        shlex.quote(sys.executable),
+        "-u",
+        shlex.quote(str(_INTERACTIVE_REVIEW_AGENT)),
     ]
-    exit_after_response_roles = {
-        token.strip()
-        for token in os.environ.get("STUB_EXIT_AFTER_RESPONSE_ROLES", "").split(",")
-        if token.strip()
-    }
-
-    def _should_exit_after_response():
-        return any(token in role for token in exit_after_response_roles)
-
-    def _next_reviewer_outcome_index(local_round_index):
-        counter_file = os.environ.get("STUB_REVIEWER_OUTCOME_COUNTER_FILE")
-        if not counter_file:
-            return local_round_index - 1
-        counter_path = Path(counter_file)
-        counter_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            current = int(counter_path.read_text(encoding="utf-8").strip())
-        except (FileNotFoundError, ValueError):
-            current = 0
-        counter_path.write_text(str(current + 1), encoding="utf-8")
-        return current
-
-    fd = sys.stdin.fileno()
-    print(f"[stub-{role}] ready", flush=True)
-    round_index = 0
-
-    # Real prompts are multi-line; reading line-by-line would advance
-    # the script outcome on every line of a single prompt. Instead,
-    # batch reads until stdin goes quiet for a brief window and treat
-    # that whole burst as one logical prompt.
-    QUIET_WINDOW = 0.15
-    while True:
-        ready, _, _ = select.select([fd], [], [], None)
-        if not ready:
-            continue
-        chunk = os.read(fd, 65536)
-        if not chunk:
-            break
-        # Drain follow-on bytes that belong to the same prompt.
-        while True:
-            ready, _, _ = select.select([fd], [], [], QUIET_WINDOW)
-            if not ready:
-                break
-            more = os.read(fd, 65536)
-            if not more:
-                break
-            chunk += more
-        prompt_text = chunk.decode("utf-8", errors="replace").strip()
-        if not prompt_text:
-            continue
-        round_index += 1
-        cwd = Path.cwd()
-        worktree = cwd
-        completion_full = worktree / completion_path_rel
-        if "reviewer" in role:
-            outcome_index = _next_reviewer_outcome_index(round_index)
-            outcome = (
-                reviewer_script[outcome_index]
-                if outcome_index < len(reviewer_script)
-                else reviewer_script[-1]
-            )
-            if outcome == "changes_requested":
-                payload = {
-                    "response_type": "changes_requested",
-                    "response_text": (
-                        f"Needs work (stub-reviewer round {round_index})"
-                    ),
-                    "getting_closer": True,
-                }
-            elif outcome == "ok_with_nit":
-                nit_policy = os.environ.get("STUB_NIT_POLICY", "address")
-                payload = {
-                    "response_type": "ok",
-                    "response_text": (
-                        f"LGTM with nit (stub-reviewer round {round_index})"
-                    ),
-                    "getting_closer": True,
-                    "decision": {
-                        "verdict": "approved",
-                        "risk": "low",
-                        "blocking_findings": [],
-                        "nits": [{
-                            "id": "N1",
-                            "title": "Use precise wording in the audit note",
-                        }],
-                        "tests_reviewed": ["stub validation"],
-                        "abstraction_review": {
-                            "status": "no_issues",
-                            "findings": [],
-                        },
-                        "nit_policy": nit_policy,
-                    },
-                }
-            else:
-                payload = {
-                    "response_type": "ok",
-                    "response_text": f"LGTM (stub-reviewer round {round_index})",
-                    "getting_closer": True,
-                }
-            if review_report_file and outcome == "ok_with_nit":
-                report_path = Path(review_report_file)
-                report_path.parent.mkdir(parents=True, exist_ok=True)
-                report_text = (
-                    "# Review Report\\n\\n"
-                    "## Findings\\n\\nNo blocking findings.\\n\\n"
-                    "## Nits\\n\\n### N1. Use precise wording in the audit note\\n"
-                )
-                report_path.write_text(report_text, encoding="utf-8")
-        else:
-            completion_full.parent.mkdir(parents=True, exist_ok=True)
-            completion_full.write_text(
-                json.dumps({
-                    "outcome": "completed",
-                    "implementation": f"stub-coder round {round_index}",
-                    "round": round_index,
-                }),
-                encoding="utf-8",
-            )
-            payload = {
-                "response_type": "ok",
-                "response_text": f"Applied (stub-coder round {round_index})",
-            }
-        time.sleep(0.02)
-        response_file.parent.mkdir(parents=True, exist_ok=True)
-        response_file.write_text(json.dumps(payload), encoding="utf-8")
-        print(f"[stub-{role}] wrote round {round_index}", flush=True)
-        if _should_exit_after_response():
-            print(f"[stub-{role}] exiting after response", flush=True)
-            sys.exit(0)
-""").strip()
+    if include_initial_prompt_arg:
+        parts.append("'{initial_prompt}'")
+    return " ".join(parts)
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -316,9 +174,6 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
     """
     coder_wt, branch = _bootstrap_git_worktree(tmp_path)
 
-    stub_path = tmp_path / "stub_agent.py"
-    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
-
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
@@ -326,7 +181,7 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
         prompt_path=prompt_path,
         ai_system="claude-code",
         timeout_minutes=1,
-        command=f"{sys.executable} -u {stub_path}",
+        command=_interactive_review_agent_command(),
     )
     config = _make_config(tmp_path, agent)
 
@@ -463,8 +318,6 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
       - end with status=ok / rounds=2 / reason=reviewer_ok
     """
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
-    stub_path = tmp_path / "stub_agent.py"
-    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
@@ -475,7 +328,7 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
         prompt_path=prompt_path,
         ai_system="claude-code",
         timeout_minutes=1,
-        command=f"{sys.executable} -u {stub_path}",
+        command=_interactive_review_agent_command(),
     )
     config = _make_config(tmp_path, agent)
     config.review_exchange_max_rounds = 3
@@ -537,6 +390,70 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
         f"expected reviewer chapters for rounds 1 and 2, got {cycle_indices}"
 
 
+def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex-style interactive launch works with the persistent exchange.
+
+    The real Codex TUI accepts an initial prompt as a positional argv argument
+    and then stays open for follow-up input. This test uses the reusable
+    interactive fixture to pin that contract without requiring live Codex auth:
+    process bootstrap arrives in argv, while reviewer/coder turn prompts arrive
+    through the PTY.
+    """
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+
+    spawn_log = tmp_path / "stub-spawns.jsonl"
+    monkeypatch.setenv("STUB_SPAWN_LOG", str(spawn_log))
+    monkeypatch.setenv("STUB_REQUIRE_INITIAL_PROMPT", "1")
+    monkeypatch.setenv("STUB_REVIEWER_OUTCOMES", "changes_requested,ok")
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="codex",
+        timeout_minutes=1,
+        command=_interactive_review_agent_command(include_initial_prompt_arg=True),
+    )
+    config = _make_config(tmp_path, agent)
+    config.review_exchange_max_rounds = 3
+
+    session_output = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=session_output,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_make_review_exchange_runner(session_output),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    outcome = cre.run_review_exchange_loop(
+        worktree=coder_wt,
+        issue_number=4061,
+        issue_title="Codex-shaped interactive integration",
+        session_name="issue-4061",
+        agent_label="agent:backend",
+        on_started=lambda _run_dir: None,
+        events=MagicMock(),
+        event_context=EventContext(),
+    )
+
+    assert outcome.status == "ok", f"unexpected outcome: {outcome}"
+    assert outcome.rounds == 2
+
+    spawn_records = [
+        json.loads(line)
+        for line in spawn_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert spawn_records
+    assert all(record["initial_prompt_present"] for record in spawn_records)
+    assert all(record["initial_prompt_contains_wait"] for record in spawn_records)
+
+
 def test_one_shot_reviewer_respawns_after_addressable_nits(
     tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
 ) -> None:
@@ -549,8 +466,6 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
     exchange as ``reviewer_no_completion``.
     """
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
-    stub_path = tmp_path / "stub_agent.py"
-    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
@@ -565,7 +480,7 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
         prompt_path=prompt_path,
         ai_system="claude-code",
         timeout_minutes=1,
-        command=f"{sys.executable} -u {stub_path}",
+        command=_interactive_review_agent_command(),
     )
     config = _make_config(tmp_path, agent)
     config.review_exchange_max_rounds = 3
@@ -649,8 +564,6 @@ def test_one_shot_coder_respawns_for_later_rework_turn(
 ) -> None:
     """A one-shot coder process is replaced before later coder rework."""
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
-    stub_path = tmp_path / "stub_agent.py"
-    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
@@ -663,7 +576,7 @@ def test_one_shot_coder_respawns_for_later_rework_turn(
         prompt_path=prompt_path,
         ai_system="claude-code",
         timeout_minutes=1,
-        command=f"{sys.executable} -u {stub_path}",
+        command=_interactive_review_agent_command(),
     )
     config = _make_config(tmp_path, agent)
     config.review_exchange_max_rounds = 4
@@ -733,8 +646,6 @@ def test_persistent_review_exchange_max_rounds_exhausted(
     Replaces the skipped no-progress / max-rounds scenarios.
     """
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
-    stub_path = tmp_path / "stub_agent.py"
-    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
@@ -748,7 +659,7 @@ def test_persistent_review_exchange_max_rounds_exhausted(
         prompt_path=prompt_path,
         ai_system="claude-code",
         timeout_minutes=1,
-        command=f"{sys.executable} -u {stub_path}",
+        command=_interactive_review_agent_command(),
     )
     config = _make_config(tmp_path, agent)
     config.review_exchange_max_rounds = 2
@@ -833,8 +744,6 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
             return 0
 
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
-    stub_path = tmp_path / "stub_agent.py"
-    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
@@ -844,7 +753,7 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
         prompt_path=prompt_path,
         ai_system="claude-code",
         timeout_minutes=1,
-        command=f"{sys.executable} -u {stub_path}",
+        command=_interactive_review_agent_command(),
     )
     config = _make_config(tmp_path, agent)
     config.review_exchange_max_rounds = 3
@@ -957,8 +866,6 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
     instance), which is what production wires.
     """
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
-    stub_path = tmp_path / "stub_agent.py"
-    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
@@ -966,7 +873,7 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
         prompt_path=prompt_path,
         ai_system="claude-code",
         timeout_minutes=1,
-        command=f"{sys.executable} -u {stub_path}",
+        command=_interactive_review_agent_command(),
     )
     config = _make_config(tmp_path, agent)
 
@@ -1122,8 +1029,6 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
     record) and the reviewer worktree directory itself.
     """
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
-    stub_path = tmp_path / "stub_agent.py"
-    stub_path.write_text(_STUB_AGENT_SOURCE, encoding="utf-8")
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
@@ -1131,7 +1036,7 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
         prompt_path=prompt_path,
         ai_system="claude-code",
         timeout_minutes=1,
-        command=f"{sys.executable} -u {stub_path}",
+        command=_interactive_review_agent_command(),
     )
     config = _make_config(tmp_path, agent)
 

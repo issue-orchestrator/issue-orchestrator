@@ -400,7 +400,7 @@ class OrchestratorSupport:
             PendingReview(
                 issue_key=self.repository_host.create_issue_key(a.issue_number),
                 pr_number=a.pr_number, pr_url=a.pr_url, branch_name=a.branch_name,
-                _issue_number=a.issue_number, agent_label=a.agent_label,
+                _issue_number=a.issue_number, agent_label=a.agent_label, issue_labels=a.issue_labels,
             )
         )
         log_transition("review", a.pr_number, "CREATED", "QUEUED", f"from #{a.issue_number}")
