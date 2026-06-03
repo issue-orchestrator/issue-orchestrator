@@ -822,7 +822,7 @@ class AgentConfig:
     reviewer: Optional[str] = None
     # Command template - escape hatch to override provider-generated command
     # If set, this is used instead of provider.build_command()
-    # For non-interactive mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
+    # For one-shot mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
     # Note: {system_prompt} includes completion instructions + "Read {prompt} for task instructions"
     command: str = "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     # Optional override for hook verification AI agent (e.g., "claude-code")
@@ -877,7 +877,7 @@ class AgentConfig:
         """Render the command template with actual values, including initial prompt.
 
         If a provider is configured, uses the provider's build_command() method.
-        Otherwise, falls back to the legacy command template.
+        Otherwise, falls back to the custom command template.
 
         Args:
             issue_number: The GitHub issue number
@@ -1154,6 +1154,7 @@ class PendingReview:
     branch_name: str
     _issue_number: int  # The actual GitHub issue number (stable_id may not be numeric)
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
+    issue_labels: tuple[str, ...] = field(default_factory=tuple, compare=False)
 
     @property
     def issue_number(self) -> int:

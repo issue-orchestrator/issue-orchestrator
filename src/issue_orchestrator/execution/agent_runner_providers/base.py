@@ -47,10 +47,19 @@ class CLIProvider(ABC):
 
         Interactive providers:
         - Are NOT wrapped in provider_runner (no retry/circuit wrapper)
-        - Do NOT include the prompt in their argv (prompt is sent via PTY stdin)
+        - May seed the initial prompt through argv and accept follow-up prompts via PTY
         - Stay alive for follow-up prompts (review feedback, rework)
         """
         return False
+
+    def runs_interactively(self, **kwargs: object) -> bool:
+        """Whether this invocation should be treated as an interactive session.
+
+        Most providers have a single execution mode and can rely on
+        :attr:`interactive`. Providers with both TUI and one-shot modes can
+        inspect provider args and choose per invocation.
+        """
+        return self.interactive
 
     @abstractmethod
     def build_command(

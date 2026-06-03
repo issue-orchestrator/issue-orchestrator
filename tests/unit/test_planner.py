@@ -746,6 +746,12 @@ class TestPlanDiscoveredReviews:
         )
 
         snapshot = make_snapshot(
+            issues=[
+                make_issue(
+                    42,
+                    labels=["agent:web", "verbose"],
+                )
+            ],
             discovered_reviews=(discovered,),
             pending_reviews=(),  # Not already queued
         )
@@ -760,6 +766,7 @@ class TestPlanDiscoveredReviews:
         assert action.pr_number == 100
         assert action.pr_url == "https://github.com/test/repo/pull/100"
         assert action.branch_name == "feature/issue-42"
+        assert action.issue_labels == ("agent:web", "verbose")
 
     def test_skips_already_queued_reviews(self):
         """Planner skips discovered reviews that are already in pending_reviews."""

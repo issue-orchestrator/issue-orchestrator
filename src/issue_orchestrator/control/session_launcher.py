@@ -14,12 +14,11 @@ the orchestrator focused on coordination and main loop logic.
 """
 
 import logging
-import shlex
 import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Callable, Sequence
+from typing import TYPE_CHECKING, Optional, Callable, Mapping, Sequence
 
 if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -62,7 +61,6 @@ from ..ports import (
 from ..ports.session_output import SessionOutput
 from ..ports.event_sink import SessionStartedEventPayload, make_session_started_event
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
-from ..ports.session_log import detect_ai_system_from_command
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
@@ -87,6 +85,7 @@ from .session_worktree_diagnostics import (
 )
 from .transition_log import log_transition
 from .isolation import build_runtime_tool_env, build_runtime_tool_env_assignments
+from .provider_command_wrapper import ProviderCommandWrapper
 
 logger = logging.getLogger(__name__)
 _TRUNCATION_MARKER_BUDGET = 30
@@ -198,6 +197,7 @@ class SessionLauncher:
         self._claim_manager = claim_manager
         self._provider_resilience = provider_resilience
         self._provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
+        self._provider_command_wrapper: ProviderCommandWrapper | None = None
         self._remove_session_machine = remove_session_machine
         self._send_to_session = send_to_session_fn
         if label_manager is None:
@@ -895,7 +895,7 @@ class SessionLauncher:
             task_kind=TaskKind.CODE.value,
             extra_provider_args=extra_args,
         )
-        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
         completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -1137,7 +1137,7 @@ class SessionLauncher:
             task_kind=TaskKind.CODE.value,
             extra_provider_args=extra_args,
         )
-        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
         completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -1393,6 +1393,7 @@ class SessionLauncher:
         rework_count = review_machine.rework_count if review_machine else 0
         review_attempt = rework_count + 1
         phase_name = f"review-{review_attempt}"
+        extra_args = self._extra_provider_args_from_labels(review.issue_labels)
 
         # Create and prepare worktree using WorktreeContext
         ctx = WorktreeContext.create(
@@ -1454,7 +1455,7 @@ class SessionLauncher:
             "agent": agent_label,
             **self._session_identity_launch_metadata(
                 agent_config,
-                extra_provider_args=None,
+                extra_provider_args=extra_args,
             ),
         })
         # New review attempt starts now; clear interrupted retry guard.
@@ -1508,8 +1509,14 @@ class SessionLauncher:
             pr_number=review.pr_number,
             existing_work=existing_work,
             task_kind=TaskKind.REVIEW.value,
+            extra_provider_args=extra_args,
         )
-        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
+        base_command = self._wrap_provider_command(
+            base_command,
+            agent_config,
+            run.run_dir,
+            extra_provider_args=extra_args,
+        )
         completion_path = get_completion_path(agent_label, run_dir=run.run_dir.name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -1719,6 +1726,7 @@ class SessionLauncher:
         worktree_path = ctx.worktree_path
         worktree_info = ctx.worktree_info
         run = ctx.run
+        extra_args = self._extra_provider_args_from_labels(review.issue_labels)
 
         ctx.write_worktree_note()
         ctx.write_session_identity({
@@ -1732,7 +1740,7 @@ class SessionLauncher:
             "prior_pr_url": review.prior_pr_url,
             **self._session_identity_launch_metadata(
                 agent_config,
-                extra_provider_args=None,
+                extra_provider_args=extra_args,
             ),
         })
 
@@ -1769,8 +1777,14 @@ class SessionLauncher:
             worktree=worktree_path,
             pr_number=prompt_pr_number,
             task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+            extra_provider_args=extra_args,
         )
-        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
+        base_command = self._wrap_provider_command(
+            base_command,
+            agent_config,
+            run.run_dir,
+            extra_provider_args=extra_args,
+        )
         completion_path = get_completion_path(agent_label, run_dir=run.run_dir.name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -1917,15 +1931,6 @@ class SessionLauncher:
         prompt_path = self._session_output.write_session_prompt(run_dir, prompt_text)
         return str(prompt_path)
 
-    def _is_interactive_provider(self, agent_config: "AgentConfig") -> bool:
-        """Check if the agent uses an interactive provider (e.g. Claude Code TUI)."""
-        if not agent_config.provider:
-            return False
-        from issue_orchestrator.agent_runner import get_provider, is_valid_provider
-        if not is_valid_provider(agent_config.provider):
-            return False
-        return get_provider(agent_config.provider).interactive
-
     def _send_initial_prompt(self, session_name: str, prompt_path: Path, agent_config: "AgentConfig") -> None:
         """Send the initial prompt to an interactive session via PTY stdin.
 
@@ -1942,40 +1947,32 @@ class SessionLauncher:
         sent = self._send_to_session(session_name, msg)
         logger.info("[launch] Sent initial prompt to interactive session %s: success=%s", session_name, sent)
 
-    def _wrap_provider_command(self, base_command: str, agent_config: "AgentConfig", run_dir: Path) -> str:
+    def _wrap_provider_command(
+        self,
+        base_command: str,
+        agent_config: "AgentConfig",
+        run_dir: Path,
+        *,
+        extra_provider_args: Mapping[str, object] | None = None,
+    ) -> str:
         """Wrap provider command with retry/circuit reporting.
 
         Interactive providers are returned as-is — they manage their own
         lifecycle and don't use the provider_runner subprocess wrapper.
         """
-        if self._is_interactive_provider(agent_config):
-            return base_command
-        retry_cfg = self.config.provider_resilience.short_retry
-        provider = agent_config.provider or detect_ai_system_from_command(base_command)
-        cmd = [
-            sys.executable,
-            "-m",
-            "issue_orchestrator.entrypoints.cli_tools.provider_runner",
-            "--command",
+        return self._get_provider_command_wrapper().wrap(
             base_command,
-            "--timeout-seconds",
-            str(agent_config.timeout_minutes * 60),
-            "--max-attempts",
-            str(retry_cfg.max_attempts),
-            "--initial-backoff-seconds",
-            str(retry_cfg.initial_backoff_seconds),
-            "--max-backoff-seconds",
-            str(retry_cfg.max_backoff_seconds),
-            "--run-dir",
-            str(run_dir),
-        ]
-        if retry_cfg.jitter:
-            cmd.append("--jitter")
-        else:
-            cmd.append("--no-jitter")
-        if provider:
-            cmd.extend(["--provider", provider])
-        return shlex.join(cmd)
+            agent_config,
+            run_dir,
+            extra_provider_args=extra_provider_args,
+        )
+
+    def _get_provider_command_wrapper(self) -> ProviderCommandWrapper:
+        if self._provider_command_wrapper is None:
+            self._provider_command_wrapper = ProviderCommandWrapper(
+                self.config.provider_resilience.short_retry
+            )
+        return self._provider_command_wrapper
 
     def _check_provider_circuit(self, provider: str | None, issue_number: int) -> Optional["LaunchResult"]:
         if not provider or not self._provider_policy:

@@ -358,6 +358,7 @@ class Planner:
 
         # Get already-queued PR numbers
         queued_pr_numbers = {r.pr_number for r in snapshot.pending_reviews}
+        issue_labels_by_number = {issue.number: tuple(issue.labels) for issue in snapshot.issues}
 
         for review in snapshot.discovered_reviews:
             if review.pr_number not in queued_pr_numbers:
@@ -384,6 +385,7 @@ class Planner:
                         reason=f"session completed with PR #{review.pr_number}",
                         expected=build_expected_for_mutation(),
                         issue_key=ik,
+                        issue_labels=issue_labels_by_number.get(review.issue_number, ()),
                     ))
                     logger.debug("Planner: queuing review for PR #%d", review.pr_number)
                 else:

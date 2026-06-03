@@ -5,14 +5,18 @@ Builds command-line invocations for OpenAI's Codex CLI.
 Previously in ``_vendor/agent_runner/providers/codex.py``.
 """
 
+from collections.abc import Mapping
+
 from .base import CLIProvider
 
 
 class CodexProvider(CLIProvider):
     """Provider for OpenAI's Codex CLI.
 
-    Builds command-line invocations for Codex with appropriate flags
-    for non-interactive, automated execution.
+    Builds command-line invocations for Codex. Codex defaults to the
+    interactive TUI so persistent review-exchange sessions can keep one live
+    process and receive follow-up prompts over the PTY. Callers that need the
+    one-shot automation surface can pass ``execution_mode="exec"``.
     """
 
     @property
@@ -27,6 +31,13 @@ class CodexProvider(CLIProvider):
     def description(self) -> str:
         return "OpenAI Codex CLI"
 
+    @property
+    def interactive(self) -> bool:
+        return True
+
+    def runs_interactively(self, **kwargs: object) -> bool:
+        return self._execution_mode(kwargs) == "interactive"
+
     def build_command(
         self,
         prompt: str,
@@ -39,6 +50,7 @@ class CodexProvider(CLIProvider):
             prompt: The task to perform
             model: Model name (e.g., gpt-5.3-codex). If None, uses Codex's default.
             **kwargs: Additional options:
+                - execution_mode: "interactive" (default) or "exec"
                 - approval_mode: "full-auto" (default), "yolo", or "default"
                 - sandbox: Sandbox policy (read-only, workspace-write, danger-full-access)
                 - reasoning_effort: Codex reasoning effort (low, medium, high, xhigh)
@@ -56,46 +68,40 @@ class CodexProvider(CLIProvider):
                   JSONL stream that the terminal renderer concatenates as
                   unstyled text — exactly what the user saw on tixmeup
                   #362's reviewer log. Defaulting off makes the recording
-                  match what a human running ``codex exec`` interactively
-                  would see. Automation that genuinely wants the JSON
-                  event stream can opt in per-agent via
-                  ``provider_args: { json_output: "true" }``.
+                  match what a human running Codex in a terminal would see.
+                  Automation that genuinely wants the JSON event stream can
+                  opt in with ``execution_mode="exec"`` plus
+                  ``json_output="true"``.
         """
-        # Use exec subcommand for non-interactive execution
-        cmd = [self.executable, "exec"]
+        execution_mode = self._execution_mode(kwargs)
+        json_output = self._truthy(kwargs.get("json_output", "false"))
+        if execution_mode == "interactive" and json_output:
+            raise ValueError("Codex json_output requires execution_mode='exec'")
 
-        # Approval mode
+        cmd = [self.executable]
+        if execution_mode == "exec":
+            cmd.append("exec")
+
         approval_mode = kwargs.get("approval_mode", "full-auto")
-        if approval_mode == "yolo":
-            cmd.append("--dangerously-bypass-approvals-and-sandbox")
-        elif approval_mode == "full-auto":
-            cmd.append("--full-auto")
-        # else: default mode, no flag needed
+        self._append_approval_flags(
+            cmd,
+            approval_mode=approval_mode,
+            execution_mode=execution_mode,
+        )
 
         # Model (optional - Codex will use default if not specified)
         if model:
             cmd.extend(["--model", model])
 
-        # Reasoning effort is configured through Codex config overrides.
-        reasoning_effort = kwargs.get("reasoning_effort")
-        if reasoning_effort is None:
-            reasoning_effort = kwargs.get("model_reasoning_effort")
-        if reasoning_effort:
-            cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+        self._append_reasoning_effort(cmd, kwargs)
 
-        # Sandbox policy (only if not using yolo which disables sandbox)
-        sandbox = kwargs.get("sandbox")
-        if sandbox and approval_mode != "yolo":
-            cmd.extend(["--sandbox", sandbox])
+        self._append_sandbox_flags(
+            cmd,
+            kwargs,
+            approval_mode=approval_mode,
+            execution_mode=execution_mode,
+        )
 
-        # JSON-event-stream mode is opt-in. The default leaves codex in
-        # terminal-UI mode so the PTY recording captures what a human
-        # would see at the terminal — the timeline viewer's terminal
-        # renderer can then play it back faithfully. ``--json`` flips
-        # codex to a structured JSONL stream on stdout that the
-        # terminal renderer cannot render without a structured-event
-        # parser. See the docstring above for the full rationale.
-        json_output = kwargs.get("json_output", "false").lower() == "true"
         if json_output:
             cmd.append("--json")
 
@@ -103,3 +109,59 @@ class CodexProvider(CLIProvider):
         cmd.append(prompt)
 
         return cmd
+
+    @staticmethod
+    def _append_approval_flags(
+        cmd: list[str],
+        *,
+        approval_mode: str,
+        execution_mode: str,
+    ) -> None:
+        if approval_mode == "yolo":
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        elif approval_mode == "full-auto":
+            if execution_mode == "exec":
+                cmd.append("--full-auto")
+            else:
+                cmd.extend(["--ask-for-approval", "never"])
+
+    @staticmethod
+    def _append_reasoning_effort(
+        cmd: list[str],
+        kwargs: Mapping[str, object],
+    ) -> None:
+        reasoning_effort = kwargs.get("reasoning_effort")
+        if reasoning_effort is None:
+            reasoning_effort = kwargs.get("model_reasoning_effort")
+        if reasoning_effort:
+            cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
+
+    @staticmethod
+    def _append_sandbox_flags(
+        cmd: list[str],
+        kwargs: Mapping[str, object],
+        *,
+        approval_mode: str,
+        execution_mode: str,
+    ) -> None:
+        sandbox = kwargs.get("sandbox")
+        if sandbox is None and approval_mode == "full-auto" and execution_mode == "interactive":
+            sandbox = "workspace-write"
+        if sandbox and approval_mode != "yolo":
+            cmd.extend(["--sandbox", str(sandbox)])
+
+    @staticmethod
+    def _execution_mode(kwargs: Mapping[str, object]) -> str:
+        raw = str(kwargs.get("execution_mode", "interactive")).strip().lower()
+        if raw in {"interactive", "tui"}:
+            return "interactive"
+        if raw in {"exec", "non-interactive", "noninteractive"}:
+            return "exec"
+        raise ValueError(
+            "Codex execution_mode must be 'interactive' or 'exec' "
+            f"(got {raw!r})"
+        )
+
+    @staticmethod
+    def _truthy(value: object) -> bool:
+        return str(value).strip().lower() == "true"

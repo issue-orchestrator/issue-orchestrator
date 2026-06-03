@@ -43,6 +43,7 @@ agents:
     ai_system: "claude-code"
     # provider: "claude-code"       # Overrides default_agent.provider
     # provider_args: {}               # Provider-specific args, e.g.:
+    #   execution_mode: "interactive" # Codex: interactive (default) or exec
     #   approval_mode: "full-auto"    # Codex
     #   sandbox: "workspace-write"    # Codex
     #   reasoning_effort: "xhigh"     # Codex

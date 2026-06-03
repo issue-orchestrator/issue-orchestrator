@@ -157,8 +157,8 @@ class TestAgentConfig:
         assert config.model == "sonnet"
         assert config.timeout_minutes == 45
 
-    def test_get_command_legacy_includes_system_prompt_variable(self, tmp_path):
-        """Test legacy command path includes {system_prompt} with completion command docs."""
+    def test_get_command_template_includes_system_prompt_variable(self, tmp_path):
+        """Test custom command path includes {system_prompt} with completion command docs."""
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Task instructions")
 
@@ -357,8 +357,10 @@ class TestAgentConfig:
 
         import shlex
         tokens = shlex.split(cmd)
-        assert tokens[:2] == ["codex", "exec"]
-        assert "--full-auto" in tokens
+        assert tokens[0] == "codex"
+        assert "exec" not in tokens[:2]
+        assert "--ask-for-approval" in tokens
+        assert "never" in tokens
         assert "gpt-5.4" in tokens
         config_idx = tokens.index("-c")
         assert tokens[config_idx + 1] == 'model_reasoning_effort="xhigh"'

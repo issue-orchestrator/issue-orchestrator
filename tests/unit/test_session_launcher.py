@@ -12,6 +12,7 @@ Tests mock at port boundaries, not internal patches, following the hexagonal arc
 
 import json
 import os
+import shlex
 import pytest
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -971,6 +972,24 @@ class TestLaunchReviewSession:
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__review-1")
 
+    def test_review_launch_threads_issue_label_provider_args(self, launcher_bundle):
+        """Label-derived provider args should reach review command and wrapper."""
+        launcher_bundle.launcher.config.agents["agent:reviewer"].provider = "claude-code"
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+            issue_labels=("agent:web", "verbose"),
+        )
+
+        result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "--verbose" in shlex.split(command)
+
     def test_fails_when_no_review_agent_configured(self, session_launcher):
         """Verify fails when no code review agent configured (line 418)."""
         session_launcher.config.code_review_agent = None
@@ -1194,6 +1213,29 @@ class TestLaunchRetrospectiveReviewSession:
         assert event.data["task"] == TaskKind.RETROSPECTIVE_REVIEW.value
         assert event.data["prior_pr_number"] == 512
         assert event.data["source_agent"] == "agent:web"
+
+    def test_retrospective_review_threads_issue_label_provider_args(
+        self,
+        launcher_bundle,
+    ):
+        launcher_bundle.launcher.config.agents["agent:reviewer"].provider = "claude-code"
+        review = PendingRetrospectiveReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="365"),
+            issue_number=365,
+            issue_title="Review old implementation",
+            agent_label="agent:web",
+            trigger_label="lack-of-review-redo",
+            issue_labels=("agent:web", "lack-of-review-redo", "verbose"),
+        )
+
+        result = launcher_bundle.launcher.launch_retrospective_review_session(
+            review,
+            active_sessions=[],
+        )
+
+        assert result.success is True
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "--verbose" in shlex.split(command)
 
     def test_unset_prior_pr_is_resolved_lazily_at_launch(
         self,

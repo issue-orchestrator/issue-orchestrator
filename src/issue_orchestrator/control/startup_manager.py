@@ -578,6 +578,7 @@ class StartupManager:
                     pr_url=pr_url,
                     branch_name=pr.branch,
                     _issue_number=issue_number,
+                    issue_labels=validity.issue_labels,
                 )
                 if review not in state.pending_reviews:
                     state.pending_reviews.append(review)
