@@ -384,12 +384,13 @@ def main() -> None:  # noqa: C901, PLR0912
         print(f"Note: Skipping validation for '{status}' status (agent is reporting a problem)")
 
     if validation_result and assets is not None:
-        record_validation_artifacts(
+        validation_record_path = record_validation_artifacts(
             worktree_root,
             assets.validation_artifacts,
             validation_result,
         )
-        record.validation_record_path = str(assets.validation_artifacts.record_path)
+        if validation_record_path is not None:
+            record.validation_record_path = str(validation_record_path)
 
     if validation_result and not validation_result.passed:
         print(f"\n{'='*60}")

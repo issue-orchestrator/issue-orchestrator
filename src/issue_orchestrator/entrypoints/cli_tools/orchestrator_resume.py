@@ -9,8 +9,9 @@ import urllib.request
 
 from collections.abc import MutableMapping
 from dataclasses import dataclass
+from pathlib import Path
 
-from ...infra.env import get_env
+from ...infra.env import ENV_PREFIX, get_env
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,31 +46,75 @@ def api_request_headers() -> ApiRequestHeaders:
     return ApiRequestHeaders.from_agent_environment()
 
 
+@dataclass(frozen=True, slots=True)
+class ResumeTarget:
+    """Typed Control API endpoint identity for an agent resume callback."""
+
+    port: str
+    issue_number: str
+
+    @classmethod
+    def from_agent_environment(cls) -> "ResumeTarget":
+        raw_port = get_env("API_PORT") or os.environ.get("ORCHESTRATOR_API_PORT")
+        raw_issue_number = get_env("ISSUE_NUMBER") or os.environ.get(
+            "ORCHESTRATOR_ISSUE_NUMBER"
+        )
+        port = raw_port.strip() if raw_port else ""
+        issue_number = raw_issue_number.strip() if raw_issue_number else ""
+        missing: list[str] = []
+        if port == "":
+            missing.append("ISSUE_ORCHESTRATOR_API_PORT")
+        if issue_number == "":
+            missing.append("ISSUE_ORCHESTRATOR_ISSUE_NUMBER")
+        if missing:
+            raise ValueError(
+                f"missing environment variables: {', '.join(missing)}"
+            )
+        return cls(port=port, issue_number=issue_number)
+
+    def url(self) -> str:
+        return f"http://localhost:{self.port}/api/issues/{self.issue_number}/resume"
+
+
+@dataclass(frozen=True, slots=True)
+class ResumeRequestBody:
+    """Typed request body for an agent-triggered resume callback."""
+
+    run_dir: Path
+
+    def __post_init__(self) -> None:
+        if not self.run_dir.is_absolute():
+            raise ValueError(f"{ENV_PREFIX}RUN_DIR must be absolute")
+
+    @classmethod
+    def from_agent_environment(cls) -> "ResumeRequestBody":
+        run_dir = get_env("RUN_DIR")
+        if not run_dir or not run_dir.strip():
+            raise ValueError(f"{ENV_PREFIX}RUN_DIR is required")
+        return cls(run_dir=Path(run_dir))
+
+    def to_json_bytes(self) -> bytes:
+        return json.dumps({"run_dir": str(self.run_dir)}).encode("utf-8")
+
+
 def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None]:
     """Trigger the orchestrator to resume processing for this issue."""
-    port = get_env("API_PORT") or os.environ.get("ORCHESTRATOR_API_PORT")
-    issue_number = get_env("ISSUE_NUMBER") or os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
-
-    if not port or not issue_number:
-        missing: list[str] = []
-        if not port:
-            missing.append("ISSUE_ORCHESTRATOR_API_PORT")
-        if not issue_number:
-            missing.append("ISSUE_ORCHESTRATOR_ISSUE_NUMBER")
+    try:
+        target = ResumeTarget.from_agent_environment()
+        request_body = ResumeRequestBody.from_agent_environment()
+    except ValueError as exc:
         return False, (
-            f"Cannot resume: missing environment variables: {', '.join(missing)}. "
-            "Completion record written. Resume processing from the web UI."
+            f"Cannot resume: {exc}. Completion record written. "
+            "Resume processing from the web UI."
         )
 
-    url = f"http://localhost:{port}/api/issues/{issue_number}/resume"
-
     if verbose:
-        print(f"Triggering orchestrator resume for issue #{issue_number}...")
+        print(f"Triggering orchestrator resume for issue #{target.issue_number}...")
 
     try:
         req = urllib.request.Request(
-            url,
-            data=b"{}",
+            target.url(),
+            data=request_body.to_json_bytes(),
             headers=api_request_headers().to_mutable_mapping(),
             method="POST",
         )

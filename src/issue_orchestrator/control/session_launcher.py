@@ -372,7 +372,6 @@ class SessionLauncher:
         """
         orch_bin = Path(sys.executable).parent
         orch_src = Path(__file__).resolve().parents[2]
-        run_dir = run_assets.run_dir
         runtime_tool_assignments = " ".join(build_runtime_tool_env_assignments(worktree_path))
         config_exports = ""
         if self.config.config_path is not None:
@@ -389,8 +388,8 @@ class SessionLauncher:
             f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
             f"{config_exports}"
             f" {ENV_PREFIX}API_PORT='{self.config.control_api_port}'"
-            f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
-            f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
+            f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_assets.run_dir}'"
+            f" {ENV_PREFIX}RUN_DIR='{run_assets.run_dir}'"
             f" {ENV_PREFIX}WORKTREE='{worktree_path}'"
             f" {runtime_tool_assignments}"
             f' PYTHONPATH="{orch_src}:${{PYTHONPATH:-}}"'
@@ -949,7 +948,6 @@ class SessionLauncher:
             ], context="launch_session_creation_failed")
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, "Failed to create terminal session")
-
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
 
@@ -1554,7 +1552,6 @@ class SessionLauncher:
             session_name,
             session_created,
         )
-
 
         # Create pseudo-issue for session tracking
         pseudo_issue = Issue(

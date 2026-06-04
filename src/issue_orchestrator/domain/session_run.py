@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -131,7 +132,7 @@ class SessionRunAssets:
         cls,
         *,
         run_dir: Path,
-        manifest: dict[str, Any],
+        manifest: Mapping[str, Any],
     ) -> "SessionRunAssets":
         session_name = _required_manifest_string(manifest, "session_name")
         run_id = _required_manifest_string(manifest, "run_id")
@@ -223,7 +224,7 @@ class SessionRunAssets:
         return DiagnosticArtifactPath(run_dir=self.run_dir, path=self.run_dir / filename)
 
 
-def _required_manifest_string(manifest: dict[str, Any], key: str) -> str:
+def _required_manifest_string(manifest: Mapping[str, Any], key: str) -> str:
     raw = manifest.get(key)
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError(f"session run manifest missing required {key!r}")

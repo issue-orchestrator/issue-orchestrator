@@ -171,7 +171,7 @@ def record_validation_artifacts(
     worktree_root: Path,
     validation_artifacts: ValidationArtifactPaths,
     validation_result: AgentGateResult,
-) -> None:
+) -> Path | None:
     """Attach validation artifacts to the session output for diagnostics."""
     run_dir = validation_artifacts.run_dir
     if not run_dir.is_dir():
@@ -179,7 +179,7 @@ def record_validation_artifacts(
     record = validation_result.record
     record_path = validation_result.record_path
     if not record_path and not record:
-        return
+        return None
 
     session_output = FileSystemSessionOutput()
     run_record_path = validation_artifacts.record_path
@@ -207,7 +207,7 @@ def record_validation_artifacts(
         )
 
     if not record:
-        return
+        return resolved_record_path
 
     _copy_validation_log(
         worktree_root=worktree_root,
@@ -232,6 +232,7 @@ def record_validation_artifacts(
         record_path=resolved_record_path,
         junit_xml_paths=_runtime_validation_junit_xml_paths(worktree_root),
     )
+    return resolved_record_path
 
 
 def _runtime_validation_junit_xml_paths(worktree: Path) -> tuple[str, ...]:

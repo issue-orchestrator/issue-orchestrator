@@ -1865,19 +1865,19 @@ class TestReviewExchangeExecution:
             review_issues="Missing error handling and unit tests",
         )
         worktree = worktree_with_completion(record)
+        run_assets = make_session_run_assets(worktree)
 
         # Process with pr_number to indicate review session
         result = processor.process(
-            worktree, run_assets=make_session_run_assets(worktree), issue_number=42, issue_title="Fix bug", pr_number=456
+            worktree,
+            run_assets=run_assets,
+            issue_number=42,
+            issue_title="Fix bug",
+            pr_number=456,
         )
 
         assert result.success
-        # Verify feedback file was written to session run directory
-        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
-        # Find the session directory (may have timestamp suffix)
-        session_dirs = list(sessions_dir.iterdir()) if sessions_dir.exists() else []
-        assert len(session_dirs) > 0, "Session directory should exist"
-        feedback_file = session_dirs[0] / "reviewer-feedback.json"
+        feedback_file = run_assets.run_dir / "reviewer-feedback.json"
         assert feedback_file.exists(), "Feedback file should be written"
         # Verify content
         feedback_data = json.loads(feedback_file.read_text())
@@ -1899,18 +1899,18 @@ class TestReviewExchangeExecution:
             review_issues=None,  # No issues
         )
         worktree = worktree_with_completion(record)
+        run_assets = make_session_run_assets(worktree)
 
         result = processor.process(
-            worktree, run_assets=make_session_run_assets(worktree), issue_number=42, issue_title="Fix bug", pr_number=456
+            worktree,
+            run_assets=run_assets,
+            issue_number=42,
+            issue_title="Fix bug",
+            pr_number=456,
         )
 
         assert result.success
-        # Feedback file should NOT exist
-        sessions_dir = worktree / ".issue-orchestrator" / "sessions"
-        if sessions_dir.exists():
-            for session_dir in sessions_dir.iterdir():
-                feedback_file = session_dir / "reviewer-feedback.json"
-                assert not feedback_file.exists(), "Feedback file should not be written for approved reviews"
+        assert not (run_assets.run_dir / "reviewer-feedback.json").exists()
 
 
 class TestCompletionProcessorPRActions:

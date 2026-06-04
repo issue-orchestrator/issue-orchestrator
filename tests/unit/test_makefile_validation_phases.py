@@ -134,7 +134,7 @@ def test_validate_pr_uses_cache_aware_verify_script():
 
 def test_agent_validation_targets_emit_timing_markers():
     simulated_lines = _dry_run("test-simulated-agent", SIMULATED_PARALLEL="0")
-    integration_lines = _dry_run("test-integration-agent", INTEGRATION_PARALLEL="0")
+    integration_lines = _dry_run("test-integration-agent", INTEGRATION_AGENT_PARALLEL="0")
 
     _find_line(simulated_lines, "[validate-timing] START target=$target")
     _find_line(simulated_lines, "[validate-timing] END target=$target")
@@ -143,3 +143,31 @@ def test_agent_validation_targets_emit_timing_markers():
     _find_line(integration_lines, "[validate-timing] START target=$target")
     _find_line(integration_lines, "[validate-timing] END target=$target")
     _find_line(integration_lines, 'target="test-integration-agent"')
+
+
+def test_agent_backed_integration_runs_serial_by_default():
+    lines = _dry_run("test-integration-agent")
+    pytest_line = lines[
+        _find_line(
+            lines,
+            "tests/integration/test_claude_execution.py",
+            "tests/integration/test_codex_execution.py",
+            "tests/integration/test_live_agent_chain.py",
+        )
+    ]
+
+    assert " -n " not in f" {pytest_line} "
+
+
+def test_agent_backed_integration_allows_explicit_parallel_override():
+    lines = _dry_run("test-integration-agent", INTEGRATION_AGENT_PARALLEL="2")
+    pytest_line = lines[
+        _find_line(
+            lines,
+            "tests/integration/test_claude_execution.py",
+            "tests/integration/test_codex_execution.py",
+            "tests/integration/test_live_agent_chain.py",
+        )
+    ]
+
+    assert " -n 2 " in f" {pytest_line} "

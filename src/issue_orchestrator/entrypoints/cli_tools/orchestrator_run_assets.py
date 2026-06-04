@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from ...domain.session_run import SessionRunAssets
 from ...infra.env import ENV_PREFIX, get_env
@@ -33,17 +34,14 @@ def require_orchestrator_run_assets_for_session(
     if not manifest_path.is_file():
         _die(f"{ENV_PREFIX}RUN_DIR is missing manifest.json: {run_dir}")
 
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        _die(f"{ENV_PREFIX}RUN_DIR manifest is invalid JSON: {manifest_path}: {exc}")
+    manifest = _load_manifest(manifest_path)
 
     try:
         assets = SessionRunAssets.from_manifest_payload(
             run_dir=run_dir,
             manifest=manifest,
         )
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         _die(f"{ENV_PREFIX}RUN_DIR manifest is invalid: {exc}")
 
     if assets.worktree_path.resolve() != worktree_root.resolve():
@@ -59,6 +57,18 @@ def require_orchestrator_run_assets_for_session(
         )
 
     return assets
+
+
+def _load_manifest(manifest_path: Path) -> Mapping[str, Any]:
+    try:
+        raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        _die(f"{ENV_PREFIX}RUN_DIR manifest cannot be read: {manifest_path}: {exc}")
+    except json.JSONDecodeError as exc:
+        _die(f"{ENV_PREFIX}RUN_DIR manifest is invalid JSON: {manifest_path}: {exc}")
+    if not isinstance(raw_manifest, dict):
+        _die(f"{ENV_PREFIX}RUN_DIR manifest must be a JSON object: {manifest_path}")
+    return raw_manifest
 
 
 def _die(message: str) -> NoReturn:

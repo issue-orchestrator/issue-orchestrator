@@ -1213,6 +1213,27 @@ validation:
             for artifact in manifest["artifacts"].values()
         )
 
+    def test_record_validation_artifacts_returns_none_without_record(
+        self, tmp_path: Path
+    ):
+        run = FileSystemSessionOutput().start_run(tmp_path, "test-123")
+
+        record_path = record_validation_artifacts(
+            tmp_path,
+            run.validation_artifacts,
+            AgentGateResult(
+                passed=True,
+                reason="Validation passed",
+                record=None,
+                record_path=None,
+            ),
+        )
+
+        manifest = FileSystemSessionOutput().read_manifest(run.run_dir)
+        assert record_path is None
+        assert manifest is not None
+        assert "validation_record_path" not in manifest
+
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
     def test_agent_gate_runs_when_configured(self, _mock_dirty, tmp_path, capsys):
         """Test that agent gate validation runs when configured via coding-done."""
@@ -1757,6 +1778,49 @@ class TestOrchestratorModeSkips:
             assert data["validation_record_path"] == str(
                 run_dir / "validation-record.json"
             )
+        finally:
+            os.chdir(original_cwd)
+            os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
+
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_orchestrator_mode_does_not_write_dangling_validation_record_path(
+        self,
+        _mock_dirty,
+        tmp_path,
+    ):
+        """Completion records only point at validation records that exist."""
+        self._setup_git_repo(tmp_path)
+        run_dir = self._setup_config_with_passing_validation(tmp_path)
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, _orchestrator_env(run_dir)):
+                with patch('sys.argv', [
+                    'coding-done', 'completed',
+                    '--implementation', 'Added feature',
+                    '--problems', 'None',
+                ]):
+                    with patch(
+                        'issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id',
+                        return_value='test-123',
+                    ):
+                        with patch(
+                            'issue_orchestrator.entrypoints.cli_tools.coding_done.run_validation',
+                            return_value=AgentGateResult(
+                                passed=True,
+                                reason="Validation passed",
+                                record=None,
+                                record_path=None,
+                            ),
+                        ):
+                            coding_done_main()
+
+            completion_record = json.loads(
+                (tmp_path / COMPLETION_RECORD_PATH).read_text()
+            )
+            assert completion_record.get("validation_record_path") is None
+            assert not (run_dir / "validation-record.json").exists()
         finally:
             os.chdir(original_cwd)
             os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
