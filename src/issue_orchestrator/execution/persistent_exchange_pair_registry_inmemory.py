@@ -42,14 +42,12 @@ class PersistentExchangePair:
     boundary. Returned by :meth:`InMemoryPersistentExchangePairRegistry.acquire`
     to execution-layer callers.
 
-    Path fields are pair-lifetime scoped, not per-exchange. Agent-written
-    response/report paths live inside the role worktrees so sandboxed agents
-    can write them; recordings and validation mirrors live under the
-    persistent pair root. The agent's environment is set once at spawn to
-    point at these stable paths; if the pair survives across exchanges (B2
-    onward) every round of every exchange reads/writes the same physical
-    files. Per-exchange artifacts (``chapters.json``, ``summary.json``) still
-    live in that exchange's ``run_dir`` and are unaffected by this scope.
+    Pair write paths are pair-lifetime scoped. Agent-written response/report
+    paths live inside the role worktrees so sandboxed agents can write them;
+    recordings and coder completion/validation paths live under the persistent
+    pair root. ``exchange_run_id`` and ``run_dir`` record the current typed
+    exchange run consuming those stable pair-scoped writes; the pair contract
+    owner rebinds them on each exchange acquire.
 
     ``created_at`` is wall-clock seconds since epoch, set once at
     construction. ``last_used_at`` is updated on every cache hit so
@@ -72,6 +70,8 @@ class PersistentExchangePair:
     reviewer_session: PersistentSession
     reviewer_worktree_path: Path
     issue_key: Hashable
+    exchange_run_id: str
+    run_dir: Path
     created_at: float
     coder_response_path: Path
     reviewer_response_path: Path
@@ -210,7 +210,7 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
         ):
             try:
                 close_persistent_session(session)
-            except Exception:  # noqa: BLE001
+            except (OSError, RuntimeError, TimeoutError, ValueError):
                 logger.exception(
                     "[exchange-pair-registry] %s session close raised "
                     "issue_key=%s pid=%d reason=%s",
@@ -220,7 +220,7 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
         if self._on_release is not None:
             try:
                 self._on_release(pair, reason)
-            except Exception:  # noqa: BLE001
+            except (OSError, RuntimeError, TimeoutError, ValueError):
                 logger.exception(
                     "[exchange-pair-registry] on_release hook raised "
                     "issue_key=%s reason=%s reviewer_worktree=%s",

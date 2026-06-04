@@ -2,7 +2,7 @@
 
 These tests verify the behavior of restoring session tracking after restart:
 - Session restoration from discovered running sessions
-- Handling of orphaned sessions (no worktree found)
+- Handling of orphaned sessions (no recorded run assets)
 - Error recovery during restoration
 - Validation of restored session state
 
@@ -10,6 +10,7 @@ Tests use mock adapters at port boundaries, not internal patches.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock
@@ -21,6 +22,7 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.domain.session_key import TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.session_runner import DiscoveredSession
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 class MockRepositoryHost:
@@ -58,6 +60,7 @@ def make_discovered_session(
     tab_name: str | None = None,
     is_review: bool = False,
     session_name: str | None = None,
+    worktree: Path | None = None,
 ) -> DiscoveredSession:
     """Create a DiscoveredSession for testing."""
     if tab_name is None:
@@ -72,7 +75,24 @@ def make_discovered_session(
     )
     if session_name:
         discovered["session_name"] = session_name
+    if worktree is not None:
+        asset_session_name = session_name or _asset_session_name(
+            issue_number,
+            tab_name,
+            is_review,
+        )
+        run_assets = make_session_run_assets(worktree, session_name=asset_session_name)
+        discovered["run_dir"] = str(run_assets.run_dir)
     return discovered
+
+
+def _asset_session_name(issue_number: int, tab_name: str, is_review: bool) -> str:
+    if not is_review:
+        return f"issue-{issue_number}"
+    match = re.search(r"\bReview PR #(\d+)\b", tab_name)
+    if match:
+        return f"review-{match.group(1)}"
+    return f"review-{issue_number}"
 
 
 def make_config(
@@ -145,10 +165,12 @@ class TestRestoreSessionsBasic:
         config = make_config(agents={"agent:web": make_agent_config(tmp_path)})
         restorer = SessionRestorer(config, MockRepositoryHost(), MockWorkingCopy())
         restorer.restore_sessions = MagicMock(return_value=[])
+        run_assets = make_session_run_assets(tmp_path, session_name="issue-123")
 
         restorer.restore_known_terminal(
             issue_number=123,
             session_name="issue-123",
+            run_dir=run_assets.run_dir,
             is_review=False,
             already_tracked=[],
         )
@@ -160,6 +182,7 @@ class TestRestoreSessionsBasic:
                 "tab_name": "",
                 "is_review": False,
                 "session_name": "issue-123",
+                "run_dir": str(run_assets.run_dir),
             }
         ]
 
@@ -188,7 +211,7 @@ class TestRestoreSessionsBasic:
         restorer = SessionRestorer(config, repo_host, working_copy)
 
         # Act
-        discovered = [make_discovered_session(123, is_review=False)]
+        discovered = [make_discovered_session(123, is_review=False, worktree=worktree)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         # Assert
@@ -224,7 +247,14 @@ class TestRestoreSessionsBasic:
         restorer = SessionRestorer(config, repo_host, working_copy)
 
         # Tab name format: "#<issue> Review PR #<pr>"
-        discovered = [make_discovered_session(100, tab_name="#100 Review PR #456", is_review=True)]
+        discovered = [
+            make_discovered_session(
+                100,
+                tab_name="#100 Review PR #456",
+                is_review=True,
+                worktree=worktree,
+            )
+        ]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         assert len(restored) == 1
@@ -290,8 +320,8 @@ class TestRestoreSessionsBasic:
 
         # Same issue discovered twice
         discovered = [
-            make_discovered_session(123, tab_name="#123 First tab"),
-            make_discovered_session(123, tab_name="#123 Second tab"),
+            make_discovered_session(123, tab_name="#123 First tab", worktree=worktree),
+            make_discovered_session(123, tab_name="#123 Second tab", worktree=worktree),
         ]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
@@ -300,13 +330,12 @@ class TestRestoreSessionsBasic:
 
 
 class TestOrphanedSessionHandling:
-    """Tests for handling sessions without corresponding worktrees."""
+    """Tests for handling sessions without recorded run assets."""
 
-    def test_cleans_up_orphaned_session_without_worktree(self, tmp_path, caplog):
-        """Sessions without worktrees are skipped and logged."""
+    def test_skips_discovered_session_without_run_assets(self, tmp_path, caplog):
+        """Sessions without recorded run assets are skipped and logged."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        # Note: NO worktree created for issue 123
 
         agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
@@ -325,7 +354,7 @@ class TestOrphanedSessionHandling:
         assert len(restored) == 0
 
         # Warning logged
-        assert "Could not find worktree" in caplog.text
+        assert "has no recorded run_dir" in caplog.text
 
 
 class TestErrorRecovery:
@@ -352,8 +381,8 @@ class TestErrorRecovery:
         restorer = SessionRestorer(config, repo_host, working_copy)
 
         discovered = [
-            make_discovered_session(100),  # Will fail - no worktree
-            make_discovered_session(200),  # Will succeed
+            make_discovered_session(100),  # Will fail - no recorded run assets
+            make_discovered_session(200, worktree=worktree_200),  # Will succeed
         ]
 
         with caplog.at_level(logging.WARNING):
@@ -385,7 +414,7 @@ class TestErrorRecovery:
 
         restorer = SessionRestorer(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(123)]
+        discovered = [make_discovered_session(123, worktree=worktree)]
         with caplog.at_level(logging.ERROR):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
 
@@ -400,18 +429,12 @@ class TestStateValidation:
     """Tests for state validation during restoration."""
 
     def test_skips_session_without_agent_config(self, tmp_path, caplog):
-        """Sessions without available agent config are treated as orphaned.
-
-        When there are no agents configured, _find_worktree cannot find any
-        worktrees (since it iterates over agent repo_roots). This results in
-        the session being treated as orphaned and cleaned up.
-        """
+        """Sessions without available agent config are skipped."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         worktree = tmp_path / "repo-123"
         worktree.mkdir()
 
-        # No agents configured - means no worktrees can be found
         config = make_config(agents={})
         config.repo_root = repo_root
 
@@ -423,7 +446,7 @@ class TestStateValidation:
 
         restorer = SessionRestorer(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(123)]
+        discovered = [make_discovered_session(123, worktree=worktree)]
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
 
@@ -451,7 +474,7 @@ class TestStateValidation:
 
         restorer = SessionRestorer(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(123)]
+        discovered = [make_discovered_session(123, worktree=worktree)]
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
 
@@ -478,7 +501,9 @@ class TestStateValidation:
 
         restorer = SessionRestorer(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(123, tab_name="#123 My task")]
+        discovered = [
+            make_discovered_session(123, tab_name="#123 My task", worktree=worktree)
+        ]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         # Session still restored with minimal issue
@@ -507,7 +532,7 @@ class TestStateValidation:
 
         restorer = SessionRestorer(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(123)]
+        discovered = [make_discovered_session(123, worktree=worktree)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         # Session restored with fallback agent config
@@ -537,7 +562,7 @@ class TestBranchNameResolution:
 
         restorer = SessionRestorer(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(123)]
+        discovered = [make_discovered_session(123, worktree=worktree)]
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
 
@@ -546,16 +571,15 @@ class TestBranchNameResolution:
         assert "Failed to get branch name" in caplog.text
 
 
-class TestWorktreeFinding:
-    """Tests for worktree discovery logic."""
+class TestWorktreeFromRunAssets:
+    """Tests for typed worktree restoration from run assets."""
 
-    def test_finds_worktree_in_sibling_directory(self, tmp_path):
-        """Worktree is found as sibling of repo_root with issue number suffix."""
+    def test_uses_worktree_recorded_in_run_assets(self, tmp_path):
+        """Worktree comes from the run manifest, not sibling directory search."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
-        # Worktree is sibling: repo-123
-        worktree = tmp_path / "repo-123"
-        worktree.mkdir()
+        worktree = tmp_path / "custom" / "agent-worktree"
+        worktree.mkdir(parents=True)
 
         agent_config = make_agent_config(tmp_path)
         config = make_config(agents={"agent:web": agent_config})
@@ -569,7 +593,7 @@ class TestWorktreeFinding:
 
         restorer = SessionRestorer(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(123)]
+        discovered = [make_discovered_session(123, worktree=worktree)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         assert len(restored) == 1
@@ -598,7 +622,14 @@ class TestReviewSessionSpecifics:
         restorer = SessionRestorer(config, repo_host, working_copy)
 
         # Tab name without PR number pattern
-        discovered = [make_discovered_session(100, tab_name="#100 Review Something", is_review=True)]
+        discovered = [
+            make_discovered_session(
+                100,
+                tab_name="#100 Review Something",
+                is_review=True,
+                worktree=worktree,
+            )
+        ]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         assert len(restored) == 1
@@ -624,7 +655,7 @@ class TestReviewSessionSpecifics:
 
         restorer = SessionRestorer(config, repo_host, working_copy)
 
-        discovered = [make_discovered_session(100, is_review=True)]
+        discovered = [make_discovered_session(100, is_review=True, worktree=worktree)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
         assert len(restored) == 1

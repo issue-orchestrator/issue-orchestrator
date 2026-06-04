@@ -14,6 +14,7 @@ from issue_orchestrator.control.lease_renewer import LeaseRenewer
 from issue_orchestrator.domain.claim import ClaimFetchError
 from issue_orchestrator.domain.lease_config import LeaseConfig
 from issue_orchestrator.domain.models import Issue, Session, SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 class MockClaimManager:
@@ -54,6 +55,10 @@ def create_session(
         terminal_id=f"issue-{issue_number}",
         worktree_path=Path("/tmp/worktree"),
         branch_name="test-branch",
+        run_assets=make_session_run_assets(
+            Path("/tmp/worktree"),
+            session_name=f"issue-{issue_number}",
+        ),
         completion_path="completion.json",
         agent_label="test-agent",
         lease_id=lease_id,

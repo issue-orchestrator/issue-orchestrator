@@ -20,6 +20,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from issue_orchestrator.infra.env import ENV_PREFIX
+from tests.unit.session_run_helpers import make_session_run_assets
 
 from .conftest import xdist_timeout
 
@@ -465,7 +466,10 @@ class TestClaudeViaAdapterPath:
             monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(plugin_state_root))
 
             escaped_prompt = ISSUE_4057_PROMPT.replace('"', '\\"')
+            session_name = "issue-999"
+            run_assets = make_session_run_assets(worktree, session_name=session_name)
             claude_cmd = (
+                f"export {ENV_PREFIX}RUN_DIR='{run_assets.run_dir}' && "
                 "claude --print --dangerously-skip-permissions "
                 f"\"{escaped_prompt}\""
             )
@@ -476,28 +480,28 @@ class TestClaudeViaAdapterPath:
                 command=claude_cmd,
                 working_dir=str(worktree),
                 title="Claude subprocess integration",
-                session_name="issue-999",
+                session_name=session_name,
             )
             assert created is True
 
-            log_path = plugin._session_log_path(worktree, "issue-999")
+            log_path = run_assets.log_path
 
             # Confirm real #4057-like session startup and run-scoped log creation.
             import time
             deadline = time.monotonic() + 60
             session_became_live = False
             while time.monotonic() < deadline:
-                if plugin.session_exists(0, "issue-999"):
+                if plugin.session_exists(0, session_name):
                     session_became_live = True
                 if session_became_live and log_path.exists():
                     break
                 time.sleep(0.2)
             else:
-                plugin.kill_session(0, "issue-999")
+                plugin.kill_session(0, session_name)
                 raise AssertionError("Claude subprocess session did not become live with run-scoped log")
 
-            if plugin.session_exists(0, "issue-999"):
-                plugin.kill_session(0, "issue-999")
+            if plugin.session_exists(0, session_name):
+                plugin.kill_session(0, session_name)
                 exit_deadline = time.monotonic() + 30
                 while time.monotonic() < exit_deadline:
                     if not plugin.session_exists(0, "issue-999"):

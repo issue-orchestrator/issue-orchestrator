@@ -519,6 +519,7 @@ class PublishJobExecutor:
             worktree=worktree,
             issue_number=job.issue_number,
             issue_title=job.issue_title,
+            run_assets=job.run_assets,
             pr_number=job.pr_number,
             completion_path=job.completion_path,
             agent_label=job.agent_label,

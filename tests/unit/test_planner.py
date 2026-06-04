@@ -53,6 +53,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def make_config(**kwargs) -> Config:
@@ -98,6 +99,10 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
         terminal_id=f"issue-{issue.number}",
         worktree_path=Path(f"/tmp/worktree-{issue.number}"),
         branch_name=f"issue-{issue.number}",
+        run_assets=make_session_run_assets(
+            Path(f"/tmp/worktree-{issue.number}"),
+            session_name=f"issue-{issue.number}",
+        ),
         started_at=datetime.now(),
         status=SessionStatus.RUNNING,
     )
@@ -325,6 +330,10 @@ class TestObservedCompletionLabels:
                 completion_path=".issue-orchestrator/completion.json",
             ),
             record=record,
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree-42"),
+                session_name="issue-42",
+            ),
         )
 
         snapshot = make_snapshot(

@@ -133,6 +133,36 @@ def _make_review_exchange_runner(
     )
 
 
+def _run_review_exchange_for_test(
+    cre: CompletionReviewExchange,
+    session_output: FileSystemSessionOutput,
+    *,
+    worktree: Path,
+    issue_number: int,
+    issue_title: str,
+    session_name: str,
+    agent_label: str,
+    events: object,
+    event_context: object,
+):
+    exchange_run = session_output.start_review_exchange_run(
+        worktree,
+        issue_number=issue_number,
+        parent_session_name=session_name,
+        agent_label=agent_label,
+    )
+    return cre.run_review_exchange_loop(
+        exchange_run=exchange_run,
+        worktree=worktree,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        session_name=session_name,
+        agent_label=agent_label,
+        events=events,
+        event_context=event_context,
+    )
+
+
 def _make_config(
     tmp_path: Path,
     agent: AgentConfig,
@@ -247,13 +277,14 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=4057,
         issue_title="Test integration",
         session_name="issue-4057",
         agent_label="agent:backend",
-        on_started=lambda run_dir: captured_started.setdefault("on_started_run_dir", run_dir),
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -388,13 +419,14 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        _session_output_for_test,
         worktree=coder_wt,
         issue_number=4058,
         issue_title="Multi-round integration",
         session_name="issue-4058",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -466,13 +498,14 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=4061,
         issue_title="Codex-shaped interactive integration",
         session_name="issue-4061",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=MagicMock(),
         event_context=EventContext(),
     )
@@ -553,13 +586,14 @@ def test_real_interactive_codex_reviewer_round_trips_through_exchange(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=4062,
         issue_title="Real interactive codex reviewer smoke",
         session_name="issue-4062",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -642,13 +676,14 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=358,
         issue_title="One-shot reviewer respawn",
         session_name="issue-358",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -737,13 +772,14 @@ def test_one_shot_coder_respawns_for_later_rework_turn(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=359,
         issue_title="One-shot coder respawn",
         session_name="issue-359",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -813,13 +849,14 @@ def test_persistent_review_exchange_max_rounds_exhausted(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        _session_output_for_test,
         worktree=coder_wt,
         issue_number=4059,
         issue_title="Max-rounds integration",
         session_name="issue-4059",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=MagicMock(),
         event_context=EventContext(),
     )
@@ -910,13 +947,14 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
     from issue_orchestrator.events import EventContext
 
     issue_number = 4060
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        _session_output_for_test,
         worktree=coder_wt,
         issue_number=issue_number,
         issue_title="Two-round projection",
         session_name=f"issue-{issue_number}",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=timeline_sink,
         event_context=EventContext(),
     )
@@ -1028,13 +1066,14 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
     from issue_orchestrator.events import EventContext
 
     def _run_one(session_name: str) -> "ReviewExchangeOutcome":  # noqa: F821
-        return cre.run_review_exchange_loop(
+        return _run_review_exchange_for_test(
+            cre,
+            session_output,
             worktree=coder_wt,
             issue_number=9001,
             issue_title="Persistence integration",
             session_name=session_name,
             agent_label="agent:backend",
-            on_started=lambda _run_dir: None,
             events=MagicMock(),
             event_context=EventContext(),
         )
@@ -1193,13 +1232,14 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
     issue_number = 9101
 
     def _run_one(session_name: str):
-        return cre.run_review_exchange_loop(
+        return _run_review_exchange_for_test(
+            cre,
+            session_output,
             worktree=coder_wt,
             issue_number=issue_number,
             issue_title="Path-stability integration",
             session_name=session_name,
             agent_label="agent:backend",
-            on_started=lambda _run_dir: None,
             events=MagicMock(),
             event_context=EventContext(),
         )

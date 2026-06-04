@@ -17,6 +17,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_CSS_CHUNKS
 from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 TEMPLATE_DIR = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "templates"
@@ -69,6 +70,10 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
         terminal_id=f"issue-{issue.number}",
         worktree_path=Path(f"/tmp/worktree-{issue.number}"),
         branch_name=f"feature/{issue.number}",
+        run_assets=make_session_run_assets(
+            Path(f"/tmp/worktree-{issue.number}"),
+            session_name=f"issue-{issue.number}",
+        ),
         started_at=datetime.now() - timedelta(minutes=6),
     )
 

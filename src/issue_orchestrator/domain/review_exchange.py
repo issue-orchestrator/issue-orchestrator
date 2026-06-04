@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .review_exchange_run import ReviewExchangeRunAssets
+
 if TYPE_CHECKING:
     from .review_exchange_turn import ReviewExchangeTurnPacket
 
@@ -36,16 +38,50 @@ class ReviewExchangeResponse:
 
 
 @dataclass(frozen=True)
+class ReviewExchangeCacheMetadata:
+    """Typed metadata for a cached review-exchange outcome."""
+
+    summary_path: Path
+    validation_record_path: Path
+    head_sha: str = ""
+
+    def to_event_fields(self) -> dict[str, str]:
+        fields = {"review_cache_summary_path": str(self.summary_path)}
+        fields["review_cache_validation_record_path"] = str(
+            self.validation_record_path,
+        )
+        if self.head_sha:
+            fields["review_cache_head_sha"] = self.head_sha
+        return fields
+
+
+@dataclass(frozen=True)
 class ReviewExchangeOutcome:
     """Terminal outcome of a complete review-exchange run."""
 
     status: str  # "ok" | "stopped" | "error"
     rounds: int
     reason: str
+    run_assets: ReviewExchangeRunAssets
     reviewer_response: ReviewExchangeResponse | None = None
-    exchange_dir: Path | None = None
     summary: dict[str, Any] | None = None
-    cache_metadata: dict[str, str] | None = None
+    cache_metadata: ReviewExchangeCacheMetadata | None = None
+
+    @property
+    def run_dir(self) -> Path:
+        return self.run_assets.run_dir
+
+    @property
+    def exchange_dir(self) -> Path:
+        return self.run_assets.exchange_dir
+
+    @property
+    def summary_path(self) -> Path:
+        return self.run_assets.summary_path
+
+    @property
+    def validation_record_path(self) -> Path:
+        return self.run_assets.validation_record_path
 
 
 def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:

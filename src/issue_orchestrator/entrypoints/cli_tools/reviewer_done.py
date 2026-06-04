@@ -16,12 +16,12 @@ import traceback
 from .agent_done import (
     build_completion_record,
     get_issue_number,
-    trigger_orchestrator_resume,
     validate_fields,
     write_completion_record,
     write_error_completion,
     write_marker_file,
 )
+from .orchestrator_resume import trigger_orchestrator_resume
 from ...infra.logging_config import issue_log
 
 import logging

@@ -24,6 +24,10 @@ from issue_orchestrator.domain.review_exchange import (
     ReviewExchangeOutcome,
     ReviewExchangeResponse,
 )
+from issue_orchestrator.domain.review_exchange_run import (
+    ReviewExchangeRun,
+    ReviewExchangeRunAssets,
+)
 from issue_orchestrator.domain.models import (
     CompletionOutcome,
     CompletionRecord,
@@ -32,7 +36,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.ports.background_job import CompletedJob
-from issue_orchestrator.ports.session_output import SessionOutput
+from issue_orchestrator.ports.session_output import ReviewExchangeSummary, SessionOutput
 
 
 class _FakeReviewExchangeRunner:
@@ -47,12 +51,13 @@ class _FakeReviewExchangeRunner:
     """
 
     def run(self, **kwargs: Any) -> ReviewExchangeOutcome:
+        exchange_run = kwargs["exchange_run"]
         return ReviewExchangeOutcome(
             status="ok",
             rounds=1,
             reason="reviewer_ok",
+            run_assets=exchange_run.assets,
             reviewer_response=None,
-            exchange_dir=None,
             summary={"status": "ok", "reason": "reviewer_ok", "completed_rounds": 1},
         )
 
@@ -115,7 +120,7 @@ class _CapturingSupervisor:
 @dataclass
 class _CapturedSummary:
     summary: dict[str, Any]
-    validation_record_path: Path | None
+    review_run: ReviewExchangeRun
 
 
 class _FakeSessionOutput:
@@ -125,6 +130,7 @@ class _FakeSessionOutput:
         self._worktree = worktree
         self._summary: _CapturedSummary | None = None
         self.no_completion_count = 0
+        self.started_runs: list[ReviewExchangeRun] = []
         self._run_dir = worktree / ".sessions" / "exchange-run"
         (self._run_dir / "review-exchange").mkdir(parents=True, exist_ok=True)
 
@@ -133,19 +139,41 @@ class _FakeSessionOutput:
         return self._run_dir
 
     def find_run_dir(self, worktree: Path, session_name: str) -> Path | None:
-        return self._run_dir
+        raise AssertionError("review exchange tests must use typed run DI")
+
+    def start_review_exchange_run(
+        self,
+        worktree: Path,
+        *,
+        issue_number: int,
+        parent_session_name: str,
+        agent_label: str,
+    ) -> ReviewExchangeRun:
+        run = ReviewExchangeRun(
+            session_name=f"review-exchange-{issue_number}-{len(self.started_runs) + 1}",
+            run_id=f"exchange-run-{len(self.started_runs) + 1}",
+            parent_session_name=parent_session_name,
+            assets=ReviewExchangeRunAssets.from_run_dir(self._run_dir),
+        )
+        self.started_runs.append(run)
+        return run
+
+    def cached_review_run(self, parent_session_name: str = "coding-1") -> ReviewExchangeRun:
+        return ReviewExchangeRun(
+            session_name="review-exchange-230",
+            run_id="exchange-run-cached",
+            parent_session_name=parent_session_name,
+            assets=ReviewExchangeRunAssets.from_run_dir(self._run_dir),
+        )
 
     def store_review_exchange_summary(
         self,
-        worktree: Path,
-        review_session_name: str,
+        review_run: ReviewExchangeRun,
         summary: dict[str, Any],
-        *,
-        validation_record_path: Path | None = None,
     ) -> None:
         self._summary = _CapturedSummary(
             summary=dict(summary),
-            validation_record_path=validation_record_path,
+            review_run=review_run,
         )
 
     def load_review_exchange_summary(
@@ -160,18 +188,9 @@ class _FakeSessionOutput:
         if not_before_started_at == "future-boundary":
             return None
 
-        @dataclass
-        class _Cached:
-            summary: dict[str, Any]
-            validation_record_path: Path | None
-            exchange_dir: Path | None
-            summary_path: Path
-
-        return _Cached(
+        return ReviewExchangeSummary(
             summary=self._summary.summary,
-            validation_record_path=self._summary.validation_record_path,
-            exchange_dir=self._run_dir / "review-exchange",
-            summary_path=self._run_dir / "review-exchange" / "summary.json",
+            run_assets=self._summary.review_run.assets,
         )
 
     def count_consecutive_review_exchange_no_completion(
@@ -231,16 +250,21 @@ def _store_cached_approval(
     worktree: Path,
     validation_record_path: Path | None,
 ) -> None:
+    review_run = session_output.cached_review_run()
+    if validation_record_path is not None and validation_record_path.exists():
+        review_run.assets.validation_record_path.write_text(
+            validation_record_path.read_text()
+        )
+    elif review_run.assets.validation_record_path.exists():
+        review_run.assets.validation_record_path.unlink()
     session_output.store_review_exchange_summary(
-        worktree,
-        "review-exchange-230",
+        review_run,
         {
             "status": "ok",
             "reason": "reviewer_ok",
             "completed_rounds": 1,
             "response_text": "Looks good.",
         },
-        validation_record_path=validation_record_path,
     )
 
 
@@ -249,16 +273,21 @@ def _store_cached_halt(
     worktree: Path,
     validation_record_path: Path | None,
 ) -> None:
+    review_run = session_output.cached_review_run()
+    if validation_record_path is not None and validation_record_path.exists():
+        review_run.assets.validation_record_path.write_text(
+            validation_record_path.read_text()
+        )
+    elif review_run.assets.validation_record_path.exists():
+        review_run.assets.validation_record_path.unlink()
     session_output.store_review_exchange_summary(
-        worktree,
-        "review-exchange-230",
+        review_run,
         {
             "status": "stopped",
             "reason": "max_rounds_exceeded",
             "completed_rounds": 3,
             "response_text": "Max rounds reached.",
         },
-        validation_record_path=validation_record_path,
     )
 
 
@@ -276,7 +305,7 @@ def _build(
 
     session_output = _FakeSessionOutput(tmp_path)
 
-    def _on_started(**kwargs: Any) -> None:
+    def _record_review_started(**kwargs: Any) -> None:
         started_events.append(kwargs)
 
     def _on_outcome(**kwargs: Any) -> None:
@@ -289,7 +318,7 @@ def _build(
     review = CompletionReviewExchange(
         config=_make_config(tmp_path, require_validation=require_validation),
         session_output=cast(SessionOutput, session_output),
-        emit_review_started=_on_started,
+        emit_review_started=_record_review_started,
         emit_review_outcome=_on_outcome,
         review_exchange_runner=_FakeReviewExchangeRunner(),
         job_supervisor=BackgroundJobSupervisor(job_runner),
@@ -719,19 +748,16 @@ def test_tick_after_completion_resolves_cached_outcome(
         logger="issue_orchestrator.control.completion_review_exchange",
     )
 
-    recorded_on_started: list[Path] = []
-
     def fake_loop(**kwargs: Any) -> ReviewExchangeOutcome:
-        kwargs["on_started"](session_output.run_dir)
-        recorded_on_started.append(session_output.run_dir)
+        exchange_run = kwargs["exchange_run"]
         return ReviewExchangeOutcome(
             status="ok",
             rounds=1,
             reason="Looks good.",
+            run_assets=exchange_run.assets,
             reviewer_response=ReviewExchangeResponse(
                 response_type="ok", getting_closer=True, response_text="Looks good."
             ),
-            exchange_dir=session_output.run_dir / "review-exchange",
             summary={
                 "status": "ok",
                 "reason": "reviewer_ok",
@@ -779,7 +805,7 @@ def test_tick_after_completion_resolves_cached_outcome(
     assert completed is True
     assert outcome is not None and outcome.status == "ok"
     assert "Review exchange passed (cached)" in actions_taken
-    assert recorded_on_started, "emit_review_started must fire during the job"
+    assert started, "emit_review_started must fire when the typed run is allocated"
     approval_messages = [
         record.getMessage()
         for record in caplog.records
@@ -841,11 +867,14 @@ def test_cached_review_is_reused_when_validation_sha_matches(
     assert outcome is not None and outcome.status == "ok"
     assert outcome.summary is not None
     assert not any(key.startswith("_cache_") for key in outcome.summary)
-    assert outcome.cache_metadata == {
+    assert outcome.cache_metadata is not None
+    assert outcome.cache_metadata.to_event_fields() == {
         "review_cache_summary_path": str(
             session_output.run_dir / "review-exchange" / "summary.json"
         ),
-        "review_cache_validation_record_path": str(cached_validation),
+        "review_cache_validation_record_path": str(
+            session_output.run_dir / "validation-record.json"
+        ),
         "review_cache_head_sha": "same-sha",
     }
     assert started_events[0]["review_cache_head_sha"] == "same-sha"
@@ -866,6 +895,97 @@ def test_cached_review_is_reused_when_validation_sha_matches(
         in approval_message
     )
     assert "reviewer_response_text='Looks good.'" in approval_message
+
+
+def test_cached_review_reuses_rework_head_when_completion_validation_is_stale(
+    tmp_path: Path,
+) -> None:
+    """A review exchange can advance HEAD after the original coding-done record.
+
+    The cached approval must be compared to the actual worktree HEAD, not the
+    stale validation path embedded in the original completion record.
+    """
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+
+    stale_completion_validation = tmp_path / "original-validation.json"
+    cached_rework_validation = tmp_path / "rework-validation.json"
+    _write_validation_record(
+        stale_completion_validation,
+        head_sha="original-sha",
+        passed=False,
+    )
+    _write_validation_record(cached_rework_validation, head_sha="rework-sha")
+    _store_cached_approval(session_output, tmp_path, cached_rework_validation)
+
+    actions_taken: list[str] = []
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=277,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=stale_completion_validation),
+        current_head_sha="rework-sha",
+        errors=[],
+        actions_taken=actions_taken,
+        run_review_exchange_loop=lambda **_: (_ for _ in ()).throw(
+            AssertionError("review approval at current rework head should be reused"),
+        ),
+    )
+
+    assert deferred is False
+    assert halt is False
+    assert completed is True
+    assert outcome is not None and outcome.status == "ok"
+    assert actions_taken == ["Review exchange passed (cached)"]
+    assert job_runner.submitted == []
+
+
+def test_cached_review_ignored_when_actual_worktree_head_moves_past_cache(
+    tmp_path: Path,
+) -> None:
+    job_runner = _FakeJobRunner()
+    review, session_output = _build(
+        tmp_path,
+        job_runner,
+        [],
+        [],
+        require_validation=True,
+    )
+
+    cached_rework_validation = tmp_path / "rework-validation.json"
+    _write_validation_record(cached_rework_validation, head_sha="rework-sha")
+    _store_cached_approval(session_output, tmp_path, cached_rework_validation)
+
+    (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=277,
+        issue_title="Example",
+        session_name="coding-1",
+        agent_label="agent:backend",
+        record=_make_record(validation_record_path=cached_rework_validation),
+        current_head_sha="new-sha",
+        errors=[],
+        actions_taken=[],
+        run_review_exchange_loop=lambda **_: (_ for _ in ()).throw(
+            AssertionError("fresh exchange should be deferred to background job"),
+        ),
+    )
+
+    assert deferred is True
+    assert halt is False
+    assert completed is False
+    assert outcome is None
+    assert len(job_runner.submitted) == 1
 
 
 def test_cached_review_halt_is_logged_when_reused(
@@ -992,15 +1112,17 @@ def test_stale_no_completion_summary_still_trips_loop_budget(tmp_path: Path) -> 
     current_validation = tmp_path / "current-validation.json"
     _write_validation_record(cached_validation, head_sha="stale-sha")
     _write_validation_record(current_validation, head_sha="current-sha")
+    review_run = session_output.cached_review_run()
+    review_run.assets.validation_record_path.write_text(
+        cached_validation.read_text()
+    )
     session_output.store_review_exchange_summary(
-        tmp_path,
-        "review-exchange-230",
+        review_run,
         {
             "status": "error",
             "reason": "reviewer_no_completion",
             "completed_rounds": 1,
         },
-        validation_record_path=cached_validation,
     )
 
     errors: list[str] = []
@@ -1239,15 +1361,15 @@ def test_no_job_runner_falls_back_to_inline_execution(
     )
 
     def fake_loop(**kwargs: Any) -> ReviewExchangeOutcome:
-        kwargs["on_started"](session_output.run_dir)
+        exchange_run = kwargs["exchange_run"]
         return ReviewExchangeOutcome(
             status="ok",
             rounds=1,
             reason="Looks good.",
+            run_assets=exchange_run.assets,
             reviewer_response=ReviewExchangeResponse(
                 response_type="ok", getting_closer=True, response_text="Looks good."
             ),
-            exchange_dir=session_output.run_dir / "review-exchange",
             summary={
                 "status": "ok",
                 "reason": "reviewer_ok",
@@ -1304,17 +1426,17 @@ def test_inline_review_exchange_halt_is_logged(
     )
 
     def fake_loop(**kwargs: Any) -> ReviewExchangeOutcome:
-        kwargs["on_started"](session_output.run_dir)
+        exchange_run = kwargs["exchange_run"]
         return ReviewExchangeOutcome(
             status="stopped",
             rounds=3,
             reason="max_rounds_exceeded",
+            run_assets=exchange_run.assets,
             reviewer_response=ReviewExchangeResponse(
                 response_type="changes_requested",
                 getting_closer=True,
                 response_text="Still not done.",
             ),
-            exchange_dir=session_output.run_dir / "review-exchange",
             summary={
                 "status": "stopped",
                 "reason": "max_rounds_exceeded",

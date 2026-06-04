@@ -26,6 +26,7 @@ from issue_orchestrator.domain.models import (
     PublishJobStatus,
     SessionHistoryEntry,
 )
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def _history_entry(issue_number: int) -> SessionHistoryEntry:
@@ -35,6 +36,25 @@ def _history_entry(issue_number: int) -> SessionHistoryEntry:
         agent_type="agent:web",
         status="failed",
         runtime_minutes=1,
+    )
+
+
+def _publish_job(
+    *,
+    job_id: str,
+    issue_number: int,
+    session_key: str,
+    status: PublishJobStatus,
+) -> PublishJob:
+    return PublishJob(
+        job_id=job_id,
+        issue_number=issue_number,
+        session_key=session_key,
+        run_assets=make_session_run_assets(
+            Path(f"/tmp/{job_id}"),
+            session_name=f"publish-{issue_number}",
+        ),
+        status=status,
     )
 
 
@@ -321,13 +341,13 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
             ),
         ],
         pending_publish_jobs={
-            f"job-{target}": PublishJob(
+            f"job-{target}": _publish_job(
                 job_id=f"job-{target}",
                 issue_number=target,
                 session_key="session-1",
                 status=PublishJobStatus.QUEUED,
             ),
-            f"job-{other}": PublishJob(
+            f"job-{other}": _publish_job(
                 job_id=f"job-{other}",
                 issue_number=other,
                 session_key="session-2",
@@ -335,13 +355,13 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
             ),
         },
         running_publish_jobs={
-            f"running-{target}": PublishJob(
+            f"running-{target}": _publish_job(
                 job_id=f"running-{target}",
                 issue_number=target,
                 session_key="session-1",
                 status=PublishJobStatus.RUNNING,
             ),
-            f"running-{other}": PublishJob(
+            f"running-{other}": _publish_job(
                 job_id=f"running-{other}",
                 issue_number=other,
                 session_key="session-2",
@@ -563,13 +583,13 @@ def test_clear_scratch_retry_records_tombstones_for_active_publish_jobs() -> Non
     other = 11
     state = OrchestratorState(
         pending_publish_jobs={
-            "job-target-pending": PublishJob(
+            "job-target-pending": _publish_job(
                 job_id="job-target-pending",
                 issue_number=target,
                 session_key="session-1",
                 status=PublishJobStatus.QUEUED,
             ),
-            "job-other-pending": PublishJob(
+            "job-other-pending": _publish_job(
                 job_id="job-other-pending",
                 issue_number=other,
                 session_key="session-2",
@@ -577,13 +597,13 @@ def test_clear_scratch_retry_records_tombstones_for_active_publish_jobs() -> Non
             ),
         },
         running_publish_jobs={
-            "job-target-running": PublishJob(
+            "job-target-running": _publish_job(
                 job_id="job-target-running",
                 issue_number=target,
                 session_key="session-1",
                 status=PublishJobStatus.RUNNING,
             ),
-            "job-other-running": PublishJob(
+            "job-other-running": _publish_job(
                 job_id="job-other-running",
                 issue_number=other,
                 session_key="session-2",

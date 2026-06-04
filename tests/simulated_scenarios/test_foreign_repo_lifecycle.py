@@ -143,12 +143,23 @@ def foreign_repo(tmp_path: Path) -> Path:
     return _init_foreign_repo(tmp_path)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class WorktreeHandle:
     """Returned by the ``make_worktree`` factory fixture."""
 
     path: Path
     repo: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ForeignSessionContract:
+    """Typed env inputs for simulated foreign-repo agent sessions."""
+
+    issue_number: int
+    session_name: str
+    completion_rel: str
+    run_dir: Path
+    worktree_path: Path
 
 
 @pytest.fixture()
@@ -187,16 +198,32 @@ def make_worktree(foreign_repo: Path, tmp_path: Path):
     )
 
 
-def _build_session_exports(
+def _coder_session_contract(
     issue_number: int,
+    worktree_path: Path,
     completion_rel: str = ".issue-orchestrator/completion.json",
-) -> str:
+) -> ForeignSessionContract:
+    session_name = f"coder-{issue_number}"
+    return ForeignSessionContract(
+        issue_number=issue_number,
+        session_name=session_name,
+        completion_rel=completion_rel,
+        run_dir=worktree_path / ".issue-orchestrator" / "sessions" / session_name,
+        worktree_path=worktree_path,
+    )
+
+
+def _build_session_exports(contract: ForeignSessionContract) -> str:
     """Build the env-export string that session_launcher produces."""
     orch_bin = Path(sys.executable).parent
     return (
-        f"export {ENV_PREFIX}COMPLETION_PATH='{completion_rel}'"
+        f"export {ENV_PREFIX}COMPLETION_PATH='{contract.completion_rel}'"
+        f" {ENV_PREFIX}SESSION_ID='{contract.session_name}'"
         f" {ENV_PREFIX}AGENT_LABEL='agent:coder'"
-        f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
+        f" {ENV_PREFIX}ISSUE_NUMBER='{contract.issue_number}'"
+        f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{contract.run_dir}'"
+        f" {ENV_PREFIX}RUN_DIR='{contract.run_dir}'"
+        f" {ENV_PREFIX}WORKTREE='{contract.worktree_path}'"
         f' PATH="{orch_bin}:$PATH"'
     )
 
@@ -456,7 +483,7 @@ def test_foreign_repo_real_path_chain_finds_coding_done(make_worktree) -> None:
     assert not (wt / ".venv").exists()
 
     plugin = SubprocessPlugin()
-    exports = _build_session_exports(77)
+    exports = _build_session_exports(_coder_session_contract(77, wt))
     full_cmd = plugin._build_process_command(  # noqa: SLF001
         f"{exports} && which coding-done", wt
     )
@@ -481,7 +508,7 @@ def test_foreign_repo_real_path_chain_coding_done_executes(make_worktree) -> Non
     wt = handle.path
 
     plugin = SubprocessPlugin()
-    exports = _build_session_exports(78)
+    exports = _build_session_exports(_coder_session_contract(78, wt))
     full_cmd = plugin._build_process_command(  # noqa: SLF001
         f"{exports} && coding-done --help", wt
     )
@@ -510,7 +537,7 @@ def test_foreign_repo_real_path_chain_validation_runs(make_worktree) -> None:
     val_script.chmod(0o755)
 
     plugin = SubprocessPlugin()
-    exports = _build_session_exports(79)
+    exports = _build_session_exports(_coder_session_contract(79, wt))
     full_cmd = plugin._build_process_command(  # noqa: SLF001
         f"{exports} && ./validate.sh", wt
     )
@@ -547,7 +574,7 @@ def test_foreign_repo_coding_done_writes_completion(make_worktree) -> None:
          "commit", "-m", "worktree setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    exports = _build_session_exports(80, completion_rel)
+    exports = _build_session_exports(_coder_session_contract(80, wt, completion_rel))
     agent_cmd = (
         "coding-done completed"
         " --implementation 'Foreign repo test implementation'"
@@ -612,14 +639,15 @@ def test_foreign_repo_real_pty_agent_invocation(
          "commit", "-m", "worktree setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    exports = _build_session_exports(81, completion_rel)
+    session_contract = _coder_session_contract(81, wt, completion_rel)
+    exports = _build_session_exports(session_contract)
     command = f"{exports} && ./test-agent.sh"
 
     # Use monkeypatch for clean env manipulation (auto-restores on teardown)
     monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(handle.repo))
 
     plugin = SubprocessPlugin()
-    session_name = "coder-81"
+    session_name = session_contract.session_name
 
     created = plugin.create_session(
         session_id=81,
@@ -685,7 +713,7 @@ def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
          "commit", "-m", "setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    exports = _build_session_exports(90, completion_rel)
+    exports = _build_session_exports(_coder_session_contract(90, wt, completion_rel))
 
     prompt = (
         "You are in a test. Run this exact bash command and nothing else: "
@@ -745,7 +773,7 @@ def test_foreign_repo_codex_agent_done(make_worktree) -> None:
          "commit", "-m", "setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
-    exports = _build_session_exports(91, completion_rel)
+    exports = _build_session_exports(_coder_session_contract(91, wt, completion_rel))
 
     prompt = (
         "You are in a test. Run this exact bash command and nothing else: "

@@ -301,20 +301,21 @@ class TestReviewExchangeSummary:
         self, session_output, tmp_path
     ):
         worktree = tmp_path
-        session_name = "issue-1"
         summary = {"status": "ok", "completed_rounds": 2}
-        validation_source = tmp_path / "validation-source.json"
-        validation_source.write_text(json.dumps({"passed": True}))
+        review_run = session_output.start_review_exchange_run(
+            worktree,
+            issue_number=1,
+            parent_session_name="issue-1",
+            agent_label="agent:coder",
+        )
+        review_run.assets.validation_record_path.write_text(json.dumps({"passed": True}))
 
         stored = session_output.store_review_exchange_summary(
-            worktree,
-            session_name,
+            review_run,
             summary,
-            validation_record_path=validation_source,
         )
 
-        run_dir = session_output.find_run_dir(worktree, session_name=session_name)
-        assert run_dir is not None
+        run_dir = review_run.assets.run_dir
         summary_path = run_dir / REVIEW_EXCHANGE_DIR_NAME / REVIEW_EXCHANGE_SUMMARY_NAME
         assert summary_path.exists()
         assert json.loads(summary_path.read_text()) == summary

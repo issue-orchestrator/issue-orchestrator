@@ -296,6 +296,8 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
     )
     issue_key = FakeIssueKey(name=str(issue.number))
     session_key = SessionKey(issue=issue_key, task=task)
+    from tests.unit.session_run_helpers import make_session_run_assets
+
     return Session(
         key=session_key,
         issue=issue,
@@ -303,6 +305,10 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
         terminal_id=f"issue-{issue.number}",
         worktree_path=Path(worktree_path),
         branch_name=branch_name,
+        run_assets=make_session_run_assets(
+            Path(worktree_path),
+            session_name=f"issue-{issue.number}",
+        ),
     )
 
 
@@ -762,12 +768,12 @@ class TestLaunchSession:
 
         orchestrator.deps.session_restorer.restore_sessions.assert_not_called()
 
-    def test_launch_collision_restores_terminal_without_dropping_queued_issue(
+    def test_launch_collision_requires_discovered_run_assets_without_dropping_queue(
         self,
         sample_config,
         mock_repository_host,
     ):
-        """A launch collision reattaches the terminal and leaves queue state intact."""
+        """A launch collision does not synthesize a session without run assets."""
         issue = create_issue(9, labels=["agent:web"])
         mock_repository_host.issues.append(issue)
         worktree = sample_config.repo_root.parent / f"{sample_config.repo_root.name}-9"
@@ -786,9 +792,8 @@ class TestLaunchSession:
 
         session = orchestrator.launch_session(issue)
 
-        assert session is not None
-        assert session.terminal_id == "issue-9"
-        assert orchestrator.state.active_sessions == [session]
+        assert session is None
+        assert orchestrator.state.active_sessions == []
         assert orchestrator.state.cached_queue_issues == [issue]
 
     def test_launch_session_returns_none_for_unknown_agent(
@@ -807,9 +812,11 @@ class TestHandleSessionCompletion:
     """Test the handle_session_completion method."""
 
     @pytest.fixture
-    def mock_worktree_manager(self):
+    def mock_worktree_manager(self, tmp_path: Path):
         """Create a mock worktree manager for testing."""
         manager = MagicMock()
+        manager.worktree_path = tmp_path / "worktree"
+        manager.worktree_path.mkdir(parents=True)
         manager.remove = MagicMock()
         return manager
 
@@ -2623,17 +2630,12 @@ class TestSessionExistsDetection:
     and prevents duplicate launches, which was previously handled by lock files.
     """
 
-    def test_review_with_active_terminal_restored_to_active_sessions(
+    def test_review_with_active_terminal_requires_discovered_run_assets(
         self,
         sample_config,
         tmp_path,
     ):
-        """Test that reviews with active terminal sessions are restored to active_sessions.
-
-        When a terminal session exists but isn't tracked in active_sessions,
-        the session should be restored via SessionRestorer. This prevents infinite
-        loops because the session is now actively tracked.
-        """
+        """Launch routing does not rediscover review worktrees without run assets."""
         from issue_orchestrator.domain.models import PendingReview
 
         runner = MockSessionRunner()
@@ -2655,19 +2657,13 @@ class TestSessionExistsDetection:
         orchestrator = create_test_orchestrator(sample_config, runner=runner)
         orchestrator.state.pending_reviews.append(review)
 
-        # Launch should fail (terminal exists) but session should be restored
-        with patch(
-            "issue_orchestrator.control.session_restorer.SessionRestorer._find_worktree",
-            return_value=(worktree_path, "issue-42"),
-        ):
-            result = orchestrator.launch_review_session(review)
+        result = orchestrator.launch_review_session(review)
 
         assert result is None
         # Review is removed from pending (processed)
         assert len(orchestrator.state.pending_reviews) == 0
-        # Session is restored to active_sessions (prevents infinite loop)
-        assert len(orchestrator.state.active_sessions) == 1
-        assert orchestrator.state.active_sessions[0].terminal_id == "review-123"
+        # Restoration requires runner-discovered run assets, not worktree guessing.
+        assert orchestrator.state.active_sessions == []
 
     def test_review_tracked_in_active_sessions_removed_from_pending(
         self,
@@ -2700,18 +2696,13 @@ class TestSessionExistsDetection:
         # Should be removed from pending (session exists in active_sessions)
         assert len(orchestrator.state.pending_reviews) == 0
 
-    def test_rework_with_active_terminal_restored_to_active_sessions(
+    def test_rework_with_active_terminal_requires_discovered_run_assets(
         self,
         sample_config,
         mock_repository_host,
         tmp_path,
     ):
-        """Test that reworks with active terminal sessions are restored to active_sessions.
-
-        When a terminal session exists but isn't tracked in active_sessions,
-        the session should be restored via SessionRestorer. This prevents infinite
-        loops because the session is now actively tracked.
-        """
+        """Launch routing does not rediscover rework worktrees without run assets."""
         from issue_orchestrator.domain.models import PendingRework
         from issue_orchestrator.domain.issue_key import FakeIssueKey
 
@@ -2733,18 +2724,13 @@ class TestSessionExistsDetection:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, runner=runner)
         orchestrator.state.pending_reworks.append(rework)
 
-        with patch(
-            "issue_orchestrator.control.session_restorer.SessionRestorer._find_worktree",
-            return_value=(worktree_path, "issue-42"),
-        ):
-            result = orchestrator.launch_rework_session(rework)
+        result = orchestrator.launch_rework_session(rework)
 
         assert result is None
         # Rework is removed from pending (processed)
         assert len(orchestrator.state.pending_reworks) == 0
-        # Session is restored to active_sessions (prevents infinite loop)
-        assert len(orchestrator.state.active_sessions) == 1
-        assert orchestrator.state.active_sessions[0].terminal_id == "rework-42"
+        # Restoration requires runner-discovered run assets, not worktree guessing.
+        assert orchestrator.state.active_sessions == []
 
 
 class TestStateMachineTransitions:

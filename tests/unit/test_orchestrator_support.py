@@ -68,6 +68,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports import TraceEvent
 from issue_orchestrator.infra.config import Config
@@ -185,6 +186,10 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = 
         terminal_id=f"session-{issue.number}",
         worktree_path=worktree,
         branch_name=f"issue-{issue.number}",
+        run_assets=make_session_run_assets(
+            worktree,
+            session_name=f"session-{issue.number}",
+        ),
         started_at=datetime.now(),
         status=SessionStatus.RUNNING,
     )
@@ -1509,6 +1514,10 @@ class TestUpdateStateAfterAction:
                 terminal_id="retrospective-review-42",
                 worktree_path=Path("/tmp/work42"),
                 branch_name="issue-42",
+                run_assets=make_session_run_assets(
+                    Path("/tmp/work42"),
+                    session_name="retrospective-review-42",
+                ),
             )
         )
         action = QueueRetrospectiveReviewAction(

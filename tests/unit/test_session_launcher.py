@@ -88,6 +88,7 @@ from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.contracts.public import SessionStartedPayload
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 # =============================================================================
@@ -621,6 +622,10 @@ class TestLaunchIssueSession:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
 
         result = session_launcher.launch_issue_session(sample_issue, active_sessions=[existing_session])
@@ -1498,6 +1503,10 @@ class TestLaunchReworkSession:
             terminal_id="rework-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="rework-123",
+            ),
         )
         rework = PendingRework(
             issue_key=issue_key,
@@ -1751,7 +1760,7 @@ class TestLaunchReworkSession:
         worktree_path = mock_worktree_manager.tmp_path / "worktree-123"
         worktree_path.mkdir(parents=True, exist_ok=True)
         sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
-        review_run_dir = sessions_dir / "review-456__20240115-120000"
+        review_run_dir = sessions_dir / "20240115-120000__review-456"
         review_run_dir.mkdir(parents=True, exist_ok=True)
 
         feedback_data = {
@@ -1790,7 +1799,7 @@ class TestLaunchReworkSession:
         worktree_path = mock_worktree_manager.tmp_path / "worktree-123"
         worktree_path.mkdir(parents=True, exist_ok=True)
         sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
-        review_run_dir = sessions_dir / "review-456__20240115-120000"
+        review_run_dir = sessions_dir / "20240115-120000__review-456"
         review_run_dir.mkdir(parents=True, exist_ok=True)
 
         old_timestamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
@@ -1828,7 +1837,7 @@ class TestLaunchReworkSession:
         worktree_path = mock_worktree_manager.tmp_path / "worktree-123"
         worktree_path.mkdir(parents=True, exist_ok=True)
         sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
-        review_run_dir = sessions_dir / "review-456__20240115-120000"
+        review_run_dir = sessions_dir / "20240115-120000__review-456"
         review_run_dir.mkdir(parents=True, exist_ok=True)
 
         feedback_data = {
@@ -1894,6 +1903,10 @@ class TestOrchestratorLaunchSession:
             terminal_id="issue-123",
             worktree_path=tmp_path / "existing",
             branch_name="123-existing",
+            run_assets=make_session_run_assets(
+                tmp_path / "existing",
+                session_name="issue-123",
+            ),
         )
         duplicate = Session(
             key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
@@ -1902,6 +1915,10 @@ class TestOrchestratorLaunchSession:
             terminal_id="issue-123",
             worktree_path=tmp_path / "duplicate",
             branch_name="123-duplicate",
+            run_assets=make_session_run_assets(
+                tmp_path / "duplicate",
+                session_name="issue-123",
+            ),
         )
         state = OrchestratorState(active_sessions=[existing])
         session_launcher = MagicMock()
@@ -1915,14 +1932,14 @@ class TestOrchestratorLaunchSession:
         assert result is duplicate
         assert state.active_sessions == [existing]
 
-    def test_restores_orphaned_terminal_when_keep_queued(
+    def test_keeps_orphaned_terminal_unrestored_without_run_assets(
         self,
         launcher_bundle,
         sample_issue,
         sample_agent_config,
         tmp_path,
     ):
-        """Verify an existing untracked issue terminal is restored."""
+        """Launch routing does not synthesize active sessions without run assets."""
         launcher_bundle.session_exists_override[0] = lambda name: name == "issue-123"
         state = OrchestratorState()
         restored = Session(
@@ -1932,6 +1949,7 @@ class TestOrchestratorLaunchSession:
             terminal_id="issue-123",
             worktree_path=tmp_path,
             branch_name="123-test",
+            run_assets=make_session_run_assets(tmp_path, session_name="issue-123"),
         )
         mock_restorer = MagicMock()
         mock_restorer.restore_known_terminal.return_value = [restored]
@@ -1943,14 +1961,9 @@ class TestOrchestratorLaunchSession:
             mock_restorer,
         )
 
-        assert result is restored
-        assert state.active_sessions == [restored]
-        mock_restorer.restore_known_terminal.assert_called_once()
-        restore_kwargs = mock_restorer.restore_known_terminal.call_args.kwargs
-        assert restore_kwargs["issue_number"] == 123
-        assert restore_kwargs["session_name"] == "issue-123"
-        assert restore_kwargs["is_review"] is False
-        assert restore_kwargs["already_tracked"] is state.active_sessions
+        assert result is None
+        assert state.active_sessions == []
+        mock_restorer.restore_known_terminal.assert_not_called()
 
 
 class TestOrchestratorLaunchValidationRetrySession:
@@ -2019,8 +2032,8 @@ class TestOrchestratorLaunchReviewSession:
         assert len(state.pending_reviews) == 0
         assert len(state.active_sessions) == 1
 
-    def test_restores_orphaned_terminal_when_keep_queued(self, launcher_bundle):
-        """Verify orphaned terminal restoration (lines 987-990)."""
+    def test_keeps_orphaned_terminal_unrestored_without_run_assets(self, launcher_bundle):
+        """Review launch routing refuses restoration without run assets."""
         launcher_bundle.session_exists_override[0] = lambda name: name == "review-456"
         review = PendingReview(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
@@ -2038,8 +2051,7 @@ class TestOrchestratorLaunchReviewSession:
         result = orchestrator_launch_review_session(review, state, launcher_bundle.launcher, mock_restorer)
 
         assert result is None
-        # Should have tried to restore
-        mock_restorer.restore_known_terminal.assert_called_once()
+        mock_restorer.restore_known_terminal.assert_not_called()
 
 
 class TestOrchestratorLaunchReworkSession:
@@ -2254,6 +2266,10 @@ class TestRestoreRunningSessions:
             terminal_id="issue-123",
             worktree_path=tmp_path / "existing",
             branch_name="123-existing",
+            run_assets=make_session_run_assets(
+                tmp_path / "existing",
+                session_name="issue-123",
+            ),
         )
         duplicate = Session(
             key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
@@ -2262,6 +2278,10 @@ class TestRestoreRunningSessions:
             terminal_id="issue-123",
             worktree_path=tmp_path / "duplicate",
             branch_name="123-duplicate",
+            run_assets=make_session_run_assets(
+                tmp_path / "duplicate",
+                session_name="issue-123",
+            ),
         )
         new_session = Session(
             key=SessionKey(issue=FakeIssueKey("456"), task=TaskKind.CODE),
@@ -2270,6 +2290,10 @@ class TestRestoreRunningSessions:
             terminal_id="issue-456",
             worktree_path=tmp_path / "new",
             branch_name="456-new",
+            run_assets=make_session_run_assets(
+                tmp_path / "new",
+                session_name="issue-456",
+            ),
         )
         mock_restorer = MagicMock()
         mock_restorer.restore_sessions.return_value = [duplicate, new_session]
@@ -2306,6 +2330,10 @@ class TestProcessActiveSessions:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
 
         state = OrchestratorState()
@@ -2344,6 +2372,10 @@ class TestProcessActiveSessions:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
 
         state = OrchestratorState()
@@ -2414,6 +2446,10 @@ class TestProcessActiveSessions:
             terminal_id="issue-359",
             worktree_path=worktree,
             branch_name="359-feature",
+            run_assets=make_session_run_assets(
+                worktree,
+                session_name="issue-359",
+            ),
         )
         state = OrchestratorState(active_sessions=[session])
 
@@ -2479,6 +2515,10 @@ class TestProcessActiveSessions:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
         duplicate = Session(
             key=SessionKey(issue=issue_key, task=TaskKind.CODE),
@@ -2487,6 +2527,10 @@ class TestProcessActiveSessions:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
         state = OrchestratorState(active_sessions=[session, duplicate])
         mock_observer = MagicMock()
@@ -2623,6 +2667,10 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
 
         state = OrchestratorState()
@@ -2678,6 +2726,10 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
 
         state = OrchestratorState()
@@ -2736,6 +2788,10 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
         state = OrchestratorState(active_sessions=[session])
         calls: list[str] = []
@@ -2796,10 +2852,14 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                run_id="20260525",
+                session_name="coding-1",
+            ),
         )
         state = OrchestratorState(active_sessions=[session])
-        run_dir = session.worktree_path / ".issue-orchestrator" / "sessions" / "20260525__coding-1"
-        session.run_dir = run_dir
+        run_dir = session.run_dir
         analyzed: list[Path] = []
 
         mock_completion_handler = MagicMock()
@@ -2857,6 +2917,10 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
         state = OrchestratorState(active_sessions=[session])
         calls: list[str] = []
@@ -2923,6 +2987,10 @@ class TestHandleSessionCompletion:
             terminal_id="retrospective-review-365",
             worktree_path=tmp_path / "worktree",
             branch_name="365-review",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="retrospective-review-365",
+            ),
             agent_label="agent:reviewer",
         )
         state = OrchestratorState(active_sessions=[session])
@@ -2991,6 +3059,10 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
 
         def already_gone(_name: str) -> None:
@@ -3020,6 +3092,10 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
         state = OrchestratorState(active_sessions=[session])
         kill_session = MagicMock()
@@ -3057,6 +3133,10 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
 
         state = OrchestratorState()
@@ -3112,6 +3192,10 @@ class TestHandleSessionCompletion:
             terminal_id="issue-123",
             worktree_path=tmp_path / "worktree",
             branch_name="123-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-123",
+            ),
         )
 
         state = OrchestratorState()

@@ -29,6 +29,23 @@ from issue_orchestrator.execution import persistent_session_exchange as pse
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports import TraceEvent
 
+_REAL_RUN_PERSISTENT_SESSION_EXCHANGE = pse.run_persistent_session_exchange
+
+
+def _run_persistent_session_exchange_with_typed_run(**kwargs: Any):
+    parent_session_name = kwargs.pop("parent_session_name", "coding-1")
+    if "exchange_run" not in kwargs:
+        kwargs["exchange_run"] = kwargs["session_output"].start_review_exchange_run(
+            kwargs["coder_worktree_path"],
+            issue_number=kwargs["issue_number"],
+            parent_session_name=parent_session_name,
+            agent_label=kwargs["coder_label"],
+        )
+    return _REAL_RUN_PERSISTENT_SESSION_EXCHANGE(**kwargs)
+
+
+pse.run_persistent_session_exchange = _run_persistent_session_exchange_with_typed_run
+
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -1591,6 +1608,71 @@ class TestTurnArtifactsPersisted:
             (42, "review-exchange-reviewer_no_completion")
         ]
 
+    def test_prompt_not_accepted_respawns_in_place_and_advances(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A silent prompted reviewer is a stale/unusable process, not a verdict.
+
+        Regression for the tixmeup #290 shape: the prompt was written, the
+        reviewer stayed alive, but no response/report appeared. The exchange
+        should retry the same turn with a fresh process instead of waiting for
+        the full round timeout and then leaving the issue with no next action.
+        """
+        from issue_orchestrator.domain.review_exchange_failures import (
+            RoundFailureReason,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    PersistentRoundTimeoutError(
+                        "prompt rendered but no terminal activity followed",
+                        failure_reason=RoundFailureReason.PROMPT_NOT_ACCEPTED,
+                    ),
+                    {"response_type": "ok", "response_text": "All good", "getting_closer": True},
+                ],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            events=sink,
+            event_context=EventContext(),
+        )
+
+        assert outcome.status == "ok"
+        assert outcome.reason == "reviewer_ok"
+        assert state["opened"].count("reviewer") == 2
+        assert state["registry"].released == []
+        assert [
+            evt for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+        ] == []
+
     def test_coder_timeout_persists_no_completion_result_too(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -2195,7 +2277,7 @@ class TestCallerHooks:
         # Called once per reviewer round (rounds 1 and 2).
         assert round_invocations == [1, 2]
 
-    def test_on_started_called_with_run_dir(
+    def test_exchange_run_assets_own_run_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
@@ -2211,8 +2293,14 @@ class TestCallerHooks:
             },
         )
 
-        observed: list[Path] = []
-        pse.run_persistent_session_exchange(
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt,
+            issue_number=42,
+            parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2227,12 +2315,11 @@ class TestCallerHooks:
             max_rounds=1,
             max_no_progress=2,
             require_validation=False,
-            on_started=lambda d: observed.append(d),
         )
-        assert len(observed) == 1
-        assert observed[0].exists()
+        assert outcome.run_assets == exchange_run.assets
+        assert exchange_run.assets.run_dir.exists()
         # And the run dir contains the exchange artifacts.
-        assert (observed[0] / "review-exchange").is_dir()
+        assert exchange_run.assets.exchange_dir.is_dir()
 
     def test_initial_validation_record_is_available_to_reviewer_in_run_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -2258,8 +2345,14 @@ class TestCallerHooks:
             },
         )
 
-        observed: list[Path] = []
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt,
+            issue_number=42,
+            parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2275,12 +2368,10 @@ class TestCallerHooks:
             max_no_progress=2,
             require_validation=True,
             initial_validation_record_path=current_record,
-            on_started=lambda d: observed.append(d),
         )
 
         assert outcome.status == "ok"
-        assert len(observed) == 1
-        run_record = observed[0] / "validation-record.json"
+        run_record = exchange_run.assets.validation_record_path
         assert json.loads(run_record.read_text(encoding="utf-8")) == validation_payload
         reviewer_prompt = next(
             prompt for role, prompt, _notice in state["prompt_inboxes_seen"]
@@ -2331,8 +2422,14 @@ class TestCallerHooks:
             coder_validation_payload_script=[refreshed_payload],
         )
 
-        observed: list[Path] = []
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt,
+            issue_number=42,
+            parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2348,12 +2445,10 @@ class TestCallerHooks:
             max_no_progress=2,
             require_validation=True,
             initial_validation_record_path=current_record,
-            on_started=lambda d: observed.append(d),
         )
 
         assert outcome.status == "ok"
-        assert len(observed) == 1
-        run_record = observed[0] / "validation-record.json"
+        run_record = exchange_run.assets.validation_record_path
         pair_record = tmp_path / "persistent-pairs" / "issue-42" / "validation-record.json"
         assert json.loads(run_record.read_text(encoding="utf-8")) == refreshed_payload
         assert json.loads(pair_record.read_text(encoding="utf-8")) == refreshed_payload
@@ -3069,6 +3164,7 @@ class TestRoleEnvironmentScrubbing:
         response_file = run_dir / "reviewer" / "review-response.json"
 
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="reviewer",
             response_file=response_file,
             review_report_file=None,
             completion_path=run_dir / "reviewer" / "completion-reviewer.json",
@@ -3086,6 +3182,8 @@ class TestRoleEnvironmentScrubbing:
             "CLAUDECODE", "SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY",
         ):
             assert forbidden not in env, f"{forbidden} leaked into agent env"
+        assert "ISSUE_ORCHESTRATOR_RUN_DIR" not in env
+        assert "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR" not in env
 
     def test_required_overrides_are_present_in_role_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -3098,6 +3196,7 @@ class TestRoleEnvironmentScrubbing:
         monkeypatch.setenv("GH_TOKEN", "ghp_fake")  # ensure scrubbing path runs
 
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="coder",
             response_file=response_file,
             review_report_file=None,
             completion_path=run_dir / "coder" / "completion-coder.json",
@@ -3113,6 +3212,9 @@ class TestRoleEnvironmentScrubbing:
         assert env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] == str(response_file)
         assert env["ISSUE_ORCHESTRATOR_AGENT_LABEL"] == "agent:backend"
         assert env["ISSUE_ORCHESTRATOR_ISSUE_NUMBER"] == "4057"
+        assert env["ISSUE_ORCHESTRATOR_SESSION_ID"] == "exchange-1"
+        assert env["ISSUE_ORCHESTRATOR_RUN_DIR"] == str(run_dir)
+        assert env["ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR"] == str(run_dir)
         assert env["ORCHESTRATOR_SESSION_ID"] == "exchange-1"
         assert env["ORCHESTRATOR_API_PORT"] == "8080"
         # Git-safe defaults from the filtered-env helper.
@@ -3132,6 +3234,7 @@ class TestRoleEnvironmentScrubbing:
         worktree = tmp_path / "wt"
         worktree.mkdir()
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="reviewer",
             response_file=run_dir / "reviewer" / "review-response.json",
             review_report_file=worktree / ".issue-orchestrator" / "review-report.md",
             completion_path=run_dir / "reviewer" / "completion-reviewer.json",
@@ -3378,12 +3481,20 @@ class TestPerSessionRecordingMirror:
             },
         )
 
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt,
+            issue_number=42,
+            parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
         stale_pair_root = tmp_path / "stale-persistent-pairs" / "issue-42"
         stale_pair = pse.PersistentExchangePair(
             coder_session=_FakeSession("coder"),
             reviewer_session=_FakeSession("reviewer"),
             reviewer_worktree_path=reviewer_wt,
             issue_key=42,
+            exchange_run_id=exchange_run.run_id,
+            run_dir=exchange_run.assets.run_dir,
             created_at=0.0,
             coder_response_path=coder_wt / ".issue-orchestrator" / "review-response.json",
             reviewer_response_path=reviewer_wt / ".issue-orchestrator" / "review-response.json",
@@ -3411,6 +3522,7 @@ class TestPerSessionRecordingMirror:
         registry = _StaleThenFreshRegistry()
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=registry,
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3450,6 +3562,8 @@ class TestPerSessionRecordingMirror:
                 reviewer_session=_FakeSession("reviewer"),
                 reviewer_worktree_path=tmp_path / "reviewer-wt",
                 issue_key=42,
+                exchange_run_id="run-42",
+                run_dir=pair_root,
                 created_at=0.0,
                 coder_response_path=tmp_path / "coder-response.json",
                 reviewer_response_path=tmp_path / "reviewer-response.json",
@@ -3482,6 +3596,10 @@ class TestPerSessionRecordingMirror:
             pse._acquire_pair_with_recording_contract(  # noqa: SLF001
                 pair_registry=registry,
                 issue_number=42,
+                exchange_run=pse._PairExchangeRunBinding(  # noqa: SLF001
+                    run_id="run-42",
+                    assets=pse.ReviewExchangeRunAssets.from_run_dir(pair_root),
+                ),
                 spawn=broken_pair,
             )
 
@@ -3492,6 +3610,77 @@ class TestPerSessionRecordingMirror:
         ]
         assert "no_writer" in str(exc_info.value)
         assert "missing_file" in str(exc_info.value)
+
+    def test_live_cached_pair_is_rebound_to_current_exchange_run(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A healthy cached pair is process-lifetime scoped, not run scoped.
+
+        The owner-injected exchange binding must update the pair's current
+        run metadata without respawning the live role processes. Pair-scoped
+        write paths stay stable; per-run artifacts are projected separately.
+        """
+        pair_root = tmp_path / "persistent-pairs" / "issue-42"
+        first_run_dir = tmp_path / "sessions" / "run-1"
+        second_run_dir = tmp_path / "sessions" / "run-2"
+        coder_recording = pair_root / "coder" / "terminal-recording.jsonl"
+        reviewer_recording = pair_root / "reviewer" / "terminal-recording.jsonl"
+        pair = pse.PersistentExchangePair(
+            coder_session=_FakeSession(
+                "coder",
+                log_writer=_build_pty_writer(coder_recording),
+            ),
+            reviewer_session=_FakeSession(
+                "reviewer",
+                log_writer=_build_pty_writer(reviewer_recording),
+            ),
+            reviewer_worktree_path=tmp_path / "reviewer-wt",
+            issue_key=42,
+            exchange_run_id="run-1",
+            run_dir=first_run_dir,
+            created_at=0.0,
+            coder_response_path=tmp_path / "coder-response.json",
+            reviewer_response_path=tmp_path / "reviewer-response.json",
+            reviewer_report_path=tmp_path / "reviewer-wt" / ".issue-orchestrator" / "review-report.md",
+            coder_recording_path=coder_recording,
+            reviewer_recording_path=reviewer_recording,
+            coder_completion_path=pair_root / "coder" / "completion-coder.json",
+            validation_record_path=pair_root / "validation-record.json",
+        )
+
+        class _CachedRegistry:
+            def __init__(self) -> None:
+                self.acquire_count = 0
+                self.released: list[tuple[int, str]] = []
+
+            def acquire(self, *, issue_key, spawn):  # noqa: ANN001, ANN201, ARG002
+                self.acquire_count += 1
+                return pair
+
+            def release(self, issue_key, *, reason):  # noqa: ANN001, ANN201
+                self.released.append((issue_key, reason))
+
+        registry = _CachedRegistry()
+        binding = pse._PairExchangeRunBinding(  # noqa: SLF001
+            run_id="run-2",
+            assets=pse.ReviewExchangeRunAssets.from_run_dir(second_run_dir),
+        )
+
+        acquired = pse._acquire_pair_with_recording_contract(  # noqa: SLF001
+            pair_registry=registry,
+            issue_number=42,
+            exchange_run=binding,
+            spawn=lambda: pair,
+        )
+
+        assert acquired is pair
+        assert registry.acquire_count == 1
+        assert registry.released == []
+        assert pair.exchange_run_id == "run-2"
+        assert pair.run_dir == second_run_dir
+        assert pair.coder_recording_path == coder_recording
+        assert pair.reviewer_recording_path == reviewer_recording
 
     def test_slice_base_freezes_at_construction_for_offset_translation(
         self, tmp_path: Path,
@@ -3958,6 +4147,10 @@ class TestSliceIsolationAcrossExchanges:
                     cached_pair["pair"] = spawn()
                 self.acquired.append((issue_key, cached_pair["pair"]))
                 return cached_pair["pair"]
+
+            def release(self, issue_key, *, reason):  # type: ignore[override]
+                super().release(issue_key, reason=reason)
+                cached_pair.pop("pair", None)
 
         registry = _CachingFakePairRegistry()
         round_payloads: dict[str, list[bytes]] = {"coder": [], "reviewer": []}
@@ -4937,6 +5130,10 @@ class TestContinuousSliceMirroring:
                 self.acquired.append((issue_key, cached_pair["pair"]))
                 return cached_pair["pair"]
 
+            def release(self, issue_key, *, reason):  # type: ignore[override]
+                super().release(issue_key, reason=reason)
+                cached_pair.pop("pair", None)
+
         def _open(*, command, working_dir, env, recording_path=None,
                   additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
             role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
@@ -5208,6 +5405,9 @@ class TestProductionLayoutCacheResolution:
         must REUSE that OK. Pre-state-machine this returned None
         and the orchestrator spawned a redundant review-exchange
         every ~5 seconds until needs-human."""
+        from issue_orchestrator.control.completion_review_exchange import (
+            ReuseResumeResolution,
+        )
         from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
 
         worktree, coder_run = self._stage_run(
@@ -5227,9 +5427,10 @@ class TestProductionLayoutCacheResolution:
             current_validation_record_path=coder_run / "validation-record.json",
         )
         assert resolution.decision is ResumeDecision.REUSE_APPROVAL
-        assert resolution.outcome is not None
-        assert resolution.outcome.status == "ok"
-        assert resolution.outcome.summary.get("head_sha") == "HEAD_X"
+        assert isinstance(resolution, ReuseResumeResolution)
+        assert resolution.cached.outcome.status == "ok"
+        assert resolution.cached.outcome.summary is not None
+        assert resolution.cached.outcome.summary.get("head_sha") == "HEAD_X"
 
     # -----------------------------------------------------------------
     # State-table cells, one production-layout case each
@@ -5361,7 +5562,7 @@ class TestProductionLayoutCacheResolution:
         assert resolution.decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY
         # Outcome NOT populated for retry paths — caller must spawn
         # fresh, not reuse the failure.
-        assert resolution.outcome is None
+        assert not hasattr(resolution, "cached")
 
     def test_legacy_summary_without_head_sha_is_stale(
         self, tmp_path: Path,

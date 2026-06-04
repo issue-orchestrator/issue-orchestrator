@@ -269,16 +269,9 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         # registry cleanup is separate from the optional UI tab/worktree cleanup
         # action, otherwise a finished agent can be rediscovered as running.
         _terminate_finished_session(session, status, kill_session_fn)
-    if session.worktree_path:
-        run_dir = resolve_session_run_dir(session_output, session)
-        if run_dir:
-            session_output.attach_claude_log(run_dir)
-            run_session_analysis(run_dir)
-        else:
-            logger.warning(
-                "[%s] No session output dir found - Claude log won't be attached",
-                session.terminal_id,
-            )
+    run_dir = resolve_session_run_dir(session_output, session)
+    session_output.attach_claude_log(run_dir)
+    run_session_analysis(run_dir)
 
     # Apply completion actions (from CompletionHandler policy)
     if result.actions:
@@ -415,7 +408,7 @@ def process_active_sessions(
             ),
             repo_root=config.repo_root,
             issue_key=_validation_issue_key(session, config),
-            session_run_dir=session.run_dir,
+            session_run_assets=session.run_assets,
         )
         if decision.status == SessionStatus.RUNNING:
             logger.info(

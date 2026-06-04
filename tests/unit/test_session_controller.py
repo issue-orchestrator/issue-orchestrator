@@ -40,6 +40,7 @@ from issue_orchestrator.domain.models import (
     CompletionOutcome,
     RequestedAction,
 )
+from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.ports import NullEventSink
 from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -87,6 +88,43 @@ def make_record(outcome: CompletionOutcome, **kwargs) -> CompletionRecord:
     )
 
 
+def make_session_run_assets(
+    worktree: Path,
+    session_name: str,
+    session_output: FileSystemSessionOutput,
+) -> SessionRunAssets:
+    """Allocate the run contract the active-session owner would inject."""
+    worktree = worktree.resolve()
+    worktree.mkdir(parents=True, exist_ok=True)
+    return session_output.start_run(
+        worktree,
+        session_name,
+        issue_number=123,
+        agent_label="agent:test",
+        backend="subprocess",
+    )
+
+
+def decide_with_run_assets(
+    controller: SessionController,
+    *,
+    worktree_path: Path,
+    session_name: str,
+    **kwargs,
+) -> SessionDecision:
+    """Call the controller with an explicit typed run contract."""
+    return controller.decide_outcome(
+        worktree_path=worktree_path,
+        session_name=session_name,
+        session_run_assets=make_session_run_assets(
+            worktree_path,
+            session_name,
+            controller.session_output,
+        ),
+        **kwargs,
+    )
+
+
 class MockCompletionProcessor:
     """Fake completion processor for testing decisions without I/O."""
 
@@ -115,6 +153,8 @@ class MockCompletionProcessor:
         worktree_path: Path,
         issue_number: int,
         issue_title: str,
+        *,
+        run_assets: SessionRunAssets,
         pr_number: int | None = None,
         completion_path: str | None = None,
     ):
@@ -125,6 +165,7 @@ class MockCompletionProcessor:
                 "issue_title": issue_title,
                 "pr_number": pr_number,
                 "completion_path": completion_path,
+                "run_assets": run_assets,
             }
         )
         return self.process_result
@@ -209,7 +250,8 @@ class TestSessionControllerRunning:
 
         observation = SessionObservationResult.running(runtime_minutes=5.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -237,7 +279,8 @@ class TestSessionControllerTerminated:
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=tmp_path,
             issue_number=123,
@@ -266,7 +309,8 @@ class TestSessionControllerTerminated:
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -297,7 +341,8 @@ class TestSessionControllerTerminated:
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=tmp_path,
             issue_number=123,
@@ -337,7 +382,8 @@ class TestSessionControllerTerminated:
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=tmp_path,
             issue_number=123,
@@ -375,7 +421,8 @@ class TestSessionControllerTerminated:
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -416,7 +463,8 @@ class TestSessionControllerTerminated:
             timeout_minutes=120,
             session_exists=True,
         )
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -468,7 +516,8 @@ class TestSessionControllerTerminated:
             timeout_minutes=120,
             session_exists=True,
         )
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -507,7 +556,8 @@ class TestSessionControllerTerminated:
             review_exchange_canceller=cancel,
         )
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.timed_out(
                 runtime_minutes=121.0,
                 timeout_minutes=120,
@@ -547,7 +597,8 @@ class TestSessionControllerTerminated:
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -576,7 +627,8 @@ class TestSessionControllerTerminated:
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -608,7 +660,8 @@ class TestSessionControllerTimeout:
             session_exists=True,
         )
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=tmp_path,
             issue_number=123,
@@ -639,6 +692,7 @@ class TestSessionControllerTimeout:
         completion_rel_path = (
             ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
         )
+        run = make_session_run_assets(tmp_path, "issue-123", controller.session_output)
 
         decision = controller.decide_outcome(
             observation=observation,
@@ -647,14 +701,10 @@ class TestSessionControllerTimeout:
             issue_title="Test Issue",
             session_name="issue-123",
             completion_path=completion_rel_path,
+            session_run_assets=run,
         )
 
-        # Diagnostic should be written to the run dir resolved from the
-        # completion_path session name ("coding-1"), not the session_name
-        # ("issue-123").  _resolve_run_dir prefers completion_session_name.
-        run_dir = controller.session_output.find_run_dir(tmp_path, "coding-1")
-        assert run_dir is not None
-        diagnostic_files = list(run_dir.glob("no-completion-*.json"))
+        diagnostic_files = list(run.run_dir.glob("no-completion-*.json"))
         assert len(diagnostic_files) == 1
         diagnostic = json.loads(diagnostic_files[0].read_text(encoding="utf-8"))
         assert diagnostic["kind"] == "no-completion-record"
@@ -663,6 +713,7 @@ class TestSessionControllerTimeout:
         assert diagnostic["observation"] == "timed_out"
         assert diagnostic["agent_done_marker_exists"] is False
         assert diagnostic["nearby_completion_candidates"] == []
+        assert controller.session_output.find_run_dir(tmp_path, "coding-1") is None
         assert decision.status == SessionStatus.TIMED_OUT
 
     def test_timeout_without_completion_uses_recorded_run_dir(self, tmp_path: Path):
@@ -694,7 +745,7 @@ class TestSessionControllerTimeout:
             issue_title="Test Issue",
             session_name="issue-123",
             completion_path=completion_rel_path,
-            session_run_dir=run.run_dir,
+            session_run_assets=run,
         )
 
         diagnostic_files = list(run.run_dir.glob("no-completion-*.json"))
@@ -737,6 +788,7 @@ class TestSessionControllerTimeout:
         completion_rel_path = (
             ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
         )
+        run = make_session_run_assets(tmp_path, "issue-123", controller.session_output)
 
         decision = controller.decide_outcome(
             observation=observation,
@@ -745,11 +797,10 @@ class TestSessionControllerTimeout:
             issue_title="Test Issue",
             session_name="issue-123",
             completion_path=completion_rel_path,
+            session_run_assets=run,
         )
 
-        run_dir = controller.session_output.find_run_dir(tmp_path, "coding-1")
-        assert run_dir is not None
-        diagnostic_files = list(run_dir.glob("no-completion-*.json"))
+        diagnostic_files = list(run.run_dir.glob("no-completion-*.json"))
         diagnostic = json.loads(diagnostic_files[0].read_text(encoding="utf-8"))
         assert diagnostic["agent_done_marker_exists"] is True
         assert "agent-done completed" in diagnostic["agent_done_marker_preview"]
@@ -780,7 +831,8 @@ class TestSessionControllerTimeout:
             session_exists=True,
         )
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -814,7 +866,8 @@ class TestSessionControllerTimeout:
             session_exists=True,
         )
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -847,7 +900,8 @@ class TestSessionControllerReviewOutcomes:
 
         observation = SessionObservationResult.terminated(runtime_minutes=5.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -873,7 +927,8 @@ class TestSessionControllerReviewOutcomes:
 
         observation = SessionObservationResult.terminated(runtime_minutes=5.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -974,7 +1029,8 @@ class TestSessionControllerValidationCaching:
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.terminated(runtime_minutes=10.0),
             worktree_path=worktree,
             issue_number=123,
@@ -1023,7 +1079,8 @@ class TestSessionControllerValidationCaching:
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.terminated(runtime_minutes=10.0),
             worktree_path=worktree,
             issue_number=123,
@@ -1092,7 +1149,8 @@ class TestSessionControllerValidationCaching:
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.terminated(runtime_minutes=10.0),
             worktree_path=worktree,
             issue_number=123,
@@ -1139,7 +1197,8 @@ class TestSessionControllerValidationCaching:
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.terminated(runtime_minutes=10.0),
             worktree_path=worktree,
             issue_number=123,
@@ -1191,7 +1250,8 @@ class TestSessionControllerValidationCaching:
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.terminated(runtime_minutes=10.0),
             worktree_path=worktree,
             issue_number=123,
@@ -1234,7 +1294,8 @@ class TestSessionControllerValidationCaching:
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=worktree,
             issue_number=123,
@@ -1314,7 +1375,8 @@ class TestSessionControllerValidationCaching:
             validation_evidence_recorder=RunEvidenceRecorder(session_output),
         )
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.terminated(runtime_minutes=10.0),
             worktree_path=worktree,
             issue_number=123,
@@ -1358,7 +1420,8 @@ class TestSessionControllerValidationCaching:
         worktree.mkdir()
 
         for issue_number, session_name in ((123, "issue-123"), (124, "issue-124")):
-            decision = controller.decide_outcome(
+            decision = decide_with_run_assets(
+            controller,
                 observation=SessionObservationResult.terminated(runtime_minutes=10.0),
                 worktree_path=worktree,
                 issue_number=issue_number,
@@ -1429,7 +1492,8 @@ class TestSessionControllerValidationCaching:
         worktree.mkdir()
 
         for session_name in ("issue-123-a", "issue-123-b"):
-            decision = controller.decide_outcome(
+            decision = decide_with_run_assets(
+            controller,
                 observation=SessionObservationResult.terminated(runtime_minutes=10.0),
                 worktree_path=worktree,
                 issue_number=123,
@@ -1485,7 +1549,8 @@ class TestSessionControllerValidationCaching:
         worktree.mkdir()
 
         for issue_number in (123, 124):
-            decision = controller.decide_outcome(
+            decision = decide_with_run_assets(
+            controller,
                 observation=SessionObservationResult.terminated(runtime_minutes=10.0),
                 worktree_path=worktree,
                 issue_number=issue_number,
@@ -1539,7 +1604,8 @@ class TestSessionControllerValidationCaching:
         worktree.mkdir()
 
         with pytest.raises(RuntimeError, match="stable IssueKey"):
-            controller.decide_outcome(
+            decide_with_run_assets(
+            controller,
                 observation=SessionObservationResult.terminated(runtime_minutes=10.0),
                 worktree_path=worktree,
                 issue_number=123,
@@ -1578,7 +1644,8 @@ class TestSessionControllerValidationCaching:
             FileNotFoundError,
             match="validation-record.json missing for passed validation event",
         ):
-            controller.decide_outcome(
+            decide_with_run_assets(
+            controller,
                 observation=SessionObservationResult.terminated(runtime_minutes=10.0),
                 worktree_path=worktree,
                 issue_number=123,
@@ -1613,7 +1680,8 @@ class TestSessionControllerValidationCaching:
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=worktree,
             issue_number=123,
@@ -1655,7 +1723,8 @@ class TestSessionControllerValidationCaching:
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.terminated(runtime_minutes=10.0),
             worktree_path=worktree,
             issue_number=123,
@@ -1699,7 +1768,8 @@ class TestSessionControllerValidationCaching:
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=observation,
             worktree_path=Path("/tmp/test"),
             issue_number=123,
@@ -1752,7 +1822,8 @@ class TestSessionControllerValidationCaching:
             working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
         )
 
-        decision = controller.decide_outcome(
+        decision = decide_with_run_assets(
+            controller,
             observation=SessionObservationResult.terminated(runtime_minutes=10.0),
             worktree_path=worktree,
             issue_number=123,

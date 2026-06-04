@@ -6,6 +6,7 @@ from issue_orchestrator.control.session_completion_diagnostics import surface_fa
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def _session(tmp_path: Path, *, permission_mode: str = "bypassPermissions") -> Session:
@@ -23,6 +24,7 @@ def _session(tmp_path: Path, *, permission_mode: str = "bypassPermissions") -> S
         terminal_id="issue-123",
         worktree_path=tmp_path,
         branch_name="issue-123-test",
+        run_assets=make_session_run_assets(tmp_path, session_name="issue-123"),
         agent_label="agent:test",
     )
 

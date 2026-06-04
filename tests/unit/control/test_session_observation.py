@@ -24,6 +24,7 @@ from issue_orchestrator.observation.observation import (
 )
 from issue_orchestrator.ports import TraceEvent
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 class CapturingEventSink:
@@ -49,6 +50,10 @@ def _session(
         terminal_id=terminal_id,
         worktree_path=tmp_path / f"worktree-{issue_number}",
         branch_name=f"agent/issue-{issue_number}",
+        run_assets=make_session_run_assets(
+            tmp_path / f"worktree-{issue_number}",
+            session_name=terminal_id,
+        ),
         lease_id=lease_id,
     )
 

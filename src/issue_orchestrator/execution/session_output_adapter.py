@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
 import threading
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 from ..contracts.run_manifest import validate_run_manifest_payload
 from ..domain.artifact_contracts import (
@@ -32,6 +32,7 @@ from ..infra.terminal_cleaning import (
 from ..infra.terminal_recording import append_output_event
 from ..domain.review_exchange_manifest import ReviewExchangeManifestHeader
 from ..domain.review_exchange_resume import is_no_completion_reason
+from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.exchange_chapter import (
     CHAPTER_SCHEMA_VERSION,
     ChapterSidecarIdentityMismatch,
@@ -40,9 +41,13 @@ from ..domain.exchange_chapter import (
 )
 from ..ports.session_output import (
     ReviewExchangeSummary,
-    SessionRun,
+    SessionRunAssets,
     ValidationRecord,
     ValidationState,
+)
+from .review_exchange_session_output import (
+    start_review_exchange_run as _start_review_exchange_run,
+    store_review_exchange_summary as _store_review_exchange_summary,
 )
 from . import session_output_log_artifacts as log_artifacts
 from .session_output_log_artifacts import SessionLogArtifacts
@@ -114,6 +119,8 @@ class FileSystemSessionOutput:
 
     def sessions_base_dir(self, worktree_path: Path) -> Path:
         """Get the base sessions directory for a worktree."""
+        if isinstance(worktree_path, Mock) or not isinstance(worktree_path, Path):
+            raise TypeError("worktree_path must be a pathlib.Path")
         return worktree_path / ".issue-orchestrator" / SESSION_OUTPUT_DIR
 
     def start_run(
@@ -129,7 +136,7 @@ class FileSystemSessionOutput:
         retention_tier: str = "hot",
         retention_days: int = 7,
         retention_pinned: bool = False,
-    ) -> SessionRun:
+    ) -> SessionRunAssets:
         """Create a new run directory and initial manifest."""
         with self._io_lock:
             run_id = self._run_timestamp()
@@ -194,11 +201,12 @@ class FileSystemSessionOutput:
             self._update_latest(worktree_path, manifest)
             self._append_index(worktree_path, manifest)
 
-        return SessionRun(
+        return SessionRunAssets.from_paths(
             session_name=session_name,
             run_id=run_id,
+            worktree_path=worktree_path,
             run_dir=run_dir,
-            log_path=log_path,
+            terminal_recording_path=log_path,
             manifest_path=manifest_path,
             started_at=started_at,
         )
@@ -641,50 +649,33 @@ Timestamp: {self._now_iso()}
     # Review Exchange Artifacts
     # -------------------------------------------------------------------------
 
-    def store_review_exchange_summary(
+    def start_review_exchange_run(
         self,
         worktree_path: Path,
-        session_name: str,
-        summary: dict[str, Any],
-        validation_record_path: Path | None = None,
-    ) -> ReviewExchangeSummary:
-        run_dir = self.ensure_run_dir(worktree_path, session_name)
-        exchange_dir = run_dir / REVIEW_EXCHANGE_DIR_NAME
-        exchange_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
-        self._write_json(summary_path, summary)
-
-        stored_validation: Path | None = None
-        if validation_record_path and validation_record_path.exists():
-            stored_validation = run_dir / VALIDATION_RECORD_NAME
-            try:
-                shutil.copy2(validation_record_path, stored_validation)
-            except OSError:
-                logger.debug(
-                    "Failed to copy validation record to %s", stored_validation
-                )
-                stored_validation = None
-
-        updates = {
-            "review_exchange_dir": str(exchange_dir),
-            "review_exchange_summary_path": str(summary_path),
-            "ended_at": datetime.now(timezone.utc).isoformat(),
-            "outcome": str(summary.get("status") or "completed"),
-        }
-        if stored_validation:
-            updates["validation_record_path"] = str(stored_validation)
-        self.update_manifest(run_dir, updates)
-        self._append_run_log_line(
-            run_dir,
-            f"review-exchange status={summary.get('status', 'unknown')} "
-            f"reason={summary.get('reason', '')}".strip(),
+        *,
+        issue_number: int,
+        parent_session_name: str,
+        agent_label: str,
+    ) -> ReviewExchangeRun:
+        return _start_review_exchange_run(
+            self.start_run,
+            worktree_path,
+            issue_number=issue_number,
+            parent_session_name=parent_session_name,
+            agent_label=agent_label,
         )
 
-        return ReviewExchangeSummary(
-            summary=summary,
-            exchange_dir=exchange_dir,
-            summary_path=summary_path,
-            validation_record_path=stored_validation,
+    def store_review_exchange_summary(
+        self,
+        review_run: ReviewExchangeRun,
+        summary: dict[str, Any],
+    ) -> ReviewExchangeSummary:
+        return _store_review_exchange_summary(
+            review_run,
+            summary,
+            write_json=self._write_json,
+            update_manifest=self.update_manifest,
+            append_run_log_line=self._append_run_log_line,
         )
 
     def count_consecutive_review_exchange_no_completion(
@@ -910,14 +901,9 @@ Timestamp: {self._now_iso()}
                 summary = self._read_json(summary_path)
                 if not isinstance(summary, dict):
                     continue
-                validation_path = run_dir / VALIDATION_RECORD_NAME
                 return ReviewExchangeSummary(
                     summary=summary,
-                    exchange_dir=exchange_dir,
-                    summary_path=summary_path,
-                    validation_record_path=validation_path
-                    if validation_path.exists()
-                    else None,
+                    run_assets=ReviewExchangeRunAssets.from_exchange_dir(exchange_dir),
                 )
         return None
 

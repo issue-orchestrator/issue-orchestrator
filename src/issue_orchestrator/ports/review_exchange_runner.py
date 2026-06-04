@@ -15,11 +15,12 @@ to keep the import-linter contracts honest at the static-graph layer
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Protocol, TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..domain.models import AgentConfig
     from ..domain.review_exchange import ReviewExchangeOutcome
+    from ..domain.review_exchange_run import ReviewExchangeRun
     from ..events import EventContext
     from .event_sink import EventSink
 
@@ -35,6 +36,7 @@ class ReviewExchangeRunner(Protocol):
     def run(
         self,
         *,
+        exchange_run: "ReviewExchangeRun",
         coder_worktree: Path,
         issue_number: int,
         issue_title: str,
@@ -46,12 +48,10 @@ class ReviewExchangeRunner(Protocol):
         max_no_progress: int,
         require_validation: bool,
         nit_policy: str = "surface",
-        parent_session_name: str | None = None,
         initial_validation_record_path: Path | None = None,
         web_port: int | None = None,
         events: "EventSink | None" = None,
         event_context: "EventContext | None" = None,
-        on_started: Callable[[Path], None] | None = None,
     ) -> "ReviewExchangeOutcome":
         ...
 

@@ -12,6 +12,7 @@ import sys
 import pytest
 
 from issue_orchestrator.domain.models import Issue, AgentConfig
+from issue_orchestrator.domain.review_exchange_run import ReviewExchangeRunAssets
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 from issue_orchestrator.ports.working_copy import BranchStatus, CommitInfo, DiffResult, PreflightResult, PushResult, RebaseResult
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo
@@ -151,6 +152,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
     def _stub_run(
         self,
         *,
+        exchange_run,
         coder_worktree,
         issue_number,
         issue_title,  # noqa: ARG001
@@ -161,25 +163,15 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         max_rounds,
         max_no_progress,
         require_validation,
-        parent_session_name=None,  # noqa: ARG001 — added in PR #6271
         initial_validation_record_path=None,
         web_port=None,  # noqa: ARG001
         nit_policy="surface",
         events=None,
         event_context=None,
-        on_started=None,
     ):
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        session_name = f"review-exchange-{issue_number}-{timestamp}"
-        run = self._session_output.start_run(
-            coder_worktree,
-            session_name,
-            issue_number=issue_number,
-            agent_label=None,
-            backend="persistent-pty",
-        )
-        run_dir = run.run_dir
-        exchange_dir = run_dir / "review-exchange"
+        session_name = exchange_run.session_name
+        run_dir = exchange_run.assets.run_dir
+        exchange_dir = exchange_run.assets.exchange_dir
         exchange_dir.mkdir(parents=True, exist_ok=True)
 
         # Mirror the real runner: when an initial validation record was
@@ -196,9 +188,6 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             if not seed_target.exists():
                 seed_target.write_bytes(initial_validation_record_path.read_bytes())
 
-        if on_started is not None:
-            on_started(run_dir)
-
         if write_validation_record_passed:
             (run_dir / "validation-record.json").write_text(
                 json.dumps({"passed": True}), encoding="utf-8",
@@ -214,7 +203,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             from issue_orchestrator.ports import make_trace_event
             enriched = dict(payload)
             enriched["run_dir"] = str(run_dir)
-            enriched["session_run_id"] = run.run_id
+            enriched["session_run_id"] = exchange_run.run_id
             events.publish(make_trace_event(name, event_context.enrich(enriched)))
 
         _emit(EventName.REVIEW_EXCHANGE_STARTED, {
@@ -320,8 +309,8 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             status=terminating_status,
             rounds=rounds_run,
             reason=terminating_reason,
+            run_assets=ReviewExchangeRunAssets.from_exchange_dir(exchange_dir),
             reviewer_response=last_reviewer,
-            exchange_dir=exchange_dir,
             summary=summary,
         )
 

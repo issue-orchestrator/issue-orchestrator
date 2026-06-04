@@ -12,6 +12,7 @@ from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.publish_recovery import PublishRecoveryService
 from issue_orchestrator.domain.models import Issue, OrchestratorState, PublishJob, SessionHistoryEntry
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
 
@@ -97,7 +98,18 @@ def _failed_job(tmp_path: Path, *, issue_number: int = 4057, branch: str = "4057
     worktree = tmp_path / "worktree-4057"
     worktree.mkdir(parents=True)
     worktree_id = set_worktree_id(worktree, "wt-4057")
-    completion_rel = ".issue-orchestrator/sessions/coding-1/completion-agent-web.json"
+    session_output = FileSystemSessionOutput()
+    run_assets = session_output.start_run(
+        worktree,
+        "coding-1",
+        issue_number=issue_number,
+        agent_label="agent:web",
+        backend="subprocess",
+    )
+    completion_rel = (
+        f".issue-orchestrator/sessions/{run_assets.run_dir.name}/"
+        "completion-agent-web.json"
+    )
     completion_path = worktree / completion_rel
     completion_path.parent.mkdir(parents=True, exist_ok=True)
     completion_path.write_text("{}")
@@ -107,6 +119,7 @@ def _failed_job(tmp_path: Path, *, issue_number: int = 4057, branch: str = "4057
         "requested_actions": ["push_branch", "create_pr"],
         "completion_path": completion_rel,
         "agent_label": "agent:web",
+        "run_assets": run_assets.to_dict(),
     })
     return JobRecord(
         job_id="job-failed-1",

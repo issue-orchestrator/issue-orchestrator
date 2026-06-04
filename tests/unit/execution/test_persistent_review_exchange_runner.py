@@ -37,6 +37,10 @@ import pytest
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.domain.review_exchange import ReviewExchangeOutcome
+from issue_orchestrator.domain.review_exchange_run import (
+    ReviewExchangeRun,
+    ReviewExchangeRunAssets,
+)
 from issue_orchestrator.execution import persistent_review_exchange_runner as prer
 
 
@@ -84,19 +88,31 @@ def _make_agent(tmp_path: Path) -> AgentConfig:
     )
 
 
-def _canned_outcome() -> ReviewExchangeOutcome:
+def _make_exchange_run(tmp_path: Path) -> ReviewExchangeRun:
+    run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "r1__review-exchange-42"
+    return ReviewExchangeRun(
+        session_name="review-exchange-42",
+        run_id="r1",
+        parent_session_name="coding-42",
+        assets=ReviewExchangeRunAssets.from_run_dir(run_dir),
+    )
+
+
+def _canned_outcome(exchange_run: ReviewExchangeRun) -> ReviewExchangeOutcome:
     return ReviewExchangeOutcome(
         status="ok",
         rounds=2,
         reason="reviewer_ok",
+        run_assets=exchange_run.assets,
         reviewer_response=None,
-        exchange_dir=None,
         summary={"status": "ok", "completed_rounds": 2},
     )
 
 
 def _run(runner, tmp_path):
+    exchange_run = _make_exchange_run(tmp_path)
     return runner.run(
+        exchange_run=exchange_run,
         coder_worktree=tmp_path / "coder",
         issue_number=42,
         issue_title="t",
@@ -128,7 +144,7 @@ def test_run_threads_pair_registry_and_persistent_root_into_inner_runner(
 
     def _fake_inner(**kwargs):
         captured.update(kwargs)
-        return _canned_outcome()
+        return _canned_outcome(kwargs["exchange_run"])
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
     runner = _make_runner(tmp_path)
@@ -191,7 +207,7 @@ def test_run_passes_reviewer_worktree_factory_invoked_lazily(
         # The fake inner runner deliberately does NOT call the factory;
         # we want to assert the runner passed a factory, not a path,
         # and that no worktree was created prematurely.
-        return _canned_outcome()
+        return _canned_outcome(kwargs["exchange_run"])
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
     runner = _make_runner(tmp_path)
@@ -228,7 +244,7 @@ def test_run_threads_coder_branch_for_inner_fast_forward(
 
     def _fake_inner(**kwargs):
         captured.update(kwargs)
-        return _canned_outcome()
+        return _canned_outcome(kwargs["exchange_run"])
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
     runner = _make_runner(tmp_path)

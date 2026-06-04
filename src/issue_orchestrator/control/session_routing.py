@@ -50,17 +50,7 @@ def orchestrator_launch_review_session(
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         session_name = f"review-{review.pr_number}"
-        restored = session_restorer.restore_known_terminal(
-            issue_number=review.issue_number,
-            session_name=session_name,
-            is_review=True,
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-        else:
-            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
+        _log_unrestorable_existing_terminal(session_name)
     return result.session if result.success else None
 
 
@@ -83,17 +73,7 @@ def orchestrator_launch_retrospective_review_session(
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         session_name = SessionRef.for_retrospective_review(review.issue_number).name
-        restored = session_restorer.restore_known_terminal(
-            issue_number=review.issue_number,
-            session_name=session_name,
-            is_review=True,
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-        else:
-            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
+        _log_unrestorable_existing_terminal(session_name)
     return result.session if result.success else None
 
 
@@ -114,17 +94,7 @@ def orchestrator_launch_rework_session(
             logger.warning("[ORPHAN] Rework missing issue number: %s", rework.issue_key)
             return None
         session_name = f"rework-{issue_number}"
-        restored = session_restorer.restore_known_terminal(
-            issue_number=issue_number,
-            session_name=session_name,
-            is_review=False,
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-        else:
-            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
+        _log_unrestorable_existing_terminal(session_name)
     return result.session if result.success else None
 
 
@@ -144,17 +114,7 @@ def orchestrator_launch_validation_retry_session(
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         session_name = f"issue-{retry.issue_number}"
-        restored = session_restorer.restore_known_terminal(
-            issue_number=retry.issue_number,
-            session_name=session_name,
-            is_review=False,
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-        else:
-            logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
+        _log_unrestorable_existing_terminal(session_name)
     return result.session if result.success else None
 
 
@@ -276,15 +236,13 @@ def orchestrator_launch_session(
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued and session_restorer is not None:
         session_name = f"issue-{issue.number}"
-        restored = session_restorer.restore_known_terminal(
-            issue_number=issue.number,
-            session_name=session_name,
-            is_review=False,
-            already_tracked=state.active_sessions,
-        )
-        if restored:
-            append_unique_active_sessions(state.active_sessions, restored)
-            logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
-            return restored[0]
-        logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
+        _log_unrestorable_existing_terminal(session_name)
     return result.session if result.success else None
+
+
+def _log_unrestorable_existing_terminal(session_name: str) -> None:
+    logger.warning(
+        "[ORPHAN] Existing terminal %s cannot be restored from launch routing; "
+        "active restoration requires discovered run assets",
+        session_name,
+    )

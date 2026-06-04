@@ -162,6 +162,15 @@ class ResumeFacts:
 # Reason constants — single source of truth for the matrix
 # ---------------------------------------------------------------------------
 
+STATUS_REVIEWER_OK = "ok"
+"""Terminal status: reviewer approved."""
+
+STATUS_REVIEWER_STOPPED = "stopped"
+"""Terminal status: bounded exchange stopped before approval."""
+
+STATUS_REVIEWER_ERROR = "error"
+"""Terminal status: exchange ended with protocol/timeout failure."""
+
 REASON_REVIEWER_OK = "reviewer_ok"
 """Status=ok terminal: the reviewer approved."""
 

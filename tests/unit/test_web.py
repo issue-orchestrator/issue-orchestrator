@@ -72,6 +72,7 @@ from issue_orchestrator.timeline import (
     TimelineStream,
 )
 from issue_orchestrator.events import EventName
+from tests.unit.session_run_helpers import make_session_run_assets
 
 _TEST_RUN_DIR_BY_ISSUE: dict[int, str] = {}
 
@@ -230,6 +231,10 @@ def create_session(issue, worktree_path="/tmp/worktree-1", branch_name="feature/
         terminal_id=f"issue-{issue.number}",
         worktree_path=Path(worktree_path),
         branch_name=branch_name,
+        run_assets=make_session_run_assets(
+            Path(worktree_path),
+            session_name=f"issue-{issue.number}",
+        ),
     )
 
 
@@ -344,5 +349,4 @@ def _first_cycle(payload: dict[str, Any]) -> dict[str, Any]:
     first = cycles[0]
     assert isinstance(first, dict)
     return first
-
 

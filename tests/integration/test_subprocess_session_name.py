@@ -20,11 +20,14 @@ pytestmark = pytest.mark.xdist_group("pty")
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.hooks.hookspec import PROJECT_NAME, TerminalSpec
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
-def _long_running_command() -> str:
+def _long_running_command(worktree: Path, session_name: str) -> str:
     """Keep subprocess sessions alive long enough to assert registry state."""
-    return f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(30)'"
+    run_assets = make_session_run_assets(worktree, session_name=session_name)
+    command = f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(30)'"
+    return f"export ISSUE_ORCHESTRATOR_RUN_DIR='{run_assets.run_dir}' && {command}"
 
 
 @pytest.fixture
@@ -75,7 +78,7 @@ class TestSessionNameFlow:
         # This is what the orchestrator does for review sessions
         result = plugin_manager.hook.create_session(
             session_id=3865,
-            command=_long_running_command(),
+            command=_long_running_command(worktree, "review-3865"),
             working_dir=str(worktree),
             title="Review PR #3865",
             session_name="review-3865",  # This is the key parameter!
@@ -114,7 +117,7 @@ class TestSessionNameFlow:
         # Caller provides explicit session name (no fallbacks)
         result = plugin_manager.hook.create_session(
             session_id=123,
-            command=_long_running_command(),
+            command=_long_running_command(worktree, "issue-123"),
             working_dir=str(worktree),
             title="Issue #123",
             session_name="issue-123",  # Caller computes name

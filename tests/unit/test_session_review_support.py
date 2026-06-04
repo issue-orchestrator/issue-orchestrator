@@ -12,6 +12,7 @@ from issue_orchestrator.control.session_review_support import (
     read_local_reviewer_feedback,
 )
 from issue_orchestrator.ports import ReviewState
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def _feedback_file(run_dir: Path, review_issues: str = "Fix the tests") -> Path:
@@ -29,8 +30,8 @@ def _feedback_file(run_dir: Path, review_issues: str = "Fix the tests") -> Path:
 
 
 def test_find_review_feedback_file_returns_latest_matching_review_run(tmp_path: Path) -> None:
-    older = tmp_path / ".issue-orchestrator" / "sessions" / "review-7__20260101"
-    newer = tmp_path / ".issue-orchestrator" / "sessions" / "review-7__20260102"
+    older = tmp_path / ".issue-orchestrator" / "sessions" / "20260101__review-7"
+    newer = tmp_path / ".issue-orchestrator" / "sessions" / "20260102__review-7"
     _feedback_file(older, "older")
     expected = _feedback_file(newer, "newer")
 
@@ -39,19 +40,22 @@ def test_find_review_feedback_file_returns_latest_matching_review_run(tmp_path: 
 
 def test_copy_review_feedback_to_rework_copies_latest_file(tmp_path: Path) -> None:
     source = _feedback_file(
-        tmp_path / ".issue-orchestrator" / "sessions" / "review-7__20260102",
+        tmp_path / ".issue-orchestrator" / "sessions" / "20260102__review-7",
         "Use explicit assertions",
     )
-    rework_run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "rework-7__20260103"
-    rework_run_dir.mkdir(parents=True)
+    rework_run_assets = make_session_run_assets(
+        tmp_path,
+        run_id="20260103",
+        session_name="rework-7",
+    )
 
     copied = copy_review_feedback_to_rework(
         worktree_path=tmp_path,
         pr_number=7,
-        rework_run_dir=rework_run_dir,
+        rework_run_assets=rework_run_assets,
     )
 
-    assert copied == rework_run_dir / "reviewer-feedback.json"
+    assert copied == rework_run_assets.run_dir / "reviewer-feedback.json"
     assert copied is not None
     assert copied.read_text() == source.read_text()
 
@@ -72,15 +76,15 @@ def test_read_local_reviewer_feedback_ignores_malformed_json(tmp_path: Path) -> 
 
 
 def test_format_reviewer_feedback_uses_local_cache_before_github(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    _feedback_file(run_dir, "Local feedback")
+    run_assets = make_session_run_assets(tmp_path, session_name="rework-7")
+    _feedback_file(run_assets.run_dir, "Local feedback")
     repository_host = SimpleNamespace(get_pr_reviews=lambda _pr_number: [])
 
     result = format_reviewer_feedback(
         pr_number=7,
         repository_host=repository_host,
         cache_minutes=10,
-        run_dir=run_dir,
+        run_assets=run_assets,
         sleep_fn=lambda _delay: None,
     )
 
@@ -88,6 +92,7 @@ def test_format_reviewer_feedback_uses_local_cache_before_github(tmp_path: Path)
 
 
 def test_format_reviewer_feedback_formats_actionable_reviews(tmp_path: Path) -> None:
+    run_assets = make_session_run_assets(tmp_path, session_name="rework-7")
     repository_host = SimpleNamespace(
         get_pr_reviews=lambda _pr_number: [
             {"state": ReviewState.APPROVED.value, "body": "Looks good"},
@@ -103,7 +108,7 @@ def test_format_reviewer_feedback_formats_actionable_reviews(tmp_path: Path) -> 
         pr_number=7,
         repository_host=repository_host,
         cache_minutes=0,
-        run_dir=None,
+        run_assets=run_assets,
         sleep_fn=lambda _delay: None,
     )
 

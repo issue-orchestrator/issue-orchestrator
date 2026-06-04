@@ -50,6 +50,7 @@ _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
 _DEFAULT_RESPONSE_DRAIN_SECONDS = 0.1
 _DEFAULT_TERMINATE_GRACE_SECONDS = 5.0
 _DEFAULT_PTY_WRITE_TIMEOUT_SECONDS = 30.0
+_DEFAULT_PROMPT_ACCEPTANCE_IDLE_SECONDS = 120.0
 # Echo-settle window between writing the prompt text and the standalone
 # Enter ("\r") that submits it — see the two-write contract in send_round.
 _ENTER_SETTLE_QUIET_SECONDS = 0.3
@@ -380,6 +381,7 @@ def send_round(
     response_file: Path,
     timeout_seconds: float,
     write_timeout_seconds: float = _DEFAULT_PTY_WRITE_TIMEOUT_SECONDS,
+    prompt_acceptance_idle_seconds: float | None = _DEFAULT_PROMPT_ACCEPTANCE_IDLE_SECONDS,
     poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
     response_drain_seconds: float = _DEFAULT_RESPONSE_DRAIN_SECONDS,
     now: Callable[[], float] = time.monotonic,
@@ -406,6 +408,11 @@ def send_round(
     effective write deadline is capped by ``timeout_seconds`` so a short
     total round timeout remains authoritative.
 
+    ``prompt_acceptance_idle_seconds`` bounds how long a prompted session may
+    stay alive without producing any PTY/recording activity or response after
+    prompt delivery. This catches the "prompt rendered, agent never engaged"
+    failure mode before the full round timeout.
+
     ``now`` and ``sleep`` are injectable for deterministic tests.
     """
     if session.closed:
@@ -417,6 +424,11 @@ def send_round(
         raise ValueError("timeout_seconds must be positive")
     if write_timeout_seconds <= 0:
         raise ValueError("write_timeout_seconds must be positive")
+    if (
+        prompt_acceptance_idle_seconds is not None
+        and prompt_acceptance_idle_seconds <= 0
+    ):
+        raise ValueError("prompt_acceptance_idle_seconds must be positive or None")
     label = role_label or f"pid={session.proc.pid}"
     payload = prompt.encode("utf-8")
     started_at = now()
@@ -451,6 +463,7 @@ def send_round(
         timeout_seconds=timeout_seconds,
         poll_interval_seconds=poll_interval_seconds,
         response_drain_seconds=response_drain_seconds,
+        prompt_acceptance_idle_seconds=prompt_acceptance_idle_seconds,
         now=now,
         sleep=sleep,
         label=label,
@@ -466,6 +479,7 @@ def _wait_for_round_response(
     timeout_seconds: float,
     poll_interval_seconds: float,
     response_drain_seconds: float,
+    prompt_acceptance_idle_seconds: float | None,
     now: Callable[[], float],
     sleep: Callable[[float], None],
     label: str,
@@ -479,6 +493,8 @@ def _wait_for_round_response(
     via the round failure reason, which drives the respawn logic upstream.
     """
     last_heartbeat = now()
+    last_activity_at = last_heartbeat
+    last_recording_size = _safe_recording_size(session)
     poll_iter = 0
     bytes_drained_total = 0
     while now() < deadline:
@@ -488,7 +504,19 @@ def _wait_for_round_response(
         # zero bytes drained over a long interval means the agent
         # hasn't even read its prompt yet, which is the failure
         # mode that hung the test.
-        bytes_drained_total += _drain_pty_output(session)
+        current = now()
+        drained = _drain_pty_output(session)
+        bytes_drained_total += drained
+        recording_size = _safe_recording_size(session)
+        recording_grew = (
+            last_recording_size is not None
+            and recording_size is not None
+            and recording_size > last_recording_size
+        )
+        if drained or recording_grew:
+            last_activity_at = current
+        if recording_size is not None:
+            last_recording_size = recording_size
         parsed = _try_read_response(response_file)
         if parsed is not None:
             _drain_pty_output_until_quiet(
@@ -534,16 +562,39 @@ def _wait_for_round_response(
                 f"Agent exited unexpectedly (code={ret}) before responding",
                 failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
             )
+        idle_for = now() - last_activity_at
+        if (
+            prompt_acceptance_idle_seconds is not None
+            and idle_for >= prompt_acceptance_idle_seconds
+        ):
+            logger.warning(
+                "[send_round] prompt not accepted role=%s pid=%d after %.1fs idle "
+                "(elapsed=%.1fs poll_iters=%d bytes_drained=%d "
+                "response_file_exists=%s recording_bytes=%s)",
+                label,
+                session.proc.pid,
+                idle_for,
+                now() - started_at,
+                poll_iter,
+                bytes_drained_total,
+                response_file.exists(),
+                recording_size if recording_size is not None else "n/a",
+            )
+            raise PersistentRoundTimeoutError(
+                "Agent did not produce terminal output or a response after "
+                f"prompt delivery for {idle_for:.1f}s",
+                failure_reason=RoundFailureReason.PROMPT_NOT_ACCEPTED,
+            )
         if now() - last_heartbeat >= _SEND_ROUND_HEARTBEAT_SECONDS:
-            recording_size = _safe_recording_size(session)
             logger.info(
                 "[send_round] heartbeat role=%s pid=%d alive=%s elapsed=%.0fs "
                 "deadline_in=%.0fs poll_iters=%d bytes_drained=%d "
-                "response_file_exists=%s recording_bytes=%s",
+                "idle_for=%.0fs response_file_exists=%s recording_bytes=%s",
                 label, session.proc.pid,
                 session.proc.poll() is None,
                 now() - started_at, deadline - now(),
                 poll_iter, bytes_drained_total,
+                idle_for,
                 response_file.exists(),
                 recording_size if recording_size is not None else "n/a",
             )

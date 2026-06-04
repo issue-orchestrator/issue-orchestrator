@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..domain.session_run import SessionRunAssets
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..ports.session_output import SessionOutput
 
@@ -94,24 +95,16 @@ def write_failure_diagnostic(
     errors: list[str],
     error_details: list[dict[str, Any]],
     duration_seconds: float,
+    run_assets: SessionRunAssets,
 ) -> str | None:
     """Write detailed failure diagnostics to a file in the worktree."""
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     filename = f"failure-diagnostic-{timestamp}.json"
-    if session_name:
-        run_dir = session_output.find_run_dir(worktree, session_name=session_name)
-        if run_dir:
-            diagnostic_dir = run_dir
-            diagnostic_rel = f".issue-orchestrator/sessions/{run_dir.name}/{filename}"
-        else:
-            diagnostic_dir = session_output.ensure_run_dir(worktree, session_name)
-            diagnostic_rel = f".issue-orchestrator/sessions/{diagnostic_dir.name}/{filename}"
-    else:
-        diagnostic_dir = worktree / ".issue-orchestrator"
-        diagnostic_rel = f".issue-orchestrator/{filename}"
-    diagnostic_path = diagnostic_dir / filename
+    diagnostic_artifact = run_assets.diagnostic_artifact(filename)
+    diagnostic_dir = run_assets.run_dir
+    diagnostic_rel = f".issue-orchestrator/sessions/{run_assets.run_dir.name}/{filename}"
 
-    diagnostic = {
+    payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "session_name": session_name,
         "issue_number": issue_number,
@@ -128,17 +121,14 @@ def write_failure_diagnostic(
 
     try:
         diagnostic_dir.mkdir(parents=True, exist_ok=True)
-        diagnostic_path.write_text(json.dumps(diagnostic, indent=2))
-        if session_name:
-            run_dir = session_output.find_run_dir(worktree, session_name=session_name)
-            if run_dir:
-                session_output.update_manifest(
-                    run_dir,
-                    {"diagnostic_path": diagnostic_rel},
-                )
+        diagnostic_artifact.path.write_text(json.dumps(payload, indent=2))
+        session_output.update_manifest(
+            run_assets.run_dir,
+            {"diagnostic_path": diagnostic_rel},
+        )
         logger.info(
             "[DIAGNOSTIC] Wrote failure diagnostic: issue=%d path=%s",
-            issue_number, diagnostic_path,
+            issue_number, diagnostic_artifact.path,
         )
         # Return relative path for inclusion in GitHub comment
         return diagnostic_rel

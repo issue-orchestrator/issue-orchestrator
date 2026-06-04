@@ -15,6 +15,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def _make_session_key(issue_number: int = 1, task: TaskKind = TaskKind.CODE) -> SessionKey:
@@ -582,6 +583,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
         )
 
         assert session.issue == issue
@@ -604,6 +609,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
             started_at=past,
         )
 
@@ -624,6 +633,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
             started_at=recent,
         )
 
@@ -647,6 +660,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
             started_at=old,
         )
 
@@ -662,6 +679,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
         )
 
         assert session.status == SessionStatus.RUNNING
@@ -730,6 +751,10 @@ class TestOrchestratorState:
             terminal_id="retrospective-review-367",
             worktree_path=Path("/tmp/work367"),
             branch_name="issue-367",
+            run_assets=make_session_run_assets(
+                Path("/tmp/work367"),
+                session_name="retrospective-review-367",
+            ),
         )
         restored_legacy_issue = Issue(number=368, title="Restored", labels=["agent:web"])
         restored_legacy_session = Session(
@@ -739,6 +764,10 @@ class TestOrchestratorState:
             terminal_id="retrospective-review-368",
             worktree_path=Path("/tmp/work368"),
             branch_name="issue-368",
+            run_assets=make_session_run_assets(
+                Path("/tmp/work368"),
+                session_name="retrospective-review-368",
+            ),
         )
         state = OrchestratorState(
             active_sessions=[active_session, restored_legacy_session],
@@ -786,6 +815,10 @@ class TestOrchestratorState:
             terminal_id="session-1",
             worktree_path=Path("/tmp/work1"),
             branch_name="feature/1",
+            run_assets=make_session_run_assets(
+                Path("/tmp/work1"),
+                session_name="session-1",
+            ),
         )
 
         state = OrchestratorState(
