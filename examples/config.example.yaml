@@ -48,7 +48,6 @@ agents:
     #   sandbox: "workspace-write"    # Codex
     #   reasoning_effort: "xhigh"     # Codex
     #   permission_mode: "bypassPermissions"  # Claude Code
-    # permission_mode: "default"     # Provider-specific permission mode
     # command: "claude --model {model} '{initial_prompt}'"
     # initial_prompt: "Work on issue #{issue_number}: {issue_title}"
     # skip_review: false

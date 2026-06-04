@@ -306,7 +306,7 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
                 agent.model,
                 agent.timeout_minutes,
                 agent.command,
-                agent.permission_mode,
+                agent.effective_permission_mode,
             )
 
     except FileNotFoundError as e:

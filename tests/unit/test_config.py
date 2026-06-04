@@ -97,6 +97,44 @@ ui:
         assert config.web_port == 0
         assert config.control_api_port == 0
 
+    def test_config_load_rejects_agent_level_permission_mode(self, tmp_path):
+        """The top-level agent permission_mode spelling is not supported;
+        the error points at provider_args.permission_mode."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+    permission_mode: bypassPermissions
+worktrees:
+  base: {worktree_base}
+""")
+
+        with pytest.raises(
+            ValueError,
+            match=r"agents\.agent:web\.permission_mode is not supported.*provider_args\.permission_mode",
+        ):
+            Config.load(config_file)
+
+    def test_repo_owned_configs_load(self):
+        """Every checked-in config (orchestrator + E2E fixtures) must parse.
+
+        Guards against config-contract changes (like the agent-level
+        permission_mode rejection) silently breaking repo-owned YAML."""
+        repo_root = Path(__file__).resolve().parents[2]
+        config_paths = sorted(
+            list((repo_root / ".issue-orchestrator" / "config").glob("*.yaml"))
+            + list((repo_root / "tests" / "e2e" / "configs").glob("*.yaml"))
+        )
+        assert config_paths, "expected repo-owned configs to exist"
+        for path in config_paths:
+            Config.load(path)
+
     def test_config_load_codex_agent_without_model_uses_provider_default(self, tmp_path):
         """Codex agents without a model should not inherit Claude's sonnet fallback."""
         prompt = tmp_path / "prompt.md"

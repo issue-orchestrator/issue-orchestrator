@@ -156,7 +156,8 @@ class SessionBuilder:
         # Create a minimal mock agent config
         agent_config = MagicMock()
         agent_config.timeout_minutes = 60
-        agent_config.permission_mode = "bypassPermissions"
+        agent_config.provider_args = {"permission_mode": "bypassPermissions"}
+        agent_config.effective_permission_mode = "bypassPermissions"
         agent_config.command = "claude -p --model {model} {initial_prompt}"
 
         return Session(

@@ -20,7 +20,6 @@ def test_write_e2e_config_preserves_agent_prompt_contract(tmp_path: Path) -> Non
             provider="claude-code",
             model="opus",
             timeout_minutes=75,
-            permission_mode="bypassPermissions",
             initial_prompt="Work on issue #{issue_number}: stay focused and use --follow-up-file /tmp/follow-up-issues.jsonl.",
             provider_args={"permission_mode": "bypassPermissions", "verbose": "true"},
             retry_prompt_template="repo-specific/prompts/retry.md",

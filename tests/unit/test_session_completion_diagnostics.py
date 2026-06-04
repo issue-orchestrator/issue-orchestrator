@@ -9,12 +9,15 @@ from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
 
 def _session(tmp_path: Path, *, permission_mode: str = "bypassPermissions") -> Session:
+    provider_args = (
+        {"permission_mode": permission_mode} if permission_mode != "default" else {}
+    )
     return Session(
         key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
         issue=Issue(123, "Test issue", ["agent:test"], repo="owner/repo"),
         agent_config=AgentConfig(
             prompt_path=tmp_path / "prompt.md",
-            permission_mode=permission_mode,
+            provider_args=provider_args,
             command="claude -p prompt",
         ),
         terminal_id="issue-123",
@@ -40,6 +43,8 @@ def test_surface_failure_context_warns_about_default_permission_mode(
     )
 
     assert "permission_mode is 'default'" in caplog.text
+    assert "provider_args.permission_mode" in caplog.text
+    assert "Add 'permission_mode" not in caplog.text
     assert "No detailed failure context available" in caplog.text
 
 

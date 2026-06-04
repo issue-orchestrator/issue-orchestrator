@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.session_failure_diagnosis import (
     SessionFailureDiagnosis,
     create_session_failure_diagnosis,
@@ -126,7 +127,7 @@ class TestCreateSessionFailureDiagnosis:
         """When issue is in active sessions, uses that worktree."""
         mock_get_provider.return_value = None
 
-        agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+        agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
         active_session = Mock(
             issue=Mock(number=123),
             worktree_path="/path/to/wt",
@@ -153,8 +154,8 @@ class TestCreateSessionFailureDiagnosis:
         """When multiple active sessions match, uses the first one."""
         mock_get_provider.return_value = None
 
-        config1 = Mock(permission_mode="mode1", command="cmd1")
-        config2 = Mock(permission_mode="mode2", command="cmd2")
+        config1 = Mock(effective_permission_mode="mode1", command="cmd1")
+        config2 = Mock(effective_permission_mode="mode2", command="cmd2")
         session1 = Mock(issue=Mock(number=123), worktree_path="/path1", agent_config=config1)
         session2 = Mock(issue=Mock(number=123), worktree_path="/path2", agent_config=config2)
 
@@ -454,7 +455,7 @@ class TestCreateSessionFailureDiagnosis:
         mock_detect.return_value = "anthropic-claude"
         mock_get_provider.return_value = None
 
-        agent_config = Mock(command="claude-code", permission_mode="bypassPermissions")
+        agent_config = Mock(command="claude-code", effective_permission_mode="bypassPermissions")
         active_session = Mock(
             issue=Mock(number=123),
             worktree_path="/path/to/wt",
@@ -492,7 +493,7 @@ class TestCreateSessionFailureDiagnosis:
             status_reason="error",
             agent_type="agent-cursor",
         )
-        agent_config = Mock(command="cursor", permission_mode="default")
+        agent_config = Mock(command="cursor", effective_permission_mode="default")
 
         config = Mock()
         config.repo_root = Path("/repo")
@@ -541,7 +542,10 @@ class TestCreateSessionFailureDiagnosis:
         """Permission mode is extracted from active session's agent config."""
         mock_get_provider.return_value = None
 
-        agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+        agent_config = AgentConfig(
+            prompt_path=Path("prompt.md"),
+            provider_args={"permission_mode": "bypassPermissions"},
+        )
         active_session = Mock(
             issue=Mock(number=123),
             worktree_path="/path/to/wt",
@@ -563,6 +567,41 @@ class TestCreateSessionFailureDiagnosis:
 
         assert diagnosis.permission_mode == "bypassPermissions"
 
+    @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
+    def test_provider_args_permission_mode_suppresses_default_warning(
+        self, mock_get_provider
+    ):
+        """provider_args permission_mode is honored by diagnostics: no false
+        'default' warning for an agent launched with bypassPermissions."""
+        mock_get_provider.return_value = None
+
+        agent_config = AgentConfig(
+            prompt_path=Path("prompt.md"),
+            provider="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+        )
+        active_session = Mock(
+            issue=Mock(number=123),
+            worktree_path="/path/to/wt",
+            agent_config=agent_config,
+        )
+        config = Mock()
+        config.repo_root = Path("/repo")
+        config.repo = "org/repo"
+        config.worktree_base = None
+        config.agents = {}
+
+        diagnosis = create_session_failure_diagnosis(
+            issue_number=123,
+            session_history=[],
+            active_sessions=[active_session],
+            config=config,
+            agents={},
+        )
+
+        assert diagnosis.permission_mode == "bypassPermissions"
+        assert not any("default" in w.lower() for w in diagnosis.warnings)
+
     # =========================================================================
     # Warnings and Suggestions Tests
     # =========================================================================
@@ -572,7 +611,7 @@ class TestCreateSessionFailureDiagnosis:
         """Warns when permission_mode is 'default'."""
         mock_get_provider.return_value = None
 
-        agent_config = Mock(permission_mode="default", command="claude-code")
+        agent_config = AgentConfig(prompt_path=Path("prompt.md"))
         active_session = Mock(
             issue=Mock(number=123),
             worktree_path="/path/to/wt",
@@ -593,7 +632,8 @@ class TestCreateSessionFailureDiagnosis:
         )
 
         assert any("default" in w.lower() for w in diagnosis.warnings)
-        assert any("permission_mode" in s.lower() for s in diagnosis.suggestions)
+        assert any("provider_args.permission_mode" in s for s in diagnosis.suggestions)
+        assert not any("Add 'permission_mode" in s for s in diagnosis.suggestions)
 
     @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
     def test_warns_about_missing_log(self, mock_get_provider):
@@ -602,7 +642,7 @@ class TestCreateSessionFailureDiagnosis:
         mock_provider.get_log_path.return_value = None
         mock_get_provider.return_value = mock_provider
 
-        agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+        agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
         active_session = Mock(
             issue=Mock(number=123),
             worktree_path="/path/to/wt",
@@ -638,7 +678,7 @@ class TestCreateSessionFailureDiagnosis:
             )
             mock_get_provider.return_value = mock_provider
 
-            agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+            agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
             active_session = Mock(
                 issue=Mock(number=123),
                 worktree_path="/path/to/wt",
@@ -672,7 +712,7 @@ class TestCreateSessionFailureDiagnosis:
             mock_provider.get_failure_context.return_value = "Session completed successfully"
             mock_get_provider.return_value = mock_provider
 
-            agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+            agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
             active_session = Mock(
                 issue=Mock(number=123),
                 worktree_path="/path/to/wt",
@@ -711,7 +751,7 @@ class TestCreateSessionFailureDiagnosis:
             mock_provider.get_failure_context.return_value = "context"
             mock_get_provider.return_value = mock_provider
 
-            agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+            agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
             active_session = Mock(
                 issue=Mock(number=123),
                 worktree_path="/path/to/wt",
@@ -739,7 +779,7 @@ class TestCreateSessionFailureDiagnosis:
         """Handles when log provider is not available."""
         mock_get_provider.return_value = None
 
-        agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+        agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
         active_session = Mock(
             issue=Mock(number=123),
             worktree_path="/path/to/wt",
@@ -774,7 +814,7 @@ class TestCreateSessionFailureDiagnosis:
             mock_provider.get_failure_context.return_value = "Detailed failure context"
             mock_get_provider.return_value = mock_provider
 
-            agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+            agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
             active_session = Mock(
                 issue=Mock(number=123),
                 worktree_path="/path/to/wt",
@@ -811,7 +851,7 @@ class TestCreateSessionFailureDiagnosis:
         mock_get_provider.return_value = None
 
         # Active session with its own config
-        active_config = Mock(command="active-cmd", permission_mode="active-mode")
+        active_config = Mock(command="active-cmd", effective_permission_mode="active-mode")
         active_session = Mock(
             issue=Mock(number=123),
             worktree_path="/active/path",
@@ -825,7 +865,7 @@ class TestCreateSessionFailureDiagnosis:
             status_reason="error",
             agent_type="agent-history",
         )
-        history_config = Mock(command="history-cmd", permission_mode="history-mode")
+        history_config = Mock(command="history-cmd", effective_permission_mode="history-mode")
 
         config = Mock()
         config.repo_root = Path("/repo")
@@ -852,7 +892,7 @@ class TestCreateSessionFailureDiagnosis:
         mock_provider.get_log_path.return_value = None
         mock_get_provider.return_value = mock_provider
 
-        agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+        agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
         active_session = Mock(
             issue=Mock(number=123),
             worktree_path="/path/to/wt",
@@ -910,12 +950,12 @@ class TestCreateSessionFailureDiagnosis:
         other_session1 = Mock(
             issue=Mock(number=100),
             worktree_path="/path1",
-            agent_config=Mock(permission_mode="mode1", command="cmd1"),
+            agent_config=Mock(effective_permission_mode="mode1", command="cmd1"),
         )
         other_session2 = Mock(
             issue=Mock(number=200),
             worktree_path="/path2",
-            agent_config=Mock(permission_mode="mode2", command="cmd2"),
+            agent_config=Mock(effective_permission_mode="mode2", command="cmd2"),
         )
 
         config = Mock()
@@ -949,7 +989,7 @@ class TestCreateSessionFailureDiagnosis:
             mock_provider.get_failure_context.return_value = None
             mock_get_provider.return_value = mock_provider
 
-            agent_config = Mock(permission_mode="bypassPermissions", command="claude-code")
+            agent_config = Mock(effective_permission_mode="bypassPermissions", command="claude-code")
             active_session = Mock(
                 issue=Mock(number=123),
                 worktree_path="/path/to/wt",

@@ -140,7 +140,6 @@ class OrchestratorProcess:
                     "provider": cfg.provider,
                     "model": cfg.model,
                     "timeout_minutes": cfg.timeout_minutes,
-                    "permission_mode": cfg.permission_mode,
                     "skip_review": cfg.skip_review,
                     "reviewer": cfg.reviewer,
                     "command": cfg.command,

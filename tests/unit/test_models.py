@@ -157,6 +157,139 @@ class TestAgentConfig:
         assert config.model == "sonnet"
         assert config.timeout_minutes == 45
 
+    def test_effective_permission_mode_provider_args_wins(self, tmp_path):
+        """provider_args.permission_mode is the single config spelling."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+        )
+
+        assert config.effective_permission_mode == "bypassPermissions"
+
+    def test_effective_permission_mode_defaults_when_unset(self, tmp_path):
+        """Without provider_args.permission_mode, the mode is 'default'."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file)
+
+        assert config.effective_permission_mode == "default"
+
+    def test_provider_args_permission_mode_reaches_launch_command(self, tmp_path):
+        """A claude agent configured via provider_args launches with that mode."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+        )
+
+        command = config.get_command(
+            issue_number=1, issue_title="Title", worktree=tmp_path
+        )
+
+        assert "--permission-mode bypassPermissions" in command
+
+    def test_review_task_kind_defaults_to_review_initial_prompt(self, tmp_path):
+        """Review launches without an explicit initial_prompt get the review
+        default, never the coding-flavored field default."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file)
+
+        rendered = config.render_initial_prompt(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            pr_number=42,
+            task_kind=TaskKind.REVIEW.value,
+        )
+
+        assert "reviewer-done" in rendered
+        assert "PR #42" in rendered
+        assert "coding-done" not in rendered
+
+    def test_retrospective_review_task_kind_defaults_to_review_initial_prompt(
+        self, tmp_path
+    ):
+        """Retrospective review launches also get the review default."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file)
+
+        rendered = config.render_initial_prompt(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            pr_number=42,
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+        )
+
+        assert "reviewer-done" in rendered
+        assert "coding-done" not in rendered
+
+    def test_code_task_kind_keeps_coding_initial_prompt(self, tmp_path):
+        """Code launches keep the coding default initial prompt."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file)
+
+        rendered = config.render_initial_prompt(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            task_kind=TaskKind.CODE.value,
+        )
+
+        assert "coding-done" in rendered
+        assert "reviewer-done" not in rendered
+
+    def test_explicit_initial_prompt_wins_for_review_task_kind(self, tmp_path):
+        """An explicitly configured initial_prompt is used as-is for any kind."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            initial_prompt="Custom review flow for #{issue_number}",
+        )
+
+        rendered = config.render_initial_prompt(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            pr_number=42,
+            task_kind=TaskKind.REVIEW.value,
+        )
+
+        assert rendered == "Custom review flow for #7"
+
+    def test_get_command_review_kind_uses_review_initial_prompt(self, tmp_path):
+        """The review default flows through get_command for review launches."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file, provider="claude-code")
+
+        command = config.get_command(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            pr_number=42,
+            task_kind=TaskKind.REVIEW.value,
+        )
+
+        assert "use reviewer-done to report your verdict" in command
+
     def test_resolve_launch_provider_prefers_explicit_provider(self, tmp_path):
         prompt_file = tmp_path / "prompt.txt"
         prompt_file.write_text("p")

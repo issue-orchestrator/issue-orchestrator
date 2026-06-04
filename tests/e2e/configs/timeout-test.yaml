@@ -26,7 +26,8 @@ agents:
     model: haiku
     ai_system: "claude-code"
     timeout_minutes: 1  # Very short - will timeout quickly
-    permission_mode: bypassPermissions  # Required for non-interactive e2e tests
+    provider_args:
+      permission_mode: bypassPermissions  # Required for non-interactive e2e tests
 
 execution:
   concurrency:

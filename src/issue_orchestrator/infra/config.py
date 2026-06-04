@@ -769,8 +769,6 @@ class Config:
                 agent_dict["timeout_minutes"] = agent.timeout_minutes
             if agent.provider_args:
                 agent_dict["provider_args"] = dict(agent.provider_args)
-            if agent.permission_mode != "default":
-                agent_dict["permission_mode"] = agent.permission_mode
             if agent.skip_review:
                 agent_dict["skip_review"] = agent.skip_review
             if agent.reviewer:
