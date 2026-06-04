@@ -828,10 +828,8 @@ class AgentConfig:
     model: str = "sonnet"
     timeout_minutes: int = 45
     # Provider-specific arguments (e.g., permission_mode for claude-code, approval_mode for codex)
+    # Claude permission modes: default, acceptEdits, bypassPermissions, plan, dontAsk
     provider_args: dict[str, Any] = field(default_factory=dict)
-    # Permission mode for Claude CLI: default, acceptEdits, bypassPermissions, plan, dontAsk
-    # Deprecated: use provider_args instead. Kept for backwards compatibility.
-    permission_mode: str = "default"
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
     skip_review: bool = False
     # Per-agent reviewer override (uses review.default if not set)
@@ -855,17 +853,17 @@ class AgentConfig:
 
     @property
     def effective_permission_mode(self) -> str:
-        """Effective Claude permission mode: ``provider_args`` wins over the
-        legacy ``permission_mode`` field.
+        """Claude permission mode from ``provider_args`` (``"default"`` when unset).
 
-        Single resolution rule shared by command rendering and failure
-        diagnostics so ``provider_args: {permission_mode: ...}`` configs are
-        honored everywhere, not just at launch.
+        Single read shared by command rendering, session identity metadata,
+        and failure diagnostics — there is exactly one place permission mode
+        is spelled (``provider_args.permission_mode``) and one place it is
+        resolved.
         """
         mode = self.provider_args.get("permission_mode")
         if isinstance(mode, str) and mode:
             return mode
-        return self.permission_mode
+        return "default"
 
     def _initial_prompt_template(self, task_kind: str) -> str:
         """Initial prompt template for ``task_kind``.
@@ -1092,9 +1090,8 @@ class AgentConfig:
             if user_system_prompt:
                 system_prompt = f"{system_prompt}\n\n---\n\n{user_system_prompt}"
             kwargs["system_prompt"] = system_prompt
-            # Effective permission mode (provider_args wins over the legacy
-            # field — see effective_permission_mode). setdefault keeps
-            # per-issue extra_provider_args overrides authoritative.
+            # setdefault keeps per-issue extra_provider_args overrides
+            # authoritative over the agent's effective_permission_mode.
             kwargs.setdefault("permission_mode", self.effective_permission_mode)
         else:
             # Other providers (Codex, etc.): prepend completion instructions to prompt

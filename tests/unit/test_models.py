@@ -158,7 +158,7 @@ class TestAgentConfig:
         assert config.timeout_minutes == 45
 
     def test_effective_permission_mode_provider_args_wins(self, tmp_path):
-        """provider_args permission_mode overrides the legacy field."""
+        """provider_args.permission_mode is the single config spelling."""
         prompt_file = tmp_path / "prompt.txt"
         prompt_file.write_text("Sample prompt")
 
@@ -170,14 +170,14 @@ class TestAgentConfig:
 
         assert config.effective_permission_mode == "bypassPermissions"
 
-    def test_effective_permission_mode_falls_back_to_legacy_field(self, tmp_path):
-        """Without provider_args, the legacy permission_mode field applies."""
+    def test_effective_permission_mode_defaults_when_unset(self, tmp_path):
+        """Without provider_args.permission_mode, the mode is 'default'."""
         prompt_file = tmp_path / "prompt.txt"
         prompt_file.write_text("Sample prompt")
 
-        config = AgentConfig(prompt_path=prompt_file, permission_mode="acceptEdits")
+        config = AgentConfig(prompt_path=prompt_file)
 
-        assert config.effective_permission_mode == "acceptEdits"
+        assert config.effective_permission_mode == "default"
 
     def test_provider_args_permission_mode_reaches_launch_command(self, tmp_path):
         """A claude agent configured via provider_args launches with that mode."""

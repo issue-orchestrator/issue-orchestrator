@@ -1301,7 +1301,6 @@ def _open_role_session(  # noqa: PLR0913
         model=agent.model,
         timeout_minutes=agent.timeout_minutes,
         provider_args=dict(agent.provider_args),
-        permission_mode=agent.permission_mode,
         skip_review=agent.skip_review,
         reviewer=agent.reviewer,
         command=agent.command,

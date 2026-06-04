@@ -240,12 +240,10 @@ class SessionLauncher:
         *,
         extra_provider_args: dict[str, str] | None,
     ) -> dict[str, object]:
-        provider_args = dict(agent_config.provider_args)
-        permission_mode = str(provider_args.get("permission_mode") or agent_config.permission_mode or "")
         return {
             "provider": str(agent_config.provider or ""),
             "model": str(agent_config.model or ""),
-            "permission_mode": permission_mode,
+            "permission_mode": agent_config.effective_permission_mode,
             "timeout_minutes": int(agent_config.timeout_minutes),
             "extra_provider_args": dict(extra_provider_args or {}),
         }

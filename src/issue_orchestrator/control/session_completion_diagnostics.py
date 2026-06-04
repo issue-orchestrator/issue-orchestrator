@@ -42,12 +42,12 @@ def surface_failure_context(session: Session, status: SessionStatus) -> None:
             f"- Status: {status.value}",
             f"- Agent: {session.agent_label or 'unknown'}",
             f"- AI System: {ai_system}",
-            f"- Permission Mode: {session.agent_config.permission_mode}",
+            f"- Permission Mode: {session.agent_config.effective_permission_mode}",
             f"- Worktree: {session.worktree_path}",
             f"- Runtime: {session.runtime_minutes} minutes",
         ]
 
-        if session.agent_config.permission_mode == "default":
+        if session.agent_config.effective_permission_mode == "default":
             diag_lines.append("")
             diag_lines.append("⚠️  WARNING: permission_mode is 'default' - Claude will prompt for permissions!")
             diag_lines.append("   This causes sessions to hang/fail in non-interactive mode.")

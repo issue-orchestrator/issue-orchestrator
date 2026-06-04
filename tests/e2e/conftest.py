@@ -414,7 +414,7 @@ def e2e_session_config(
             command="bash {prompt}",
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
         "agent:script-completes": AgentConfig(
             prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
@@ -423,7 +423,7 @@ def e2e_session_config(
             command="bash {prompt}",
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
         "agent:script-review": AgentConfig(
             prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "review-decider.sh",
@@ -432,7 +432,7 @@ def e2e_session_config(
             command="PR_NUMBER={pr_number} bash {prompt}",
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
         "agent:triage-investigator": AgentConfig(
             prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
@@ -441,7 +441,7 @@ def e2e_session_config(
             command="bash {prompt}",
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
     }
 
