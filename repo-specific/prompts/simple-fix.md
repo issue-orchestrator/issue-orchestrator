@@ -4,7 +4,7 @@ You are a coding agent. Your job is to implement features or fix bugs as describ
 
 ## How This Prompt Works
 
-This file is passed to Claude via `--append-system-prompt`. The orchestrator also passes an `initial_prompt` as the first message which contains the specific issue number and title. That context is substituted at runtime - this file is read as-is.
+The orchestrator injects its own protocol first (completion instructions, or per-round review-exchange prompts) and points you at this file with "Read \<path\> for your task-specific instructions." Issue context (number/title) arrives in the orchestrator's prompt, not here — this file is read as-is from the worktree.
 
 If you are running in Codex, you MUST discover and use repo-specific skills from:
 - `~/.codex/skills/`
