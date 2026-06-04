@@ -28,6 +28,7 @@ from issue_orchestrator.infra.e2e_reports import (
     CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR,
     CONFIGURED_JUNIT_XML_PATHS_NO_FILES_ERROR,
 )
+from issue_orchestrator.infra.e2e_runtime_output import read_runtime_captured_output
 
 from .conftest import xdist_timeout
 
@@ -167,6 +168,29 @@ tests/e2e/test_quarantined.py::test_known_flaky
 """
     )
 
+    (repo / ".issue-orchestrator").mkdir()
+    return repo
+
+
+@pytest.fixture
+def test_repo_with_passed_output(tmp_path: Path) -> Path:
+    """Create a repo with passing tests that emit stdout and stderr."""
+    repo = tmp_path / "test_repo_output"
+    repo.mkdir()
+    tests_dir = repo / "tests" / "e2e"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test_output.py").write_text(
+        """\
+import sys
+
+
+def test_passed_output():
+    print("passed stdout from runtime")
+    print("passed stderr from runtime", file=sys.stderr)
+    assert True
+""",
+        encoding="utf-8",
+    )
     (repo / ".issue-orchestrator").mkdir()
     return repo
 
@@ -420,6 +444,45 @@ def test_worker_pytest_runner_ingests_configured_junit_report(test_repo: Path):
         (artifact["kind"], Path(artifact["path"]).name) for artifact in artifacts
     }
     assert ("junit_xml", "pytest-results.xml") in artifact_kinds
+
+
+def test_worker_pytest_runner_captures_passed_test_output_live(
+    test_repo_with_passed_output: Path,
+):
+    """Runtime rows should expose passed-test stdout/stderr before JUnit ingest."""
+    result = run_worker_with_execution_spec(
+        test_repo_with_passed_output,
+        execution_spec={
+            "runner_kind": "pytest",
+            "pytest_args": ["tests/e2e", "-v"],
+            "command": [],
+            "junit_xml_paths": [],
+            "artifact_paths": [],
+            "allow_retry_once": False,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    db = E2EDB(test_repo_with_passed_output / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+    assert run is not None
+    details = db.run_details(run.id)
+    assert details is not None
+    row = details["results"][0]
+    assert row["outcome"] == "passed"
+    assert row["stdout_available"] is True
+    assert row["stderr_available"] is True
+
+    captured = read_runtime_captured_output(
+        test_repo_with_passed_output,
+        run.id,
+        row["nodeid"],
+    )
+    assert captured is not None
+    assert captured.system_out == "passed stdout from runtime"
+    assert captured.system_err == "passed stderr from runtime"
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +909,81 @@ def test_worker_command_runner_ingests_junit_and_artifacts(test_repo_with_comman
     assert progress["total_tests"] == 2
     assert progress["completed"] == 2
     assert progress["failed"] == 1
+
+
+def test_worker_command_runner_snapshots_quarantined_only_junit_failures(
+    tmp_path: Path,
+):
+    """Quarantined JUnit failures should retain output and not fail the worker."""
+    repo = tmp_path / "test_repo_command_quarantine"
+    repo.mkdir()
+    (repo / ".issue-orchestrator").mkdir()
+    (repo / "tests" / "e2e").mkdir(parents=True)
+    (repo / "tests" / "e2e" / "quarantine.txt").write_text(
+        "ui.smoke::test_known_flaky\n",
+        encoding="utf-8",
+    )
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir()
+    scripts_dir.joinpath("run_quarantined_suite.py").write_text(
+        textwrap.dedent(
+            """\
+            from pathlib import Path
+
+            artifacts = Path("artifacts")
+            artifacts.mkdir(parents=True, exist_ok=True)
+            (artifacts / "results.xml").write_text(
+                \"\"\"<testsuite tests="1" failures="1">
+                <testcase classname="ui.smoke" name="test_known_flaky" time="0.10">
+                  <failure message="known flaky">AssertionError: still flaky</failure>
+                  <system-out>captured stdout from flaky test</system-out>
+                  <system-err>captured stderr from flaky test</system-err>
+                </testcase>
+                </testsuite>\"\"\",
+                encoding="utf-8",
+            )
+            raise SystemExit(1)
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_worker_with_execution_spec(
+        repo,
+        execution_spec={
+            "runner_kind": "command",
+            "pytest_args": [],
+            "command": [sys.executable, "scripts/run_quarantined_suite.py"],
+            "junit_xml_paths": ["artifacts/results.xml"],
+            "artifact_paths": [],
+            "allow_retry_once": False,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    db = E2EDB(repo / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+    assert run is not None
+    assert run.status == "warning"
+    assert "only quarantined tests failed" in (run.note or "")
+
+    details = db.run_details(run.id)
+    assert details is not None
+    result_row = details["results"][0]
+    assert result_row["nodeid"] == "ui.smoke::test_known_flaky"
+    assert result_row["is_quarantined"] is True
+    assert result_row["stdout_available"] is True
+    assert result_row["stderr_available"] is True
+    assert db.get_failed_tests(run.id) == []
+
+    artifact = details["artifacts"][0]
+    artifact_path = Path(artifact["path"])
+    assert artifact_path.parent == repo / ".issue-orchestrator" / "e2e-results" / f"run_{run.id}"
+    assert artifact_path.exists()
+    (repo / "artifacts" / "results.xml").unlink()
+    assert artifact_path.exists()
 
 
 def test_worker_command_runner_requires_configured_junit_reports(

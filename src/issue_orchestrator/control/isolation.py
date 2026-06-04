@@ -55,6 +55,7 @@ GIT_SAFE_ENV = {
 
 RUNTIME_TOOL_HOME_DIR = ".issue-orchestrator/tool-homes"
 GRADLE_USER_HOME_ENV = "GRADLE_USER_HOME"
+PATH_ENV = "PATH"
 
 
 def get_gradle_user_home(worktree: Path) -> Path:
@@ -65,6 +66,18 @@ def get_gradle_user_home(worktree: Path) -> Path:
     return worktree / RUNTIME_TOOL_HOME_DIR / "gradle"
 
 
+def get_worktree_venv_bin(worktree: Path) -> Path:
+    """Return the worktree-local Python virtualenv bin directory."""
+    return worktree / ".venv" / "bin"
+
+
+def _prepend_path_entry(entry: Path, current_path: str) -> str:
+    entry_text = str(entry)
+    if not current_path:
+        return entry_text
+    return f"{entry_text}{os.pathsep}{current_path}"
+
+
 def build_runtime_tool_env(
     worktree: Path,
     *,
@@ -72,21 +85,33 @@ def build_runtime_tool_env(
 ) -> dict[str, str]:
     """Build an environment with tool homes isolated to the worktree.
 
-    Gradle daemons are scoped by ``GRADLE_USER_HOME``. Without a per-worktree
-    value, concurrent sessions share the user's daemon registry, so a
-    ``gradle --stop`` in one worktree can terminate validation in another.
+    Gradle daemons are scoped by ``GRADLE_USER_HOME``. Python command-line
+    tools are resolved from the worktree's own ``.venv/bin`` when it exists.
+    Without these per-worktree values, concurrent sessions share the user's
+    daemon registry and validation commands can miss repo-local tools.
 
     The isolated value intentionally overrides any caller-provided
     ``GRADLE_USER_HOME`` so orchestrator-managed runs remain reproducible.
     """
     env = dict(os.environ if base_env is None else base_env)
     env[GRADLE_USER_HOME_ENV] = str(get_gradle_user_home(worktree))
+    worktree_venv_bin = get_worktree_venv_bin(worktree)
+    if worktree_venv_bin.is_dir():
+        env[PATH_ENV] = _prepend_path_entry(worktree_venv_bin, env.get(PATH_ENV, ""))
     return env
 
 
 def build_runtime_tool_env_assignments(worktree: Path) -> list[str]:
     """Build shell assignment texts for runtime tool-home isolation."""
-    return [f"{GRADLE_USER_HOME_ENV}={shlex.quote(str(get_gradle_user_home(worktree)))}"]
+    assignments = [
+        f"{GRADLE_USER_HOME_ENV}={shlex.quote(str(get_gradle_user_home(worktree)))}"
+    ]
+    worktree_venv_bin = get_worktree_venv_bin(worktree)
+    if worktree_venv_bin.is_dir():
+        assignments.append(
+            f"{PATH_ENV}={shlex.quote(str(worktree_venv_bin))}:$PATH"
+        )
+    return assignments
 
 
 def get_orchestrator_socket_path() -> str:

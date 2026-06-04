@@ -216,6 +216,38 @@ test('viewer: mixed passed+skipped run renders each in its own group with matchi
         'skipped group must use skipped icon on its file row');
 });
 
+test('viewer: quarantined cases render outside Failed and Skipped groups', () => {
+    const ctx = loadViewer();
+    const html = ctx.renderCanonicalValidationViewer({
+        status: 'passed',
+        junit_cases: [
+            {
+                case_id: 'q1',
+                display_name: 'known flaky',
+                outcome: 'failed',
+                suite_name: 'tests/test_flaky.py',
+                failure_details: 'AssertionError: known flaky',
+                is_quarantined: true,
+                extras: [],
+            },
+            {
+                case_id: 's1',
+                display_name: 'not requested',
+                outcome: 'skipped',
+                suite_name: 'tests/test_optional.py',
+                failure_details: 'provider not requested',
+                extras: [],
+            },
+        ],
+    });
+
+    assert.match(html, /cvv-group-quarantined/);
+    assert.match(html, /Quarantined<\/span><span class="cvv-summary">\(1\)/);
+    assert.match(html, /Q Quarantined/);
+    assert.doesNotMatch(html, /cvv-group-failed/);
+    assert.match(html, /Skipped<\/span><span class="cvv-summary">\(1\)/);
+});
+
 test('viewer: failed run renders one triage card per failed/errored test', () => {
     const ctx = loadViewer();
     const html = ctx.renderCanonicalValidationViewer({

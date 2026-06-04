@@ -308,11 +308,14 @@ function renderE2EResultsPanel(data) {
 // Run-level summary chips.  Info display only — NOT filter pills.
 // Layout: outcome chip + counts + (optional) command/duration meta.
 function _renderRunSummaryChips(data, canonical) {
-    const status = canonical.status === 'passed' ? 'passed' : 'failed';
+    const rawStatus = String(data && data.run && data.run.status || canonical.status || '').toLowerCase();
+    const status = rawStatus === 'passed' || rawStatus === 'warning' ? rawStatus : 'failed';
     const totalCases = canonical.junit_cases.length;
+    const activeCases = canonical.junit_cases.filter(c => c && c.is_quarantined !== true);
+    const quarantinedCount = canonical.junit_cases.length - activeCases.length;
     const failedCount = canonical.failed_tests.length;
-    const passedCount = canonical.junit_cases.filter(c => c.outcome === 'passed').length;
-    const skippedCount = canonical.junit_cases.filter(c => c.outcome === 'skipped').length;
+    const passedCount = activeCases.filter(c => c.outcome === 'passed').length;
+    const skippedCount = activeCases.filter(c => c.outcome === 'skipped').length;
     const command = _formatRunCommand(data && data.run);
     const duration = data && data.run ? _formatDurationSeconds(data.run.duration_seconds) : '';
 
@@ -321,6 +324,7 @@ function _renderRunSummaryChips(data, canonical) {
         `<span class="e2e-run-chip">${totalCases} case${totalCases === 1 ? '' : 's'}</span>`,
     ];
     if (failedCount > 0) chips.push(`<span class="e2e-run-chip is-fail">${failedCount} failing</span>`);
+    if (quarantinedCount > 0) chips.push(`<span class="e2e-run-chip muted">${quarantinedCount} quarantined</span>`);
     chips.push(`<span class="e2e-run-chip">${passedCount} passing</span>`);
     if (skippedCount > 0) chips.push(`<span class="e2e-run-chip muted">${skippedCount} skipped</span>`);
 

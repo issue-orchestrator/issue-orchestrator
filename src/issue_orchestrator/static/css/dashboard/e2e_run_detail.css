@@ -436,6 +436,7 @@
 }
 .e2e-run-chip-failed { background: #fbeae7; border-color: #c0392f; color: #8c1f17; }
 .e2e-run-chip-passed { background: #e6f4ea; border-color: #1f8f3a; color: #1f8f3a; }
+.e2e-run-chip-warning { background: #fbf3dc; border-color: #b07a00; color: #7a5600; }
 .e2e-run-chip.is-fail { background: #fbeae7; border-color: #c0392f; color: #8c1f17; }
 .e2e-run-chip.muted { background: #f6f8fa; color: #8a93a3; }
 .e2e-run-summary-meta {

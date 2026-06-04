@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import shlex
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -106,6 +107,15 @@ class TestRuntimeToolEnv:
         assert env["PATH"] == "/bin"
         assert env[GRADLE_USER_HOME_ENV] == str(get_gradle_user_home(worktree))
 
+    def test_build_runtime_tool_env_prepends_worktree_venv_bin(self, tmp_path):
+        """Validation commands should resolve tools from the worktree venv."""
+        worktree = tmp_path / "worktree"
+        (worktree / ".venv" / "bin").mkdir(parents=True)
+
+        env = build_runtime_tool_env(worktree, base_env={"PATH": "/bin"})
+
+        assert env["PATH"] == f"{worktree / '.venv' / 'bin'}{os.pathsep}/bin"
+
     def test_build_runtime_tool_env_assignments_quotes_spaces(self):
         """Shell assignments should be safe for paths containing spaces."""
         worktree = Path("/path/with spaces/worktree")
@@ -115,6 +125,19 @@ class TestRuntimeToolEnv:
         assert assignments == [
             f"{GRADLE_USER_HOME_ENV}="
             "'/path/with spaces/worktree/.issue-orchestrator/tool-homes/gradle'"
+        ]
+
+    def test_build_runtime_tool_env_assignments_prepends_existing_venv(self, tmp_path):
+        """Session launch exports should expose the worktree venv on PATH."""
+        worktree = tmp_path / "worktree with spaces"
+        (worktree / ".venv" / "bin").mkdir(parents=True)
+
+        assignments = build_runtime_tool_env_assignments(worktree)
+
+        assert assignments == [
+            f"{GRADLE_USER_HOME_ENV}="
+            f"{shlex.quote(str(get_gradle_user_home(worktree)))}",
+            f"PATH={shlex.quote(str(worktree / '.venv' / 'bin'))}:$PATH",
         ]
 
 

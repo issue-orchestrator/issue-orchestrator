@@ -104,7 +104,7 @@ class TestEnsureE2EWorktree:
         assert "--detach" in cmd
         assert FAKE_SHA in cmd
 
-        # git clean preserves .venv, timeline, and sessions
+        # git clean preserves .venv, timeline, sessions, and E2E reports
         clean_calls = [c for c in mock_run.call_args_list
                        if "clean" in c[0][0]]
         assert len(clean_calls) == 1
@@ -112,6 +112,7 @@ class TestEnsureE2EWorktree:
         assert "--exclude=.venv" in clean_cmd
         assert "--exclude=.issue-orchestrator/state/timeline.sqlite*" in clean_cmd
         assert "--exclude=.issue-orchestrator/sessions" in clean_cmd
+        assert "--exclude=.issue-orchestrator/e2e-results" in clean_cmd
 
         # Minimal pytest venv
         uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from issue_orchestrator.entrypoints.web import app, set_orchestrator
 from issue_orchestrator.infra.e2e_db import E2EDB
 from issue_orchestrator.infra.e2e_reports import E2ERunArtifactRecord
+from issue_orchestrator.infra.e2e_runtime_output import write_runtime_captured_output
 
 
 def _orchestrator_for(repo_root: Path) -> MagicMock:
@@ -84,6 +85,39 @@ def test_returns_captured_output_for_passing_test() -> None:
             set_orchestrator(None)
 
 
+def test_returns_runtime_captured_output_without_junit_artifact() -> None:
+    """Live runs should expose passed-test output before JUnit finalization."""
+    with tempfile.TemporaryDirectory(prefix="e2e-test-output-") as tmp:
+        repo_root = Path(tmp)
+        (repo_root / ".issue-orchestrator").mkdir()
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_id = _start_run(db, repo_root)
+        nodeid = "tests/e2e/test_smoke.py::test_live_output"
+        write_runtime_captured_output(
+            repo_root,
+            run_id,
+            nodeid,
+            system_out="runtime stdout",
+            system_err="runtime stderr",
+        )
+
+        set_orchestrator(_orchestrator_for(repo_root))
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                f"/api/e2e-run/{run_id}/test-output",
+                params={"nodeid": nodeid},
+            )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["nodeid"] == nodeid
+            assert body["system_out"] == "runtime stdout"
+            assert body["system_err"] == "runtime stderr"
+            assert body["source_path"].endswith(".json")
+        finally:
+            set_orchestrator(None)
+
+
 def test_returns_captured_output_for_known_nodeid() -> None:
     with tempfile.TemporaryDirectory(prefix="e2e-test-output-") as tmp:
         repo_root = Path(tmp)
@@ -151,6 +185,53 @@ def test_returns_captured_output_for_raw_junit_case_id() -> None:
             )
             assert resp.status_code == 200
             assert resp.json()["system_out"] == "captured stdout content"
+        finally:
+            set_orchestrator(None)
+
+
+def test_returns_captured_output_for_legacy_class_normalized_nodeid() -> None:
+    """Existing runs may have the old class-as-path nodeid shape."""
+    with tempfile.TemporaryDirectory(prefix="e2e-test-output-") as tmp:
+        repo_root = Path(tmp)
+        (repo_root / ".issue-orchestrator").mkdir()
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_id = _start_run(db, repo_root)
+        junit_path = repo_root / "junit.xml"
+        junit_path.write_text(
+            """\
+<testsuite name="suite">
+  <testcase classname="tests.e2e.test_claim_coordination.TestClaimCoordination" name="test_claim" time="0.10">
+    <system-out>legacy class output</system-out>
+  </testcase>
+</testsuite>
+""",
+            encoding="utf-8",
+        )
+        db.replace_run_artifacts(
+            run_id,
+            [
+                E2ERunArtifactRecord(
+                    kind="junit_xml",
+                    label="JUnit XML: junit.xml",
+                    path=str(junit_path),
+                )
+            ],
+        )
+
+        set_orchestrator(_orchestrator_for(repo_root))
+        try:
+            client = TestClient(app)
+            resp = client.get(
+                f"/api/e2e-run/{run_id}/test-output",
+                params={
+                    "nodeid": (
+                        "tests/e2e/test_claim_coordination/"
+                        "TestClaimCoordination.py::test_claim"
+                    )
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json()["system_out"] == "legacy class output"
         finally:
             set_orchestrator(None)
 

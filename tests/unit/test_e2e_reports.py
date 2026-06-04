@@ -7,12 +7,14 @@ import pytest
 
 from issue_orchestrator.infra.e2e_reports import (
     CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR,
+    E2ERunArtifactRecord,
     MAX_CAPTURED_OUTPUT_CHARS,
     JUnitCaseResult,
     discover_report_artifacts,
     normalize_pytest_junit_cases,
     parse_junit_report,
     parse_junit_report_cached,
+    snapshot_report_artifacts,
 )
 
 
@@ -123,6 +125,14 @@ def test_normalize_pytest_junit_cases_matches_runtime_nodeids() -> None:
                 duration_seconds=0.12,
             ),
             JUnitCaseResult(
+                case_id="tests.e2e.test_claim_coordination.TestClaimCoordination::test_claim",
+                display_name="test_claim",
+                suite_name="tests.e2e.test_claim_coordination.TestClaimCoordination",
+                outcome="failed",
+                duration_seconds=0.56,
+                failure_details="claim failed",
+            ),
+            JUnitCaseResult(
                 case_id="tests/e2e/test_existing.py::test_already_normalized",
                 display_name="test_already_normalized",
                 suite_name="tests/e2e/test_existing.py",
@@ -135,8 +145,61 @@ def test_normalize_pytest_junit_cases_matches_runtime_nodeids() -> None:
 
     assert normalized[0].suite_name == "tests/e2e/test_basic.py"
     assert normalized[0].case_id == "tests/e2e/test_basic.py::test_passing"
-    assert normalized[1].suite_name == "tests/e2e/test_existing.py"
-    assert normalized[1].case_id == "tests/e2e/test_existing.py::test_already_normalized"
+    assert normalized[1].suite_name == "tests/e2e/test_claim_coordination.py"
+    assert normalized[1].case_id == (
+        "tests/e2e/test_claim_coordination.py::TestClaimCoordination::test_claim"
+    )
+    assert normalized[2].suite_name == "tests/e2e/test_existing.py"
+    assert normalized[2].case_id == "tests/e2e/test_existing.py::test_already_normalized"
+
+
+def test_snapshot_report_artifacts_copies_into_run_scoped_directory(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    report = source_dir / "results.xml"
+    report.write_text("<testsuite />", encoding="utf-8")
+    log = source_dir / "results.log"
+    log.write_text("output", encoding="utf-8")
+    destination = tmp_path / ".issue-orchestrator" / "e2e-results" / "run_12"
+
+    copied = snapshot_report_artifacts(
+        [
+            E2ERunArtifactRecord("junit_xml", "JUnit XML: results.xml", str(report)),
+            E2ERunArtifactRecord("raw_log", "Raw Log: results.log", str(log)),
+        ],
+        destination,
+    )
+
+    assert [Path(artifact.path).parent for artifact in copied] == [
+        destination,
+        destination,
+    ]
+    assert (destination / "results.xml").read_text(encoding="utf-8") == "<testsuite />"
+    assert (destination / "results.log").read_text(encoding="utf-8") == "output"
+
+
+def test_snapshot_report_artifacts_dedupes_same_basename(tmp_path: Path) -> None:
+    left = tmp_path / "left" / "results.xml"
+    right = tmp_path / "right" / "results.xml"
+    left.parent.mkdir()
+    right.parent.mkdir()
+    left.write_text("left", encoding="utf-8")
+    right.write_text("right", encoding="utf-8")
+
+    copied = snapshot_report_artifacts(
+        [
+            E2ERunArtifactRecord("junit_xml", "left", str(left)),
+            E2ERunArtifactRecord("junit_xml", "right", str(right)),
+        ],
+        tmp_path / "run_1",
+    )
+
+    assert [Path(artifact.path).name for artifact in copied] == [
+        "results.xml",
+        "results-2.xml",
+    ]
 
 
 def test_discover_report_artifacts_classifies_and_dedupes_files(tmp_path: Path) -> None:

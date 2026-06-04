@@ -218,17 +218,28 @@ test('translator: fixed test → outcome=passed, but linked-issue extra survives
     assert.strictEqual(out.junit_cases[0].extras[0].namespace, 'io.agent-context');
 });
 
-test('translator: skipped + quarantined both map to outcome=skipped', () => {
+test('translator: skipped and quarantined remain distinct outcomes', () => {
     const ctx = loadModule();
     const out = ctx.e2eRunToCanonicalPayload({
         results_by_category: {
             skipped: [{ nodeid: 'tests/test_a.py::test_pending', outcome: 'skipped' }],
-            quarantined: [{ nodeid: 'tests/test_a.py::test_held_out', is_quarantined: true }],
+            quarantined: [{
+                nodeid: 'tests/test_a.py::test_held_out',
+                outcome: 'failed',
+                is_quarantined: true,
+                failure_summary: 'AssertionError: known flaky',
+            }],
         },
     });
-    assert.strictEqual(out.status, 'passed');  // no failures
+    assert.strictEqual(out.status, 'passed');  // no non-quarantined failures
     assert.strictEqual(out.junit_cases.length, 2);
-    for (const c of out.junit_cases) assert.strictEqual(c.outcome, 'skipped');
+    const skipped = out.junit_cases.find(c => c.case_id.endsWith('test_pending'));
+    const quarantined = out.junit_cases.find(c => c.case_id.endsWith('test_held_out'));
+    assert.strictEqual(skipped.outcome, 'skipped');
+    assert.strictEqual(skipped.is_quarantined, false);
+    assert.strictEqual(quarantined.outcome, 'failed');
+    assert.strictEqual(quarantined.is_quarantined, true);
+    assert.deepEqual(out.failed_tests, []);
 });
 
 test('translator: failed_tests list mirrors the failing node IDs across all failure categories', () => {
