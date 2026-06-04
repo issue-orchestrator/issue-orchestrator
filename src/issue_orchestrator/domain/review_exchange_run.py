@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import Mock
 
+from .path_guards import require_absolute_path, require_path_under
 from .review_exchange_turn_artifacts import review_exchange_dir
 
 
@@ -69,14 +69,8 @@ class ReviewExchangeRun:
 
 
 def _require_absolute(path: object, field_name: str) -> None:
-    if isinstance(path, Mock) or not isinstance(path, Path):
-        raise TypeError(f"{field_name} must be a pathlib.Path")
-    if not path.is_absolute():
-        raise ValueError(f"{field_name} must be absolute: {path}")
+    require_absolute_path(path, field_name)
 
 
 def _require_under(path: Path, root: Path, field_name: str) -> None:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError as exc:
-        raise ValueError(f"{field_name} must live under {root}: {path}") from exc
+    require_path_under(path, root, field_name)

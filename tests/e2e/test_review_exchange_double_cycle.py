@@ -152,7 +152,7 @@ def _double_review_config(
             command=command,
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
             reviewer=_REVIEWER_LABEL,
         ),
         _REVIEWER_LABEL: AgentConfig(
@@ -162,7 +162,7 @@ def _double_review_config(
             command=command,
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
     }
     return config

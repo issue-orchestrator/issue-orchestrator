@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
+
+from .path_guards import require_absolute_path, require_path_under
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,10 +238,7 @@ def _require_non_empty(value: object, field_name: str) -> None:
 
 
 def _require_absolute_path(value: object, field_name: str) -> None:
-    if isinstance(value, Mock) or not isinstance(value, Path):
-        raise TypeError(f"{field_name} must be a pathlib.Path")
-    if not value.is_absolute():
-        raise ValueError(f"{field_name} must be absolute: {value}")
+    require_absolute_path(value, field_name)
 
 
 def _require_contained_file(path: Path, run_dir: Path, field_name: str) -> None:
@@ -249,10 +247,7 @@ def _require_contained_file(path: Path, run_dir: Path, field_name: str) -> None:
 
 
 def _require_under_run_dir(path: Path, run_dir: Path, field_name: str) -> None:
-    try:
-        path.resolve().relative_to(run_dir.resolve())
-    except ValueError as exc:
-        raise ValueError(f"{field_name} must live under run_dir: {path}") from exc
+    require_path_under(path, run_dir, field_name)
 
 
 def _require_run_dir_under_worktree(run_dir: Path, worktree_path: Path) -> None:

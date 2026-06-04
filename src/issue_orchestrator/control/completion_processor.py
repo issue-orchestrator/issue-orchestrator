@@ -1165,7 +1165,6 @@ class CompletionProcessor:
         return self._check_publish_gate_if_required(
             worktree,
             record,
-            session_name,
             issue_number,
             run_assets,
         )
@@ -1288,7 +1287,6 @@ class CompletionProcessor:
         self,
         worktree: Path,
         record: CompletionRecord,
-        session_name: str | None,
         issue_number: int,
         run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
@@ -1299,19 +1297,7 @@ class CompletionProcessor:
         """
         if not self._requires_publish_gate(record):
             return None
-        # Get session output dir for validation to write directly there
-        if not session_name:
-            comment = build_processing_failure_comment(
-                errors=["session_name is required for publish gate"],
-                actions_taken=[],
-                diagnostic_path=None,
-            )
-            self._add_issue_comment(issue_number, comment, context="processing failure")
-            return ProcessingResult(
-                success=False,
-                message="Publish gate requires session output but no session name available",
-                errors=["session_name is required for publish gate"],
-            )
+        gate_session_name = run_assets.session_name
         session_output_dir = run_assets.run_dir
 
         gate_passed, gate_reason, gate_record = self._check_publish_gate(
@@ -1321,7 +1307,7 @@ class CompletionProcessor:
             return self._handle_gate_failure(
                 worktree,
                 record,
-                session_name,
+                gate_session_name,
                 issue_number,
                 gate_reason,
                 gate_record,
@@ -1329,7 +1315,7 @@ class CompletionProcessor:
             )
         else:
             # Attach validation artifacts even on success
-            if gate_record and session_name:
+            if gate_record:
                 record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
                 self._attach_validation_artifacts(
                     worktree,
@@ -1412,7 +1398,6 @@ class CompletionProcessor:
         plan: Any,
         worktree: Path,
         record: CompletionRecord,
-        session_name: str | None,
         issue_number: int,
         issue_title: str,
         agent_label: str | None,
@@ -1424,13 +1409,7 @@ class CompletionProcessor:
             return None
         if RequestedAction.PUSH_BRANCH not in plan.ordered_actions:
             return None
-        if session_name is None:
-            return ProcessingResult(
-                success=False,
-                message="Pre-publish validation requires a session name",
-                failure_kind="validation_failed",
-                errors=["Validation: session_name is required for pre-publish validation"],
-            )
+        gate_session_name = run_assets.session_name
 
         result = self.pre_publish_gate.check(worktree)
         if not result.ran:
@@ -1446,7 +1425,7 @@ class CompletionProcessor:
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
-            session_name=session_name,
+            session_name=gate_session_name,
             agent_label=agent_label,
             record=record,
             run_assets=run_assets,
@@ -1456,7 +1435,7 @@ class CompletionProcessor:
         return self._handle_gate_failure(
             worktree,
             record,
-            session_name,
+            gate_session_name,
             issue_number,
             result.reason,
             self._pre_publish_validation_record(run_assets, result),
@@ -1720,7 +1699,6 @@ class CompletionProcessor:
             plan=plan,
             worktree=worktree,
             record=record,
-            session_name=session_name,
             issue_number=issue_number,
             issue_title=issue_title,
             agent_label=agent_label,

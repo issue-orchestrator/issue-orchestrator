@@ -400,19 +400,13 @@ def _discover_existing_terminal(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer",
 ) -> "DiscoveredSession | None":
-    runner = getattr(session_launcher.session_manager, "runner", None)
-    discover = getattr(runner, "discover_running_sessions", None)
-    if not callable(discover):
-        return None
     try:
-        running = discover()
+        running = session_launcher.session_manager.runner.discover_running_sessions()
     except Exception:
         logger.exception(
             "[ORPHAN] Failed to discover running terminal sessions for %s",
             request.session_name,
         )
-        return None
-    if not isinstance(running, list):
         return None
 
     for raw_session_info in running:
