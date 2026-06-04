@@ -149,14 +149,14 @@ def _detect_ai_system_and_mode(agent_config, history_entry, agents):
 
     if agent_config:
         ai_system = detect_ai_system_from_command(agent_config.command) or "claude-code"
-        return ai_system, agent_config.permission_mode
+        return ai_system, agent_config.effective_permission_mode
 
     if history_entry:
         agent_label = history_entry.agent_type
         if agent_label in agents:
             cfg = agents[agent_label]
             ai_system = detect_ai_system_from_command(cfg.command) or "claude-code"
-            return ai_system, cfg.permission_mode
+            return ai_system, cfg.effective_permission_mode
 
     return "claude-code", "unknown"
 

@@ -1500,6 +1500,7 @@ class SessionLauncher:
             worktree=worktree_path,
             pr_number=review.pr_number,
             existing_work=existing_work,
+            task_kind=TaskKind.REVIEW.value,
         )
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
@@ -1768,6 +1769,7 @@ class SessionLauncher:
             worktree=worktree_path,
             pr_number=prompt_pr_number,
             existing_work=existing_work,
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
         )
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command_for_prompt(

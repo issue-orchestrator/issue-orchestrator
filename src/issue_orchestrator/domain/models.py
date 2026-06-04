@@ -800,6 +800,22 @@ def resolve_retrospective_coder_agent(
     return None
 
 
+# Initial prompt used for review-kind launches when the agent config does not
+# set an explicit ``initial_prompt``. The AgentConfig field default below is
+# coding-flavored; inheriting it for a review launch would tell the reviewer
+# to do coding work and call coding-done (prompt/protocol drift).
+DEFAULT_REVIEW_INITIAL_PROMPT = (
+    "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
+    "Follow the instructions in {prompt}. "
+    "When done, use reviewer-done to report your verdict."
+)
+
+# Task kinds whose default initial prompt is the review prompt above.
+_REVIEW_TASK_KINDS = frozenset(
+    {TaskKind.REVIEW.value, TaskKind.RETROSPECTIVE_REVIEW.value}
+)
+
+
 @dataclass
 class AgentConfig:
     """Configuration for an agent type."""
@@ -837,6 +853,35 @@ class AgentConfig:
     #                     {retry_count}, {max_retries}
     retry_prompt_template: Optional[str] = None
 
+    @property
+    def effective_permission_mode(self) -> str:
+        """Effective Claude permission mode: ``provider_args`` wins over the
+        legacy ``permission_mode`` field.
+
+        Single resolution rule shared by command rendering and failure
+        diagnostics so ``provider_args: {permission_mode: ...}`` configs are
+        honored everywhere, not just at launch.
+        """
+        mode = self.provider_args.get("permission_mode")
+        if isinstance(mode, str) and mode:
+            return mode
+        return self.permission_mode
+
+    def _initial_prompt_template(self, task_kind: str) -> str:
+        """Initial prompt template for ``task_kind``.
+
+        An explicitly configured ``initial_prompt`` always wins. When the
+        field still holds its coding-flavored dataclass default, review-kind
+        launches get the review default instead — a reviewer must never be
+        told to do coding work and call coding-done.
+        """
+        field_default = type(self).__dataclass_fields__["initial_prompt"].default
+        if self.initial_prompt != field_default:
+            return self.initial_prompt
+        if task_kind in _REVIEW_TASK_KINDS:
+            return DEFAULT_REVIEW_INITIAL_PROMPT
+        return self.initial_prompt
+
     def render_initial_prompt(
         self,
         issue_number: int,
@@ -844,6 +889,7 @@ class AgentConfig:
         worktree: Path,
         pr_number: Optional[int] = None,
         existing_work: Optional[str] = None,
+        task_kind: str = TaskKind.CODE.value,
     ) -> str:
         """Render the session prompt text before command wrapping."""
         prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
@@ -853,13 +899,13 @@ class AgentConfig:
             "prompt": prompt_for_command,
             "worktree": worktree,
             "model": self.model,
-            "permission_mode": self.permission_mode,
+            "permission_mode": self.effective_permission_mode,
             "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
         }
         if pr_number is not None:
             format_kwargs["pr_number"] = pr_number
 
-        rendered_prompt = self.initial_prompt.format(**format_kwargs)
+        rendered_prompt = self._initial_prompt_template(task_kind).format(**format_kwargs)
         if existing_work:
             rendered_prompt = f"IMPORTANT: {existing_work}\n\n{rendered_prompt}"
         return rendered_prompt
@@ -921,6 +967,7 @@ class AgentConfig:
             worktree=worktree,
             pr_number=pr_number,
             existing_work=existing_work,
+            task_kind=task_kind,
         )
         return self.get_command_for_prompt(
             rendered_prompt,
@@ -976,7 +1023,7 @@ class AgentConfig:
             "prompt": prompt_for_command,
             "worktree": worktree,
             "model": self.model,
-            "permission_mode": self.permission_mode,
+            "permission_mode": self.effective_permission_mode,
             "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
             "initial_prompt": escaped_prompt,
             "system_prompt": escaped_system_prompt,
@@ -1045,8 +1092,10 @@ class AgentConfig:
             if user_system_prompt:
                 system_prompt = f"{system_prompt}\n\n---\n\n{user_system_prompt}"
             kwargs["system_prompt"] = system_prompt
-            # Use permission_mode from provider_args or fall back to legacy field
-            kwargs.setdefault("permission_mode", self.permission_mode)
+            # Effective permission mode (provider_args wins over the legacy
+            # field — see effective_permission_mode). setdefault keeps
+            # per-issue extra_provider_args overrides authoritative.
+            kwargs.setdefault("permission_mode", self.effective_permission_mode)
         else:
             # Other providers (Codex, etc.): prepend completion instructions to prompt
             prompt = f"{completion_with_prompt_ref}\n\n---\n\n{prompt}"
