@@ -166,19 +166,24 @@ async function copyWorktreePath(path, event) {
     }
 }
 
-// Resume processing for a blocked issue with completion.json
-async function resumeIssue(issueNumber, event) {
+// Resume processing for a blocked issue with a recorded run completion
+async function resumeIssue(issueNumber, runDir, event) {
     event.stopPropagation();
     const btn = event.target;
     const originalText = btn.textContent;
+    if (!runDir) {
+        showToast('Cannot resume: missing recorded run directory', 'error');
+        return;
+    }
     btn.disabled = true;
     btn.textContent = 'Resuming...';
 
     try {
-        const res = await fetch(`/api/issues/${issueNumber}/resume`, {
-            method: 'POST',
+        const req = uiActionContract.buildIssueResumeRequest(issueNumber, runDir);
+        const res = await fetch(req.endpoint, {
+            method: req.method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify(req.body),
         });
         const data = await res.json();
 

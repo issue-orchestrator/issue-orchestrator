@@ -4,6 +4,8 @@
 
 from tests.unit import test_web as _support
 from tests.unit.test_web import *  # noqa: F403
+from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
@@ -33,6 +35,81 @@ class TestDialogEndpoints:
             for check in payload["checks"]
         )
         mock_run_doctor.assert_called_once()
+
+    def test_blocked_issues_payload_carries_recorded_debug_run_dir(self, tmp_path: Path):
+        """Blocked Resume uses the exact debug session run contract."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.repo_root = tmp_path / "repo"
+        mock_orch.config.worktree_base = tmp_path / "worktrees"
+        worktree = mock_orch.config.worktree_base / "repo-123"
+        worktree.mkdir(parents=True)
+        mock_orch.deps.label_manager = LabelManager(mock_orch.config)
+        mock_orch.state.cached_queue_issues = [
+            create_issue(123, "Blocked with completion", labels=["agent:web", "blocked"])
+        ]
+
+        session_output = FileSystemSessionOutput()
+        run_assets = session_output.start_run(
+            worktree.resolve(),
+            "debug-123",
+            issue_number=123,
+            agent_label="agent:web",
+            backend="subprocess",
+        )
+        completion_path = (
+            f".issue-orchestrator/sessions/{run_assets.run_dir.name}/completion.json"
+        )
+        session_output.update_manifest(
+            run_assets.run_dir,
+            {
+                "completion_path": completion_path,
+                "issue_number": 123,
+                "agent_label": "agent:web",
+            },
+        )
+        completion_file = worktree / completion_path
+        completion_file.write_text('{"outcome":"completed"}', encoding="utf-8")
+        mock_orch.deps.session_output = session_output
+        set_orchestrator(mock_orch)
+
+        try:
+            response = TestClient(app).get("/api/blocked-issues")
+        finally:
+            set_orchestrator(None)
+
+        assert response.status_code == 200
+        issue_payload = response.json()["blocked_issues"][0]
+        assert issue_payload["run_dir"] == str(run_assets.run_dir)
+        assert issue_payload["has_completion"] is True
+
+    def test_blocked_issues_payload_does_not_resume_legacy_completion_only(
+        self,
+        tmp_path: Path,
+    ):
+        """Legacy worktree completion files do not satisfy the run contract."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.repo_root = tmp_path / "repo"
+        mock_orch.config.worktree_base = tmp_path / "worktrees"
+        worktree = mock_orch.config.worktree_base / "repo-123"
+        legacy_completion = worktree / ".issue-orchestrator" / "completion.json"
+        legacy_completion.parent.mkdir(parents=True)
+        legacy_completion.write_text('{"outcome":"completed"}', encoding="utf-8")
+        mock_orch.deps.label_manager = LabelManager(mock_orch.config)
+        mock_orch.deps.session_output = FileSystemSessionOutput()
+        mock_orch.state.cached_queue_issues = [
+            create_issue(123, "Blocked legacy", labels=["agent:web", "blocked"])
+        ]
+        set_orchestrator(mock_orch)
+
+        try:
+            response = TestClient(app).get("/api/blocked-issues")
+        finally:
+            set_orchestrator(None)
+
+        assert response.status_code == 200
+        issue_payload = response.json()["blocked_issues"][0]
+        assert issue_payload["run_dir"] is None
+        assert issue_payload["has_completion"] is False
 
 
 class TestRefreshEndpoint:

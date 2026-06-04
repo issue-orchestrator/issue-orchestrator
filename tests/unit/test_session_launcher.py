@@ -1936,23 +1936,20 @@ class TestOrchestratorLaunchSession:
         self,
         launcher_bundle,
         sample_issue,
-        sample_agent_config,
-        tmp_path,
     ):
         """Launch routing does not synthesize active sessions without run assets."""
         launcher_bundle.session_exists_override[0] = lambda name: name == "issue-123"
+        launcher_bundle.launcher.session_manager.runner.discover_running_sessions.return_value = [
+            {
+                "issue_number": 123,
+                "tab_name": "issue-123",
+                "is_review": False,
+                "session_name": "issue-123",
+                "run_dir": "",
+            }
+        ]
         state = OrchestratorState()
-        restored = Session(
-            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
-            issue=sample_issue,
-            agent_config=sample_agent_config,
-            terminal_id="issue-123",
-            worktree_path=tmp_path,
-            branch_name="123-test",
-            run_assets=make_session_run_assets(tmp_path, session_name="issue-123"),
-        )
         mock_restorer = MagicMock()
-        mock_restorer.restore_known_terminal.return_value = [restored]
 
         result = orchestrator_launch_session(
             sample_issue,
@@ -1964,6 +1961,57 @@ class TestOrchestratorLaunchSession:
         assert result is None
         assert state.active_sessions == []
         mock_restorer.restore_known_terminal.assert_not_called()
+
+    def test_restores_orphaned_terminal_from_discovered_run_assets(
+        self,
+        launcher_bundle,
+        sample_issue,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """Launch routing re-tracks existing terminals with typed run assets."""
+        launcher_bundle.session_exists_override[0] = lambda name: name == "issue-123"
+        run_assets = make_session_run_assets(tmp_path, session_name="issue-123")
+        launcher_bundle.launcher.session_manager.runner.discover_running_sessions.return_value = [
+            {
+                "issue_number": 123,
+                "tab_name": "issue-123",
+                "is_review": False,
+                "session_name": "issue-123",
+                "run_dir": str(run_assets.run_dir),
+            }
+        ]
+        state = OrchestratorState()
+        restored = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=sample_issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path,
+            branch_name="123-test",
+            run_assets=run_assets,
+        )
+        mock_restorer = MagicMock()
+        mock_restorer.canonical_terminal_id.return_value = "issue-123"
+        mock_restorer.restore_known_terminal.return_value = [restored]
+
+        result = orchestrator_launch_session(
+            sample_issue,
+            state,
+            launcher_bundle.launcher,
+            mock_restorer,
+        )
+
+        assert result is restored
+        assert state.active_sessions == [restored]
+        mock_restorer.restore_known_terminal.assert_called_once_with(
+            issue_number=123,
+            session_name="issue-123",
+            run_dir=run_assets.run_dir,
+            is_review=False,
+            already_tracked=[],
+            tab_name="",
+        )
 
 
 class TestOrchestratorLaunchValidationRetrySession:
@@ -2008,6 +2056,62 @@ class TestOrchestratorLaunchValidationRetrySession:
         assert [r.issue_number for r in state.pending_validation_retries] == [456]
         assert [s.terminal_id for s in state.active_sessions] == ["issue-123"]
 
+    def test_restores_keep_queued_retry_and_removes_pending(
+        self,
+        launcher_bundle,
+        sample_issue,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """Existing retry terminals are re-tracked from discovered run assets."""
+        launcher_bundle.session_exists_override[0] = lambda name: name == "issue-123"
+        run_assets = make_session_run_assets(tmp_path, session_name="issue-123")
+        launcher_bundle.launcher.session_manager.runner.discover_running_sessions.return_value = [
+            {
+                "issue_number": 123,
+                "tab_name": "issue-123",
+                "is_review": False,
+                "session_name": "issue-123",
+                "run_dir": str(run_assets.run_dir),
+            }
+        ]
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Fix checkout",
+            agent_label="agent:web",
+            worktree_path=str(tmp_path),
+            branch_name="123-fix-checkout",
+            original_prompt="original task",
+            validation_error="dirty worktree",
+            validation_error_file=None,
+            retry_count=1,
+            validation_cmd="make test",
+        )
+        state = OrchestratorState(pending_validation_retries=[retry])
+        restored = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.CODE),
+            issue=sample_issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path,
+            branch_name="123-fix-checkout",
+            run_assets=run_assets,
+        )
+        mock_restorer = MagicMock()
+        mock_restorer.canonical_terminal_id.return_value = "issue-123"
+        mock_restorer.restore_known_terminal.return_value = [restored]
+
+        result = orchestrator_launch_validation_retry_session(
+            retry,
+            state,
+            launcher_bundle.launcher,
+            mock_restorer,
+        )
+
+        assert result is restored
+        assert state.active_sessions == [restored]
+        assert state.pending_validation_retries == []
+
 
 class TestOrchestratorLaunchReviewSession:
     """Tests for orchestrator_launch_review_session function (lines 977, 990)."""
@@ -2035,6 +2139,15 @@ class TestOrchestratorLaunchReviewSession:
     def test_keeps_orphaned_terminal_unrestored_without_run_assets(self, launcher_bundle):
         """Review launch routing refuses restoration without run assets."""
         launcher_bundle.session_exists_override[0] = lambda name: name == "review-456"
+        launcher_bundle.launcher.session_manager.runner.discover_running_sessions.return_value = [
+            {
+                "issue_number": 123,
+                "tab_name": "Review PR #456",
+                "is_review": True,
+                "session_name": "review-456",
+                "run_dir": "",
+            }
+        ]
         review = PendingReview(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
             pr_number=456,
@@ -2052,6 +2165,67 @@ class TestOrchestratorLaunchReviewSession:
 
         assert result is None
         mock_restorer.restore_known_terminal.assert_not_called()
+        assert state.pending_reviews == [review]
+
+    def test_restores_review_terminal_from_discovered_run_assets(
+        self,
+        launcher_bundle,
+        sample_issue,
+        sample_agent_config,
+        tmp_path,
+    ):
+        """Review launch routing re-tracks keep-queued review terminals."""
+        launcher_bundle.session_exists_override[0] = lambda name: name == "review-456"
+        run_assets = make_session_run_assets(tmp_path, session_name="review-456")
+        launcher_bundle.launcher.session_manager.runner.discover_running_sessions.return_value = [
+            {
+                "issue_number": 123,
+                "tab_name": "Review PR #456",
+                "is_review": True,
+                "session_name": "review-456",
+                "run_dir": str(run_assets.run_dir),
+            }
+        ]
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+        state = OrchestratorState(pending_reviews=[review])
+        restored = Session(
+            key=SessionKey(issue=FakeIssueKey("123"), task=TaskKind.REVIEW),
+            issue=sample_issue,
+            agent_config=sample_agent_config,
+            terminal_id="review-456",
+            worktree_path=tmp_path,
+            branch_name="123-feature",
+            run_assets=run_assets,
+            pr_number=456,
+        )
+        mock_restorer = MagicMock()
+        mock_restorer.canonical_terminal_id.return_value = "review-456"
+        mock_restorer.restore_known_terminal.return_value = [restored]
+
+        result = orchestrator_launch_review_session(
+            review,
+            state,
+            launcher_bundle.launcher,
+            mock_restorer,
+        )
+
+        assert result is restored
+        assert state.active_sessions == [restored]
+        assert state.pending_reviews == []
+        mock_restorer.restore_known_terminal.assert_called_once_with(
+            issue_number=123,
+            session_name="review-456",
+            run_dir=run_assets.run_dir,
+            is_review=True,
+            already_tracked=[],
+            tab_name="Review PR #456",
+        )
 
 
 class TestOrchestratorLaunchReworkSession:

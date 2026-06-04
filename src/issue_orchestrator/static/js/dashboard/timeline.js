@@ -648,7 +648,8 @@ function renderBlockedList() {
         const labelClass = issue.needs_human ? 'needs-human' : '';
         const reason = issue.failure_reason || issue.blocking_label;
         const hasWorktree = !!issue.worktree_path;
-        const hasCompletion = issue.has_completion;
+        const resumeRunDir = typeof issue.run_dir === 'string' ? issue.run_dir : '';
+        const hasCompletion = Boolean(issue.has_completion && resumeRunDir);
         html += `
             <div class="blocked-item-container" id="blocked-container-${issue.issue_number}">
                 <div class="blocked-item">
@@ -670,7 +671,7 @@ function renderBlockedList() {
                     <div class="blocked-item-actions">
                         ${hasWorktree ? `<button class="copy-path-btn" onclick="copyWorktreePath('${escapeHtml(issue.worktree_path)}', event)" title="Copy worktree path">Copy Path</button>` : ''}
                         ${hasWorktree ? `<button class="debug-btn" onclick="launchDebugSession(${issue.issue_number}, event)" title="Launch interactive debug session">Launch Debug</button>` : ''}
-                        ${hasCompletion ? `<button class="resume-btn" onclick="resumeIssue(${issue.issue_number}, event)" title="Process completion and continue flow">Resume</button>` : ''}
+                        ${hasCompletion ? `<button class="resume-btn" data-run-dir="${escapeAttr(resumeRunDir)}" onclick="resumeIssue(${issue.issue_number}, this.dataset.runDir, event)" title="Process completion and continue flow">Resume</button>` : ''}
                         <button class="diagnose-btn" onclick="toggleDiagnosis(${issue.issue_number}, event)">Diagnose</button>
                     </div>
                 </div>

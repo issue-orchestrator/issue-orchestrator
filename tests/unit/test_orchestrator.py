@@ -2660,8 +2660,8 @@ class TestSessionExistsDetection:
         result = orchestrator.launch_review_session(review)
 
         assert result is None
-        # Review is removed from pending (processed)
-        assert len(orchestrator.state.pending_reviews) == 0
+        # Keep queued until runner discovery can provide a typed run contract.
+        assert orchestrator.state.pending_reviews == [review]
         # Restoration requires runner-discovered run assets, not worktree guessing.
         assert orchestrator.state.active_sessions == []
 
@@ -2727,8 +2727,8 @@ class TestSessionExistsDetection:
         result = orchestrator.launch_rework_session(rework)
 
         assert result is None
-        # Rework is removed from pending (processed)
-        assert len(orchestrator.state.pending_reworks) == 0
+        # Keep queued until runner discovery can provide a typed run contract.
+        assert orchestrator.state.pending_reworks == [rework]
         # Restoration requires runner-discovered run assets, not worktree guessing.
         assert orchestrator.state.active_sessions == []
 

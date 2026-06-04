@@ -24,32 +24,32 @@ import pytest
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.domain.review_artifacts import ReviewDecision
 from issue_orchestrator.domain.review_exchange import ReviewExchangeResponse
+from issue_orchestrator.domain.review_exchange_run import ReviewExchangeRun
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.execution import persistent_session_exchange as pse
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports import TraceEvent
 
-_REAL_RUN_PERSISTENT_SESSION_EXCHANGE = pse.run_persistent_session_exchange
-
-
-def _run_persistent_session_exchange_with_typed_run(**kwargs: Any):
-    parent_session_name = kwargs.pop("parent_session_name", "coding-1")
-    if "exchange_run" not in kwargs:
-        kwargs["exchange_run"] = kwargs["session_output"].start_review_exchange_run(
-            kwargs["coder_worktree_path"],
-            issue_number=kwargs["issue_number"],
-            parent_session_name=parent_session_name,
-            agent_label=kwargs["coder_label"],
-        )
-    return _REAL_RUN_PERSISTENT_SESSION_EXCHANGE(**kwargs)
-
-
-pse.run_persistent_session_exchange = _run_persistent_session_exchange_with_typed_run
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
+
+
+def _start_exchange_run(
+    *,
+    session_output: FileSystemSessionOutput,
+    coder_worktree_path: Path,
+    issue_number: int,
+    coder_label: str,
+    parent_session_name: str = "coding-1",
+) -> ReviewExchangeRun:
+    return session_output.start_review_exchange_run(
+        coder_worktree_path,
+        issue_number=issue_number,
+        parent_session_name=parent_session_name,
+        agent_label=coder_label,
+    )
 
 
 class _Sink:
@@ -439,6 +439,12 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -534,6 +540,12 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -618,6 +630,12 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -993,6 +1011,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1156,6 +1180,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1252,6 +1282,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1352,6 +1388,12 @@ class TestTurnArtifactsPersisted:
             return reviewer_wt
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1461,6 +1503,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1528,6 +1576,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1585,6 +1639,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1646,6 +1706,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1704,6 +1770,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1775,6 +1847,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1834,6 +1912,12 @@ class TestExchangeTerminationConditions:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1889,6 +1973,12 @@ class TestExchangeTerminationConditions:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1932,6 +2022,12 @@ class TestExchangeTerminationConditions:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1985,6 +2081,12 @@ class TestExchangeTerminationConditions:
 
         with pytest.raises(RuntimeError, match="driver failed"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=state["registry"],
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2034,6 +2136,12 @@ class TestChapterSidecarAndEvents:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2088,6 +2196,12 @@ class TestChapterSidecarAndEvents:
         )
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2189,6 +2303,12 @@ class TestChapterSidecarAndEvents:
         )
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2258,6 +2378,12 @@ class TestCallerHooks:
 
         round_invocations: list[int] = []
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2500,6 +2626,12 @@ class TestCoderProtocolGuardrail:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2612,6 +2744,12 @@ class TestCoderProtocolGuardrail:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2769,6 +2907,12 @@ class TestCoderProtocolGuardrail:
         monkeypatch.setattr(pse_mod, "send_round", _send)
 
         outcome = pse_mod.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2815,6 +2959,12 @@ class TestCoderProtocolGuardrail:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2876,6 +3026,12 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2936,6 +3092,12 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3002,6 +3164,12 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3053,6 +3221,12 @@ class TestRecordingContractFailLoud:
 
         with pytest.raises(RuntimeError, match="missing_file"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=state["registry"],
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3117,6 +3291,12 @@ class TestAtomicSummaryWrite:
         monkeypatch.setattr(atomic_io.os, "replace", _capturing_replace)
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3291,6 +3471,12 @@ class TestResponseFileInsideWorktree:
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=registry,
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3354,6 +3540,12 @@ class TestResponseFileInsideWorktree:
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=_FakePairRegistry(),
             persistent_pair_root=persistent_pair_root,
@@ -3411,6 +3603,12 @@ class TestPerSessionRecordingMirror:
         )
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3796,6 +3994,12 @@ class TestPerSessionRecordingMirror:
 
         try:
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3912,6 +4116,12 @@ class TestEndToEndTimelineReadback:
 
         try:
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=registry,
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3981,6 +4191,12 @@ class TestEndToEndTimelineReadback:
         )
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4076,6 +4292,12 @@ class TestAgentEnvPathIsolation:
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=_FakePairRegistry(),
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4190,6 +4412,12 @@ class TestSliceIsolationAcrossExchanges:
             for n in (1, 2):
                 exchange_counter["n"] = n
                 pse.run_persistent_session_exchange(
+                    exchange_run=_start_exchange_run(
+                        session_output=session_output,
+                        coder_worktree_path=coder_wt,
+                        issue_number=42,
+                        coder_label="agent:backend",
+                    ),
                     session_output=session_output,
                     pair_registry=registry,
                     persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4305,6 +4533,12 @@ class TestSliceIsolationAcrossExchanges:
 
         try:
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4398,6 +4632,12 @@ class TestSliceIsolationAcrossExchanges:
             for issue, (coder_wt, reviewer_wt) in worktrees.items():
                 active_issue["n"] = issue
                 pse.run_persistent_session_exchange(
+                    exchange_run=_start_exchange_run(
+                        session_output=session_output,
+                        coder_worktree_path=coder_wt,
+                        issue_number=issue,
+                        coder_label="agent:backend",
+                    ),
                     session_output=session_output,
                     pair_registry=_FakePairRegistry(),
                     persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4927,6 +5167,12 @@ class TestContinuousSliceMirroring:
 
         try:
             outcome = pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -5033,6 +5279,12 @@ class TestContinuousSliceMirroring:
 
         with pytest.raises(OSError, match="simulated attach failure"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -5089,6 +5341,12 @@ class TestContinuousSliceMirroring:
 
         with pytest.raises(RuntimeError, match="no_writer"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -5163,6 +5421,12 @@ class TestContinuousSliceMirroring:
             for n in (1, 2):
                 exchange_n["n"] = n
                 pse.run_persistent_session_exchange(
+                    exchange_run=_start_exchange_run(
+                        session_output=session_output,
+                        coder_worktree_path=coder_wt,
+                        issue_number=42,
+                        coder_label="agent:backend",
+                    ),
                     session_output=session_output,
                     pair_registry=_CachingFakePairRegistry(),
                     persistent_pair_root=tmp_path / "persistent-pairs",
@@ -5651,6 +5915,12 @@ class TestSessionCleanup:
 
         with pytest.raises(RuntimeError, match="unexpected"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=state["registry"],
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -5727,6 +5997,12 @@ class TestSpawnPartialConstructionCleanup:
         registry = _FakePairRegistry()
         with pytest.raises(RuntimeError, match="reviewer pty bring-up failed"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=registry,
                 persistent_pair_root=tmp_path / "persistent-pairs",

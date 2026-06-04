@@ -437,9 +437,7 @@ class FileSystemSessionOutput:
         which always emits all three legacy fields together — and
         writes them via the unchecked merge.
         """
-        updates: dict[str, Any] = dict(
-            validation_outcome_to_manifest_fields(outcome)
-        )
+        updates: dict[str, Any] = dict(validation_outcome_to_manifest_fields(outcome))
         if ended_at is not None:
             updates["ended_at"] = ended_at
         if session_outcome_value is not None:
@@ -725,7 +723,10 @@ Timestamp: {self._now_iso()}
                 continue
             if not_before_started_at is not None:
                 started_at = manifest.get("started_at")
-                if not isinstance(started_at, str) or started_at < not_before_started_at:
+                if (
+                    not isinstance(started_at, str)
+                    or started_at < not_before_started_at
+                ):
                     # Crossed the scratch-reset boundary; stop counting.
                     break
             manifest_dir = manifest.get("review_exchange_dir")
@@ -808,7 +809,8 @@ Timestamp: {self._now_iso()}
 
     @staticmethod
     def _manifest_matches_parent_session(
-        manifest: dict[str, Any], parent_session_name: str,
+        manifest: dict[str, Any],
+        parent_session_name: str,
     ) -> bool | None:
         """Filter a candidate manifest by ``parent_session_name``.
 
@@ -863,8 +865,7 @@ Timestamp: {self._now_iso()}
         # Legacy fallback: candidates whose run_dir name ends with
         # ``__{session_name}`` (the pre-PR #6271 scoping heuristic).
         legacy_session_candidates = [
-            d for d in all_candidates
-            if d.name.endswith(f"__{session_name}")
+            d for d in all_candidates if d.name.endswith(f"__{session_name}")
         ]
 
         for candidates in (legacy_session_candidates, all_candidates):
@@ -879,7 +880,10 @@ Timestamp: {self._now_iso()}
                     continue
                 if not_before_started_at is not None:
                     started_at = manifest.get("started_at")
-                    if not isinstance(started_at, str) or started_at < not_before_started_at:
+                    if (
+                        not isinstance(started_at, str)
+                        or started_at < not_before_started_at
+                    ):
                         logger.info(
                             "[session_output] Ignoring review exchange summary before boundary: "
                             "session=%s run_dir=%s started_at=%s boundary=%s",
@@ -1095,7 +1099,9 @@ Timestamp: {self._now_iso()}
             return ExchangeChapterSidecar.from_payload(payload)
         except (KeyError, ValueError, TypeError) as exc:
             logger.warning(
-                "Malformed chapters sidecar at %s: %s", sidecar_path, exc,
+                "Malformed chapters sidecar at %s: %s",
+                sidecar_path,
+                exc,
             )
             return None
 

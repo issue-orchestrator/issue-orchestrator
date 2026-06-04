@@ -50,6 +50,20 @@ test('buildIssueRetryRequest returns issue-specific endpoint', () => {
     assert.deepEqual(req.body, {});
 });
 
+test('buildIssueResumeRequest returns issue-specific endpoint and run contract', () => {
+    const req = uiActionContract.buildIssueResumeRequest('4057', '/tmp/run');
+    assert.equal(req.endpoint, '/api/issues/4057/resume');
+    assert.equal(req.method, 'POST');
+    assert.deepEqual(req.body, { run_dir: '/tmp/run' });
+});
+
+test('buildIssueResumeRequest rejects missing runDir', () => {
+    assert.throws(
+        () => uiActionContract.buildIssueResumeRequest(4057, ''),
+        /runDir is required/,
+    );
+});
+
 test('buildRetryPublishRequest returns issue-specific endpoint', () => {
     const req = uiActionContract.buildRetryPublishRequest('4057');
     assert.equal(req.endpoint, '/api/issues/4057/retry-publish');
