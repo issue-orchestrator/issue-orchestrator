@@ -51,7 +51,7 @@ def surface_failure_context(session: Session, status: SessionStatus) -> None:
             diag_lines.append("")
             diag_lines.append("⚠️  WARNING: permission_mode is 'default' - Claude will prompt for permissions!")
             diag_lines.append("   This causes sessions to hang/fail in non-interactive mode.")
-            diag_lines.append("   FIX: Add 'permission_mode: bypassPermissions' to your agent config in YAML.")
+            diag_lines.append("   FIX: Set provider_args.permission_mode: bypassPermissions in your agent config YAML.")
 
         context = None
         if provider:

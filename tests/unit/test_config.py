@@ -121,6 +121,20 @@ worktrees:
         ):
             Config.load(config_file)
 
+    def test_repo_owned_configs_load(self):
+        """Every checked-in config (orchestrator + E2E fixtures) must parse.
+
+        Guards against config-contract changes (like the agent-level
+        permission_mode rejection) silently breaking repo-owned YAML."""
+        repo_root = Path(__file__).resolve().parents[2]
+        config_paths = sorted(
+            list((repo_root / ".issue-orchestrator" / "config").glob("*.yaml"))
+            + list((repo_root / "tests" / "e2e" / "configs").glob("*.yaml"))
+        )
+        assert config_paths, "expected repo-owned configs to exist"
+        for path in config_paths:
+            Config.load(path)
+
     def test_config_load_codex_agent_without_model_uses_provider_default(self, tmp_path):
         """Codex agents without a model should not inherit Claude's sonnet fallback."""
         prompt = tmp_path / "prompt.md"

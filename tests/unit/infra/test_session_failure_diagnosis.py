@@ -632,7 +632,8 @@ class TestCreateSessionFailureDiagnosis:
         )
 
         assert any("default" in w.lower() for w in diagnosis.warnings)
-        assert any("permission_mode" in s.lower() for s in diagnosis.suggestions)
+        assert any("provider_args.permission_mode" in s for s in diagnosis.suggestions)
+        assert not any("Add 'permission_mode" in s for s in diagnosis.suggestions)
 
     @patch("issue_orchestrator.adapters.session_log.registry.get_log_provider")
     def test_warns_about_missing_log(self, mock_get_provider):

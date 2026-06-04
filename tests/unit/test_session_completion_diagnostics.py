@@ -43,6 +43,8 @@ def test_surface_failure_context_warns_about_default_permission_mode(
     )
 
     assert "permission_mode is 'default'" in caplog.text
+    assert "provider_args.permission_mode" in caplog.text
+    assert "Add 'permission_mode" not in caplog.text
     assert "No detailed failure context available" in caplog.text
 
 

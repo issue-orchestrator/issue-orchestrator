@@ -168,7 +168,7 @@ def _build_warnings_and_suggestions(permission_mode: str, log_path: Path | None,
 
     if permission_mode == "default":
         warnings.append("permission_mode is 'default' - Claude prompts for permissions in non-interactive mode")
-        suggestions.append("Add 'permission_mode: bypassPermissions' to your agent config in YAML")
+        suggestions.append("Set provider_args.permission_mode: bypassPermissions in your agent config YAML")
 
     if not log_path or not log_path.exists():
         warnings.append("No AI session log found for this issue")
@@ -176,7 +176,7 @@ def _build_warnings_and_suggestions(permission_mode: str, log_path: Path | None,
 
     if log_context and "permission" in log_context.lower():
         warnings.append("Permission-related errors detected in log")
-        suggestions.append("Consider using 'permission_mode: bypassPermissions' for non-interactive sessions")
+        suggestions.append("Consider setting provider_args.permission_mode: bypassPermissions for non-interactive sessions")
 
     return warnings, suggestions
 
