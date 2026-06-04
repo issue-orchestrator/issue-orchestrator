@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .e2e_paths import runtime_output_dir
 from .e2e_reports import MAX_CAPTURED_OUTPUT_CHARS
 
 
@@ -26,17 +28,6 @@ class RuntimeCapturedOutput:
             "system_err": self.system_err,
             "source_path": str(self.source_path),
         }
-
-
-def runtime_output_dir(repo_root: Path, run_id: int) -> Path:
-    """Return the run-scoped runtime output directory."""
-    return (
-        repo_root
-        / ".issue-orchestrator"
-        / "e2e-results"
-        / f"run_{run_id}"
-        / "runtime-output"
-    )
 
 
 def runtime_output_path(repo_root: Path, run_id: int, nodeid: str) -> Path:
@@ -84,12 +75,22 @@ def write_pytest_report_captured_output(
     report: object,
 ) -> RuntimeCapturedOutput | None:
     """Persist captured stdout/stderr from a pytest TestReport."""
+    return write_pytest_reports_captured_output(repo_root, run_id, nodeid, [report])
+
+
+def write_pytest_reports_captured_output(
+    repo_root: Path,
+    run_id: int,
+    nodeid: str,
+    reports: list[object],
+) -> RuntimeCapturedOutput | None:
+    """Persist captured stdout/stderr from pytest phase TestReports."""
     return write_runtime_captured_output(
         repo_root,
         run_id,
         nodeid,
-        system_out=_pytest_report_system_out(report),
-        system_err=_pytest_report_system_err(report),
+        system_out=_join_report_channels(reports, _pytest_report_system_out),
+        system_err=_join_report_channels(reports, _pytest_report_system_err),
     )
 
 
@@ -135,6 +136,30 @@ def _pytest_report_system_err(report: object) -> str | None:
         return None
     text = value.strip()
     return text or None
+
+
+def _join_report_channels(
+    reports: list[object],
+    reader: Callable[[object], str | None],
+) -> str | None:
+    parts = [
+        value
+        for report in reports
+        if isinstance((value := reader(report)), str) and value.strip()
+    ]
+    return _merge_cumulative_parts(parts)
+
+
+def _merge_cumulative_parts(parts: list[str]) -> str | None:
+    if not parts:
+        return None
+    merged = ""
+    for part in parts:
+        if not merged or part == merged or part.startswith(f"{merged}\n"):
+            merged = part
+            continue
+        merged = f"{merged}\n{part}"
+    return merged
 
 
 def _clean_channel(value: object) -> str | None:

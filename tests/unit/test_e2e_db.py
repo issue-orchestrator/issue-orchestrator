@@ -1,6 +1,7 @@
 """Unit tests for E2E database layer."""
 
 import json
+import sqlite3
 import pytest
 import tempfile
 from datetime import datetime, timezone
@@ -178,12 +179,29 @@ class TestE2EDB:
         second_dir.mkdir(parents=True)
         (first_dir / "results.xml").write_text("old", encoding="utf-8")
         (second_dir / "results.xml").write_text("new", encoding="utf-8")
+        timeline_db = worktree / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        timeline_db.parent.mkdir(parents=True)
+        with sqlite3.connect(timeline_db) as conn:
+            conn.execute(
+                "CREATE TABLE timeline_events (event_id TEXT, timestamp TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO timeline_events (event_id, timestamp) VALUES (?, ?)",
+                ("old-event", "2000-01-01T00:00:00+00:00"),
+            )
+            conn.execute(
+                "INSERT INTO timeline_events (event_id, timestamp) VALUES (?, ?)",
+                ("new-event", "2999-01-01T00:00:00+00:00"),
+            )
 
         pruned = db.prune_old_runs(1, e2e_worktree_path=worktree)
 
         assert pruned == 1
         assert not first_dir.exists()
         assert second_dir.exists()
+        with sqlite3.connect(timeline_db) as conn:
+            rows = conn.execute("SELECT event_id FROM timeline_events").fetchall()
+        assert [row[0] for row in rows] == ["new-event"]
 
     def test_record_junit_cases(self, db: E2EDB):
         """Parsed JUnit cases should populate generic result metadata."""

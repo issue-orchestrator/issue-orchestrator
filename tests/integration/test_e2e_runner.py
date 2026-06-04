@@ -182,11 +182,50 @@ def test_repo_with_passed_output(tmp_path: Path) -> Path:
     (tests_dir / "test_output.py").write_text(
         """\
 import sys
+import pytest
 
 
-def test_passed_output():
+@pytest.fixture
+def noisy_fixture():
+    print("setup stdout from runtime")
+    print("setup stderr from runtime", file=sys.stderr)
+    yield
+    print("teardown stdout from runtime")
+    print("teardown stderr from runtime", file=sys.stderr)
+
+
+def test_passed_output(noisy_fixture):
     print("passed stdout from runtime")
     print("passed stderr from runtime", file=sys.stderr)
+    assert True
+""",
+        encoding="utf-8",
+    )
+    (repo / ".issue-orchestrator").mkdir()
+    return repo
+
+
+@pytest.fixture
+def test_repo_with_teardown_only_output(tmp_path: Path) -> Path:
+    """Create a repo with a passing test that only emits teardown output."""
+    repo = tmp_path / "test_repo_teardown_output"
+    repo.mkdir()
+    tests_dir = repo / "tests" / "e2e"
+    tests_dir.mkdir(parents=True)
+    (tests_dir / "test_output.py").write_text(
+        """\
+import sys
+import pytest
+
+
+@pytest.fixture
+def noisy_teardown():
+    yield
+    print("teardown-only stdout from runtime")
+    print("teardown-only stderr from runtime", file=sys.stderr)
+
+
+def test_passed_output(noisy_teardown):
     assert True
 """,
         encoding="utf-8",
@@ -481,8 +520,55 @@ def test_worker_pytest_runner_captures_passed_test_output_live(
         row["nodeid"],
     )
     assert captured is not None
-    assert captured.system_out == "passed stdout from runtime"
-    assert captured.system_err == "passed stderr from runtime"
+    assert captured.system_out == (
+        "setup stdout from runtime\n"
+        "passed stdout from runtime\n"
+        "teardown stdout from runtime"
+    )
+    assert captured.system_err == (
+        "setup stderr from runtime\n"
+        "passed stderr from runtime\n"
+        "teardown stderr from runtime"
+    )
+
+
+def test_worker_pytest_runner_marks_teardown_only_output_available(
+    test_repo_with_teardown_only_output: Path,
+):
+    """Teardown-only capture should still enable stdout/stderr affordances."""
+    result = run_worker_with_execution_spec(
+        test_repo_with_teardown_only_output,
+        execution_spec={
+            "runner_kind": "pytest",
+            "pytest_args": ["tests/e2e", "-v"],
+            "command": [],
+            "junit_xml_paths": [],
+            "artifact_paths": [],
+            "allow_retry_once": False,
+            "stop_on_first_failure": False,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+
+    db = E2EDB(test_repo_with_teardown_only_output / ".issue-orchestrator" / "e2e.db")
+    run = db.latest_run("test-orch")
+    assert run is not None
+    details = db.run_details(run.id)
+    assert details is not None
+    row = details["results"][0]
+    assert row["outcome"] == "passed"
+    assert row["stdout_available"] is True
+    assert row["stderr_available"] is True
+
+    captured = read_runtime_captured_output(
+        test_repo_with_teardown_only_output,
+        run.id,
+        row["nodeid"],
+    )
+    assert captured is not None
+    assert captured.system_out == "teardown-only stdout from runtime"
+    assert captured.system_err == "teardown-only stderr from runtime"
 
 
 # ---------------------------------------------------------------------------

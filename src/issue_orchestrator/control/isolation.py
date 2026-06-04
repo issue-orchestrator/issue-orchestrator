@@ -86,9 +86,11 @@ def build_runtime_tool_env(
     """Build an environment with tool homes isolated to the worktree.
 
     Gradle daemons are scoped by ``GRADLE_USER_HOME``. Python command-line
-    tools are resolved from the worktree's own ``.venv/bin`` when it exists.
-    Without these per-worktree values, concurrent sessions share the user's
-    daemon registry and validation commands can miss repo-local tools.
+    tools are resolved from the worktree's own ``.venv/bin``. The path is
+    prepended before the directory exists so sessions launched during setup
+    still pick it up once the venv is created. Without these per-worktree
+    values, concurrent sessions share the user's daemon registry and validation
+    commands can miss repo-local tools.
 
     The isolated value intentionally overrides any caller-provided
     ``GRADLE_USER_HOME`` so orchestrator-managed runs remain reproducible.
@@ -96,8 +98,8 @@ def build_runtime_tool_env(
     env = dict(os.environ if base_env is None else base_env)
     env[GRADLE_USER_HOME_ENV] = str(get_gradle_user_home(worktree))
     worktree_venv_bin = get_worktree_venv_bin(worktree)
-    if worktree_venv_bin.is_dir():
-        env[PATH_ENV] = _prepend_path_entry(worktree_venv_bin, env.get(PATH_ENV, ""))
+    current_path = env.get(PATH_ENV, os.environ.get(PATH_ENV, ""))
+    env[PATH_ENV] = _prepend_path_entry(worktree_venv_bin, current_path)
     return env
 
 
@@ -107,10 +109,9 @@ def build_runtime_tool_env_assignments(worktree: Path) -> list[str]:
         f"{GRADLE_USER_HOME_ENV}={shlex.quote(str(get_gradle_user_home(worktree)))}"
     ]
     worktree_venv_bin = get_worktree_venv_bin(worktree)
-    if worktree_venv_bin.is_dir():
-        assignments.append(
-            f"{PATH_ENV}={shlex.quote(str(worktree_venv_bin))}:$PATH"
-        )
+    assignments.append(
+        f"{PATH_ENV}={shlex.quote(str(worktree_venv_bin))}:$PATH"
+    )
     return assignments
 
 

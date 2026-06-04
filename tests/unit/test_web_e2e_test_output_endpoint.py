@@ -59,6 +59,13 @@ def test_returns_captured_output_for_passing_test() -> None:
         run_id = _start_run(db, repo_root)
         junit_path = repo_root / "junit.xml"
         _write_junit_with_output(junit_path)
+        write_runtime_captured_output(
+            repo_root,
+            run_id,
+            "tests/e2e/test_smoke.py::test_passed_with_logs",
+            system_out="runtime-only partial stdout",
+            system_err=None,
+        )
         db.replace_run_artifacts(
             run_id,
             [
@@ -81,6 +88,7 @@ def test_returns_captured_output_for_passing_test() -> None:
             body = resp.json()
             assert body["system_out"] == "setup log: connecting to fixture"
             assert body["system_err"] is None
+            assert body["source_path"] == str(junit_path)
         finally:
             set_orchestrator(None)
 

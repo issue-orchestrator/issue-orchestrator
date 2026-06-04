@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
@@ -27,6 +28,37 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _RuntimeResult:
+    nodeid: str
+    outcome: str
+    duration_seconds: float | None
+    longrepr: str | None
+    is_quarantined: bool
+    display_name: str
+    suite_name: str | None
+    stdout_available: bool
+    stderr_available: bool
+
+    def with_output_availability(
+        self,
+        *,
+        stdout_available: bool,
+        stderr_available: bool,
+    ) -> "_RuntimeResult":
+        return _RuntimeResult(
+            nodeid=self.nodeid,
+            outcome=self.outcome,
+            duration_seconds=self.duration_seconds,
+            longrepr=self.longrepr,
+            is_quarantined=self.is_quarantined,
+            display_name=self.display_name,
+            suite_name=self.suite_name,
+            stdout_available=self.stdout_available or stdout_available,
+            stderr_available=self.stderr_available or stderr_available,
+        )
 
 
 def _get_git_info(repo_root: Path) -> tuple[Optional[str], Optional[str]]:
@@ -97,6 +129,8 @@ class ResultPlugin:
         self.timeline_store = timeline_store
         self.failed_tests: list[str] = []  # Non-quarantined failures for retry
         self.errors: list[str] = []  # Setup/teardown errors (not test failures)
+        self._phase_reports_by_nodeid: dict[str, list[object]] = {}
+        self._completed_results_by_nodeid: dict[str, _RuntimeResult] = {}
 
     def pytest_collection_finish(self, session) -> None:
         """Called after test collection - record total test count."""
@@ -117,15 +151,39 @@ class ResultPlugin:
 
     def pytest_runtest_logreport(self, report) -> None:
         """Called for each test phase (setup, call, teardown)."""
+        nodeid = report.nodeid
+        phase_reports = self._phase_reports_by_nodeid.setdefault(nodeid, [])
+        phase_reports.append(report)
+        captured_output = _persist_runtime_captured_output(
+            self.repo_root,
+            self.run_id,
+            nodeid,
+            phase_reports,
+        )
+        stdout_available = (
+            captured_output is not None and captured_output.system_out is not None
+        )
+        stderr_available = (
+            captured_output is not None and captured_output.system_err is not None
+        )
         # Capture setup/teardown errors so we can explain "all tests
         # passed but run failed" to the user.
         if report.when != "call":
             if report.failed:
                 summary = str(report.longrepr)[:500] if report.longrepr else "unknown error"
                 self.errors.append(f"{report.nodeid} ({report.when}): {summary}")
+            if report.when == "teardown":
+                result = self._completed_results_by_nodeid.pop(nodeid, None)
+                if result is not None:
+                    self._upsert_runtime_result(
+                        result.with_output_availability(
+                            stdout_available=stdout_available,
+                            stderr_available=stderr_available,
+                        )
+                    )
+                self._phase_reports_by_nodeid.pop(nodeid, None)
             return
 
-        nodeid = report.nodeid
         outcome = report.outcome  # passed, failed, skipped
         duration = getattr(report, "duration", None)
 
@@ -137,31 +195,20 @@ class ResultPlugin:
         is_quarantined = nodeid in self.quarantine
         suite_name = nodeid.rsplit("::", 1)[0] if "::" in nodeid else None
         display_name = nodeid.split("::")[-1]
-        captured_output = _persist_runtime_captured_output(
-            self.repo_root,
-            self.run_id,
-            nodeid,
-            report,
-        )
 
-        self.db.upsert_test_result(
-            run_id=self.run_id,
+        result = _RuntimeResult(
             nodeid=nodeid,
             outcome=outcome,
             duration_seconds=duration,
             longrepr=longrepr,
-            retry_outcome=None,
             is_quarantined=is_quarantined,
             display_name=display_name,
             suite_name=suite_name,
-            result_source="runtime",
-            stdout_available=(
-                captured_output is not None and captured_output.system_out is not None
-            ),
-            stderr_available=(
-                captured_output is not None and captured_output.system_err is not None
-            ),
+            stdout_available=stdout_available,
+            stderr_available=stderr_available,
         )
+        self._completed_results_by_nodeid[nodeid] = result
+        self._upsert_runtime_result(result)
 
         # Clear current_test after completion
         self.db.update_progress(self.run_id, current_test=None)
@@ -187,6 +234,22 @@ class ResultPlugin:
         if outcome == "failed" and not is_quarantined:
             self.failed_tests.append(nodeid)
             logger.warning("Test failed: %s", nodeid)
+
+    def _upsert_runtime_result(self, result: _RuntimeResult) -> None:
+        self.db.upsert_test_result(
+            run_id=self.run_id,
+            nodeid=result.nodeid,
+            outcome=result.outcome,
+            duration_seconds=result.duration_seconds,
+            longrepr=result.longrepr,
+            retry_outcome=None,
+            is_quarantined=result.is_quarantined,
+            display_name=result.display_name,
+            suite_name=result.suite_name,
+            result_source="runtime",
+            stdout_available=result.stdout_available,
+            stderr_available=result.stderr_available,
+        )
 
 
 def _run_pytest(
@@ -222,18 +285,18 @@ def _persist_runtime_captured_output(
     repo_root: Path,
     run_id: int,
     nodeid: str,
-    report: Any,
+    reports: list[object],
 ):
     """Persist pytest's runtime-captured output for live dashboard viewing."""
     from issue_orchestrator.infra.e2e_runtime_output import (
-        write_pytest_report_captured_output,
+        write_pytest_reports_captured_output,
     )
 
-    return write_pytest_report_captured_output(
+    return write_pytest_reports_captured_output(
         repo_root,
         run_id,
         nodeid,
-        report,
+        reports,
     )
 
 
@@ -442,9 +505,9 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         normalize_pytest_junit_cases,
         snapshot_report_artifacts,
     )
+    from issue_orchestrator.infra.e2e_paths import run_report_artifact_dir
     from issue_orchestrator.infra.e2e_run_completion import (
         decide_completion,
-        run_report_artifact_dir,
         status_from_cases,
     )
 

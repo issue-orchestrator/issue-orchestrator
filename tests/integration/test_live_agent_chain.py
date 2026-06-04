@@ -438,25 +438,32 @@ class TestLiveAgentChain:
                 return
             time.sleep(0.2)
 
+    @pytest.mark.live_codex
     def test_persistent_send_round_multi_round_real_codex_interactive(self) -> None:
         """The reviewer is INTERACTIVE codex (the production default): one
-        persistent TUI process across multiple rounds. Round 1 is the
-        launch-arg task; rounds 2 and 3 are injected with ``send_round`` and
-        MUST submit via the two-write prompt+Enter contract — codex treats a
-        \\r batched with the prompt text as a literal newline in its input box
-        (renders, never submits), which is exactly the tixmeup #277/#290 hang
-        class. The command is built via the codex provider so this test tracks
-        the real production invocation."""
+        persistent TUI process across multiple rounds.
+
+        Production launches codex with a bootstrap prompt telling it to wait
+        for stdin, then each real review turn is injected with ``send_round``.
+        The injected rounds MUST submit via the two-write prompt+Enter contract
+        — codex treats a ``\r`` batched with the prompt text as a literal
+        newline in its input box (renders, never submits), which is exactly the
+        tixmeup #277/#290 hang class. The command is built via the codex
+        provider so this test tracks the real production invocation.
+        """
         if shutil.which("codex") is None:
             pytest.skip("codex CLI not installed")
         from issue_orchestrator.execution.agent_runner_providers import get_provider
-        from issue_orchestrator.execution.persistent_round_runner import (
-            _drain_pty_output,
-        )
 
         repo_root = Path(__file__).resolve().parents[2]
         work_dir = Path(tempfile.mkdtemp(prefix=".live-codex-int-", dir=repo_root))
         response_file = work_dir / "review-response.json"
+        bootstrap = (
+            "You are the reviewer in a persistent review exchange. Wait for "
+            "the orchestrator to send each turn via stdin, write exactly one "
+            "line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE for "
+            "each turn, then keep waiting for the next prompt."
+        )
         task = (
             "Run exactly this one shell command and nothing else (no "
             "sleeping, no waiting commands): "
@@ -466,39 +473,29 @@ class TestLiveAgentChain:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] = str(response_file)
         command = get_provider("codex").build_command(
-            task, execution_mode="interactive", approval_mode="full-auto",
+            bootstrap,
+            execution_mode="interactive",
+            approval_mode="full-auto",
+            reasoning_effort="low",
         )
 
         session = open_persistent_session(
             command=command, working_dir=work_dir, env=env,
         )
         try:
-            # Round 1 is the launch-arg task — wait for codex to complete it.
-            r1_deadline = time.monotonic() + 120
-            while time.monotonic() < r1_deadline:
-                _drain_pty_output(session)
-                if response_file.exists():
-                    break
-                if session.proc.poll() is not None:
-                    pytest.fail(
-                        f"codex exited during round 1, code={session.proc.poll()}"
-                    )
-                time.sleep(0.3)
-            else:
-                pytest.fail("interactive codex did not finish its launch-arg task in 120s")
             assert session.proc.poll() is None, (
-                "interactive codex must stay alive after round 1 — it is a "
-                "persistent TUI, not the one-shot exec mode"
+                "interactive codex must stay alive after launch — it is a "
+                "persistent TUI, not one-shot exec mode"
             )
 
-            for n in (2, 3):
+            for n in (1, 2, 3):
                 self._wait_for_pty_idle(session, quiet_seconds=3.0, max_wait=30.0)
                 response_file.unlink(missing_ok=True)
                 result = send_round(
                     session,
                     prompt=task,
                     response_file=response_file,
-                    timeout_seconds=90,
+                    timeout_seconds=120,
                     poll_interval_seconds=0.3,
                     role_label=f"reviewer@round-{n}",
                 )

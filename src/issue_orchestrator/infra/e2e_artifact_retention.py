@@ -8,14 +8,18 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from .e2e_paths import run_report_artifact_dir
+
 logger = logging.getLogger(__name__)
 
 
 def delete_run_report_artifacts(worktree_path: Path, run_id: int) -> None:
     """Delete run-scoped report artifacts from the E2E worktree."""
-    run_dir = worktree_path / ".issue-orchestrator" / "e2e-results" / f"run_{run_id}"
+    run_dir = run_report_artifact_dir(worktree_path, run_id)
+    if not run_dir.exists():
+        return
     try:
-        shutil.rmtree(run_dir, ignore_errors=True)
+        shutil.rmtree(run_dir)
     except OSError:
         logger.debug("Could not delete E2E report artifacts for run %d", run_id)
 
@@ -31,10 +35,8 @@ def _prune_worktree_timeline(worktree_path: Path, cutoff: str) -> None:
     if not wt_timeline.exists():
         return
     try:
-        conn = sqlite3.connect(f"file:{wt_timeline}")
-        conn.execute("DELETE FROM timeline_events WHERE timestamp < ?", (cutoff,))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(wt_timeline) as conn:
+            conn.execute("DELETE FROM timeline_events WHERE timestamp < ?", (cutoff,))
     except Exception:
         logger.debug("Could not prune worktree timeline", exc_info=True)
 

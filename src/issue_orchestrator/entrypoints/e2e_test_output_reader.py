@@ -18,11 +18,11 @@ def load_e2e_test_output(
     nodeid: str,
     junit_paths: list[Path],
 ) -> E2ETestOutputPayload | None:
-    """Load captured output from live runtime capture or JUnit XML."""
-    runtime_payload = _captured_output_from_runtime(repo_root, nodeid, run_id=run_id)
-    if runtime_payload is not None:
-        return runtime_payload
-    return _captured_output_from_junit(junit_paths, nodeid, run_id=run_id)
+    """Load captured output from finalized JUnit XML or live runtime capture."""
+    junit_payload = _captured_output_from_junit(junit_paths, nodeid, run_id=run_id)
+    if junit_payload is not None:
+        return junit_payload
+    return _captured_output_from_runtime(repo_root, nodeid, run_id=run_id)
 
 
 def _captured_output_from_runtime(

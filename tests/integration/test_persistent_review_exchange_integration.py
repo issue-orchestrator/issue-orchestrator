@@ -491,6 +491,7 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
 
 
 @pytest.mark.skipif(not _CODEX_READY, reason="codex CLI not installed or not logged in")
+@pytest.mark.live_codex
 def test_real_interactive_codex_reviewer_round_trips_through_exchange(
     tmp_path: Path,
 ) -> None:

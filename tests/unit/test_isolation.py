@@ -104,7 +104,7 @@ class TestRuntimeToolEnv:
             },
         )
 
-        assert env["PATH"] == "/bin"
+        assert env["PATH"] == f"{worktree / '.venv' / 'bin'}{os.pathsep}/bin"
         assert env[GRADLE_USER_HOME_ENV] == str(get_gradle_user_home(worktree))
 
     def test_build_runtime_tool_env_prepends_worktree_venv_bin(self, tmp_path):
@@ -116,6 +116,21 @@ class TestRuntimeToolEnv:
 
         assert env["PATH"] == f"{worktree / '.venv' / 'bin'}{os.pathsep}/bin"
 
+    def test_build_runtime_tool_env_empty_base_preserves_process_path(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Override-only envs still need the ambient PATH to find provider CLIs."""
+        worktree = tmp_path / "worktree"
+        monkeypatch.setenv("PATH", "/usr/local/bin:/bin")
+
+        env = build_runtime_tool_env(worktree, base_env={})
+
+        assert env["PATH"] == (
+            f"{worktree / '.venv' / 'bin'}{os.pathsep}/usr/local/bin:/bin"
+        )
+
     def test_build_runtime_tool_env_assignments_quotes_spaces(self):
         """Shell assignments should be safe for paths containing spaces."""
         worktree = Path("/path/with spaces/worktree")
@@ -124,13 +139,13 @@ class TestRuntimeToolEnv:
 
         assert assignments == [
             f"{GRADLE_USER_HOME_ENV}="
-            "'/path/with spaces/worktree/.issue-orchestrator/tool-homes/gradle'"
+            "'/path/with spaces/worktree/.issue-orchestrator/tool-homes/gradle'",
+            "PATH='/path/with spaces/worktree/.venv/bin':$PATH",
         ]
 
-    def test_build_runtime_tool_env_assignments_prepends_existing_venv(self, tmp_path):
+    def test_build_runtime_tool_env_assignments_prepends_worktree_venv(self, tmp_path):
         """Session launch exports should expose the worktree venv on PATH."""
         worktree = tmp_path / "worktree with spaces"
-        (worktree / ".venv" / "bin").mkdir(parents=True)
 
         assignments = build_runtime_tool_env_assignments(worktree)
 

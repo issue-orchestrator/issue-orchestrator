@@ -1,11 +1,13 @@
 """Unit tests for runtime E2E stdout/stderr capture artifacts."""
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from issue_orchestrator.infra.e2e_runtime_output import (
     read_runtime_captured_output,
     runtime_output_path,
     write_runtime_captured_output,
+    write_pytest_reports_captured_output,
 )
 
 
@@ -40,3 +42,22 @@ def test_runtime_captured_output_ignores_empty_channels(tmp_path: Path) -> None:
     )
 
     assert captured is None
+
+
+def test_pytest_report_capture_combines_phase_output(tmp_path: Path) -> None:
+    nodeid = "tests/e2e/test_smoke.py::test_chatty"
+
+    written = write_pytest_reports_captured_output(
+        tmp_path,
+        12,
+        nodeid,
+        [
+            SimpleNamespace(capstdout="setup stdout", capstderr="", caplog=""),
+            SimpleNamespace(capstdout="call stdout", capstderr="call stderr", caplog="call log"),
+            SimpleNamespace(capstdout="", capstderr="teardown stderr", caplog=""),
+        ],
+    )
+
+    assert written is not None
+    assert written.system_out == "setup stdout\ncall stdout\ncall log"
+    assert written.system_err == "call stderr\nteardown stderr"

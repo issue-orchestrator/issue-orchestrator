@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 
@@ -26,11 +25,6 @@ def status_from_cases(cases: list[Any], quarantine: set[str]) -> str | None:
     if failed_cases:
         return "warning"
     return "passed"
-
-
-def run_report_artifact_dir(repo_root: Path, run_id: int) -> Path:
-    """Return the worktree-local, run-scoped report artifact directory."""
-    return repo_root / ".issue-orchestrator" / "e2e-results" / f"run_{run_id}"
 
 
 def quarantined_failure_nodeids(db: Any, run_id: int) -> list[str]:
