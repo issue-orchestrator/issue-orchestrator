@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..domain.models import AgentConfig
     from ..domain.review_exchange import ReviewExchangeOutcome
     from ..domain.review_exchange_run import ReviewExchangeRun
+    from ..domain.runtime_config import RuntimeConfigReference
     from ..events import EventContext
     from .event_sink import EventSink
 
@@ -44,6 +45,7 @@ class ReviewExchangeRunner(Protocol):
         reviewer_label: str,
         coder_agent: "AgentConfig",
         reviewer_agent: "AgentConfig",
+        runtime_config: "RuntimeConfigReference",
         max_rounds: int,
         max_no_progress: int,
         require_validation: bool,

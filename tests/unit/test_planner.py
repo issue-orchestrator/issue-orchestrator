@@ -1626,6 +1626,7 @@ class TestPlanAwaitingMergeEscalations:
             issue_number=42,
             pr_number=100,
             pr_url="https://github.com/o/r/pull/100",
+            issue_key="M0-042",
             rework_cycle=1,
             kind="checks_pending_timeout",
             reason="Required GitHub checks have been pending for ~31 minute(s) ...",
@@ -1656,7 +1657,10 @@ class TestPlanAwaitingMergeEscalations:
         )
         from issue_orchestrator.control.actions import ActionType
 
-        config = make_config(code_review_agent="agent:reviewer")
+        config = make_config(
+            code_review_agent="agent:reviewer",
+            label_prefix="bot",
+        )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
@@ -1664,6 +1668,7 @@ class TestPlanAwaitingMergeEscalations:
             issue_number=42,
             pr_number=100,
             pr_url="https://github.com/o/r/pull/100",
+            issue_key="M0-042",
             rework_cycle=1,
             kind="branch_protection_blocked",
             reason="Branch protection blocks merge despite all required checks passing.",
@@ -1679,8 +1684,12 @@ class TestPlanAwaitingMergeEscalations:
             a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN
         ]
         assert len(escalate_actions) == 1
-        assert escalate_actions[0].comment_override is not None
-        assert "branch protection" in escalate_actions[0].comment_override.lower()
+        action = escalate_actions[0]
+        assert action.needs_human_label == "bot:needs-human"
+        assert action.comment_override is not None
+        assert "branch protection" in action.comment_override.lower()
+        assert "`bot:needs-human`" in action.comment_override
+        assert "`blocked-needs-human`" not in action.comment_override
 
 
 class TestPlanDiscoveredFailures:

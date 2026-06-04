@@ -11,6 +11,7 @@ from ..domain.completion_finalization import ReviewExchangeRunningQuery
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.review_exchange_resume import ResumeDecision
 from ..domain.review_artifacts import review_artifacts_from_exchange_result
+from ..domain.runtime_config import RuntimeConfigReference
 from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
 from ..ports.session_output import SessionOutput
@@ -1203,6 +1204,13 @@ class CompletionReviewExchange:
             raise ValueError("Review exchange requires ai_system on coder and reviewer agents")
         return coder_system, reviewer_system
 
+    def runtime_config_reference(self) -> RuntimeConfigReference:
+        if not self._config:
+            raise ValueError("Review exchange requires config")
+        if self._config.config_path is None:
+            raise ValueError("Review exchange requires config_path")
+        return RuntimeConfigReference.from_path(self._config.config_path)
+
     def run_review_exchange_loop(
         self,
         *,
@@ -1242,6 +1250,7 @@ class CompletionReviewExchange:
             reviewer_label=reviewer_label,
             coder_agent=coder_agent,
             reviewer_agent=reviewer_agent,
+            runtime_config=self.runtime_config_reference(),
             max_rounds=self._config.review_exchange_max_rounds,
             max_no_progress=self._config.review_exchange_max_no_progress,
             require_validation=self._config.review_exchange_require_validation,

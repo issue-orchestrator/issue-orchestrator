@@ -389,6 +389,7 @@ def main() -> None:  # noqa: C901, PLR0912
             assets.validation_artifacts,
             validation_result,
         )
+        record.validation_record_path = str(assets.validation_artifacts.record_path)
 
     if validation_result and not validation_result.passed:
         print(f"\n{'='*60}")
@@ -431,9 +432,6 @@ def main() -> None:  # noqa: C901, PLR0912
         if issue_number:
             logger.info(issue_log(issue_number, "coding-done outcome: status=%s validation=FAILED"), status)
         sys.exit(1)
-
-    if validation_result and validation_result.record_path:
-        record.validation_record_path = validation_result.record_path
 
     # 3b. Re-check dirty tree AFTER validation. Closes the temporal
     #     variance with the orchestrator's publish gate: validate.sh can

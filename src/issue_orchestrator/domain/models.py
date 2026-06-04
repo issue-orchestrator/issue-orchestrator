@@ -1413,6 +1413,7 @@ class DiscoveredAwaitingMergeEscalation:
     issue_number: int
     pr_number: int
     pr_url: str
+    issue_key: str
     rework_cycle: int  # carried for label/comment continuity
     kind: PostPublishEscalationKind
     reason: str  # short human-readable summary, used in the PR comment

@@ -52,6 +52,17 @@ from ..domain.models import (
 logger = logging.getLogger(__name__)
 
 _BLOCKED_HISTORY_HOT_REFRESH_LOOKBACK = 200
+_DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
+    "discovered_reviews",
+    "discovered_retrospective_reviews",
+    "discovered_awaiting_merge_reconciliations",
+    "discovered_awaiting_merge_drifts",
+    "discovered_awaiting_merge_escalations",
+    "discovered_reworks",
+    "discovered_escalations",
+    "discovered_failures",
+    "immediate_cleanups",
+)
 
 
 def init_orchestrator_components(orch: "Orchestrator") -> None:
@@ -179,16 +190,7 @@ class OrchestratorSupport:
         )
 
     def clear_discovered_facts(self) -> None:
-        for attr in (
-            "discovered_reviews",
-            "discovered_retrospective_reviews",
-            "discovered_awaiting_merge_reconciliations",
-            "discovered_awaiting_merge_drifts",
-            "discovered_reworks",
-            "discovered_escalations",
-            "discovered_failures",
-            "immediate_cleanups",
-        ):
+        for attr in _DISCOVERED_FACT_ATTRS:
             getattr(self.state, attr).clear()
 
     def emit_heartbeat_if_needed(self) -> None:
@@ -507,14 +509,8 @@ def pause_issue_for_reconciliation(
 
 def clear_discovered_facts(state: "OrchestratorState") -> None:
     """Clear discovered facts from state - moved per method table."""
-    state.discovered_reviews.clear()
-    state.discovered_retrospective_reviews.clear()
-    state.discovered_awaiting_merge_reconciliations.clear()
-    state.discovered_awaiting_merge_drifts.clear()
-    state.discovered_reworks.clear()
-    state.discovered_escalations.clear()
-    state.discovered_failures.clear()
-    state.immediate_cleanups.clear()
+    for attr in _DISCOVERED_FACT_ATTRS:
+        getattr(state, attr).clear()
 
 
 def emit_heartbeat_if_needed(

@@ -605,6 +605,12 @@ class GitHubHttpClient:
         key = self._cache_key("GET", url, {"per_page": 100})  # Match list_labels params
         self._etag_cache.pop(key, None)
 
+    def invalidate_pr_etag(self, pr_number: int) -> None:
+        """Invalidate ETag cache for a PR endpoint."""
+        url = f"/repos/{self._config.repo}/pulls/{pr_number}"
+        key = self._cache_key("GET", url, None)
+        self._etag_cache.pop(key, None)
+
     def list_milestones(self, state: str = "open") -> list[dict[str, Any]]:
         """List milestones in the repository.
 

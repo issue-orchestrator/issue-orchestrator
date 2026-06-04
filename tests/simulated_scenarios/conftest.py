@@ -110,6 +110,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         ReviewExchangeOutcome,
         ReviewExchangeResponse,
     )
+    from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
     from issue_orchestrator.events import EventName
     from issue_orchestrator.execution.persistent_review_exchange_runner import (
         PersistentReviewExchangeRunner,
@@ -160,6 +161,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         reviewer_label,  # noqa: ARG001
         coder_agent,  # noqa: ARG001
         reviewer_agent,  # noqa: ARG001
+        runtime_config,
         max_rounds,
         max_no_progress,
         require_validation,
@@ -169,6 +171,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         events=None,
         event_context=None,
     ):
+        assert isinstance(runtime_config, RuntimeConfigReference)
         session_name = exchange_run.session_name
         run_dir = exchange_run.assets.run_dir
         exchange_dir = exchange_run.assets.exchange_dir
@@ -625,6 +628,7 @@ def build_config(
 ) -> Config:
     config = Config()
     config.repo_root = repo_root
+    config.config_path = _write_runtime_config(repo_root, validation_cmd)
     config.repo = "local/test"
     config.worktree_base = repo_root / ".issue-orchestrator" / "worktrees"
     config.worktree_base.mkdir(parents=True, exist_ok=True)
@@ -673,6 +677,29 @@ def build_config(
         ),
     }
     return config
+
+
+def _write_runtime_config(repo_root: Path, validation_cmd: str | None) -> Path:
+    config_path = repo_root / ".issue-orchestrator" / "config" / "default.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    quick = (
+        {"cmd": validation_cmd, "timeout_seconds": 5}
+        if validation_cmd
+        else {}
+    )
+    config_path.write_text(
+        json.dumps(
+            {
+                "validation": {
+                    "quick": quick,
+                    "publish": quick,
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return config_path.resolve()
 
 
 class FreshIssueReader:

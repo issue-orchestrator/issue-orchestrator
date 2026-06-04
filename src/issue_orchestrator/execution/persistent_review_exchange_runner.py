@@ -22,6 +22,7 @@ from pathlib import Path
 from ..domain.models import AgentConfig
 from ..domain.review_exchange import ReviewExchangeOutcome
 from ..domain.review_exchange_run import ReviewExchangeRun
+from ..domain.runtime_config import RuntimeConfigReference
 from ..events import EventContext
 from ..ports.event_sink import EventSink
 from .persistent_exchange_pair_registry_inmemory import (
@@ -95,6 +96,7 @@ class PersistentReviewExchangeRunner:
         reviewer_label: str,
         coder_agent: AgentConfig,
         reviewer_agent: AgentConfig,
+        runtime_config: RuntimeConfigReference,
         max_rounds: int,
         max_no_progress: int,
         require_validation: bool,
@@ -134,6 +136,7 @@ class PersistentReviewExchangeRunner:
             reviewer_label=reviewer_label,
             coder_agent=coder_agent,
             reviewer_agent=reviewer_agent,
+            runtime_config=runtime_config,
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
             require_validation=require_validation,

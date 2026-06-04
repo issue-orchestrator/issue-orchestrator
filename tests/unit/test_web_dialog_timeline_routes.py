@@ -358,10 +358,25 @@ class TestApiTimelineEndpoint:
             report_action = next(action for action in actions if action.get("artifact_type") == "review_report")
             decision_action = next(action for action in actions if action.get("artifact_type") == "review_decision")
 
-            assert report_action["type"] == "open_review_artifact"
-            assert report_action["primary"] is True
-            assert report_action["run_dir"] == str(run.run_dir)
-            assert decision_action["type"] == "open_review_artifact"
+            assert report_action == {
+                "type": "open_review_artifact",
+                "label": "Review report",
+                "issue_number": 123,
+                "artifact_type": "review_report",
+                "artifact_path": str(report),
+                "render_mode": "",
+                "primary": True,
+                "run_dir": str(run.run_dir),
+            }
+            assert decision_action == {
+                "type": "open_review_artifact",
+                "label": "Decision JSON",
+                "issue_number": 123,
+                "artifact_type": "review_decision",
+                "artifact_path": str(decision),
+                "render_mode": "",
+                "run_dir": str(run.run_dir),
+            }
             assert "primary" not in decision_action
         finally:
             set_orchestrator(None)

@@ -178,6 +178,7 @@ def _make_config(
     """
     config = Config()
     config.repo_root = tmp_path
+    config.config_path = _write_test_config(tmp_path)
     config.repo = "local/test"
     config.review_exchange_mode = "via-local-loop"
     config.review_exchange_max_rounds = 2
@@ -190,6 +191,16 @@ def _make_config(
     config.code_review_agent = "agent:reviewer"
     config.control_api_port = None
     return config
+
+
+def _write_test_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps({"validation": {"quick": {}, "publish": {}}}, indent=2),
+        encoding="utf-8",
+    )
+    return config_path.resolve()
 
 
 @pytest.fixture(autouse=True)

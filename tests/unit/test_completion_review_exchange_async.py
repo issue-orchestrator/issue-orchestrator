@@ -205,6 +205,10 @@ class _FakeSessionOutput:
 
 def _make_config(tmp_path: Path, *, require_validation: bool = False) -> Config:
     cfg = Config(repo_root=tmp_path)
+    config_path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text("validation:\n  quick:\n    cmd: 'true'\n", encoding="utf-8")
+    cfg.config_path = config_path
     cfg.review_exchange_mode = "via-local-loop"
     cfg.review_exchange_require_validation = require_validation
     cfg.code_review_agent = "agent:reviewer"

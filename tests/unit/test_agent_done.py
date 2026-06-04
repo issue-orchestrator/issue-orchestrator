@@ -1754,6 +1754,9 @@ class TestOrchestratorModeSkips:
             assert data["session_id"] == "test-123"
             assert data["outcome"] == "completed"
             assert data["implementation"] == "Added feature"
+            assert data["validation_record_path"] == str(
+                run_dir / "validation-record.json"
+            )
         finally:
             os.chdir(original_cwd)
             os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
@@ -1820,6 +1823,8 @@ class TestOrchestratorModeSkips:
             )
             data = json.loads(validation_record.read_text())
             assert data["passed"] is True
+            completion_record = json.loads((tmp_path / COMPLETION_RECORD_PATH).read_text())
+            assert completion_record["validation_record_path"] == str(validation_record)
         finally:
             os.chdir(original_cwd)
             os.environ.pop("ORCHESTRATOR_SESSION_ID", None)

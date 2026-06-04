@@ -91,6 +91,7 @@ from ..domain.review_exchange_turn import (
     TurnResultKind,
 )
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
+from ..domain.runtime_config import RuntimeConfigReference
 from ..domain import review_exchange_turn_artifacts as turn_artifacts
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
@@ -401,6 +402,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     reviewer_label: str,
     coder_agent: AgentConfig,
     reviewer_agent: AgentConfig,
+    runtime_config: RuntimeConfigReference,
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
@@ -551,6 +553,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             completion_path=coder_completion,
             validation_output_dir=run_dir,
             review_report_file=None,
+            runtime_config=runtime_config,
             agent_label=coder_label,
             web_port=web_port,
             issue_number=issue_number,
@@ -580,6 +583,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 completion_path=reviewer_pair_dir / "completion-reviewer.json",
                 validation_output_dir=run_dir,
                 review_report_file=reviewer_report,
+                runtime_config=runtime_config,
                 agent_label=reviewer_label,
                 web_port=web_port,
                 issue_number=issue_number,
@@ -676,6 +680,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             completion_path=pair.coder_completion_path,
             validation_output_dir=run_dir,
             review_report_file=None,
+            runtime_config=runtime_config,
             agent_label=coder_label,
             web_port=web_port,
             issue_number=issue_number,
@@ -696,6 +701,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             completion_path=reviewer_pair_dir / "completion-reviewer.json",
             validation_output_dir=run_dir,
             review_report_file=pair.reviewer_report_path,
+            runtime_config=runtime_config,
             agent_label=reviewer_label,
             web_port=web_port,
             issue_number=issue_number,
@@ -910,6 +916,7 @@ class _RoleSessionSpec:
     completion_path: Path
     validation_output_dir: Path
     review_report_file: Path | None
+    runtime_config: RuntimeConfigReference
     agent_label: str
     web_port: int | None
     issue_number: int
@@ -1153,6 +1160,7 @@ def _open_role_session(spec: _RoleSessionSpec) -> PersistentSession:
         completion_path=completion_path,
         validation_output_dir=validation_output_dir,
         worktree=worktree,
+        runtime_config=spec.runtime_config,
         agent_label=agent_label,
         web_port=web_port,
         issue_number=issue_number,
@@ -1186,6 +1194,7 @@ def _build_role_env(
     completion_path: Path,
     validation_output_dir: Path,
     worktree: Path,
+    runtime_config: RuntimeConfigReference,
     agent_label: str,
     web_port: int | None,
     issue_number: int,
@@ -1219,6 +1228,7 @@ def _build_role_env(
         "ORCHESTRATOR_ISSUE_NUMBER": str(issue_number),
         "ORCHESTRATOR_SESSION_ID": session_name,
     }
+    overrides.update(runtime_config.to_env())
     if role == Role.CODER.value:
         overrides[f"{ENV_PREFIX}VALIDATION_OUTPUT_DIR"] = str(validation_output_dir)
         overrides[f"{ENV_PREFIX}RUN_DIR"] = str(validation_output_dir)

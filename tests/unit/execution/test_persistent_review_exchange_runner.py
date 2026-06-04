@@ -41,6 +41,7 @@ from issue_orchestrator.domain.review_exchange_run import (
     ReviewExchangeRun,
     ReviewExchangeRunAssets,
 )
+from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.execution import persistent_review_exchange_runner as prer
 
 
@@ -98,6 +99,13 @@ def _make_exchange_run(tmp_path: Path) -> ReviewExchangeRun:
     )
 
 
+def _runtime_config(tmp_path: Path) -> RuntimeConfigReference:
+    config_path = tmp_path / "issue-orchestrator.test.yaml"
+    if not config_path.exists():
+        config_path.write_text("validation:\n  quick:\n    cmd: 'true'\n", encoding="utf-8")
+    return RuntimeConfigReference.from_path(config_path)
+
+
 def _canned_outcome(exchange_run: ReviewExchangeRun) -> ReviewExchangeOutcome:
     return ReviewExchangeOutcome(
         status="ok",
@@ -120,6 +128,7 @@ def _run(runner, tmp_path):
         reviewer_label="agent:reviewer",
         coder_agent=_make_agent(tmp_path),
         reviewer_agent=_make_agent(tmp_path),
+        runtime_config=_runtime_config(tmp_path),
         max_rounds=3,
         max_no_progress=3,
         require_validation=False,
@@ -159,6 +168,7 @@ def test_run_threads_pair_registry_and_persistent_root_into_inner_runner(
     )
     assert captured["coder_worktree_path"] == tmp_path / "coder"
     assert captured["session_output"] is runner._session_output  # noqa: SLF001
+    assert captured["runtime_config"] == _runtime_config(tmp_path)
 
 
 def test_persistent_pair_root_helper_is_worktree_scoped(tmp_path: Path) -> None:

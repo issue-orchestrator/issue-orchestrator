@@ -30,6 +30,7 @@ from issue_orchestrator.domain.review_exchange_run import (
     ReviewExchangeRun,
     ReviewExchangeRunAssets,
 )
+from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.control.completion_processor import (
     CompletionProcessor,
     ProcessingResult,
@@ -60,6 +61,14 @@ from tests.unit.session_run_helpers import make_session_run_assets
 
 
 # ==================== Fixtures ====================
+
+
+def _write_test_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if not config_path.exists():
+        config_path.write_text("validation:\n  quick:\n    cmd: 'true'\n", encoding="utf-8")
+    return config_path
 
 
 def _review_exchange_outcome(
@@ -288,6 +297,7 @@ class TestReviewExchangeModeResolution:
         config.review_enabled = True
         config.review_exchange_mode = "auto"
         config.code_review_agent = "agent:reviewer"
+        config.config_path = _write_test_config(tmp_path)
         config.agents = {
             "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
             "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
@@ -337,6 +347,7 @@ class TestReviewExchangeExecution:
         config.review_enabled = True
         config.review_exchange_mode = "via-mcp"
         config.code_review_agent = "agent:reviewer"
+        config.config_path = _write_test_config(tmp_path)
         config.agents = {
             "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
             "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
@@ -1688,12 +1699,13 @@ class TestReviewExchangeExecution:
         monkeypatching execution-layer symbols (the runner now owns the
         worktree + persistent-runner dispatch internally)."""
         config = self._make_config(tmp_path)
-        captured: dict[str, str] = {}
+        captured: dict[str, object] = {}
 
         class _CaptureRunner:
             def run(self, **kwargs):
                 captured["coder_label"] = kwargs["coder_label"]
                 captured["reviewer_label"] = kwargs["reviewer_label"]
+                captured["runtime_config"] = kwargs["runtime_config"]
                 return _review_exchange_outcome(
                     kwargs["exchange_run"],
                     status="ok",
@@ -1731,6 +1743,10 @@ class TestReviewExchangeExecution:
 
         assert captured["coder_label"] == "agent:coder"
         assert captured["reviewer_label"] == "agent:reviewer"
+        assert config.config_path is not None
+        assert captured["runtime_config"] == RuntimeConfigReference.from_path(
+            config.config_path
+        )
 
     def test_resolve_agent_label_from_completion_path(self, tmp_path):
         coder_prompt = tmp_path / "coder.md"
