@@ -33,7 +33,8 @@ agents:
     command: "bash {prompt}"
     meta_agent: "claude-code"
     ai_system: "claude-code"
-    permission_mode: bypassPermissions
+    provider_args:
+      permission_mode: bypassPermissions
   "agent:script-review":
     prompt: "tests/e2e/fixtures/scripts/review-decider.sh"
     model: sonnet
@@ -41,7 +42,8 @@ agents:
     command: "PR_NUMBER={pr_number} bash {prompt}"
     meta_agent: "claude-code"
     ai_system: "claude-code"
-    permission_mode: bypassPermissions
+    provider_args:
+      permission_mode: bypassPermissions
   "agent:triage-investigator":
     prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
     model: sonnet
@@ -49,7 +51,8 @@ agents:
     command: "bash {prompt}"
     meta_agent: "claude-code"
     ai_system: "claude-code"
-    permission_mode: bypassPermissions
+    provider_args:
+      permission_mode: bypassPermissions
 
 execution:
   concurrency:

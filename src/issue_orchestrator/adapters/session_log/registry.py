@@ -105,7 +105,7 @@ class DataDrivenLogProvider:
         if permission_issues:
             context_parts.append("\n## Permission Issues")
             context_parts.extend(permission_issues[:5])
-            context_parts.append("\nTIP: Consider using 'permission_mode: bypassPermissions' in your agent config")
+            context_parts.append("\nTIP: Consider setting provider_args.permission_mode: bypassPermissions in your agent config")
 
         # Get recent activity
         recent = self._extract_recent_activity(entries, max_items=5)

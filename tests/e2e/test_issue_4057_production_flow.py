@@ -444,7 +444,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             model="opus",
             timeout_minutes=CODING_AGENT_TIMEOUT_MINUTES,
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
             initial_prompt=ISSUE_4057_PROMPT,
         ),
         "agent:reviewer": AgentConfig(
@@ -453,7 +453,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             model="opus",
             timeout_minutes=REVIEW_AGENT_TIMEOUT_MINUTES,
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
             initial_prompt=(
                 "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
                 "Follow repo-specific/prompts/reviewer.md. "

@@ -8,7 +8,8 @@ agents:
     meta_agent: claude-code
     ai_system: claude-code
     model: haiku
-    permission_mode: bypassPermissions
+    provider_args:
+      permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
 
   hook:cursor:
