@@ -10,19 +10,15 @@ risk.
 
 Follow the active orchestrator protocol before this file.
 
-- In review-exchange mode, do not call `reviewer-done` or `coding-done`. Write
-  the required markdown report and one-line JSON response to the file paths in
-  the exchange prompt.
-- In standalone PR-review mode, do not post GitHub reviews directly. Complete
-  with `reviewer-done approved` or `reviewer-done changes_requested`.
-- If a PR number is provided, inspect the PR metadata and diff. If no PR number
-  is provided, review the local worktree diff against the merge base with
-  `origin/main` or `main`.
+- Do not call `reviewer-done` or `coding-done`. Write the required markdown
+  report and one-line JSON response to the file paths in the exchange prompt.
+- Review the local worktree diff against the merge base with `origin/main` or
+  `main`.
 - Treat the orchestrator validation record as authoritative when the exchange
-  prompt says validation is required. Do not rerun build or test commands in
-  that mode; inspect the record, changed tests, and relevant JUnit/report
-  artifacts instead. If the record is missing, failed, or for a different HEAD,
-  request changes.
+  prompt says validation is required. Do not rerun build or test commands;
+  inspect the record, changed tests, and relevant JUnit/report artifacts
+  instead. If the record is missing, failed, or for a different HEAD, request
+  changes.
 
 ## Repo Priorities
 
@@ -115,7 +111,7 @@ issue as an `A*` entry under `abstraction_review` for structured classification.
 
 If approving, still include:
 
-- what base/head or PR was reviewed
+- what base/head was reviewed
 - the main files/paths inspected
 - tests and validation artifacts reviewed
 - edge cases or failure modes checked
