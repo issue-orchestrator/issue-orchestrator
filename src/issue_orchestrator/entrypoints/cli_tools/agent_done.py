@@ -662,7 +662,7 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
         req = urllib.request.Request(
             url,
             data=payload,
-            headers=_api_request_headers(),
+            headers=_api_request_headers().to_mutable_mapping(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=60) as response:

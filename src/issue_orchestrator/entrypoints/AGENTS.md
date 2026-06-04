@@ -8,6 +8,18 @@
 - `cli_tools/` contains tools agents use (e.g., `coding-done`, `reviewer-done`)
 - Web endpoints serve the dashboard and API
 
+## Run-Asset Entrypoint Contract
+
+- Entrypoints that participate in active session completion must require the
+  owner-injected typed run contract. Missing `ISSUE_ORCHESTRATOR_RUN_DIR` in an
+  orchestrator-managed session is a hard error, not a reason to search.
+- CLI and HTTP handlers should parse external input once, construct typed
+  command/value objects, and pass those into owners. Do not pass loose metadata
+  maps or optional required fields through the active path.
+- Completion tools may create fresh run assets only for standalone developer
+  invocations. Managed sessions must use the run assets injected by the
+  orchestrator owner.
+
 ## Key Files
 
 | File | Purpose |
