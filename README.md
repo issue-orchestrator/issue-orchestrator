@@ -38,7 +38,7 @@ Issue-Orchestrator does not know what "good" means for your codebase. Your proje
 
 The dashboard is the concrete control surface: issues flow through Queued, Running, Blocked, Awaiting Merge, and Completed columns. Selecting an issue opens its timeline: review cycles, rework rounds, validation results, session recordings, transcripts, and failure diagnostics.
 
-![Issue-Orchestrator dashboard for a target repo showing Queued, Running, Blocked, Awaiting Merge, and Completed columns with real issue cards.](docs/images/dashboard.png)
+![Issue-Orchestrator dashboard for a target repo showing Queued 5, Running 2, Blocked 1, Awaiting Merge 1, and Completed 4 columns with real issue cards.](docs/images/dashboard.png)
 
 Behind that view, each issue moves through an explicit state machine backed by GitHub labels and isolated worktrees. Before advancing work, the orchestrator re-observes GitHub and the worktree, so crashes, human edits, dirty trees, and provider failures become recoverable states instead of silent corruption.
 
