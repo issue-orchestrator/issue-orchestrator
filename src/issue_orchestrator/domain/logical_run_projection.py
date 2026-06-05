@@ -42,7 +42,9 @@ def group_events_by_logical_cycle(
         LogicalEventGroup(logical_run=key[0], logical_cycle=key[1], events=tuple(items))
         for key, items in ((key, grouped[key]) for key in sorted(grouped))
     )
-    return _merge_orphan_rework_terminal_groups(groups)
+    return _repair_late_physical_attempt_groups(
+        _merge_orphan_rework_terminal_groups(groups)
+    )
 
 
 class LogicalRunProjector:
@@ -60,7 +62,9 @@ class LogicalRunProjector:
             return f"run:{run_id}"
         return "lifecycle:0"
 
-    def filter_last_run_cycles(self, cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def filter_last_run_cycles(
+        self, cycles: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Filter cycles to only those from the latest logical run."""
         if not cycles:
             return cycles
@@ -73,7 +77,9 @@ class LogicalRunProjector:
             return cycles
         return [c for c in cycles if c.get("lifecycle") == max_lifecycle]
 
-    def annotate_cycle_in_run(self, cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def annotate_cycle_in_run(
+        self, cycles: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Annotate cycles with logical-run-local sequence numbers."""
         by_run_counts: dict[str, int] = {}
         for cycle in cycles:
@@ -104,21 +110,25 @@ class LogicalRunProjector:
             for cycle in run_cycles:
                 cycle_run_ids = cycle.get("session_run_ids")
                 if isinstance(cycle_run_ids, list):
-                    run_id_candidates.extend(str(item) for item in cycle_run_ids if item)
+                    run_id_candidates.extend(
+                        str(item) for item in cycle_run_ids if item
+                    )
                 elif cycle.get("run_id"):
                     run_id_candidates.append(str(cycle.get("run_id")))
             session_run_ids = list(dict.fromkeys(run_id_candidates))
-            runs.append({
-                "run_key": run_key,
-                "run_id": session_run_ids[-1] if session_run_ids else None,
-                "session_run_ids": session_run_ids,
-                "run_number": index,
-                "outcome": last_cycle.get("outcome", "In progress"),
-                "timestamp": last_cycle.get("timestamp", ""),
-                "time_label": last_cycle.get("time_label", ""),
-                "cycles": run_cycles,
-                "expanded": index == len(order),
-            })
+            runs.append(
+                {
+                    "run_key": run_key,
+                    "run_id": session_run_ids[-1] if session_run_ids else None,
+                    "session_run_ids": session_run_ids,
+                    "run_number": index,
+                    "outcome": last_cycle.get("outcome", "In progress"),
+                    "timestamp": last_cycle.get("timestamp", ""),
+                    "time_label": last_cycle.get("time_label", ""),
+                    "cycles": run_cycles,
+                    "expanded": index == len(order),
+                }
+            )
 
         # UX invariant: only the latest run can be "In progress". If there is a
         # newer run, any older in-progress run/cycle is superseded.
@@ -153,6 +163,49 @@ def _merge_orphan_rework_terminal_groups(
             continue
         merged.append(group)
     return tuple(merged)
+
+
+def _repair_late_physical_attempt_groups(
+    groups: tuple[LogicalEventGroup, ...],
+) -> tuple[LogicalEventGroup, ...]:
+    repaired: list[LogicalEventGroup] = []
+    next_cycle_by_run: dict[int, int] = {}
+    for group in groups:
+        segments = _split_late_physical_attempt_segments(group.events)
+        cycle = max(
+            group.logical_cycle,
+            next_cycle_by_run.get(group.logical_run, group.logical_cycle),
+        )
+        for segment in segments:
+            repaired.append(
+                LogicalEventGroup(
+                    logical_run=group.logical_run,
+                    logical_cycle=cycle,
+                    events=segment,
+                )
+            )
+            cycle += 1
+        next_cycle_by_run[group.logical_run] = cycle
+    return tuple(repaired)
+
+
+def _split_late_physical_attempt_segments(
+    events: tuple[dict[str, Any], ...],
+) -> tuple[tuple[dict[str, Any], ...], ...]:
+    segments: list[tuple[dict[str, Any], ...]] = []
+    current: list[dict[str, Any]] = []
+    terminal_seen = False
+    for event in events:
+        if current and terminal_seen and _is_late_physical_rework_start(event):
+            segments.append(tuple(current))
+            current = []
+            terminal_seen = False
+        current.append(event)
+        if _is_coding_terminal(event):
+            terminal_seen = True
+    if current:
+        segments.append(tuple(current))
+    return tuple(segments)
 
 
 def _is_orphan_rework_terminal_group(
@@ -200,6 +253,31 @@ def _has_rework_terminal_tail(events: Iterable[dict[str, Any]]) -> bool:
 
 def _event_name(event: dict[str, Any]) -> str:
     return str(event.get("source_event") or event.get("event") or "")
+
+
+def _is_late_physical_rework_start(event: dict[str, Any]) -> bool:
+    event_name = _event_name(event)
+    if event_name in {"agent.rework_started", "rework.launching", "rework.started"}:
+        return True
+    if event.get("task") == "rework":
+        return True
+    rework_cycle = event.get("rework_cycle")
+    return isinstance(rework_cycle, int) and rework_cycle > 0
+
+
+def _is_coding_terminal(event: dict[str, Any]) -> bool:
+    return _event_name(event) in {
+        "agent.blocked",
+        "agent.coding_completed",
+        "agent.completed",
+        "agent.failed",
+        "agent.timed_out",
+        "observation.completion_detected",
+        "session.blocked",
+        "session.completed",
+        "session.failed",
+        "session.timeout",
+    }
 
 
 def _required_positive_int(event: dict[str, Any], key: str) -> int:

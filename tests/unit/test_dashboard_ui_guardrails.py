@@ -208,6 +208,16 @@ def test_blocked_bulk_buttons_default_disabled_in_template() -> None:
     assert re.search(r'onclick="bulkClearViewed\(\)"\s+disabled', html)
 
 
+def test_issue_detail_status_is_live_region() -> None:
+    html = _read(DASHBOARD_TEMPLATE)
+    match = re.search(r"<div[^>]*\bid=\"issueDetailStatus\"[^>]*>", html)
+    assert match is not None
+    status_tag = match.group(0)
+    assert 'role="status"' in status_tag
+    assert 'aria-live="polite"' in status_tag
+    assert 'aria-atomic="true"' in status_tag
+
+
 def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     assert re.search(r'onclick="bulkRetryAwaitingMerge\(\)"\s+disabled', html)
