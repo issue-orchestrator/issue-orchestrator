@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from issue_orchestrator.domain.logical_run_projection import group_events_by_logical_cycle
+from issue_orchestrator.domain.logical_run_projection import (
+    group_events_by_logical_cycle,
+)
 from issue_orchestrator.view_models.lifecycle_projection import (
     LifecycleProjectionError,
     project_dashboard_lifecycle_container,
@@ -1152,10 +1154,7 @@ def test_validation_passed_without_run_dir_projects_missing_evidence() -> None:
         cycles=[{"cycle": 1, "events": [started, completed, passed_event]}],
     ).cycles[0]
     assert isinstance(cycle.coder.validation, ValidationEvidenceMissing)
-    assert (
-        cycle.coder.validation.diagnostics[0].code
-        == "validation.run_dir_missing"
-    )
+    assert cycle.coder.validation.diagnostics[0].code == "validation.run_dir_missing"
 
 
 def test_dashboard_projection_container_iterates_singleton_issue_model() -> None:
@@ -1373,17 +1372,86 @@ def test_rework_completion_tail_with_iteration_start_does_not_merge() -> None:
         rework_cycle=1,
     )
 
-    groups = group_events_by_logical_cycle([
-        rework_start,
-        cached_review_approved,
-        next_iteration_start,
-        completion,
-    ])
+    groups = group_events_by_logical_cycle(
+        [
+            rework_start,
+            cached_review_approved,
+            next_iteration_start,
+            completion,
+        ]
+    )
 
     assert [(group.logical_run, group.logical_cycle) for group in groups] == [
         (4, 1),
         (4, 2),
     ]
+
+
+def test_post_publish_rework_start_after_approved_completion_projects_running_cycle() -> (
+    None
+):
+    cached_review_started = _event(
+        "review.started",
+        event_id="cached-review-start",
+        timestamp="2026-06-05T14:28:44Z",
+        reviewer_agent="agent:reviewer",
+        run_dir="/tmp/review-run",
+        logical_run=3,
+        logical_cycle=2,
+    )
+    cached_review_approved = _event(
+        "review.approved",
+        event_id="cached-review-approved",
+        timestamp="2026-06-05T14:28:45Z",
+        reviewer_agent="agent:reviewer",
+        run_dir="/tmp/review-run",
+        logical_run=3,
+        logical_cycle=2,
+    )
+    approved_completion = _event(
+        "agent.completed",
+        event_id="coding-completed",
+        timestamp="2026-06-05T14:30:39Z",
+        agent="agent:coder",
+        run_dir="/tmp/code-run",
+        logical_run=3,
+        logical_cycle=2,
+        source_event="session.completed",
+        artifacts=[_artifact("completion_record", "/tmp/code-run/completion.json")],
+    )
+    post_publish_rework_start = _event(
+        "agent.rework_started",
+        event_id="post-publish-rework-start",
+        timestamp="2026-06-05T14:47:06Z",
+        agent="agent:coder",
+        run_dir="/tmp/rework-run",
+        logical_run=3,
+        logical_cycle=2,
+        source_event="rework.started",
+        rework_cycle=1,
+    )
+
+    lifecycle = project_issue_lifecycle(
+        issue_number=290,
+        title="Post-publish rework regression",
+        events=[
+            cached_review_started,
+            cached_review_approved,
+            approved_completion,
+            post_publish_rework_start,
+        ],
+        cycles=[],
+        review_required=True,
+    )
+
+    assert len(lifecycle.cycles) == 2
+    assert isinstance(lifecycle.cycles[0].coder, CompletedCodingAttempt)
+    assert isinstance(lifecycle.cycles[0].review, ReviewApproved)
+    assert lifecycle.cycles[0].outcome.label == "approved"
+    assert isinstance(lifecycle.cycles[1].coder, RunningCodingAttempt)
+    assert isinstance(lifecycle.cycles[1].review, ReviewNotReached)
+    assert lifecycle.cycles[1].review.reason == "coding_in_progress"
+    assert lifecycle.cycles[1].outcome.label == "in_progress"
 
 
 def test_issue_lifecycle_rejects_mixed_logical_cycle_annotations() -> None:
