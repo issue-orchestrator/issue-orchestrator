@@ -28,6 +28,88 @@ SUMMARY_BOOLEAN_FLAG = "boolean_flag"
 # Config value type constants - used in json_schema_extra["config_value_type"]
 CONFIG_VALUE_TYPE_PATH = "path"
 
+# Form control kinds - the CLOSED set of control types the settings form can
+# faithfully render and round-trip. classify_form_control() below is the
+# single owner of the JSON-schema -> form-control mapping. The settings
+# template and static/js/settings_form_controls.js dispatch on the kind token
+# it produces and must never re-interpret the schema themselves.
+FORM_CONTROL_BOOLEAN = "boolean"
+FORM_CONTROL_ENUM = "enum"
+FORM_CONTROL_INTEGER = "integer"
+FORM_CONTROL_NUMBER = "number"
+FORM_CONTROL_STRING = "string"
+FORM_CONTROL_OPTIONAL_STRING = "optional_string"
+FORM_CONTROL_DICT_ENUM = "dict_enum"
+
+FORM_CONTROL_KINDS = frozenset(
+    {
+        FORM_CONTROL_BOOLEAN,
+        FORM_CONTROL_ENUM,
+        FORM_CONTROL_INTEGER,
+        FORM_CONTROL_NUMBER,
+        FORM_CONTROL_STRING,
+        FORM_CONTROL_OPTIONAL_STRING,
+        FORM_CONTROL_DICT_ENUM,
+    }
+)
+
+
+class UnsupportedSettingsFieldError(Exception):
+    """A settings-schema field has no faithful form-control projection.
+
+    Raised at schema-build time so an unsupported field type fails loudly
+    in CI and at page render, instead of silently degrading to a text
+    input whose posted string the strict POST validation then rejects.
+    """
+
+
+def classify_form_control(field_name: str, prop: dict[str, Any]) -> dict[str, Any]:
+    """Classify a JSON-schema property into a form-control descriptor.
+
+    Returns ``{"kind": <FORM_CONTROL_*>}`` plus kind-specific keys:
+    ``enum`` carries ``options``; ``dict_enum`` carries ``value_options``.
+
+    Raises UnsupportedSettingsFieldError for any property shape outside the
+    closed set - extend this function AND both dispatches (template + JS)
+    together when the registry grows a new field shape.
+    """
+    if prop.get("enum") is not None:
+        return {"kind": FORM_CONTROL_ENUM, "options": list(prop["enum"])}
+    prop_type = prop.get("type")
+    if prop_type == "boolean":
+        return {"kind": FORM_CONTROL_BOOLEAN}
+    if prop_type == "integer":
+        return {"kind": FORM_CONTROL_INTEGER}
+    if prop_type == "number":
+        return {"kind": FORM_CONTROL_NUMBER}
+    if prop_type == "string":
+        return {"kind": FORM_CONTROL_STRING}
+    if prop_type == "object":
+        additional = prop.get("additionalProperties")
+        if isinstance(additional, dict) and additional.get("enum"):
+            return {
+                "kind": FORM_CONTROL_DICT_ENUM,
+                "value_options": list(additional["enum"]),
+            }
+        raise UnsupportedSettingsFieldError(
+            f"Settings field '{field_name}' is an object without an enum "
+            "additionalProperties value schema; the settings form cannot "
+            "project it. Extend classify_form_control() and the form "
+            "dispatches together."
+        )
+    any_of = prop.get("anyOf")
+    if isinstance(any_of, list):
+        types = sorted(
+            entry.get("type", "") for entry in any_of if isinstance(entry, dict)
+        )
+        if types == ["null", "string"]:
+            return {"kind": FORM_CONTROL_OPTIONAL_STRING}
+    raise UnsupportedSettingsFieldError(
+        f"Settings field '{field_name}' has no form-control projection for "
+        f"JSON schema {prop!r}. Extend classify_form_control() and the form "
+        "dispatches together."
+    )
+
 
 def _get_nested_attr(obj: Any, path: str) -> Any:
     """Get obj.a.b.c from dotted path 'a.b.c'."""
@@ -148,7 +230,10 @@ def build_settings_json_schema(tab_definitions: list[dict[str, Any]]) -> dict[st
     """Generate per-tab JSON schemas for template rendering.
 
     Returns a dict mapping tab key -> JSON schema dict.
-    The schema includes x_extra with section, restart_required, etc.
+    The schema includes x_extra with section, restart_required, etc., and
+    x_control with the form-control classification every renderer/collector
+    must dispatch on. Raises UnsupportedSettingsFieldError when a field has
+    no faithful form projection (fail-fast - no silent text-input fallback).
     """
     schemas: dict[str, Any] = {}
     for tab in tab_definitions:
@@ -162,6 +247,9 @@ def build_settings_json_schema(tab_definitions: list[dict[str, Any]]) -> dict[st
             extra = field_info.json_schema_extra
             if isinstance(extra, dict):
                 prop["x_extra"] = extra
+            prop["x_control"] = classify_form_control(
+                f"{tab['key']}.{prop_name}", prop
+            )
 
         schemas[tab["key"]] = schema
     return schemas

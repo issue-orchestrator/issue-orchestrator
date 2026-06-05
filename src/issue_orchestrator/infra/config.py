@@ -1356,7 +1356,16 @@ class Config:
         valid_nit_policies = {"ignore", "surface", "address"}
         if self.review_nits_default_policy not in valid_nit_policies:
             errors.append("review.nits.default_policy must be one of: ignore, surface, address")
+        if not isinstance(self.review_nits_by_agent, dict):
+            errors.append(
+                "review.nits.by_agent must be a mapping of coder agent label to policy"
+            )
+            return errors
         for agent_label, policy in self.review_nits_by_agent.items():
+            if not isinstance(agent_label, str):
+                errors.append(
+                    f"review.nits.by_agent key {agent_label!r} must be a string agent label"
+                )
             if policy not in valid_nit_policies:
                 errors.append(
                     f"review.nits.by_agent.{agent_label} must be one of: ignore, surface, address"

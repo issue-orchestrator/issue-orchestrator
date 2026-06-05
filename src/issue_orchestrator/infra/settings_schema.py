@@ -23,6 +23,10 @@ from .settings_schema_support import (
     DOCTOR_CHECK_REFERENCES_AGENT,
     DOCTOR_SEVERITY_ERROR,
     DOCTOR_SEVERITY_WARNING,
+    FORM_CONTROL_DICT_ENUM,  # pyright: ignore[reportUnusedImport] -- re-exported for form-projection guardrails
+    FORM_CONTROL_KINDS,  # pyright: ignore[reportUnusedImport] -- re-exported for form-projection guardrails
+    UnsupportedSettingsFieldError,  # pyright: ignore[reportUnusedImport] -- re-exported for form-projection guardrails
+    classify_form_control,  # pyright: ignore[reportUnusedImport] -- re-exported for form-projection guardrails
     SUMMARY_BOOLEAN_FLAG,
     SUMMARY_ENABLED_FLAG,
     SUMMARY_INTERVAL,

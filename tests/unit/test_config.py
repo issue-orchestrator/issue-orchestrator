@@ -2019,6 +2019,76 @@ review:
         assert any("review.nits.default_policy" in e for e in errors)
         assert any("review.nits.by_agent.agent:coder" in e for e in errors)
 
+    def test_review_nits_by_agent_non_mapping_fails_validation(self, tmp_path):
+        """A non-mapping review.nits.by_agent must fail validate() loudly.
+
+        The loader previously coerced malformed values to {} silently,
+        hiding the YAML mistake from the validator entirely.
+        """
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+
+review:
+  enabled: true
+  default: agent:reviewer
+  nits:
+    by_agent:
+      - agent:coder
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert any(
+            "review.nits.by_agent must be a mapping" in e for e in errors
+        ), errors
+
+    def test_review_nits_by_agent_non_string_key_fails_validation(self, tmp_path):
+        """Non-string agent labels never match real labels; fail loudly."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+
+review:
+  enabled: true
+  default: agent:reviewer
+  nits:
+    by_agent:
+      42: surface
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert any("must be a string agent label" in e for e in errors), errors
+
     def test_validate_no_error_when_review_disabled(self, tmp_path):
         """Test that no error when review.enabled is false (default)."""
         prompt_file = tmp_path / "prompt.txt"

@@ -1418,8 +1418,14 @@ def test_settings_page_uses_shared_embedded_nav_helper() -> None:
     assert 'id="cancelSettingsBtn"' in tmpl
     assert 'onclick="cancelSettings()"' in tmpl
     assert "window.embeddedNav.buildHref('/', window.location.search)" in tmpl
-    assert "{{ tabs_for_js | tojson }}" in tmpl
-    assert "{{ schemas_for_js | tojson }}" in tmpl
+    # Dict-editor JSON embeds must go through tojson (XSS neutralization);
+    # the old tabs_for_js/schemas_for_js client-side schema bootstrap is
+    # gone by design (form encoding is server-classified, see
+    # test_settings_form_dispatches_cover_the_classifier_kind_set).
+    assert "{{ control.value_options | tojson }}" in tmpl
+    assert "{{ tab_values[field_name] | tojson }}" in tmpl
+    assert "tabs_for_js" not in tmpl
+    assert "schemas_for_js" not in tmpl
     # Old ad-hoc helpers / literals must be gone.
     assert "settingsIsEmbedded" not in tmpl
     assert "'/?embedded=1'" not in tmpl
@@ -1449,6 +1455,41 @@ def test_theme_resolution_uses_shared_embedded_nav_helper() -> None:
     assert "window.embeddedNav.resolveEffectiveTheme" in settings_apply
     # The old inlined system-only fallback must be gone.
     assert "storedTheme === 'system'" not in settings_apply
+
+
+SETTINGS_FORM_CONTROLS_JS = (
+    ROOT / "src" / "issue_orchestrator" / "static" / "js" / "settings_form_controls.js"
+)
+
+
+def test_settings_form_dispatches_cover_the_classifier_kind_set() -> None:
+    """Template render and JS collect must cover exactly the closed control
+    kind set owned by classify_form_control().
+
+    Regression for "nits_by_agent: Input should be a valid dictionary": the
+    template's catch-all `else -> text input` silently mis-rendered the
+    first dict-typed registry field, so every settings save posted a
+    Python-repr string that strict POST validation rejected. The catch-all
+    is gone; a kind missing from either dispatch must fail HERE.
+    """
+    from issue_orchestrator.infra.settings_schema import FORM_CONTROL_KINDS
+
+    tmpl = _read(SETTINGS_TEMPLATE)
+    js = _read(SETTINGS_FORM_CONTROLS_JS)
+    for kind in FORM_CONTROL_KINDS:
+        assert f"control.kind == '{kind}'" in tmpl, (
+            f"settings.html has no render branch for control kind {kind!r}"
+        )
+        assert f"{kind}: (el)" in js, (
+            f"settings_form_controls.js has no collector for control kind {kind!r}"
+        )
+    # The template must fail loudly on an unknown kind, never fall back to
+    # a text input; the JS collector throws via the dispatch lookup.
+    assert "unsupported_settings_control_kind(control.kind)" in tmpl
+    assert "Unsupported settings control kind" in js
+    # The form must not re-interpret the JSON schema client-side.
+    assert "SCHEMA_FIELDS" not in tmpl
+    assert "anyOf" not in tmpl
 
 
 def test_all_dashboard_js_node_tests_pass() -> None:
