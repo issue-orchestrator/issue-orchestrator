@@ -97,6 +97,44 @@ ui:
         assert config.web_port == 0
         assert config.control_api_port == 0
 
+    def test_config_load_rejects_agent_level_permission_mode(self, tmp_path):
+        """The top-level agent permission_mode spelling is not supported;
+        the error points at provider_args.permission_mode."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+    permission_mode: bypassPermissions
+worktrees:
+  base: {worktree_base}
+""")
+
+        with pytest.raises(
+            ValueError,
+            match=r"agents\.agent:web\.permission_mode is not supported.*provider_args\.permission_mode",
+        ):
+            Config.load(config_file)
+
+    def test_repo_owned_configs_load(self):
+        """Every checked-in config (orchestrator + E2E fixtures) must parse.
+
+        Guards against config-contract changes (like the agent-level
+        permission_mode rejection) silently breaking repo-owned YAML."""
+        repo_root = Path(__file__).resolve().parents[2]
+        config_paths = sorted(
+            list((repo_root / ".issue-orchestrator" / "config").glob("*.yaml"))
+            + list((repo_root / "tests" / "e2e" / "configs").glob("*.yaml"))
+        )
+        assert config_paths, "expected repo-owned configs to exist"
+        for path in config_paths:
+            Config.load(path)
+
     def test_config_load_codex_agent_without_model_uses_provider_default(self, tmp_path):
         """Codex agents without a model should not inherit Claude's sonnet fallback."""
         prompt = tmp_path / "prompt.md"
@@ -1980,6 +2018,109 @@ review:
 
         assert any("review.nits.default_policy" in e for e in errors)
         assert any("review.nits.by_agent.agent:coder" in e for e in errors)
+
+    def test_review_nits_by_agent_empty_yaml_value_means_empty_mapping(self, tmp_path):
+        """`by_agent:` with nothing under it (YAML None) is the idiomatic
+        empty-mapping spelling and must keep loading as {} - not become a
+        validation error for configs that load fine today."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+
+review:
+  enabled: true
+  default: agent:reviewer
+  nits:
+    by_agent:
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.review_nits_by_agent == {}
+        assert not [e for e in config.validate() if "by_agent" in e]
+
+    def test_review_nits_by_agent_non_mapping_fails_validation(self, tmp_path):
+        """A non-mapping review.nits.by_agent must fail validate() loudly.
+
+        The loader previously coerced malformed values to {} silently,
+        hiding the YAML mistake from the validator entirely.
+        """
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+
+review:
+  enabled: true
+  default: agent:reviewer
+  nits:
+    by_agent:
+      - agent:coder
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert any(
+            "review.nits.by_agent must be a mapping" in e for e in errors
+        ), errors
+
+    def test_review_nits_by_agent_non_string_key_fails_validation(self, tmp_path):
+        """Non-string agent labels never match real labels; fail loudly."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+
+review:
+  enabled: true
+  default: agent:reviewer
+  nits:
+    by_agent:
+      42: surface
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert any("must be a string agent label" in e for e in errors), errors
 
     def test_validate_no_error_when_review_disabled(self, tmp_path):
         """Test that no error when review.enabled is false (default)."""

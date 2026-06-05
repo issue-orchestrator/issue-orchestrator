@@ -27,6 +27,7 @@ from issue_orchestrator.testing.support.test_data import (
     cleanup_test_issues,
     cleanup_issues_by_label,
 )
+from ._stale_orchestrator_cleanup import kill_stale_e2e_orchestrators
 
 # Import all helpers from fixture modules
 from .fixtures import (
@@ -217,31 +218,8 @@ def gh_audit_session() -> Generator[None, None, None]:
 
 @pytest.fixture(scope="session", autouse=True)
 def kill_stale_orchestrators():
-    """Kill any stale orchestrator processes before running e2e tests."""
-    import subprocess
-    subprocess.run(["pkill", "-f", "issue-orchestrator.*start"], capture_output=True)
-
-    try:
-        ps_result = subprocess.run(["ps", "ax", "-o", "pid=,command="], capture_output=True, text=True)
-    except PermissionError as exc:
-        logger.info("[E2E CLEANUP] Skipping ps scan (permission denied): %s", exc)
-        ps_result = None
-
-    if ps_result and ps_result.returncode == 0:
-        for line in ps_result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(None, 1)
-            if len(parts) != 2:
-                continue
-            pid_str, cmd = parts
-            if "issue-orchestrator" in cmd and " start " in f" {cmd} ":
-                try:
-                    subprocess.run(["kill", pid_str], capture_output=True)
-                    logger.info("[E2E CLEANUP] Killed stale orchestrator pid=%s", pid_str)
-                except Exception:
-                    pass
+    """Kill stale E2E-owned orchestrator processes before running e2e tests."""
+    kill_stale_e2e_orchestrators()
     yield
 
 
@@ -436,7 +414,7 @@ def e2e_session_config(
             command="bash {prompt}",
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
         "agent:script-completes": AgentConfig(
             prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
@@ -445,7 +423,7 @@ def e2e_session_config(
             command="bash {prompt}",
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
         "agent:script-review": AgentConfig(
             prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "review-decider.sh",
@@ -454,7 +432,7 @@ def e2e_session_config(
             command="PR_NUMBER={pr_number} bash {prompt}",
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
         "agent:triage-investigator": AgentConfig(
             prompt_path=e2e_project_root / "tests" / "e2e" / "fixtures" / "scripts" / "complete-immediately.sh",
@@ -463,7 +441,7 @@ def e2e_session_config(
             command="bash {prompt}",
             meta_agent="claude-code",
             ai_system="claude-code",
-            permission_mode="bypassPermissions",
+            provider_args={"permission_mode": "bypassPermissions"},
         ),
     }
 

@@ -68,6 +68,8 @@ def _update_worktree(repo_root: Path, worktree_path: Path) -> None:
       for E2E run nesting — snapshot reads from here at completion)
     - .issue-orchestrator/sessions (session artifacts: terminal recordings,
       validation records, review feedback — needed for rich timeline rendering)
+    - .issue-orchestrator/e2e-results (run-scoped report artifacts used for
+      lazy stdout/stderr retrieval in the dashboard)
     """
     ref = _resolve_e2e_ref(repo_root)
     logger.info("Updating E2E worktree at %s (ref=%s)", worktree_path, ref[:12])
@@ -78,6 +80,7 @@ def _update_worktree(repo_root: Path, worktree_path: Path) -> None:
             "--exclude=.venv",
             "--exclude=.issue-orchestrator/state/timeline.sqlite*",
             "--exclude=.issue-orchestrator/sessions",
+            "--exclude=.issue-orchestrator/e2e-results",
         ],
         cwd=worktree_path,
     )

@@ -76,6 +76,7 @@ from .config_sections import (
     parse_filtering_config,
     parse_milestone_order,
 )
+from .config_value_rules import validate_review_nit_policy
 from .validation_config_loader import (
     load_validation_config as load_validation_config,
     load_validation_config_from_file as load_validation_config_from_file,
@@ -769,8 +770,6 @@ class Config:
                 agent_dict["timeout_minutes"] = agent.timeout_minutes
             if agent.provider_args:
                 agent_dict["provider_args"] = dict(agent.provider_args)
-            if agent.permission_mode != "default":
-                agent_dict["permission_mode"] = agent.permission_mode
             if agent.skip_review:
                 agent_dict["skip_review"] = agent.skip_review
             if agent.reviewer:
@@ -1354,16 +1353,9 @@ class Config:
     def _validate_review_nit_policy_config(self) -> list[str]:
         """Validate review nit policy settings."""
 
-        errors: list[str] = []
-        valid_nit_policies = {"ignore", "surface", "address"}
-        if self.review_nits_default_policy not in valid_nit_policies:
-            errors.append("review.nits.default_policy must be one of: ignore, surface, address")
-        for agent_label, policy in self.review_nits_by_agent.items():
-            if policy not in valid_nit_policies:
-                errors.append(
-                    f"review.nits.by_agent.{agent_label} must be one of: ignore, surface, address"
-                )
-        return errors
+        return validate_review_nit_policy(
+            self.review_nits_default_policy, self.review_nits_by_agent
+        )
 
     def _validate_retrospective_review_config(self) -> list[str]:
         """Validate review-first existing-implementation rerun settings."""

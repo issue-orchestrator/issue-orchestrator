@@ -104,6 +104,35 @@ def test_cached_rework_review_and_completion_stay_in_rework_cycle() -> None:
     assert completed.logical_phase == "rework"
 
 
+def test_rework_start_after_occupied_review_cycle_advances_cycle() -> None:
+    rework_start = enrich_logical_semantics(
+        event_name="rework.started",
+        event_data={"task": "rework", "rework_cycle": 1},
+        previous_event_name="worktree.reset",
+        previous_data={
+            "logical_run": 3,
+            "logical_cycle": 2,
+            "_logical_rework_driven": True,
+        },
+    )
+    completed = enrich_logical_semantics(
+        event_name="session.completed",
+        event_data={"task": "rework", "rework_cycle": 1},
+        previous_event_name="rework.started",
+        previous_data={
+            "logical_run": rework_start.logical_run,
+            "logical_cycle": rework_start.logical_cycle,
+            "_logical_rework_driven": rework_start.rework_driven,
+        },
+    )
+
+    assert rework_start.logical_run == 3
+    assert rework_start.logical_cycle == 3
+    assert rework_start.logical_phase == "rework"
+    assert completed.logical_cycle == 3
+    assert completed.logical_phase == "rework"
+
+
 def test_pr_pending_removed_does_not_start_new_logical_run() -> None:
     """pr-pending label churns naturally during the PR lifecycle and must not
     split the issue's lifecycle into separate logical runs. Real restart triggers

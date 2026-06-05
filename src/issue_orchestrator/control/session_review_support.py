@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..domain.models import PendingReview
+from ..domain.session_run import SessionRunAssets
 from ..infra.config import Config
 from ..ports import Issue as IssueProtocol, RepositoryHost, RepositoryHostError, ReviewState
 from ..ports.pull_request_tracker import PRInfo
@@ -88,9 +89,9 @@ def find_review_feedback_file(
     if not sessions_dir.exists():
         return None
 
-    review_prefix = f"review-{pr_number}__"
+    review_suffix = f"__review-{pr_number}"
     review_dirs = sorted(
-        [d for d in sessions_dir.iterdir() if d.is_dir() and d.name.startswith(review_prefix)],
+        [d for d in sessions_dir.iterdir() if d.is_dir() and d.name.endswith(review_suffix)],
         key=lambda d: d.name,
         reverse=True,
     )
@@ -107,7 +108,7 @@ def copy_review_feedback_to_rework(
     *,
     worktree_path: Path,
     pr_number: int,
-    rework_run_dir: Path,
+    rework_run_assets: SessionRunAssets,
 ) -> Path | None:
     """Copy reviewer feedback from the latest review run into a rework run."""
     source_file = find_review_feedback_file(worktree_path, pr_number)
@@ -119,7 +120,7 @@ def copy_review_feedback_to_rework(
         )
         return None
 
-    dest_file = rework_run_dir / "reviewer-feedback.json"
+    dest_file = rework_run_assets.run_dir / "reviewer-feedback.json"
     try:
         shutil.copy2(source_file, dest_file)
         logger.info(
@@ -200,17 +201,16 @@ def format_reviewer_feedback(
     pr_number: int,
     repository_host: RepositoryHost,
     cache_minutes: int,
-    run_dir: Path | None = None,
+    run_assets: SessionRunAssets,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> str | None:
     """Extract and format actionable reviewer feedback for a rework prompt."""
-    if run_dir:
-        local_feedback = read_local_reviewer_feedback(
-            run_dir=run_dir,
-            cache_minutes=cache_minutes,
-        )
-        if local_feedback:
-            return f"REVIEWER FEEDBACK (address these issues):\n\n{local_feedback}"
+    local_feedback = read_local_reviewer_feedback(
+        run_dir=run_assets.run_dir,
+        cache_minutes=cache_minutes,
+    )
+    if local_feedback:
+        return f"REVIEWER FEEDBACK (address these issues):\n\n{local_feedback}"
 
     backoff_delays = [1.0, 2.0, 4.0]
     feedback_reviews = []

@@ -52,9 +52,14 @@ class TestCodexJsonOutputDefault:
     def test_explicit_true_does_pass_json_flag(self) -> None:
         """The opt-in path is still wired — automation that genuinely
         wants codex's JSONL events can request them via
-        ``provider_args: {json_output: "true"}`` per agent."""
-        cmd = _cmd(json_output="true")
+        ``provider_args: {execution_mode: "exec", json_output: "true"}``
+        per agent."""
+        cmd = _cmd(execution_mode="exec", json_output="true")
         assert "--json" in cmd
+
+    def test_json_output_requires_exec_mode(self) -> None:
+        with pytest.raises(ValueError, match="json_output requires"):
+            _cmd(json_output="true")
 
     @pytest.mark.parametrize("yes_value", ["TRUE", "True", "tRuE"])
     def test_truthy_string_case_insensitive_passes_json_flag(
@@ -63,7 +68,7 @@ class TestCodexJsonOutputDefault:
         """Match historical behavior: ``json_output`` is parsed
         case-insensitively. Locks the contract so a downstream caller
         passing ``"True"`` keeps working."""
-        cmd = _cmd(json_output=yes_value)
+        cmd = _cmd(execution_mode="exec", json_output=yes_value)
         assert "--json" in cmd
 
     @pytest.mark.parametrize("no_value", ["", "0", "no", "off", "False"])
@@ -83,14 +88,26 @@ class TestCodexBaseCommand:
     other flags. These aren't exhaustive — just enough to catch a
     structural regression."""
 
-    def test_starts_with_codex_exec(self) -> None:
+    def test_default_starts_interactive_codex(self) -> None:
         cmd = _cmd()
+        assert cmd[0] == "codex"
+        assert "exec" not in cmd[:2]
+
+    def test_exec_mode_uses_codex_exec(self) -> None:
+        cmd = _cmd(execution_mode="exec")
         assert cmd[:2] == ["codex", "exec"]
 
     def test_full_auto_default(self) -> None:
-        # Default approval_mode is "full-auto", which translates to
-        # the deprecated-but-still-supported ``--full-auto`` flag.
-        assert "--full-auto" in _cmd()
+        cmd = _cmd()
+        assert "--ask-for-approval" in cmd
+        assert "never" in cmd
+        assert "--sandbox" in cmd
+        assert "workspace-write" in cmd
+        assert "--full-auto" not in cmd
+
+    def test_exec_mode_preserves_full_auto_flag(self) -> None:
+        # Non-interactive exec keeps the old compatibility flag.
+        assert "--full-auto" in _cmd(execution_mode="exec")
 
     def test_yolo_swaps_to_dangerously_bypass(self) -> None:
         cmd = _cmd(approval_mode="yolo")
@@ -100,3 +117,9 @@ class TestCodexBaseCommand:
     def test_prompt_is_last_arg(self) -> None:
         cmd = CodexProvider().build_command(prompt="hello world")
         assert cmd[-1] == "hello world"
+
+    def test_provider_is_interactive_by_default(self) -> None:
+        provider = CodexProvider()
+        assert provider.interactive is True
+        assert provider.runs_interactively() is True
+        assert provider.runs_interactively(execution_mode="exec") is False

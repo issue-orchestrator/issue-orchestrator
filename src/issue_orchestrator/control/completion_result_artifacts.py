@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from ..domain.events import SessionEvent
 from ..domain.models import COMPLETION_RECORD_PATH, CompletionRecord, RequestedAction
 from ..domain.runtime_identity import RuntimeIdentity
+from ..domain.session_run import SessionRunAssets
 from ..ports.session_output import SessionOutput
 from .completion_failure_reporting import (
     build_cleanup_failure_comment,
@@ -51,6 +52,7 @@ def build_processing_result(
     total_duration: float,
     completion_path: str | None,
     preserved_completion_path: str | None,
+    run_assets: SessionRunAssets,
     emit_completion_event: EmitCompletionEvent,
     post_issue_comment: PostIssueComment,
     cleanup_completion_record_fn: Callable[[Path, str | None, int], None],
@@ -117,6 +119,7 @@ def build_processing_result(
             errors=errors,
             error_details=error_details,
             duration_seconds=total_duration,
+            run_assets=run_assets,
         )
         comment = build_processing_failure_comment(
             errors=errors,
@@ -149,29 +152,27 @@ def preserve_completion_record(
     session_output: SessionOutput,
     worktree: Path,
     completion_path: str | None,
-    session_name: str | None,
+    run_assets: SessionRunAssets,
 ) -> str | None:
     """Persist a run-scoped completion copy before cleanup for timeline/audit use."""
     source_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
     if not source_path.exists():
         return None
 
-    run_dir = run_dir_from_completion_path(worktree, completion_path)
-    if run_dir is None:
-        resolved_session_name = session_name or session_output.session_name_from_path(completion_path)
-        if not resolved_session_name:
-            return None
-        run_dir = session_output.find_run_dir(worktree, resolved_session_name)
-    if not run_dir:
-        return None
-
-    target_path = run_dir / "completion-record.json"
+    artifact = run_assets.completion_record_copy
+    target_path = artifact.path
     try:
         shutil.copy2(source_path, target_path)
-        session_output.update_manifest(run_dir, {"completion_record_path": str(target_path)})
+        session_output.update_manifest(
+            run_assets.run_dir,
+            {"completion_record_path": str(target_path)},
+        )
         return str(target_path)
     except Exception:
-        logger.exception("Failed to preserve completion record for run_dir=%s", run_dir)
+        logger.exception(
+            "Failed to preserve completion record for run_dir=%s",
+            run_assets.run_dir,
+        )
         return None
 
 
@@ -293,22 +294,3 @@ def write_reviewer_feedback_file(
             exc,
         )
         return None
-
-
-def run_dir_from_completion_path(
-    worktree: Path,
-    completion_path: str | None,
-) -> Path | None:
-    if not completion_path:
-        return None
-    parts = Path(completion_path).parts
-    try:
-        sessions_idx = parts.index("sessions")
-    except ValueError:
-        return None
-    if sessions_idx + 1 >= len(parts):
-        return None
-    run_dir = worktree.joinpath(*parts[:sessions_idx + 2])
-    if not run_dir.exists() or not run_dir.is_dir():
-        return None
-    return run_dir

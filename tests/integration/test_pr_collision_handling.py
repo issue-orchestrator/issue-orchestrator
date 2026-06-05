@@ -138,7 +138,7 @@ class TestPRAlreadyExistsHandling:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        session_output.start_run(worktree, "issue-123", issue_number=123)
+        run_assets = session_output.start_run(worktree, "issue-123", issue_number=123)
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
@@ -149,6 +149,7 @@ class TestPRAlreadyExistsHandling:
 
         result = processor.process(
             worktree=worktree,
+            run_assets=run_assets,
             issue_number=123,
             issue_title="Test Issue",
         )
@@ -179,7 +180,7 @@ class TestPRAlreadyExistsHandling:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        session_output.start_run(worktree, "issue-123", issue_number=123)
+        run_assets = session_output.start_run(worktree, "issue-123", issue_number=123)
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
@@ -190,6 +191,7 @@ class TestPRAlreadyExistsHandling:
 
         result = processor.process(
             worktree=worktree,
+            run_assets=run_assets,
             issue_number=123,
             issue_title="Test Issue",
         )
@@ -219,7 +221,7 @@ class TestPRAlreadyExistsHandling:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        session_output.start_run(worktree, "issue-123", issue_number=123)
+        run_assets = session_output.start_run(worktree, "issue-123", issue_number=123)
         record = make_completion_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
@@ -234,6 +236,7 @@ class TestPRAlreadyExistsHandling:
         # Process
         processor.process(
             worktree=worktree,
+            run_assets=run_assets,
             issue_number=123,
             issue_title="Test Issue",
         )

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
@@ -27,6 +28,37 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _RuntimeResult:
+    nodeid: str
+    outcome: str
+    duration_seconds: float | None
+    longrepr: str | None
+    is_quarantined: bool
+    display_name: str
+    suite_name: str | None
+    stdout_available: bool
+    stderr_available: bool
+
+    def with_output_availability(
+        self,
+        *,
+        stdout_available: bool,
+        stderr_available: bool,
+    ) -> "_RuntimeResult":
+        return _RuntimeResult(
+            nodeid=self.nodeid,
+            outcome=self.outcome,
+            duration_seconds=self.duration_seconds,
+            longrepr=self.longrepr,
+            is_quarantined=self.is_quarantined,
+            display_name=self.display_name,
+            suite_name=self.suite_name,
+            stdout_available=self.stdout_available or stdout_available,
+            stderr_available=self.stderr_available or stderr_available,
+        )
 
 
 def _get_git_info(repo_root: Path) -> tuple[Optional[str], Optional[str]]:
@@ -87,14 +119,18 @@ class ResultPlugin:
         db: "E2EDB",
         run_id: int,
         quarantine: set[str],
+        repo_root: Path,
         timeline_store: "SqliteTimelineStore",
     ):
         self.db = db
         self.run_id = run_id
         self.quarantine = quarantine
+        self.repo_root = repo_root
         self.timeline_store = timeline_store
         self.failed_tests: list[str] = []  # Non-quarantined failures for retry
         self.errors: list[str] = []  # Setup/teardown errors (not test failures)
+        self._phase_reports_by_nodeid: dict[str, list[object]] = {}
+        self._completed_results_by_nodeid: dict[str, _RuntimeResult] = {}
 
     def pytest_collection_finish(self, session) -> None:
         """Called after test collection - record total test count."""
@@ -115,15 +151,39 @@ class ResultPlugin:
 
     def pytest_runtest_logreport(self, report) -> None:
         """Called for each test phase (setup, call, teardown)."""
+        nodeid = report.nodeid
+        phase_reports = self._phase_reports_by_nodeid.setdefault(nodeid, [])
+        phase_reports.append(report)
+        captured_output = _persist_runtime_captured_output(
+            self.repo_root,
+            self.run_id,
+            nodeid,
+            phase_reports,
+        )
+        stdout_available = (
+            captured_output is not None and captured_output.system_out is not None
+        )
+        stderr_available = (
+            captured_output is not None and captured_output.system_err is not None
+        )
         # Capture setup/teardown errors so we can explain "all tests
         # passed but run failed" to the user.
         if report.when != "call":
             if report.failed:
                 summary = str(report.longrepr)[:500] if report.longrepr else "unknown error"
                 self.errors.append(f"{report.nodeid} ({report.when}): {summary}")
+            if report.when == "teardown":
+                result = self._completed_results_by_nodeid.pop(nodeid, None)
+                if result is not None:
+                    self._upsert_runtime_result(
+                        result.with_output_availability(
+                            stdout_available=stdout_available,
+                            stderr_available=stderr_available,
+                        )
+                    )
+                self._phase_reports_by_nodeid.pop(nodeid, None)
             return
 
-        nodeid = report.nodeid
         outcome = report.outcome  # passed, failed, skipped
         duration = getattr(report, "duration", None)
 
@@ -136,18 +196,19 @@ class ResultPlugin:
         suite_name = nodeid.rsplit("::", 1)[0] if "::" in nodeid else None
         display_name = nodeid.split("::")[-1]
 
-        self.db.upsert_test_result(
-            run_id=self.run_id,
+        result = _RuntimeResult(
             nodeid=nodeid,
             outcome=outcome,
             duration_seconds=duration,
             longrepr=longrepr,
-            retry_outcome=None,
             is_quarantined=is_quarantined,
             display_name=display_name,
             suite_name=suite_name,
-            result_source="runtime",
+            stdout_available=stdout_available,
+            stderr_available=stderr_available,
         )
+        self._completed_results_by_nodeid[nodeid] = result
+        self._upsert_runtime_result(result)
 
         # Clear current_test after completion
         self.db.update_progress(self.run_id, current_test=None)
@@ -174,12 +235,29 @@ class ResultPlugin:
             self.failed_tests.append(nodeid)
             logger.warning("Test failed: %s", nodeid)
 
+    def _upsert_runtime_result(self, result: _RuntimeResult) -> None:
+        self.db.upsert_test_result(
+            run_id=self.run_id,
+            nodeid=result.nodeid,
+            outcome=result.outcome,
+            duration_seconds=result.duration_seconds,
+            longrepr=result.longrepr,
+            retry_outcome=None,
+            is_quarantined=result.is_quarantined,
+            display_name=result.display_name,
+            suite_name=result.suite_name,
+            result_source="runtime",
+            stdout_available=result.stdout_available,
+            stderr_available=result.stderr_available,
+        )
+
 
 def _run_pytest(
     pytest_args: list[str],
     db: "E2EDB",
     run_id: int,
     quarantine: set[str],
+    repo_root: Path,
     timeline_store: "SqliteTimelineStore",
 ) -> tuple[int, list[str], list[str]]:
     """Run pytest with result plugin.
@@ -189,12 +267,37 @@ def _run_pytest(
     """
     import pytest
 
-    plugin = ResultPlugin(db, run_id, quarantine, timeline_store=timeline_store)
+    plugin = ResultPlugin(
+        db,
+        run_id,
+        quarantine,
+        repo_root=repo_root,
+        timeline_store=timeline_store,
+    )
 
     # Run pytest in-process with our plugin
     exit_code = pytest.main(pytest_args, plugins=[plugin])
 
     return exit_code, plugin.failed_tests, plugin.errors
+
+
+def _persist_runtime_captured_output(
+    repo_root: Path,
+    run_id: int,
+    nodeid: str,
+    reports: list[object],
+):
+    """Persist pytest's runtime-captured output for live dashboard viewing."""
+    from issue_orchestrator.infra.e2e_runtime_output import (
+        write_pytest_reports_captured_output,
+    )
+
+    return write_pytest_reports_captured_output(
+        repo_root,
+        run_id,
+        nodeid,
+        reports,
+    )
 
 
 def _run_retry(
@@ -243,6 +346,7 @@ def _emit_junit_case_events(
     run_id: int,
     cases: list[Any],
     *,
+    quarantine: set[str],
     timeline_store: "SqliteTimelineStore",
 ) -> None:
     """Emit synthetic timeline events for post-run JUnit ingestion."""
@@ -266,7 +370,7 @@ def _emit_junit_case_events(
             "outcome": case.outcome,
             "duration_seconds": case.duration_seconds,
             "result_source": "junit_xml",
-            "is_quarantined": False,
+            "is_quarantined": case.case_id in quarantine,
         }
         if case.failure_details:
             event_data["longrepr"] = case.failure_details[:4000]
@@ -276,15 +380,6 @@ def _emit_junit_case_events(
             event_data,
             timeline_store=timeline_store,
         )
-
-
-def _status_from_cases(cases: list[Any]) -> str | None:
-    """Derive a run status from parsed structured results."""
-    if not cases:
-        return None
-    if any(case.outcome in {"failed", "error"} for case in cases):
-        return "failed"
-    return "passed"
 
 
 def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test execution, quarantine handling, and retry logic
@@ -408,6 +503,12 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         discover_report_artifacts,
         junit_report_modified_after,
         normalize_pytest_junit_cases,
+        snapshot_report_artifacts,
+    )
+    from issue_orchestrator.infra.e2e_paths import run_report_artifact_dir
+    from issue_orchestrator.infra.e2e_run_completion import (
+        decide_completion,
+        status_from_cases,
     )
 
     execution_spec = E2EExecutionSpec(
@@ -503,6 +604,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                 db,
                 run_id,
                 quarantine,
+                repo_root,
                 timeline_store=timeline_store,
             )
 
@@ -537,7 +639,12 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                 )
                 structured_cases = normalize_pytest_junit_cases(structured_cases)
                 if structured_cases:
-                    db.record_junit_cases(run_id, structured_cases)
+                    db.record_junit_cases(run_id, structured_cases, quarantine=quarantine)
+                    structured_status = status_from_cases(structured_cases, quarantine)
+                artifact_records = snapshot_report_artifacts(
+                    artifact_records,
+                    run_report_artifact_dir(repo_root, run_id),
+                )
                 db.replace_run_artifacts(run_id, artifact_records)
 
         elif execution_spec.runner_kind == "command":
@@ -552,16 +659,21 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                 artifact_paths=execution_spec.artifact_paths,
                 modified_after=junit_report_modified_after(start_time),
             )
+            artifact_records = snapshot_report_artifacts(
+                artifact_records,
+                run_report_artifact_dir(repo_root, run_id),
+            )
             db.replace_run_artifacts(run_id, artifact_records)
             if structured_cases:
                 db.update_progress(run_id, total_tests=len(structured_cases), current_test=None)
-                db.record_junit_cases(run_id, structured_cases)
+                db.record_junit_cases(run_id, structured_cases, quarantine=quarantine)
                 _emit_junit_case_events(
                     run_id,
                     structured_cases,
+                    quarantine=quarantine,
                     timeline_store=timeline_store,
                 )
-                structured_status = _status_from_cases(structured_cases)
+                structured_status = status_from_cases(structured_cases, quarantine)
                 failed_tests = [
                     case.case_id
                     for case in structured_cases
@@ -582,36 +694,23 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         # When tests pass only after retry, the run is "warning" — not
         # silently "passed".  This ensures retries are visible so the
         # user can investigate flakiness.
-        notes: list[str] = []
-        if fixture_errors:
-            notes.append("Fixture errors: " + "; ".join(fixture_errors[:5]))
-        if retried_passed:
-            short = [n.split("::")[-1] for n in retried_passed]
-            notes.append(
-                f"{len(retried_passed)} test(s) required retry: "
-                + ", ".join(short)
-            )
-        if execution_spec.runner_kind == "command" and structured_status == "failed" and exit_code == 0:
-            notes.append("Command exited 0 but JUnit XML reported failing tests")
-
-        if fixture_errors:
-            status = "failed"
-        elif retried_passed and exit_code == 0:
-            # All tests eventually passed, but retries were needed —
-            # surface as "warning" so the run isn't silently green.
-            status = "warning"
-        elif structured_status == "failed":
-            status = "failed"
-        elif exit_code == 0:
-            status = "passed"
-        elif execution_spec.runner_kind == "pytest" and exit_code == 5:
+        decision = decide_completion(
+            db=db,
+            run_id=run_id,
+            runner_kind=execution_spec.runner_kind,
+            exit_code=exit_code,
+            failed_tests=failed_tests,
+            fixture_errors=fixture_errors,
+            retried_passed=retried_passed,
+            structured_status=structured_status,
+        )
+        status = decision.status
+        exit_code = decision.exit_code
+        if execution_spec.runner_kind == "pytest" and exit_code == 5 and status == "passed":
             # pytest exit code 5 = no tests collected
-            status = "passed"
             logger.warning("No tests collected (exit code 5), marking as passed")
-        else:
-            status = "failed"
 
-        note = "; ".join(notes) if notes else None
+        note = "; ".join(decision.notes) if decision.notes else None
 
         duration = time.time() - start_time
 

@@ -17,6 +17,7 @@ pytestmark = pytest.mark.xdist_group("pty")
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.env import ENV_PREFIX
+from tests.unit.session_run_helpers import make_session_run_assets
 
 from .conftest import xdist_timeout
 
@@ -112,7 +113,13 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     # This integration test only needs to prove that a subprocess-backed coding
     # session emits terminal output and a completion record.
     completion_path = ".issue-orchestrator/completion.json"
-    command = "echo 'hello-from-subprocess' && coding-done completed --implementation 'subprocess test' --problems 'none'"
+    session_name = "issue-42"
+    run_assets = make_session_run_assets(worktree, session_name=session_name)
+    command = (
+        f"export {ENV_PREFIX}RUN_DIR='{run_assets.run_dir}' && "
+        "echo 'hello-from-subprocess' && "
+        "coding-done completed --implementation 'subprocess test' --problems 'none'"
+    )
 
     plugin = SubprocessPlugin()
     created = plugin.create_session(
@@ -120,15 +127,15 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
         command=command,
         working_dir=str(worktree),
         title="Subprocess integration test",
-        session_name="issue-42",
+        session_name=session_name,
     )
     assert created is True
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "terminal-recording.jsonl"
+    log_path = run_assets.log_path
     completion_file = worktree / completion_path
     _wait_for_file(completion_file)
     _wait_for_content(log_path, "hello-from-subprocess")
-    _wait_for_exit(plugin, "issue-42")
+    _wait_for_exit(plugin, session_name)
 
     assert log_path.exists()
     assert "hello-from-subprocess" in _read_recording_output(log_path)
@@ -150,7 +157,12 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     # shell proceeds to read, so file existence guarantees shell is waiting.
     # pexpect captures all PTY output to session.log automatically.
     ready_file = worktree / ".ready"
-    command = f"touch {shlex.quote(str(ready_file))}; read -r line; echo \"INPUT:$line\""
+    session_name = "issue-7"
+    run_assets = make_session_run_assets(worktree, session_name=session_name)
+    command = (
+        f"export {ENV_PREFIX}RUN_DIR='{run_assets.run_dir}' && "
+        f"touch {shlex.quote(str(ready_file))}; read -r line; echo \"INPUT:$line\""
+    )
 
     plugin = SubprocessPlugin()
     created = plugin.create_session(
@@ -158,17 +170,17 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
         command=command,
         working_dir=str(worktree),
         title="Subprocess input test",
-        session_name="issue-7",
+        session_name=session_name,
     )
     assert created is True
 
     # Wait for ready file - guarantees shell has executed touch and is now in read
     _wait_for_file(ready_file)
 
-    assert plugin.send_to_session(7, "ping", "issue-7") is True
+    assert plugin.send_to_session(7, "ping", session_name) is True
 
     # Wait for the expected output instead of polling session_exists.
     # This avoids a race condition in pexpect where the watcher thread and
     # isalive() can both call waitpid() on the same process.
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-7" / "terminal-recording.jsonl"
+    log_path = run_assets.log_path
     _wait_for_content(log_path, "INPUT:ping")

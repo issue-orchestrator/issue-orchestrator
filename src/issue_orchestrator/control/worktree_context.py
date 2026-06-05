@@ -34,7 +34,8 @@ from ..infra.config import Config
 from ..infra.logging_config import get_repo_log_path
 from ..infra.repo_identity import get_repo_head_sha
 from ..ports import EventSink,  make_trace_event
-from ..ports.session_output import SessionOutput, SessionRun
+from ..domain.session_run import SessionRunAssets
+from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
 from .worktree import Worktree, WorktreePreparationError
 
@@ -65,7 +66,7 @@ class WorktreeContext:
     phase_name: str
     issue_number: int
     worktree_info: WorktreeInfo
-    run: SessionRun
+    run: SessionRunAssets
     claude_project_dir: Path
     error: Optional[WorktreePreparationError] = None
 

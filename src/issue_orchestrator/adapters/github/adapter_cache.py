@@ -37,8 +37,17 @@ class GitHubAdapterCacheSupport:
         self._cache.invalidate_issue_labels(issue_number)
         logger.debug("Invalidated label cache for issue %d", issue_number)
 
-    def invalidate_pr_cache(self, issue_number: int | None = None, branch: str | None = None) -> None:
+    def invalidate_pr_cache(
+        self,
+        *,
+        pr_number: int | None = None,
+        issue_number: int | None = None,
+        branch: str | None = None,
+    ) -> None:
         """Invalidate cached PR info by issue number and/or branch."""
+        if pr_number is not None:
+            self._cache.invalidate_pr(pr_number)
+            logger.debug("Invalidated PR cache for PR %d", pr_number)
         if issue_number is not None:
             self._cache.invalidate_pr_by_issue(issue_number)
             logger.debug("Invalidated PR cache for issue %d", issue_number)

@@ -281,7 +281,6 @@ def _kill_by_port(port: int, use_sigkill: bool = False) -> bool:
 
     Returns True if any process was killed.
     """
-    import subprocess
     try:
         result = subprocess.run(
             ["lsof", "-t", f"-i:{port}"],
@@ -296,7 +295,8 @@ def _kill_by_port(port: int, use_sigkill: bool = False) -> bool:
                 try:
                     pid = int(pid_str)
                     os.kill(pid, sig)
-                    logger.info("Sent %s to process %d on port %d", sig.name, pid, port)
+                    logger.warning("port-based kill: %s pid=%d port=%d (cross-repo "
+                                   "if another orchestrator)", sig.name, pid, port)
                     killed = True
                 except (ProcessLookupError, ValueError):
                     pass

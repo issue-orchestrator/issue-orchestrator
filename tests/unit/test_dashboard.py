@@ -47,6 +47,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 # Helper functions
@@ -82,6 +83,10 @@ def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/te
         terminal_id=f"issue-{issue.number}",
         worktree_path=Path(worktree_path),
         branch_name=branch_name,
+        run_assets=make_session_run_assets(
+            Path(worktree_path),
+            session_name=f"issue-{issue.number}",
+        ),
     )
     return session
 

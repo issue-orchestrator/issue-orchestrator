@@ -17,6 +17,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_CSS_CHUNKS
 from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_JS_CHUNKS
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 TEMPLATE_DIR = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "templates"
@@ -69,6 +70,10 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
         terminal_id=f"issue-{issue.number}",
         worktree_path=Path(f"/tmp/worktree-{issue.number}"),
         branch_name=f"feature/{issue.number}",
+        run_assets=make_session_run_assets(
+            Path(f"/tmp/worktree-{issue.number}"),
+            session_name=f"issue-{issue.number}",
+        ),
         started_at=datetime.now() - timedelta(minutes=6),
     )
 
@@ -403,6 +408,17 @@ def test_github_usage_pill_is_rendered(jinja_env):
     soup = render_dashboard(jinja_env, vm)
     assert soup.select_one("#ghUsagePill") is not None
     assert soup.select_one("#ghUsagePanel") is not None
+    embedded_pill = soup.select_one("#ghUsagePillEmbedded")
+    embedded_panel = soup.select_one("#ghUsagePanelEmbedded")
+    assert embedded_pill is not None
+    assert embedded_panel is not None
+    assert embedded_pill.get("aria-controls") == "ghUsagePanelEmbedded"
+    show_usage_item = next(
+        button
+        for button in soup.select(".settings-menu-item")
+        if "Show GitHub usage" in button.text
+    )
+    assert show_usage_item.get("onclick") == "showGitHubUsage()"
 
 
 def test_embedded_header_elements_in_tab_bar(jinja_env):

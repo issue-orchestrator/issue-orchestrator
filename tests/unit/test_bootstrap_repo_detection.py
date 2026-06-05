@@ -399,6 +399,8 @@ class TestBuildOrchestratorForTesting:
             reviewer_session=reviewer,  # type: ignore[arg-type]
             reviewer_worktree_path=worktree_path,
             issue_key=42,
+            exchange_run_id="run-42",
+            run_dir=tmp_path / ".issue-orchestrator" / "sessions" / "run-42",
             created_at=0.0,
             coder_response_path=tmp_path / "coder/r.json",
             reviewer_response_path=tmp_path / "reviewer/r.json",

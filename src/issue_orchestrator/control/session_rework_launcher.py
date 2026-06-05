@@ -18,6 +18,7 @@ from ..domain.models import (
     TaskKind,
     get_completion_path,
 )
+from ..domain.session_run import SessionRunAssets
 from ..events import EventName
 from ..infra.config import Config
 from ..infra.logging_config import issue_log, log_context
@@ -102,7 +103,7 @@ class SessionEnvBuilder(Protocol):
         session_id: str,
         agent_label: str,
         issue_number: int,
-        run_dir: Path,
+        run_assets: SessionRunAssets,
         worktree_path: Path,
     ) -> str: ...
 
@@ -293,7 +294,7 @@ def launch_rework_session(
     copy_review_feedback_to_rework(
         worktree_path=worktree_path,
         pr_number=pr_number,
-        rework_run_dir=run.run_dir,
+        rework_run_assets=run,
     )
 
     feedback_sections: list[str] = []
@@ -304,7 +305,7 @@ def launch_rework_session(
         pr_number=pr_number,
         repository_host=deps.repository_host,
         cache_minutes=deps.config.reviewer_feedback_cache_minutes,
-        run_dir=run.run_dir,
+        run_assets=run,
         sleep_fn=time.sleep,
     )
     if reviewer_feedback:
@@ -352,7 +353,7 @@ def launch_rework_session(
         session_id=run.session_name,
         agent_label=rework.agent_type,
         issue_number=issue_number,
-        run_dir=run.run_dir,
+        run_assets=run,
         worktree_path=worktree_path,
     )
     command = f"{env_exports} && {base_command}"
@@ -388,7 +389,7 @@ def launch_rework_session(
         worktree_path=worktree_path,
         branch_name=branch_name,
         completion_path=completion_path,
-        run_dir=run.run_dir,
+        run_assets=run,
         agent_label=rework.agent_type,
         pr_number=pr_number,
         rework_cycle=rework.rework_cycle,

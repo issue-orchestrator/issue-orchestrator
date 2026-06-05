@@ -272,6 +272,12 @@ h1 {
 .gh-usage-wrap {
     position: relative;
 }
+.embedded-gh-usage {
+    display: none;
+}
+html[data-embedded="true"] .embedded-gh-usage {
+    display: block;
+}
 .gh-usage-pill {
     border: 1px solid var(--border);
     background: var(--bg-panel);
@@ -286,6 +292,11 @@ h1 {
 }
 .gh-usage-pill:hover {
     border-color: var(--accent);
+}
+.gh-usage-pill:focus-visible,
+.settings-menu-item:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 .gh-usage-label {
     font-weight: 700;

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import glob
+import shutil
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
@@ -182,18 +183,82 @@ def normalize_pytest_junit_cases(
             normalized.append(case)
             continue
         parts = [part for part in suite_name.split(".") if part]
-        if len(parts) < 2:
+        module_index = _pytest_module_part_index(parts)
+        if module_index is None:
             normalized.append(case)
             continue
-        path = "/".join((*parts[:-1], f"{parts[-1]}.py"))
+        path = "/".join((*parts[:module_index], f"{parts[module_index]}.py"))
+        class_parts = parts[module_index + 1 :]
+        name_parts = (*class_parts, case.display_name)
         normalized.append(
             replace(
                 case,
                 suite_name=path,
-                case_id=f"{path}::{case.display_name}",
+                case_id=f"{path}::{'::'.join(name_parts)}",
             )
         )
     return normalized
+
+
+def _pytest_module_part_index(parts: list[str]) -> int | None:
+    """Return the dotted classname part that names the pytest module."""
+    for index in range(len(parts) - 1, -1, -1):
+        part = parts[index]
+        if part.startswith("test_") or part.endswith("_test"):
+            return index
+    return None
+
+
+def snapshot_report_artifacts(
+    artifacts: list[E2ERunArtifactRecord],
+    destination_dir: Path,
+) -> list[E2ERunArtifactRecord]:
+    """Copy run artifacts into a durable per-run directory.
+
+    E2E workers often execute inside a disposable sibling worktree. Persisted
+    artifact rows must point at files that survive the next worktree cleanup or
+    run, because the dashboard lazy-loads captured stdout/stderr from JUnit XML.
+    """
+    if not artifacts:
+        return []
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[E2ERunArtifactRecord] = []
+    used_names: set[str] = set()
+    for artifact in artifacts:
+        source = Path(artifact.path)
+        if not source.exists():
+            raise ValueError(f"E2E artifact no longer exists: {source}")
+
+        if source.resolve().parent == destination_dir.resolve():
+            target = source
+        else:
+            target = destination_dir / _unique_artifact_name(source.name, used_names)
+            shutil.copy2(source, target)
+        used_names.add(target.name)
+        copied.append(
+            E2ERunArtifactRecord(
+                kind=artifact.kind,
+                label=artifact.label,
+                path=str(target),
+            )
+        )
+    return copied
+
+
+def _unique_artifact_name(name: str, used_names: set[str]) -> str:
+    candidate = name or "artifact"
+    if candidate not in used_names:
+        return candidate
+    path = Path(candidate)
+    stem = path.stem or "artifact"
+    suffix = path.suffix
+    counter = 2
+    while True:
+        candidate = f"{stem}-{counter}{suffix}"
+        if candidate not in used_names:
+            return candidate
+        counter += 1
 
 
 def _parse_testcase(testcase: XmlElement) -> JUnitCaseResult:

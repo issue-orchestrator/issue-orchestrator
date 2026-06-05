@@ -21,6 +21,7 @@ from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.triage_manifest import PRToReview, TriageManifest
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import RepositoryHost
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def make_issue(
@@ -52,6 +53,7 @@ def make_session(
         terminal_id=terminal_id,
         worktree_path=tmp_path,
         branch_name=f"issue-{issue.number}",
+        run_assets=make_session_run_assets(tmp_path, session_name=terminal_id),
     )
 
 

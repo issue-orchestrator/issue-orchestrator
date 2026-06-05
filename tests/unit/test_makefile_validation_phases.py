@@ -134,12 +134,100 @@ def test_validate_pr_uses_cache_aware_verify_script():
 
 def test_agent_validation_targets_emit_timing_markers():
     simulated_lines = _dry_run("test-simulated-agent", SIMULATED_PARALLEL="0")
-    integration_lines = _dry_run("test-integration-agent", INTEGRATION_PARALLEL="0")
+    integration_lines = _dry_run("test-integration-agent", INTEGRATION_AGENT_PARALLEL="0")
 
     _find_line(simulated_lines, "[validate-timing] START target=$target")
     _find_line(simulated_lines, "[validate-timing] END target=$target")
     _find_line(simulated_lines, 'target="test-simulated-agent"')
 
-    _find_line(integration_lines, "[validate-timing] START target=$target")
-    _find_line(integration_lines, "[validate-timing] END target=$target")
-    _find_line(integration_lines, 'target="test-integration-agent"')
+    starts = _matching_indexes(integration_lines, "[validate-timing] START target=$target")
+    ends = _matching_indexes(integration_lines, "[validate-timing] END target=$target")
+    assert len(starts) == 2
+    assert len(ends) == 2
+
+    agent_index = _find_line(integration_lines, 'target="test-integration-agent"')
+    live_codex_index = _find_line(
+        integration_lines,
+        'target="test-integration-agent-live-codex"',
+    )
+    non_live_marker_index = _find_line(integration_lines, '-m "not live_codex"')
+    live_marker_index = _find_line(integration_lines, '-m "live_codex"')
+
+    assert agent_index < live_codex_index
+    assert non_live_marker_index == agent_index
+    assert live_marker_index == live_codex_index
+
+
+def test_core_validation_runs_live_codex_marker_serially():
+    lines = _dry_run("test-integration-core", INTEGRATION_PARALLEL="0")
+
+    starts = _matching_indexes(lines, "[validate-timing] START target=$target")
+    ends = _matching_indexes(lines, "[validate-timing] END target=$target")
+    assert len(starts) == 2
+    assert len(ends) == 2
+
+    core_index = _find_line(lines, 'target="test-integration-core"')
+    live_codex_index = _find_line(lines, 'target="test-integration-core-live-codex"')
+    non_live_marker_index = _find_line(
+        lines,
+        '-m "not requires_infra and not live_codex"',
+    )
+    live_marker_index = _find_line(lines, '-m "live_codex and not requires_infra"')
+
+    assert core_index < live_codex_index
+    assert non_live_marker_index == core_index
+    assert live_marker_index == live_codex_index
+    assert all(
+        "::test_real_interactive_codex_reviewer_round_trips_through_exchange" not in line
+        for line in lines
+    )
+
+
+def test_agent_backed_integration_runs_serial_by_default():
+    lines = _dry_run("test-integration-agent")
+    non_live_pytest_line = lines[
+        _find_line(
+            lines,
+            "tests/integration/test_claude_execution.py",
+            "tests/integration/test_codex_execution.py",
+            "tests/integration/test_live_agent_chain.py",
+            '-m "not live_codex"',
+        )
+    ]
+    live_codex_pytest_line = lines[
+        _find_line(
+            lines,
+            "tests/integration/test_claude_execution.py",
+            "tests/integration/test_codex_execution.py",
+            "tests/integration/test_live_agent_chain.py",
+            '-m "live_codex"',
+        )
+    ]
+
+    assert " -n " not in f" {non_live_pytest_line} "
+    assert " -n " not in f" {live_codex_pytest_line} "
+
+
+def test_agent_backed_integration_allows_explicit_parallel_override():
+    lines = _dry_run("test-integration-agent", INTEGRATION_AGENT_PARALLEL="2")
+    non_live_pytest_line = lines[
+        _find_line(
+            lines,
+            "tests/integration/test_claude_execution.py",
+            "tests/integration/test_codex_execution.py",
+            "tests/integration/test_live_agent_chain.py",
+            '-m "not live_codex"',
+        )
+    ]
+    live_codex_pytest_line = lines[
+        _find_line(
+            lines,
+            "tests/integration/test_claude_execution.py",
+            "tests/integration/test_codex_execution.py",
+            "tests/integration/test_live_agent_chain.py",
+            '-m "live_codex"',
+        )
+    ]
+
+    assert " -n 2 " in f" {non_live_pytest_line} "
+    assert " -n " not in f" {live_codex_pytest_line} "

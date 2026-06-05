@@ -143,6 +143,22 @@
                 </svg>
             </button>
             <span class="embedded-sep" aria-hidden="true"></span>
+            <div class="gh-usage-wrap embedded-gh-usage" id="ghUsageWrapEmbedded">
+                <button class="gh-usage-pill" id="ghUsagePillEmbedded" onclick="toggleGitHubUsagePanel()" aria-expanded="false" aria-controls="ghUsagePanelEmbedded">
+                    <span class="gh-usage-label">GH calls</span>
+                    <span class="gh-usage-summary" id="ghUsageSummaryEmbedded">Usage</span>
+                </button>
+                <section class="gh-usage-panel" id="ghUsagePanelEmbedded" aria-label="GitHub API usage">
+                    <div class="gh-usage-row"><span class="label">Calls/min</span><span class="value" id="ghUsageCallsPerMinuteEmbedded">-</span></div>
+                    <div class="gh-usage-row"><span class="label">Total calls</span><span class="value" id="ghUsageTotalCallsEmbedded">-</span></div>
+                    <div class="gh-usage-row"><span class="label">Errors</span><span class="value" id="ghUsageErrorsEmbedded">-</span></div>
+                    <div class="gh-usage-row"><span class="label">Rate limit (per hour)</span><span class="value" id="ghUsageRateLimitEmbedded">-</span></div>
+                    <div class="gh-usage-row"><span class="label">Resets</span><span class="value" id="ghUsageResetEmbedded">-</span></div>
+                    <div class="gh-usage-actions">
+                        <button class="issue-action-btn" onclick="setGitHubUsageHidden(true)">Hide</button>
+                    </div>
+                </section>
+            </div>
             <button class="tab {% if active_tab != 'e2e' %}active{% endif %}" id="tab-dashboard" data-tab="kanban" onclick="switchTab('kanban')" role="tab" aria-controls="panel-dashboard" aria-selected="{% if active_tab != 'e2e' %}true{% else %}false{% endif %}">
                 Dashboard
             </button>
@@ -165,7 +181,7 @@
                     <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem"><span aria-hidden="true">&#x1F504;</span> Refresh from GitHub</button>
                     <button class="settings-menu-item" onclick="openRetrospectiveReviewDialog()" role="menuitem"><span aria-hidden="true">&#x21BB;</span> Review Existing Implementation</button>
                     <button class="settings-menu-item" onclick="openFlowRefreshPrefs()" role="menuitem"><span aria-hidden="true">&#x26A1;</span> Flow refresh preferences</button>
-                    <button class="settings-menu-item" onclick="setGitHubUsageHidden(false)" role="menuitem"><span aria-hidden="true">&#x1F4CA;</span> Show GitHub usage</button>
+                    <button class="settings-menu-item" onclick="showGitHubUsage()" role="menuitem"><span aria-hidden="true">&#x1F4CA;</span> Show GitHub usage</button>
                     <button class="settings-menu-item" onclick="goToSettings()" role="menuitem"><span aria-hidden="true">&#x2699;</span> Settings</button>
                 </div>
             </div>
@@ -361,7 +377,7 @@
         <div class="issue-detail-header">
             <div class="issue-detail-heading">
                 <h2 id="issueDetailTitle">Issue Detail</h2>
-                <div class="issue-detail-status" id="issueDetailStatus">Loading issue detail...</div>
+                <div class="issue-detail-status" id="issueDetailStatus" role="status" aria-live="polite" aria-atomic="true">Loading issue detail...</div>
             </div>
             <button class="modal-close" id="issueDetailCloseBtn" onclick="closeIssueDetail()" aria-label="Close issue detail">&times;</button>
         </div>

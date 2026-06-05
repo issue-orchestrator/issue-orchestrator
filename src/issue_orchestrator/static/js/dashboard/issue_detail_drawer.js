@@ -33,6 +33,29 @@ function getIssueDetailFocusableElements() {
     ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
 }
 
+function _compactIssueDetailFailureDetail(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    return text.length > 180 ? `${text.slice(0, 177)}...` : text;
+}
+
+async function readIssueDetailFailureMessage(res) {
+    let data = {};
+    try {
+        data = await res.json();
+    } catch (_) {
+        return 'Issue detail unavailable.';
+    }
+    if (data && data.error === 'timeline_projection_failed') {
+        const detail = _compactIssueDetailFailureDetail(data.detail);
+        return detail
+            ? `Timeline projection failed: ${detail}`
+            : 'Timeline projection failed.';
+    }
+    const detail = _compactIssueDetailFailureDetail(data && data.detail);
+    return detail ? `Issue detail unavailable: ${detail}` : 'Issue detail unavailable.';
+}
+
 async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     if (!issueDetailDrawer) return;
     lastIssueDetailTrigger = triggerEl || document.activeElement;
@@ -77,7 +100,7 @@ async function openIssueDetail(issueNumber, triggerEl = null, opts = {}) {
     try {
         const res = await fetch(url);
         if (!res.ok) {
-            document.getElementById('issueDetailStatus').textContent = 'Issue detail unavailable.';
+            document.getElementById('issueDetailStatus').textContent = await readIssueDetailFailureMessage(res);
             return;
         }
         issueDetailData = await res.json();

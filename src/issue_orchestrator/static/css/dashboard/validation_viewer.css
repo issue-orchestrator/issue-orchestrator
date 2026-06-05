@@ -162,6 +162,7 @@ details.cvv-triage-card[open] > summary.cvv-triage-head > .cvv-caret {
 .cvv-chip-failed { background: #fbeae7; border-color: #c0392f; color: #8c1f17; }
 .cvv-chip-error  { background: #fbf3dc; border-color: #b07a00; color: #b07a00; }
 .cvv-chip-skipped { background: #ececef; border-color: #cdd1d8; color: #8a93a3; }
+.cvv-chip-quarantined { background: #f6f8fa; border-color: #8a93a3; color: #5a6472; }
 
 .cvv-ico {
     width: 14px;
@@ -178,6 +179,7 @@ details.cvv-triage-card[open] > summary.cvv-triage-head > .cvv-caret {
 .cvv-ico-failed  { background: #c0392f; }
 .cvv-ico-error   { background: #b07a00; }
 .cvv-ico-skipped { background: #8a93a3; }
+.cvv-ico-quarantined { background: #5a6472; }
 /* PR #6333: typed OutcomeBadge tones for the inline Agent-attempts
    tree.  ``in_progress`` is a muted blue (work is still moving);
    ``neutral`` is grey (known-non-terminal-non-error or unknown —

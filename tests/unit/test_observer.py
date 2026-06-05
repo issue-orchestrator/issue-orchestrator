@@ -18,6 +18,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import PRInfo
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 @pytest.fixture
@@ -111,8 +112,21 @@ def sample_session(sample_agent_config, tmp_path):
         issue=issue,
         agent_config=sample_agent_config,
         terminal_id="issue-123",
-        worktree_path=tmp_path / "worktree",
+        worktree_path=tmp_path,
         branch_name="issue-123-test",
+        run_assets=make_session_run_assets(
+            tmp_path,
+            session_name="issue-123",
+        ),
+    )
+
+
+def set_session_worktree(session: Session, worktree_path) -> None:
+    """Move a test session while preserving its typed run ownership."""
+    session.worktree_path = worktree_path
+    session.run_assets = make_session_run_assets(
+        worktree_path,
+        session_name=session.terminal_id,
     )
 
 
@@ -333,6 +347,10 @@ class TestCheckAllSessions:
             terminal_id="issue-456",
             worktree_path=tmp_path / "worktree2",
             branch_name="issue-456-test",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree2",
+                session_name="issue-456",
+            ),
         )
 
         result = monitor.check_all_sessions([session1, session2])
@@ -465,9 +483,9 @@ class TestObserveSession:
         # Create valid completion.json
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
         completion_dir = worktree / ".issue-orchestrator"
-        completion_dir.mkdir(parents=True)
+        completion_dir.mkdir(parents=True, exist_ok=True)
         completion_file = completion_dir / "completion.json"
         completion_file.write_text(json.dumps({
             "session_id": "any-session-id",
@@ -492,9 +510,9 @@ class TestObserveSession:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
         completion_dir = worktree / ".issue-orchestrator"
-        completion_dir.mkdir(parents=True)
+        completion_dir.mkdir(parents=True, exist_ok=True)
         completion_file = completion_dir / "completion.json"
         # Missing required fields (session_id, timestamp, outcome, summary)
         completion_file.write_text(json.dumps({"partial": "data"}))
@@ -514,9 +532,9 @@ class TestObserveSession:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
         completion_dir = worktree / ".issue-orchestrator"
-        completion_dir.mkdir(parents=True)
+        completion_dir.mkdir(parents=True, exist_ok=True)
         completion_file = completion_dir / "completion.json"
         completion_file.write_text("{ not valid json")
 
@@ -552,7 +570,7 @@ class TestObserveSession:
         """Test that observe_session returns RUNNING when session exists and not timed out."""
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         mock_session_runner.session_exists_by_name.return_value = True
 
         result = monitor.observe_session(sample_session)
@@ -572,7 +590,7 @@ class TestObserveSession:
         from datetime import datetime, timedelta
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         # Set session to be older than the 60-second grace period
         sample_session.started_at = datetime.now() - timedelta(seconds=120)
         mock_session_runner.session_exists_by_name.return_value = False
@@ -592,7 +610,7 @@ class TestObserveSession:
         from datetime import datetime
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         # Session just started (within grace period)
         sample_session.started_at = datetime.now()
         mock_session_runner.session_exists_by_name.return_value = False
@@ -615,7 +633,7 @@ class TestObserveSession:
         from datetime import datetime, timedelta
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         # Session is older than grace period
         sample_session.started_at = datetime.now() - timedelta(seconds=120)
         mock_session_runner.session_exists_by_name.return_value = False
@@ -638,7 +656,7 @@ class TestObserveSession:
         """Test that observe_session sends /exit when running session has a PR."""
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         sample_session.exit_sent = False
         mock_session_runner.session_exists_by_name.return_value = True
         mock_session_runner.send_to_session_by_name.return_value = True
@@ -656,7 +674,7 @@ class TestObserveSession:
         self, monitor, sample_session, mock_session_runner, mock_repository_host, tmp_path
     ):
         """Test that observe_session doesn't resend /exit if already sent."""
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         sample_session.exit_sent = True
         mock_session_runner.session_exists_by_name.return_value = True
         mock_repository_host.get_prs_for_branch.return_value = [
@@ -673,7 +691,7 @@ class TestObserveSession:
         """Test timeout detection via state machine takes priority."""
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
 
         mock_machine = MagicMock()
         mock_machine.get_runtime_minutes.return_value = 60.0
@@ -706,12 +724,12 @@ class TestObserveSession:
         )
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
         sample_session.started_at = datetime.now() - timedelta(
             minutes=sample_session.agent_config.timeout_minutes + 2
         )
         completion_dir = worktree / ".issue-orchestrator"
-        completion_dir.mkdir(parents=True)
+        completion_dir.mkdir(parents=True, exist_ok=True)
         completion_file = completion_dir / "completion.json"
         completion_file.write_text(
             json.dumps({
@@ -755,9 +773,9 @@ class TestObserveSession:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
         completion_dir = worktree / ".issue-orchestrator"
-        completion_dir.mkdir(parents=True)
+        completion_dir.mkdir(parents=True, exist_ok=True)
         completion_file = completion_dir / "completion.json"
         completion_file.write_text(json.dumps({
             "session_id": "any-session-id",
@@ -800,9 +818,9 @@ class TestObserveSession:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
         completion_dir = worktree / ".issue-orchestrator"
-        completion_dir.mkdir(parents=True)
+        completion_dir.mkdir(parents=True, exist_ok=True)
         completion_file = completion_dir / "completion.json"
         completion_file.write_text(json.dumps({
             "session_id": "any-session-id",
@@ -901,6 +919,10 @@ class TestCheckAllSessionsExceptionHandling:
             terminal_id="issue-456",
             worktree_path=tmp_path / "worktree2",
             branch_name="issue-456-test",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree2",
+                session_name="issue-456",
+            ),
         )
 
         result = monitor.check_all_sessions([sample_session, session2])
@@ -920,7 +942,7 @@ class TestObserveSessionExceptionHandling:
         """Test observe_session catches exceptions when checking for PRs."""
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         sample_session.exit_sent = False
         mock_session_runner.session_exists_by_name.return_value = True
         mock_repository_host.get_prs_for_branch.side_effect = Exception("Network error")
@@ -995,7 +1017,7 @@ class TestTerminalObserverIntegration:
         from issue_orchestrator.domain import ProcessState
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         mock_terminal_observer.get_process_state.return_value = ProcessState.RUNNING
         # Window check returns False - but pane_dead says RUNNING should win
         mock_session_runner.session_exists_by_name.return_value = False
@@ -1015,7 +1037,7 @@ class TestTerminalObserverIntegration:
         from issue_orchestrator.observation.observation import SessionObservation
         from datetime import datetime
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         sample_session.started_at = datetime.now()
         mock_terminal_observer.get_process_state.return_value = ProcessState.EXITED
         mock_terminal_observer.get_exit_info.return_value = ProcessExitInfo(exit_code=1)
@@ -1037,7 +1059,7 @@ class TestTerminalObserverIntegration:
         from issue_orchestrator.observation.observation import SessionObservation
         from datetime import datetime
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         sample_session.started_at = datetime.now()
         mock_terminal_observer.get_process_state.return_value = ProcessState.SIGNALED
         mock_terminal_observer.get_exit_info.return_value = ProcessExitInfo(
@@ -1058,7 +1080,7 @@ class TestTerminalObserverIntegration:
         from issue_orchestrator.domain import ProcessState
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         mock_terminal_observer.get_process_state.return_value = ProcessState.UNKNOWN
         # Window exists, so treat as running
         mock_session_runner.session_exists_by_name.return_value = True
@@ -1074,7 +1096,7 @@ class TestTerminalObserverIntegration:
         """Test observe_session uses window check when no terminal observer."""
         from issue_orchestrator.observation.observation import SessionObservation
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         mock_session_runner.session_exists_by_name.return_value = True
 
         result = monitor.observe_session(sample_session)
@@ -1102,7 +1124,7 @@ class TestTerminalObserverIntegration:
             terminal_observer=mock_terminal_observer,
         )
 
-        sample_session.worktree_path = tmp_path
+        set_session_worktree(sample_session, tmp_path)
         sample_session.started_at = datetime.now()
         mock_terminal_observer.get_process_state.return_value = ProcessState.EXITED
         mock_terminal_observer.get_exit_info.return_value = ProcessExitInfo(
@@ -1160,7 +1182,7 @@ class TestEmitNoOutputIfStale:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
 
         # Create session log
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
@@ -1206,7 +1228,7 @@ class TestEmitNoOutputIfStale:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
 
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
@@ -1245,7 +1267,7 @@ class TestEmitNoOutputIfStale:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
         # Don't create log file
 
         monitor._emit_no_output_if_stale(sample_session)  # noqa: SLF001
@@ -1274,7 +1296,7 @@ class TestEmitNoOutputIfStale:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
 
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
@@ -1326,7 +1348,7 @@ class TestEmitNoOutputEdgeCases:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
 
         monitor._emit_no_output_if_stale(sample_session)  # noqa: SLF001
 
@@ -1354,7 +1376,7 @@ class TestEmitNoOutputEdgeCases:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
 
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
@@ -1392,7 +1414,7 @@ class TestEmitNoOutputEdgeCases:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True)
-        sample_session.worktree_path = worktree
+        set_session_worktree(sample_session, worktree)
 
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)

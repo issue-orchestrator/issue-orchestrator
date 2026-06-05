@@ -24,6 +24,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.ports import PRInfo
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 @pytest.fixture
@@ -97,6 +98,10 @@ class TestFactGathererCreateSnapshot:
             terminal_id="issue-1",
             worktree_path=tmp_path / "worktree",
             branch_name="1-issue-1",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="issue-1",
+            ),
         )
         sample_state.active_sessions = [session]
 

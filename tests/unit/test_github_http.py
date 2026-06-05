@@ -642,6 +642,51 @@ def test_invalidate_labels_etag_clears_cache() -> None:
     assert "if-none-match" not in requests_seen[0]["headers"]
 
 
+def test_invalidate_pr_etag_clears_pr_cache() -> None:
+    requests_seen: list[dict] = []
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        requests_seen.append({
+            "method": request.method,
+            "path": request.url.path,
+            "headers": dict(request.headers),
+        })
+        if "if-none-match" in request.headers:
+            return httpx.Response(304, text="")
+        return httpx.Response(
+            200,
+            json={
+                "number": 42,
+                "title": "PR",
+                "labels": [{"name": f"label-{call_count}"}],
+            },
+            headers={"ETag": f"W/pr-etag-{call_count}"},
+        )
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    first = client.get_pr(42)
+    assert first is not None
+    assert first["labels"][0]["name"] == "label-1"
+
+    requests_seen.clear()
+    second = client.get_pr(42)
+    assert second is not None
+    assert second["labels"][0]["name"] == "label-1"
+    assert "if-none-match" in requests_seen[0]["headers"]
+
+    client.invalidate_pr_etag(42)
+
+    requests_seen.clear()
+    third = client.get_pr(42)
+    assert third is not None
+    assert third["labels"][0]["name"] == "label-3"
+    assert "if-none-match" not in requests_seen[0]["headers"]
+
+
 def test_get_prs_for_issue_query_includes_is_pr_qualifier() -> None:
     """GitHub search rejects queries without `is:` with 422.
 

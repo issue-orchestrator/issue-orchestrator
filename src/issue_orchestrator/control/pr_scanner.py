@@ -187,6 +187,7 @@ class PRScanner:
                 pr_url=pr.url,
                 branch_name=pr.branch,
                 _issue_number=issue_number,
+                issue_labels=validity.issue_labels,
             )
             results.append(review)
             logger.info("[SCANNER] Found orphaned PR #%d for code review", pr.number)

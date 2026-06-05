@@ -34,6 +34,25 @@ The schema drives everything else automatically:
 - **status summaries** — `format_summary()` reads `summary` annotations from schema
 - **docs/user/configuration_reference.md** — regenerate via `generate_config_reference()`
 
+### Supported form field shapes (closed set)
+
+The settings form renders/collects by dispatching on the control kind
+produced by `settings_schema_support.classify_form_control()`:
+`bool`, `int`, `float`, `str`, `Literal[...]` (enum), `Optional[str]`,
+and `dict[str, Literal[...]]` (key/value editor). A field whose JSON
+schema falls outside this set **fails loudly** at schema build
+(`UnsupportedSettingsFieldError`) and in
+`tests/unit/test_settings_schema.py::TestFormControlClassification` —
+there is deliberately no text-input fallback (that fallback is what
+broke dict-typed fields: the form posted a Python-repr string and every
+save failed validation).
+
+To add a new field shape, extend ALL THREE together (pinned by
+`tests/unit/test_dashboard_ui_guardrails.py::test_settings_form_dispatches_cover_the_classifier_kind_set`):
+1. `classify_form_control()` — new kind token
+2. `templates/settings.html` — render branch for the kind
+3. `static/js/settings_form_controls.js` — collector (+ resetter) for the kind
+
 `docs/user/configuration.md` is hand-written onboarding. Update it only when the user-facing setup narrative changes; schema fields drive `docs/user/configuration_reference.md`.
 
 **Also update (when relevant):**

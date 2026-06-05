@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import base64
+from pathlib import Path
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
 from issue_orchestrator.infra.env import ENV_PREFIX
@@ -22,6 +23,11 @@ def _read_recording_output(path):
     return "".join(output_chunks)
 
 
+def _command_with_run_dir(worktree: Path, session_name: str, command: str) -> tuple[str, Path]:
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / session_name
+    return f"export {ENV_PREFIX}RUN_DIR='{run_dir}' && {command}", run_dir
+
+
 def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     """Test that subprocess output is captured to the session log file.
 
@@ -35,9 +41,14 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
 
     plugin = SubprocessPlugin()
+    command, run_dir = _command_with_run_dir(
+        worktree,
+        "issue-123",
+        "printf 'hello from subprocess\\n'",
+    )
     created = plugin.create_session(
         session_id=123,
-        command="printf 'hello from subprocess\\n'",
+        command=command,
         working_dir=str(worktree),
         title="Test session",
         session_name="issue-123",
@@ -51,7 +62,7 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
         assert time.monotonic() < deadline, "subprocess did not exit within 30s"
         time.sleep(0.05)  # yield GIL so watcher thread can drain PTY output
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
+    log_path = run_dir / "terminal-recording.jsonl"
     assert log_path.exists(), f"Log file not created at {log_path}"
     content = log_path.read_text()
     events = [json.loads(line) for line in content.splitlines() if line.strip()]
@@ -126,13 +137,19 @@ def test_discover_running_sessions_includes_canonical_session_name(tmp_path, mon
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
 
     plugin = SubprocessPlugin()
+    run_dir = (
+        worktree
+        / ".issue-orchestrator"
+        / "sessions"
+        / "20260221-000000Z__review-456"
+    )
     record = _SessionRecord(
         session_name="review-456",
         issue_number=100,
         worktree_path=str(worktree),
         pid=4242,
         started_at="2026-01-01T00:00:00",
-        log_path=str(worktree / "ui-session.log"),
+        log_path=str(run_dir / "terminal-recording.jsonl"),
         tab_name="Review PR #456",
         is_review=True,
     )
@@ -145,6 +162,7 @@ def test_discover_running_sessions_includes_canonical_session_name(tmp_path, mon
             "tab_name": "Review PR #456",
             "is_review": True,
             "session_name": "review-456",
+            "run_dir": str(run_dir),
         }
     ]
 
@@ -184,16 +202,21 @@ def test_subprocess_session_auto_accepts_claude_trust_prompt(tmp_path, monkeypat
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
 
     plugin = SubprocessPlugin(session_interactions_enabled=True, worktree_base=repo_root)
+    command, run_dir = _command_with_run_dir(
+        worktree,
+        "issue-123",
+        "ISSUE_ORCHESTRATOR_TEST=1 && claude",
+    )
     created = plugin.create_session(
         session_id=123,
-        command="ISSUE_ORCHESTRATOR_TEST=1 && claude",
+        command=command,
         working_dir=str(worktree),
         title="Trust prompt test",
         session_name="issue-123",
     )
     assert created is True
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
+    log_path = run_dir / "terminal-recording.jsonl"
 
     deadline = time.monotonic() + 30.0
     while plugin.session_exists(123, "issue-123"):

@@ -155,6 +155,7 @@ class TestCodexWithAgentRunner:
         provider = CodexProvider()
         cmd = provider.build_command(
             prompt="Echo the word SUCCESS and exit.",
+            execution_mode="exec",
             json_output="false",
         )
 
@@ -381,6 +382,7 @@ class TestCodexWithAgentRunnerFullPath:
 
         cmd = provider.build_command(
             prompt=prompt,
+            execution_mode="exec",
             approval_mode="yolo",  # Skip approvals for testing
             json_output="false",
         )

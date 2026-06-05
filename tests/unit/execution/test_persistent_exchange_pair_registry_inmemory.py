@@ -73,6 +73,8 @@ def _make_pair(
         reviewer_session=_FakeSession(pid=reviewer_pid),
         reviewer_worktree_path=reviewer_worktree or Path("/tmp/fake-reviewer-wt"),
         issue_key=issue_key,
+        exchange_run_id=f"run-{issue_key}",
+        run_dir=base / "run",
         created_at=created_at,
         coder_response_path=base / "coder/review-response.json",
         reviewer_response_path=base / "reviewer/review-response.json",

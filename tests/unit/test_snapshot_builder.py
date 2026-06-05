@@ -10,6 +10,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 # =============================================================================
@@ -138,6 +139,10 @@ class TestIdleStateCalculation:
             terminal_id="test-session",
             worktree_path=tmp_path / "worktree",
             branch_name="1-feature",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree",
+                session_name="test-session",
+            ),
         )
         state = OrchestratorState(active_sessions=[session])
 

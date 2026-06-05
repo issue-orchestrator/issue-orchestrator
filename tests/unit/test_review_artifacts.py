@@ -12,6 +12,7 @@ from issue_orchestrator.domain.review_artifacts import (
     review_artifacts_from_summary,
     review_requires_nit_rework,
 )
+from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
 
 
 def _no_issues_abstraction() -> dict[str, object]:
@@ -359,21 +360,25 @@ def test_report_must_reference_abstraction_item_id(tmp_path):
         )
 
 
-def test_review_artifacts_from_summary_filters_to_valid_refs():
+def test_review_artifacts_from_summary_returns_typed_refs():
     artifacts = review_artifacts_from_summary(
-        {
-            "artifacts": [
-                {
-                    "type": "review_report",
-                    "label": "Review report",
-                    "value": "/tmp/run/review-exchange/turns/r.review-report.md",
-                    "render_mode": "markdown",
-                    "ignored": {"not": "a string"},
-                },
-                {"type": "review_decision", "label": "", "value": "/tmp/x"},
-                "not-a-dict",
-            ]
-        }
+        ReviewExchangeSummaryV1.from_payload(
+            {
+                "completed_rounds": 1,
+                "status": "ok",
+                "reason": "reviewer_ok",
+                "response_text": None,
+                "timestamp": "2026-02-01T00:00:00+00:00",
+                "artifacts": [
+                    {
+                        "type": "review_report",
+                        "label": "Review report",
+                        "value": "/tmp/run/review-exchange/turns/r.review-report.md",
+                        "render_mode": "markdown",
+                    },
+                ],
+            }
+        )
     )
 
     assert artifacts == [
@@ -384,3 +389,18 @@ def test_review_artifacts_from_summary_filters_to_valid_refs():
             "render_mode": "markdown",
         }
     ]
+
+
+def test_review_artifacts_from_summary_rejects_legacy_dict():
+    with pytest.raises(TypeError, match="ReviewExchangeSummaryV1"):
+        review_artifacts_from_summary(
+            {
+                "artifacts": [
+                    {
+                        "type": "review_report",
+                        "label": "Review report",
+                        "value": "/tmp/run/review-exchange/turns/r.review-report.md",
+                    },
+                ]
+            }  # type: ignore[arg-type]
+        )

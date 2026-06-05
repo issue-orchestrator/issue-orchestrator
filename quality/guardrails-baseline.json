@@ -49,12 +49,12 @@
       "value": 12
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_handler.py": {
-      "detail": "36 branch site(s) mention lifecycle/control terms",
+      "detail": "35 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/completion_handler.py",
       "path": "src/issue_orchestrator/control/completion_handler.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 36
+      "value": 35
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_observer.py": {
       "detail": "2 branch site(s) mention lifecycle/control terms",
@@ -200,6 +200,14 @@
       "rule_id": "control_policy_branch_sites",
       "value": 3
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/provider_command_wrapper.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/provider_command_wrapper.py",
+      "path": "src/issue_orchestrator/control/provider_command_wrapper.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/publish_executor.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -239,6 +247,14 @@
       "path": "src/issue_orchestrator/control/retrospective_review.py",
       "rule_id": "control_policy_branch_sites",
       "value": 4
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/retrospective_review_completion.py": {
+      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/retrospective_review_completion.py",
+      "path": "src/issue_orchestrator/control/retrospective_review_completion.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/retry_policy.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
@@ -313,12 +329,12 @@
       "value": 2
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/session_launcher.py": {
-      "detail": "18 branch site(s) mention lifecycle/control terms",
+      "detail": "17 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py",
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 18
+      "value": 17
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/session_observation.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -1289,12 +1305,12 @@
       "value": 835
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_handler.py": {
-      "detail": "1291 lines exceeds budget 800",
+      "detail": "1235 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/completion_handler.py",
       "path": "src/issue_orchestrator/control/completion_handler.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1291
+      "value": 1235
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_processor.py": {
       "detail": "2414 lines exceeds budget 800",
@@ -1337,20 +1353,20 @@
       "value": 1907
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_launcher.py": {
-      "detail": "2038 lines exceeds budget 800",
+      "detail": "2035 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py",
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2038
+      "value": 2035
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
-      "detail": "842 lines exceeds budget 800",
+      "detail": "837 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py",
       "path": "src/issue_orchestrator/control/startup_manager.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 842
+      "value": 837
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/validation.py": {
       "detail": "865 lines exceeds budget 800",
@@ -1385,12 +1401,12 @@
       "value": 1649
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/control_api.py": {
-      "detail": "1292 lines exceeds budget 800",
+      "detail": "1289 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/control_api.py",
       "path": "src/issue_orchestrator/entrypoints/control_api.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1292
+      "value": 1289
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/control_api_e2e_runs.py": {
       "detail": "950 lines exceeds budget 800",
@@ -1457,12 +1473,12 @@
       "value": 910
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/persistent_session_exchange.py": {
-      "detail": "3199 lines exceeds budget 800",
+      "detail": "3198 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 3199
+      "value": 3198
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/session_output_adapter.py": {
       "detail": "1641 lines exceeds budget 800",
@@ -1473,20 +1489,20 @@
       "value": 1641
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
-      "detail": "1475 lines exceeds budget 800",
+      "detail": "1473 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1475
+      "value": 1473
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
-      "detail": "858 lines exceeds budget 800",
+      "detail": "862 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config_sections.py",
       "path": "src/issue_orchestrator/infra/config_sections.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 858
+      "value": 862
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/e2e_db.py": {
       "detail": "1624 lines exceeds budget 800",
@@ -1569,7 +1585,7 @@
       "value": 20
     },
     "ruff_complexity_noqa:src/issue_orchestrator/control/session_completion.py:C901:handle_session_completion": {
-      "detail": "C901 line 154: `handle_session_completion` is too complex (12 > 10)",
+      "detail": "C901 line 157: `handle_session_completion` is too complex (12 > 10)",
       "kind": "ruff_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:C901:handle_session_completion",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -1577,7 +1593,7 @@
       "value": 12
     },
     "ruff_complexity_noqa:src/issue_orchestrator/control/session_launcher.py:C901:launch_issue_session": {
-      "detail": "C901 line 576: `launch_issue_session` is too complex (21 > 10)",
+      "detail": "C901 line 601: `launch_issue_session` is too complex (21 > 10)",
       "kind": "ruff_finding",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py:C901:launch_issue_session",
       "path": "src/issue_orchestrator/control/session_launcher.py",
@@ -1737,12 +1753,12 @@
       "value": 13
     },
     "ruff_complexity_noqa:src/issue_orchestrator/infra/config.py:C901:to_dict": {
-      "detail": "C901 line 752: `to_dict` is too complex (140 > 10)",
+      "detail": "C901 line 752: `to_dict` is too complex (139 > 10)",
       "kind": "ruff_finding",
       "metric_id": "src/issue_orchestrator/infra/config.py:C901:to_dict",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "ruff_complexity_noqa",
-      "value": 140
+      "value": 139
     },
     "ruff_complexity_noqa:src/issue_orchestrator/timeline.py:C901:_detail_from_data": {
       "detail": "C901 line 615: `_detail_from_data` is too complex (29 > 10)",
@@ -1817,7 +1833,7 @@
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/control/session_completion.py:2daa2bc8908a": {
-      "detail": "line 154: # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history",
+      "detail": "line 157: # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:2daa2bc8908a",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -1833,7 +1849,7 @@
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/control/session_launcher.py:76e7b3f07c8a": {
-      "detail": "line 576: # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases",
+      "detail": "line 601: # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py:76e7b3f07c8a",
       "path": "src/issue_orchestrator/control/session_launcher.py",
@@ -1857,7 +1873,7 @@
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/_auth_middleware.py:6d1e2504aa94": {
-      "detail": "line 302: # noqa: BLE001 - tolerate malformed body",
+      "detail": "line 354: # noqa: BLE001 - tolerate malformed body",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/entrypoints/_auth_middleware.py:6d1e2504aa94",
       "path": "src/issue_orchestrator/entrypoints/_auth_middleware.py",
@@ -2209,17 +2225,17 @@
       "value": 1
     },
     "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7": {
-      "detail": "line 3198: # noqa: E402",
+      "detail": "line 3197: # noqa: E402",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3199": {
-      "detail": "line 3199: # noqa: E402",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3198": {
+      "detail": "line 3198: # noqa: E402",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3199",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:9f842d1935e7:line-3198",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
@@ -2240,34 +2256,34 @@
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1844": {
-      "detail": "line 1844: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1843": {
+      "detail": "line 1843: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1844",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-1843",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2228": {
-      "detail": "line 2228: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2227": {
+      "detail": "line 2227: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2228",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2227",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2381": {
-      "detail": "line 2381: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2380": {
+      "detail": "line 2380: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2381",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-2380",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-3050": {
-      "detail": "line 3050: # noqa: PLR0913",
+    "ruff_noqa_suppressions:src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-3049": {
+      "detail": "line 3049: # noqa: PLR0913",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-3050",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:c42b8e05cbaa:line-3049",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
@@ -2585,7 +2601,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:45cf318bd4b8": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 334: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 337: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:45cf318bd4b8",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -2593,7 +2609,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:513f5a152665": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 346: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 349: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:513f5a152665",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -2601,7 +2617,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:78de2b454d03": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 338: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 341: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:78de2b454d03",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -2609,7 +2625,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:a1a6e5563292": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 252: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 255: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:a1a6e5563292",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -2617,7 +2633,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:c7928c89cefa": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 241: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 244: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:c7928c89cefa",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -2625,7 +2641,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:d2909cb27256": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 218: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 221: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:d2909cb27256",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -2633,7 +2649,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:de3dc0d1488b": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 245: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 248: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:de3dc0d1488b",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -2641,7 +2657,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:f94dd99e25e5": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 352: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 355: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:f94dd99e25e5",
       "path": "src/issue_orchestrator/control/session_completion.py",
@@ -2689,7 +2705,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/startup_manager.py:issue-orchestrator.direct-runtime-state-mutation:952b5ee86d95": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 611: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 612: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py:issue-orchestrator.direct-runtime-state-mutation:952b5ee86d95",
       "path": "src/issue_orchestrator/control/startup_manager.py",
@@ -2697,7 +2713,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/startup_manager.py:issue-orchestrator.direct-runtime-state-mutation:c666a2bd744d": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 583: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 584: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py:issue-orchestrator.direct-runtime-state-mutation:c666a2bd744d",
       "path": "src/issue_orchestrator/control/startup_manager.py",
@@ -2705,7 +2721,7 @@
       "value": 1
     },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/startup_manager.py:issue-orchestrator.direct-runtime-state-mutation:de3dc0d1488b": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 714: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 709: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py:issue-orchestrator.direct-runtime-state-mutation:de3dc0d1488b",
       "path": "src/issue_orchestrator/control/startup_manager.py",
@@ -2969,17 +2985,17 @@
       "value": 1
     },
     "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549": {
-      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2211: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2210: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "semgrep_semantic_vocabulary",
       "value": 1
     },
-    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2785": {
-      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2785: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
+    "semgrep_semantic_vocabulary:src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2784": {
+      "detail": "issue-orchestrator.raw-semantic-vocabulary-literal line 2784: Route lifecycle/status vocabulary through typed enums, contracts, or named owner mappings instead of raw semantic string literals.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2785",
+      "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py:issue-orchestrator.raw-semantic-vocabulary-literal:6a852b321549:line-2784",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "semgrep_semantic_vocabulary",
       "value": 1

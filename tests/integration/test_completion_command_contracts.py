@@ -40,6 +40,7 @@ from issue_orchestrator.entrypoints.setup_wizard_common import (
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.resources import get_coding_done_instructions, get_reviewer_done_instructions
+from tests.unit.session_run_helpers import make_session_run_assets
 
 from .conftest import xdist_timeout
 
@@ -344,12 +345,14 @@ def test_completion_record_drives_expected_review_actions(
     worktree.mkdir()
     _init_git_repo(worktree)
     (worktree / ".issue-orchestrator").mkdir(parents=True, exist_ok=True)
-    completion_path = worktree / ".issue-orchestrator" / "completion-review-100.json"
+    run_assets = make_session_run_assets(worktree, session_name="review-100")
+    completion_path = run_assets.run_dir / "completion-review-100.json"
 
     env = {
         **os.environ,
         "ISSUE_ORCHESTRATOR_COMPLETION_PATH": str(completion_path.relative_to(worktree)),
         "ISSUE_ORCHESTRATOR_SESSION_ID": "review-100",
+        "ISSUE_ORCHESTRATOR_RUN_DIR": str(run_assets.run_dir),
     }
     write_result = _run_completion_raw(
         ["approved", "--summary", "LGTM", "--risk", "low"],
@@ -383,7 +386,8 @@ def test_completion_record_drives_expected_review_actions(
         issue_number=1,
         issue_title="Test issue",
         session_name="review-100",
-        completion_path=".issue-orchestrator/completion-review-100.json",
+        completion_path=str(completion_path.relative_to(worktree)),
+        session_run_assets=run_assets,
     )
 
     assert decision.status.name == "COMPLETED"
@@ -394,13 +398,15 @@ def test_completion_record_drives_expected_review_actions(
 
 
 def _make_test_session(issue: Issue, worktree: Path) -> Session:
+    terminal_id = f"issue-{issue.number}"
     return Session(
         key=SessionKey(issue=FakeIssueKey(str(issue.number)), task=TaskKind.CODE),
         issue=issue,
-        terminal_id="issue-1",
-        branch_name="issue-1",
+        terminal_id=terminal_id,
+        branch_name=terminal_id,
         worktree_path=worktree,
         agent_config=AgentConfig(prompt_path=worktree / "prompt.md", timeout_minutes=30),
+        run_assets=make_session_run_assets(worktree, session_name=terminal_id),
     )
 
 
@@ -439,14 +445,7 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager
         get_issue_machine_fn=lambda _issue: None,
         get_session_machine_fn=lambda _terminal: None,
         get_review_machine_fn=lambda _pr: None,
-        session_output=type(
-            "SessionOutput",
-            (),
-            {
-                "find_run_dir": lambda self, *_args, **_kwargs: None,
-                "session_name_from_path": lambda self, _path: None,
-            },
-        )(),
+        session_output=FileSystemSessionOutput(),
     )
 
     for _ in range(3):

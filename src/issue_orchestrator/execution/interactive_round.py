@@ -24,6 +24,7 @@ from pathlib import Path
 
 from .agent_runner_env import build_filtered_env
 from .agent_runner_types import AgentResult, AgentSpec
+from ..infra.shutdown_signals import child_signal_reset_preexec
 from ..infra.terminal_recording import MirroredTerminalRecordingWriter
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,9 @@ def _spawn_interactive_process(
         stdout=slave_fd,
         stderr=slave_fd,
         start_new_session=True,
+        # Don't let the agent inherit the orchestrator's blocked SIGTERM/SIGINT
+        # mask (it is stopped via SIGTERM). See infra.shutdown_signals.
+        preexec_fn=child_signal_reset_preexec(),
     )
 
 

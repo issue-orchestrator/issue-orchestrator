@@ -8,9 +8,11 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
+from unittest.mock import Mock
 
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # pyright: ignore[reportUnusedImport] (re-exported)
+from .session_run import SessionRunAssets
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue as IssueProtocol
@@ -800,6 +802,22 @@ def resolve_retrospective_coder_agent(
     return None
 
 
+# Initial prompt used for review-kind launches when the agent config does not
+# set an explicit ``initial_prompt``. The AgentConfig field default below is
+# coding-flavored; inheriting it for a review launch would tell the reviewer
+# to do coding work and call coding-done (prompt/protocol drift).
+DEFAULT_REVIEW_INITIAL_PROMPT = (
+    "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
+    "Follow the instructions in {prompt}. "
+    "When done, use reviewer-done to report your verdict."
+)
+
+# Task kinds whose default initial prompt is the review prompt above.
+_REVIEW_TASK_KINDS = frozenset(
+    {TaskKind.REVIEW.value, TaskKind.RETROSPECTIVE_REVIEW.value}
+)
+
+
 @dataclass
 class AgentConfig:
     """Configuration for an agent type."""
@@ -812,17 +830,15 @@ class AgentConfig:
     model: str = "sonnet"
     timeout_minutes: int = 45
     # Provider-specific arguments (e.g., permission_mode for claude-code, approval_mode for codex)
+    # Claude permission modes: default, acceptEdits, bypassPermissions, plan, dontAsk
     provider_args: dict[str, Any] = field(default_factory=dict)
-    # Permission mode for Claude CLI: default, acceptEdits, bypassPermissions, plan, dontAsk
-    # Deprecated: use provider_args instead. Kept for backwards compatibility.
-    permission_mode: str = "default"
     # Skip code review for this agent (e.g., domain-expert agents that don't produce code)
     skip_review: bool = False
     # Per-agent reviewer override (uses review.default if not set)
     reviewer: Optional[str] = None
     # Command template - escape hatch to override provider-generated command
     # If set, this is used instead of provider.build_command()
-    # For non-interactive mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
+    # For one-shot mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
     # Note: {system_prompt} includes completion instructions + "Read {prompt} for task instructions"
     command: str = "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     # Optional override for hook verification AI agent (e.g., "claude-code")
@@ -837,6 +853,35 @@ class AgentConfig:
     #                     {retry_count}, {max_retries}
     retry_prompt_template: Optional[str] = None
 
+    @property
+    def effective_permission_mode(self) -> str:
+        """Claude permission mode from ``provider_args`` (``"default"`` when unset).
+
+        Single read shared by command rendering, session identity metadata,
+        and failure diagnostics — there is exactly one place permission mode
+        is spelled (``provider_args.permission_mode``) and one place it is
+        resolved.
+        """
+        mode = self.provider_args.get("permission_mode")
+        if isinstance(mode, str) and mode:
+            return mode
+        return "default"
+
+    def _initial_prompt_template(self, task_kind: str) -> str:
+        """Initial prompt template for ``task_kind``.
+
+        An explicitly configured ``initial_prompt`` always wins. When the
+        field still holds its coding-flavored dataclass default, review-kind
+        launches get the review default instead — a reviewer must never be
+        told to do coding work and call coding-done.
+        """
+        field_default = type(self).__dataclass_fields__["initial_prompt"].default
+        if self.initial_prompt != field_default:
+            return self.initial_prompt
+        if task_kind in _REVIEW_TASK_KINDS:
+            return DEFAULT_REVIEW_INITIAL_PROMPT
+        return self.initial_prompt
+
     def render_initial_prompt(
         self,
         issue_number: int,
@@ -844,6 +889,7 @@ class AgentConfig:
         worktree: Path,
         pr_number: Optional[int] = None,
         existing_work: Optional[str] = None,
+        task_kind: str = TaskKind.CODE.value,
     ) -> str:
         """Render the session prompt text before command wrapping."""
         prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
@@ -853,16 +899,40 @@ class AgentConfig:
             "prompt": prompt_for_command,
             "worktree": worktree,
             "model": self.model,
-            "permission_mode": self.permission_mode,
+            "permission_mode": self.effective_permission_mode,
             "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
         }
         if pr_number is not None:
             format_kwargs["pr_number"] = pr_number
 
-        rendered_prompt = self.initial_prompt.format(**format_kwargs)
+        rendered_prompt = self._initial_prompt_template(task_kind).format(**format_kwargs)
         if existing_work:
             rendered_prompt = f"IMPORTANT: {existing_work}\n\n{rendered_prompt}"
         return rendered_prompt
+
+    def resolve_launch_provider(self) -> Optional[str]:
+        """Provider identity for building a LAUNCH command.
+
+        ``provider`` wins. An explicitly configured ``command`` (anything
+        other than the field default) is an intentional override and keeps
+        template-based launching — exchange stub agents configure a custom
+        ``command`` alongside a real ``ai_system``. Otherwise ``ai_system``
+        resolves: it shares the provider-registry vocabulary
+        (``claude-code``, ``codex``).
+
+        Exists because session CLASSIFICATION (``provider or ai_system``,
+        see ``persistent_session_exchange._agent_provider``) and command
+        BUILDING (``provider`` only, else the legacy ``claude -p`` template)
+        resolved differently: an ``ai_system="codex"`` reviewer with no
+        ``provider`` was classified as codex but silently launched as
+        print-mode claude, which renders nothing and hangs the round to its
+        full timeout (caught by the real-codex exchange smoke test).
+        """
+        if self.provider:
+            return self.provider
+        if self.command != type(self).__dataclass_fields__["command"].default:
+            return None
+        return self.ai_system
 
     def get_command(
         self,
@@ -877,7 +947,7 @@ class AgentConfig:
         """Render the command template with actual values, including initial prompt.
 
         If a provider is configured, uses the provider's build_command() method.
-        Otherwise, falls back to the legacy command template.
+        Otherwise, falls back to the custom command template.
 
         Args:
             issue_number: The GitHub issue number
@@ -897,6 +967,7 @@ class AgentConfig:
             worktree=worktree,
             pr_number=pr_number,
             existing_work=existing_work,
+            task_kind=task_kind,
         )
         return self.get_command_for_prompt(
             rendered_prompt,
@@ -952,7 +1023,7 @@ class AgentConfig:
             "prompt": prompt_for_command,
             "worktree": worktree,
             "model": self.model,
-            "permission_mode": self.permission_mode,
+            "permission_mode": self.effective_permission_mode,
             "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
             "initial_prompt": escaped_prompt,
             "system_prompt": escaped_system_prompt,
@@ -1021,14 +1092,27 @@ class AgentConfig:
             if user_system_prompt:
                 system_prompt = f"{system_prompt}\n\n---\n\n{user_system_prompt}"
             kwargs["system_prompt"] = system_prompt
-            # Use permission_mode from provider_args or fall back to legacy field
-            kwargs.setdefault("permission_mode", self.permission_mode)
+            # setdefault keeps per-issue extra_provider_args overrides
+            # authoritative over the agent's effective_permission_mode.
+            kwargs.setdefault("permission_mode", self.effective_permission_mode)
         else:
             # Other providers (Codex, etc.): prepend completion instructions to prompt
             prompt = f"{completion_with_prompt_ref}\n\n---\n\n{prompt}"
 
         # Build the command (returns list[str])
-        cmd_list = provider.build_command(prompt=prompt, model=self.model, **kwargs)
+        model: Optional[str] = self.model
+        if (
+            model == type(self).__dataclass_fields__["model"].default
+            and self.provider != "claude-code"
+        ):
+            # The field default ("sonnet") is claude vocabulary. Forwarding
+            # it to another provider sends e.g. ``codex --model sonnet``,
+            # which the codex backend rejects (400) and the TUI then idles
+            # for the whole round timeout — caught live by the real-codex
+            # exchange smoke test. An untouched default is "no explicit
+            # choice": let the provider use its own default model.
+            model = None
+        cmd_list = provider.build_command(prompt=prompt, model=model, **kwargs)
 
         # Convert to shell-safe string
         return shlex.join(cmd_list)
@@ -1052,8 +1136,8 @@ class Session:
     terminal_id: str  # Opaque handle - only terminal adapter interprets this
     worktree_path: Path
     branch_name: str
+    run_assets: SessionRunAssets  # Exact session artifacts allocated before launch.
     completion_path: str = COMPLETION_RECORD_PATH  # Agent-specific path to completion.json
-    run_dir: Path | None = None  # Exact session artifact directory from launch; None for restored/legacy sessions
     agent_label: Optional[str] = None  # Agent type label (e.g., "agent:backend") for per-agent reviewer
     pr_number: int | None = None  # PR number for review/rework sessions
     rework_cycle: int | None = None  # Which rework iteration (1, 2, ...) — None for initial coding
@@ -1077,6 +1161,14 @@ class Session:
     lease_expires_at: datetime | None = None  # When the claim expires if not renewed
     last_claim_verified_at: datetime | None = None  # Last time we verified we're still the winner
 
+    def __post_init__(self) -> None:
+        _require_session_run_assets(self.run_assets)
+
+    @property
+    def run_dir(self) -> Path:
+        """Exact session artifact directory allocated before launch."""
+        return self.run_assets.run_dir
+
     @property
     def runtime_minutes(self) -> int:
         """How long this session has been running."""
@@ -1087,6 +1179,11 @@ class Session:
     def is_timed_out(self) -> bool:
         """Check if session exceeded timeout."""
         return self.runtime_minutes > self.agent_config.timeout_minutes
+
+
+def _require_session_run_assets(value: object) -> None:
+    if isinstance(value, Mock) or not isinstance(value, SessionRunAssets):
+        raise TypeError("Session.run_assets must be a SessionRunAssets")
 
 
 def is_retrospective_review_session(session: Session) -> bool:
@@ -1154,6 +1251,7 @@ class PendingReview:
     branch_name: str
     _issue_number: int  # The actual GitHub issue number (stable_id may not be numeric)
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
+    issue_labels: tuple[str, ...] = field(default_factory=tuple, compare=False)
 
     @property
     def issue_number(self) -> int:
@@ -1315,6 +1413,7 @@ class DiscoveredAwaitingMergeEscalation:
     issue_number: int
     pr_number: int
     pr_url: str
+    issue_key: str
     rework_cycle: int  # carried for label/comment continuity
     kind: PostPublishEscalationKind
     reason: str  # short human-readable summary, used in the PR comment
@@ -1450,6 +1549,7 @@ class ObservedCompletion:
     identity: SessionIdentity
     worktree: WorktreeLocation
     record: CompletionRecord
+    run_assets: SessionRunAssets
 
     # Session-specific fields (not from the completion record)
     pr_number: int | None = None  # For review sessions
@@ -1556,6 +1656,7 @@ class PublishJob:
     job_id: str  # UUID
     issue_number: int
     session_key: str
+    run_assets: SessionRunAssets
 
     # Job state
     status: PublishJobStatus = PublishJobStatus.QUEUED
@@ -1610,6 +1711,7 @@ class PublishJob:
             job_id=job_id,
             issue_number=observed.issue_number,
             session_key=observed.session_key,
+            run_assets=observed.run_assets,
             created_at=time.monotonic(),
             worktree_path=observed.worktree_path,
             branch_name=observed.branch_name,

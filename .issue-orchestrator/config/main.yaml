@@ -9,37 +9,50 @@ worktrees:
 agents:
   agent:backend:
     prompt: repo-specific/prompts/simple-fix.md
-    model: sonnet
-    provider: claude-code
-    ai_system: claude-code
-    permission_mode: bypassPermissions
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "opus"
+    timeout_minutes: 90
+    reviewer: "agent:reviewer"
+    provider_args:
+      permission_mode: "bypassPermissions"
   agent:frontend:
     prompt: repo-specific/prompts/simple-fix.md
-    model: sonnet
-    provider: claude-code
-    ai_system: claude-code
-    permission_mode: bypassPermissions
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "opus"
+    timeout_minutes: 90
+    reviewer: "agent:reviewer"
+    provider_args:
+      permission_mode: "bypassPermissions"
   agent:mobile:
     prompt: repo-specific/prompts/simple-fix.md
-    model: sonnet
-    provider: claude-code
-    ai_system: claude-code
-    permission_mode: bypassPermissions
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "opus"
+    timeout_minutes: 90
+    reviewer: "agent:reviewer"
+    provider_args:
+      permission_mode: "bypassPermissions"
   agent:reviewer:
     prompt: repo-specific/prompts/reviewer.md
-    model: sonnet
-    provider: claude-code
-    ai_system: claude-code
-    timeout_minutes: 30
-    permission_mode: bypassPermissions
-    initial_prompt: "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
+    provider: "codex"
+    ai_system: "codex"
+    model: "gpt-5.5"
+    timeout_minutes: 45
+    provider_args:
+      approval_mode: "full-auto"
+      sandbox: "workspace-write"
+      reasoning_effort: "xhigh"
   agent:triage:
     prompt: repo-specific/prompts/triage.md
-    model: sonnet
-    provider: claude-code
-    ai_system: claude-code
-    timeout_minutes: 60
-    permission_mode: bypassPermissions
+    provider: "claude-code"
+    ai_system: "claude-code"
+    model: "opus"
+    timeout_minutes: 90
+    reviewer: "agent:reviewer"
+    provider_args:
+      permission_mode: "bypassPermissions"
     initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
   agent:goal-pilot:
     prompt: repo-specific/prompts/goal-pilot.md
@@ -52,8 +65,8 @@ agents:
 
 execution:
   concurrency:
-    max_concurrent_sessions: 6
-    session_timeout_minutes: 10
+    max_concurrent_sessions: 2
+    session_timeout_minutes: 120
   terminal_adapter: subprocess
 
 review:
@@ -65,6 +78,10 @@ review:
   nits:
     default_policy: "address"
     by_agent: {}
+  exchange:
+    # Persistent coder<->reviewer exchange (code default; explicit for clarity,
+    # matching tixmeup's config).
+    mode: "via-local-loop"
 
 validation:
   quick:

@@ -205,6 +205,31 @@ exists = self._session_runner.session_exists(session.terminal_id)  # ✅ Proper 
 - If callers must rummage across disparate classes/fields to accomplish a task, consider introducing a higher-level port or helper.
 - Entry points should depend on behavior-level ports, not storage or transport details.
 
+## Strongly Typed Run-Asset Ownership
+
+Active session, completion, and review-exchange paths must preserve explicit
+typed data flow for run artifacts.
+
+- The owner that creates a session run owns filesystem allocation/discovery.
+  Lower layers receive typed values via constructor or method arguments.
+- Active `Session` creation requires a frozen typed run contract such as
+  `SessionRunAssets`; do not pass a naked `Path`, optional, string, default, or
+  rediscoverable hint where a real run contract is required.
+- Leaf functions should declare the narrowest typed artifact they need. Group
+  paths into frozen aggregates only when the aggregate proves an invariant, such
+  as several files belonging to the same run directory and session identity.
+- No active path may use "latest run", completion-path inference, alternate
+  names, session-name search, worktree scans, or similar fallback recovery for a
+  missing `run_dir`.
+- If the owner cannot satisfy the contract, fail fast. Historical/UI inspection
+  may be best-effort, but it must stay outside active control flow and be named
+  as inspection.
+- Avoid weak metadata maps for owned artifacts. Prefer frozen dataclasses,
+  enums, value objects, and required constructor arguments over `dict[str, str]`,
+  sentinel values, or optional required fields.
+- Tests must inject typed run assets directly. Fakes should fail if an active
+  path attempts fallback discovery.
+
 ## Hexagonal Architecture - Layer Boundaries
 
 This codebase follows hexagonal (ports & adapters) architecture. **Respect layer boundaries.**

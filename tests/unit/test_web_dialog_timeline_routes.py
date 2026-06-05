@@ -4,10 +4,13 @@
 
 from tests.unit import test_web as _support
 from tests.unit.test_web import *  # noqa: F403
+from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
 )
+
 
 class TestDialogEndpoints:
     """Tests for dialog view-model endpoints."""
@@ -20,7 +23,9 @@ class TestDialogEndpoints:
 
         with patch(
             "issue_orchestrator.entrypoints.web_diagnostics_routes.run_doctor",
-            return_value=DoctorResult([Check(name="Config", status="ok", detail="loaded")]),
+            return_value=DoctorResult(
+                [Check(name="Config", status="ok", detail="loaded")]
+            ),
         ) as mock_run_doctor:
             client = TestClient(app)
             response = client.get("/api/dialog/doctor")
@@ -34,6 +39,85 @@ class TestDialogEndpoints:
         )
         mock_run_doctor.assert_called_once()
 
+    def test_blocked_issues_payload_carries_recorded_debug_run_dir(
+        self, tmp_path: Path
+    ):
+        """Blocked Resume uses the exact debug session run contract."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.repo_root = tmp_path / "repo"
+        mock_orch.config.worktree_base = tmp_path / "worktrees"
+        worktree = mock_orch.config.worktree_base / "repo-123"
+        worktree.mkdir(parents=True)
+        mock_orch.deps.label_manager = LabelManager(mock_orch.config)
+        mock_orch.state.cached_queue_issues = [
+            create_issue(
+                123, "Blocked with completion", labels=["agent:web", "blocked"]
+            )
+        ]
+
+        session_output = FileSystemSessionOutput()
+        run_assets = session_output.start_run(
+            worktree.resolve(),
+            "debug-123",
+            issue_number=123,
+            agent_label="agent:web",
+            backend="subprocess",
+        )
+        completion_path = (
+            f".issue-orchestrator/sessions/{run_assets.run_dir.name}/completion.json"
+        )
+        session_output.update_manifest(
+            run_assets.run_dir,
+            {
+                "completion_path": completion_path,
+                "issue_number": 123,
+                "agent_label": "agent:web",
+            },
+        )
+        completion_file = worktree / completion_path
+        completion_file.write_text('{"outcome":"completed"}', encoding="utf-8")
+        mock_orch.deps.session_output = session_output
+        set_orchestrator(mock_orch)
+
+        try:
+            response = TestClient(app).get("/api/blocked-issues")
+        finally:
+            set_orchestrator(None)
+
+        assert response.status_code == 200
+        issue_payload = response.json()["blocked_issues"][0]
+        assert issue_payload["run_dir"] == str(run_assets.run_dir)
+        assert issue_payload["has_completion"] is True
+
+    def test_blocked_issues_payload_does_not_resume_legacy_completion_only(
+        self,
+        tmp_path: Path,
+    ):
+        """Legacy worktree completion files do not satisfy the run contract."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.repo_root = tmp_path / "repo"
+        mock_orch.config.worktree_base = tmp_path / "worktrees"
+        worktree = mock_orch.config.worktree_base / "repo-123"
+        legacy_completion = worktree / ".issue-orchestrator" / "completion.json"
+        legacy_completion.parent.mkdir(parents=True)
+        legacy_completion.write_text('{"outcome":"completed"}', encoding="utf-8")
+        mock_orch.deps.label_manager = LabelManager(mock_orch.config)
+        mock_orch.deps.session_output = FileSystemSessionOutput()
+        mock_orch.state.cached_queue_issues = [
+            create_issue(123, "Blocked legacy", labels=["agent:web", "blocked"])
+        ]
+        set_orchestrator(mock_orch)
+
+        try:
+            response = TestClient(app).get("/api/blocked-issues")
+        finally:
+            set_orchestrator(None)
+
+        assert response.status_code == 200
+        issue_payload = response.json()["blocked_issues"][0]
+        assert issue_payload["run_dir"] is None
+        assert issue_payload["has_completion"] is False
+
 
 class TestRefreshEndpoint:
     """Test the POST /api/refresh endpoint."""
@@ -41,6 +125,7 @@ class TestRefreshEndpoint:
     def test_refresh_without_body(self):
         """Test refresh without body calls request_refresh."""
         from issue_orchestrator.entrypoints import web
+
         mock_orch = create_mock_orchestrator()
         mock_orch.request_refresh = MagicMock()
         set_orchestrator(mock_orch)
@@ -139,7 +224,10 @@ class TestApiTimelineEndpoint:
     def test_timeline_returns_events(self, tmp_path: Path):
         """Timeline endpoint returns stream events with artifacts."""
         from issue_orchestrator.entrypoints import web
-        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
         mock_orch = create_mock_orchestrator()
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-timeline-returns-events"
@@ -148,7 +236,9 @@ class TestApiTimelineEndpoint:
         (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
-        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+        session_output.update_manifest(
+            run.run_dir, {"claude_log_path": str(claude_log)}
+        )
 
         stream = TimelineStream(
             issue_number=123,
@@ -166,7 +256,9 @@ class TestApiTimelineEndpoint:
                     parent_key="session:issue-123",
                     run_id="20260206-000000Z",
                     run_dir=str(run.run_dir),
-                    artifacts=[TimelineArtifact("worktree", "Worktree", "/tmp/worktree")],
+                    artifacts=[
+                        TimelineArtifact("worktree", "Worktree", "/tmp/worktree")
+                    ],
                     timeline_schema_version=TIMELINE_SCHEMA_VERSION,
                     event_intent="coding",
                     logical_run=1,
@@ -187,8 +279,16 @@ class TestApiTimelineEndpoint:
                     run_dir=str(run.run_dir),
                     artifacts=[
                         TimelineArtifact("pull_request", "PR", "https://example/pr/1"),
-                        TimelineArtifact("review_comment", "Review Comment", "https://example/pr/1#issuecomment-1"),
-                        TimelineArtifact("completion_record", "Completion", "/tmp/worktree/completion.json"),
+                        TimelineArtifact(
+                            "review_comment",
+                            "Review Comment",
+                            "https://example/pr/1#issuecomment-1",
+                        ),
+                        TimelineArtifact(
+                            "completion_record",
+                            "Completion",
+                            "/tmp/worktree/completion.json",
+                        ),
                     ],
                     timeline_schema_version=TIMELINE_SCHEMA_VERSION,
                     event_intent="coding",
@@ -217,9 +317,18 @@ class TestApiTimelineEndpoint:
             assert "open_agent_log" in action_types
             assert "open_session_diagnostics" in action_types
             start_actions = payload["events"][0]["actions"]
-            assert sum(1 for action in start_actions if action["type"] == "open_session_diagnostics") == 1
+            assert (
+                sum(
+                    1
+                    for action in start_actions
+                    if action["type"] == "open_session_diagnostics"
+                )
+                == 1
+            )
             assert start_actions[-1]["type"] == "open_session_diagnostics"
-            completion_artifacts = {a["type"] for a in payload["events"][1]["artifacts"]}
+            completion_artifacts = {
+                a["type"] for a in payload["events"][1]["artifacts"]
+            }
             assert "pull_request" in completion_artifacts
             assert "review_comment" in completion_artifacts
             assert "completion_record" in completion_artifacts
@@ -235,9 +344,13 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_timeline_surfaces_review_report_primary_and_decision_menu(self, tmp_path: Path):
+    def test_timeline_surfaces_review_report_primary_and_decision_menu(
+        self, tmp_path: Path
+    ):
         """Review artifact pair should be independently actionable from timelines."""
-        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
 
         mock_orch = create_mock_orchestrator()
         session_output = FileSystemSessionOutput()
@@ -251,7 +364,9 @@ class TestApiTimelineEndpoint:
         report = turns / "round-001.reviewer.attempt-001.review-report.md"
         decision = turns / "round-001.reviewer.attempt-001.review-decision.json"
         report.write_text("# Review Report\n\nNo issues.\n", encoding="utf-8")
-        decision.write_text('{"schema_version": 1, "verdict": "approved"}\n', encoding="utf-8")
+        decision.write_text(
+            '{"schema_version": 1, "verdict": "approved"}\n', encoding="utf-8"
+        )
 
         mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
             issue_number=123,
@@ -265,7 +380,9 @@ class TestApiTimelineEndpoint:
                     phase="reviewing",
                     artifacts=[
                         TimelineArtifact("review_report", "Review report", str(report)),
-                        TimelineArtifact("review_decision", "Decision JSON", str(decision)),
+                        TimelineArtifact(
+                            "review_decision", "Decision JSON", str(decision)
+                        ),
                     ],
                     reviewer_agent="agent:reviewer",
                 )
@@ -278,13 +395,36 @@ class TestApiTimelineEndpoint:
             response = client.get("/api/timeline/123")
             assert response.status_code == 200
             actions = response.json()["events"][0]["actions"]
-            report_action = next(action for action in actions if action.get("artifact_type") == "review_report")
-            decision_action = next(action for action in actions if action.get("artifact_type") == "review_decision")
+            report_action = next(
+                action
+                for action in actions
+                if action.get("artifact_type") == "review_report"
+            )
+            decision_action = next(
+                action
+                for action in actions
+                if action.get("artifact_type") == "review_decision"
+            )
 
-            assert report_action["type"] == "open_review_artifact"
-            assert report_action["primary"] is True
-            assert report_action["run_dir"] == str(run.run_dir)
-            assert decision_action["type"] == "open_review_artifact"
+            assert report_action == {
+                "type": "open_review_artifact",
+                "label": "Review report",
+                "issue_number": 123,
+                "artifact_type": "review_report",
+                "artifact_path": str(report),
+                "render_mode": "",
+                "primary": True,
+                "run_dir": str(run.run_dir),
+            }
+            assert decision_action == {
+                "type": "open_review_artifact",
+                "label": "Decision JSON",
+                "issue_number": 123,
+                "artifact_type": "review_decision",
+                "artifact_path": str(decision),
+                "render_mode": "",
+                "run_dir": str(run.run_dir),
+            }
             assert "primary" not in decision_action
         finally:
             set_orchestrator(None)
@@ -300,11 +440,11 @@ class TestApiTimelineEndpoint:
         report.write_text(report_text, encoding="utf-8")
         decision = turns / "round-001.reviewer.attempt-001.review-decision.json"
         decision_text = (
-            '{\n'
+            "{\n"
             '  "schema_version": 1,\n'
             '  "verdict": "approved",\n'
             '  "nits": [{"id": "N1", "title": "Rename helper"}]\n'
-            '}\n'
+            "}\n"
         )
         decision.write_text(decision_text, encoding="utf-8")
 
@@ -363,7 +503,9 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_timeline_cycles_include_orchestrator_phase_events_within_active_cycle(self):
+    def test_timeline_cycles_include_orchestrator_phase_events_within_active_cycle(
+        self,
+    ):
         """Validation/queue orchestration events should remain in the same active cycle."""
         mock_orch = create_mock_orchestrator()
         stream = TimelineStream(
@@ -440,31 +582,33 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_survives_failed_coder_with_stale_review_start(self):
         """A failed coder terminal state owns the cycle even if review start leaked in."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "session.started",
-                event_id="coding-start",
-                timestamp="2026-02-09T10:00:00Z",
-                agent="agent:backend",
-                run_dir="/tmp/run-330",
-            ),
-            build_timeline_event(
-                "review.started",
-                event_id="review-start",
-                timestamp="2026-02-09T10:10:00Z",
-                reviewer_agent="agent:reviewer",
-                run_dir="/tmp/review-330",
-            ),
-            build_timeline_event(
-                "session.failed",
-                event_id="coding-failed",
-                timestamp="2026-02-09T10:20:00Z",
-                status="failed",
-                agent="agent:backend",
-                run_dir="/tmp/run-330",
-                summary="Exceeded timeout",
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "session.started",
+                    event_id="coding-start",
+                    timestamp="2026-02-09T10:00:00Z",
+                    agent="agent:backend",
+                    run_dir="/tmp/run-330",
+                ),
+                build_timeline_event(
+                    "review.started",
+                    event_id="review-start",
+                    timestamp="2026-02-09T10:10:00Z",
+                    reviewer_agent="agent:reviewer",
+                    run_dir="/tmp/review-330",
+                ),
+                build_timeline_event(
+                    "session.failed",
+                    event_id="coding-failed",
+                    timestamp="2026-02-09T10:20:00Z",
+                    status="failed",
+                    agent="agent:backend",
+                    run_dir="/tmp/run-330",
+                    summary="Exceeded timeout",
+                ),
+            ]
+        )
 
         cycle = payload["lifecycle"]["current"]["issue_lifecycles"][0]["cycles"][0]
         assert cycle["coder"]["kind"] == "failed_coding_attempt"
@@ -476,38 +620,40 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_starts_new_lifecycle_after_completion_without_review(self):
         """Signal path: a new coding session after completion becomes a new lifecycle."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "session.started",
-                event_id="e1",
-                timestamp="2026-02-09T10:00:00Z",
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e2",
-                timestamp="2026-02-09T10:30:00Z",
-                status="completed",
-                rework_cycle=0,
-            ),
-            build_timeline_event(
-                "session.started",
-                event_id="e3",
-                timestamp="2026-02-09T11:00:00Z",
-                logical_run=2,
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e4",
-                timestamp="2026-02-09T11:30:00Z",
-                status="completed",
-                logical_run=2,
-                rework_cycle=0,
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-09T10:00:00Z",
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e2",
+                    timestamp="2026-02-09T10:30:00Z",
+                    status="completed",
+                    rework_cycle=0,
+                ),
+                build_timeline_event(
+                    "session.started",
+                    event_id="e3",
+                    timestamp="2026-02-09T11:00:00Z",
+                    logical_run=2,
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e4",
+                    timestamp="2026-02-09T11:30:00Z",
+                    status="completed",
+                    logical_run=2,
+                    rework_cycle=0,
+                ),
+            ]
+        )
 
         runs = payload["runs"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
@@ -518,55 +664,57 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_review_continuation_stays_in_same_lifecycle(self):
         """Signal path: completion followed by review remains one lifecycle/run."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "session.started",
-                event_id="e1",
-                timestamp="2026-02-09T10:00:00Z",
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e2",
-                timestamp="2026-02-09T10:30:00Z",
-                status="completed",
-                rework_cycle=0,
-            ),
-            build_timeline_event(
-                "review.started",
-                event_id="e3",
-                timestamp="2026-02-09T10:31:00Z",
-                status="started",
-                phase="reviewing",
-                rework_cycle=0,
-            ),
-            build_timeline_event(
-                "review.changes_requested",
-                event_id="e4",
-                timestamp="2026-02-09T10:32:00Z",
-                status="failed",
-                phase="reviewing",
-                rework_cycle=0,
-                reviewer_agent="agent:reviewer",
-            ),
-            build_timeline_event(
-                "rework.started",
-                event_id="e5",
-                timestamp="2026-02-09T10:40:00Z",
-                status="started",
-                phase="rework",
-                rework_cycle=1,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e6",
-                timestamp="2026-02-09T11:00:00Z",
-                status="completed",
-                rework_cycle=1,
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-09T10:00:00Z",
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e2",
+                    timestamp="2026-02-09T10:30:00Z",
+                    status="completed",
+                    rework_cycle=0,
+                ),
+                build_timeline_event(
+                    "review.started",
+                    event_id="e3",
+                    timestamp="2026-02-09T10:31:00Z",
+                    status="started",
+                    phase="reviewing",
+                    rework_cycle=0,
+                ),
+                build_timeline_event(
+                    "review.changes_requested",
+                    event_id="e4",
+                    timestamp="2026-02-09T10:32:00Z",
+                    status="failed",
+                    phase="reviewing",
+                    rework_cycle=0,
+                    reviewer_agent="agent:reviewer",
+                ),
+                build_timeline_event(
+                    "rework.started",
+                    event_id="e5",
+                    timestamp="2026-02-09T10:40:00Z",
+                    status="started",
+                    phase="rework",
+                    rework_cycle=1,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e6",
+                    timestamp="2026-02-09T11:00:00Z",
+                    status="completed",
+                    rework_cycle=1,
+                ),
+            ]
+        )
 
         runs = payload["runs"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
@@ -577,43 +725,45 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_manual_unblock_without_event_starts_new_lifecycle(self):
         """Manual label removal (no issue.unblocked event) still creates a new run lifecycle."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "session.started",
-                event_id="e1",
-                timestamp="2026-02-08T10:00:00Z",
-                status="started",
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e2",
-                timestamp="2026-02-08T10:30:00Z",
-                status="completed",
-            ),
-            build_timeline_event(
-                "issue.blocked",
-                event_id="e3",
-                timestamp="2026-02-08T10:40:00Z",
-                status="failed",
-                phase="blocked",
-            ),
-            build_timeline_event(
-                "session.started",
-                event_id="e4",
-                timestamp="2026-02-09T09:00:00Z",
-                status="started",
-                logical_run=2,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e5",
-                timestamp="2026-02-09T09:30:00Z",
-                status="completed",
-                logical_run=2,
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-08T10:00:00Z",
+                    status="started",
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e2",
+                    timestamp="2026-02-08T10:30:00Z",
+                    status="completed",
+                ),
+                build_timeline_event(
+                    "issue.blocked",
+                    event_id="e3",
+                    timestamp="2026-02-08T10:40:00Z",
+                    status="failed",
+                    phase="blocked",
+                ),
+                build_timeline_event(
+                    "session.started",
+                    event_id="e4",
+                    timestamp="2026-02-09T09:00:00Z",
+                    status="started",
+                    logical_run=2,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e5",
+                    timestamp="2026-02-09T09:30:00Z",
+                    status="completed",
+                    logical_run=2,
+                ),
+            ]
+        )
 
         runs = payload["runs"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
@@ -624,38 +774,40 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_signal_events_split_from_legacy_lifecycle(self):
         """Legacy timeline followed by signal-era events should split runs."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "session.started",
-                event_id="e1",
-                timestamp="2026-02-08T10:00:00Z",
-                status="started",
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e2",
-                timestamp="2026-02-08T10:30:00Z",
-                status="completed",
-            ),
-            build_timeline_event(
-                "session.started",
-                event_id="e3",
-                timestamp="2026-02-09T10:00:00Z",
-                status="started",
-                logical_run=2,
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e4",
-                timestamp="2026-02-09T10:30:00Z",
-                status="completed",
-                logical_run=2,
-                rework_cycle=0,
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-08T10:00:00Z",
+                    status="started",
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e2",
+                    timestamp="2026-02-08T10:30:00Z",
+                    status="completed",
+                ),
+                build_timeline_event(
+                    "session.started",
+                    event_id="e3",
+                    timestamp="2026-02-09T10:00:00Z",
+                    status="started",
+                    logical_run=2,
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e4",
+                    timestamp="2026-02-09T10:30:00Z",
+                    status="completed",
+                    logical_run=2,
+                    rework_cycle=0,
+                ),
+            ]
+        )
 
         runs = payload["runs"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
@@ -666,44 +818,46 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_includes_cycle_run_id_for_latest_run_filtering(self):
         """Journey cycles should carry run_id + cycle_in_run for latest-run rendering."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "session.started",
-                event_id="e1",
-                timestamp="2026-02-09T10:00:00Z",
-                status="started",
-                run_id="run-1",
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e2",
-                timestamp="2026-02-09T10:30:00Z",
-                status="completed",
-                run_id="run-1",
-                rework_cycle=0,
-            ),
-            build_timeline_event(
-                "session.started",
-                event_id="e3",
-                timestamp="2026-02-09T11:00:00Z",
-                status="started",
-                run_id="run-2",
-                logical_run=2,
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e4",
-                timestamp="2026-02-09T11:30:00Z",
-                status="completed",
-                run_id="run-2",
-                logical_run=2,
-                rework_cycle=0,
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-09T10:00:00Z",
+                    status="started",
+                    run_id="run-1",
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e2",
+                    timestamp="2026-02-09T10:30:00Z",
+                    status="completed",
+                    run_id="run-1",
+                    rework_cycle=0,
+                ),
+                build_timeline_event(
+                    "session.started",
+                    event_id="e3",
+                    timestamp="2026-02-09T11:00:00Z",
+                    status="started",
+                    run_id="run-2",
+                    logical_run=2,
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e4",
+                    timestamp="2026-02-09T11:30:00Z",
+                    status="completed",
+                    run_id="run-2",
+                    logical_run=2,
+                    rework_cycle=0,
+                ),
+            ]
+        )
 
         runs = payload["runs"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
@@ -713,30 +867,32 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_drops_claim_preamble_when_real_cycles_exist(self):
         """Claim-only preamble should not appear as its own numbered cycle."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "claim.acquired",
-                event_id="e1",
-                timestamp="2026-02-09T09:50:00Z",
-                status="completed",
-                phase="in_progress",
-            ),
-            build_timeline_event(
-                "session.started",
-                event_id="e2",
-                timestamp="2026-02-09T10:00:00Z",
-                status="started",
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e3",
-                timestamp="2026-02-09T10:30:00Z",
-                status="completed",
-                rework_cycle=0,
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "claim.acquired",
+                    event_id="e1",
+                    timestamp="2026-02-09T09:50:00Z",
+                    status="completed",
+                    phase="in_progress",
+                ),
+                build_timeline_event(
+                    "session.started",
+                    event_id="e2",
+                    timestamp="2026-02-09T10:00:00Z",
+                    status="started",
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e3",
+                    timestamp="2026-02-09T10:30:00Z",
+                    status="completed",
+                    rework_cycle=0,
+                ),
+            ]
+        )
 
         runs = payload["runs"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
@@ -746,30 +902,32 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_drops_claim_event_inside_signal_cycle(self):
         """Claim events are hidden even when they share the active signal cycle."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "session.started",
-                event_id="e1",
-                timestamp="2026-02-09T10:00:00Z",
-                status="started",
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "claim.acquired",
-                event_id="e2",
-                timestamp="2026-02-09T10:01:00Z",
-                status="completed",
-                rework_cycle=0,
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e3",
-                timestamp="2026-02-09T10:30:00Z",
-                status="completed",
-                rework_cycle=0,
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-09T10:00:00Z",
+                    status="started",
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "claim.acquired",
+                    event_id="e2",
+                    timestamp="2026-02-09T10:01:00Z",
+                    status="completed",
+                    rework_cycle=0,
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e3",
+                    timestamp="2026-02-09T10:30:00Z",
+                    status="completed",
+                    rework_cycle=0,
+                ),
+            ]
+        )
 
         runs = payload["runs"]
         journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
@@ -848,16 +1006,20 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_surfaces_current_run_validation_failure(self, tmp_path: Path):
         """Issue detail should expose current run validation failures even before a timeline failure event exists."""
-        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
 
         mock_orch = create_mock_orchestrator()
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-run-diagnostic"
         worktree.mkdir(parents=True)
         from issue_orchestrator.domain.artifact_contracts import ValidationFailed
+
         run = session_output.start_run(worktree, "coding-1", issue_number=123)
         session_output.update_validation_outcome(
-            run.run_dir, ValidationFailed(reason=".venv/bin/python missing"),
+            run.run_dir,
+            ValidationFailed(reason=".venv/bin/python missing"),
         )
         session_output.update_manifest(
             run.run_dir,
@@ -887,7 +1049,9 @@ class TestApiTimelineEndpoint:
             "FAILED tests/unit/test_web.py::TestProviderCircuitsEndpoint::test_get_provider_circuits_open\n",
             encoding="utf-8",
         )
-        (run.run_dir / "validation-stderr.log").write_text("make: *** [validate] Error 2\n", encoding="utf-8")
+        (run.run_dir / "validation-stderr.log").write_text(
+            "make: *** [validate] Error 2\n", encoding="utf-8"
+        )
         mock_orch.state.session_history = [
             SessionHistoryEntry(
                 issue_number=123,
@@ -924,10 +1088,66 @@ class TestApiTimelineEndpoint:
             assert diagnostic["failed_tests_preview"] == [
                 "tests/unit/test_web.py::TestProviderCircuitsEndpoint::test_get_provider_circuits_open"
             ]
-            assert any(action.get("id") == "open_validation_failure" for action in payload["actions"])
+            assert any(
+                action.get("id") == "open_validation_failure"
+                for action in payload["actions"]
+            )
             assert "Current run failed validation" in payload["status_explanation"]
         finally:
             set_orchestrator(None)
+
+    def test_issue_detail_projection_failure_returns_typed_error(self):
+        """Projection failures should not masquerade as missing issue data."""
+        from issue_orchestrator.view_models.lifecycle_projection import (
+            LifecycleProjectionError,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=123,
+            events=[
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-09T10:00:00Z",
+                    status="started",
+                    phase="in_progress",
+                    rework_cycle=0,
+                ),
+            ],
+        )
+        set_orchestrator(mock_orch)
+        try:
+            with patch(
+                "issue_orchestrator.entrypoints.web_issue_detail_routes."
+                "_dashboard_lifecycle_payload",
+                side_effect=LifecycleProjectionError("broken lifecycle"),
+            ):
+                response = TestClient(app).get("/api/issue-detail/123")
+        finally:
+            set_orchestrator(None)
+
+        assert response.status_code == 500
+        payload = response.json()
+        assert payload["error"] == "timeline_projection_failed"
+        assert payload["issue_number"] == 123
+        assert payload["route"] == "issue_detail"
+        assert "broken lifecycle" in payload["detail"]
+
+    def test_timeline_projection_boundary_is_not_global(self):
+        """Non-projection routes must keep their own exception contracts."""
+        from pydantic import ValidationError
+
+        from issue_orchestrator.entrypoints.control_api import control_app
+        from issue_orchestrator.view_models.lifecycle_projection import (
+            LifecycleProjectionError,
+        )
+
+        assert LifecycleProjectionError not in control_app.exception_handlers
+        assert ValidationError not in control_app.exception_handlers
+        assert "TimelineProjectionBoundaryRoute" not in {
+            type(route).__name__ for route in app.routes
+        }
 
     def test_issue_detail_validation_diagnostic_includes_junit_cases_when_configured(
         self, tmp_path: Path
@@ -961,9 +1181,11 @@ class TestApiTimelineEndpoint:
         worktree = tmp_path / "wt-junit-cases"
         worktree.mkdir(parents=True)
         from issue_orchestrator.domain.artifact_contracts import ValidationFailed
+
         run = session_output.start_run(worktree, "coding-1", issue_number=123)
         session_output.update_validation_outcome(
-            run.run_dir, ValidationFailed(reason="tests failed"),
+            run.run_dir,
+            ValidationFailed(reason="tests failed"),
         )
         session_output.update_manifest(
             run.run_dir,
@@ -1078,7 +1300,10 @@ class TestApiTimelineEndpoint:
             assert failed["category"] == "failed"
             assert failed["result_category"] == "failed"
             assert failed["longrepr"] is not None
-            assert "AssertionError: expected 1 open circuit but got 0" in failed["longrepr"]
+            assert (
+                "AssertionError: expected 1 open circuit but got 0"
+                in failed["longrepr"]
+            )
             assert "tests/unit/test_circuits.py:42" in failed["longrepr"]
             assert failed["failure_summary"] is not None
             assert "AssertionError" in failed["failure_summary"]
@@ -1128,6 +1353,7 @@ class TestApiTimelineEndpoint:
         worktree = tmp_path / "wt-passed-junit"
         worktree.mkdir(parents=True)
         from issue_orchestrator.domain.artifact_contracts import ValidationPassed
+
         run = session_output.start_run(worktree, "coding-1", issue_number=125)
         session_output.update_validation_outcome(run.run_dir, ValidationPassed())
         session_output.update_manifest(
@@ -1205,7 +1431,8 @@ class TestApiTimelineEndpoint:
             cases = diagnostic["junit_cases"]
             assert len(cases) == 2
             assert {c["display_name"] for c in cases} == {
-                "test_passes", "test_also_passes",
+                "test_passes",
+                "test_also_passes",
             }
             assert all(c["outcome"] == "passed" for c in cases)
 
@@ -1241,6 +1468,7 @@ class TestApiTimelineEndpoint:
         worktree = tmp_path / "wt-passed-no-junit"
         worktree.mkdir(parents=True)
         from issue_orchestrator.domain.artifact_contracts import ValidationPassed
+
         run = session_output.start_run(worktree, "coding-1", issue_number=126)
         session_output.update_validation_outcome(run.run_dir, ValidationPassed())
         (run.run_dir / "validation-record.json").write_text(
@@ -1316,9 +1544,11 @@ class TestApiTimelineEndpoint:
         worktree = tmp_path / "wt-no-junit"
         worktree.mkdir(parents=True)
         from issue_orchestrator.domain.artifact_contracts import ValidationFailed
+
         run = session_output.start_run(worktree, "coding-1", issue_number=124)
         session_output.update_validation_outcome(
-            run.run_dir, ValidationFailed(reason="tests failed"),
+            run.run_dir,
+            ValidationFailed(reason="tests failed"),
         )
         (run.run_dir / "validation-record.json").write_text(
             json.dumps(
@@ -1375,18 +1605,24 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_issue_detail_prefers_validation_failure_over_timeline_missing(self, tmp_path: Path):
+    def test_issue_detail_prefers_validation_failure_over_timeline_missing(
+        self, tmp_path: Path
+    ):
         """Current-run validation failure should remain the primary explanation when both diagnostics apply."""
-        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
 
         mock_orch = create_mock_orchestrator()
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-run-diagnostic-priority"
         worktree.mkdir(parents=True)
         from issue_orchestrator.domain.artifact_contracts import ValidationFailed
+
         run = session_output.start_run(worktree, "coding-1", issue_number=123)
         session_output.update_validation_outcome(
-            run.run_dir, ValidationFailed(reason=".venv/bin/python missing"),
+            run.run_dir,
+            ValidationFailed(reason=".venv/bin/python missing"),
         )
         mock_orch.state.session_history = [
             SessionHistoryEntry(
@@ -1410,7 +1646,10 @@ class TestApiTimelineEndpoint:
             payload = response.json()
             assert "Current run failed validation" in payload["status_explanation"]
             assert "Timeline data missing" not in payload["status_explanation"]
-            assert payload["summary"]["timeline_diagnostic"]["state"] == "expected_history_missing"
+            assert (
+                payload["summary"]["timeline_diagnostic"]["state"]
+                == "expected_history_missing"
+            )
             assert payload["summary"]["run_diagnostic"]["state"] == "validation_failed"
         finally:
             set_orchestrator(None)
@@ -1488,7 +1727,9 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
-    def test_issue_detail_reports_logical_semantics_missing_when_events_lack_fields(self):
+    def test_issue_detail_reports_logical_semantics_missing_when_events_lack_fields(
+        self,
+    ):
         """Issue detail should fail fast on events missing logical semantics."""
         mock_orch = create_mock_orchestrator()
         mock_orch.state.session_history = [
@@ -1536,60 +1777,62 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_latest_logical_run_keeps_review_with_rework(self):
         """Latest run must be logical lifecycle, not physical run_id ordering."""
-        payload = fetch_issue_detail_payload([
-            build_timeline_event(
-                "session.started",
-                event_id="e1",
-                timestamp="2026-02-16T02:13:47Z",
-                status="started",
-                run_id="20260216-071346Z",
-                rework_cycle=0,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e2",
-                timestamp="2026-02-16T02:19:00Z",
-                status="completed",
-                run_id="20260216-071346Z",
-                rework_cycle=0,
-            ),
-            build_timeline_event(
-                "review.started",
-                event_id="e3",
-                timestamp="2026-02-16T02:19:10Z",
-                status="started",
-                run_id="20260216-075116Z",
-                rework_cycle=0,
-                task="review",
-            ),
-            build_timeline_event(
-                "review.changes_requested",
-                event_id="e4",
-                timestamp="2026-02-16T02:22:00Z",
-                status="failed",
-                run_id="20260216-075116Z",
-                rework_cycle=0,
-                task="review",
-            ),
-            build_timeline_event(
-                "rework.started",
-                event_id="e5",
-                timestamp="2026-02-16T02:47:51Z",
-                status="started",
-                run_id="20260216-074751Z",
-                rework_cycle=1,
-                agent="agent:backend",
-            ),
-            build_timeline_event(
-                "session.completed",
-                event_id="e6",
-                timestamp="2026-02-16T03:00:00Z",
-                status="completed",
-                run_id="20260216-074751Z",
-                rework_cycle=1,
-            ),
-        ])
+        payload = fetch_issue_detail_payload(
+            [
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-16T02:13:47Z",
+                    status="started",
+                    run_id="20260216-071346Z",
+                    rework_cycle=0,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e2",
+                    timestamp="2026-02-16T02:19:00Z",
+                    status="completed",
+                    run_id="20260216-071346Z",
+                    rework_cycle=0,
+                ),
+                build_timeline_event(
+                    "review.started",
+                    event_id="e3",
+                    timestamp="2026-02-16T02:19:10Z",
+                    status="started",
+                    run_id="20260216-075116Z",
+                    rework_cycle=0,
+                    task="review",
+                ),
+                build_timeline_event(
+                    "review.changes_requested",
+                    event_id="e4",
+                    timestamp="2026-02-16T02:22:00Z",
+                    status="failed",
+                    run_id="20260216-075116Z",
+                    rework_cycle=0,
+                    task="review",
+                ),
+                build_timeline_event(
+                    "rework.started",
+                    event_id="e5",
+                    timestamp="2026-02-16T02:47:51Z",
+                    status="started",
+                    run_id="20260216-074751Z",
+                    rework_cycle=1,
+                    agent="agent:backend",
+                ),
+                build_timeline_event(
+                    "session.completed",
+                    event_id="e6",
+                    timestamp="2026-02-16T03:00:00Z",
+                    status="completed",
+                    run_id="20260216-074751Z",
+                    rework_cycle=1,
+                ),
+            ]
+        )
 
         assert payload["run_count"] == 1
         latest_run = _latest_run(payload)
@@ -1608,7 +1851,10 @@ class TestApiTimelineEndpoint:
 
     def test_timeline_filters_label_churn_events(self, tmp_path: Path):
         """Timeline endpoint omits low-signal issue.labels_changed churn events."""
-        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
         mock_orch = create_mock_orchestrator()
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-timeline-filter-churn"
@@ -1617,7 +1863,9 @@ class TestApiTimelineEndpoint:
         (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
-        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+        session_output.update_manifest(
+            run.run_dir, {"claude_log_path": str(claude_log)}
+        )
 
         stream = TimelineStream(
             issue_number=123,
@@ -1675,7 +1923,10 @@ class TestApiTimelineEndpoint:
 
     def test_timeline_keeps_pr_pending_removal_label_event(self, tmp_path: Path):
         """Timeline should retain pr-pending removal because it changes run boundaries."""
-        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
+
         mock_orch = create_mock_orchestrator()
         session_output = FileSystemSessionOutput()
         worktree = tmp_path / "wt-timeline-pr-pending"
@@ -1684,7 +1935,9 @@ class TestApiTimelineEndpoint:
         (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
-        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+        session_output.update_manifest(
+            run.run_dir, {"claude_log_path": str(claude_log)}
+        )
 
         stream = TimelineStream(
             issue_number=123,
@@ -1747,6 +2000,7 @@ class TestApiTimelineEndpoint:
     def test_refresh_with_inflight_stable_ids(self):
         """Test refresh with inflight_stable_ids parameter."""
         from issue_orchestrator.entrypoints import web
+
         mock_orch = create_mock_orchestrator()
         mock_orch.request_refresh = MagicMock()
         set_orchestrator(mock_orch)
@@ -1754,8 +2008,7 @@ class TestApiTimelineEndpoint:
         try:
             client = TestClient(app)
             response = client.post(
-                "/api/refresh",
-                json={"inflight_stable_ids": ["issue-1", "issue-2"]}
+                "/api/refresh", json={"inflight_stable_ids": ["issue-1", "issue-2"]}
             )
 
             assert response.status_code == 200
@@ -1768,16 +2021,14 @@ class TestApiTimelineEndpoint:
     def test_refresh_with_empty_inflight_ids(self):
         """Test refresh with empty inflight_stable_ids list."""
         from issue_orchestrator.entrypoints import web
+
         mock_orch = create_mock_orchestrator()
         mock_orch.request_refresh = MagicMock()
         set_orchestrator(mock_orch)
 
         try:
             client = TestClient(app)
-            response = client.post(
-                "/api/refresh",
-                json={"inflight_stable_ids": []}
-            )
+            response = client.post("/api/refresh", json={"inflight_stable_ids": []})
 
             assert response.status_code == 200
             call_args = mock_orch.request_refresh.call_args
@@ -1788,6 +2039,7 @@ class TestApiTimelineEndpoint:
     def test_refresh_ignores_malformed_json(self):
         """Test refresh ignores malformed JSON."""
         from issue_orchestrator.entrypoints import web
+
         mock_orch = create_mock_orchestrator()
         mock_orch.request_refresh = MagicMock()
         set_orchestrator(mock_orch)
@@ -1797,7 +2049,7 @@ class TestApiTimelineEndpoint:
             response = client.post(
                 "/api/refresh",
                 content="not valid json",
-                headers={"Content-Type": "application/json"}
+                headers={"Content-Type": "application/json"},
             )
 
             assert response.status_code == 200
@@ -1808,6 +2060,7 @@ class TestApiTimelineEndpoint:
     def test_refresh_when_orchestrator_not_running(self):
         """Test refresh returns 503 when orchestrator not initialized."""
         from issue_orchestrator.entrypoints import web
+
         set_orchestrator(None)
 
         client = TestClient(app)
@@ -1822,7 +2075,9 @@ class TestApiTimelineEndpoint:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.post("/api/refresh/visibility", json={"issues": [12, "13", -1, "bad"]})
+            response = client.post(
+                "/api/refresh/visibility", json={"issues": [12, "13", -1, "bad"]}
+            )
             assert response.status_code == 200
             assert response.json()["status"] == "ok"
             assert mock_orch.state.ui_visible_issue_numbers == [12, 13]
@@ -1882,7 +2137,9 @@ class TestApiTimelineEndpoint:
             assert response.status_code == 200
             assert response.json()["status"] == "rejected_out_of_scope"
             assert response.json()["in_scope"] is False
-            assert not any(issue.number == 7 for issue in mock_orch.state.cached_queue_issues)
+            assert not any(
+                issue.number == 7 for issue in mock_orch.state.cached_queue_issues
+            )
             assert 7 not in mock_orch.state.issue_refresh_timestamps
             assert 999 not in mock_orch.state.issue_refresh_timestamps
         finally:
@@ -1918,7 +2175,9 @@ class TestApiTimelineEndpoint:
             assert response.status_code == 200
             assert response.json()["status"] == "rejected_out_of_scope"
             assert response.json()["in_scope"] is False
-            assert not any(issue.number == 7 for issue in mock_orch.state.cached_queue_issues)
+            assert not any(
+                issue.number == 7 for issue in mock_orch.state.cached_queue_issues
+            )
             assert 7 not in mock_orch.state.issue_refresh_timestamps
         finally:
             set_orchestrator(None)

@@ -35,6 +35,7 @@ from .config_models import (
     ValidationConfig,
 )
 from .config_paths import get_section, resolve_relative_path
+from .config_value_rules import normalize_optional_mapping
 
 if TYPE_CHECKING:
     from .config import Config
@@ -437,8 +438,7 @@ def load_review_section(config: "Config", review_section: dict) -> None:
             "default_policy",
             "surface",
         )
-        by_agent = nits_section.get("by_agent", {})
-        config.review_nits_by_agent = dict(by_agent) if isinstance(by_agent, dict) else {}
+        config.review_nits_by_agent = normalize_optional_mapping(nits_section.get("by_agent", {}))
     exchange_section = review_section.get("exchange", {})
     config.review_exchange_mode = exchange_section.get("mode", "via-local-loop")
     probe_section = exchange_section.get("probe", {})
@@ -825,6 +825,11 @@ def load_agents_section(
         if agent_data.get("provider_args"):
             provider_args.update(agent_data["provider_args"])
 
+        if "permission_mode" in agent_data:
+            raise ValueError(
+                f"agents.{label}.permission_mode is not supported; "
+                f"set agents.{label}.provider_args.permission_mode instead"
+            )
         agent_kwargs = {
             "prompt_path": prompt_path,
             "prompt_relative": prompt_relative,
@@ -832,7 +837,6 @@ def load_agents_section(
             "model": model,
             "timeout_minutes": agent_data.get("timeout_minutes", 45),
             "provider_args": provider_args,
-            "permission_mode": agent_data.get("permission_mode", "default"),
             "skip_review": agent_data.get("skip_review", False),
             "reviewer": agent_data.get("reviewer"),
             "meta_agent": agent_data.get("meta_agent"),

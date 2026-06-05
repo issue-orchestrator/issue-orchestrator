@@ -248,20 +248,12 @@ class CompletionObserver:
 
     def _read_provider_status(self, session: Session) -> ProviderStatus | None:
         run_dir = resolve_session_run_dir(self.session_output, session)
-        if not run_dir:
-            return None
         return read_provider_status(run_dir)
 
     def _get_session_log_tail(self, session: Session) -> str:
         """Get last 50 lines of session log for diagnostics."""
         run_dir = resolve_session_run_dir(self.session_output, session)
-        if run_dir:
-            log_path = self.session_output.get_log_path_for_run_dir(run_dir)
-        else:
-            log_path = self.session_output.get_log_path(
-                session.worktree_path,
-                session.terminal_id,
-            )
+        log_path = self.session_output.get_log_path_for_run_dir(run_dir)
         if not (log_path and log_path.exists()):
             return ""
         try:
@@ -300,6 +292,7 @@ class CompletionObserver:
                 completion_path=session.completion_path,
             ),
             record=record,
+            run_assets=session.run_assets,
             pr_number=pr_number,
             agent_label=session.agent_label,
             validation_retry_count=session.validation_retry_count,

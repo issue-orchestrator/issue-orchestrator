@@ -32,6 +32,7 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def make_completion_record(
@@ -197,6 +198,7 @@ def session_with_worktree(tmp_path):
             branch_name=f"issue-{issue_number}",
             worktree_path=worktree,
             agent_config=agent_config,
+            run_assets=make_session_run_assets(worktree, session_name=terminal_id),
         )
     return _create
 
@@ -220,6 +222,7 @@ class TestSessionControllerDecision:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         assert decision.status == SessionStatus.FAILED
@@ -251,6 +254,7 @@ class TestSessionControllerDecision:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         assert decision.status == SessionStatus.COMPLETED
@@ -283,6 +287,7 @@ class TestSessionControllerDecision:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         assert decision.status == SessionStatus.BLOCKED
@@ -312,6 +317,7 @@ class TestSessionControllerDecision:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         assert decision.status == SessionStatus.NEEDS_HUMAN
@@ -344,6 +350,7 @@ class TestSessionControllerDecision:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         assert decision.status == SessionStatus.COMPLETED
@@ -377,6 +384,7 @@ class TestSessionControllerDecision:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         assert decision.status == SessionStatus.COMPLETED  # Review session completed its job
@@ -409,6 +417,7 @@ class TestEventEmission:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         events = mock_event_sink.events
@@ -439,6 +448,7 @@ class TestEventEmission:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         events = mock_event_sink.events
@@ -463,6 +473,7 @@ class TestEventEmission:
             issue_number=session.issue.number,
             issue_title=session.issue.title,
             session_name=session.terminal_id,
+            session_run_assets=session.run_assets,
         )
 
         events = mock_event_sink.events

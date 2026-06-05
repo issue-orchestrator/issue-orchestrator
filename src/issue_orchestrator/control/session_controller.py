@@ -49,6 +49,7 @@ from ..domain.completion_finalization import (
     CompletionRuntimeState,
 )
 from ..domain.models import SessionStatus, CompletionOutcome
+from ..domain.session_run import SessionRunAssets
 from ..ports.provider_resilience import ProviderErrorType
 from ..infra.provider_resilience import ProviderStatus, read_provider_status
 from ..infra.logging_config import issue_log
@@ -65,7 +66,7 @@ from ..ports.run_evidence import (
 from ..ports.session_output import SessionOutput, ValidationRecord, ValidationState
 from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 from .review_exchange_contracts import ReviewExchangeCanceller
-from .session_run_resolution import resolve_run_dir
+from .session_run_resolution import resolve_run_assets
 from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
@@ -233,12 +234,13 @@ class SessionController:
         issue_title: str,
         session_name: str,
         completion_path: str | None = None,
+        *,
+        session_run_assets: SessionRunAssets,
         validation_retry_count: int = 0,
         original_prompt: str | None = None,
         retry_prompt_template: str | None = None,
         repo_root: Path | None = None,
         issue_key: "IssueKey | None" = None,
-        session_run_dir: Path | None = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
@@ -259,13 +261,11 @@ class SessionController:
             completion_path
         )
         validation_session_name = completion_session_name or session_name
-        run_dir = self._resolve_run_dir(
-            worktree_path,
+        run_assets = self._resolve_run_assets(
             session_name,
-            completion_session_name,
-            issue_number,
-            session_run_dir=session_run_dir,
+            session_run_assets=session_run_assets,
         )
+        run_dir = run_assets.run_dir
         provider_status = self._read_provider_status(run_dir)
         if provider_status and provider_status.succeeded and self._provider_resilience:
             self._provider_resilience.record_success(provider_status.provider)
@@ -319,6 +319,7 @@ class SessionController:
             issue_title,
             pr_number=pr_number,
             completion_path=completion_path,
+            run_assets=run_assets,
         )
         deferred_decision = self._deferred_review_exchange_decision(
             result=result,
@@ -468,7 +469,7 @@ class SessionController:
         issue_number: int,
         issue_title: str,
         session_name: str,
-        run_dir: Path | None,
+        run_dir: Path,
         validation_retry_count: int,
         original_prompt: str | None,
         retry_prompt_template: str | None,
@@ -505,9 +506,7 @@ class SessionController:
             validation_error,
         )
 
-        failure_run_dir = run_dir or self.session_output.ensure_run_dir(
-            worktree_path, session_name
-        )
+        failure_run_dir = run_dir
         self._record_validation_failure_manifest(
             run_dir=failure_run_dir,
             outcome=record.outcome,
@@ -657,13 +656,11 @@ class SessionController:
     def _handle_pre_publish_validation_failure(
         self,
         *,
-        run_dir: Path | None,
+        run_dir: Path,
         session_name: str,
         issue_number: int,
         validation_reason: str,
     ) -> SessionStatus:
-        if run_dir is None:
-            return SessionStatus.VALIDATION_FAILED
         self._emit_pre_publish_validation_failure(
             run_dir=run_dir,
             session_name=session_name,
@@ -774,7 +771,7 @@ class SessionController:
         worktree_path: Path,
         issue_number: int,
         session_name: str,
-        run_dir: Path | None,
+        run_dir: Path,
         completion_path: str | None,
     ) -> SessionDecision:
         """Handle case where no completion record exists."""
@@ -872,7 +869,7 @@ class SessionController:
         worktree_path: Path,
         issue_number: int,
         session_name: str,
-        run_dir: Path | None,
+        run_dir: Path,
         completion_path: str | None,
         debug_context: dict[str, Any] | None = None,
     ) -> None:
@@ -882,10 +879,6 @@ class SessionController:
                 completion_path or ".issue-orchestrator/completion.json"
             )
             requested_path = (worktree_path / requested_rel_path).resolve()
-            if not run_dir:
-                run_dir = self.session_output.ensure_run_dir(
-                    worktree_path, session_name
-                )
 
             run_dir_completion_path: str | None = None
             run_dir_completion_exists: bool | None = None
@@ -948,7 +941,7 @@ class SessionController:
         self,
         *,
         worktree_path: Path,
-        run_dir: Path | None,
+        run_dir: Path,
         completion_path: str | None,
     ) -> dict[str, Any]:
         requested_rel_path = completion_path or ".issue-orchestrator/completion.json"
@@ -980,7 +973,7 @@ class SessionController:
         self,
         *,
         worktree_path: Path,
-        run_dir: Path | None,
+        run_dir: Path,
         requested_path: Path,
     ) -> list[dict[str, Any]]:
         candidates: list[Path] = []
@@ -1011,11 +1004,10 @@ class SessionController:
             try:
                 stat = candidate.stat()
                 relative_to_run_dir = None
-                if run_dir is not None:
-                    try:
-                        relative_to_run_dir = str(candidate.relative_to(run_dir))
-                    except ValueError:
-                        relative_to_run_dir = None
+                try:
+                    relative_to_run_dir = str(candidate.relative_to(run_dir))
+                except ValueError:
+                    relative_to_run_dir = None
                 records.append(
                     {
                         "path": str(candidate),
@@ -1064,15 +1056,11 @@ class SessionController:
                 session_name,
             )
 
-    def _read_provider_status(self, run_dir: Path | None) -> ProviderStatus | None:
-        if not run_dir:
-            return None
+    def _read_provider_status(self, run_dir: Path) -> ProviderStatus | None:
         return read_provider_status(run_dir)
 
-    def _get_session_log_tail(self, run_dir: Path | None, session_name: str) -> str:
+    def _get_session_log_tail(self, run_dir: Path, session_name: str) -> str:
         """Get last 50 lines of session log for diagnostics."""
-        if not run_dir:
-            return ""
         log_path = self.session_output.get_log_path_for_run_dir(run_dir)
         if not (log_path and log_path.exists()):
             return ""
@@ -1123,7 +1111,7 @@ class SessionController:
         worktree_path: Path,
         issue_number: int,
         session_name: str,
-        run_dir: Path | None,
+        run_dir: Path,
         result: "ProcessingResult",
     ) -> None:
         """Emit session processing completed event."""
@@ -1136,8 +1124,7 @@ class SessionController:
             "errors": result.errors,
             "pr_url": result.pr_url,
         }
-        if run_dir:
-            payload["run_dir"] = str(run_dir)
+        payload["run_dir"] = str(run_dir)
         self._emit_event(EventName.SESSION_PROCESSING_COMPLETED, payload)
 
     def _map_outcome_to_status(self, record: "CompletionRecord") -> SessionStatus:
@@ -1456,55 +1443,25 @@ class SessionController:
         )
         return SessionStatus.VALIDATION_FAILED
 
-    def _resolve_run_dir(
+    def _resolve_run_assets(
         self,
-        worktree_path: Path,
         session_name: str,
-        completion_session_name: str | None,
-        issue_number: int,
         *,
-        session_run_dir: Path | None = None,
-    ) -> Path:
-        """Pick the most relevant run directory for the session being processed."""
-        primary_session_name = completion_session_name or session_name
-        alternate_session_names = (
-            (session_name,)
-            if completion_session_name and completion_session_name != session_name
-            else ()
+        session_run_assets: SessionRunAssets,
+    ) -> SessionRunAssets:
+        """Return the recorded run assets for the session being processed."""
+        return resolve_run_assets(
+            session_name=session_name,
+            recorded_run_assets=session_run_assets,
         )
-        run_dir = resolve_run_dir(
-            self.session_output,
-            worktree_path=worktree_path,
-            session_name=primary_session_name,
-            issue_number=issue_number,
-            recorded_run_dir=session_run_dir,
-            alternate_session_names=alternate_session_names,
-        )
-        if run_dir:
-            return run_dir
-
-        fallback_name = completion_session_name or session_name
-        run_dir = self.session_output.ensure_run_dir(worktree_path, fallback_name)
-        logger.warning(
-            "Run dir missing for session=%s; created fallback run dir at %s",
-            fallback_name,
-            run_dir,
-        )
-        return run_dir
 
     def _enrich_manifest_from_completion(
         self,
-        run_dir: Path | None,
+        run_dir: Path,
         record: "CompletionRecord",
     ) -> None:
         """Write CompletionRecord detail into the run manifest."""
         from ..domain.run_manifest import RunManifest
-
-        if not run_dir:
-            logger.debug(
-                "[MANIFEST] No run dir — skipping enrichment",
-            )
-            return
 
         try:
             manifest = RunManifest.load(run_dir)
@@ -1586,7 +1543,7 @@ class SessionController:
         session_name: str,
         issue_number: int,
         issue_title: str,
-        run_dir: Path | None = None,
+        run_dir: Path,
         issue_key: "IssueKey | None" = None,
     ) -> tuple[bool, Optional[str], Optional[Path]]:
         """Run validation command (with attempt-scoped caching) and return result.
@@ -1609,10 +1566,7 @@ class SessionController:
         if not self._command_runner or not self._validation_cmd:
             return True, None, None
 
-        # Get session output directory for validation artifacts
-        target_run_dir = run_dir or self.session_output.ensure_run_dir(
-            worktree_path, session_name
-        )
+        target_run_dir = run_dir
 
         # Get HEAD SHA for logging and attempt identity
         head_sha = self._working_copy.get_head_sha(worktree_path)

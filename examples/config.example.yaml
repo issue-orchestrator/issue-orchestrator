@@ -43,11 +43,11 @@ agents:
     ai_system: "claude-code"
     # provider: "claude-code"       # Overrides default_agent.provider
     # provider_args: {}               # Provider-specific args, e.g.:
+    #   execution_mode: "interactive" # Codex: interactive (default) or exec
     #   approval_mode: "full-auto"    # Codex
     #   sandbox: "workspace-write"    # Codex
     #   reasoning_effort: "xhigh"     # Codex
     #   permission_mode: "bypassPermissions"  # Claude Code
-    # permission_mode: "default"     # Provider-specific permission mode
     # command: "claude --model {model} '{initial_prompt}'"
     # initial_prompt: "Work on issue #{issue_number}: {issue_title}"
     # skip_review: false

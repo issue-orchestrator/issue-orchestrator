@@ -171,7 +171,7 @@ def create_claim_enabled_config(
             timeout_minutes=5,
             command="claude",
             ai_system="claude-code",
-            permission_mode="auto-edit",
+            provider_args={"permission_mode": "auto-edit"},
         ),
     }
 

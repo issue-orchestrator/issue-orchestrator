@@ -55,6 +55,7 @@ from issue_orchestrator.domain.models import (
     PendingTriageReview,
     PendingCleanup,
     DiscoveredAwaitingMergeDrift,
+    DiscoveredAwaitingMergeEscalation,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredRetrospectiveReview,
     DiscoveredReview,
@@ -68,6 +69,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports import TraceEvent
 from issue_orchestrator.infra.config import Config
@@ -185,6 +187,10 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = 
         terminal_id=f"session-{issue.number}",
         worktree_path=worktree,
         branch_name=f"issue-{issue.number}",
+        run_assets=make_session_run_assets(
+            worktree,
+            session_name=f"session-{issue.number}",
+        ),
         started_at=datetime.now(),
         status=SessionStatus.RUNNING,
     )
@@ -901,6 +907,17 @@ class TestClearDiscoveredFacts:
                 status_reason="PR closed; issue remains open",
             )
         ]
+        sample_orchestrator_state.discovered_awaiting_merge_escalations = [
+            DiscoveredAwaitingMergeEscalation(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                issue_key="M0-001",
+                rework_cycle=1,
+                kind="branch_protection_blocked",
+                reason="Branch protection blocks merge.",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="agent:dev", rework_cycle=1)
         ]
@@ -917,6 +934,7 @@ class TestClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_reviews) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
+        assert len(sample_orchestrator_state.discovered_awaiting_merge_escalations) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1350,6 +1368,17 @@ class TestOrchestratorSupportClearDiscoveredFacts:
                 status_reason="PR closed; issue remains open",
             )
         ]
+        sample_orchestrator_state.discovered_awaiting_merge_escalations = [
+            DiscoveredAwaitingMergeEscalation(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                issue_key="M0-001",
+                rework_cycle=1,
+                kind="branch_protection_blocked",
+                reason="Branch protection blocks merge.",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="a", rework_cycle=1)
         ]
@@ -1368,6 +1397,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_reviews) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
+        assert len(sample_orchestrator_state.discovered_awaiting_merge_escalations) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1423,6 +1453,7 @@ class TestUpdateStateAfterAction:
             pr_number=100,
             pr_url="https://github.com/test/repo/pull/100",
             branch_name="issue-42",
+            issue_labels=("agent:web", "verbose"),
         )
         result = MagicMock(success=True, details={})
 
@@ -1434,6 +1465,7 @@ class TestUpdateStateAfterAction:
         review = support_with_state.state.pending_reviews[0]
         assert review.pr_number == 100
         assert review.branch_name == "issue-42"
+        assert review.issue_labels == ("agent:web", "verbose")
 
     def test_queue_review_skips_duplicate(self, support_with_state, mock_repository_host):
         """QUEUE_REVIEW action skips if PR already in pending_reviews."""
@@ -1507,6 +1539,10 @@ class TestUpdateStateAfterAction:
                 terminal_id="retrospective-review-42",
                 worktree_path=Path("/tmp/work42"),
                 branch_name="issue-42",
+                run_assets=make_session_run_assets(
+                    Path("/tmp/work42"),
+                    session_name="retrospective-review-42",
+                ),
             )
         )
         action = QueueRetrospectiveReviewAction(

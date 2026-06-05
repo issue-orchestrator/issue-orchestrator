@@ -333,19 +333,12 @@ class CompletionHandler:
         ) or processing_errors:
             log_path = get_repo_log_path(self.config.repo_root)
             run_dir = self._resolve_session_run_dir(session)
-            if run_dir:
-                self._session_output.write_orchestrator_tail(
-                    run_dir=run_dir,
-                    log_path=log_path,
-                    issue_number=session.issue.number,
-                    session_name=session.terminal_id,
-                )
-            else:
-                logger.warning(
-                    "[%s] No session output dir found for failed session - "
-                    "session may have crashed before setup completed",
-                    session.terminal_id,
-                )
+            self._session_output.write_orchestrator_tail(
+                run_dir=run_dir,
+                log_path=log_path,
+                issue_number=session.issue.number,
+                session_name=session.terminal_id,
+            )
 
         # Enrich manifest with runtime context + log tail
         self._enrich_manifest_runtime(session, status)
@@ -391,8 +384,6 @@ class CompletionHandler:
         """Persist a run audit and return any label actions it requires."""
         labels = self._fetch_issue_labels_for_audit(session.issue.number)
         run_dir = self._resolve_session_run_dir(session)
-        if not run_dir:
-            return ()
 
         trigger = self._resolve_run_audit_trigger(
             session.issue.number,
@@ -708,8 +699,7 @@ class CompletionHandler:
         else:
             payload["completion_path_absolute"] = str((session.worktree_path / session.completion_path).resolve())
         run_dir = self._resolve_session_run_dir(session)
-        if run_dir:
-            payload["run_dir"] = str(run_dir)
+        payload["run_dir"] = str(run_dir)
         for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
             if detail.get(key):
                 payload[key] = detail[key]
@@ -747,8 +737,7 @@ class CompletionHandler:
             "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
         }
         run_dir = self._resolve_session_run_dir(session)
-        if run_dir:
-            payload["run_dir"] = str(run_dir)
+        payload["run_dir"] = str(run_dir)
         self.events.publish(make_trace_event(EventName.SESSION_FAILED, payload))
 
     def _emit_blocked_event(
@@ -1155,12 +1144,7 @@ class CompletionHandler:
         """
         from ..domain.run_manifest import RunManifest
 
-        if not session.worktree_path:
-            return
-
         run_dir = self._resolve_session_run_dir(session)
-        if not run_dir:
-            return
 
         try:
             manifest = RunManifest.load(run_dir)
@@ -1193,7 +1177,7 @@ class CompletionHandler:
         except Exception as exc:
             logger.warning("[MANIFEST] Failed to save runtime enrichment: %s", exc)
 
-    def _resolve_session_run_dir(self, session: Session) -> Path | None:
+    def _resolve_session_run_dir(self, session: Session) -> Path:
         """Resolve run_dir for events/diagnostics."""
         return resolve_session_run_dir(self._session_output, session)
 

@@ -16,6 +16,7 @@ class RoundFailureReason(str, enum.Enum):
     INVALID_RESPONSE = "invalid_response"
     SESSION_CLOSED = "session_closed"
     PROMPT_WRITE_FAILED = "prompt_write_failed"
+    PROMPT_NOT_ACCEPTED = "prompt_not_accepted"
     ROUND_ERROR = "round_error"
     UNKNOWN = "unknown"
 
@@ -27,11 +28,14 @@ class RoundFailureReason(str, enum.Enum):
 #   - TIMEOUT / INVALID_RESPONSE: the process is alive and responded, just not
 #     usefully. Respawning would kill a working process and could mask a stuck
 #     agent, so these are NOT recoverable by respawn.
+#   - PROMPT_NOT_ACCEPTED: the process stayed live but stopped emitting after
+#     prompt delivery, so the next reliable owner action is a fresh process.
 #   - NO_COMPLETION / ROUND_ERROR / UNKNOWN: ambiguous; not safe to auto-retry.
 PROCESS_UNUSABLE_FAILURE_REASONS: frozenset[RoundFailureReason] = frozenset({
     RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
     RoundFailureReason.SESSION_CLOSED,
     RoundFailureReason.PROMPT_WRITE_FAILED,
+    RoundFailureReason.PROMPT_NOT_ACCEPTED,
 })
 
 
@@ -76,6 +80,10 @@ _ROUND_FAILURE_PRESENTATION: dict[RoundFailureReason, RoundFailurePresentation] 
     RoundFailureReason.PROMPT_WRITE_FAILED: RoundFailurePresentation(
         chapter_label="prompt delivery failed",
         narrative_phrase="prompt delivery failed",
+    ),
+    RoundFailureReason.PROMPT_NOT_ACCEPTED: RoundFailurePresentation(
+        chapter_label="did not accept the prompt",
+        narrative_phrase="did not accept the prompt",
     ),
     RoundFailureReason.ROUND_ERROR: RoundFailurePresentation(
         chapter_label="round failed",

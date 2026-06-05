@@ -27,6 +27,7 @@ from issue_orchestrator.domain.models import (
     PendingReview,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 
 
@@ -156,16 +157,25 @@ class SessionBuilder:
         # Create a minimal mock agent config
         agent_config = MagicMock()
         agent_config.timeout_minutes = 60
-        agent_config.permission_mode = "bypassPermissions"
+        agent_config.provider_args = {"permission_mode": "bypassPermissions"}
+        agent_config.effective_permission_mode = "bypassPermissions"
         agent_config.command = "claude -p --model {model} {initial_prompt}"
 
+        terminal_id = self._terminal_id or f"issue-{self._issue.number}"
+        run_assets = FileSystemSessionOutput().start_run(
+            worktree_path=self._worktree_path,
+            session_name=terminal_id,
+            issue_number=self._issue.number,
+            agent_label=self._agent_label,
+        )
         return Session(
             key=session_key,
             issue=self._issue,
             agent_config=agent_config,
-            terminal_id=self._terminal_id or f"issue-{self._issue.number}",
+            terminal_id=terminal_id,
             worktree_path=self._worktree_path,
             branch_name=self._branch_name,
+            run_assets=run_assets,
             completion_path=self._completion_path,
             agent_label=self._agent_label,
         )

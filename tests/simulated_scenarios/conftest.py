@@ -12,14 +12,29 @@ import sys
 import pytest
 
 from issue_orchestrator.domain.models import Issue, AgentConfig
+from issue_orchestrator.domain.review_exchange_run import ReviewExchangeRunAssets
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
-from issue_orchestrator.ports.working_copy import BranchStatus, CommitInfo, DiffResult, PreflightResult, PushResult, RebaseResult
+from issue_orchestrator.ports.working_copy import (
+    BranchStatus,
+    CommitInfo,
+    DiffResult,
+    PreflightResult,
+    PushResult,
+    RebaseResult,
+)
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 from issue_orchestrator.infra.config import Config
-from tests.conftest import MockGitHubAdapter, MockEventSink, build_test_orchestrator_deps
+from tests.conftest import (
+    MockGitHubAdapter,
+    MockEventSink,
+    build_test_orchestrator_deps,
+)
 from issue_orchestrator.execution import CompositeEventSink
 from issue_orchestrator.execution.timeline_event_sink import TimelineEventSink
-from issue_orchestrator.execution.timeline_store import SqliteTimelineStore, TimelineStoreConfig
+from issue_orchestrator.execution.timeline_store import (
+    SqliteTimelineStore,
+    TimelineStoreConfig,
+)
 from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
 from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
 from issue_orchestrator.infra.orchestrator import Orchestrator
@@ -109,6 +124,10 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         ReviewExchangeOutcome,
         ReviewExchangeResponse,
     )
+    from issue_orchestrator.domain.review_exchange_summary import (
+        ReviewExchangeSummaryV1,
+    )
+    from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
     from issue_orchestrator.events import EventName
     from issue_orchestrator.execution.persistent_review_exchange_runner import (
         PersistentReviewExchangeRunner,
@@ -125,7 +144,8 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         }
     ]
     reviewer_responses_raw = overrides.get(
-        "reviewer_responses", default_reviewer_responses,
+        "reviewer_responses",
+        default_reviewer_responses,
     )
     coder_response_type = overrides.get("coder_response_type")
     rounds_override = overrides.get("rounds")
@@ -151,6 +171,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
     def _stub_run(
         self,
         *,
+        exchange_run,
         coder_worktree,
         issue_number,
         issue_title,  # noqa: ARG001
@@ -158,28 +179,20 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         reviewer_label,  # noqa: ARG001
         coder_agent,  # noqa: ARG001
         reviewer_agent,  # noqa: ARG001
+        runtime_config,
         max_rounds,
         max_no_progress,
         require_validation,
-        parent_session_name=None,  # noqa: ARG001 — added in PR #6271
         initial_validation_record_path=None,
         web_port=None,  # noqa: ARG001
         nit_policy="surface",
         events=None,
         event_context=None,
-        on_started=None,
     ):
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        session_name = f"review-exchange-{issue_number}-{timestamp}"
-        run = self._session_output.start_run(
-            coder_worktree,
-            session_name,
-            issue_number=issue_number,
-            agent_label=None,
-            backend="persistent-pty",
-        )
-        run_dir = run.run_dir
-        exchange_dir = run_dir / "review-exchange"
+        assert isinstance(runtime_config, RuntimeConfigReference)
+        session_name = exchange_run.session_name
+        run_dir = exchange_run.assets.run_dir
+        exchange_dir = exchange_run.assets.exchange_dir
         exchange_dir.mkdir(parents=True, exist_ok=True)
 
         # Mirror the real runner: when an initial validation record was
@@ -196,32 +209,35 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             if not seed_target.exists():
                 seed_target.write_bytes(initial_validation_record_path.read_bytes())
 
-        if on_started is not None:
-            on_started(run_dir)
-
         if write_validation_record_passed:
             (run_dir / "validation-record.json").write_text(
-                json.dumps({"passed": True}), encoding="utf-8",
+                json.dumps({"passed": True}),
+                encoding="utf-8",
             )
         if write_validation_record_failed:
             (run_dir / "validation-record.json").write_text(
-                json.dumps({"passed": False}), encoding="utf-8",
+                json.dumps({"passed": False}),
+                encoding="utf-8",
             )
 
         def _emit(name, payload):
             if events is None or event_context is None:
                 return
             from issue_orchestrator.ports import make_trace_event
+
             enriched = dict(payload)
             enriched["run_dir"] = str(run_dir)
-            enriched["session_run_id"] = run.run_id
+            enriched["session_run_id"] = exchange_run.run_id
             events.publish(make_trace_event(name, event_context.enrich(enriched)))
 
-        _emit(EventName.REVIEW_EXCHANGE_STARTED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "exchange_dir": str(exchange_dir),
-        })
+        _emit(
+            EventName.REVIEW_EXCHANGE_STARTED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "exchange_dir": str(exchange_dir),
+            },
+        )
 
         # Walk the scripted reviewer responses, capping at max_rounds.
         # If validation is required and no record exists, the runner's
@@ -243,7 +259,11 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             getting_closer = bool(entry.get("getting_closer", True))
             response_text = str(entry.get("response_text", "stub-reviewer"))
 
-            if response_type == "ok" and require_validation and not _validation_passed(run_dir):
+            if (
+                response_type == "ok"
+                and require_validation
+                and not _validation_passed(run_dir)
+            ):
                 response_type = "changes_requested"
                 response_text = "Validation record missing or failed"
                 getting_closer = False
@@ -255,16 +275,19 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
             )
             last_reviewer = reviewer
             rounds_run = round_index
-            _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "round_index": round_index,
-                "reviewer_response_type": reviewer.response_type,
-                "reviewer_response_text": reviewer.response_text,
-                "coder_response_type": coder_response_type,
-                "review_nit_policy": nit_policy,
-                "review_abstraction_status": "no_issues",
-            })
+            _emit(
+                EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
+                {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "reviewer_response_type": reviewer.response_type,
+                    "reviewer_response_text": reviewer.response_text,
+                    "coder_response_type": coder_response_type,
+                    "review_nit_policy": nit_policy,
+                    "review_abstraction_status": "no_issues",
+                },
+            )
 
             if response_type == "ok":
                 terminating_status = "ok"
@@ -276,7 +299,7 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
                 no_progress_streak = 0
             if max_no_progress > 0 and no_progress_streak >= max_no_progress:
                 terminating_status = "stopped"
-                terminating_reason = "no_progress"
+                terminating_reason = "reviewer_reports_no_progress"
                 break
         else:
             terminating_status = "stopped"
@@ -295,33 +318,40 @@ def _stub_persistent_review_exchange_setup(monkeypatch, request):
         if rounds_override is not None:
             rounds_run = int(rounds_override)
 
-        _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "rounds": rounds_run,
-            "status": terminating_status,
-            "reason": terminating_reason,
-            "review_nit_policy": nit_policy,
-            "review_abstraction_status": "no_issues",
-        })
-        summary = {
-            "completed_rounds": rounds_run,
-            "status": terminating_status,
-            "response_text": last_reviewer.response_text if last_reviewer else None,
-            "reason": terminating_reason,
-        }
+        _emit(
+            EventName.REVIEW_EXCHANGE_COMPLETED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "rounds": rounds_run,
+                "status": terminating_status,
+                "reason": terminating_reason,
+                "review_nit_policy": nit_policy,
+                "review_abstraction_status": "no_issues",
+            },
+        )
+        summary = ReviewExchangeSummaryV1.from_payload(
+            {
+                "completed_rounds": rounds_run,
+                "status": terminating_status,
+                "response_text": last_reviewer.response_text if last_reviewer else None,
+                "reason": terminating_reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
         # The real runner persists summary.json atomically into
         # exchange_dir; the orchestration logic reads it on the next
         # tick to decide cache-hit / advance / halt. Mirror that here so
         # scenario tests that walk the run-dir layout match production.
         from issue_orchestrator.infra.atomic_io import atomic_write_json
-        atomic_write_json(exchange_dir / "summary.json", summary)
+
+        atomic_write_json(exchange_dir / "summary.json", summary.to_payload())
         return ReviewExchangeOutcome(
             status=terminating_status,
             rounds=rounds_run,
             reason=terminating_reason,
+            run_assets=ReviewExchangeRunAssets.from_exchange_dir(exchange_dir),
             reviewer_response=last_reviewer,
-            exchange_dir=exchange_dir,
             summary=summary,
         )
 
@@ -346,7 +376,14 @@ class ScriptSessionRunner:
         self._last_output: dict[str, str] = {}
         self._runner = AgentRunner()
 
-    def create_session(self, session_id: int, command: str, working_dir: str, title: str | None, session_name: str) -> bool:
+    def create_session(
+        self,
+        session_id: int,
+        command: str,
+        working_dir: str,
+        title: str | None,
+        session_name: str,
+    ) -> bool:
         python_bin_dir = str(Path(sys.executable).parent)
 
         # Extract run_dir from command to determine log/output paths.
@@ -356,7 +393,9 @@ class ScriptSessionRunner:
             if not run_dir.is_absolute():
                 run_dir = (Path(working_dir) / run_dir).resolve()
         else:
-            run_dir = Path(working_dir) / ".issue-orchestrator" / "sessions" / "fallback"
+            run_dir = (
+                Path(working_dir) / ".issue-orchestrator" / "sessions" / "fallback"
+            )
 
         spec = AgentSpec(
             command=["bash", "-c", command],
@@ -392,7 +431,9 @@ class ScriptSessionRunner:
     def cleanup_idle_sessions(self) -> int:
         return 0
 
-    def get_session_output(self, session_id: int, lines: int, session_name: str) -> str | None:
+    def get_session_output(
+        self, session_id: int, lines: int, session_name: str
+    ) -> str | None:
         return self._last_output.get(session_name)
 
     def send_to_session(self, session_id: int, text: str, session_name: str) -> bool:
@@ -423,7 +464,14 @@ class FastScriptSessionRunner:
     def __init__(self) -> None:
         self._last_output: dict[str, str] = {}
 
-    def create_session(self, session_id: int, command: str, working_dir: str, title: str | None, session_name: str) -> bool:
+    def create_session(
+        self,
+        session_id: int,
+        command: str,
+        working_dir: str,
+        title: str | None,
+        session_name: str,
+    ) -> bool:
         python_bin_dir = str(Path(sys.executable).parent)
 
         match = _RUN_DIR_RE.search(command)
@@ -432,7 +480,9 @@ class FastScriptSessionRunner:
             if not run_dir.is_absolute():
                 run_dir = (Path(working_dir) / run_dir).resolve()
         else:
-            run_dir = Path(working_dir) / ".issue-orchestrator" / "sessions" / "fallback"
+            run_dir = (
+                Path(working_dir) / ".issue-orchestrator" / "sessions" / "fallback"
+            )
         run_dir.mkdir(parents=True, exist_ok=True)
 
         env = dict(os.environ)
@@ -468,7 +518,9 @@ class FastScriptSessionRunner:
     def cleanup_idle_sessions(self) -> int:
         return 0
 
-    def get_session_output(self, session_id: int, lines: int, session_name: str) -> str | None:
+    def get_session_output(
+        self, session_id: int, lines: int, session_name: str
+    ) -> str | None:
         return self._last_output.get(session_name)
 
     def send_to_session(self, session_id: int, text: str, session_name: str) -> bool:
@@ -524,7 +576,9 @@ class StubWorkingCopy:
         return self.branch
 
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
-        return BranchStatus(branch=self.branch, ahead=0, behind=0, has_remote=True, clean=True)
+        return BranchStatus(
+            branch=self.branch, ahead=0, behind=0, has_remote=True, clean=True
+        )
 
     def has_uncommitted_changes(self, worktree: Path) -> bool:
         return False
@@ -538,22 +592,35 @@ class StubWorkingCopy:
     def fetch(self, worktree: Path, remote: str = "origin") -> bool:
         return True
 
-    def list_remote_branches(self, repo_root: Path, remote: str = "origin") -> list[str]:
+    def list_remote_branches(
+        self, repo_root: Path, remote: str = "origin"
+    ) -> list[str]:
         return [f"{remote}/{self.branch}"]
 
-    def get_commits_ahead_count(self, repo_root: Path, branch: str, base: str = "origin/main") -> int:
+    def get_commits_ahead_count(
+        self, repo_root: Path, branch: str, base: str = "origin/main"
+    ) -> int:
         return 0
 
     def get_last_commit_date(self, repo_root: Path, branch: str) -> str | None:
         return None
 
-    def rebase_on_branch(self, worktree: Path, target: str = "origin/main") -> RebaseResult:
+    def rebase_on_branch(
+        self, worktree: Path, target: str = "origin/main"
+    ) -> RebaseResult:
         return RebaseResult(success=True, message="ok")
 
     def create_branch_from_current(self, worktree: Path, branch: str) -> None:
         self.branch = branch
 
-    def push(self, worktree: Path, remote: str = "origin", force_with_lease: bool = True, set_upstream: bool = True, skip_hooks: bool = False) -> PushResult:
+    def push(
+        self,
+        worktree: Path,
+        remote: str = "origin",
+        force_with_lease: bool = True,
+        set_upstream: bool = True,
+        skip_hooks: bool = False,
+    ) -> PushResult:
         return PushResult(success=True, branch=self.branch, remote=remote, message="ok")
 
     def diff_against_base(self, worktree: Path, base_ref: str) -> DiffResult:
@@ -568,7 +635,9 @@ class StubWorkingCopy:
     def push_preflight(self, worktree: Path, remote: str = "origin") -> PreflightResult:
         return PreflightResult(would_succeed=True)
 
-    def delete_remote_branch(self, repo_root: Path, branch: str, remote: str = "origin") -> bool:
+    def delete_remote_branch(
+        self, repo_root: Path, branch: str, remote: str = "origin"
+    ) -> bool:
         return True
 
     # --- Extra methods for CompletionProcessor.GitAdapter protocol ---
@@ -602,9 +671,24 @@ class TempWorktreeManager:
         final_branch = branch_name or f"{issue_number}-sim"
         # Use a real git repo so branch/introspection commands work in scenarios.
         subprocess.run(["git", "init"], cwd=worktree, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=worktree, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Test User"], cwd=worktree, check=True, capture_output=True)
-        subprocess.run(["git", "checkout", "-b", final_branch], cwd=worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "-b", final_branch],
+            cwd=worktree,
+            check=True,
+            capture_output=True,
+        )
         return WorktreeInfo(path=worktree, branch_name=final_branch)
 
     def remove(self, worktree_path: Path) -> None:
@@ -636,6 +720,7 @@ def build_config(
 ) -> Config:
     config = Config()
     config.repo_root = repo_root
+    config.config_path = _write_runtime_config(repo_root, validation_cmd)
     config.repo = "local/test"
     config.worktree_base = repo_root / ".issue-orchestrator" / "worktrees"
     config.worktree_base.mkdir(parents=True, exist_ok=True)
@@ -684,6 +769,25 @@ def build_config(
         ),
     }
     return config
+
+
+def _write_runtime_config(repo_root: Path, validation_cmd: str | None) -> Path:
+    config_path = repo_root / ".issue-orchestrator" / "config" / "default.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    quick = {"cmd": validation_cmd, "timeout_seconds": 5} if validation_cmd else {}
+    config_path.write_text(
+        json.dumps(
+            {
+                "validation": {
+                    "quick": quick,
+                    "publish": quick,
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return config_path.resolve()
 
 
 class FreshIssueReader:
@@ -768,13 +872,19 @@ def run_until(orchestrator: Orchestrator, predicate, max_ticks: int = 10) -> Non
     raise AssertionError("predicate not satisfied before max_ticks")
 
 
-def run_until_event(orchestrator: Orchestrator, events: MockEventSink, name, max_ticks: int = 10) -> None:
+def run_until_event(
+    orchestrator: Orchestrator, events: MockEventSink, name, max_ticks: int = 10
+) -> None:
     def _predicate() -> bool:
         return any(e.name == name for e in events.events)
+
     run_until(orchestrator, _predicate, max_ticks=max_ticks)
 
 
-def run_until_pending_reviews(orchestrator: Orchestrator, expected: int, max_ticks: int = 10) -> None:
+def run_until_pending_reviews(
+    orchestrator: Orchestrator, expected: int, max_ticks: int = 10
+) -> None:
     def _predicate() -> bool:
         return len(orchestrator.state.pending_reviews) >= expected
+
     run_until(orchestrator, _predicate, max_ticks=max_ticks)

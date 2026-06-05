@@ -503,12 +503,17 @@ class AwaitingMergeReconciler:
             ), None
         if action == "BLOCKED_TERMINAL":
             return None, self._build_branch_protection_escalation(
-                pr=pr, issue_number=entry.issue_number, pr_number=pr_number,
+                pr=pr,
+                issue_number=entry.issue_number,
+                issue_key=issue.key.stable_id(),
+                pr_number=pr_number,
             )
         if action == "WAIT_FOR_CHECKS":
             return None, self._maybe_escalate_pending_checks(
                 state=state, pr=pr,
-                issue_number=entry.issue_number, pr_number=pr_number,
+                issue_number=entry.issue_number,
+                issue_key=issue.key.stable_id(),
+                pr_number=pr_number,
             )
         # READY / UNKNOWN — nothing to do.
         return None, None
@@ -525,7 +530,8 @@ class AwaitingMergeReconciler:
             return False
         if self.label_manager.code_reviewed not in pr.labels:
             return False
-        if self.label_manager.needs_rework in pr.labels:
+        terminal_labels = (self.label_manager.needs_human, self.label_manager.needs_rework)
+        if any(label in pr.labels for label in terminal_labels):
             return False
         if any(s.issue.number == entry.issue_number for s in state.active_sessions):
             return False
@@ -558,7 +564,12 @@ class AwaitingMergeReconciler:
         )
 
     def _build_branch_protection_escalation(
-        self, *, pr: PRInfo, issue_number: int, pr_number: int,
+        self,
+        *,
+        pr: PRInfo,
+        issue_number: int,
+        issue_key: str,
+        pr_number: int,
     ) -> DiscoveredAwaitingMergeEscalation:
         # blocked + SUCCESS rollup: branch protection (CODEOWNERS,
         # approvals, signatures) blocks merge. Code rework can't help —
@@ -567,6 +578,7 @@ class AwaitingMergeReconciler:
         return _build_escalation(
             pr=pr,
             issue_number=issue_number,
+            issue_key=issue_key,
             pr_number=pr_number,
             label_manager=self.label_manager,
             kind="branch_protection_blocked",
@@ -584,6 +596,7 @@ class AwaitingMergeReconciler:
         state: OrchestratorState,
         pr: PRInfo,
         issue_number: int,
+        issue_key: str,
         pr_number: int,
     ) -> DiscoveredAwaitingMergeEscalation | None:
         """Run the WAIT_FOR_CHECKS timeout state machine for one PR.
@@ -608,6 +621,7 @@ class AwaitingMergeReconciler:
         return _build_escalation(
             pr=pr,
             issue_number=issue_number,
+            issue_key=issue_key,
             pr_number=pr_number,
             label_manager=self.label_manager,
             kind="checks_pending_timeout",
@@ -797,6 +811,7 @@ def _build_escalation(
     *,
     pr: PRInfo,
     issue_number: int,
+    issue_key: str,
     pr_number: int,
     label_manager: LabelManager,
     kind: PostPublishEscalationKind,
@@ -806,30 +821,8 @@ def _build_escalation(
         issue_number=issue_number,
         pr_number=pr_number,
         pr_url=pr.url,
+        issue_key=issue_key,
         rework_cycle=_next_rework_cycle(pr.labels, label_manager),
         kind=kind,
         reason=reason,
-    )
-
-
-# Markdown body posted to the PR when the post-publish gate escalates
-# (distinct from the rework-cycles-exceeded comment).
-def build_post_publish_escalation_comment(
-    *, kind: PostPublishEscalationKind, reason: str
-) -> str:
-    if kind == "checks_pending_timeout":
-        title = "⏱ Escalated to Human Review (CI checks timed out)"
-    else:  # branch_protection_blocked
-        title = "🛑 Escalated to Human Review (branch protection)"
-    return (
-        f"## {title}\n\n"
-        f"This PR was approved by the reviewer but cannot be merged "
-        f"automatically.\n\n"
-        f"**Diagnosis:** {reason}\n\n"
-        f"**A human is needed to:**\n"
-        f"- Investigate why merge is blocked.\n"
-        f"- Either complete the merge manually, adjust branch "
-        f"protection, or unblock CI; or\n"
-        f"- Provide additional guidance and remove the "
-        f"`blocked-needs-human` label so the orchestrator can resume."
     )

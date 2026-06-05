@@ -34,6 +34,7 @@ from ..domain.models import (
     ObservedCompletion,
     active_retrospective_review_issue_numbers,
 )
+from ..domain.post_publish_escalation import build_post_publish_escalation_comment
 if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -69,9 +70,7 @@ from .actions import (
     SyncLabelsAction,
 )
 from .awaiting_merge_reconciler import (
-    POST_PUBLISH_VALIDATION_SOURCE,
-    build_post_publish_escalation_comment,
-    build_post_publish_validation_comment,
+    POST_PUBLISH_VALIDATION_SOURCE, build_post_publish_validation_comment,
 )
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
@@ -358,6 +357,7 @@ class Planner:
 
         # Get already-queued PR numbers
         queued_pr_numbers = {r.pr_number for r in snapshot.pending_reviews}
+        issue_labels_by_number = {issue.number: tuple(issue.labels) for issue in snapshot.issues}
 
         for review in snapshot.discovered_reviews:
             if review.pr_number not in queued_pr_numbers:
@@ -384,6 +384,7 @@ class Planner:
                         reason=f"session completed with PR #{review.pr_number}",
                         expected=build_expected_for_mutation(),
                         issue_key=ik,
+                        issue_labels=issue_labels_by_number.get(review.issue_number, ()),
                     ))
                     logger.debug("Planner: queuing review for PR #%d", review.pr_number)
                 else:
@@ -870,9 +871,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         for escalation in snapshot.discovered_awaiting_merge_escalations:
             issue = issues_by_number.get(escalation.issue_number)
-            issue_key = issue.key.stable_id() if issue else str(escalation.issue_number)
+            issue_key = issue.key.stable_id() if issue else escalation.issue_key
             comment = build_post_publish_escalation_comment(
                 kind=escalation.kind, reason=escalation.reason,
+                needs_human_label=self._lm.needs_human,
             )
             actions.append(EscalateToHumanAction(
                 issue_number=escalation.issue_number,

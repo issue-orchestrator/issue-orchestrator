@@ -15,6 +15,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def _make_session_key(issue_number: int = 1, task: TaskKind = TaskKind.CODE) -> SessionKey:
@@ -157,8 +158,211 @@ class TestAgentConfig:
         assert config.model == "sonnet"
         assert config.timeout_minutes == 45
 
-    def test_get_command_legacy_includes_system_prompt_variable(self, tmp_path):
-        """Test legacy command path includes {system_prompt} with completion command docs."""
+    def test_effective_permission_mode_provider_args_wins(self, tmp_path):
+        """provider_args.permission_mode is the single config spelling."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+        )
+
+        assert config.effective_permission_mode == "bypassPermissions"
+
+    def test_effective_permission_mode_defaults_when_unset(self, tmp_path):
+        """Without provider_args.permission_mode, the mode is 'default'."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file)
+
+        assert config.effective_permission_mode == "default"
+
+    def test_provider_args_permission_mode_reaches_launch_command(self, tmp_path):
+        """A claude agent configured via provider_args launches with that mode."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            provider_args={"permission_mode": "bypassPermissions"},
+        )
+
+        command = config.get_command(
+            issue_number=1, issue_title="Title", worktree=tmp_path
+        )
+
+        assert "--permission-mode bypassPermissions" in command
+
+    def test_review_task_kind_defaults_to_review_initial_prompt(self, tmp_path):
+        """Review launches without an explicit initial_prompt get the review
+        default, never the coding-flavored field default."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file)
+
+        rendered = config.render_initial_prompt(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            pr_number=42,
+            task_kind=TaskKind.REVIEW.value,
+        )
+
+        assert "reviewer-done" in rendered
+        assert "PR #42" in rendered
+        assert "coding-done" not in rendered
+
+    def test_retrospective_review_task_kind_defaults_to_review_initial_prompt(
+        self, tmp_path
+    ):
+        """Retrospective review launches also get the review default."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file)
+
+        rendered = config.render_initial_prompt(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            pr_number=42,
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW.value,
+        )
+
+        assert "reviewer-done" in rendered
+        assert "coding-done" not in rendered
+
+    def test_code_task_kind_keeps_coding_initial_prompt(self, tmp_path):
+        """Code launches keep the coding default initial prompt."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file)
+
+        rendered = config.render_initial_prompt(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            task_kind=TaskKind.CODE.value,
+        )
+
+        assert "coding-done" in rendered
+        assert "reviewer-done" not in rendered
+
+    def test_explicit_initial_prompt_wins_for_review_task_kind(self, tmp_path):
+        """An explicitly configured initial_prompt is used as-is for any kind."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            initial_prompt="Custom review flow for #{issue_number}",
+        )
+
+        rendered = config.render_initial_prompt(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            pr_number=42,
+            task_kind=TaskKind.REVIEW.value,
+        )
+
+        assert rendered == "Custom review flow for #7"
+
+    def test_get_command_review_kind_uses_review_initial_prompt(self, tmp_path):
+        """The review default flows through get_command for review launches."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(prompt_path=prompt_file, provider="claude-code")
+
+        command = config.get_command(
+            issue_number=7,
+            issue_title="Title",
+            worktree=tmp_path,
+            pr_number=42,
+            task_kind=TaskKind.REVIEW.value,
+        )
+
+        assert "use reviewer-done to report your verdict" in command
+
+    def test_resolve_launch_provider_prefers_explicit_provider(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(
+            prompt_path=prompt_file, provider="codex", ai_system="claude-code",
+        )
+        assert config.resolve_launch_provider() == "codex"
+
+    def test_resolve_launch_provider_falls_back_to_ai_system(self, tmp_path):
+        """An ai_system-only agent must launch its REAL agent, not the legacy
+        claude template — classification and launch must agree (the
+        real-codex exchange smoke test caught an ai_system="codex" reviewer
+        silently booting print-mode claude and hanging the round)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(prompt_path=prompt_file, ai_system="codex")
+        assert config.resolve_launch_provider() == "codex"
+
+    def test_resolve_launch_provider_honors_custom_command_override(self, tmp_path):
+        """A custom command template is an intentional override (exchange
+        stub agents set one alongside a real ai_system) — it must keep
+        template-based launching."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(
+            prompt_path=prompt_file, ai_system="codex", command="python -u stub.py",
+        )
+        assert config.resolve_launch_provider() is None
+
+    def test_resolve_launch_provider_none_when_nothing_configured(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(prompt_path=prompt_file)
+        assert config.resolve_launch_provider() is None
+
+    def test_provider_command_omits_claude_default_model_for_codex(self, tmp_path):
+        """The untouched model default ("sonnet") is claude vocabulary; it
+        must not be forwarded to codex (``--model sonnet`` gets a 400 from
+        the codex backend and the TUI idles for the whole round timeout —
+        caught live by the real-codex exchange smoke test)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(prompt_path=prompt_file, provider="codex")
+        command = config.get_command(
+            issue_number=1, issue_title="t", worktree=tmp_path,
+        )
+        assert "--model" not in command
+
+    def test_provider_command_forwards_explicit_model_for_codex(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(
+            prompt_path=prompt_file, provider="codex", model="gpt-5-codex",
+        )
+        command = config.get_command(
+            issue_number=1, issue_title="t", worktree=tmp_path,
+        )
+        assert "--model gpt-5-codex" in command
+
+    def test_provider_command_keeps_default_model_for_claude(self, tmp_path):
+        """claude-code owns the "sonnet" default — forwarding it is correct
+        and preserves existing behavior."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("p")
+        config = AgentConfig(prompt_path=prompt_file, provider="claude-code")
+        command = config.get_command(
+            issue_number=1, issue_title="t", worktree=tmp_path,
+        )
+        assert "--model sonnet" in command
+
+    def test_get_command_template_includes_system_prompt_variable(self, tmp_path):
+        """Test custom command path includes {system_prompt} with completion command docs."""
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Task instructions")
 
@@ -357,8 +561,10 @@ class TestAgentConfig:
 
         import shlex
         tokens = shlex.split(cmd)
-        assert tokens[:2] == ["codex", "exec"]
-        assert "--full-auto" in tokens
+        assert tokens[0] == "codex"
+        assert "exec" not in tokens[:2]
+        assert "--ask-for-approval" in tokens
+        assert "never" in tokens
         assert "gpt-5.4" in tokens
         config_idx = tokens.index("-c")
         assert tokens[config_idx + 1] == 'model_reasoning_effort="xhigh"'
@@ -377,6 +583,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
         )
 
         assert session.issue == issue
@@ -399,6 +609,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
             started_at=past,
         )
 
@@ -419,6 +633,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
             started_at=recent,
         )
 
@@ -442,6 +660,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
             started_at=old,
         )
 
@@ -457,6 +679,10 @@ class TestSession:
             terminal_id="test-session",
             worktree_path=Path("/tmp/worktree"),
             branch_name="feature/test",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="test-session",
+            ),
         )
 
         assert session.status == SessionStatus.RUNNING
@@ -525,6 +751,10 @@ class TestOrchestratorState:
             terminal_id="retrospective-review-367",
             worktree_path=Path("/tmp/work367"),
             branch_name="issue-367",
+            run_assets=make_session_run_assets(
+                Path("/tmp/work367"),
+                session_name="retrospective-review-367",
+            ),
         )
         restored_legacy_issue = Issue(number=368, title="Restored", labels=["agent:web"])
         restored_legacy_session = Session(
@@ -534,6 +764,10 @@ class TestOrchestratorState:
             terminal_id="retrospective-review-368",
             worktree_path=Path("/tmp/work368"),
             branch_name="issue-368",
+            run_assets=make_session_run_assets(
+                Path("/tmp/work368"),
+                session_name="retrospective-review-368",
+            ),
         )
         state = OrchestratorState(
             active_sessions=[active_session, restored_legacy_session],
@@ -581,6 +815,10 @@ class TestOrchestratorState:
             terminal_id="session-1",
             worktree_path=Path("/tmp/work1"),
             branch_name="feature/1",
+            run_assets=make_session_run_assets(
+                Path("/tmp/work1"),
+                session_name="session-1",
+            ),
         )
 
         state = OrchestratorState(
