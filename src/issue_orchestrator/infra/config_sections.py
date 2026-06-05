@@ -437,8 +437,6 @@ def load_review_section(config: "Config", review_section: dict) -> None:
             "default_policy",
             "surface",
         )
-        # Assign raw - malformed values must reach validate() and fail
-        # loudly there, never be silently coerced to an empty mapping.
         by_agent = nits_section.get("by_agent", {})
         config.review_nits_by_agent = dict(by_agent) if isinstance(by_agent, dict) else by_agent
     exchange_section = review_section.get("exchange", {})

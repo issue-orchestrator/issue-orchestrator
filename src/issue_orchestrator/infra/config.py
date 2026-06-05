@@ -76,6 +76,7 @@ from .config_sections import (
     parse_filtering_config,
     parse_milestone_order,
 )
+from .config_value_rules import validate_review_nit_policy
 from .validation_config_loader import (
     load_validation_config as load_validation_config,
     load_validation_config_from_file as load_validation_config_from_file,
@@ -1352,25 +1353,9 @@ class Config:
     def _validate_review_nit_policy_config(self) -> list[str]:
         """Validate review nit policy settings."""
 
-        errors: list[str] = []
-        valid_nit_policies = {"ignore", "surface", "address"}
-        if self.review_nits_default_policy not in valid_nit_policies:
-            errors.append("review.nits.default_policy must be one of: ignore, surface, address")
-        if not isinstance(self.review_nits_by_agent, dict):
-            errors.append(
-                "review.nits.by_agent must be a mapping of coder agent label to policy"
-            )
-            return errors
-        for agent_label, policy in self.review_nits_by_agent.items():
-            if not isinstance(agent_label, str):
-                errors.append(
-                    f"review.nits.by_agent key {agent_label!r} must be a string agent label"
-                )
-            if policy not in valid_nit_policies:
-                errors.append(
-                    f"review.nits.by_agent.{agent_label} must be one of: ignore, surface, address"
-                )
-        return errors
+        return validate_review_nit_policy(
+            self.review_nits_default_policy, self.review_nits_by_agent
+        )
 
     def _validate_retrospective_review_config(self) -> list[str]:
         """Validate review-first existing-implementation rerun settings."""
