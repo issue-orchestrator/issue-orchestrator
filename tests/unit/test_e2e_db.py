@@ -1,6 +1,7 @@
 """Unit tests for E2E database layer."""
 
 import json
+import sqlite3
 import pytest
 import tempfile
 from datetime import datetime, timezone
@@ -160,6 +161,48 @@ class TestE2EDB:
         assert [artifact["kind"] for artifact in artifacts] == ["junit_xml", "raw_log"]
         assert artifacts[0]["path"] == "/tmp/junit.xml"
 
+    def test_prune_old_runs_deletes_run_scoped_report_artifacts(
+        self,
+        db: E2EDB,
+        tmp_path: Path,
+    ):
+        """Retention pruning should remove report snapshots for pruned runs."""
+        first = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
+        db.finish_run(first, "passed", exit_code=0)
+        second = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
+        db.finish_run(second, "passed", exit_code=0)
+
+        worktree = tmp_path / "repo-e2e-worktree"
+        first_dir = worktree / ".issue-orchestrator" / "e2e-results" / f"run_{first}"
+        second_dir = worktree / ".issue-orchestrator" / "e2e-results" / f"run_{second}"
+        first_dir.mkdir(parents=True)
+        second_dir.mkdir(parents=True)
+        (first_dir / "results.xml").write_text("old", encoding="utf-8")
+        (second_dir / "results.xml").write_text("new", encoding="utf-8")
+        timeline_db = worktree / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        timeline_db.parent.mkdir(parents=True)
+        with sqlite3.connect(timeline_db) as conn:
+            conn.execute(
+                "CREATE TABLE timeline_events (event_id TEXT, timestamp TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO timeline_events (event_id, timestamp) VALUES (?, ?)",
+                ("old-event", "2000-01-01T00:00:00+00:00"),
+            )
+            conn.execute(
+                "INSERT INTO timeline_events (event_id, timestamp) VALUES (?, ?)",
+                ("new-event", "2999-01-01T00:00:00+00:00"),
+            )
+
+        pruned = db.prune_old_runs(1, e2e_worktree_path=worktree)
+
+        assert pruned == 1
+        assert not first_dir.exists()
+        assert second_dir.exists()
+        with sqlite3.connect(timeline_db) as conn:
+            rows = conn.execute("SELECT event_id FROM timeline_events").fetchall()
+        assert [row[0] for row in rows] == ["new-event"]
+
     def test_record_junit_cases(self, db: E2EDB):
         """Parsed JUnit cases should populate generic result metadata."""
         run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
@@ -197,6 +240,29 @@ class TestE2EDB:
         assert by_case_id["suite::test_fails"]["failure_summary"] == "AssertionError"
         assert by_case_id["suite::test_fails"]["stdout_available"] is False
         assert by_case_id["suite::test_fails"]["stderr_available"] is True
+
+    def test_record_junit_cases_marks_quarantined_cases(self, db: E2EDB):
+        """JUnit ingestion should apply the quarantine list at the DB boundary."""
+        run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
+
+        db.record_junit_cases(
+            run_id,
+            [
+                JUnitCaseResult(
+                    case_id="suite::test_known_flaky",
+                    display_name="test_known_flaky",
+                    suite_name="suite",
+                    outcome="failed",
+                    duration_seconds=1.2,
+                    failure_details="AssertionError",
+                ),
+            ],
+            quarantine={"suite::test_known_flaky"},
+        )
+
+        result = db.run_details(run_id)["results"][0]
+        assert result["is_quarantined"] is True
+        assert db.get_failed_tests(run_id) == []
 
     def test_runtime_updates_preserve_persisted_captured_output_availability(
         self,
@@ -252,15 +318,14 @@ class TestE2EDB:
         db.upsert_test_result(run_id, "test::fail1", "failed", 2.0, "Error 1")
         db.upsert_test_result(run_id, "test::pass2", "passed", 1.5, None)
         db.upsert_test_result(run_id, "test::fail2", "failed", 3.0, "Error 2")
-        # Error outcome is not included in get_failed_tests (only 'failed')
+        # Error outcomes should be treated as actionable failures too.
         db.upsert_test_result(run_id, "test::error1", "error", 0.5, "Error 3")
 
         failed = db.get_failed_tests(run_id)
 
-        # Only 'failed' outcomes (not 'error') are returned
-        assert len(failed) == 2
+        assert len(failed) == 3
         nodeids = {t.nodeid for t in failed}
-        assert nodeids == {"test::fail1", "test::fail2"}
+        assert nodeids == {"test::fail1", "test::fail2", "test::error1"}
 
     def test_list_runs(self, db: E2EDB):
         """Test listing runs with limit."""

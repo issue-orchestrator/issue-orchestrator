@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -363,28 +363,6 @@ def _empty_captured_output_availability() -> dict[str, bool]:
         "stdout_available": False,
         "stderr_available": False,
     }
-
-
-def _iter_junit_case_rows(
-    junit_paths: list[Any],
-    *,
-    run_id: int,
-) -> Iterator[tuple[Path, Any, Any]]:
-    """Yield source path, raw case, and pytest-normalized case from run XMLs."""
-    from ..infra.e2e_reports import parse_junit_report_cached
-
-    for path_like in junit_paths:
-        path = Path(path_like)
-        if not path.exists():
-            logger.warning("JUnit XML for run %s missing on disk: %s", run_id, path)
-            continue
-        try:
-            raw_cases, normalized_cases = parse_junit_report_cached(path)
-        except ValueError:
-            logger.warning("Skipping malformed JUnit XML for run %s: %s", run_id, path)
-            continue
-        for raw_case, norm_case in zip(raw_cases, normalized_cases):
-            yield path, raw_case, norm_case
 
 
 def _public_e2e_existing_issue(issue: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -762,36 +740,6 @@ async def get_e2e_run_detail(
     return E2ERunDetailPayload.model_validate(payload)
 
 
-def _captured_output_from_junit(
-    junit_paths: list[Any],
-    nodeid: str,
-    *,
-    run_id: int,
-) -> dict[str, Any] | None:
-    """Walk the run's JUnit XMLs looking for captured output for one nodeid.
-
-    Returns the JSON-serializable payload to send back, or None when no XML
-    contained a matching case with non-empty captured output. Handles both
-    raw and normalized pytest case-ids so the endpoint works for any runner.
-    Uses the parser's mtime-keyed cache so a failure-heavy run reparses the
-    same on-disk XML at most once per file change.
-    """
-    for path, raw_case, norm_case in _iter_junit_case_rows(
-        junit_paths,
-        run_id=run_id,
-    ):
-        matches = nodeid in (raw_case.case_id, norm_case.case_id)
-        has_output = raw_case.system_out is not None or raw_case.system_err is not None
-        if matches and has_output:
-            return {
-                "nodeid": nodeid,
-                "system_out": raw_case.system_out,
-                "system_err": raw_case.system_err,
-                "source_path": str(path),
-            }
-    return None
-
-
 @web_issue_detail_router.get(
     "/api/e2e-run/{run_id}/test-output",
     response_model=E2ETestOutputPayload,
@@ -825,7 +773,8 @@ async def get_e2e_run_test_output(
             status_code=404,
         )
     db = E2EDB(db_path)
-    if db.get_run(run_id) is None:
+    run = db.get_run(run_id)
+    if run is None:
         return JSONResponse(
             {"error": "not_found", "detail": f"E2E run {run_id} not found"},
             status_code=404,
@@ -836,22 +785,28 @@ async def get_e2e_run_test_output(
         for artifact in db.list_run_artifacts(run_id)
         if artifact.kind == "junit_xml"
     ]
+    from .e2e_test_output_reader import load_e2e_test_output
+
+    payload = load_e2e_test_output(
+        repo_root=Path(run.repo_root),
+        run_id=run_id,
+        nodeid=nodeid_clean,
+        junit_paths=junit_paths,
+    )
+    if payload is not None:
+        return payload
     if not junit_paths:
         return JSONResponse(
             {"error": "no_junit", "detail": f"No JUnit XML artifact for run {run_id}"},
             status_code=404,
         )
-
-    payload = _captured_output_from_junit(junit_paths, nodeid_clean, run_id=run_id)
-    if payload is None:
-        return JSONResponse(
-            {
-                "error": "not_found",
-                "detail": f"No captured output recorded for nodeid {nodeid_clean!r}",
-            },
-            status_code=404,
-        )
-    return E2ETestOutputPayload.model_validate(payload)
+    return JSONResponse(
+        {
+            "error": "not_found",
+            "detail": f"No captured output recorded for nodeid {nodeid_clean!r}",
+        },
+        status_code=404,
+    )
 
 
 @web_issue_detail_router.get(

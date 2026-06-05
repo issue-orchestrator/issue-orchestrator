@@ -30,7 +30,6 @@ import pytest
 from issue_orchestrator.execution.agent_runner import AgentRunner
 from issue_orchestrator.execution.agent_runner_types import AgentSpec, RetryPolicy
 from issue_orchestrator.execution.persistent_round_runner import (
-    PersistentSession,
     close_persistent_session,
     open_persistent_session,
     send_round,
@@ -450,75 +449,19 @@ class TestLiveAgentChain:
                 return
             time.sleep(0.2)
 
-    @staticmethod
-    def _open_codex_session_after_launch_task(
-        *,
-        command: list[str],
-        work_dir: Path,
-        env: dict[str, str],
-        response_file: Path,
-        max_attempts: int = 2,
-        launch_timeout_seconds: float = 120.0,
-    ) -> PersistentSession:
-        from issue_orchestrator.execution.persistent_round_runner import (
-            _drain_pty_output,
-        )
-
-        last_failure = "no attempts made"
-        for attempt in range(1, max_attempts + 1):
-            response_file.unlink(missing_ok=True)
-            session = open_persistent_session(
-                command=command, working_dir=work_dir, env=env,
-            )
-            launch_succeeded = False
-            try:
-                deadline = time.monotonic() + launch_timeout_seconds
-                while time.monotonic() < deadline:
-                    _drain_pty_output(session)
-                    if launch_response := TestLiveAgentChain._read_ok_response(
-                        response_file
-                    ):
-                        assert launch_response == {"response_type": "ok"}
-                        launch_succeeded = True
-                        return session
-                    if session.proc.poll() is not None:
-                        last_failure = (
-                            "codex exited during round 1 on attempt "
-                            f"{attempt}, code={session.proc.poll()}"
-                        )
-                        break
-                    time.sleep(0.3)
-                else:
-                    last_failure = (
-                        "interactive codex did not finish its launch-arg task "
-                        f"in {launch_timeout_seconds:.0f}s on attempt {attempt}"
-                    )
-            finally:
-                if not launch_succeeded:
-                    close_persistent_session(session)
-        pytest.fail(f"{last_failure} after {max_attempts} attempt(s)")
-
-    @staticmethod
-    def _read_ok_response(response_file: Path) -> dict[str, object] | None:
-        if not response_file.exists():
-            return None
-        try:
-            parsed = json.loads(response_file.read_text())
-        except json.JSONDecodeError:
-            return None
-        if parsed == {"response_type": "ok"}:
-            return parsed
-        return None
-
+    @pytest.mark.live_codex
     def test_persistent_send_round_multi_round_real_codex_interactive(self) -> None:
         """The reviewer is INTERACTIVE codex (the production default): one
-        persistent TUI process across multiple rounds. Round 1 is the
-        launch-arg task; rounds 2 and 3 are injected with ``send_round`` and
-        MUST submit via the two-write prompt+Enter contract — codex treats a
-        \\r batched with the prompt text as a literal newline in its input box
-        (renders, never submits), which is exactly the tixmeup #277/#290 hang
-        class. The command is built via the codex provider so this test tracks
-        the real production invocation."""
+        persistent TUI process across multiple rounds.
+
+        Production launches codex with a bootstrap prompt telling it to wait
+        for stdin, then each real review turn is injected with ``send_round``.
+        The injected rounds MUST submit via the two-write prompt+Enter contract
+        — codex treats a ``\r`` batched with the prompt text as a literal
+        newline in its input box (renders, never submits), which is exactly the
+        tixmeup #277/#290 hang class. The command is built via the codex
+        provider so this test tracks the real production invocation.
+        """
         if shutil.which("codex") is None:
             pytest.skip("codex CLI not installed")
         from issue_orchestrator.execution.agent_runner_providers import get_provider
@@ -526,6 +469,12 @@ class TestLiveAgentChain:
         repo_root = Path(__file__).resolve().parents[2]
         work_dir = Path(tempfile.mkdtemp(prefix=".live-codex-int-", dir=repo_root))
         response_file = work_dir / "review-response.json"
+        bootstrap = (
+            "You are the reviewer in a persistent review exchange. Wait for "
+            "the orchestrator to send each turn via stdin, write exactly one "
+            "line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE for "
+            "each turn, then keep waiting for the next prompt."
+        )
         task = (
             "Run exactly this one shell command and nothing else (no "
             "sleeping, no waiting commands): "
@@ -535,27 +484,29 @@ class TestLiveAgentChain:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] = str(response_file)
         command = get_provider("codex").build_command(
-            task, execution_mode="interactive", approval_mode="full-auto",
+            bootstrap,
+            execution_mode="interactive",
+            approval_mode="full-auto",
+            reasoning_effort="low",
         )
 
-        session = self._open_codex_session_after_launch_task(
-            command=command, work_dir=work_dir, env=env,
-            response_file=response_file,
+        session = open_persistent_session(
+            command=command, working_dir=work_dir, env=env,
         )
         try:
             assert session.proc.poll() is None, (
-                "interactive codex must stay alive after round 1 — it is a "
-                "persistent TUI, not the one-shot exec mode"
+                "interactive codex must stay alive after launch — it is a "
+                "persistent TUI, not one-shot exec mode"
             )
 
-            for n in (2, 3):
+            for n in (1, 2, 3):
                 self._wait_for_pty_idle(session, quiet_seconds=3.0, max_wait=30.0)
                 response_file.unlink(missing_ok=True)
                 result = send_round(
                     session,
                     prompt=task,
                     response_file=response_file,
-                    timeout_seconds=90,
+                    timeout_seconds=120,
                     poll_interval_seconds=0.3,
                     role_label=f"reviewer@round-{n}",
                 )

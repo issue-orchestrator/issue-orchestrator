@@ -10,7 +10,7 @@
 // ``{results_by_category: {untriaged, has_issue, flaky, fixed, passed,
 // quarantined, skipped}, lifecycle, issue_affordances, run, artifacts, ...}``.
 //
-// ``e2eRunToCanonicalPayload(runData) → canonicalPayload`` is a pure
+// ``e2eRunToCanonicalPayload(runData) -> canonicalPayload`` is a pure
 // function that converts the former to the latter.  It is the single seam
 // where orchestrator-workflow categories (untriaged / has_issue / flaky /
 // fixed / quarantined) collapse onto JUnit-canonical outcomes (passed /
@@ -58,16 +58,18 @@ function e2eRunToCanonicalPayload(runData) {
     for (const test of categories.passed || []) {
         junitCases.push(_testToJunitCase(test, 'passed', runId));
     }
-    // ``skipped`` and ``quarantined`` both map to outcome=skipped.
-    // Quarantined tests get a small marker in ``extras`` so the future
-    // plugin (or the canonical viewer's badge logic) can label them —
-    // but for Phase C scope we just preserve the data path.  Actual
-    // quarantine UI is deferred per issue #6318.
     for (const test of categories.skipped || []) {
         junitCases.push(_testToJunitCase(test, 'skipped', runId));
     }
+    // ``quarantined`` is an orthogonal marker, not a skipped outcome.
+    // Preserve the result's actual outcome so the canonical viewer can
+    // render quarantine separately without inflating skipped counts.
     for (const test of categories.quarantined || []) {
-        junitCases.push(_testToJunitCase(test, 'skipped', runId));
+        junitCases.push(_testToJunitCase(
+            Object.assign({}, test, { is_quarantined: true }),
+            _outcomeFromTest(test, 'failed'),
+            runId,
+        ));
     }
 
     const failureCount = failedTests.length;
@@ -152,6 +154,7 @@ function _testToJunitCase(test, outcome, runId) {
         duration_seconds: duration,
         extras: _extrasForTest(safe, outcome),
         failure_details: failureDetails,
+        is_quarantined: safe.is_quarantined === true,
         outcome,
         suite_name: suiteName,
         system_err: _optionalCapturedText(safe.system_err),
@@ -167,6 +170,14 @@ function _testToJunitCase(test, outcome, runId) {
         junitCase.captured_output_url = capturedOutputUrl;
     }
     return junitCase;
+}
+
+function _outcomeFromTest(test, fallback) {
+    const raw = String(test && test.outcome || '').trim().toLowerCase();
+    if (raw === 'passed' || raw === 'failed' || raw === 'error' || raw === 'skipped') {
+        return raw;
+    }
+    return fallback;
 }
 
 function _failureDetailsFromTest(test) {

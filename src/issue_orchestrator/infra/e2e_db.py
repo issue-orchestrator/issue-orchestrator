@@ -456,76 +456,99 @@ class E2EDB:
 
         Removes the run row, its test results, failure issues, run issues,
         flake history, log file on disk, timeline events (if store provided),
-        and worktree-local artifacts (sessions and timeline) if worktree path
-        is provided.
+        and worktree-local artifacts (run report snapshots, sessions, and
+        timeline) if worktree path is provided.
 
         Returns the number of runs pruned.
         """
         with self._connect() as conn:
-            # Find run IDs to prune (all runs except the newest N)
-            rows = conn.execute(
-                """
-                SELECT id, log_path FROM e2e_runs
-                WHERE id NOT IN (
-                    SELECT id FROM e2e_runs
-                    ORDER BY started_at DESC
-                    LIMIT ?
-                )
-                ORDER BY started_at ASC
-                """,
-                (retention_count,),
-            ).fetchall()
+            rows = self._runs_to_prune(conn, retention_count)
 
             if not rows:
                 return 0
 
-            pruned = 0
-            for row in rows:
-                run_id = row["id"]
-                log_path = row["log_path"]
-
-                # Delete related rows
-                conn.execute("DELETE FROM e2e_run_artifacts WHERE run_id = ?", (run_id,))
-                conn.execute("DELETE FROM e2e_test_results WHERE run_id = ?", (run_id,))
-                conn.execute("DELETE FROM e2e_failure_issues WHERE first_failing_run_id = ?", (run_id,))
-                conn.execute("DELETE FROM e2e_run_issues WHERE run_id = ?", (run_id,))
-                conn.execute("DELETE FROM e2e_flake_history WHERE run_id = ?", (run_id,))
-                conn.execute("DELETE FROM e2e_runs WHERE id = ?", (run_id,))
-
-                # Delete log file
-                if log_path:
-                    try:
-                        Path(log_path).unlink(missing_ok=True)
-                    except OSError:
-                        pass
-
-                # Delete timeline events
-                if timeline_store is not None:
-                    try:
-                        from ..domain.timeline_key import TimelineKey
-                        store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
-                        timeline_store.delete(store_key)
-                    except Exception:
-                        logger.debug("Could not delete timeline for E2E run %d", run_id)
-
-                pruned += 1
+            pruned = self._delete_pruned_runs(conn, rows, timeline_store, e2e_worktree_path)
 
             # Clean worktree-local artifacts for pruned runs
             if pruned and e2e_worktree_path is not None:
-                self._prune_worktree_artifacts(e2e_worktree_path, retention_count)
+                cutoff = self._oldest_retained_run_start(retention_count)
+                if cutoff:
+                    from .e2e_artifact_retention import prune_worktree_artifacts
+                    prune_worktree_artifacts(e2e_worktree_path, cutoff)
 
             if pruned:
                 logger.info("Pruned %d old E2E run(s) (retention=%d)", pruned, retention_count)
             return pruned
 
-    def _prune_worktree_artifacts(self, worktree_path: Path, retention_count: int) -> None:
-        """Clean old session dirs and timeline events from the E2E worktree.
+    def _runs_to_prune(
+        self, conn: sqlite3.Connection, retention_count: int
+    ) -> list[sqlite3.Row]:
+        return conn.execute(
+            """
+            SELECT id, log_path FROM e2e_runs
+            WHERE id NOT IN (
+                SELECT id FROM e2e_runs
+                ORDER BY started_at DESC
+                LIMIT ?
+            )
+            ORDER BY started_at ASC
+            """,
+            (retention_count,),
+        ).fetchall()
 
-        Finds the oldest retained run's start time and removes worktree
-        artifacts older than that cutoff.
-        """
-        import shutil
+    def _delete_pruned_runs(
+        self,
+        conn: sqlite3.Connection,
+        rows: list[sqlite3.Row],
+        timeline_store: "TimelineStore | None",
+        e2e_worktree_path: Path | None,
+    ) -> int:
+        for row in rows:
+            run_id = row["id"]
+            self._delete_run_rows(conn, run_id)
+            self._delete_log_file(row["log_path"])
+            self._delete_run_worktree_artifacts(e2e_worktree_path, run_id)
+            self._delete_run_timeline(timeline_store, run_id)
+        return len(rows)
 
+    def _delete_run_rows(self, conn: sqlite3.Connection, run_id: int) -> None:
+        conn.execute("DELETE FROM e2e_run_artifacts WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM e2e_test_results WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM e2e_failure_issues WHERE first_failing_run_id = ?", (run_id,))
+        conn.execute("DELETE FROM e2e_run_issues WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM e2e_flake_history WHERE run_id = ?", (run_id,))
+        conn.execute("DELETE FROM e2e_runs WHERE id = ?", (run_id,))
+
+    def _delete_log_file(self, log_path: str | None) -> None:
+        if not log_path:
+            return
+        try:
+            Path(log_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _delete_run_worktree_artifacts(
+        self, e2e_worktree_path: Path | None, run_id: int
+    ) -> None:
+        if e2e_worktree_path is None:
+            return
+        from .e2e_artifact_retention import delete_run_report_artifacts
+        delete_run_report_artifacts(e2e_worktree_path, run_id)
+
+    def _delete_run_timeline(
+        self, timeline_store: "TimelineStore | None", run_id: int
+    ) -> None:
+        if timeline_store is None:
+            return
+        try:
+            from ..domain.timeline_key import TimelineKey
+            store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
+            timeline_store.delete(store_key)
+        except Exception:
+            logger.debug("Could not delete timeline for E2E run %d", run_id)
+
+    def _oldest_retained_run_start(self, retention_count: int) -> str | None:
+        """Return the oldest retained run start timestamp."""
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -537,42 +560,8 @@ class E2EDB:
             ).fetchone()
 
         if not row:
-            return
-        cutoff = row["started_at"]
-
-        # Prune worktree timeline events older than cutoff
-        wt_timeline = worktree_path / ".issue-orchestrator" / "state" / "timeline.sqlite"
-        if wt_timeline.exists():
-            try:
-                import sqlite3
-                uri = f"file:{wt_timeline}"
-                conn = sqlite3.connect(uri)
-                conn.execute(
-                    "DELETE FROM timeline_events WHERE timestamp < ?",
-                    (cutoff,),
-                )
-                conn.commit()
-                conn.close()
-            except Exception:
-                logger.debug("Could not prune worktree timeline", exc_info=True)
-
-        # Prune old session directories by modification time
-        sessions_dir = worktree_path / ".issue-orchestrator" / "sessions"
-        if sessions_dir.is_dir():
-            from datetime import datetime
-            try:
-                cutoff_dt = datetime.fromisoformat(cutoff)
-                cutoff_ts = cutoff_dt.timestamp()
-            except (ValueError, TypeError):
-                return
-
-            for entry in sessions_dir.iterdir():
-                if entry.is_dir():
-                    try:
-                        if entry.stat().st_mtime < cutoff_ts:
-                            shutil.rmtree(entry, ignore_errors=True)
-                    except OSError:
-                        pass
+            return None
+        return row["started_at"]
 
     def reset_all_history(
         self,
@@ -757,6 +746,7 @@ class E2EDB:
                     duration_seconds = excluded.duration_seconds,
                     longrepr = excluded.longrepr,
                     retry_outcome = excluded.retry_outcome,
+                    is_quarantined = e2e_test_results.is_quarantined OR excluded.is_quarantined,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -788,6 +778,7 @@ class E2EDB:
         result_source: str = "external_report",
         stdout_available: bool = False,
         stderr_available: bool = False,
+        is_quarantined: bool = False,
     ) -> None:
         """Generic wrapper for non-pytest case results."""
         self.upsert_test_result(
@@ -801,6 +792,7 @@ class E2EDB:
             result_source=result_source,
             stdout_available=stdout_available,
             stderr_available=stderr_available,
+            is_quarantined=is_quarantined,
         )
 
     def replace_run_artifacts(
@@ -843,8 +835,10 @@ class E2EDB:
         self,
         run_id: int,
         cases: list[JUnitCaseResult],
+        quarantine: set[str] | None = None,
     ) -> None:
         """Persist parsed JUnit cases into e2e_test_results."""
+        quarantine = quarantine or set()
         for case in cases:
             self.upsert_result_case(
                 run_id=run_id,
@@ -857,6 +851,7 @@ class E2EDB:
                 result_source="junit_xml",
                 stdout_available=case.system_out is not None,
                 stderr_available=case.system_err is not None,
+                is_quarantined=case.case_id in quarantine,
             )
 
     def update_retry_outcome(
@@ -1039,17 +1034,21 @@ class E2EDB:
             return {}
 
         issues_by_nodeid: dict[str, dict] = {}
-        # S608: ``placeholders`` is the dynamic-IN-clause idiom —
-        # literal ``?`` characters, not values.
-        placeholders = ",".join("?" * len(nodeids))
+        conn.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS temp_e2e_issue_nodeids (nodeid TEXT PRIMARY KEY)"
+        )
+        conn.execute("DELETE FROM temp_e2e_issue_nodeids")
+        conn.executemany(
+            "INSERT OR IGNORE INTO temp_e2e_issue_nodeids (nodeid) VALUES (?)",
+            [(nodeid,) for nodeid in nodeids],
+        )
         cursor = conn.execute(
-            f"""
-            SELECT nodeid, github_issue_number, resolution, resolved_at
-            FROM e2e_failure_issues
-            WHERE nodeid IN ({placeholders})
-            ORDER BY nodeid, created_at DESC
-            """,  # noqa: S608
-            tuple(nodeids),
+            """
+            SELECT f.nodeid, f.github_issue_number, f.resolution, f.resolved_at
+            FROM e2e_failure_issues f
+            JOIN temp_e2e_issue_nodeids n ON n.nodeid = f.nodeid
+            ORDER BY f.nodeid, f.created_at DESC
+            """
         )
         # Take the most recent issue per nodeid
         for issue_row in cursor.fetchall():
@@ -1134,7 +1133,7 @@ class E2EDB:
                 """
                 SELECT * FROM e2e_test_results
                 WHERE run_id = ?
-                    AND outcome = 'failed'
+                    AND outcome IN ('failed', 'error')
                     AND is_quarantined = 0
                     AND (retry_outcome IS NULL OR retry_outcome = 'failed')
                 ORDER BY nodeid
@@ -1217,7 +1216,7 @@ class E2EDB:
                 skipped.append(r)
             elif r.outcome == "passed":
                 passed.append(r)
-            elif r.outcome == "failed":
+            elif r.outcome in {"failed", "error"}:
                 if r.retry_outcome == "passed":
                     passed_on_retry.append(r)
                 else:

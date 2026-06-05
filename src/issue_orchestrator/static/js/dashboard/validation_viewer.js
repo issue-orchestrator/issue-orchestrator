@@ -102,8 +102,10 @@ function renderCanonicalValidationViewer(data, options = {}) {
         : null;
     const status = (data && data.status === 'passed') ? 'passed' : 'failed';
 
-    const failureCases = cases.filter((c) => c && (c.outcome === 'failed' || c.outcome === 'error'));
-    const otherCases = cases.filter((c) => c && c.outcome !== 'failed' && c.outcome !== 'error');
+    const quarantinedCases = cases.filter((c) => _isQuarantinedCase(c));
+    const activeCases = cases.filter((c) => c && !_isQuarantinedCase(c));
+    const failureCases = activeCases.filter((c) => c && (c.outcome === 'failed' || c.outcome === 'error'));
+    const otherCases = activeCases.filter((c) => c && c.outcome !== 'failed' && c.outcome !== 'error');
 
     // failed_tests fallback (reviewer Blocker 1): when JUnit XML wasn't
     // available — e.g. the runner died before writing it, or the suite
@@ -138,10 +140,10 @@ function renderCanonicalValidationViewer(data, options = {}) {
         + ' aria-label="Validation results">';
 
     // Phase D redesign (issue #6322): outcome-grouped expanders.
-    // Each outcome (Failed / Errored / Skipped / Passed) becomes a
+    // Each outcome (Failed / Errored / Quarantined / Skipped / Passed) becomes a
     // top-level <details> closed by default; zero-count groups are
-    // hidden entirely.  Severity order: Failed → Errored → Skipped
-    // → Passed.  Replaces the old "always-visible triage cards +
+    // hidden entirely.  Severity order: Failed -> Errored -> Quarantined
+    // -> Skipped -> Passed.  Replaces the old "always-visible triage cards +
     // collapsed browse-by-file" layout.
     //
     // Predictable-collapse: every group starts closed; nothing
@@ -166,6 +168,14 @@ function renderCanonicalValidationViewer(data, options = {}) {
             label: 'Errored',
             cases: erroredCases,
             idPrefix: 'cvv-grp-errored',
+        });
+    }
+    if (quarantinedCases.length > 0) {
+        html += _renderOutcomeGroup({
+            outcome: 'quarantined',
+            label: 'Quarantined',
+            cases: quarantinedCases,
+            idPrefix: 'cvv-grp-quarantined',
         });
     }
     if (skippedCases.length > 0) {
@@ -226,6 +236,10 @@ function renderCanonicalValidationViewer(data, options = {}) {
 
     html += '</div>';  // cvv-root
     return html;
+}
+
+function _isQuarantinedCase(testCase) {
+    return testCase && testCase.is_quarantined === true;
 }
 
 // ── Accessibility enhancer (issue #6310 follow-up Phase D) ──────────────────
@@ -527,7 +541,7 @@ function _renderOutcomeGroup(opts) {
     const label = opts.label;
     const cases = opts.cases || [];
     const idPrefix = opts.idPrefix || `cvv-grp-${outcome}`;
-    const iconChar = outcome === 'error' ? '⚠' : outcome === 'failed' ? '✕' : outcome === 'skipped' ? '–' : '✓';
+    const iconChar = outcome === 'error' ? '⚠' : outcome === 'failed' ? '✕' : outcome === 'quarantined' ? 'Q' : outcome === 'skipped' ? '–' : '✓';
     const count = cases.length;
 
     let html = `<details class="cvv-row cvv-group cvv-group-${outcome}" role="treeitem" aria-expanded="false">`;
@@ -545,6 +559,15 @@ function _renderOutcomeGroup(opts) {
         // collapse all the way through).
         for (let i = 0; i < cases.length; i++) {
             html += _renderTriageCard(cases[i], `${idPrefix}-${i}`);
+        }
+    } else if (outcome === 'quarantined') {
+        const failureLike = cases.filter((c) => c && (c.outcome === 'failed' || c.outcome === 'error'));
+        const nonFailureLike = cases.filter((c) => c && c.outcome !== 'failed' && c.outcome !== 'error');
+        for (let i = 0; i < failureLike.length; i++) {
+            html += _renderTriageCard(failureLike[i], `${idPrefix}-qf-${i}`);
+        }
+        if (nonFailureLike.length > 0) {
+            html += _renderBrowseByFile(nonFailureLike, `${idPrefix}-qo`, 'quarantined');
         }
     } else {
         // Passed / Skipped cases share the browse-by-file tree.
@@ -626,6 +649,9 @@ function _renderTriageCard(testCase, idPrefix) {
 
     html += '<div class="cvv-badges">';
     html += `<span class="cvv-chip cvv-chip-${outcome}">${outcome === 'error' ? '⚠ Errored' : '✕ Failed'}</span>`;
+    if (_isQuarantinedCase(testCase)) {
+        html += '<span class="cvv-chip cvv-chip-quarantined">Q Quarantined</span>';
+    }
     if (duration) html += `<span class="cvv-chip">${escapeHtml(duration)}</span>`;
     html += '</div>';
 
@@ -676,8 +702,10 @@ function _cvvCopyErrorFromButton(button) {
 // (``–``) rather than the passed icon (``✓``).  Default is ``passed``
 // for back-compat with the older single-section browse caller.
 function _renderBrowseByFile(cases, idPrefix, fileIconOutcome) {
-    const fileOutcome = (fileIconOutcome === 'skipped') ? 'skipped' : 'passed';
-    const fileIcon = fileOutcome === 'skipped' ? '–' : '✓';
+    const fileOutcome = (fileIconOutcome === 'skipped' || fileIconOutcome === 'quarantined')
+        ? fileIconOutcome
+        : 'passed';
+    const fileIcon = fileOutcome === 'quarantined' ? 'Q' : fileOutcome === 'skipped' ? '–' : '✓';
 
     const byFile = new Map();
     for (const c of cases) {
@@ -721,6 +749,9 @@ function _renderPassedTestRow(testCase, idPrefix) {
     html += '<div class="cvv-row-body" role="group">';
     html += '<div class="cvv-badges">';
     html += `<span class="cvv-chip cvv-chip-${outcome}">${outcome === 'skipped' ? '– Skipped' : '✓ Passed'}</span>`;
+    if (_isQuarantinedCase(testCase)) {
+        html += '<span class="cvv-chip cvv-chip-quarantined">Q Quarantined</span>';
+    }
     if (duration) html += `<span class="cvv-chip">${escapeHtml(duration)}</span>`;
     html += '</div>';
     // Skipped tests carry their skip reason in ``failure_details``

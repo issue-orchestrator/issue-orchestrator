@@ -354,19 +354,25 @@ test-integration: sync-deps
 test-integration-core: sync-deps
 ifeq ($(INTEGRATION_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-core,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" \
+		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_codex" \
 			--ignore=tests/integration/test_claude_execution.py \
 			--ignore=tests/integration/test_codex_execution.py \
 			--ignore=tests/integration/test_live_agent_chain.py \
 			$(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-integration-core,\
-		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
+		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_codex" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
 			--ignore=tests/integration/test_claude_execution.py \
 			--ignore=tests/integration/test_codex_execution.py \
 			--ignore=tests/integration/test_live_agent_chain.py \
 			$(PYTEST_TIMINGS))
 endif
+	$(call TIMED_RUN,test-integration-core-live-codex,\
+		$(PYTEST) tests/integration -x -q --tb=short -m "live_codex and not requires_infra" \
+			--ignore=tests/integration/test_claude_execution.py \
+			--ignore=tests/integration/test_codex_execution.py \
+			--ignore=tests/integration/test_live_agent_chain.py \
+			$(PYTEST_TIMINGS))
 
 # Backward-compatible alias for existing callers.
 test-integration-no-infra: test-integration-core
@@ -374,11 +380,13 @@ test-integration-no-infra: test-integration-core
 test-integration-agent: sync-deps
 ifeq ($(INTEGRATION_AGENT_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-agent,\
-		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS))
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "not live_codex" $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-integration-agent,\
-		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -n $(INTEGRATION_AGENT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "not live_codex" -n $(INTEGRATION_AGENT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
+	$(call TIMED_RUN,test-integration-agent-live-codex,\
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "live_codex" $(PYTEST_TIMINGS))
 
 # Full integration tests including infrastructure-dependent ones (run in CI)
 test-integration-full: sync-deps
