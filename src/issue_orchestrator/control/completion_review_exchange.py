@@ -59,7 +59,9 @@ def is_review_exchange_job_for_issue(job_id: str, issue_number: int) -> bool:
     return job_id == base or job_id.startswith(f"{base}:")
 
 
-def _cached_review_event_metadata(exchange_outcome: "ReviewExchangeOutcome") -> dict[str, str]:
+def _cached_review_event_metadata(
+    exchange_outcome: "ReviewExchangeOutcome",
+) -> dict[str, str]:
     if exchange_outcome.cache_metadata is None:
         return {}
     return exchange_outcome.cache_metadata.to_event_fields()
@@ -92,15 +94,18 @@ def _log_review_exchange_terminal_outcome(
     cached: bool,
     log: Callable[..., None],
 ) -> None:
-    summary = exchange_outcome.summary or {}
+    summary = exchange_outcome.summary
     reviewer_text = (
         exchange_outcome.reviewer_response.response_text
         if exchange_outcome.reviewer_response is not None
-        else summary.get("response_text")
+        else summary.response_text
+        if summary is not None
+        else None
     )
-    head_sha = summary.get("head_sha")
+    head_sha = summary.head_sha if summary is not None else None
     if not head_sha and exchange_outcome.cache_metadata is not None:
         head_sha = exchange_outcome.cache_metadata.head_sha
+    validation_passed = summary.validation_passed if summary is not None else None
     log(
         "[REVIEW_EXCHANGE] %s "
         "issue=%d session=%s cached=%s status=%s reason=%s rounds=%s "
@@ -114,7 +119,7 @@ def _log_review_exchange_terminal_outcome(
         exchange_outcome.reason,
         exchange_outcome.rounds,
         head_sha,
-        summary.get("validation_passed"),
+        validation_passed,
         _review_exchange_summary_path(exchange_outcome),
         review_run_dir,
         _single_line_log_value(reviewer_text),
@@ -259,7 +264,9 @@ class CompletionReviewExchange:
             session_name=session_name,
             agent_label=agent_label,
             initial_validation_record_path=(
-                Path(record.validation_record_path) if record.validation_record_path else None
+                Path(record.validation_record_path)
+                if record.validation_record_path
+                else None
             ),
             current_head_sha=current_head_sha,
             review_cache_boundary_started_at=review_cache_boundary_started_at,
@@ -298,7 +305,9 @@ class CompletionReviewExchange:
         exchange_mode: str | None,
         exchange_result: ReviewExchangeOutcome | None,
     ) -> bool:
-        return exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
+        return (
+            exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
+        )
 
     def is_review_exchange_running(
         self,
@@ -398,7 +407,9 @@ class CompletionReviewExchange:
                 f"{REVIEW_EXCHANGE_ERROR_PREFIX} review exchange requires session_name"
             )
             return exchange_mode, None, True, False
-        coder_label = self.require_review_exchange_agent_label(agent_label, exchange_mode)
+        coder_label = self.require_review_exchange_agent_label(
+            agent_label, exchange_mode
+        )
         reviewer_label = self.resolve_reviewer_label(coder_label)
         job_id = _review_exchange_job_id(issue_number, session_name)
         background_failure = self._take_background_failure(
@@ -492,9 +503,7 @@ class CompletionReviewExchange:
 
         # No background runner wired — fall back to the legacy synchronous
         # path so tests and dev environments without a job runner still work.
-        logger.debug(
-            "[REVIEW_EXCHANGE] no background runner; running exchange inline"
-        )
+        logger.debug("[REVIEW_EXCHANGE] no background runner; running exchange inline")
         mode, outcome, halt = self._run_fresh_review_exchange(
             exchange_mode=exchange_mode,
             worktree=worktree,
@@ -540,7 +549,9 @@ class CompletionReviewExchange:
                 failure.error.reason,
             )
             return failure
-        reason = f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job raised: {failure.error}"
+        reason = (
+            f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job raised: {failure.error}"
+        )
         errors.append(reason)
         if cancel_error:
             errors.append(cancel_error)
@@ -802,17 +813,22 @@ class CompletionReviewExchange:
         max_failures = self._max_consecutive_review_exchange_failures()
         if session_name is None or max_failures <= 0:
             return None
-        consecutive = self._session_output.count_consecutive_review_exchange_no_completion(
-            worktree,
-            session_name,
-            not_before_started_at=review_cache_boundary_started_at,
+        consecutive = (
+            self._session_output.count_consecutive_review_exchange_no_completion(
+                worktree,
+                session_name,
+                not_before_started_at=review_cache_boundary_started_at,
+            )
         )
         if consecutive < max_failures:
             return None
         logger.error(
             "[REVIEW_EXCHANGE] no-completion runaway detected; "
             "halting issue=%d session=%s consecutive=%d max=%d",
-            issue_number, session_name, consecutive, max_failures,
+            issue_number,
+            session_name,
+            consecutive,
+            max_failures,
         )
         errors.append(
             f"{REVIEW_EXCHANGE_ERROR_PREFIX} {consecutive} consecutive "
@@ -979,7 +995,9 @@ class CompletionReviewExchange:
         if self._config is None:
             return 0
         max_failures = getattr(
-            self._config, "max_consecutive_review_exchange_failures", 0,
+            self._config,
+            "max_consecutive_review_exchange_failures",
+            0,
         )
         if not isinstance(max_failures, int) or max_failures < 0:
             return 0
@@ -991,7 +1009,9 @@ class CompletionReviewExchange:
     ) -> list[dict[str, str]] | None:
         return review_artifacts_from_exchange_result(exchange_result) or None
 
-    def _review_exchange_job_timeout_seconds(self, agent_label: str | None) -> float | None:
+    def _review_exchange_job_timeout_seconds(
+        self, agent_label: str | None
+    ) -> float | None:
         """Return a hard wall-clock deadline for one deferred exchange job.
 
         The runner owns the round/retry budget and exposes the derived
@@ -1052,9 +1072,7 @@ class CompletionReviewExchange:
         self._require_matching_review_run(exchange_result, review_run)
         if not exchange_result.summary:
             return
-        summary = dict(exchange_result.summary)
-        if current_head_sha and not summary.get("head_sha"):
-            summary["head_sha"] = current_head_sha
+        summary = exchange_result.summary.with_head_sha_if_missing(current_head_sha)
         self._session_output.store_review_exchange_summary(
             review_run,
             summary,
@@ -1153,7 +1171,9 @@ class CompletionReviewExchange:
             if mode == "via-mcp":
                 from ..infra.review_exchange_registry import supports_mcp_pair
 
-                coder_system, reviewer_system = self.resolve_exchange_systems(agent_label)
+                coder_system, reviewer_system = self.resolve_exchange_systems(
+                    agent_label
+                )
                 if not supports_mcp_pair(coder_system, reviewer_system):
                     raise ValueError(
                         "Review exchange via-mcp requires a supported ai_system pair: "
@@ -1186,12 +1206,18 @@ class CompletionReviewExchange:
         if not self._config:
             raise ValueError("Review exchange requires config")
         if agent_label not in self._config.agents:
-            raise ValueError(f"Review exchange agent '{agent_label}' not found in config.agents")
+            raise ValueError(
+                f"Review exchange agent '{agent_label}' not found in config.agents"
+            )
         reviewer_label = self._config.get_reviewer_for_agent(agent_label)
         if not reviewer_label:
-            raise ValueError("Review exchange requires review.default or per-agent reviewer")
+            raise ValueError(
+                "Review exchange requires review.default or per-agent reviewer"
+            )
         if reviewer_label not in self._config.agents:
-            raise ValueError(f"Review exchange reviewer '{reviewer_label}' not found in config.agents")
+            raise ValueError(
+                f"Review exchange reviewer '{reviewer_label}' not found in config.agents"
+            )
         return reviewer_label
 
     def resolve_exchange_systems(self, agent_label: str) -> tuple[str, str]:
@@ -1201,7 +1227,9 @@ class CompletionReviewExchange:
         coder_system = self._config.agents[agent_label].ai_system
         reviewer_system = self._config.agents[reviewer_label].ai_system
         if not coder_system or not reviewer_system:
-            raise ValueError("Review exchange requires ai_system on coder and reviewer agents")
+            raise ValueError(
+                "Review exchange requires ai_system on coder and reviewer agents"
+            )
         return coder_system, reviewer_system
 
     def runtime_config_reference(self) -> RuntimeConfigReference:

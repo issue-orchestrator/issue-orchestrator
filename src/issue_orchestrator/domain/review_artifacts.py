@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from .review_exchange_summary import ReviewExchangeSummaryV1
+
 
 NitPolicy = Literal["ignore", "surface", "address"]
 ReviewVerdict = Literal["approved", "changes_requested", "disagree"]
@@ -390,6 +392,8 @@ def review_requires_nit_rework(decision: ReviewDecision) -> bool:
 
 def review_artifacts_from_summary(summary: Any) -> list[dict[str, str]]:
     """Return validated review artifact refs from an exchange summary."""
+    if isinstance(summary, ReviewExchangeSummaryV1):
+        return [artifact.to_payload() for artifact in summary.artifacts]
     if not isinstance(summary, dict):
         return []
     artifacts = summary.get("artifacts")

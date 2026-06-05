@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ..domain.review_exchange_run import ReviewExchangeRun
 
 from ..domain.review_exchange_run import ReviewExchangeRunAssets
+from ..domain.review_exchange_summary import ReviewExchangeSummaryV1
 from ..domain.session_run import SessionRunAssets
 
 
@@ -121,7 +122,7 @@ class ReviewExchangeSummary:
     Stored at: <run_dir>/review-exchange/summary.json
     """
 
-    summary: dict[str, Any]
+    summary: ReviewExchangeSummaryV1
     run_assets: ReviewExchangeRunAssets
 
     @property
@@ -482,7 +483,7 @@ class SessionOutput(Protocol):
     def store_review_exchange_summary(
         self,
         review_run: "ReviewExchangeRun",
-        summary: dict[str, Any],
+        summary: ReviewExchangeSummaryV1,
     ) -> ReviewExchangeSummary:
         """Persist review exchange summary artifacts for a session.
 

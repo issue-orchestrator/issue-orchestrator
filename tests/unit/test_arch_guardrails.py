@@ -35,7 +35,10 @@ def _run(tmp_path: Path, code: str, rel_path: str) -> int:
 
 
 def test_blocks_subprocess_import_in_control(tmp_path: Path) -> None:
-    assert _run(tmp_path, "import subprocess\n", "src/issue_orchestrator/control/x.py") == 2
+    assert (
+        _run(tmp_path, "import subprocess\n", "src/issue_orchestrator/control/x.py")
+        == 2
+    )
 
 
 def test_allows_subprocess_in_execution(tmp_path: Path) -> None:
@@ -44,7 +47,12 @@ def test_allows_subprocess_in_execution(tmp_path: Path) -> None:
 
 
 def test_blocks_dynamic_import(tmp_path: Path) -> None:
-    assert _run(tmp_path, "__import__('subprocess')\n", "src/issue_orchestrator/domain/x.py") == 2
+    assert (
+        _run(
+            tmp_path, "__import__('subprocess')\n", "src/issue_orchestrator/domain/x.py"
+        )
+        == 2
+    )
 
 
 def test_blocks_forbidden_call(tmp_path: Path) -> None:
@@ -105,7 +113,9 @@ def test_blocks_github_adapter_import_in_control(tmp_path: Path) -> None:
     assert _run(tmp_path, code, "src/issue_orchestrator/control/x.py") == 2
 
 
-def test_blocks_github_adapter_import_in_entrypoint_non_composition(tmp_path: Path) -> None:
+def test_blocks_github_adapter_import_in_entrypoint_non_composition(
+    tmp_path: Path,
+) -> None:
     code = "from issue_orchestrator.adapters.github import GitHubAdapter\n"
     assert _run(tmp_path, code, "src/issue_orchestrator/entrypoints/cli.py") == 2
 
@@ -117,7 +127,14 @@ def test_allows_github_adapter_import_in_bootstrap(tmp_path: Path) -> None:
 
 def test_allows_github_adapter_import_in_provider_factory(tmp_path: Path) -> None:
     code = "from issue_orchestrator.adapters.github import GitHubAdapter\n"
-    assert _run(tmp_path, code, "src/issue_orchestrator/entrypoints/repository_host_factory.py") == 0
+    assert (
+        _run(
+            tmp_path,
+            code,
+            "src/issue_orchestrator/entrypoints/repository_host_factory.py",
+        )
+        == 0
+    )
 
 
 def test_blocks_github_symbol_reference_in_control(tmp_path: Path) -> None:
@@ -129,3 +146,79 @@ def test_blocks_github_symbol_reference_in_control(tmp_path: Path) -> None:
         "    return None\n"
     )
     assert _run(tmp_path, code, "src/issue_orchestrator/control/x.py") == 2
+
+
+def test_blocks_raw_review_exchange_summary_get_in_control(tmp_path: Path) -> None:
+    code = "def f(summary):\n    return summary.get('status')\n"
+    assert (
+        _run(
+            tmp_path,
+            code,
+            "src/issue_orchestrator/control/review_exchange_cache_resolution.py",
+        )
+        == 2
+    )
+
+
+def test_blocks_raw_review_exchange_summary_get_in_execution(tmp_path: Path) -> None:
+    code = "def f(cached):\n    return cached.summary.get('reason')\n"
+    assert (
+        _run(
+            tmp_path,
+            code,
+            "src/issue_orchestrator/execution/session_output_adapter.py",
+        )
+        == 2
+    )
+
+
+def test_blocks_review_exchange_summary_dict_parameter(tmp_path: Path) -> None:
+    code = (
+        "def store_review_exchange_summary(summary: dict[str, object]):\n"
+        "    return summary\n"
+    )
+    assert (
+        _run(
+            tmp_path,
+            code,
+            "src/issue_orchestrator/execution/review_exchange_session_output.py",
+        )
+        == 2
+    )
+
+
+def test_blocks_review_exchange_outcome_dict_summary_constructor(
+    tmp_path: Path,
+) -> None:
+    code = (
+        "def f(ReviewExchangeOutcome, run_assets):\n"
+        "    return ReviewExchangeOutcome(\n"
+        "        status='ok', rounds=1, reason='reviewer_ok',\n"
+        "        run_assets=run_assets,\n"
+        "        summary={'status': 'ok'},\n"
+        "    )\n"
+    )
+    assert (
+        _run(
+            tmp_path,
+            code,
+            "src/issue_orchestrator/control/review_exchange_cache_resolution.py",
+        )
+        == 2
+    )
+
+
+def test_blocks_persistent_pair_run_rebind(tmp_path: Path) -> None:
+    code = (
+        "def f(pair, binding):\n"
+        "    pair.run_dir = binding.run_dir\n"
+        "    pair.exchange_run_id = binding.run_id\n"
+    )
+    assert (
+        _run(
+            tmp_path,
+            code,
+            "src/issue_orchestrator/execution/anywhere.py",
+        )
+        == 2
+    )

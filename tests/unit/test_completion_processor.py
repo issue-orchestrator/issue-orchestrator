@@ -30,6 +30,7 @@ from issue_orchestrator.domain.review_exchange_run import (
     ReviewExchangeRun,
     ReviewExchangeRunAssets,
 )
+from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
 from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.control.completion_processor import (
     CompletionProcessor,
@@ -43,7 +44,9 @@ from issue_orchestrator.control.review_exchange_pr_comment import (
 )
 from issue_orchestrator.control.background_job_supervisor import BackgroundJobSupervisor
 from issue_orchestrator.control.pre_publish_gate import PrePublishGateResult
-from issue_orchestrator.execution.review_artifact_reader import ManifestReviewArtifactReader
+from issue_orchestrator.execution.review_artifact_reader import (
+    ManifestReviewArtifactReader,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.events import EventContext, EventName
@@ -67,7 +70,9 @@ def _write_test_config(tmp_path: Path) -> Path:
     config_path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if not config_path.exists():
-        config_path.write_text("validation:\n  quick:\n    cmd: 'true'\n", encoding="utf-8")
+        config_path.write_text(
+            "validation:\n  quick:\n    cmd: 'true'\n", encoding="utf-8"
+        )
     return config_path
 
 
@@ -79,12 +84,29 @@ def _review_exchange_outcome(
     reason: str = "reviewer_ok",
     summary: dict[str, object] | None = None,
 ) -> ReviewExchangeOutcome:
+    reason = {
+        "approved": "reviewer_ok",
+        "boom": "coder_protocol_error",
+        "max_no_progress": "reviewer_reports_no_progress",
+        "no-validation": "coder_protocol_error",
+    }.get(reason, reason)
+    typed_summary = None
+    if summary is not None:
+        payload = {
+            "completed_rounds": rounds,
+            "status": status,
+            "reason": reason,
+            "response_text": None,
+            "timestamp": "2026-02-01T00:00:00+00:00",
+        }
+        payload.update(summary)
+        typed_summary = ReviewExchangeSummaryV1.from_payload(payload)
     return ReviewExchangeOutcome(
         status=status,
         rounds=rounds,
         reason=reason,
         run_assets=exchange_run.assets,
-        summary=summary,
+        summary=typed_summary,
     )
 
 
@@ -161,15 +183,17 @@ def mock_pr_adapter():
     adapter = Mock(spec=PRAdapter)
     adapter.get_prs_for_issue = Mock(return_value=[])
     adapter.get_prs_for_branch = Mock(return_value=[])
-    adapter.create_pr = Mock(return_value=PRInfo(
-        number=42,
-        title="Test PR",
-        url="https://github.com/owner/repo/pull/42",
-        branch="issue-123",
-        body="Test body",
-        state="open",
-        labels=[],
-    ))
+    adapter.create_pr = Mock(
+        return_value=PRInfo(
+            number=42,
+            title="Test PR",
+            url="https://github.com/owner/repo/pull/42",
+            branch="issue-123",
+            body="Test body",
+            state="open",
+            labels=[],
+        )
+    )
     adapter.add_comment = Mock(return_value="comment-id")
     return adapter
 
@@ -178,13 +202,17 @@ def mock_pr_adapter():
 def mock_git_adapter():
     """Mock adapter for git operations."""
     adapter = Mock(spec=GitAdapter)
-    adapter.push = Mock(return_value=PushResult(
-        success=True,
-        branch="issue-123",
-        remote="origin",
-        message="Pushed",
-    ))
-    adapter.rebase_on_branch = Mock(return_value=MagicMock(success=True, message="Rebased"))
+    adapter.push = Mock(
+        return_value=PushResult(
+            success=True,
+            branch="issue-123",
+            remote="origin",
+            message="Pushed",
+        )
+    )
+    adapter.rebase_on_branch = Mock(
+        return_value=MagicMock(success=True, message="Rebased")
+    )
     adapter.create_branch_from_current = Mock()
     adapter.list_branch_names = Mock(return_value=["issue-123"])
     adapter.get_current_branch = Mock(return_value="issue-123")
@@ -192,7 +220,9 @@ def mock_git_adapter():
     adapter.has_uncommitted_changes = Mock(return_value=False)
     adapter.has_tracked_changes = Mock(return_value=False)
     adapter.list_dirty_files = Mock(return_value=[])
-    adapter.diff_against_base = Mock(return_value=DiffResult(success=True, diff_text=""))
+    adapter.diff_against_base = Mock(
+        return_value=DiffResult(success=True, diff_text="")
+    )
     return adapter
 
 
@@ -226,7 +256,7 @@ def make_record(
     outcome: CompletionOutcome,
     requested_actions: list[RequestedAction],
     summary: str = "Test summary",
-    **kwargs
+    **kwargs,
 ) -> CompletionRecord:
     """Helper to create CompletionRecord with required fields."""
     return CompletionRecord(
@@ -242,6 +272,7 @@ def make_record(
 @pytest.fixture
 def worktree_with_completion(tmp_path):
     """Factory for creating worktrees with completion records."""
+
     def _create(record: CompletionRecord) -> Path:
         worktree = tmp_path / "worktree"
         worktree.mkdir(parents=True, exist_ok=True)
@@ -254,6 +285,7 @@ def worktree_with_completion(tmp_path):
             session_dir = record_dir / "sessions" / record.session_id
             session_dir.mkdir(parents=True, exist_ok=True)
         return worktree
+
     return _create
 
 
@@ -278,7 +310,12 @@ class TestCompletionProcessorLabelActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test Issue")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
 
         assert result.success
         mock_label_adapter.add_label.assert_not_called()
@@ -299,8 +336,12 @@ class TestReviewExchangeModeResolution:
         config.code_review_agent = "agent:reviewer"
         config.config_path = _write_test_config(tmp_path)
         config.agents = {
-            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
-            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+            "agent:coder": AgentConfig(
+                prompt_path=coder_prompt, ai_system="claude-code"
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=reviewer_prompt, ai_system="codex"
+            ),
         }
         return config
 
@@ -349,8 +390,12 @@ class TestReviewExchangeExecution:
         config.code_review_agent = "agent:reviewer"
         config.config_path = _write_test_config(tmp_path)
         config.agents = {
-            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
-            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+            "agent:coder": AgentConfig(
+                prompt_path=coder_prompt, ai_system="claude-code"
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=reviewer_prompt, ai_system="codex"
+            ),
         }
         return config
 
@@ -361,6 +406,7 @@ class TestReviewExchangeExecution:
         from issue_orchestrator.execution.persistent_review_exchange_runner import (
             PersistentReviewExchangeRunner,
         )
+
         session_output = FileSystemSessionOutput()
         return CompletionProcessor(
             label_adapter=Mock(spec=LabelAdapter),
@@ -368,7 +414,8 @@ class TestReviewExchangeExecution:
             git_adapter=Mock(spec=GitAdapter),
             session_output=session_output,
             review_exchange_runner=PersistentReviewExchangeRunner(
-                session_output, InMemoryPersistentExchangePairRegistry(),
+                session_output,
+                InMemoryPersistentExchangePairRegistry(),
             ),
             event_bus=EventBus(),
             label_config={},
@@ -419,7 +466,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -470,7 +518,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -548,7 +597,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -563,7 +613,8 @@ class TestReviewExchangeExecution:
         assert expected_error in emit_kwargs["error"]
         # Failure diagnostics still post; the requested success comment must not.
         comments = [
-            call_args.args[1] for call_args in mock_pr_adapter.add_comment.call_args_list
+            call_args.args[1]
+            for call_args in mock_pr_adapter.add_comment.call_args_list
         ]
         assert "Should not be posted after PR creation failure." not in comments
         assert any("Orchestrator Processing Failed" in comment for comment in comments)
@@ -621,7 +672,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -685,7 +737,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -763,7 +816,8 @@ class TestReviewExchangeExecution:
         with caplog.at_level("INFO"):
             result = processor.process(
                 worktree,
-                run_assets=make_session_run_assets(worktree), issue_number=123,
+                run_assets=make_session_run_assets(worktree),
+                issue_number=123,
                 issue_title="Test Issue",
                 agent_label="agent:coder",
             )
@@ -847,7 +901,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -873,7 +928,9 @@ class TestReviewExchangeExecution:
         event_names = sink.event_names()
         assert str(EventName.REVIEW_STARTED) in event_names
         assert str(EventName.REVIEW_APPROVED) in event_names
-        assert event_names.index(str(EventName.REVIEW_STARTED)) < event_names.index(str(EventName.REVIEW_APPROVED))
+        assert event_names.index(str(EventName.REVIEW_STARTED)) < event_names.index(
+            str(EventName.REVIEW_APPROVED)
+        )
         review_started = sink.last_event(str(EventName.REVIEW_STARTED))
         review_approved = sink.last_event(str(EventName.REVIEW_APPROVED))
         assert review_started is not None
@@ -881,15 +938,13 @@ class TestReviewExchangeExecution:
         assert review_started.data.get("run_dir") == str(exchange_run.assets.run_dir)
         assert review_approved.data.get("run_dir") == str(exchange_run.assets.run_dir)
         review_events = [
-            event
-            for event in sink.events
-            if str(event.name).startswith("review.")
+            event for event in sink.events if str(event.name).startswith("review.")
         ]
         assert review_events, "Expected review lifecycle events to be emitted"
         for event in review_events:
-            assert event.data.get("run_dir") == str(
-                exchange_run.assets.run_dir
-            ), f"missing run_dir on {event.name}"
+            assert event.data.get("run_dir") == str(exchange_run.assets.run_dir), (
+                f"missing run_dir on {event.name}"
+            )
 
     def test_review_completion_comment_uses_run_scoped_artifact_reader(
         self,
@@ -929,7 +984,9 @@ class TestReviewExchangeExecution:
         )
         stray_report = review_exchange_run / "review-report.md"
         stray_report.parent.mkdir(parents=True, exist_ok=True)
-        stray_report.write_text("# Stray Review Report\n\nDo not include.\n", encoding="utf-8")
+        stray_report.write_text(
+            "# Stray Review Report\n\nDo not include.\n", encoding="utf-8"
+        )
         processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
             side_effect=lambda **kw: _review_exchange_outcome(
                 kw["exchange_run"],
@@ -951,7 +1008,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -998,9 +1056,13 @@ class TestReviewExchangeExecution:
             turns_dir = exchange_run.assets.exchange_dir / "turns"
             turns_dir.mkdir(parents=True)
             round_1_report = turns_dir / "round-1-reviewer-attempt-1.review-report.md"
-            round_1_report.write_text("# Review Round 1\n\nF1 details.\n", encoding="utf-8")
+            round_1_report.write_text(
+                "# Review Round 1\n\nF1 details.\n", encoding="utf-8"
+            )
             (turns_dir / "round-1-reviewer-attempt-1.result.json").write_text(
-                json.dumps({"kind": "changes_requested", "response_text": "Reviewer summary 1"}),
+                json.dumps(
+                    {"kind": "changes_requested", "response_text": "Reviewer summary 1"}
+                ),
                 encoding="utf-8",
             )
             (turns_dir / "round-1-coder-attempt-1.result.json").write_text(
@@ -1008,7 +1070,9 @@ class TestReviewExchangeExecution:
                 encoding="utf-8",
             )
             round_2_report = turns_dir / "round-2-reviewer-attempt-1.review-report.md"
-            round_2_report.write_text("# Review Round 2\n\nApproved final.\n", encoding="utf-8")
+            round_2_report.write_text(
+                "# Review Round 2\n\nApproved final.\n", encoding="utf-8"
+            )
             (turns_dir / "round-2-reviewer-attempt-1.result.json").write_text(
                 json.dumps({"kind": "ok", "response_text": "Approved."}),
                 encoding="utf-8",
@@ -1036,7 +1100,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -1120,7 +1185,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -1170,7 +1236,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
         )
@@ -1230,20 +1297,29 @@ class TestReviewExchangeExecution:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260201-000000Z__review-exchange-123"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260201-000000Z__review-exchange-123"
+        )
         exchange_dir = run_dir / "review-exchange"
         exchange_dir.mkdir(parents=True, exist_ok=True)
         (exchange_dir / "summary.json").write_text(
-            json.dumps({
-                "completed_rounds": 2,
-                "status": "ok",
-                "reason": "reviewer_ok",
-                "response_text": "Looks good",
-                "timestamp": "2026-02-01T00:00:00Z",
-            })
+            json.dumps(
+                {
+                    "completed_rounds": 2,
+                    "status": "ok",
+                    "reason": "reviewer_ok",
+                    "response_text": "Looks good",
+                    "timestamp": "2026-02-01T00:00:00Z",
+                }
+            )
         )
         validation_record = run_dir / "validation-record.json"
-        validation_record.write_text(json.dumps({"passed": True, "head_sha": "same-sha"}))
+        validation_record.write_text(
+            json.dumps({"passed": True, "head_sha": "same-sha"})
+        )
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[
@@ -1270,7 +1346,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
             completion_path=completion_path,
@@ -1326,7 +1403,12 @@ class TestReviewExchangeExecution:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260201-000000Z__review-exchange-123"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260201-000000Z__review-exchange-123"
+        )
         exchange_dir = run_dir / "review-exchange"
         exchange_dir.mkdir(parents=True, exist_ok=True)
         # Use a real production halt status — coder_protocol_error
@@ -1337,18 +1419,22 @@ class TestReviewExchangeExecution:
         # halt on this cache hit; the test's intent (cached non-OK
         # → replay marker, no fresh exchange) is preserved.
         (exchange_dir / "summary.json").write_text(
-            json.dumps({
-                "completed_rounds": 3,
-                "status": "error",
-                "reason": "coder_protocol_error",
-                "response_text": "Still three open comments.",
-                "timestamp": "2026-02-01T00:00:00Z",
-                "head_sha": "same-sha",
-                "validation_passed": True,
-            })
+            json.dumps(
+                {
+                    "completed_rounds": 3,
+                    "status": "error",
+                    "reason": "coder_protocol_error",
+                    "response_text": "Still three open comments.",
+                    "timestamp": "2026-02-01T00:00:00Z",
+                    "head_sha": "same-sha",
+                    "validation_passed": True,
+                }
+            )
         )
         validation_record = run_dir / "validation-record.json"
-        validation_record.write_text(json.dumps({"passed": True, "head_sha": "same-sha"}))
+        validation_record.write_text(
+            json.dumps({"passed": True, "head_sha": "same-sha"})
+        )
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[
@@ -1375,7 +1461,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
             completion_path=completion_path,
@@ -1398,9 +1485,9 @@ class TestReviewExchangeExecution:
         # The processor's recorded errors should also carry the real
         # reason so downstream halt messages and ticket-routing don't
         # collapse distinct failure modes onto one opaque token.
-        assert any(
-            "coder_protocol_error" in err for err in result.errors
-        ), result.errors
+        assert any("coder_protocol_error" in err for err in result.errors), (
+            result.errors
+        )
 
     def test_cached_exchange_max_rounds_exceeded_preserves_real_reason(
         self,
@@ -1435,22 +1522,31 @@ class TestReviewExchangeExecution:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260201-000000Z__review-exchange-123"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260201-000000Z__review-exchange-123"
+        )
         exchange_dir = run_dir / "review-exchange"
         exchange_dir.mkdir(parents=True, exist_ok=True)
         (exchange_dir / "summary.json").write_text(
-            json.dumps({
-                "completed_rounds": 5,
-                "status": "stopped",
-                "reason": "max_rounds_exceeded",
-                "response_text": "Hit round limit without convergence.",
-                "timestamp": "2026-02-01T00:00:00Z",
-                "head_sha": "same-sha",
-                "validation_passed": True,
-            })
+            json.dumps(
+                {
+                    "completed_rounds": 5,
+                    "status": "stopped",
+                    "reason": "max_rounds_exceeded",
+                    "response_text": "Hit round limit without convergence.",
+                    "timestamp": "2026-02-01T00:00:00Z",
+                    "head_sha": "same-sha",
+                    "validation_passed": True,
+                }
+            )
         )
         validation_record = run_dir / "validation-record.json"
-        validation_record.write_text(json.dumps({"passed": True, "head_sha": "same-sha"}))
+        validation_record.write_text(
+            json.dumps({"passed": True, "head_sha": "same-sha"})
+        )
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[
@@ -1477,7 +1573,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
             completion_path=completion_path,
@@ -1488,9 +1585,7 @@ class TestReviewExchangeExecution:
         assert review_changes is not None
         assert review_changes.data.get("cached") is True
         assert "max_rounds_exceeded" in review_changes.data.get("summary", "")
-        assert any(
-            "max_rounds_exceeded" in err for err in result.errors
-        ), result.errors
+        assert any("max_rounds_exceeded" in err for err in result.errors), result.errors
 
     def test_cached_exchange_requires_validation_record(
         self,
@@ -1524,17 +1619,24 @@ class TestReviewExchangeExecution:
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
-        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260201-000000Z__review-exchange-123"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260201-000000Z__review-exchange-123"
+        )
         exchange_dir = run_dir / "review-exchange"
         exchange_dir.mkdir(parents=True, exist_ok=True)
         (exchange_dir / "summary.json").write_text(
-            json.dumps({
-                "completed_rounds": 2,
-                "status": "ok",
-                "reason": "reviewer_ok",
-                "response_text": "Looks good",
-                "timestamp": "2026-02-01T00:00:00Z",
-            })
+            json.dumps(
+                {
+                    "completed_rounds": 2,
+                    "status": "ok",
+                    "reason": "reviewer_ok",
+                    "response_text": "Looks good",
+                    "timestamp": "2026-02-01T00:00:00Z",
+                }
+            )
         )
         completion_path = (
             ".issue-orchestrator/sessions/20260201-000000Z__review-exchange-123/"
@@ -1556,7 +1658,8 @@ class TestReviewExchangeExecution:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree), issue_number=123,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
             issue_title="Test Issue",
             agent_label="agent:coder",
             completion_path=completion_path,
@@ -1609,13 +1712,15 @@ class TestReviewExchangeExecution:
         exchange_dir = exchange_run_dir / "review-exchange"
         exchange_dir.mkdir(parents=True, exist_ok=True)
         (exchange_dir / "summary.json").write_text(
-            json.dumps({
-                "completed_rounds": 2,
-                "status": "ok",
-                "reason": "reviewer_ok",
-                "response_text": "Looks good",
-                "timestamp": "2026-02-01T00:00:00Z",
-            })
+            json.dumps(
+                {
+                    "completed_rounds": 2,
+                    "status": "ok",
+                    "reason": "reviewer_ok",
+                    "response_text": "Looks good",
+                    "timestamp": "2026-02-01T00:00:00Z",
+                }
+            )
         )
         validation_record = exchange_run_dir / "validation-record.json"
         validation_record.write_text(
@@ -1753,7 +1858,9 @@ class TestReviewExchangeExecution:
         coder_prompt.write_text("Coder prompt")
         config = Config()
         config.agents = {
-            "agent:backend": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code")
+            "agent:backend": AgentConfig(
+                prompt_path=coder_prompt, ai_system="claude-code"
+            )
         }
         processor = self._make_processor(config)
 
@@ -1779,7 +1886,12 @@ class TestReviewExchangeExecution:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test Issue")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
 
         assert result.success
         mock_label_adapter.add_label.assert_called_once_with(123, "blocked")
@@ -1799,7 +1911,12 @@ class TestReviewExchangeExecution:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test Issue")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
 
         assert result.success
         mock_label_adapter.add_label.assert_called_once_with(123, "needs-human")
@@ -1821,7 +1938,12 @@ class TestReviewExchangeExecution:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=42, issue_title="PR Title")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=42,
+            issue_title="PR Title",
+        )
 
         assert result.success
         mock_label_adapter.add_label.assert_called_once_with(42, "code-reviewed")
@@ -1845,7 +1967,12 @@ class TestReviewExchangeExecution:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=42, issue_title="PR Title")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=42,
+            issue_title="PR Title",
+        )
 
         assert result.success
         mock_label_adapter.add_label.assert_called_once_with(42, "needs-rework")
@@ -1931,7 +2058,12 @@ class TestCompletionProcessorPRActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Add feature")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Add feature",
+        )
 
         assert result.success
         assert result.pr_url == "https://github.com/owner/repo/pull/42"
@@ -1962,7 +2094,12 @@ class TestCompletionProcessorPRActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Add feature")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Add feature",
+        )
 
         assert not result.success
         assert any("Push failed" in err for err in result.errors)
@@ -1988,7 +2125,12 @@ class TestCompletionProcessorPRActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Add feature")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Add feature",
+        )
 
         assert result.success
         # PR was created with number 42 (from mock)
@@ -2015,7 +2157,12 @@ class TestCompletionProcessorPRActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Add feature")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Add feature",
+        )
 
         assert result.success
         # No labels should be added (no add_label calls)
@@ -2037,7 +2184,12 @@ class TestCompletionProcessorPRActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test Issue")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
 
         assert result.success
         mock_pr_adapter.add_comment.assert_called_once_with(
@@ -2060,7 +2212,12 @@ class TestCompletionProcessorGitActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.success
         mock_git_adapter.push.assert_called_once_with(worktree, skip_hooks=False)
@@ -2082,7 +2239,12 @@ class TestCompletionProcessorGitActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
         assert any("Push failed" in err for err in result.errors)
@@ -2111,7 +2273,12 @@ class TestCompletionProcessorGitActions:
         )
         worktree = worktree_with_completion(record)
 
-        processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         publish_failed = [
             event
@@ -2150,11 +2317,19 @@ class TestCompletionProcessorGitActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.success
-        mock_git_adapter.rebase_on_branch.assert_called_once_with(worktree, "origin/main")
+        mock_git_adapter.rebase_on_branch.assert_called_once_with(
+            worktree, "origin/main"
+        )
         assert mock_git_adapter.push.call_count == 2
+
 
 class TestCompletionProcessorValidation:
     """Tests for validation logic."""
@@ -2164,7 +2339,12 @@ class TestCompletionProcessorValidation:
         worktree = tmp_path / "empty-worktree"
         worktree.mkdir()
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
         assert "no completion record found" in result.message.lower()
@@ -2177,7 +2357,12 @@ class TestCompletionProcessorValidation:
         record_dir.mkdir()
         (record_dir / "completion.json").write_text("not valid json{")
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
 
@@ -2193,7 +2378,12 @@ class TestCompletionProcessorValidation:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
         assert "protected branch" in result.message.lower()
@@ -2220,12 +2410,14 @@ class TestCompletionProcessorEvents:
 
         # Subscribe to capture events
         events_received = []
-        event_bus.subscribe(
-            SessionEvent.COMPLETED,
-            lambda e: events_received.append(e)
-        )
+        event_bus.subscribe(SessionEvent.COMPLETED, lambda e: events_received.append(e))
 
-        processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert len(events_received) == 1
         assert events_received[0].entity_id == 123
@@ -2235,7 +2427,12 @@ class TestCompletionProcessorDirtyPolicy:
     """Tests for dirty-tree policy enforcement before push."""
 
     def test_push_rejected_when_tracked_dirty(
-        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
     ):
         config = Config()
         config.validation.publish.dirty_check = "tracked"
@@ -2257,7 +2454,12 @@ class TestCompletionProcessorDirtyPolicy:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
         assert result.failure_kind == "validation_failed"
@@ -2273,7 +2475,12 @@ class TestCompletionProcessorDirtyPolicy:
         mock_pr_adapter.add_comment.assert_called_once()
 
     def test_push_rejected_when_all_mode_and_untracked_present(
-        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
     ):
         config = Config()
         config.validation.publish.dirty_check = "all"
@@ -2295,14 +2502,24 @@ class TestCompletionProcessorDirtyPolicy:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
         assert "working tree is dirty" in result.message.lower()
         mock_git_adapter.push.assert_not_called()
 
     def test_push_allows_when_all_mode_and_only_planted_untracked(
-        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
     ):
         # Reproduces the mode=all parity gap with the agent's coding-done
         # check. has_uncommitted_changes fires on planted-untracked paths,
@@ -2330,13 +2547,23 @@ class TestCompletionProcessorDirtyPolicy:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.success
         mock_git_adapter.push.assert_called_once()
 
     def test_push_allows_runtime_only_dirty_files(
-        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
     ):
         config = Config()
         config.validation.publish.dirty_check = "tracked"
@@ -2350,7 +2577,9 @@ class TestCompletionProcessorDirtyPolicy:
             config=config,
         )
         mock_git_adapter.has_tracked_changes.return_value = True
-        mock_git_adapter.list_dirty_files.return_value = [".issue-orchestrator/session-latest.json"]
+        mock_git_adapter.list_dirty_files.return_value = [
+            ".issue-orchestrator/session-latest.json"
+        ]
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH],
@@ -2358,13 +2587,23 @@ class TestCompletionProcessorDirtyPolicy:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.success
         mock_git_adapter.push.assert_called_once()
 
     def test_push_blocked_when_dirty_listing_reports_enumeration_failure(
-        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
     ):
         """list_dirty_files returning ``None`` signals an enumeration
         failure: we don't know whether the dirty entries are the safe
@@ -2395,13 +2634,23 @@ class TestCompletionProcessorDirtyPolicy:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
         mock_git_adapter.push.assert_not_called()
 
     def test_push_allowed_when_dirty_check_off(
-        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+        self,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
     ):
         config = Config()
         config.validation.publish.dirty_check = "off"
@@ -2422,7 +2671,12 @@ class TestCompletionProcessorDirtyPolicy:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.success
         mock_git_adapter.push.assert_called_once()
@@ -2445,12 +2699,14 @@ class TestCompletionProcessorDirtyPolicy:
         worktree = worktree_with_completion(record)
 
         events_received = []
-        event_bus.subscribe(
-            SessionEvent.FAILED,
-            lambda e: events_received.append(e)
-        )
+        event_bus.subscribe(SessionEvent.FAILED, lambda e: events_received.append(e))
 
-        processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert len(events_received) == 1
 
@@ -2458,9 +2714,7 @@ class TestCompletionProcessorDirtyPolicy:
 class TestCompletionProcessorAuditLogging:
     """Tests for audit logging of all actions."""
 
-    def test_all_actions_logged(
-        self, processor, worktree_with_completion, caplog
-    ):
+    def test_all_actions_logged(self, processor, worktree_with_completion, caplog):
         """All executed actions should be logged for audit."""
         record = make_record(
             outcome=CompletionOutcome.REVIEW_APPROVED,
@@ -2476,8 +2730,14 @@ class TestCompletionProcessorAuditLogging:
         worktree = worktree_with_completion(record)
 
         import logging
+
         with caplog.at_level(logging.INFO):
-            processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=42, issue_title="Test PR")
+            processor.process(
+                worktree,
+                run_assets=make_session_run_assets(worktree),
+                issue_number=42,
+                issue_title="Test PR",
+            )
 
         # Verify key actions are logged
         log_text = caplog.text
@@ -2485,9 +2745,7 @@ class TestCompletionProcessorAuditLogging:
         assert "Executing action: remove_code_review_label" in log_text
         assert "Processing completion for #42" in log_text
 
-    def test_result_includes_actions_taken(
-        self, processor, worktree_with_completion
-    ):
+    def test_result_includes_actions_taken(self, processor, worktree_with_completion):
         """Result should list all actions taken for audit."""
         record = make_record(
             outcome=CompletionOutcome.BLOCKED,
@@ -2498,7 +2756,12 @@ class TestCompletionProcessorAuditLogging:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.actions_taken is not None
         assert any("blocked" in action.lower() for action in result.actions_taken)
@@ -2517,10 +2780,12 @@ class TestCompletionProcessorPublishGate:
         from issue_orchestrator.control.validation import PublishGateResult
 
         gate = Mock()
-        gate.check = Mock(return_value=PublishGateResult(
-            allowed=True,
-            reason="Validation passed",
-        ))
+        gate.check = Mock(
+            return_value=PublishGateResult(
+                allowed=True,
+                reason="Validation passed",
+            )
+        )
         return gate
 
     @pytest.fixture
@@ -2559,7 +2824,11 @@ class TestCompletionProcessorPublishGate:
         return gate
 
     def test_cannot_publish_without_validation_passing(
-        self, processor_with_gate, mock_publish_gate, mock_git_adapter, worktree_with_completion
+        self,
+        processor_with_gate,
+        mock_publish_gate,
+        mock_git_adapter,
+        worktree_with_completion,
     ):
         """CRITICAL: Publish actions must be blocked when validation fails.
 
@@ -2594,7 +2863,11 @@ class TestCompletionProcessorPublishGate:
         mock_git_adapter.push.assert_not_called()
 
     def test_publish_allowed_when_validation_passes(
-        self, processor_with_gate, mock_publish_gate, mock_git_adapter, worktree_with_completion
+        self,
+        processor_with_gate,
+        mock_publish_gate,
+        mock_git_adapter,
+        worktree_with_completion,
     ):
         """Publish actions proceed when validation passes."""
         from issue_orchestrator.control.validation import PublishGateResult
@@ -2611,13 +2884,22 @@ class TestCompletionProcessorPublishGate:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor_with_gate.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor_with_gate.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.success
         mock_git_adapter.push.assert_called_once()
 
     def test_non_publish_actions_bypass_gate(
-        self, processor_with_gate, mock_publish_gate, mock_label_adapter, worktree_with_completion
+        self,
+        processor_with_gate,
+        mock_publish_gate,
+        mock_label_adapter,
+        worktree_with_completion,
     ):
         """Non-publish actions (labels, comments) don't require validation."""
         from issue_orchestrator.control.validation import PublishGateResult
@@ -2635,7 +2917,12 @@ class TestCompletionProcessorPublishGate:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor_with_gate.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor_with_gate.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         # Label actions should succeed without gate check
         assert result.success
@@ -2666,7 +2953,12 @@ class TestCompletionProcessorPublishGate:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor_with_gate.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor_with_gate.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         # Processing must fail
         assert not result.success
@@ -2683,9 +2975,15 @@ class TestCompletionProcessorPublishGate:
         self, processor_with_gate, mock_publish_gate, tmp_path
     ):
         """Validation failure output should be written into session output."""
-        from issue_orchestrator.control.validation import PublishGateResult, ValidationRecord, ValidationRecordStore
+        from issue_orchestrator.control.validation import (
+            PublishGateResult,
+            ValidationRecord,
+            ValidationRecordStore,
+        )
         from issue_orchestrator.domain.models import CompletionRecord
-        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+        from issue_orchestrator.execution.session_output_adapter import (
+            FileSystemSessionOutput,
+        )
 
         worktree = tmp_path / "worktree"
         worktree.mkdir()
@@ -2699,7 +2997,9 @@ class TestCompletionProcessorPublishGate:
             summary="Done",
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
         )
-        (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
+        (record_dir / "completion.json").write_text(
+            json.dumps(completion_record.to_dict())
+        )
 
         session_output = FileSystemSessionOutput()
         run = session_output.start_run(worktree, "issue-123", issue_number=123)
@@ -2719,8 +3019,12 @@ class TestCompletionProcessorPublishGate:
             started_at=datetime.now(timezone.utc).isoformat(),
             ended_at=datetime.now(timezone.utc).isoformat(),
             timed_out=False,
-            stdout_path=str((run.run_dir / "validation-stdout.log").relative_to(worktree)),
-            stderr_path=str((run.run_dir / "validation-stderr.log").relative_to(worktree)),
+            stdout_path=str(
+                (run.run_dir / "validation-stdout.log").relative_to(worktree)
+            ),
+            stderr_path=str(
+                (run.run_dir / "validation-stderr.log").relative_to(worktree)
+            ),
         )
         store.write(validation_record)
 
@@ -2743,7 +3047,9 @@ class TestCompletionProcessorPublishGate:
         assert (run_dir / "validation-stderr.log").read_text() == "validation stderr"
         assert (run_dir / "validation-record.json").exists()
         manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert manifest.get("validation_record_path") == str(run_dir / "validation-record.json")
+        assert manifest.get("validation_record_path") == str(
+            run_dir / "validation-record.json"
+        )
         # Manifest carries the typed validation outcome via the three
         # legacy flat fields. The publish-gate-failed path used to write
         # `validation_failure_reason` (an inconsistent typo'd field) —
@@ -2779,7 +3085,12 @@ class TestCompletionProcessorPublishGate:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.success
         mock_pre_publish_gate.check.assert_called_once_with(worktree)
@@ -2822,7 +3133,12 @@ class TestCompletionProcessorPublishGate:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
         assert result.failure_kind == "validation_failed"
@@ -2860,7 +3176,12 @@ class TestCompletionProcessorPublishGate:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert result.success is True
         assert result.review_exchange_deferred is True
@@ -2903,7 +3224,12 @@ class TestCompletionProcessorPublishGate:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, run_assets=make_session_run_assets(worktree), issue_number=123, issue_title="Test")
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
 
         assert not result.success
         assert result.failure_kind == "validation_failed"
@@ -2930,8 +3256,12 @@ class TestCompletionProcessorPublishGate:
         config.review_exchange_mode = "via-local-loop"
         config.code_review_agent = "agent:reviewer"
         config.agents = {
-            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
-            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+            "agent:coder": AgentConfig(
+                prompt_path=coder_prompt, ai_system="claude-code"
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=reviewer_prompt, ai_system="codex"
+            ),
         }
 
         pre_publish_gate = Mock()
@@ -2969,7 +3299,9 @@ class TestCompletionProcessorPublishGate:
             summary="Done",
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
         )
-        (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
+        (record_dir / "completion.json").write_text(
+            json.dumps(completion_record.to_dict())
+        )
         processor.session_output.start_run(worktree, "issue-123", issue_number=123)
         review_exchange = processor._review_exchange  # noqa: SLF001
         processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
@@ -2983,7 +3315,10 @@ class TestCompletionProcessorPublishGate:
             "prepare_review_exchange",
             return_value=(
                 SimpleNamespace(
-                    ordered_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR]
+                    ordered_actions=[
+                        RequestedAction.PUSH_BRANCH,
+                        RequestedAction.CREATE_PR,
+                    ]
                 ),
                 None,
                 None,
@@ -2994,7 +3329,8 @@ class TestCompletionProcessorPublishGate:
         ):
             result = processor.process(
                 worktree,
-                run_assets=make_session_run_assets(worktree), issue_number=123,
+                run_assets=make_session_run_assets(worktree),
+                issue_number=123,
                 issue_title="Test Issue",
                 agent_label="agent:coder",
             )
@@ -3035,8 +3371,12 @@ class TestCompletionProcessorPublishGate:
         config.review_exchange_mode = "via-local-loop"
         config.code_review_agent = "agent:reviewer"
         config.agents = {
-            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
-            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+            "agent:coder": AgentConfig(
+                prompt_path=coder_prompt, ai_system="claude-code"
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=reviewer_prompt, ai_system="codex"
+            ),
         }
 
         pre_publish_gate = Mock()
@@ -3074,7 +3414,9 @@ class TestCompletionProcessorPublishGate:
             summary="Done",
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
         )
-        (record_dir / "completion.json").write_text(json.dumps(completion_record.to_dict()))
+        (record_dir / "completion.json").write_text(
+            json.dumps(completion_record.to_dict())
+        )
         processor.session_output.start_run(worktree, "issue-123", issue_number=123)
         review_exchange = processor._review_exchange  # noqa: SLF001
         processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
@@ -3091,7 +3433,10 @@ class TestCompletionProcessorPublishGate:
             "prepare_review_exchange",
             return_value=(
                 SimpleNamespace(
-                    ordered_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR]
+                    ordered_actions=[
+                        RequestedAction.PUSH_BRANCH,
+                        RequestedAction.CREATE_PR,
+                    ]
                 ),
                 None,
                 None,
@@ -3102,7 +3447,8 @@ class TestCompletionProcessorPublishGate:
         ):
             result = processor.process(
                 worktree,
-                run_assets=make_session_run_assets(worktree), issue_number=123,
+                run_assets=make_session_run_assets(worktree),
+                issue_number=123,
                 issue_title="Test Issue",
                 agent_label="agent:coder",
             )
@@ -3110,7 +3456,9 @@ class TestCompletionProcessorPublishGate:
         assert not result.success
         assert result.review_exchange_halted is True
         assert result.failure_kind is None
-        assert result.errors == ["review_exchange: stopped (max_no_progress)"]
+        assert result.errors == [
+            "review_exchange: stopped (reviewer_reports_no_progress)"
+        ]
         assert result.actions_taken == []
         mock_git_adapter.push.assert_not_called()
         mock_label_adapter.add_label.assert_not_called()
@@ -3430,7 +3778,9 @@ class TestRunScopedArtifacts:
             agent_label="agent:web",
             completion_path=".issue-orchestrator/sessions/20260201-000000Z__coding-1/completion-agent_web.json",
         )
-        completion_rel = f".issue-orchestrator/sessions/{run.run_dir.name}/completion-agent_web.json"
+        completion_rel = (
+            f".issue-orchestrator/sessions/{run.run_dir.name}/completion-agent_web.json"
+        )
         completion_path = worktree / completion_rel
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
@@ -3485,8 +3835,12 @@ class TestRunScopedArtifacts:
         config.review_exchange_mode = "via-local-loop"
         config.code_review_agent = "agent:reviewer"
         config.agents = {
-            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
-            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+            "agent:coder": AgentConfig(
+                prompt_path=coder_prompt, ai_system="claude-code"
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=reviewer_prompt, ai_system="codex"
+            ),
         }
 
         worktree = tmp_path / "worktree"
@@ -3517,7 +3871,9 @@ class TestRunScopedArtifacts:
 
         exchange_dir = review_run_dir / "review-exchange"
         exchange_dir.mkdir(parents=True, exist_ok=True)
-        (review_run_dir / "validation-record.json").write_text(json.dumps({"passed": True}))
+        (review_run_dir / "validation-record.json").write_text(
+            json.dumps({"passed": True})
+        )
 
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
@@ -3578,8 +3934,12 @@ class TestRunScopedArtifacts:
         config.review_exchange_mode = "via-local-loop"
         config.code_review_agent = "agent:reviewer"
         config.agents = {
-            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
-            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+            "agent:coder": AgentConfig(
+                prompt_path=coder_prompt, ai_system="claude-code"
+            ),
+            "agent:reviewer": AgentConfig(
+                prompt_path=reviewer_prompt, ai_system="codex"
+            ),
         }
 
         worktree = tmp_path / "worktree"

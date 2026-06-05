@@ -69,9 +69,21 @@ class PairExchangeRunBinding:
     def __post_init__(self) -> None:
         if not self.run_id:
             raise ValueError("pair exchange binding requires run_id")
+        if not self.assets.run_dir.is_dir():
+            raise ValueError(
+                "pair exchange binding requires an existing run_dir: "
+                f"{self.assets.run_dir}"
+            )
+        if not (self.assets.run_dir / "manifest.json").is_file():
+            raise ValueError(
+                "pair exchange binding requires run_dir/manifest.json: "
+                f"{self.assets.run_dir}"
+            )
 
     @classmethod
-    def from_exchange_run(cls, exchange_run: ReviewExchangeRun) -> "PairExchangeRunBinding":
+    def from_exchange_run(
+        cls, exchange_run: ReviewExchangeRun
+    ) -> "PairExchangeRunBinding":
         return cls(run_id=exchange_run.run_id, assets=exchange_run.assets)
 
     @property
@@ -127,27 +139,47 @@ def _pair_recording_contract_errors(
     return tuple(errors)
 
 
-def _bind_pair_to_exchange_run(
-    *,
+def _pair_matches_exchange_run(
     pair: PersistentExchangePair,
+    binding: PairExchangeRunBinding,
+) -> bool:
+    """Return True when the live pair was spawned for this run binding."""
+    return pair.exchange_run_id == binding.run_id and pair.run_dir == binding.run_dir
+
+
+def _acquire_pair_spawned_for_exchange_run(
+    *,
+    pair_registry: InMemoryPersistentExchangePairRegistry,
     issue_number: int,
     binding: PairExchangeRunBinding,
-) -> None:
-    """Record the current run consuming this live pair's stable write paths."""
-    if pair.exchange_run_id == binding.run_id and pair.run_dir == binding.run_dir:
-        return
+    spawn: Callable[[], PersistentExchangePair],
+) -> PersistentExchangePair:
+    pair = pair_registry.acquire(issue_key=issue_number, spawn=spawn)
+    if _pair_matches_exchange_run(pair, binding):
+        return pair
     logger.info(
-        "[REVIEW_EXCHANGE] rebinding live persistent pair to current run "
-        "issue=%s previous_run_id=%s current_run_id=%s previous_run_dir=%s "
-        "current_run_dir=%s",
+        "[REVIEW_EXCHANGE] cached persistent pair belongs to a different "
+        "exchange run; releasing before use issue=%s previous_run_id=%s "
+        "current_run_id=%s previous_run_dir=%s current_run_dir=%s",
         issue_number,
         pair.exchange_run_id,
         binding.run_id,
         pair.run_dir,
         binding.run_dir,
     )
-    pair.exchange_run_id = binding.run_id
-    pair.run_dir = binding.run_dir
+    pair_registry.release(
+        issue_number,
+        reason="exchange-run-changed-on-acquire",
+    )
+    pair = pair_registry.acquire(issue_key=issue_number, spawn=spawn)
+    if not _pair_matches_exchange_run(pair, binding):
+        raise RuntimeError(
+            "spawned persistent pair does not match current exchange run: "
+            f"issue={issue_number} pair_run_id={pair.exchange_run_id} "
+            f"binding_run_id={binding.run_id} pair_run_dir={pair.run_dir} "
+            f"binding_run_dir={binding.run_dir}"
+        )
+    return pair
 
 
 def acquire_pair_with_recording_contract(
@@ -159,17 +191,18 @@ def acquire_pair_with_recording_contract(
 ) -> PersistentExchangePair:
     """Acquire a live pair and bind it to the owner-injected exchange run.
 
-    The cached subprocess pair is intentionally reusable across exchange runs.
-    Its agent-visible write paths remain pair-scoped and stable; the current
-    exchange's run assets are projected from those pair-scoped files by the
-    exchange owner. Recording files are different: deleted writer targets cannot
-    be repaired safely, so that contract still releases and respawns once.
+    Role process environment contains owner-injected run assets
+    (``RUN_DIR``, ``SESSION_ID``, validation output dir). A live process from a
+    different exchange run is therefore not safe to rebind: it would keep
+    writing completion/validation evidence for the run that spawned it. The
+    pair owner releases that process and reacquires a fresh pair before
+    lower-level round code sees it.
     """
-    pair = pair_registry.acquire(issue_key=issue_number, spawn=spawn)
-    _bind_pair_to_exchange_run(
-        pair=pair,
+    pair = _acquire_pair_spawned_for_exchange_run(
+        pair_registry=pair_registry,
         issue_number=issue_number,
         binding=exchange_run,
+        spawn=spawn,
     )
     recording_contract_errors = _pair_recording_contract_errors(pair)
     if not recording_contract_errors:
@@ -185,11 +218,17 @@ def acquire_pair_with_recording_contract(
         reason="recording-contract-missing-on-acquire",
     )
     pair = pair_registry.acquire(issue_key=issue_number, spawn=spawn)
-    _bind_pair_to_exchange_run(
-        pair=pair,
-        issue_number=issue_number,
-        binding=exchange_run,
-    )
+    if not _pair_matches_exchange_run(pair, exchange_run):
+        pair_registry.release(
+            issue_number,
+            reason="exchange-run-mismatch-after-recording-respawn",
+        )
+        raise RuntimeError(
+            "respawned persistent pair does not match current exchange run: "
+            f"issue={issue_number} pair_run_id={pair.exchange_run_id} "
+            f"binding_run_id={exchange_run.run_id} pair_run_dir={pair.run_dir} "
+            f"binding_run_dir={exchange_run.run_dir}"
+        )
     respawn_errors = _pair_recording_contract_errors(pair)
     if respawn_errors:
         pair_registry.release(
@@ -210,13 +249,16 @@ def emit_review_exchange_failed(
     session_name: str,
     exc: Exception,
 ) -> None:
-    emit(EventName.REVIEW_EXCHANGE_FAILED, {
-        "issue_number": issue_number,
-        "session_name": session_name,
-        "round_index": 0,
-        "error": str(exc),
-        "exception_type": type(exc).__name__,
-    })
+    emit(
+        EventName.REVIEW_EXCHANGE_FAILED,
+        {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": 0,
+            "error": str(exc),
+            "exception_type": type(exc).__name__,
+        },
+    )
 
 
 def acquire_pair_or_emit_failure(

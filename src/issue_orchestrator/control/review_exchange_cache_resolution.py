@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,28 +23,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _summary_str(summary: Mapping[str, object], key: str) -> str | None:
-    value = summary.get(key)
-    return value if isinstance(value, str) else None
-
-
-def _summary_int(summary: Mapping[str, object], key: str) -> int | None:
-    value = summary.get(key)
-    return value if isinstance(value, int) else None
-
-
-def _summary_bool(summary: Mapping[str, object], key: str) -> bool | None:
-    value = summary.get(key)
-    return value if isinstance(value, bool) else None
-
-
 def _cached_validation_result(
     cached: ReviewExchangeSummary,
     cached_validation_passed: Callable[[Path | None], bool],
 ) -> bool | None:
-    embedded = _summary_bool(cached.summary, "validation_passed")
-    if embedded is not None:
-        return embedded
+    if cached.summary.validation_passed is not None:
+        return cached.summary.validation_passed
     record_path = cached.validation_record_path
     return cached_validation_passed(record_path) if record_path.exists() else None
 
@@ -194,11 +178,10 @@ class ReviewExchangeCacheResolver:
                 ),
                 None,
             )
-        cached_status = _summary_str(cached.summary, "status")
-        cached_reason = _summary_str(cached.summary, "reason")
-        embedded_head_sha = cached.summary.get("head_sha")
-        if isinstance(embedded_head_sha, str) and embedded_head_sha:
-            cached_head_sha: str | None = embedded_head_sha
+        cached_status = cached.summary.status
+        cached_reason = cached.summary.reason
+        if cached.summary.head_sha:
+            cached_head_sha: str | None = cached.summary.head_sha
         else:
             cached_head_sha = self.validation_head_sha(cached.validation_record_path)
         cached_validation_passed = _cached_validation_result(
@@ -236,7 +219,9 @@ class ReviewExchangeCacheResolver:
         if explicit_head_sha:
             return CurrentReviewSubject(
                 head_sha=explicit_head_sha,
-                validation_failed=record_failed if record_head_sha == explicit_head_sha else False,
+                validation_failed=record_failed
+                if record_head_sha == explicit_head_sha
+                else False,
             )
         return CurrentReviewSubject(
             head_sha=record_head_sha,
@@ -255,23 +240,20 @@ class ReviewExchangeCacheResolver:
         cached: ReviewExchangeSummary,
         cache_metadata: ReviewExchangeCacheMetadata,
     ) -> ReviewExchangeOutcome | None:
-        response_kind = _summary_str(cached.summary, "status")
-        rounds = _summary_int(cached.summary, "completed_rounds")
-        if response_kind is None or rounds is None:
-            return None
-        cached_detail = _summary_str(cached.summary, "reason")
-        reason = cached_detail or "cached_summary"
-        from ..domain.review_exchange import ReviewExchangeOutcome, ReviewExchangeResponse
+        from ..domain.review_exchange import (
+            ReviewExchangeOutcome,
+            ReviewExchangeResponse,
+        )
 
         return ReviewExchangeOutcome(
-            status=response_kind,
-            rounds=rounds,
-            reason=reason,
+            status=cached.summary.status,
+            rounds=cached.summary.completed_rounds,
+            reason=cached.summary.reason,
             reviewer_response=ReviewExchangeResponse(
-                response_type=response_kind,
-                response_text=cached.summary.get("response_text") or "",
+                response_type=cached.summary.status.value,
+                response_text=cached.summary.response_text or "",
             ),
             run_assets=cached.run_assets,
-            summary=dict(cached.summary),
+            summary=cached.summary,
             cache_metadata=cache_metadata,
         )

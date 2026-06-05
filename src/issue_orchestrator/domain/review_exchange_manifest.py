@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .review_exchange_summary import ReviewExchangeStatus
+
 
 @dataclass(frozen=True)
 class ReviewExchangeManifestHeader:
@@ -59,7 +61,8 @@ class ReviewExchangeManifestHeader:
 
     @classmethod
     def from_manifest(
-        cls, manifest: dict[str, Any],
+        cls,
+        manifest: dict[str, Any],
     ) -> "ReviewExchangeManifestHeader | None":
         """Parse a manifest dict back into a typed header.
 
@@ -121,7 +124,8 @@ class ReviewExchangeRecordingPaths:
 
     @classmethod
     def from_manifest(
-        cls, manifest: dict[str, Any],
+        cls,
+        manifest: dict[str, Any],
     ) -> "ReviewExchangeRecordingPaths | None":
         """Parse a manifest dict back into typed recording paths.
 
@@ -150,3 +154,36 @@ class ReviewExchangeRecordingPaths:
             coder_recording_pair=Path(values["coder_recording_pair"]),
             reviewer_recording_pair=Path(values["reviewer_recording_pair"]),
         )
+
+
+@dataclass(frozen=True)
+class ReviewExchangeSummaryManifestUpdate:
+    """Manifest fields written when a summary artifact is finalized."""
+
+    exchange_dir: Path
+    summary_path: Path
+    ended_at: str
+    outcome: ReviewExchangeStatus
+    validation_record_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if not self.ended_at:
+            raise ValueError(
+                "review exchange summary manifest update requires ended_at"
+            )
+        object.__setattr__(
+            self,
+            "outcome",
+            ReviewExchangeStatus(self.outcome),
+        )
+
+    def to_manifest_fields(self) -> dict[str, str]:
+        fields = {
+            "review_exchange_dir": str(self.exchange_dir),
+            "review_exchange_summary_path": str(self.summary_path),
+            "ended_at": self.ended_at,
+            "outcome": self.outcome.value,
+        }
+        if self.validation_record_path is not None:
+            fields["validation_record_path"] = str(self.validation_record_path)
+        return fields

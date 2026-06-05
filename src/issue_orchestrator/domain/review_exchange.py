@@ -21,6 +21,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .review_exchange_run import ReviewExchangeRunAssets
+from .review_exchange_summary import (
+    ReviewExchangeReason,
+    ReviewExchangeStatus,
+    ReviewExchangeSummaryV1,
+    ReviewExchangeTerminalState,
+)
 
 if TYPE_CHECKING:
     from .review_exchange_turn import ReviewExchangeTurnPacket
@@ -59,13 +65,26 @@ class ReviewExchangeCacheMetadata:
 class ReviewExchangeOutcome:
     """Terminal outcome of a complete review-exchange run."""
 
-    status: str  # "ok" | "stopped" | "error"
+    status: ReviewExchangeStatus
     rounds: int
-    reason: str
+    reason: ReviewExchangeReason
     run_assets: ReviewExchangeRunAssets
     reviewer_response: ReviewExchangeResponse | None = None
-    summary: dict[str, Any] | None = None
+    summary: ReviewExchangeSummaryV1 | None = None
     cache_metadata: ReviewExchangeCacheMetadata | None = None
+
+    def __post_init__(self) -> None:
+        terminal = ReviewExchangeTerminalState.from_values(
+            self.status,
+            self.reason,
+        )
+        object.__setattr__(self, "status", terminal.status)
+        object.__setattr__(self, "reason", terminal.reason)
+        if (
+            self.summary is not None
+            and type(self.summary) is not ReviewExchangeSummaryV1
+        ):
+            raise TypeError("summary must be ReviewExchangeSummaryV1")
 
     @property
     def run_dir(self) -> Path:
@@ -93,6 +112,7 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
     typed seam rather than a free keyword-arg signature.
     """
     from .review_exchange_turn import Role
+
     if packet.role is not Role.REVIEWER:
         raise ValueError(
             f"build_reviewer_prompt requires Role.REVIEWER packet, got {packet.role!r}"
@@ -151,6 +171,7 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
     packet's ``reviewer_feedback`` slot.
     """
     from .review_exchange_turn import Role
+
     if packet.role is not Role.CODER:
         raise ValueError(
             f"build_coder_prompt requires Role.CODER packet, got {packet.role!r}"
@@ -312,7 +333,9 @@ def _parse_protocol_json_from_embedded_objects(stripped: str) -> dict[str, Any] 
     return matches[-1] if matches else None
 
 
-def _parse_protocol_json_with_repaired_multiline_strings(stripped: str) -> dict[str, Any] | None:
+def _parse_protocol_json_with_repaired_multiline_strings(
+    stripped: str,
+) -> dict[str, Any] | None:
     """Recover common malformed JSON where agents emit raw newlines inside strings.
 
     Review exchange prompts ask for one-line JSON, but interactive agents

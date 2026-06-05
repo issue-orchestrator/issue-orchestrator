@@ -28,6 +28,7 @@ from issue_orchestrator.domain.review_exchange_run import (
     ReviewExchangeRun,
     ReviewExchangeRunAssets,
 )
+from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
 from issue_orchestrator.domain.models import (
     CompletionOutcome,
     CompletionRecord,
@@ -58,7 +59,11 @@ class _FakeReviewExchangeRunner:
             reason="reviewer_ok",
             run_assets=exchange_run.assets,
             reviewer_response=None,
-            summary={"status": "ok", "reason": "reviewer_ok", "completed_rounds": 1},
+            summary=_summary(
+                status="ok",
+                reason="reviewer_ok",
+                rounds=1,
+            ),
         )
 
     def job_timeout_seconds(self, **_: Any) -> float | None:
@@ -119,7 +124,7 @@ class _CapturingSupervisor:
 
 @dataclass
 class _CapturedSummary:
-    summary: dict[str, Any]
+    summary: ReviewExchangeSummaryV1
     review_run: ReviewExchangeRun
 
 
@@ -158,7 +163,9 @@ class _FakeSessionOutput:
         self.started_runs.append(run)
         return run
 
-    def cached_review_run(self, parent_session_name: str = "coding-1") -> ReviewExchangeRun:
+    def cached_review_run(
+        self, parent_session_name: str = "coding-1"
+    ) -> ReviewExchangeRun:
         return ReviewExchangeRun(
             session_name="review-exchange-230",
             run_id="exchange-run-cached",
@@ -169,10 +176,10 @@ class _FakeSessionOutput:
     def store_review_exchange_summary(
         self,
         review_run: ReviewExchangeRun,
-        summary: dict[str, Any],
+        summary: ReviewExchangeSummaryV1,
     ) -> None:
         self._summary = _CapturedSummary(
-            summary=dict(summary),
+            summary=summary,
             review_run=review_run,
         )
 
@@ -249,6 +256,29 @@ def _write_validation_record(path: Path, *, head_sha: str, passed: bool = True) 
     path.write_text(json.dumps({"passed": passed, "head_sha": head_sha}))
 
 
+def _summary(
+    *,
+    status: str,
+    reason: str,
+    rounds: int,
+    response_text: str | None = None,
+    head_sha: str | None = None,
+    validation_passed: bool | None = None,
+) -> ReviewExchangeSummaryV1:
+    payload: dict[str, object] = {
+        "status": status,
+        "reason": reason,
+        "completed_rounds": rounds,
+        "response_text": response_text,
+        "timestamp": "2026-02-01T00:00:00+00:00",
+    }
+    if head_sha is not None:
+        payload["head_sha"] = head_sha
+    if validation_passed is not None:
+        payload["validation_passed"] = validation_passed
+    return ReviewExchangeSummaryV1.from_payload(payload)
+
+
 def _store_cached_approval(
     session_output: _FakeSessionOutput,
     worktree: Path,
@@ -263,12 +293,12 @@ def _store_cached_approval(
         review_run.assets.validation_record_path.unlink()
     session_output.store_review_exchange_summary(
         review_run,
-        {
-            "status": "ok",
-            "reason": "reviewer_ok",
-            "completed_rounds": 1,
-            "response_text": "Looks good.",
-        },
+        _summary(
+            status="ok",
+            reason="reviewer_ok",
+            rounds=1,
+            response_text="Looks good.",
+        ),
     )
 
 
@@ -286,12 +316,12 @@ def _store_cached_halt(
         review_run.assets.validation_record_path.unlink()
     session_output.store_review_exchange_summary(
         review_run,
-        {
-            "status": "stopped",
-            "reason": "max_rounds_exceeded",
-            "completed_rounds": 3,
-            "response_text": "Max rounds reached.",
-        },
+        _summary(
+            status="stopped",
+            reason="max_rounds_exceeded",
+            rounds=3,
+            response_text="Max rounds reached.",
+        ),
     )
 
 
@@ -757,17 +787,17 @@ def test_tick_after_completion_resolves_cached_outcome(
         return ReviewExchangeOutcome(
             status="ok",
             rounds=1,
-            reason="Looks good.",
+            reason="reviewer_ok",
             run_assets=exchange_run.assets,
             reviewer_response=ReviewExchangeResponse(
                 response_type="ok", getting_closer=True, response_text="Looks good."
             ),
-            summary={
-                "status": "ok",
-                "reason": "reviewer_ok",
-                "completed_rounds": 1,
-                "response_text": "Looks good.",
-            },
+            summary=_summary(
+                status="ok",
+                reason="reviewer_ok",
+                rounds=1,
+                response_text="Looks good.",
+            ),
         )
 
     # Tick N — submit.
@@ -870,7 +900,7 @@ def test_cached_review_is_reused_when_validation_sha_matches(
     assert completed is True
     assert outcome is not None and outcome.status == "ok"
     assert outcome.summary is not None
-    assert not any(key.startswith("_cache_") for key in outcome.summary)
+    assert not any(key.startswith("_cache_") for key in outcome.summary.to_payload())
     assert outcome.cache_metadata is not None
     assert outcome.cache_metadata.to_event_fields() == {
         "review_cache_summary_path": str(
@@ -1117,16 +1147,14 @@ def test_stale_no_completion_summary_still_trips_loop_budget(tmp_path: Path) -> 
     _write_validation_record(cached_validation, head_sha="stale-sha")
     _write_validation_record(current_validation, head_sha="current-sha")
     review_run = session_output.cached_review_run()
-    review_run.assets.validation_record_path.write_text(
-        cached_validation.read_text()
-    )
+    review_run.assets.validation_record_path.write_text(cached_validation.read_text())
     session_output.store_review_exchange_summary(
         review_run,
-        {
-            "status": "error",
-            "reason": "reviewer_no_completion",
-            "completed_rounds": 1,
-        },
+        _summary(
+            status="error",
+            reason="reviewer_no_completion",
+            rounds=1,
+        ),
     )
 
     errors: list[str] = []
@@ -1150,7 +1178,9 @@ def test_stale_no_completion_summary_still_trips_loop_budget(tmp_path: Path) -> 
     assert completed is False
     assert outcome is None
     assert job_runner.submitted == []
-    assert any("3 consecutive reviewer/coder no-completion failures" in err for err in errors)
+    assert any(
+        "3 consecutive reviewer/coder no-completion failures" in err for err in errors
+    )
 
 
 def test_cached_review_before_scratch_boundary_is_ignored(tmp_path: Path) -> None:
@@ -1369,17 +1399,17 @@ def test_no_job_runner_falls_back_to_inline_execution(
         return ReviewExchangeOutcome(
             status="ok",
             rounds=1,
-            reason="Looks good.",
+            reason="reviewer_ok",
             run_assets=exchange_run.assets,
             reviewer_response=ReviewExchangeResponse(
                 response_type="ok", getting_closer=True, response_text="Looks good."
             ),
-            summary={
-                "status": "ok",
-                "reason": "reviewer_ok",
-                "completed_rounds": 1,
-                "response_text": "Looks good.",
-            },
+            summary=_summary(
+                status="ok",
+                reason="reviewer_ok",
+                rounds=1,
+                response_text="Looks good.",
+            ),
         )
 
     (_, _, outcome, completed, halt, deferred) = review.prepare_review_exchange(
@@ -1441,12 +1471,12 @@ def test_inline_review_exchange_halt_is_logged(
                 getting_closer=True,
                 response_text="Still not done.",
             ),
-            summary={
-                "status": "stopped",
-                "reason": "max_rounds_exceeded",
-                "completed_rounds": 3,
-                "response_text": "Still not done.",
-            },
+            summary=_summary(
+                status="stopped",
+                reason="max_rounds_exceeded",
+                rounds=3,
+                response_text="Still not done.",
+            ),
         )
 
     errors: list[str] = []

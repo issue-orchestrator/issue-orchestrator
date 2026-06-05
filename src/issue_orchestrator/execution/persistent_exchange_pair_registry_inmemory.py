@@ -44,10 +44,10 @@ class PersistentExchangePair:
 
     Pair write paths are pair-lifetime scoped. Agent-written response/report
     paths live inside the role worktrees so sandboxed agents can write them;
-    recordings and coder completion/validation paths live under the persistent
-    pair root. ``exchange_run_id`` and ``run_dir`` record the current typed
-    exchange run consuming those stable pair-scoped writes; the pair contract
-    owner rebinds them on each exchange acquire.
+    recordings and coder completion paths live under the persistent pair root.
+    ``exchange_run_id`` and ``run_dir`` record the typed exchange run whose
+    environment spawned the role processes. The pair contract owner releases,
+    rather than rebinds, a cached pair from any other exchange run.
 
     ``created_at`` is wall-clock seconds since epoch, set once at
     construction. ``last_used_at`` is updated on every cache hit so
@@ -201,7 +201,10 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
         logger.info(
             "[exchange-pair-registry] releasing issue_key=%s reason=%s "
             "coder_pid=%d reviewer_pid=%d age=%.1fs",
-            pair.issue_key, reason, coder_pid, reviewer_pid,
+            pair.issue_key,
+            reason,
+            coder_pid,
+            reviewer_pid,
             self._clock() - pair.created_at,
         )
         for session_label, session in (
@@ -214,7 +217,10 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
                 logger.exception(
                     "[exchange-pair-registry] %s session close raised "
                     "issue_key=%s pid=%d reason=%s",
-                    session_label, pair.issue_key, session.proc.pid, reason,
+                    session_label,
+                    pair.issue_key,
+                    session.proc.pid,
+                    reason,
                 )
 
         if self._on_release is not None:
@@ -224,7 +230,9 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
                 logger.exception(
                     "[exchange-pair-registry] on_release hook raised "
                     "issue_key=%s reason=%s reviewer_worktree=%s",
-                    pair.issue_key, reason, pair.reviewer_worktree_path,
+                    pair.issue_key,
+                    reason,
+                    pair.reviewer_worktree_path,
                 )
 
     def snapshot(self) -> list[dict[str, Any]]:

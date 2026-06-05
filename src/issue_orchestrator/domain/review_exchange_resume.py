@@ -29,6 +29,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from .review_exchange_summary import (
+    ReviewExchangeReason,
+    ReviewExchangeStatus,
+    ReviewExchangeTerminalState,
+)
+
 
 class ResumeDecision(Enum):
     """What the next tick should do with a cached review-exchange summary.
@@ -148,8 +154,8 @@ class ResumeFacts:
     head/validation gating is relaxed.
     """
 
-    status: str | None
-    reason: str | None
+    status: ReviewExchangeStatus | None
+    reason: ReviewExchangeReason | None
     cached_head_sha: str | None
     cached_validation_passed: bool | None
     current_head_sha: str | None
@@ -157,61 +163,84 @@ class ResumeFacts:
     no_completion_count: int
     require_validation: bool
 
+    def __post_init__(self) -> None:
+        if self.status is None and self.reason is None:
+            return
+        terminal = ReviewExchangeTerminalState.from_values(
+            self.status,
+            self.reason,
+        )
+        object.__setattr__(self, "status", terminal.status)
+        object.__setattr__(self, "reason", terminal.reason)
+
 
 # ---------------------------------------------------------------------------
 # Reason constants — single source of truth for the matrix
 # ---------------------------------------------------------------------------
 
-STATUS_REVIEWER_OK = "ok"
+STATUS_REVIEWER_OK = ReviewExchangeStatus.OK
 """Terminal status: reviewer approved."""
 
-STATUS_REVIEWER_STOPPED = "stopped"
+STATUS_REVIEWER_STOPPED = ReviewExchangeStatus.STOPPED
 """Terminal status: bounded exchange stopped before approval."""
 
-STATUS_REVIEWER_ERROR = "error"
+STATUS_REVIEWER_ERROR = ReviewExchangeStatus.ERROR
 """Terminal status: exchange ended with protocol/timeout failure."""
 
-REASON_REVIEWER_OK = "reviewer_ok"
+REASON_REVIEWER_OK = ReviewExchangeReason.REVIEWER_OK
 """Status=ok terminal: the reviewer approved."""
 
-REASON_REVIEWER_REPORTS_NO_PROGRESS = "reviewer_reports_no_progress"
+REASON_REVIEWER_REPORTS_NO_PROGRESS = ReviewExchangeReason.REVIEWER_REPORTS_NO_PROGRESS
 """Status=stopped terminal: max_no_progress threshold reached."""
 
-REASON_MAX_ROUNDS_EXCEEDED = "max_rounds_exceeded"
+REASON_MAX_ROUNDS_EXCEEDED = ReviewExchangeReason.MAX_ROUNDS_EXCEEDED
 """Status=stopped terminal: ran the configured max number of rounds."""
 
-REASON_REVIEWER_NO_COMPLETION = "reviewer_no_completion"
+REASON_REVIEWER_NO_COMPLETION = ReviewExchangeReason.REVIEWER_NO_COMPLETION
 """Status=error: reviewer round timed out without producing a verdict."""
 
-REASON_CODER_NO_COMPLETION = "coder_no_completion"
+REASON_CODER_NO_COMPLETION = ReviewExchangeReason.CODER_NO_COMPLETION
 """Status=error: coder round timed out without producing a response."""
 
-REASON_CODER_PROTOCOL_ERROR = "coder_protocol_error"
+REASON_CODER_PROTOCOL_ERROR = ReviewExchangeReason.CODER_PROTOCOL_ERROR
 """Status=error terminal: coder failed protocol (skipped coding-done,
 malformed completion record). Distinct from no-completion: this
 won't fix itself by retrying on the same head — escalates immediately."""
 
-
-_NO_COMPLETION_REASONS: frozenset[str] = frozenset({
-    REASON_REVIEWER_NO_COMPLETION,
-    REASON_CODER_NO_COMPLETION,
-})
-
-_TERMINAL_HALT_REASONS: frozenset[str] = frozenset({
-    REASON_REVIEWER_REPORTS_NO_PROGRESS,
-    REASON_MAX_ROUNDS_EXCEEDED,
-    REASON_CODER_PROTOCOL_ERROR,
-})
+REASON_REVIEWER_DECISION_INVALID = ReviewExchangeReason.REVIEWER_DECISION_INVALID
+"""Status=error terminal: reviewer produced malformed decision artifacts."""
 
 
-def is_no_completion_reason(reason: str | None) -> bool:
+_NO_COMPLETION_REASONS: frozenset[ReviewExchangeReason] = frozenset(
+    {
+        REASON_REVIEWER_NO_COMPLETION,
+        REASON_CODER_NO_COMPLETION,
+    }
+)
+
+_TERMINAL_HALT_REASONS: frozenset[ReviewExchangeReason] = frozenset(
+    {
+        REASON_REVIEWER_REPORTS_NO_PROGRESS,
+        REASON_MAX_ROUNDS_EXCEEDED,
+        REASON_CODER_PROTOCOL_ERROR,
+        REASON_REVIEWER_DECISION_INVALID,
+    }
+)
+
+
+def is_no_completion_reason(reason: ReviewExchangeReason | str | None) -> bool:
     """Public: does this reason count toward the no-completion budget?
 
     The retry classifier in control uses this to filter recent
     summaries. Single source of truth so the writer, cache loader,
     and counter cannot drift.
     """
-    return reason in _NO_COMPLETION_REASONS
+    if reason is None:
+        return False
+    try:
+        return ReviewExchangeReason(reason) in _NO_COMPLETION_REASONS
+    except ValueError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +286,13 @@ def decide(facts: ResumeFacts) -> ResumeDecision:
     if _is_stale(facts):
         return ResumeDecision.IGNORE_STALE
 
-    if facts.status == "ok" and facts.reason == REASON_REVIEWER_OK:
+    if facts.status is STATUS_REVIEWER_OK and facts.reason is REASON_REVIEWER_OK:
         return ResumeDecision.REUSE_APPROVAL
 
-    if facts.status == "stopped" or facts.reason == REASON_CODER_PROTOCOL_ERROR:
+    if (
+        facts.status is STATUS_REVIEWER_STOPPED
+        or facts.reason in _TERMINAL_HALT_REASONS
+    ):
         return ResumeDecision.REUSE_HALT
 
     if is_no_completion_reason(facts.reason):
@@ -276,20 +308,29 @@ def decide(facts: ResumeFacts) -> ResumeDecision:
 # ---------------------------------------------------------------------------
 
 
-_KNOWN_STATUS_REASON_PAIRS: frozenset[tuple[str, str]] = frozenset({
-    ("ok", REASON_REVIEWER_OK),
-    ("stopped", REASON_REVIEWER_REPORTS_NO_PROGRESS),
-    ("stopped", REASON_MAX_ROUNDS_EXCEEDED),
-    ("error", REASON_REVIEWER_NO_COMPLETION),
-    ("error", REASON_CODER_NO_COMPLETION),
-    ("error", REASON_CODER_PROTOCOL_ERROR),
-})
+_KNOWN_STATUS_REASON_PAIRS: frozenset[
+    tuple[ReviewExchangeStatus, ReviewExchangeReason]
+] = frozenset(
+    {
+        (STATUS_REVIEWER_OK, REASON_REVIEWER_OK),
+        (STATUS_REVIEWER_STOPPED, REASON_REVIEWER_REPORTS_NO_PROGRESS),
+        (STATUS_REVIEWER_STOPPED, REASON_MAX_ROUNDS_EXCEEDED),
+        (STATUS_REVIEWER_ERROR, REASON_REVIEWER_NO_COMPLETION),
+        (STATUS_REVIEWER_ERROR, REASON_CODER_NO_COMPLETION),
+        (STATUS_REVIEWER_ERROR, REASON_CODER_PROTOCOL_ERROR),
+        (STATUS_REVIEWER_ERROR, REASON_REVIEWER_DECISION_INVALID),
+    }
+)
 
 
 def _is_known(status: Any, reason: Any) -> bool:
-    if not isinstance(status, str) or not isinstance(reason, str):
+    if status is None or reason is None:
         return False
-    return (status, reason) in _KNOWN_STATUS_REASON_PAIRS
+    try:
+        terminal = ReviewExchangeTerminalState.from_values(status, reason)
+    except ValueError:
+        return False
+    return (terminal.status, terminal.reason) in _KNOWN_STATUS_REASON_PAIRS
 
 
 def _is_stale(facts: ResumeFacts) -> bool:

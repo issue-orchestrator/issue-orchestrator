@@ -33,6 +33,7 @@ from ..infra.terminal_recording import append_output_event
 from ..domain.review_exchange_manifest import ReviewExchangeManifestHeader
 from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
+from ..domain.review_exchange_summary import ReviewExchangeSummaryV1
 from ..domain.exchange_chapter import (
     CHAPTER_SCHEMA_VERSION,
     ChapterSidecarIdentityMismatch,
@@ -666,7 +667,7 @@ Timestamp: {self._now_iso()}
     def store_review_exchange_summary(
         self,
         review_run: ReviewExchangeRun,
-        summary: dict[str, Any],
+        summary: ReviewExchangeSummaryV1,
     ) -> ReviewExchangeSummary:
         return _store_review_exchange_summary(
             review_run,
@@ -745,25 +746,13 @@ Timestamp: {self._now_iso()}
                 # a coding boundary — stop the count so each coding
                 # turn gets its own quota.
                 break
-            summary = self._read_json(summary_path)
-            if not isinstance(summary, dict):
+            summary = self._read_review_exchange_summary(summary_path)
+            if summary is None:
                 # Unparseable summary — treat as "noise", not as a clean run
                 # that resets the count. Keep going to find a definitive
                 # signal, but don't increment.
                 continue
-            status = summary.get("status")
-            reason = summary.get("reason")
-            # Classification is owned by ``domain.review_exchange_resume``
-            # — the same module ``CompletionReviewExchange`` uses to
-            # decide whether to spawn a fresh exchange or halt. Pre-PR
-            # #6271 the adapter encoded the ``_no_completion`` suffix
-            # rule inline, which let the runner's reasons drift apart
-            # from the counter's classification (review feedback on
-            # PR #6270). Routing both consumers through one classifier
-            # function ends that drift.
-            if status == "error" and is_no_completion_reason(
-                reason if isinstance(reason, str) else None,
-            ):
+            if summary.status == "error" and is_no_completion_reason(summary.reason):
                 count += 1
                 continue
             # First clean (non-no-completion) summary stops the streak —
@@ -902,14 +891,31 @@ Timestamp: {self._now_iso()}
                 summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
                 if not summary_path.exists():
                     continue
-                summary = self._read_json(summary_path)
-                if not isinstance(summary, dict):
+                summary = self._read_review_exchange_summary(summary_path)
+                if summary is None:
                     continue
                 return ReviewExchangeSummary(
                     summary=summary,
                     run_assets=ReviewExchangeRunAssets.from_exchange_dir(exchange_dir),
                 )
         return None
+
+    def _read_review_exchange_summary(
+        self,
+        summary_path: Path,
+    ) -> ReviewExchangeSummaryV1 | None:
+        raw = self._read_json(summary_path)
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return ReviewExchangeSummaryV1.from_payload(raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[session_output] Ignoring invalid review exchange summary: %s",
+                summary_path,
+                exc_info=True,
+            )
+            return None
 
     # -------------------------------------------------------------------------
     # Review Feedback (per-cycle storage for diagnostics)

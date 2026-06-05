@@ -21,6 +21,40 @@ from issue_orchestrator.execution.session_output_adapter import (
     REVIEW_EXCHANGE_SUMMARY_NAME,
     VALIDATION_RECORD_NAME,
 )
+from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
+
+
+def _review_exchange_summary(
+    *,
+    status: str = "ok",
+    reason: str = "reviewer_ok",
+    rounds: int = 1,
+    response_text: str | None = None,
+) -> ReviewExchangeSummaryV1:
+    return ReviewExchangeSummaryV1.from_payload(
+        {
+            "status": status,
+            "reason": reason,
+            "completed_rounds": rounds,
+            "response_text": response_text,
+            "timestamp": "2026-02-01T00:00:00+00:00",
+        }
+    )
+
+
+def _review_exchange_summary_payload(
+    *,
+    status: str = "ok",
+    reason: str = "reviewer_ok",
+    rounds: int = 1,
+    response_text: str | None = None,
+) -> dict[str, object]:
+    return _review_exchange_summary(
+        status=status,
+        reason=reason,
+        rounds=rounds,
+        response_text=response_text,
+    ).to_payload()
 
 
 class TestListRuns:
@@ -46,33 +80,45 @@ class TestListRuns:
         run3_dir.mkdir()
 
         # Create manifests
-        (run1_dir / MANIFEST_NAME).write_text(json.dumps({
-            "session_name": "coding-1",
-            "run_id": "20260117-100000Z",
-            "started_at": "2026-01-17T10:00:00Z",
-            "ended_at": "2026-01-17T10:30:00Z",
-            "issue_number": 123,
-            "agent_label": "agent:developer",
-            "outcome": "completed",
-            "validation_passed": True,
-        }))
-        (run2_dir / MANIFEST_NAME).write_text(json.dumps({
-            "session_name": "review-1",
-            "run_id": "20260117-110000Z",
-            "started_at": "2026-01-17T11:00:00Z",
-            "ended_at": "2026-01-17T11:30:00Z",
-            "issue_number": 123,
-            "agent_label": "agent:reviewer",
-            "outcome": "blocked",
-        }))
-        (run3_dir / MANIFEST_NAME).write_text(json.dumps({
-            "session_name": "coding-2",
-            "run_id": "20260117-120000Z",
-            "started_at": "2026-01-17T12:00:00Z",
-            "issue_number": 123,
-            "agent_label": "agent:developer",
-            # No ended_at - still in progress
-        }))
+        (run1_dir / MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "session_name": "coding-1",
+                    "run_id": "20260117-100000Z",
+                    "started_at": "2026-01-17T10:00:00Z",
+                    "ended_at": "2026-01-17T10:30:00Z",
+                    "issue_number": 123,
+                    "agent_label": "agent:developer",
+                    "outcome": "completed",
+                    "validation_passed": True,
+                }
+            )
+        )
+        (run2_dir / MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "session_name": "review-1",
+                    "run_id": "20260117-110000Z",
+                    "started_at": "2026-01-17T11:00:00Z",
+                    "ended_at": "2026-01-17T11:30:00Z",
+                    "issue_number": 123,
+                    "agent_label": "agent:reviewer",
+                    "outcome": "blocked",
+                }
+            )
+        )
+        (run3_dir / MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "session_name": "coding-2",
+                    "run_id": "20260117-120000Z",
+                    "started_at": "2026-01-17T12:00:00Z",
+                    "issue_number": 123,
+                    "agent_label": "agent:developer",
+                    # No ended_at - still in progress
+                }
+            )
+        )
 
         # Create index
         index = {
@@ -149,16 +195,12 @@ class TestListRuns:
         assert runs[2].get("outcome") is None
         assert runs[2].get("ended_at") is None
 
-    def test_list_runs_returns_empty_for_missing_index(
-        self, session_output, tmp_path
-    ):
+    def test_list_runs_returns_empty_for_missing_index(self, session_output, tmp_path):
         """Verify list_runs returns empty list when no index exists."""
         runs = session_output.list_runs(tmp_path)
         assert runs == []
 
-    def test_list_runs_returns_empty_for_empty_index(
-        self, session_output, tmp_path
-    ):
+    def test_list_runs_returns_empty_for_empty_index(self, session_output, tmp_path):
         """Verify list_runs returns empty list when index has no runs."""
         sessions_dir = tmp_path / ".issue-orchestrator" / "sessions"
         sessions_dir.mkdir(parents=True)
@@ -175,12 +217,16 @@ class TestListRuns:
         # Create one real run
         run1_dir = sessions_dir / "20260117-100000Z__coding-1"
         run1_dir.mkdir()
-        (run1_dir / MANIFEST_NAME).write_text(json.dumps({
-            "session_name": "coding-1",
-            "started_at": "2026-01-17T10:00:00Z",
-            "ended_at": "2026-01-17T10:30:00Z",
-            "outcome": "completed",
-        }))
+        (run1_dir / MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "session_name": "coding-1",
+                    "started_at": "2026-01-17T10:00:00Z",
+                    "ended_at": "2026-01-17T10:30:00Z",
+                    "outcome": "completed",
+                }
+            )
+        )
 
         # Index references a non-existent run
         index = {
@@ -205,9 +251,7 @@ class TestListRuns:
         assert len(runs) == 1
         assert runs[0]["session_name"] == "coding-1"
 
-    def test_list_runs_derives_validation_failed_status(
-        self, session_output, tmp_path
-    ):
+    def test_list_runs_derives_validation_failed_status(self, session_output, tmp_path):
         """Verify validation_passed=False leads to validation_failed status.
 
         When the manifest has validation_passed=False, _derive_run_status
@@ -220,28 +264,34 @@ class TestListRuns:
         # Create run with validation_passed=False (validation failed case)
         run_dir = sessions_dir / "20260117-100000Z__coding-1"
         run_dir.mkdir()
-        (run_dir / MANIFEST_NAME).write_text(json.dumps({
-            "session_name": "coding-1",
-            "run_id": "20260117-100000Z",
-            "started_at": "2026-01-17T10:00:00Z",
-            "ended_at": "2026-01-17T10:30:00Z",
-            "issue_number": 123,
-            "agent_label": "agent:developer",
-            "outcome": "completed",  # Agent reported completed
-            "validation_passed": False,  # But validation failed
-            "validation_failure_reason": "make validate failed",
-        }))
+        (run_dir / MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "session_name": "coding-1",
+                    "run_id": "20260117-100000Z",
+                    "started_at": "2026-01-17T10:00:00Z",
+                    "ended_at": "2026-01-17T10:30:00Z",
+                    "issue_number": 123,
+                    "agent_label": "agent:developer",
+                    "outcome": "completed",  # Agent reported completed
+                    "validation_passed": False,  # But validation failed
+                    "validation_failure_reason": "make validate failed",
+                }
+            )
+        )
 
         # Create index
         index = {
-            "runs": [{
-                "session_name": "coding-1",
-                "run_id": "20260117-100000Z",
-                "started_at": "2026-01-17T10:00:00Z",
-                "issue_number": 123,
-                "run_dir": str(run_dir),
-                "agent_label": "agent:developer",
-            }]
+            "runs": [
+                {
+                    "session_name": "coding-1",
+                    "run_id": "20260117-100000Z",
+                    "started_at": "2026-01-17T10:00:00Z",
+                    "issue_number": 123,
+                    "run_dir": str(run_dir),
+                    "agent_label": "agent:developer",
+                }
+            ]
         }
         (sessions_dir / INDEX_NAME).write_text(json.dumps(index))
 
@@ -260,25 +310,31 @@ class TestListRuns:
 
         run_dir = sessions_dir / "20260117-100000Z__coding-1"
         run_dir.mkdir()
-        (run_dir / MANIFEST_NAME).write_text(json.dumps({
-            "session_name": "coding-1",
-            "run_id": "20260117-100000Z",
-            "started_at": "2026-01-17T10:00:00Z",
-            "ended_at": "2026-01-17T10:30:00Z",
-            "issue_number": 123,
-            "agent_label": "agent:developer",
-            "outcome": "timed_out",
-        }))
+        (run_dir / MANIFEST_NAME).write_text(
+            json.dumps(
+                {
+                    "session_name": "coding-1",
+                    "run_id": "20260117-100000Z",
+                    "started_at": "2026-01-17T10:00:00Z",
+                    "ended_at": "2026-01-17T10:30:00Z",
+                    "issue_number": 123,
+                    "agent_label": "agent:developer",
+                    "outcome": "timed_out",
+                }
+            )
+        )
 
         index = {
-            "runs": [{
-                "session_name": "coding-1",
-                "run_id": "20260117-100000Z",
-                "started_at": "2026-01-17T10:00:00Z",
-                "issue_number": 123,
-                "run_dir": str(run_dir),
-                "agent_label": "agent:developer",
-            }]
+            "runs": [
+                {
+                    "session_name": "coding-1",
+                    "run_id": "20260117-100000Z",
+                    "started_at": "2026-01-17T10:00:00Z",
+                    "issue_number": 123,
+                    "run_dir": str(run_dir),
+                    "agent_label": "agent:developer",
+                }
+            ]
         }
         (sessions_dir / INDEX_NAME).write_text(json.dumps(index))
 
@@ -301,14 +357,16 @@ class TestReviewExchangeSummary:
         self, session_output, tmp_path
     ):
         worktree = tmp_path
-        summary = {"status": "ok", "completed_rounds": 2}
+        summary = _review_exchange_summary(rounds=2)
         review_run = session_output.start_review_exchange_run(
             worktree,
             issue_number=1,
             parent_session_name="issue-1",
             agent_label="agent:coder",
         )
-        review_run.assets.validation_record_path.write_text(json.dumps({"passed": True}))
+        review_run.assets.validation_record_path.write_text(
+            json.dumps({"passed": True})
+        )
 
         stored = session_output.store_review_exchange_summary(
             review_run,
@@ -318,7 +376,7 @@ class TestReviewExchangeSummary:
         run_dir = review_run.assets.run_dir
         summary_path = run_dir / REVIEW_EXCHANGE_DIR_NAME / REVIEW_EXCHANGE_SUMMARY_NAME
         assert summary_path.exists()
-        assert json.loads(summary_path.read_text()) == summary
+        assert json.loads(summary_path.read_text()) == summary.to_payload()
         assert stored.summary == summary
         assert stored.summary_path == summary_path
         assert stored.exchange_dir == summary_path.parent
@@ -333,7 +391,8 @@ class TestReviewExchangeSummary:
         self, session_output, tmp_path
     ):
         assert (
-            session_output.load_review_exchange_summary(tmp_path, "missing-session") is None
+            session_output.load_review_exchange_summary(tmp_path, "missing-session")
+            is None
         )
 
     def test_load_review_exchange_summary_returns_none_for_invalid_json(
@@ -362,7 +421,14 @@ class TestReviewExchangeSummary:
         older_exchange = older_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
         older_exchange.mkdir(parents=True, exist_ok=True)
         (older_exchange / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(
-            json.dumps({"status": "error", "completed_rounds": 2, "response_text": "stale"})
+            json.dumps(
+                _review_exchange_summary_payload(
+                    status="error",
+                    reason="reviewer_no_completion",
+                    rounds=2,
+                    response_text="stale",
+                )
+            )
         )
         session_output.update_manifest(
             older_run.run_dir,
@@ -377,7 +443,7 @@ class TestReviewExchangeSummary:
 
         loaded = session_output.load_review_exchange_summary(worktree, session_name)
         assert loaded is not None
-        assert loaded.summary["response_text"] == "stale"
+        assert loaded.summary.response_text == "stale"
         assert loaded.exchange_dir == older_exchange
 
     def test_load_review_exchange_summary_falls_back_to_dedicated_review_run(
@@ -394,8 +460,10 @@ class TestReviewExchangeSummary:
         )
         review_exchange_dir = review_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
         review_exchange_dir.mkdir(parents=True, exist_ok=True)
-        summary = {"status": "ok", "completed_rounds": 1, "response_text": "cached"}
-        (review_exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(json.dumps(summary))
+        summary = _review_exchange_summary(response_text="cached")
+        (review_exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(
+            json.dumps(summary.to_payload())
+        )
         session_output.update_manifest(
             review_run.run_dir,
             {"review_exchange_dir": str(review_exchange_dir)},
@@ -421,12 +489,16 @@ class TestReviewExchangeSummary:
         old_exchange = old_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
         old_exchange.mkdir(parents=True, exist_ok=True)
         (old_exchange / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(
-            json.dumps({"status": "ok", "completed_rounds": 1, "response_text": "old"})
+            json.dumps(_review_exchange_summary_payload(response_text="old"))
         )
-        session_output.update_manifest(old_run.run_dir, {"review_exchange_dir": str(old_exchange)})
+        session_output.update_manifest(
+            old_run.run_dir, {"review_exchange_dir": str(old_exchange)}
+        )
 
         time.sleep(1.1)
-        boundary_run = session_output.start_run(worktree, coding_session, issue_number=3)
+        boundary_run = session_output.start_run(
+            worktree, coding_session, issue_number=3
+        )
         boundary = session_output.read_manifest(boundary_run.run_dir)["started_at"]
 
         assert (
@@ -447,9 +519,11 @@ class TestReviewExchangeSummary:
         new_exchange = new_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
         new_exchange.mkdir(parents=True, exist_ok=True)
         (new_exchange / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(
-            json.dumps({"status": "ok", "completed_rounds": 1, "response_text": "new"})
+            json.dumps(_review_exchange_summary_payload(response_text="new"))
         )
-        session_output.update_manifest(new_run.run_dir, {"review_exchange_dir": str(new_exchange)})
+        session_output.update_manifest(
+            new_run.run_dir, {"review_exchange_dir": str(new_exchange)}
+        )
 
         loaded = session_output.load_review_exchange_summary(
             worktree,
@@ -458,7 +532,7 @@ class TestReviewExchangeSummary:
         )
 
         assert loaded is not None
-        assert loaded.summary["response_text"] == "new"
+        assert loaded.summary.response_text == "new"
         assert loaded.exchange_dir == new_exchange
 
 
@@ -528,6 +602,7 @@ class TestSessionLogCleaning:
 
         assert recording.read_text(encoding="utf-8") == ""
 
+
 class TestClaudeLogAttachment:
     def test_claude_jsonl_parser_keeps_preview_tool_summaries_stable(self):
         entry = {
@@ -535,7 +610,11 @@ class TestClaudeLogAttachment:
             "message": {
                 "content": [
                     {"type": "text", "text": "Investigating"},
-                    {"type": "tool_use", "name": "Read", "input": {"file_path": "src/app.py"}},
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": "src/app.py"},
+                    },
                     {"type": "tool_use", "name": "TodoWrite", "input": "not-a-dict"},
                 ]
             },
@@ -552,7 +631,8 @@ class TestClaudeLogAttachment:
         claude_dir = tmp_path / "claude-project"
         claude_dir.mkdir()
         (claude_dir / "session.jsonl").write_text(
-            json.dumps({"timestamp": "2026-03-18T12:00:00Z", "sessionId": "sess-1"}) + "\n",
+            json.dumps({"timestamp": "2026-03-18T12:00:00Z", "sessionId": "sess-1"})
+            + "\n",
             encoding="utf-8",
         )
         run = session_output.start_run(
@@ -585,7 +665,10 @@ class TestClaudeLogAttachment:
 
         update_thread = threading.Thread(
             target=session_output.update_manifest,
-            args=(run.run_dir, {"diagnostic_path": str(run.run_dir / "diagnostic.json")}),
+            args=(
+                run.run_dir,
+                {"diagnostic_path": str(run.run_dir / "diagnostic.json")},
+            ),
         )
         attach_thread = threading.Thread(
             target=session_output.attach_claude_log_for_run,
@@ -614,24 +697,35 @@ class TestClaudeLogAttachment:
         )
         claude_log = claude_dir / "session.jsonl"
         claude_log.write_text(
-            "\n".join([
-                json.dumps({
-                    "type": "stream_event",
-                    "event": {
-                        "type": "content_block_delta",
-                        "delta": {"type": "text_delta", "text": "Hello"},
-                    },
-                }),
-                json.dumps({
-                    "type": "assistant",
-                    "message": {
-                        "content": [
-                            {"type": "text", "text": " world"},
-                            {"type": "tool_use", "name": "Bash", "input": {"command": "pwd"}},
-                        ],
-                    },
-                }),
-            ]) + "\n",
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "stream_event",
+                            "event": {
+                                "type": "content_block_delta",
+                                "delta": {"type": "text_delta", "text": "Hello"},
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {
+                                "content": [
+                                    {"type": "text", "text": " world"},
+                                    {
+                                        "type": "tool_use",
+                                        "name": "Bash",
+                                        "input": {"command": "pwd"},
+                                    },
+                                ],
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n",
             encoding="utf-8",
         )
 

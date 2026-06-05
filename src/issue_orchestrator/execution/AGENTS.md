@@ -14,10 +14,11 @@
   to lower-level collaborators. Collaborators must not rediscover active
   `run_dir` values by scanning the worktree.
 - Persistent review exchanges must keep pair-scoped process paths distinct from
-  run-scoped artifacts. Rebinding a live pair to a current
-  `ReviewExchangeRunAssets` is owner work, not caller rummaging.
-- Do not respawn or release persistent pairs merely because a run id changed.
-  Release only for concrete process/recording/contract failure, missing current
-  completion artifacts, timeout, or explicit lifecycle shutdown.
+  run-scoped artifacts. A live pair's process environment is spawned for one
+  `ReviewExchangeRunAssets` binding; do not rebind it to another run.
+- Release and respawn persistent review-exchange pairs when the requested run
+  binding differs from the pair's spawn-time binding. Reusing a live process
+  with stale `RUN_DIR`, `SESSION_ID`, or validation-output env is a correctness
+  bug even when pair-scoped recording files are healthy.
 - Any best-effort historical inspection must be named and isolated from active
   session, completion, and review-exchange control flow.
