@@ -34,6 +34,7 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
 from issue_orchestrator.domain.state_machines.review_machine import ReviewStateMachine, ReviewState
@@ -43,6 +44,7 @@ from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.events import EventName
 from issue_orchestrator.contracts.public import SessionCompletedPayload
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 # =============================================================================
@@ -91,6 +93,7 @@ def create_test_session(
     worktree_path: Path,
     terminal_id: str = "issue-1",
     task_kind: TaskKind = TaskKind.CODE,
+    run_assets: SessionRunAssets | None = None,
 ) -> Session:
     """Create a test session."""
     issue_key = FakeIssueKey(str(issue.number))
@@ -108,6 +111,8 @@ def create_test_session(
         terminal_id=terminal_id,
         worktree_path=worktree_path,
         branch_name=f"issue-{issue.number}",
+        run_assets=run_assets
+        or make_session_run_assets(worktree_path, session_name=terminal_id),
         pr_number=pr_number,
     )
 
@@ -390,42 +395,54 @@ class TestEventEmission:
         """SESSION_FAILED should include the launch-recorded run_dir."""
         events = InMemoryEventSink()
         issue = make_issue()
-        session = create_test_session(issue, agent_config, tmp_worktree)
+        run_assets = make_session_run_assets(
+            tmp_worktree,
+            session_name="issue-1",
+            run_id="20260220-000000Z",
+        )
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            run_assets=run_assets,
+        )
         session_output = Mock(spec=SessionOutput)
-        run_dir = tmp_worktree / ".issue-orchestrator" / "sessions" / "20260220-000000Z__issue-1"
-        session.run_dir = run_dir
         handler = make_handler(config, events=events, session_output=session_output)
 
         handler.process_completion(session, SessionStatus.FAILED)
 
         event = events.last_event(str(EventName.SESSION_FAILED))
         assert event is not None
-        assert event.data["run_dir"] == str(run_dir)
+        assert event.data["run_dir"] == str(run_assets.run_dir)
         session_output.find_run_dir.assert_not_called()
 
-    def test_failed_session_event_uses_issue_manifest_run_dir_fallback(
+    def test_failed_session_event_uses_recorded_run_assets(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """Phase-named run dirs still appear in failure events."""
+        """Phase-named run dirs appear only when injected as owned run assets."""
         events = InMemoryEventSink()
         issue = make_issue(number=123)
-        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
-        run_dir = tmp_worktree / ".issue-orchestrator" / "sessions" / "20260525__coding-1"
+        run_assets = make_session_run_assets(
+            tmp_worktree,
+            session_name="coding-1",
+            run_id="20260525",
+        )
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="issue-123",
+            run_assets=run_assets,
+        )
         session_output = Mock(spec=SessionOutput)
-
-        def find_run_dir(_worktree: Path, session_name: str | None = None) -> Path | None:
-            return None if session_name else run_dir
-
-        session_output.find_run_dir.side_effect = find_run_dir
-        session_output.read_manifest.return_value = {"issue_number": issue.number}
-        session_output.get_log_path_for_run_dir.return_value = None
         handler = make_handler(config, events=events, session_output=session_output)
 
         handler.process_completion(session, SessionStatus.FAILED)
 
         event = events.last_event(str(EventName.SESSION_FAILED))
         assert event is not None
-        assert event.data["run_dir"] == str(run_dir)
+        assert event.data["run_dir"] == str(run_assets.run_dir)
+        session_output.find_run_dir.assert_not_called()
 
     def test_timed_out_session_emits_session_failed_event(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -1403,10 +1420,15 @@ class TestLabelActionGeneration:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         issue = make_issue(number=123, labels=["agent:test", "needs-run-audit"])
-        session = create_test_session(issue, agent_config, tmp_worktree)
-        session.started_at = datetime.now().replace(microsecond=0)
         session_output = FileSystemSessionOutput()
-        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        run = session_output.start_run(tmp_worktree, "issue-1", issue_number=123)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            run_assets=run,
+        )
+        session.started_at = datetime.now().replace(microsecond=0)
         session_output.update_manifest(
             run.run_dir,
             {
@@ -1447,10 +1469,15 @@ class TestLabelActionGeneration:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         issue = make_issue(number=123, labels=["agent:test"])
-        session = create_test_session(issue, agent_config, tmp_worktree)
-        session.started_at = (datetime.now() - timedelta(minutes=24)).replace(microsecond=0)
         session_output = FileSystemSessionOutput()
-        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        run = session_output.start_run(tmp_worktree, "issue-1", issue_number=123)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            run_assets=run,
+        )
+        session.started_at = (datetime.now() - timedelta(minutes=24)).replace(microsecond=0)
         session_output.update_manifest(run.run_dir, {"outcome": "completed", "ended_at": "2026-03-14T23:55:16Z"})
 
         repository_host = SimpleNamespace(
@@ -1484,10 +1511,15 @@ class TestLabelActionGeneration:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         issue = make_issue(number=123, labels=["agent:test"])
-        session = create_test_session(issue, agent_config, tmp_worktree)
-        session.started_at = (datetime.now() - timedelta(minutes=12)).replace(microsecond=0)
         session_output = FileSystemSessionOutput()
-        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        run = session_output.start_run(tmp_worktree, "issue-1", issue_number=123)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            run_assets=run,
+        )
+        session.started_at = (datetime.now() - timedelta(minutes=12)).replace(microsecond=0)
         session_output.update_manifest(run.run_dir, {"outcome": "completed", "ended_at": "2026-03-14T23:55:16Z"})
 
         repository_host = SimpleNamespace(
@@ -1511,10 +1543,15 @@ class TestLabelActionGeneration:
 
     def test_timeout_writes_automatic_run_audit(self, config: Config, agent_config: AgentConfig, tmp_worktree: Path) -> None:
         issue = make_issue(number=123, labels=["agent:test"])
-        session = create_test_session(issue, agent_config, tmp_worktree)
-        session.started_at = (datetime.now() - timedelta(minutes=5)).replace(microsecond=0)
         session_output = FileSystemSessionOutput()
-        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        run = session_output.start_run(tmp_worktree, "issue-1", issue_number=123)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            run_assets=run,
+        )
+        session.started_at = (datetime.now() - timedelta(minutes=5)).replace(microsecond=0)
         session_output.update_manifest(run.run_dir, {"outcome": "timed_out", "ended_at": "2026-03-14T23:55:16Z"})
 
         repository_host = SimpleNamespace(
@@ -1542,12 +1579,17 @@ class TestLabelActionGeneration:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         issue = make_issue(number=123, labels=["agent:test"])
-        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
-        session.started_at = (datetime.now() - timedelta(minutes=91)).replace(microsecond=0)
         agent_config.timeout_minutes = 90
         session_output = FileSystemSessionOutput()
         run = session_output.start_run(tmp_worktree, "coding-1", issue_number=123)
-        session.run_dir = run.run_dir
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="issue-123",
+            run_assets=run,
+        )
+        session.started_at = (datetime.now() - timedelta(minutes=91)).replace(microsecond=0)
 
         repository_host = SimpleNamespace(
             get_prs_for_branch=lambda _branch: [],
@@ -1577,10 +1619,15 @@ class TestLabelActionGeneration:
         config.review_run_audit_on_timeout = False
         config.review_run_audit_min_runtime_minutes = 20
         issue = make_issue(number=123, labels=["agent:test"])
-        session = create_test_session(issue, agent_config, tmp_worktree)
-        session.started_at = (datetime.now() - timedelta(minutes=5)).replace(microsecond=0)
         session_output = FileSystemSessionOutput()
-        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        run = session_output.start_run(tmp_worktree, "issue-1", issue_number=123)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            run_assets=run,
+        )
+        session.started_at = (datetime.now() - timedelta(minutes=5)).replace(microsecond=0)
         session_output.update_manifest(run.run_dir, {"outcome": "timed_out", "ended_at": "2026-03-14T23:55:16Z"})
 
         repository_host = SimpleNamespace(

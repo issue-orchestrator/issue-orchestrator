@@ -25,6 +25,7 @@ from ..contracts.ui_openapi_models import (
 from ..control.worktree_manager import get_worktree_path
 from ..execution.client_host import ClientHost
 from ..execution.command_runner import LocalCommandRunner
+from ..execution.recorded_session_runs import RecordedSessionRunLookup
 from ..infra.doctor import run_doctor
 from ..infra.repo_identity import build_repo_identity
 from ..view_models.dialogs import (
@@ -156,6 +157,7 @@ def _blocked_issues_payload(
         return f"https://github.com/{config.repo}/issues/{issue_number}"
 
     blocked_issues = []
+    recorded_runs = RecordedSessionRunLookup(orchestrator.deps.session_output)
 
     if state.startup_status == "complete":
         for issue in state.cached_queue_issues:
@@ -170,34 +172,36 @@ def _blocked_issues_payload(
             for entry in reversed(state.session_history):
                 if entry.issue_number == issue.number:
                     failure_reason = (
-                        getattr(entry, "status_reason", None)
-                        or entry.status
+                        getattr(entry, "status_reason", None) or entry.status
                     )
                     break
 
             worktree_path = get_worktree_path(config, issue.number)
             worktree_exists = worktree_path.exists()
-            has_completion = False
-            if worktree_exists:
-                completion_path = (
-                    worktree_path
-                    / ".issue-orchestrator"
-                    / "completion.json"
-                )
-                has_completion = completion_path.exists()
+            resume_target = (
+                recorded_runs.debug_resume_target(worktree_path, issue.number)
+                if worktree_exists
+                else None
+            )
+            has_completion = (
+                resume_target is not None and resume_target.completion_file().exists()
+            )
 
-            blocked_issues.append({
-                "issue_number": issue.number,
-                "title": issue.title,
-                "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
-                "blocking_label": blocking_label,
-                "all_blocking_labels": blocking_labels,
-                "needs_human": needs_human,
-                "failure_reason": failure_reason,
-                "issue_url": make_issue_url(issue.number),
-                "worktree_path": str(worktree_path) if worktree_exists else None,
-                "has_completion": has_completion,
-            })
+            blocked_issues.append(
+                {
+                    "issue_number": issue.number,
+                    "title": issue.title,
+                    "agent_type": (issue.agent_type or "unknown").replace("agent:", ""),
+                    "blocking_label": blocking_label,
+                    "all_blocking_labels": blocking_labels,
+                    "needs_human": needs_human,
+                    "failure_reason": failure_reason,
+                    "issue_url": make_issue_url(issue.number),
+                    "worktree_path": str(worktree_path) if worktree_exists else None,
+                    "run_dir": str(resume_target.run_dir) if resume_target else None,
+                    "has_completion": has_completion,
+                }
+            )
 
     return {"blocked_issues": blocked_issues}
 
@@ -247,17 +251,23 @@ def _doctor_payload(orchestrator: "Orchestrator | None") -> dict[str, Any]:
     result = run_doctor(config=config, runner=LocalCommandRunner())
 
     if orchestrator is not None:
-        result.checks.insert(2, type(result.checks[0])(
-            name="Orchestrator",
-            status="ok",
-            detail=f"Running, {'paused' if orchestrator.state.paused else 'active'}",
-        ))
+        result.checks.insert(
+            2,
+            type(result.checks[0])(
+                name="Orchestrator",
+                status="ok",
+                detail=f"Running, {'paused' if orchestrator.state.paused else 'active'}",
+            ),
+        )
     else:
-        result.checks.insert(2, type(result.checks[0])(
-            name="Orchestrator",
-            status="error",
-            detail="Not running",
-        ))
+        result.checks.insert(
+            2,
+            type(result.checks[0])(
+                name="Orchestrator",
+                status="error",
+                detail="Not running",
+            ),
+        )
 
     return result.to_dict()
 

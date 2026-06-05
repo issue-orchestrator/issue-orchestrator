@@ -48,28 +48,17 @@ if not TYPE_CHECKING:
     RequestedAction = RuntimeRequestedAction
 
 RUNTIME_COMPLETION_RECORD: Any = RuntimeCompletionRecord
-
-
-def _api_request_headers() -> dict[str, str]:
-    """Build headers for Control API requests, including bearer token if set.
-
-    Agents hold a scoped ``ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN``
-    that authorizes only ``/api/preflight-push`` and
-    ``/api/issues/{n}/resume``. The admin token is deliberately
-    scrubbed from the agent env (security #6017 review P2).
-    """
-    headers = {"Content-Type": "application/json"}
-    token = os.environ.get("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
 RUNTIME_COMPLETION_OUTCOME: Any = RuntimeCompletionOutcome
 RUNTIME_PROPOSED_FOLLOW_UP_ISSUE: Any = RuntimeProposedFollowUpIssue
 RUNTIME_REQUESTED_ACTION: Any = RuntimeRequestedAction
 from ...control.validation import AgentGate, AgentGateResult
 from ...domain.artifact_contracts import ValidationFailed, ValidationPassed
+from ...domain.session_run import ValidationArtifactPaths
 from ...execution.run_evidence import RunEvidenceRecorder
 from ...execution.session_output_adapter import FileSystemSessionOutput
+from .orchestrator_resume import (
+    api_request_headers as _api_request_headers,
+)
 
 
 class AgentStatus:
@@ -180,20 +169,20 @@ def _copy_validation_log(
 
 def record_validation_artifacts(
     worktree_root: Path,
-    session_id: str | None,
+    validation_artifacts: ValidationArtifactPaths,
     validation_result: AgentGateResult,
-) -> None:
+) -> Path | None:
     """Attach validation artifacts to the session output for diagnostics."""
-    if not session_id:
-        return
+    run_dir = validation_artifacts.run_dir
+    if not run_dir.is_dir():
+        raise ValueError(f"validation run directory does not exist: {run_dir}")
     record = validation_result.record
     record_path = validation_result.record_path
     if not record_path and not record:
-        return
+        return None
 
     session_output = FileSystemSessionOutput()
-    run_dir = session_output.ensure_run_dir(worktree_root, session_id)
-    run_record_path = run_dir / "validation-record.json"
+    run_record_path = validation_artifacts.record_path
     resolved_record_path = (
         run_record_path
         if run_record_path.exists()
@@ -218,7 +207,7 @@ def record_validation_artifacts(
         )
 
     if not record:
-        return
+        return resolved_record_path
 
     _copy_validation_log(
         worktree_root=worktree_root,
@@ -243,6 +232,7 @@ def record_validation_artifacts(
         record_path=resolved_record_path,
         junit_xml_paths=_runtime_validation_junit_xml_paths(worktree_root),
     )
+    return resolved_record_path
 
 
 def _runtime_validation_junit_xml_paths(worktree: Path) -> tuple[str, ...]:
@@ -637,71 +627,6 @@ def run_validation(
     return result
 
 
-def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None]:
-    """Trigger the orchestrator to resume processing for this issue.
-
-    This is used after writing completion.json in a debug session to tell
-    the orchestrator to pick up the completion and continue the flow
-    (create PR, run review, etc.).
-
-    Requires ISSUE_ORCHESTRATOR_API_PORT and ISSUE_ORCHESTRATOR_ISSUE_NUMBER env vars
-    (legacy ORCHESTRATOR_* vars are also accepted),
-    which are set automatically when launching debug sessions from the web UI.
-
-    Args:
-        verbose: Whether to print status messages
-
-    Returns:
-        Tuple of (success, error_message)
-    """
-    import urllib.request
-    import urllib.error
-
-    port = get_env("API_PORT") or os.environ.get("ORCHESTRATOR_API_PORT")
-    issue_number = get_env("ISSUE_NUMBER") or os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
-
-    if not port or not issue_number:
-        missing = []
-        if not port:
-            missing.append("ISSUE_ORCHESTRATOR_API_PORT")
-        if not issue_number:
-            missing.append("ISSUE_ORCHESTRATOR_ISSUE_NUMBER")
-        return False, (
-            f"Cannot resume: missing environment variables: {', '.join(missing)}. "
-            f"Completion record written. Resume processing from the web UI."
-        )
-
-    url = f"http://localhost:{port}/api/issues/{issue_number}/resume"
-
-    if verbose:
-        print(f"Triggering orchestrator resume for issue #{issue_number}...")
-
-    try:
-        req = urllib.request.Request(
-            url,
-            data=b"{}",
-            headers=_api_request_headers(),
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=120) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            if result.get("success"):
-                return True, None
-            else:
-                return False, result.get("error", "Unknown error from orchestrator")
-    except urllib.error.HTTPError as e:
-        try:
-            body = e.read().decode("utf-8")
-            error_data = json.loads(body)
-            return False, error_data.get("error", f"HTTP {e.code}: {body}")
-        except Exception:
-            return False, f"HTTP {e.code}: {e.reason}"
-    except urllib.error.URLError as e:
-        return False, f"Could not reach orchestrator API: {e}"
-    except Exception as e:
-        return False, f"Resume request failed: {e}"
-
-
 def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[bool, str | None, str | None]:
     """Check if git push would succeed by calling the orchestrator API.
 
@@ -738,7 +663,7 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
         req = urllib.request.Request(
             url,
             data=payload,
-            headers=_api_request_headers(),
+            headers=_api_request_headers().to_mutable_mapping(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=60) as response:

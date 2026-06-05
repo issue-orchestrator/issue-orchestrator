@@ -25,7 +25,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from ..domain.artifact_contracts import ValidationFailed
 from ..domain.completion_finalization import (
@@ -43,7 +43,9 @@ from ..domain.models import (
 )
 from ..domain.events import EventBus, SessionEvent
 from ..domain.review_artifacts import review_artifacts_from_exchange_result
+from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.runtime_identity import RuntimeIdentity
+from ..domain.session_run import SessionRunAssets, ValidationArtifactPaths
 from ..events import EventContext, EventName
 from ..ports import EventSink
 from ..ports.review_artifact_reader import (
@@ -92,11 +94,13 @@ from .completion_types import (
 )
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
 from .review_exchange_contracts import ReviewExchangeCanceller
+from .review_cache_boundary import review_cache_boundary_started_at
 from .review_exchange_pr_comment import (
     GITHUB_COMMENT_BODY_LIMIT,
     build_review_exchange_pr_comment_body,
 )
 from .test_skip_guard import scan_added_test_skip_guards
+from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
 
@@ -874,7 +878,7 @@ class CompletionProcessor:
     def _attach_validation_artifacts(
         self,
         worktree: Path,
-        session_name: str,
+        validation_artifacts: ValidationArtifactPaths,
         record: ValidationRecord | None = None,
         record_path: Path | None = None,
     ) -> None:
@@ -883,10 +887,10 @@ class CompletionProcessor:
         Updates manifest with paths to validation files that should already exist
         in the session output directory (written directly by validation).
         """
-        run_dir = self.session_output.ensure_run_dir(worktree, session_name)
+        run_dir = validation_artifacts.run_dir
         if record_path is None and record is not None:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
-        run_dir_record_path = run_dir / "validation-record.json"
+        run_dir_record_path = validation_artifacts.record_path
         effective_record_path = self._materialize_validation_record(
             worktree=worktree,
             record_path=record_path,
@@ -904,8 +908,8 @@ class CompletionProcessor:
 
         # Update manifest with validation output paths (files written by validation)
         updates: dict[str, str] = {}
-        stdout_path = run_dir / "validation-stdout.log"
-        stderr_path = run_dir / "validation-stderr.log"
+        stdout_path = validation_artifacts.stdout_path
+        stderr_path = validation_artifacts.stderr_path
 
         if stdout_path.exists():
             updates["validation_stdout"] = str(stdout_path)
@@ -961,6 +965,8 @@ class CompletionProcessor:
         worktree: Path,
         issue_number: int,
         issue_title: str,
+        *,
+        run_assets: SessionRunAssets,
         pr_number: int | None = None,
         completion_path: str | None = None,
         agent_label: str | None = None,
@@ -988,7 +994,9 @@ class CompletionProcessor:
 
         # Read and validate completion record
         record, session_name, error_result = self._read_and_validate_record(
-            worktree, completion_path
+            worktree,
+            completion_path,
+            run_assets,
         )
         if error_result:
             return error_result
@@ -1012,7 +1020,11 @@ class CompletionProcessor:
             return ProcessingResult.for_review_exchange_deferred()
 
         pre_action_failure = self._check_pre_action_policies(
-            worktree, record, session_name, issue_number
+            worktree,
+            record,
+            session_name,
+            issue_number,
+            run_assets,
         )
         if pre_action_failure:
             return pre_action_failure
@@ -1049,7 +1061,7 @@ class CompletionProcessor:
             session_output=self.session_output,
             worktree=worktree,
             completion_path=completion_path,
-            session_name=session_name,
+            run_assets=run_assets,
         )
 
         # Execute requested actions in order
@@ -1071,6 +1083,7 @@ class CompletionProcessor:
             actions_taken=actions_taken,
             errors=errors,
             error_details=error_details,
+            run_assets=run_assets,
         )
         if early_result is not None:
             return early_result
@@ -1088,10 +1101,12 @@ class CompletionProcessor:
 
         # Write reviewer feedback to session run directory for rework sessions to use
         # This is only relevant for review sessions (pr_number provided) with feedback
-        if pr_number and record.review_issues and session_name:
-            run_dir = self.session_output.find_run_dir(worktree, session_name)
-            if run_dir:
-                write_reviewer_feedback_file(run_dir, pr_number, record.review_issues)
+        if pr_number and record.review_issues:
+            write_reviewer_feedback_file(
+                run_assets.run_dir,
+                pr_number,
+                record.review_issues,
+            )
 
         # Build and return result
         total_duration = time.monotonic() - start_time
@@ -1111,6 +1126,7 @@ class CompletionProcessor:
             total_duration=total_duration,
             completion_path=completion_path,
             preserved_completion_path=preserved_completion_path,
+            run_assets=run_assets,
             emit_completion_event=self._emit,
             post_issue_comment=self._add_issue_comment,
             cleanup_completion_record_fn=self._cleanup_completion_record,
@@ -1122,6 +1138,7 @@ class CompletionProcessor:
         record: CompletionRecord,
         session_name: str | None,
         issue_number: int,
+        run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
         """Run completion policies that must pass before any action executes."""
         worktree_state = self.validate_worktree_state(worktree, record)
@@ -1132,22 +1149,31 @@ class CompletionProcessor:
                 session_name,
                 issue_number,
                 worktree_state,
+                run_assets,
             )
 
         test_skip_error = self._check_test_skip_guard_if_required(
-            worktree, record, session_name, issue_number
+            worktree,
+            record,
+            session_name,
+            issue_number,
+            run_assets,
         )
         if test_skip_error:
             return test_skip_error
 
         return self._check_publish_gate_if_required(
-            worktree, record, session_name, issue_number
+            worktree,
+            record,
+            issue_number,
+            run_assets,
         )
 
     def _read_and_validate_record(
         self,
         worktree: Path,
         completion_path: str | None,
+        run_assets: SessionRunAssets,
     ) -> tuple[CompletionRecord | None, str | None, ProcessingResult | None]:
         """Read completion record and attach validation artifacts.
 
@@ -1171,13 +1197,10 @@ class CompletionProcessor:
             if contained is not None:
                 self._attach_validation_artifacts(
                     worktree,
-                    session_name,
+                    run_assets.validation_artifacts,
                     record_path=contained,
                 )
-        if session_name:
-            run_dir = self.session_output.find_run_dir(worktree, session_name)
-            if run_dir:
-                self.session_output.attach_claude_log(run_dir)
+        self.session_output.attach_claude_log(run_assets.run_dir)
 
         return record, session_name, None
 
@@ -1188,6 +1211,7 @@ class CompletionProcessor:
         session_name: str | None,
         issue_number: int,
         worktree_state: WorktreeValidationResult,
+        run_assets: SessionRunAssets,
     ) -> ProcessingResult:
         logger.warning(
             "Completion worktree validation failed before publish: issue=%s reason=%s",
@@ -1202,6 +1226,7 @@ class CompletionProcessor:
                 issue_number,
                 worktree_state.reason,
                 gate_record=None,
+                run_assets=run_assets,
             )
 
         tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {worktree_state.reason}"
@@ -1223,6 +1248,7 @@ class CompletionProcessor:
         record: CompletionRecord,
         session_name: str | None,
         issue_number: int,
+        run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
         """Reject newly added test-skip constructs before review/publish."""
         if not self._requires_publish_gate(record):
@@ -1241,6 +1267,7 @@ class CompletionProcessor:
                     f"against {base_ref}: {diff_result.error or 'unknown git error'}"
                 ),
                 gate_record=None,
+                run_assets=run_assets,
             )
 
         scan = scan_added_test_skip_guards(diff_result.diff_text)
@@ -1253,14 +1280,15 @@ class CompletionProcessor:
             issue_number,
             scan.reason(),
             gate_record=None,
+            run_assets=run_assets,
         )
 
     def _check_publish_gate_if_required(
         self,
         worktree: Path,
         record: CompletionRecord,
-        session_name: str | None,
         issue_number: int,
+        run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
         """Check publish gate if actions require it.
 
@@ -1269,48 +1297,29 @@ class CompletionProcessor:
         """
         if not self._requires_publish_gate(record):
             return None
-        # Get session output dir for validation to write directly there
-        if not session_name:
-            comment = build_processing_failure_comment(
-                errors=["session_name is required for publish gate"],
-                actions_taken=[],
-                diagnostic_path=None,
-            )
-            self._add_issue_comment(issue_number, comment, context="processing failure")
-            return ProcessingResult(
-                success=False,
-                message="Publish gate requires session output but no session name available",
-                errors=["session_name is required for publish gate"],
-            )
-        session_output_dir = self.session_output.find_run_dir(worktree, session_name)
-        if session_output_dir is None:
-            message = f"Session output directory not found for {session_name}"
-            comment = build_processing_failure_comment(
-                errors=[message],
-                actions_taken=[],
-                diagnostic_path=None,
-            )
-            self._add_issue_comment(issue_number, comment, context="processing failure")
-            return ProcessingResult(
-                success=False,
-                message=f"Publish gate requires session output but run dir not found for {session_name}",
-                errors=[message],
-            )
+        gate_session_name = run_assets.session_name
+        session_output_dir = run_assets.run_dir
 
         gate_passed, gate_reason, gate_record = self._check_publish_gate(
             worktree, session_output_dir=session_output_dir
         )
         if not gate_passed:
             return self._handle_gate_failure(
-                worktree, record, session_name, issue_number, gate_reason, gate_record
+                worktree,
+                record,
+                gate_session_name,
+                issue_number,
+                gate_reason,
+                gate_record,
+                run_assets=run_assets,
             )
         else:
             # Attach validation artifacts even on success
-            if gate_record and session_name:
+            if gate_record:
                 record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
                 self._attach_validation_artifacts(
                     worktree,
-                    session_name,
+                    run_assets.validation_artifacts,
                     record=gate_record,
                     record_path=record_path,
                 )
@@ -1324,29 +1333,29 @@ class CompletionProcessor:
         issue_number: int,
         gate_reason: str,
         gate_record: ValidationRecord | None,
+        *,
+        run_assets: SessionRunAssets,
     ) -> ProcessingResult:
         """Handle publish gate failure."""
         if gate_record and session_name:
             record_path = ValidationRecordStore(worktree).get_record_path(gate_record.head_sha)
             self._attach_validation_artifacts(
                 worktree,
-                session_name,
+                run_assets.validation_artifacts,
                 record=gate_record,
                 record_path=record_path,
             )
-        if session_name:
-            run_dir = self.session_output.ensure_run_dir(worktree, session_name)
-            # Was previously a free-form dict update with the legacy
-            # `validation_failure_reason` (note the inconsistent name vs
-            # `validation_reason` used elsewhere) and a bare
-            # `validation_passed: False`. Route through the typed
-            # outcome so the three legacy fields stay consistent and
-            # the `_failure_reason` typo doesn't drift back in.
-            self.session_output.update_validation_outcome(
-                run_dir,
-                ValidationFailed(reason=gate_reason or "publish gate failed"),
-                ended_at=datetime.now(timezone.utc).isoformat(),
-            )
+        # Was previously a free-form dict update with the legacy
+        # `validation_failure_reason` (note the inconsistent name vs
+        # `validation_reason` used elsewhere) and a bare
+        # `validation_passed: False`. Route through the typed outcome so
+        # the three legacy fields stay consistent and the typo doesn't drift
+        # back in.
+        self.session_output.update_validation_outcome(
+            run_assets.run_dir,
+            ValidationFailed(reason=gate_reason or "publish gate failed"),
+            ended_at=datetime.now(timezone.utc).isoformat(),
+        )
         # Add validation-failed label so user knows why issue is stuck
         validation_failed_label = self._get_label("validation_failed")
         try:
@@ -1389,24 +1398,18 @@ class CompletionProcessor:
         plan: Any,
         worktree: Path,
         record: CompletionRecord,
-        session_name: str | None,
         issue_number: int,
         issue_title: str,
         agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
+        run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
         if self.pre_publish_gate is None:
             return None
         if RequestedAction.PUSH_BRANCH not in plan.ordered_actions:
             return None
-        if session_name is None:
-            return ProcessingResult(
-                success=False,
-                message="Pre-publish validation requires a session name",
-                failure_kind="validation_failed",
-                errors=["Validation: session_name is required for pre-publish validation"],
-            )
+        gate_session_name = run_assets.session_name
 
         result = self.pre_publish_gate.check(worktree)
         if not result.ran:
@@ -1415,27 +1418,28 @@ class CompletionProcessor:
             return None
 
         self._persist_pre_publish_failure_artifacts(
-            worktree=worktree,
-            session_name=session_name,
+            run_assets=run_assets,
             result=result,
         )
         rerouted = self._reroute_pre_publish_validation_failure_if_possible(
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
-            session_name=session_name,
+            session_name=gate_session_name,
             agent_label=agent_label,
             record=record,
+            run_assets=run_assets,
         )
         if rerouted is not None:
             return rerouted
         return self._handle_gate_failure(
             worktree,
             record,
-            session_name,
+            gate_session_name,
             issue_number,
             result.reason,
-            self._pre_publish_validation_record(worktree, session_name, result),
+            self._pre_publish_validation_record(run_assets, result),
+            run_assets=run_assets,
         )
 
     def _reroute_pre_publish_validation_failure_if_possible(
@@ -1447,16 +1451,14 @@ class CompletionProcessor:
         session_name: str | None,
         agent_label: str | None,
         record: CompletionRecord,
+        run_assets: SessionRunAssets,
     ) -> ProcessingResult | None:
         if session_name is None or agent_label is None:
             return None
         if RequestedAction.CREATE_PR not in record.requested_actions:
             return None
 
-        validation_record_path = (
-            self.session_output.ensure_run_dir(worktree, session_name)
-            / "validation-record.json"
-        )
+        validation_record_path = run_assets.validation_artifacts.record_path
         if not validation_record_path.exists():
             return None
 
@@ -1492,6 +1494,10 @@ class CompletionProcessor:
             session_name=session_name,
             agent_label=agent_label,
             initial_validation_record_path=validation_record_path,
+            current_head_sha=current_worktree_head_sha(
+                git_adapter=self.git_adapter,
+                worktree=worktree,
+            ),
             errors=reroute_errors,
             actions_taken=reroute_actions,
             run_review_exchange_loop=self._run_review_exchange_loop,
@@ -1590,17 +1596,17 @@ class CompletionProcessor:
     def _persist_pre_publish_failure_artifacts(
         self,
         *,
-        worktree: Path,
-        session_name: str,
+        run_assets: SessionRunAssets,
         result: PrePublishGateResult,
     ) -> None:
-        run_dir = self.session_output.ensure_run_dir(worktree, session_name)
-        stdout_path = run_dir / "validation-stdout.log"
-        stderr_path = run_dir / "validation-stderr.log"
+        artifacts = run_assets.validation_artifacts
+        run_dir = run_assets.run_dir
+        stdout_path = artifacts.stdout_path
+        stderr_path = artifacts.stderr_path
         stdout_path.write_text(result.stdout)
         stderr_path.write_text(result.stderr)
-        record = self._pre_publish_validation_record(worktree, session_name, result)
-        record_path = run_dir / "validation-record.json"
+        record = self._pre_publish_validation_record(run_assets, result)
+        record_path = artifacts.record_path
         record_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
         self.session_output.update_manifest(
             run_dir,
@@ -1613,13 +1619,10 @@ class CompletionProcessor:
 
     def _pre_publish_validation_record(
         self,
-        worktree: Path,
-        session_name: str,
+        run_assets: SessionRunAssets,
         result: PrePublishGateResult,
     ) -> ValidationRecord:
-        run_dir = self.session_output.ensure_run_dir(worktree, session_name)
-        stdout_path = run_dir / "validation-stdout.log"
-        stderr_path = run_dir / "validation-stderr.log"
+        artifacts = run_assets.validation_artifacts
         return ValidationRecord(
             schema_version=1,
             suite="pre_publish_gate",
@@ -1630,8 +1633,8 @@ class CompletionProcessor:
             started_at=result.started_at,
             ended_at=result.ended_at,
             timed_out=False,
-            stdout_path=str(stdout_path),
-            stderr_path=str(stderr_path),
+            stdout_path=str(artifacts.stdout_path),
+            stderr_path=str(artifacts.stderr_path),
         )
 
     def _execute_actions(
@@ -1648,6 +1651,7 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
+        run_assets: SessionRunAssets,
     ) -> tuple[str | None, str | None, bool, bool, ProcessingResult | None]:
         """Execute all requested actions from completion record.
 
@@ -1658,9 +1662,9 @@ class CompletionProcessor:
         """
         pr_url: str | None = None
         requested_actions = tuple(record.requested_actions)
-        review_cache_boundary_started_at = self._review_cache_boundary_started_at(
-            worktree,
-            session_name,
+        cache_boundary_started_at = review_cache_boundary_started_at(
+            session_output=self.session_output,
+            run_assets=run_assets,
         )
         (
             plan,
@@ -1677,7 +1681,11 @@ class CompletionProcessor:
             session_name=session_name,
             agent_label=agent_label,
             record=record,
-            review_cache_boundary_started_at=review_cache_boundary_started_at,
+            review_cache_boundary_started_at=cache_boundary_started_at,
+            current_head_sha=current_worktree_head_sha(
+                git_adapter=self.git_adapter,
+                worktree=worktree,
+            ),
             errors=errors,
             actions_taken=actions_taken,
             run_review_exchange_loop=self._run_review_exchange_loop,
@@ -1691,12 +1699,12 @@ class CompletionProcessor:
             plan=plan,
             worktree=worktree,
             record=record,
-            session_name=session_name,
             issue_number=issue_number,
             issue_title=issue_title,
             agent_label=agent_label,
             actions_taken=actions_taken,
             errors=errors,
+            run_assets=run_assets,
         )
         if pre_publish_failure is not None:
             return branch, pr_url, review_exchange_completed, False, pre_publish_failure
@@ -1719,30 +1727,6 @@ class CompletionProcessor:
             review_exchange_completed=review_exchange_completed,
         )
         return branch, pr_url, review_exchange_completed, False, None
-
-    def _review_cache_boundary_started_at(
-        self,
-        worktree: Path,
-        session_name: str | None,
-    ) -> str | None:
-        if not session_name:
-            return None
-        run_dir = self.session_output.find_run_dir(worktree, session_name)
-        if not run_dir:
-            return None
-        manifest = self.session_output.read_manifest(run_dir) or {}
-        if not manifest.get("reset_from_scratch"):
-            return None
-        boundary = manifest.get("review_cache_boundary_started_at") or manifest.get("started_at")
-        if not isinstance(boundary, str) or not boundary:
-            return None
-        logger.info(
-            "[REVIEW_EXCHANGE] Scratch reset review-cache boundary active: session=%s run_dir=%s boundary=%s",
-            session_name,
-            run_dir,
-            boundary,
-        )
-        return boundary
 
     def _execute_planned_actions(
         self,
@@ -2151,11 +2135,6 @@ class CompletionProcessor:
                 f"{REVIEW_EXCHANGE_ERROR_PREFIX} missing exchange outcome before PR creation"
             )
             return self._ActionResult(halt=True)
-        review_run_dir = self._review_exchange.resolve_review_exchange_run_dir(
-            exchange_outcome=exchange_result,
-            worktree=worktree,
-            session_name=session_name,
-        )
 
         # Check for existing PR to reuse after review exchange succeeds.
         reused = self._reuse_existing_pr_if_available(
@@ -2164,7 +2143,6 @@ class CompletionProcessor:
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
             actions_taken=actions_taken,
-            run_dir=review_run_dir,
         )
         if reused is not None:
             return reused
@@ -2210,7 +2188,7 @@ class CompletionProcessor:
                     exchange_mode=exchange_mode,
                     exchange_result=exchange_result,
                     actions_taken=actions_taken,
-                    run_dir=review_run_dir,
+                    run_assets=exchange_result.run_assets,
                 )
             return self._ActionResult(
                 branch=branch,
@@ -2237,7 +2215,6 @@ class CompletionProcessor:
         exchange_mode: str | None,
         exchange_result: Any | None,
         actions_taken: list[str],
-        run_dir: Path | None,
     ) -> "_ActionResult | None":
         if self._pr_collision_strategy not in {"reuse_open", "new_branch"}:
             return None
@@ -2264,7 +2241,7 @@ class CompletionProcessor:
                 exchange_mode=exchange_mode,
                 exchange_result=exchange_result,
                 actions_taken=actions_taken,
-                run_dir=run_dir,
+                run_assets=exchange_result.run_assets,
             )
         return self._ActionResult(
             pr_url=existing_pr.url,
@@ -2280,7 +2257,7 @@ class CompletionProcessor:
         exchange_mode: str,
         exchange_result: Any,
         actions_taken: list[str],
-        run_dir: Path | None = None,
+        run_assets: ReviewExchangeRunAssets,
     ) -> None:
         """Apply review-exchange completion labels/comment to a PR."""
         label = self._get_label("code_reviewed")
@@ -2303,8 +2280,8 @@ class CompletionProcessor:
         )
         review_body = build_review_exchange_pr_comment_body(
             issue_number=issue_number,
-            run_dir=run_dir,
-            exchange_dir=exchange_result.exchange_dir,
+            run_dir=run_assets.run_dir,
+            exchange_dir=run_assets.exchange_dir,
             artifacts=artifacts,
             review_artifact_reader=self._review_artifact_reader,
             max_chars=review_body_budget,
@@ -2318,7 +2295,7 @@ class CompletionProcessor:
             pr_number=pr_number,
             comment_url=comment_url,
             comment_body=comment,
-            run_dir=run_dir,
+            run_dir=run_assets.run_dir,
         )
 
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
@@ -2327,22 +2304,22 @@ class CompletionProcessor:
     def _run_review_exchange_loop(
         self,
         *,
+        exchange_run: ReviewExchangeRun,
         worktree: Path,
         issue_number: int,
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
         initial_validation_record_path: Path | None = None,
-        on_started: Callable[[Path], None] | None = None,
     ) -> Any:
         return self._review_exchange.run_review_exchange_loop(
+            exchange_run=exchange_run,
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
             agent_label=agent_label,
             initial_validation_record_path=initial_validation_record_path,
-            on_started=on_started,
             events=self._trace_events,
             event_context=self._event_context,
         )

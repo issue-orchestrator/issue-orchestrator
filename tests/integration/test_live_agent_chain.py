@@ -28,8 +28,9 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.execution.agent_runner import AgentRunner
-from issue_orchestrator.execution.agent_runner_types import AgentSpec
+from issue_orchestrator.execution.agent_runner_types import AgentSpec, RetryPolicy
 from issue_orchestrator.execution.persistent_round_runner import (
+    PersistentSession,
     close_persistent_session,
     open_persistent_session,
     send_round,
@@ -91,6 +92,15 @@ def _claude_authenticated() -> bool:
 _CLAUDE_READY = _claude_authenticated()
 
 
+def _live_provider_retry_policy() -> RetryPolicy:
+    return RetryPolicy(
+        max_attempts=2,
+        initial_backoff_seconds=1,
+        max_backoff_seconds=1,
+        jitter=False,
+    )
+
+
 @pytest.mark.skipif(not _CLAUDE_READY, reason="Claude CLI not installed or not authenticated")
 class TestLiveAgentChain:
     """Prove the full pexpect → bash → provider_runner → Claude chain works."""
@@ -120,6 +130,7 @@ class TestLiveAgentChain:
             working_dir=tmp_path,
             timeout_seconds=60,
             output_dir=run_dir,
+            retry_policy=_live_provider_retry_policy(),
         )
 
         result = SubprocessAgentRunner().run(spec)
@@ -150,6 +161,7 @@ class TestLiveAgentChain:
             timeout_seconds=60,
             log_path=log_path,
             output_dir=run_dir,
+            retry_policy=_live_provider_retry_policy(),
         )
 
         result = AgentRunner().run(spec)
@@ -438,6 +450,66 @@ class TestLiveAgentChain:
                 return
             time.sleep(0.2)
 
+    @staticmethod
+    def _open_codex_session_after_launch_task(
+        *,
+        command: list[str],
+        work_dir: Path,
+        env: dict[str, str],
+        response_file: Path,
+        max_attempts: int = 2,
+        launch_timeout_seconds: float = 120.0,
+    ) -> PersistentSession:
+        from issue_orchestrator.execution.persistent_round_runner import (
+            _drain_pty_output,
+        )
+
+        last_failure = "no attempts made"
+        for attempt in range(1, max_attempts + 1):
+            response_file.unlink(missing_ok=True)
+            session = open_persistent_session(
+                command=command, working_dir=work_dir, env=env,
+            )
+            launch_succeeded = False
+            try:
+                deadline = time.monotonic() + launch_timeout_seconds
+                while time.monotonic() < deadline:
+                    _drain_pty_output(session)
+                    if launch_response := TestLiveAgentChain._read_ok_response(
+                        response_file
+                    ):
+                        assert launch_response == {"response_type": "ok"}
+                        launch_succeeded = True
+                        return session
+                    if session.proc.poll() is not None:
+                        last_failure = (
+                            "codex exited during round 1 on attempt "
+                            f"{attempt}, code={session.proc.poll()}"
+                        )
+                        break
+                    time.sleep(0.3)
+                else:
+                    last_failure = (
+                        "interactive codex did not finish its launch-arg task "
+                        f"in {launch_timeout_seconds:.0f}s on attempt {attempt}"
+                    )
+            finally:
+                if not launch_succeeded:
+                    close_persistent_session(session)
+        pytest.fail(f"{last_failure} after {max_attempts} attempt(s)")
+
+    @staticmethod
+    def _read_ok_response(response_file: Path) -> dict[str, object] | None:
+        if not response_file.exists():
+            return None
+        try:
+            parsed = json.loads(response_file.read_text())
+        except json.JSONDecodeError:
+            return None
+        if parsed == {"response_type": "ok"}:
+            return parsed
+        return None
+
     def test_persistent_send_round_multi_round_real_codex_interactive(self) -> None:
         """The reviewer is INTERACTIVE codex (the production default): one
         persistent TUI process across multiple rounds. Round 1 is the
@@ -450,9 +522,6 @@ class TestLiveAgentChain:
         if shutil.which("codex") is None:
             pytest.skip("codex CLI not installed")
         from issue_orchestrator.execution.agent_runner_providers import get_provider
-        from issue_orchestrator.execution.persistent_round_runner import (
-            _drain_pty_output,
-        )
 
         repo_root = Path(__file__).resolve().parents[2]
         work_dir = Path(tempfile.mkdtemp(prefix=".live-codex-int-", dir=repo_root))
@@ -469,23 +538,11 @@ class TestLiveAgentChain:
             task, execution_mode="interactive", approval_mode="full-auto",
         )
 
-        session = open_persistent_session(
-            command=command, working_dir=work_dir, env=env,
+        session = self._open_codex_session_after_launch_task(
+            command=command, work_dir=work_dir, env=env,
+            response_file=response_file,
         )
         try:
-            # Round 1 is the launch-arg task — wait for codex to complete it.
-            r1_deadline = time.monotonic() + 120
-            while time.monotonic() < r1_deadline:
-                _drain_pty_output(session)
-                if response_file.exists():
-                    break
-                if session.proc.poll() is not None:
-                    pytest.fail(
-                        f"codex exited during round 1, code={session.proc.poll()}"
-                    )
-                time.sleep(0.3)
-            else:
-                pytest.fail("interactive codex did not finish its launch-arg task in 120s")
             assert session.proc.poll() is None, (
                 "interactive codex must stay alive after round 1 — it is a "
                 "persistent TUI, not the one-shot exec mode"

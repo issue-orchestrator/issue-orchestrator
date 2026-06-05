@@ -18,6 +18,7 @@ from issue_orchestrator.observation.observation import SessionObservation, Sessi
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports import TraceEvent
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 class StubSessionRunner:
@@ -104,14 +105,16 @@ def _make_session(worktree: Path, timeout_minutes: int = 1) -> Session:
     )
     issue_key = FakeIssueKey(name="1")
     session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+    terminal_id = "issue-1"
     return Session(
         key=session_key,
         issue=issue,
         agent_config=agent_config,
-        terminal_id="issue-1",
+        terminal_id=terminal_id,
         worktree_path=worktree,
-        branch_name="issue-1",
+        branch_name=terminal_id,
         started_at=datetime.now() - timedelta(minutes=timeout_minutes + 1),
+        run_assets=make_session_run_assets(worktree, session_name=terminal_id),
     )
 
 
@@ -164,6 +167,7 @@ def test_timeout_observation_and_decision(tmp_path):
         issue_number=session.issue.number,
         issue_title=session.issue.title,
         session_name=session.terminal_id,
+        session_run_assets=session.run_assets,
     )
 
     assert decision.status == SessionStatus.TIMED_OUT

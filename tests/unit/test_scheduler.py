@@ -1127,6 +1127,7 @@ def _make_test_session(issue_number: int) -> "Session":
     from issue_orchestrator.domain.issue_key import FakeIssueKey
     from issue_orchestrator.domain.session_key import SessionKey, TaskKind
     from datetime import datetime
+    from tests.unit.session_run_helpers import make_session_run_assets
 
     mock_issue = MagicMock()
     mock_issue.number = issue_number
@@ -1143,6 +1144,10 @@ def _make_test_session(issue_number: int) -> "Session":
         terminal_id=f"test-session-{issue_number}",
         worktree_path=Path(f"/tmp/wt{issue_number}"),
         branch_name=f"issue-{issue_number}",
+        run_assets=make_session_run_assets(
+            Path(f"/tmp/wt{issue_number}"),
+            session_name=f"test-session-{issue_number}",
+        ),
         started_at=datetime.now(),
         status=SessionStatus.RUNNING,
     )

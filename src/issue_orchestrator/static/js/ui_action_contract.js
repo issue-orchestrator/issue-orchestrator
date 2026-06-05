@@ -21,6 +21,7 @@
         TERMINAL_RECORDING: (issueNumber) => `/api/session/terminal-recording/${issueNumber}`,
         RETRY_PUBLISH: (issueNumber) => `/api/issues/${issueNumber}/retry-publish`,
         CLOSE_ISSUE: (issueNumber) => `/api/issues/${issueNumber}/close`,
+        ISSUE_RESUME: (issueNumber) => `/api/issues/${issueNumber}/resume`,
     };
 
     function normalizeIssueNumbers(issueNumbers) {
@@ -100,6 +101,21 @@
             endpoint: `/api/issues/${normalized[0] || 0}/retry`,
             method: 'POST',
             body: {},
+        };
+    }
+
+    function buildIssueResumeRequest(issueNumber, runDir) {
+        const normalized = normalizeIssueNumbers([issueNumber]);
+        if (normalized.length !== 1) {
+            throw new Error(`Invalid issue number for resume action: ${issueNumber}`);
+        }
+        if (!runDir) {
+            throw new Error('runDir is required for resume action');
+        }
+        return {
+            endpoint: ENDPOINTS.ISSUE_RESUME(normalized[0]),
+            method: 'POST',
+            body: { run_dir: String(runDir) },
         };
     }
 
@@ -218,6 +234,7 @@
         buildBulkDeprioritizeRequest,
         buildBulkCancelQueuedRequest,
         buildIssueRetryRequest,
+        buildIssueResumeRequest,
         buildRetryPublishRequest,
         buildCloseIssueRequest,
         buildHostOpenPathRequest,

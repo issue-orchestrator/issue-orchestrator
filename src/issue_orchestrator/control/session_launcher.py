@@ -46,6 +46,7 @@ from ..domain.models import (
     TaskKind,
     get_completion_path,
 )
+from ..domain.session_run import SessionRunAssets
 from .worktree_context import WorktreeContext
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_manifest import TriageManifest
@@ -353,7 +354,7 @@ class SessionLauncher:
         session_id: str,
         agent_label: str,
         issue_number: int,
-        run_dir: Path,
+        run_assets: SessionRunAssets,
         worktree_path: Path,
     ) -> str:
         """Build the common env-export string for all session types.
@@ -387,8 +388,8 @@ class SessionLauncher:
             f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
             f"{config_exports}"
             f" {ENV_PREFIX}API_PORT='{self.config.control_api_port}'"
-            f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
-            f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
+            f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_assets.run_dir}'"
+            f" {ENV_PREFIX}RUN_DIR='{run_assets.run_dir}'"
             f" {ENV_PREFIX}WORKTREE='{worktree_path}'"
             f" {runtime_tool_assignments}"
             f' PYTHONPATH="{orch_src}:${{PYTHONPATH:-}}"'
@@ -907,7 +908,7 @@ class SessionLauncher:
             session_id=run.session_name,
             agent_label=issue.agent_type,
             issue_number=issue.number,
-            run_dir=run.run_dir,
+            run_assets=run,
             worktree_path=worktree_path,
         )
         if self.config.e2e_pr_labels:
@@ -948,7 +949,6 @@ class SessionLauncher:
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, "Failed to create terminal session")
 
-
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
 
         # Create session object with domain identity
@@ -960,7 +960,7 @@ class SessionLauncher:
             worktree_path=worktree_path,
             branch_name=branch_name,
             completion_path=completion_path,
-            run_dir=run.run_dir,
+            run_assets=run,
             agent_label=issue.agent_type,
             original_prompt=rendered_prompt,
             lease_id=claim.lease_id,
@@ -1149,7 +1149,7 @@ class SessionLauncher:
             session_id=run.session_name,
             agent_label=issue.agent_type,
             issue_number=issue.number,
-            run_dir=run.run_dir,
+            run_assets=run,
             worktree_path=worktree_path,
         )
         command = f"{env_exports} && {base_command}"
@@ -1185,7 +1185,7 @@ class SessionLauncher:
             worktree_path=worktree_path,
             branch_name=branch_name,
             completion_path=completion_path,
-            run_dir=run.run_dir,
+            run_assets=run,
             agent_label=issue.agent_type,
             validation_retry_count=retry_count,
             original_prompt=retry.original_prompt,
@@ -1529,7 +1529,7 @@ class SessionLauncher:
             session_id=run.session_name,
             agent_label=agent_label,
             issue_number=review.issue_number,
-            run_dir=run.run_dir,
+            run_assets=run,
             worktree_path=worktree_path,
         )
         command = f"{env_exports} && {base_command}"
@@ -1553,7 +1553,6 @@ class SessionLauncher:
             session_created,
         )
 
-
         # Create pseudo-issue for session tracking
         pseudo_issue = Issue(
             number=review.issue_number,
@@ -1570,7 +1569,7 @@ class SessionLauncher:
             worktree_path=worktree_path,
             branch_name=review.branch_name,
             completion_path=completion_path,
-            run_dir=run.run_dir,
+            run_assets=run,
             agent_label=agent_label,
             pr_number=review.pr_number,
             rework_cycle=rework_count if rework_count > 0 else None,
@@ -1798,7 +1797,7 @@ class SessionLauncher:
             session_id=run.session_name,
             agent_label=agent_label,
             issue_number=review.issue_number,
-            run_dir=run.run_dir,
+            run_assets=run,
             worktree_path=worktree_path,
         )
         command = f"{env_exports} && {base_command}"
@@ -1842,7 +1841,7 @@ class SessionLauncher:
             worktree_path=worktree_path,
             branch_name=ctx.branch_name,
             completion_path=completion_path,
-            run_dir=run.run_dir,
+            run_assets=run,
             agent_label=agent_label,
             pr_number=review.prior_pr_number,
             original_prompt=rendered_prompt,

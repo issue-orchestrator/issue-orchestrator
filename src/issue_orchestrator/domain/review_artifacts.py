@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from .review_exchange_summary import ReviewExchangeSummaryV1
+
 
 NitPolicy = Literal["ignore", "surface", "address"]
 ReviewVerdict = Literal["approved", "changes_requested", "disagree"]
@@ -388,36 +390,15 @@ def review_requires_nit_rework(decision: ReviewDecision) -> bool:
     )
 
 
-def review_artifacts_from_summary(summary: Any) -> list[dict[str, str]]:
+def review_artifacts_from_summary(
+    summary: ReviewExchangeSummaryV1 | None,
+) -> list[dict[str, str]]:
     """Return validated review artifact refs from an exchange summary."""
-    if not isinstance(summary, dict):
+    if summary is None:
         return []
-    artifacts = summary.get("artifacts")
-    if not isinstance(artifacts, list):
-        return []
-    result: list[dict[str, str]] = []
-    for artifact in artifacts:
-        if not isinstance(artifact, dict):
-            continue
-        artifact_type = artifact.get("type")
-        label = artifact.get("label")
-        value = artifact.get("value")
-        if not (
-            isinstance(artifact_type, str)
-            and artifact_type
-            and isinstance(label, str)
-            and label
-            and isinstance(value, str)
-            and value
-        ):
-            continue
-        normalized = {
-            key: raw_value
-            for key, raw_value in artifact.items()
-            if isinstance(key, str) and isinstance(raw_value, str)
-        }
-        result.append(normalized)
-    return result
+    if type(summary) is not ReviewExchangeSummaryV1:
+        raise TypeError("summary must be ReviewExchangeSummaryV1")
+    return [artifact.to_payload() for artifact in summary.artifacts]
 
 
 def review_artifacts_from_exchange_result(exchange_result: Any) -> list[dict[str, str]]:

@@ -73,6 +73,9 @@ class DummyGitAdapter:
     def get_current_branch(self, worktree: Path) -> str | None:
         return "feature"
 
+    def get_head_sha(self, worktree: Path) -> str:
+        return "test-head-sha"
+
     def has_uncommitted_changes(self, worktree: Path) -> bool:
         return False
 
@@ -123,6 +126,7 @@ def test_session_output_manifest_and_validation_pointer(tmp_path: Path) -> None:
     )
     result = processor.process(
         worktree=tmp_path,
+        run_assets=run,
         issue_number=1,
         issue_title="Test Issue",
         completion_path=completion_path,
@@ -300,6 +304,7 @@ def test_review_completion_writes_feedback_file(tmp_path: Path) -> None:
     )
     result = processor.process(
         worktree=tmp_path,
+        run_assets=run,
         issue_number=1,
         issue_title="Test Issue",
         completion_path=completion_path,
@@ -347,6 +352,7 @@ def test_feedback_file_not_written_for_approved(tmp_path: Path) -> None:
     )
     result = processor.process(
         worktree=tmp_path,
+        run_assets=run,
         issue_number=2,
         issue_title="Test Issue",
         completion_path=completion_path,

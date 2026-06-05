@@ -9,6 +9,7 @@ import pytest
 from issue_orchestrator.domain.claim import ClaimResult, ClaimState
 from issue_orchestrator.domain.lease_config import LeaseConfig
 from issue_orchestrator.domain.models import Session, SessionStatus
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 class MockClaimManager:
@@ -150,7 +151,11 @@ class TestSessionLauncherClaimAcquisition:
             mock_ctx.worktree_path = Path("/tmp/worktree")
             mock_ctx.branch_name = "test-branch"
             mock_ctx.worktree_info = MagicMock(rebase_failed=False)
-            mock_ctx.run = MagicMock(run_id="test-run", run_dir=Path("/tmp/run"))
+            mock_ctx.run = make_session_run_assets(
+                Path("/tmp/worktree"),
+                run_id="test-run",
+                session_name="issue-42",
+            )
             mock_ctx.claude_project_dir = Path("/tmp/claude")
 
             def create_worktree(*args, **kwargs):
@@ -353,6 +358,10 @@ class TestSessionCompletionClaimRelease:
             terminal_id="issue-42",
             worktree_path=Path("/tmp/worktree"),
             branch_name="test-branch",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="issue-42",
+            ),
             completion_path="completion.json",
             agent_label="test-agent",
             lease_id="test-lease-123",
@@ -421,6 +430,10 @@ class TestSessionCompletionClaimRelease:
             terminal_id="issue-42",
             worktree_path=Path("/tmp/worktree"),
             branch_name="test-branch",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree"),
+                session_name="issue-42",
+            ),
             completion_path="completion.json",
             agent_label="test-agent",
             # No lease_id

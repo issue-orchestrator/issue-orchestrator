@@ -15,6 +15,7 @@ from ..control.job_store import JobRecord, get_worktree_id
 from ..control.actions import AddLabelAction, RemoveLabelAction
 from ..domain.models import OrchestratorState, PublishJob, SessionHistoryEntry
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
+from ..domain.session_run import SessionRunAssets
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.pull_request_tracker import PRInfo
 
@@ -277,11 +278,16 @@ class PublishRecoveryService:
         metadata, error = self._job_metadata(job_record)
         if metadata is None:
             raise ValueError(error or "Publish job metadata missing")
+        run_assets_raw = metadata.get("run_assets")
+        if not isinstance(run_assets_raw, dict):
+            raise ValueError("Publish job metadata missing run_assets")
+        run_assets = SessionRunAssets.from_dict(run_assets_raw)
 
         return PublishJob(
             job_id=str(uuid.uuid4()),
             issue_number=job_record.issue_number,
             session_key=job_record.session_key,
+            run_assets=run_assets,
             created_at=time.monotonic(),
             worktree_path=job_record.worktree_path,
             branch_name=job_record.branch_name,

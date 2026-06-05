@@ -396,6 +396,89 @@ class TestPersistentSessionFailureModes:
             send_round(session, prompt="late", response_file=response_file, timeout_seconds=5)
         assert persistent_round_failure_reason(exc_info.value) == "session_closed"
 
+    def test_prompt_idle_after_delivery_is_classified_as_not_accepted(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner as prr
+
+        class _Proc:
+            pid = 321
+
+            def poll(self) -> None:
+                return None
+
+        monkeypatch.setattr(
+            prr,
+            "_submit_prompt_with_enter",
+            lambda _session, payload, **_kwargs: (len(payload) + 1, None),
+        )
+        monkeypatch.setattr(prr, "_drain_pty_output", lambda _session: 0)
+        session = prr.PersistentSession(proc=_Proc(), master_fd=99)  # type: ignore[arg-type]
+        clock = _FakeClock()
+
+        with pytest.raises(PersistentRoundTimeoutError) as exc_info:
+            send_round(
+                session,
+                prompt="review round 2",
+                response_file=tmp_path / "response.json",
+                timeout_seconds=10.0,
+                prompt_acceptance_idle_seconds=1.0,
+                poll_interval_seconds=0.25,
+                now=clock.now,
+                sleep=clock.make_sleeper(),
+            )
+
+        assert persistent_round_failure_reason(exc_info.value) == "prompt_not_accepted"
+
+    def test_prompt_activity_resets_not_accepted_idle_window(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner as prr
+
+        class _Proc:
+            pid = 322
+
+            def poll(self) -> None:
+                return None
+
+        response_file = tmp_path / "response.json"
+        clock = _FakeClock()
+        poll_count = {"value": 0}
+
+        def _drain(_session: object) -> int:
+            poll_count["value"] += 1
+            return 1 if poll_count["value"] in {1, 4} else 0
+
+        def _sleep(seconds: float) -> None:
+            clock.value += seconds
+            if clock.value >= 1.5 and not response_file.exists():
+                response_file.write_text(json.dumps({"ok": True}), encoding="utf-8")
+
+        monkeypatch.setattr(
+            prr,
+            "_submit_prompt_with_enter",
+            lambda _session, payload, **_kwargs: (len(payload) + 1, None),
+        )
+        monkeypatch.setattr(prr, "_drain_pty_output", _drain)
+        session = prr.PersistentSession(proc=_Proc(), master_fd=99)  # type: ignore[arg-type]
+
+        response = send_round(
+            session,
+            prompt="review round 2",
+            response_file=response_file,
+            timeout_seconds=10.0,
+            prompt_acceptance_idle_seconds=1.0,
+            poll_interval_seconds=0.25,
+            now=clock.now,
+            sleep=_sleep,
+        )
+
+        assert response == {"ok": True}
+
 
 # ---------------------------------------------------------------------------
 # Partial-write race tolerance — the regression that reviewer #6143 caught

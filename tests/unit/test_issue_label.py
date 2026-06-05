@@ -22,6 +22,7 @@ from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 from issue_orchestrator.view_models.dashboard_flow import compact_card
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def test_separator_is_middle_dot_with_spaces():
@@ -99,6 +100,7 @@ def test_dashboard_view_model_active_card_carries_issue_label():
         terminal_id="issue-274",
         worktree_path=Path("/tmp/wt"),
         branch_name="feature/274",
+        run_assets=make_session_run_assets(Path("/tmp/wt"), session_name="issue-274"),
         started_at=datetime.now() - timedelta(minutes=1),
     )
     state = OrchestratorState(active_sessions=[session], startup_status="complete")

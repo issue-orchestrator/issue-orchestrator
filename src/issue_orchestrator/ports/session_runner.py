@@ -16,6 +16,7 @@ class DiscoveredSession(TypedDict):
     issue_number: int
     tab_name: str
     is_review: bool
+    run_dir: str
     session_name: NotRequired[str]
 
 

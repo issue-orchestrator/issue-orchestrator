@@ -28,18 +28,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from ..domain.artifact_contracts import ValidationOutcome
     from ..domain.exchange_chapter import ExchangeChapterSidecar
+    from ..domain.review_exchange_run import ReviewExchangeRun
 
-
-@dataclass(frozen=True)
-class SessionRun:
-    """Represents a single session run directory."""
-
-    session_name: str
-    run_id: str
-    run_dir: Path
-    log_path: Path
-    manifest_path: Path
-    started_at: str
+from ..domain.review_exchange_run import ReviewExchangeRunAssets
+from ..domain.review_exchange_summary import ReviewExchangeSummaryV1
+from ..domain.session_run import SessionRunAssets
 
 
 @dataclass(frozen=True)
@@ -129,10 +122,24 @@ class ReviewExchangeSummary:
     Stored at: <run_dir>/review-exchange/summary.json
     """
 
-    summary: dict[str, Any]
-    exchange_dir: Path
-    summary_path: Path
-    validation_record_path: Path | None = None
+    summary: ReviewExchangeSummaryV1
+    run_assets: ReviewExchangeRunAssets
+
+    @property
+    def run_dir(self) -> Path:
+        return self.run_assets.run_dir
+
+    @property
+    def exchange_dir(self) -> Path:
+        return self.run_assets.exchange_dir
+
+    @property
+    def summary_path(self) -> Path:
+        return self.run_assets.summary_path
+
+    @property
+    def validation_record_path(self) -> Path:
+        return self.run_assets.validation_record_path
 
 
 class SessionOutput(Protocol):
@@ -165,7 +172,7 @@ class SessionOutput(Protocol):
         retention_tier: str = "hot",
         retention_days: int = 7,
         retention_pinned: bool = False,
-    ) -> SessionRun:
+    ) -> SessionRunAssets:
         """Create a new run directory and initial manifest.
 
         Args:
@@ -182,7 +189,7 @@ class SessionOutput(Protocol):
             retention_pinned: Whether this run is pinned from retention cleanup
 
         Returns:
-            SessionRun with paths to the new run directory
+            SessionRunAssets with owned paths to the new run directory
         """
         ...
 
@@ -462,20 +469,27 @@ class SessionOutput(Protocol):
     # Review Exchange Artifacts
     # -------------------------------------------------------------------------
 
-    def store_review_exchange_summary(
+    def start_review_exchange_run(
         self,
         worktree_path: Path,
-        session_name: str,
-        summary: dict[str, Any],
-        validation_record_path: Path | None = None,
+        *,
+        issue_number: int,
+        parent_session_name: str,
+        agent_label: str,
+    ) -> "ReviewExchangeRun":
+        """Allocate a typed run directory for one review exchange."""
+        ...
+
+    def store_review_exchange_summary(
+        self,
+        review_run: "ReviewExchangeRun",
+        summary: ReviewExchangeSummaryV1,
     ) -> ReviewExchangeSummary:
         """Persist review exchange summary artifacts for a session.
 
         Args:
-            worktree_path: Path to the worktree
-            session_name: Session name to attach summary
+            review_run: Typed review-exchange run owner.
             summary: Summary payload to store
-            validation_record_path: Optional validation record to copy alongside summary
 
         Returns:
             ReviewExchangeSummary describing stored artifacts

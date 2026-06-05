@@ -36,7 +36,12 @@ class Violation:
 def iter_py_files(root: Path) -> Iterable[Path]:
     for p in root.rglob("*.py"):
         parts = set(p.parts)
-        if "__pycache__" in parts or ".venv" in parts or "venv" in parts or ".tox" in parts:
+        if (
+            "__pycache__" in parts
+            or ".venv" in parts
+            or "venv" in parts
+            or ".tox" in parts
+        ):
             continue
         yield p
 
@@ -91,7 +96,9 @@ def matches_module(import_name: str, deny_patterns: Sequence[str]) -> Optional[s
     return None
 
 
-def resolve_relative_import(path: Path, module: Optional[str], level: int) -> Optional[str]:
+def resolve_relative_import(
+    path: Path, module: Optional[str], level: int
+) -> Optional[str]:
     """Resolve a relative import to an absolute module name.
 
     Args:
@@ -120,7 +127,7 @@ def resolve_relative_import(path: Path, module: Optional[str], level: int) -> Op
     # level=1 means current package, level=2 means parent, etc.
     if level > len(parts):
         return module
-    parts = parts[: -level] if level > 0 else parts
+    parts = parts[:-level] if level > 0 else parts
 
     # Append the imported module
     if module:
@@ -145,7 +152,9 @@ def check_layer_boundaries(path: Path, tree: ast.AST, rules: dict) -> list[Viola
         in_denied_path = any(p.startswith(prefix.rstrip("/")) for prefix in deny_in)
 
         # Check if this file is explicitly allowed
-        is_allowed_file = any(p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow)
+        is_allowed_file = any(
+            p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow
+        )
 
         if not in_denied_path or is_allowed_file:
             continue
@@ -201,7 +210,9 @@ def check_attr_call_rules(path: Path, tree: ast.AST, rules: dict) -> list[Violat
 
         p = path.as_posix()
         in_denied_path = any(p.startswith(prefix.rstrip("/")) for prefix in deny_in)
-        is_allowed_file = any(p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow)
+        is_allowed_file = any(
+            p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow
+        )
 
         if not in_denied_path or is_allowed_file:
             continue
@@ -235,7 +246,9 @@ def check_symbol_ref_rules(path: Path, tree: ast.AST, rules: dict) -> list[Viola
 
         p = path.as_posix()
         in_denied_path = any(p.startswith(prefix.rstrip("/")) for prefix in deny_in)
-        is_allowed_file = any(p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow)
+        is_allowed_file = any(
+            p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow
+        )
 
         if not in_denied_path or is_allowed_file:
             continue
@@ -265,13 +278,442 @@ def check_symbol_ref_rules(path: Path, tree: ast.AST, rules: dict) -> list[Viola
     return violations
 
 
-def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[Violation]:
+_REVIEW_EXCHANGE_TYPED_SUMMARY_PATHS = frozenset(
+    {
+        "src/issue_orchestrator/domain/review_artifacts.py",
+        "src/issue_orchestrator/domain/review_exchange.py",
+        "src/issue_orchestrator/ports/session_output.py",
+        "src/issue_orchestrator/control/completion_review_exchange.py",
+        "src/issue_orchestrator/control/review_exchange_cache_resolution.py",
+        "src/issue_orchestrator/execution/persistent_session_exchange.py",
+        "src/issue_orchestrator/execution/review_exchange_session_output.py",
+        "src/issue_orchestrator/execution/session_output_adapter.py",
+        "src/issue_orchestrator/execution/persistent_review_exchange_runner.py",
+    }
+)
+
+
+def _is_review_exchange_typed_summary_path(path: Path) -> bool:
+    rel = path.as_posix()
+    return rel in _REVIEW_EXCHANGE_TYPED_SUMMARY_PATHS
+
+
+def _is_review_exchange_control_or_execution_path(path: Path) -> bool:
+    rel = path.as_posix()
+    if _is_review_exchange_typed_summary_path(path):
+        return True
+    if not (
+        rel.startswith("src/issue_orchestrator/control/")
+        or rel.startswith("src/issue_orchestrator/execution/")
+    ):
+        return False
+    name = path.name
+    return "review_exchange" in name or name in {
+        "persistent_session_exchange.py",
+        "persistent_pair_contract.py",
+    }
+
+
+def _is_summary_expr(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "summary"
+    if isinstance(node, ast.Attribute):
+        return node.attr == "summary" or _is_summary_expr(node.value)
+    return False
+
+
+def _annotation_mentions_dict(node: ast.AST | None) -> bool:
+    if node is None:
+        return False
+    if isinstance(node, ast.Name):
+        return node.id == "dict" or node.id == "Dict"
+    if isinstance(node, ast.Subscript):
+        return _annotation_mentions_dict(node.value)
+    if isinstance(node, ast.Attribute):
+        return node.attr in {"dict", "Dict"}
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _annotation_mentions_dict(node.left) or _annotation_mentions_dict(
+            node.right
+        )
+    return False
+
+
+def _arg_is_summary_dict(arg: ast.arg) -> bool:
+    return arg.arg == "summary" and _annotation_mentions_dict(arg.annotation)
+
+
+def _constructor_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _keyword_value_for(node: ast.Call, key: str) -> ast.AST | None:
+    for keyword in node.keywords:
+        if keyword.arg == key:
+            return keyword.value
+    return None
+
+
+def _base_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return _base_name(node.value)
+    return None
+
+
+def _is_pair_run_binding_mutation(target: ast.Attribute) -> bool:
+    if target.attr == "exchange_run_id":
+        return True
+    if target.attr != "run_dir":
+        return False
+    base = _base_name(target.value)
+    return base is not None and "pair" in base
+
+
+def _violation(
+    path: Path,
+    node: ast.AST,
+    kind: str,
+    detail: str,
+) -> Violation:
+    return Violation(
+        path.as_posix(),
+        getattr(node, "lineno", 1),
+        getattr(node, "col_offset", 0),
+        kind,
+        detail,
+    )
+
+
+def _summary_get_violation(path: Path, node: ast.AST) -> Violation | None:
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and _is_summary_expr(node.func.value)
+    ):
+        return None
+    return _violation(
+        path,
+        node,
+        "review-exchange-summary-typed-contract",
+        "use ReviewExchangeSummaryV1 typed fields instead of summary.get(...)",
+    )
+
+
+def _summary_constructor_violation(path: Path, node: ast.Call) -> Violation | None:
+    constructor_name = _constructor_name(node.func)
+    if constructor_name not in {"ReviewExchangeOutcome", "ReviewExchangeSummary"}:
+        return None
+    summary_value = _keyword_value_for(node, "summary")
+    if not isinstance(summary_value, ast.Dict):
+        return None
+    return _violation(
+        path,
+        node,
+        "review-exchange-summary-typed-contract",
+        f"{constructor_name}(summary={{...}}) must use ReviewExchangeSummaryV1",
+    )
+
+
+def _summary_dict_coercion_violation(path: Path, node: ast.Call) -> Violation | None:
+    if not (
+        node.args
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "dict"
+        and _is_summary_expr(node.args[0])
+    ):
+        return None
+    return _violation(
+        path,
+        node,
+        "review-exchange-summary-typed-contract",
+        "do not coerce review-exchange summary to dict; use typed fields/to_payload()",
+    )
+
+
+def _summary_function_arg_violations(
+    path: Path,
+    node: ast.FunctionDef,
+) -> list[Violation]:
+    violations: list[Violation] = []
+    for arg in [*node.args.args, *node.args.kwonlyargs]:
+        if _arg_is_summary_dict(arg):
+            violations.append(
+                _violation(
+                    path,
+                    arg,
+                    "review-exchange-summary-typed-contract",
+                    "review-exchange summary parameters must use "
+                    "ReviewExchangeSummaryV1, not dict",
+                )
+            )
+    return violations
+
+
+def _summary_annassign_violation(path: Path, node: ast.AST) -> Violation | None:
+    if not (
+        isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "summary"
+        and _annotation_mentions_dict(node.annotation)
+    ):
+        return None
+    return _violation(
+        path,
+        node,
+        "review-exchange-summary-typed-contract",
+        "review-exchange summary variables must use ReviewExchangeSummaryV1, not dict",
+    )
+
+
+def _review_exchange_summary_contract_violations(
+    path: Path,
+    tree: ast.AST,
+) -> list[Violation]:
+    violations: list[Violation] = []
+    if not _is_review_exchange_typed_summary_path(path):
+        return violations
+    for node in ast.walk(tree):
+        if violation := _summary_get_violation(path, node):
+            violations.append(violation)
+        if isinstance(node, ast.Call):
+            if violation := _summary_constructor_violation(path, node):
+                violations.append(violation)
+            if violation := _summary_dict_coercion_violation(path, node):
+                violations.append(violation)
+        if isinstance(node, ast.FunctionDef):
+            violations.extend(_summary_function_arg_violations(path, node))
+        if violation := _summary_annassign_violation(path, node):
+            violations.append(violation)
+    return violations
+
+
+def _assignment_targets(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, ast.Assign):
+        return list(node.targets)
+    if isinstance(node, ast.AnnAssign):
+        return [node.target]
+    if isinstance(node, ast.AugAssign):
+        return [node.target]
+    return []
+
+
+def _pair_run_rebind_violations(path: Path, tree: ast.AST) -> list[Violation]:
+    violations: list[Violation] = []
+    if not path.as_posix().startswith("src/issue_orchestrator/"):
+        return violations
+    for node in ast.walk(tree):
+        for target in _assignment_targets(node):
+            if isinstance(target, ast.Attribute) and _is_pair_run_binding_mutation(
+                target
+            ):
+                violations.append(
+                    _violation(
+                        path,
+                        target,
+                        "review-exchange-pair-run-rebind",
+                        "release/respawn persistent pairs instead of rebinding "
+                        "run_dir/exchange_run_id",
+                    )
+                )
+    return violations
+
+
+def check_review_exchange_typed_flow_rules(
+    path: Path,
+    tree: ast.AST,
+) -> list[Violation]:
+    """Check review-exchange typed-dataflow ownership guardrails."""
+    violations: list[Violation] = []
+    violations.extend(_review_exchange_summary_contract_violations(path, tree))
+    violations.extend(_pair_run_rebind_violations(path, tree))
+    return violations
+
+
+def _check_import_denies(
+    path: Path,
+    tree: ast.AST,
+    *,
+    allow_general: bool,
+    deny_imports: set[str],
+) -> list[Violation]:
+    violations: list[Violation] = []
+    if allow_general:
+        return violations
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if base_mod(alias.name) in deny_imports:
+                    violations.append(
+                        _violation(path, node, "import", f"import {alias.name}")
+                    )
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module
+            and base_mod(node.module) in deny_imports
+        ):
+            violations.append(
+                _violation(path, node, "import", f"from {node.module} import ...")
+            )
+    return violations
+
+
+def _constant_string_arg(node: ast.Call) -> str | None:
+    if not node.args:
+        return None
+    first = node.args[0]
+    if isinstance(first, ast.Constant) and isinstance(first.value, str):
+        return first.value
+    return None
+
+
+def _dynamic_import_name_call_violation(
+    path: Path,
+    node: ast.Call,
+    *,
+    allow_general: bool,
+    deny_dynamic_imports: set[str],
+    deny_imports: set[str],
+    deny_dynamic_any: set[str],
+) -> Violation | None:
+    if not (
+        isinstance(node.func, ast.Name)
+        and node.func.id == "__import__"
+        and not allow_general
+    ):
+        return None
+    import_name = _constant_string_arg(node)
+    if import_name is not None:
+        mod = base_mod(import_name)
+        if mod in deny_dynamic_imports or mod in deny_imports:
+            return _violation(
+                path,
+                node,
+                "dynamic-import",
+                f'__import__("{import_name}")',
+            )
+    elif "__import__" in deny_dynamic_any:
+        return _violation(path, node, "dynamic-import", "__import__(...)")
+    return None
+
+
+def _importlib_dynamic_import_violation(
+    path: Path,
+    node: ast.Call,
+    *,
+    allow_general: bool,
+    deny_dynamic_imports: set[str],
+    deny_imports: set[str],
+    deny_dynamic_any: set[str],
+) -> Violation | None:
+    if get_attr_call(node.func) != ("importlib", "import_module") or allow_general:
+        return None
+    import_name = _constant_string_arg(node)
+    if import_name is not None:
+        mod = base_mod(import_name)
+        if mod in deny_dynamic_imports or mod in deny_imports:
+            return _violation(
+                path,
+                node,
+                "dynamic-import",
+                f'importlib.import_module("{import_name}")',
+            )
+    elif "importlib.import_module" in deny_dynamic_any:
+        return _violation(
+            path,
+            node,
+            "dynamic-import",
+            "importlib.import_module(...)",
+        )
+    return None
+
+
+def _check_dynamic_import_denies(
+    path: Path,
+    tree: ast.AST,
+    *,
+    allow_general: bool,
+    deny_dynamic_imports: set[str],
+    deny_imports: set[str],
+    deny_dynamic_any: set[str],
+) -> list[Violation]:
+    violations: list[Violation] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for check in (
+            _dynamic_import_name_call_violation,
+            _importlib_dynamic_import_violation,
+        ):
+            violation = check(
+                path,
+                node,
+                allow_general=allow_general,
+                deny_dynamic_imports=deny_dynamic_imports,
+                deny_imports=deny_imports,
+                deny_dynamic_any=deny_dynamic_any,
+            )
+            if violation is not None:
+                violations.append(violation)
+    return violations
+
+
+def _check_denied_call_rules(
+    path: Path,
+    tree: ast.AST,
+    *,
+    allow_general: bool,
+    deny_calls: set[tuple[str, str]],
+    deny_os_calls: bool,
+    deny_git_subprocess: bool,
+    allow_git_subprocess: bool,
+) -> list[Violation]:
+    violations: list[Violation] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        module, attr = get_attr_call(node.func)
+        if not allow_general and module and attr and (module, attr) in deny_calls:
+            violations.append(_violation(path, node, "call", f"{module}.{attr}(...)"))
+        if (
+            not allow_general
+            and deny_os_calls
+            and module == "os"
+            and attr in {"system", "popen"}
+        ):
+            violations.append(_violation(path, node, "call", f"os.{attr}(...)"))
+        if (
+            deny_git_subprocess
+            and not allow_git_subprocess
+            and _is_git_subprocess_call(node)
+        ):
+            violations.append(
+                _violation(
+                    path,
+                    node,
+                    "git-subprocess",
+                    "subprocess.*(['git', ...])",
+                )
+            )
+    return violations
+
+
+def check_file(
+    path: Path, rules: dict, allow_prefixes: Sequence[str]
+) -> list[Violation]:
     allow_general = is_allowed(path, allow_prefixes)
 
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
     except SyntaxError as e:
-        return [Violation(path.as_posix(), e.lineno or 1, e.offset or 0, "syntax", e.msg)]
+        return [
+            Violation(path.as_posix(), e.lineno or 1, e.offset or 0, "syntax", e.msg)
+        ]
 
     violations: list[Violation] = []
 
@@ -279,106 +721,60 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
     violations.extend(check_layer_boundaries(path, tree, rules))
     violations.extend(check_attr_call_rules(path, tree, rules))
     violations.extend(check_symbol_ref_rules(path, tree, rules))
+    violations.extend(check_review_exchange_typed_flow_rules(path, tree))
 
     deny_imports = set(rules.get("deny_imports", []) or [])
     deny_dynamic_imports = set(rules.get("deny_dynamic_imports", []) or [])
-    deny_calls = set(tuple(x.split(".", 1)) for x in (rules.get("deny_calls", []) or []))
+    deny_calls = set(
+        tuple(x.split(".", 1)) for x in (rules.get("deny_calls", []) or [])
+    )
     deny_os_calls = bool(rules.get("deny_os_system_like", True))
     deny_dynamic_any = set(rules.get("deny_dynamic_any", []) or [])
     deny_git_subprocess = bool(rules.get("deny_git_subprocess", False))
     allow_git_prefixes = rules.get("allow_git_subprocess_prefixes", []) or []
     allow_git_subprocess = is_allowed(path, allow_git_prefixes)
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if not allow_general and base_mod(alias.name) in deny_imports:
-                    violations.append(
-                        Violation(path.as_posix(), node.lineno, node.col_offset, "import", f"import {alias.name}")
-                    )
-
-        if isinstance(node, ast.ImportFrom):
-            if not allow_general and node.module and base_mod(node.module) in deny_imports:
-                violations.append(
-                    Violation(
-                        path.as_posix(),
-                        node.lineno,
-                        node.col_offset,
-                        "import",
-                        f"from {node.module} import ...",
-                    )
-                )
-
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "__import__"
-        ):
-            if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                mod = base_mod(node.args[0].value)
-                if not allow_general and (mod in deny_dynamic_imports or mod in deny_imports):
-                    violations.append(
-                        Violation(
-                            path.as_posix(),
-                            node.lineno,
-                            node.col_offset,
-                            "dynamic-import",
-                            f'__import__("{node.args[0].value}")',
-                        )
-                    )
-            elif not allow_general and "__import__" in deny_dynamic_any:
-                violations.append(
-                    Violation(path.as_posix(), node.lineno, node.col_offset, "dynamic-import", "__import__(...)")
-                )
-
-        if isinstance(node, ast.Call):
-            m, a = get_attr_call(node.func)
-            if (m, a) == ("importlib", "import_module"):
-                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                    mod = base_mod(node.args[0].value)
-                    if not allow_general and (mod in deny_dynamic_imports or mod in deny_imports):
-                        violations.append(
-                            Violation(
-                                path.as_posix(),
-                                node.lineno,
-                                node.col_offset,
-                                "dynamic-import",
-                                f'importlib.import_module("{node.args[0].value}")',
-                            )
-                        )
-                elif not allow_general and "importlib.import_module" in deny_dynamic_any:
-                    violations.append(
-                        Violation(
-                            path.as_posix(),
-                            node.lineno,
-                            node.col_offset,
-                            "dynamic-import",
-                            "importlib.import_module(...)",
-                        )
-                    )
-
-            if not allow_general and m and a and (m, a) in deny_calls:
-                violations.append(
-                    Violation(path.as_posix(), node.lineno, node.col_offset, "call", f"{m}.{a}(...)")
-                )
-
-            if not allow_general and deny_os_calls and m == "os" and a in {"system", "popen"}:
-                violations.append(
-                    Violation(path.as_posix(), node.lineno, node.col_offset, "call", f"os.{a}(...)")
-                )
-
-            if deny_git_subprocess and not allow_git_subprocess and _is_git_subprocess_call(node):
-                violations.append(
-                    Violation(path.as_posix(), node.lineno, node.col_offset, "git-subprocess", "subprocess.*(['git', ...])")
-                )
+    violations.extend(
+        _check_import_denies(
+            path,
+            tree,
+            allow_general=allow_general,
+            deny_imports=deny_imports,
+        )
+    )
+    violations.extend(
+        _check_dynamic_import_denies(
+            path,
+            tree,
+            allow_general=allow_general,
+            deny_dynamic_imports=deny_dynamic_imports,
+            deny_imports=deny_imports,
+            deny_dynamic_any=deny_dynamic_any,
+        )
+    )
+    violations.extend(
+        _check_denied_call_rules(
+            path,
+            tree,
+            allow_general=allow_general,
+            deny_calls=deny_calls,
+            deny_os_calls=deny_os_calls,
+            deny_git_subprocess=deny_git_subprocess,
+            allow_git_subprocess=allow_git_subprocess,
+        )
+    )
 
     return violations
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("root", nargs="?", default="src", help="Root to scan (default: src)")
-    ap.add_argument("--rules", default="tools/ast_guardrails.yml", help="Rules file path")
+    ap.add_argument(
+        "root", nargs="?", default="src", help="Root to scan (default: src)"
+    )
+    ap.add_argument(
+        "--rules", default="tools/ast_guardrails.yml", help="Rules file path"
+    )
     ap.add_argument(
         "--allow-prefix",
         action="append",

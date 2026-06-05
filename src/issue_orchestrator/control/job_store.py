@@ -308,6 +308,7 @@ class JobStore:
             "completion_path": job.completion_path,
             "agent_label": job.agent_label,
             "retry_publish": job.retry_publish,
+            "run_assets": job.run_assets.to_dict(),
         }
 
         # Get or create worktree identity

@@ -16,7 +16,9 @@ import pytest
 from issue_orchestrator.domain.review_exchange_manifest import (
     ReviewExchangeManifestHeader,
     ReviewExchangeRecordingPaths,
+    ReviewExchangeSummaryManifestUpdate,
 )
+from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeStatus
 
 
 # ---------------------------------------------------------------------------
@@ -63,20 +65,37 @@ class TestReviewExchangeManifestHeader:
     def test_from_manifest_returns_none_when_review_exchange_dir_missing(self) -> None:
         # Empty / non-review-exchange manifest.
         assert ReviewExchangeManifestHeader.from_manifest({}) is None
-        assert ReviewExchangeManifestHeader.from_manifest({
-            "session_name": "coding-1",
-            "started_at": "2026-05-06T00:00:00",
-        }) is None
+        assert (
+            ReviewExchangeManifestHeader.from_manifest(
+                {
+                    "session_name": "coding-1",
+                    "started_at": "2026-05-06T00:00:00",
+                }
+            )
+            is None
+        )
 
-    def test_from_manifest_returns_none_when_review_exchange_dir_wrong_type(self) -> None:
-        assert ReviewExchangeManifestHeader.from_manifest({
-            "review_exchange_dir": 42,  # not a str
-        }) is None
+    def test_from_manifest_returns_none_when_review_exchange_dir_wrong_type(
+        self,
+    ) -> None:
+        assert (
+            ReviewExchangeManifestHeader.from_manifest(
+                {
+                    "review_exchange_dir": 42,  # not a str
+                }
+            )
+            is None
+        )
 
     def test_from_manifest_returns_none_when_review_exchange_dir_empty(self) -> None:
-        assert ReviewExchangeManifestHeader.from_manifest({
-            "review_exchange_dir": "",
-        }) is None
+        assert (
+            ReviewExchangeManifestHeader.from_manifest(
+                {
+                    "review_exchange_dir": "",
+                }
+            )
+            is None
+        )
 
     def test_from_manifest_tolerates_legacy_runs_without_parent_session_name(
         self,
@@ -85,18 +104,22 @@ class TestReviewExchangeManifestHeader:
         ``parent_session_name``. Parsing must succeed and leave the
         field None — the cache loader's ``_manifest_matches_parent_session``
         returns ``None`` (legacy fallback) on that shape."""
-        recovered = ReviewExchangeManifestHeader.from_manifest({
-            "review_exchange_dir": "/wt/r1/review-exchange",
-        })
+        recovered = ReviewExchangeManifestHeader.from_manifest(
+            {
+                "review_exchange_dir": "/wt/r1/review-exchange",
+            }
+        )
         assert recovered is not None
         assert recovered.exchange_dir == Path("/wt/r1/review-exchange")
         assert recovered.parent_session_name is None
 
     def test_from_manifest_ignores_wrong_typed_parent_session_name(self) -> None:
-        recovered = ReviewExchangeManifestHeader.from_manifest({
-            "review_exchange_dir": "/wt/r1/review-exchange",
-            "parent_session_name": 42,  # not a str — treat as unset
-        })
+        recovered = ReviewExchangeManifestHeader.from_manifest(
+            {
+                "review_exchange_dir": "/wt/r1/review-exchange",
+                "parent_session_name": 42,  # not a str — treat as unset
+            }
+        )
         assert recovered is not None
         assert recovered.parent_session_name is None
 
@@ -112,23 +135,31 @@ class TestReviewExchangeRecordingPaths:
             persistent_pair_dir=Path("/state/persistent-pairs/issue-359"),
             coder_recording=Path("/wt/r1/coder/terminal-recording.jsonl"),
             reviewer_recording=Path("/wt/r1/reviewer/terminal-recording.jsonl"),
-            coder_recording_pair=Path("/state/persistent-pairs/issue-359/coder/terminal-recording.jsonl"),
-            reviewer_recording_pair=Path("/state/persistent-pairs/issue-359/reviewer/terminal-recording.jsonl"),
+            coder_recording_pair=Path(
+                "/state/persistent-pairs/issue-359/coder/terminal-recording.jsonl"
+            ),
+            reviewer_recording_pair=Path(
+                "/state/persistent-pairs/issue-359/reviewer/terminal-recording.jsonl"
+            ),
         )
         recovered = ReviewExchangeRecordingPaths.from_manifest(
             original.to_manifest_fields(),
         )
         assert recovered == original
 
-    @pytest.mark.parametrize("missing_key", [
-        "persistent_pair_dir",
-        "coder_recording",
-        "reviewer_recording",
-        "coder_recording_pair",
-        "reviewer_recording_pair",
-    ])
+    @pytest.mark.parametrize(
+        "missing_key",
+        [
+            "persistent_pair_dir",
+            "coder_recording",
+            "reviewer_recording",
+            "coder_recording_pair",
+            "reviewer_recording_pair",
+        ],
+    )
     def test_from_manifest_returns_none_when_any_field_missing(
-        self, missing_key: str,
+        self,
+        missing_key: str,
     ) -> None:
         """All five fields are required together; partial states are
         rejected wholesale because a partial set isn't usable."""
@@ -144,10 +175,66 @@ class TestReviewExchangeRecordingPaths:
 
     def test_from_manifest_returns_none_when_field_wrong_type(self) -> None:
         # A non-string in any required slot rejects the whole section.
-        assert ReviewExchangeRecordingPaths.from_manifest({
-            "persistent_pair_dir": 42,
-            "coder_recording": "/a",
-            "reviewer_recording": "/b",
-            "coder_recording_pair": "/c",
-            "reviewer_recording_pair": "/d",
-        }) is None
+        assert (
+            ReviewExchangeRecordingPaths.from_manifest(
+                {
+                    "persistent_pair_dir": 42,
+                    "coder_recording": "/a",
+                    "reviewer_recording": "/b",
+                    "coder_recording_pair": "/c",
+                    "reviewer_recording_pair": "/d",
+                }
+            )
+            is None
+        )
+
+
+# ---------------------------------------------------------------------------
+# ReviewExchangeSummaryManifestUpdate
+# ---------------------------------------------------------------------------
+
+
+class TestReviewExchangeSummaryManifestUpdate:
+    def test_to_manifest_fields_preserves_typed_summary_update(self) -> None:
+        update = ReviewExchangeSummaryManifestUpdate(
+            exchange_dir=Path("/wt/r1/review-exchange"),
+            summary_path=Path("/wt/r1/review-exchange/summary.json"),
+            ended_at="2026-06-04T10:15:00Z",
+            outcome=ReviewExchangeStatus.OK,
+            validation_record_path=Path("/wt/r1/review-exchange/validation.json"),
+        )
+
+        assert update.to_manifest_fields() == {
+            "review_exchange_dir": "/wt/r1/review-exchange",
+            "review_exchange_summary_path": "/wt/r1/review-exchange/summary.json",
+            "ended_at": "2026-06-04T10:15:00Z",
+            "outcome": "ok",
+            "validation_record_path": "/wt/r1/review-exchange/validation.json",
+        }
+
+    def test_to_manifest_fields_omits_validation_path_when_unset(self) -> None:
+        update = ReviewExchangeSummaryManifestUpdate(
+            exchange_dir=Path("/wt/r1/review-exchange"),
+            summary_path=Path("/wt/r1/review-exchange/summary.json"),
+            ended_at="2026-06-04T10:15:00Z",
+            outcome=ReviewExchangeStatus.STOPPED,
+        )
+
+        assert update.to_manifest_fields() == {
+            "review_exchange_dir": "/wt/r1/review-exchange",
+            "review_exchange_summary_path": "/wt/r1/review-exchange/summary.json",
+            "ended_at": "2026-06-04T10:15:00Z",
+            "outcome": "stopped",
+        }
+
+    def test_rejects_empty_ended_at(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="review exchange summary manifest update requires ended_at",
+        ):
+            ReviewExchangeSummaryManifestUpdate(
+                exchange_dir=Path("/wt/r1/review-exchange"),
+                summary_path=Path("/wt/r1/review-exchange/summary.json"),
+                ended_at="",
+                outcome=ReviewExchangeStatus.OK,
+            )

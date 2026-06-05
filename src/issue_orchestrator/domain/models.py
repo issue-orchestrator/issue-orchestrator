@@ -8,9 +8,11 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
+from unittest.mock import Mock
 
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # pyright: ignore[reportUnusedImport] (re-exported)
+from .session_run import SessionRunAssets
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue as IssueProtocol
@@ -1134,8 +1136,8 @@ class Session:
     terminal_id: str  # Opaque handle - only terminal adapter interprets this
     worktree_path: Path
     branch_name: str
+    run_assets: SessionRunAssets  # Exact session artifacts allocated before launch.
     completion_path: str = COMPLETION_RECORD_PATH  # Agent-specific path to completion.json
-    run_dir: Path | None = None  # Exact session artifact directory from launch; None for restored/legacy sessions
     agent_label: Optional[str] = None  # Agent type label (e.g., "agent:backend") for per-agent reviewer
     pr_number: int | None = None  # PR number for review/rework sessions
     rework_cycle: int | None = None  # Which rework iteration (1, 2, ...) — None for initial coding
@@ -1159,6 +1161,14 @@ class Session:
     lease_expires_at: datetime | None = None  # When the claim expires if not renewed
     last_claim_verified_at: datetime | None = None  # Last time we verified we're still the winner
 
+    def __post_init__(self) -> None:
+        _require_session_run_assets(self.run_assets)
+
+    @property
+    def run_dir(self) -> Path:
+        """Exact session artifact directory allocated before launch."""
+        return self.run_assets.run_dir
+
     @property
     def runtime_minutes(self) -> int:
         """How long this session has been running."""
@@ -1169,6 +1179,11 @@ class Session:
     def is_timed_out(self) -> bool:
         """Check if session exceeded timeout."""
         return self.runtime_minutes > self.agent_config.timeout_minutes
+
+
+def _require_session_run_assets(value: object) -> None:
+    if isinstance(value, Mock) or not isinstance(value, SessionRunAssets):
+        raise TypeError("Session.run_assets must be a SessionRunAssets")
 
 
 def is_retrospective_review_session(session: Session) -> bool:
@@ -1398,6 +1413,7 @@ class DiscoveredAwaitingMergeEscalation:
     issue_number: int
     pr_number: int
     pr_url: str
+    issue_key: str
     rework_cycle: int  # carried for label/comment continuity
     kind: PostPublishEscalationKind
     reason: str  # short human-readable summary, used in the PR comment
@@ -1533,6 +1549,7 @@ class ObservedCompletion:
     identity: SessionIdentity
     worktree: WorktreeLocation
     record: CompletionRecord
+    run_assets: SessionRunAssets
 
     # Session-specific fields (not from the completion record)
     pr_number: int | None = None  # For review sessions
@@ -1639,6 +1656,7 @@ class PublishJob:
     job_id: str  # UUID
     issue_number: int
     session_key: str
+    run_assets: SessionRunAssets
 
     # Job state
     status: PublishJobStatus = PublishJobStatus.QUEUED
@@ -1693,6 +1711,7 @@ class PublishJob:
             job_id=job_id,
             issue_number=observed.issue_number,
             session_key=observed.session_key,
+            run_assets=observed.run_assets,
             created_at=time.monotonic(),
             worktree_path=observed.worktree_path,
             branch_name=observed.branch_name,

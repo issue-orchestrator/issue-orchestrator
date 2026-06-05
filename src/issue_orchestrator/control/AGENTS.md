@@ -8,6 +8,48 @@
 - Follows Observer → Planner → ActionApplier pattern (see ADR-0014)
 - Planner generates actions, ActionApplier executes them - never bypass this
 
+## Strongly Typed Session Run Ownership
+
+Active session control paths must preserve a typed, explicit data flow for run
+assets. The owner that creates a session run owns filesystem discovery and
+allocation; every lower-level collaborator receives the resulting typed values
+through constructors or method arguments.
+
+Required invariants:
+- Leaf functions declare the narrow typed artifact contract they need. If a
+  function needs only validation stdout/stderr/record paths, pass that typed
+  leaf contract directly rather than a broad run object.
+- Group leaf contracts into strongly typed aggregates only where the grouping
+  proves a real invariant, such as all paths belonging to the same owned
+  session run.
+- Active `Session` creation requires a frozen typed run object such as
+  `SessionRunAssets`; do not model ownership as a naked `Path`, `Path | None`,
+  loose string, default value, or rediscoverable hint.
+- The run owner allocates `run_dir` and any exchange assets, records them, and
+  injects the typed run object into lower-level collaborators. Lower-level
+  objects may unpack paths only at filesystem I/O edges; they must not rummage
+  through the worktree to rediscover them.
+- Review exchange code follows the same rule: construct a typed
+  `ReviewExchangeRun` / `ReviewExchangeRunAssets` at the owning boundary, then
+  pass that object through the exchange runner, completion processor, cache, and
+  artifact writers.
+- If the typed contract cannot be satisfied, fail fast or skip restoration of
+  that incomplete historical record. Do not silently manufacture a replacement
+  run directory.
+- No active control path may use "latest run", completion-path inference,
+  alternate session names, session-name search, or worktree scans as fallback
+  recovery for a missing `run_dir`.
+- Filesystem search helpers such as `find_run_dir(...)` are not part of active
+  session ownership. If they remain for explicit UI/debug/historical inspection,
+  keep them outside active control flow and name the behavior as best-effort
+  inspection.
+- Avoid weak metadata maps for owned contracts. Prefer frozen dataclasses,
+  enums, value objects, and required constructor arguments over loose
+  `dict[str, str]`, optional fields, or sentinel values.
+- Tests for active session and review exchange flows should inject the typed run
+  assets directly. Fakes should fail if active paths attempt fallback discovery,
+  so ownership regressions are caught immediately.
+
 ## Writing Coordinator Functions
 
 Control layer code often involves multi-step coordination (launching sessions, handling completions, etc.). Write these functions so they read like a **table of contents**:

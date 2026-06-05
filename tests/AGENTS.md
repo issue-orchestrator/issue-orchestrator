@@ -28,6 +28,17 @@ Before writing a test, ask: **"Would a user of this code care about this?"**
 - If yes → test it through the public API
 - If no → don't test it directly (it's an implementation detail)
 
+## Typed Run Assets in Tests
+
+- Active session/completion/review-exchange tests must construct and inject
+  typed run assets such as `SessionRunAssets` or `ReviewExchangeRunAssets`.
+- Do not omit required run assets from positive-path test sessions. Missing
+  `run_dir` belongs only in explicit negative tests that assert fail-fast
+  behavior.
+- Prefer builders/fakes that fail when production code attempts fallback
+  discovery. A passing test must not depend on "latest run" lookup,
+  session-name scans, alternate-name recovery, or worktree rummaging.
+
 ---
 
 ## Never Access Private Members (`_xxx`)

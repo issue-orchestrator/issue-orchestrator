@@ -2,8 +2,11 @@
 
 # ruff: noqa: F403,F405,SLF001
 
+from pathlib import Path
+
 from tests.unit import test_web as _support
 from tests.unit.test_web import *  # noqa: F403
+from tests.unit.session_run_helpers import make_session_run_assets
 
 globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
@@ -171,6 +174,10 @@ class TestApiStatusPublishJobs:
             job_id="running-job-1",
             issue_number=42,
             session_key="code:42",
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree-42"),
+                session_name="issue-42",
+            ),
             status=PublishJobStatus.RUNNING,
             started_at=1000.0,
         )

@@ -442,12 +442,15 @@ class TestLabelOperations:
         """Test that adding a label invalidates the cache."""
         # Pre-populate cache
         cache.set_issue_labels(42, ["old-label"])
+        cache.set_pr(42, {"number": 42, "labels": ["old-label"]})
         mock_http_client.get_issue_labels.return_value = ["old-label", "new-label"]
 
         adapter.add_label(42, "new-label")
 
         # Cache should be invalidated (empty after invalidation)
         assert cache.get_issue_labels(42) is None
+        assert cache.get_pr(42) is None
+        mock_http_client.invalidate_pr_etag.assert_called_once_with(42)
 
     def test_add_label_updates_pr_cache_labels(self, adapter, mock_http_client, mock_verification_service, cache):
         """Test that adding a label updates PR cache labels."""
@@ -469,6 +472,7 @@ class TestLabelOperations:
 
         # Cache should be invalidated
         assert cache.get_issue_labels(42) is None
+        assert cache.get_pr_by_issue(42) is None
 
     def test_add_label_verification_failure_raises(self, adapter, mock_http_client, mock_verification_service):
         """Test that add_label raises on verification failure."""
@@ -501,11 +505,14 @@ class TestLabelOperations:
     def test_remove_label_invalidates_cache(self, adapter, mock_http_client, mock_verification_service, cache):
         """Test that removing a label invalidates the cache."""
         cache.set_issue_labels(42, ["bug"])
+        cache.set_pr(42, {"number": 42, "labels": ["bug"]})
         mock_http_client.get_issue_labels.return_value = []
 
         adapter.remove_label(42, "bug")
 
         assert cache.get_issue_labels(42) is None
+        assert cache.get_pr(42) is None
+        mock_http_client.invalidate_pr_etag.assert_called_once_with(42)
 
     def test_has_label_true(self, adapter, mock_http_client):
         """Test has_label returns True when label exists."""

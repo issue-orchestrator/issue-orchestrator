@@ -7,20 +7,22 @@ execution layer.
 
 The reviewer-worktree lifecycle (create lazily on first exchange,
 fast-forward at the start of every reviewer round, remove when the
-pair is released at issue completion / reset / shutdown) lives
-entirely inside this implementation plus the registry's ``on_release``
-hook. The caller's only contract is "hand me a coder worktree and
-config; get back an outcome."
+    pair is released at issue completion / reset / shutdown) lives
+    entirely inside this implementation plus the registry's ``on_release``
+    hook. The caller allocates the typed exchange run through
+    ``SessionOutput`` and passes it in; this runner never resolves run
+    directories by name.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..domain.models import AgentConfig
 from ..domain.review_exchange import ReviewExchangeOutcome
+from ..domain.review_exchange_run import ReviewExchangeRun
+from ..domain.runtime_config import RuntimeConfigReference
 from ..events import EventContext
 from ..ports.event_sink import EventSink
 from .persistent_exchange_pair_registry_inmemory import (
@@ -86,6 +88,7 @@ class PersistentReviewExchangeRunner:
     def run(  # noqa: PLR0913
         self,
         *,
+        exchange_run: ReviewExchangeRun,
         coder_worktree: Path,
         issue_number: int,
         issue_title: str,
@@ -93,16 +96,15 @@ class PersistentReviewExchangeRunner:
         reviewer_label: str,
         coder_agent: AgentConfig,
         reviewer_agent: AgentConfig,
+        runtime_config: RuntimeConfigReference,
         max_rounds: int,
         max_no_progress: int,
         require_validation: bool,
         nit_policy: str = "surface",
-        parent_session_name: str | None = None,
         initial_validation_record_path: Path | None = None,
         web_port: int | None = None,
         events: EventSink | None = None,
         event_context: EventContext | None = None,
-        on_started: Callable[[Path], None] | None = None,
     ) -> ReviewExchangeOutcome:
         coder_branch = resolve_current_branch(coder_worktree)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -121,6 +123,7 @@ class PersistentReviewExchangeRunner:
             return wt.path
 
         return run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=self._session_output,
             pair_registry=self._pair_registry,
             persistent_pair_root=persistent_pair_root_for_worktree(coder_worktree),
@@ -133,14 +136,13 @@ class PersistentReviewExchangeRunner:
             reviewer_label=reviewer_label,
             coder_agent=coder_agent,
             reviewer_agent=reviewer_agent,
+            runtime_config=runtime_config,
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
             require_validation=require_validation,
             nit_policy=nit_policy,
-            parent_session_name=parent_session_name,
             initial_validation_record_path=initial_validation_record_path,
             web_port=web_port,
             events=events,
             event_context=event_context,
-            on_started=on_started,
         )

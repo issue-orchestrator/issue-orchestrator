@@ -29,7 +29,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from issue_orchestrator.control.completion_review_exchange import CompletionReviewExchange
+from issue_orchestrator.control.completion_review_exchange import (
+    CompletionReviewExchange,
+)
 from issue_orchestrator.events import EventName
 from issue_orchestrator.execution.manifest_accessor import ManifestAccessor, RunIdentity
 from issue_orchestrator.execution.persistent_exchange_pair_registry_inmemory import (
@@ -49,7 +51,9 @@ _INTERACTIVE_REVIEW_AGENT = (
 )
 
 
-def _interactive_review_agent_command(*, include_initial_prompt_arg: bool = False) -> str:
+def _interactive_review_agent_command(
+    *, include_initial_prompt_arg: bool = False
+) -> str:
     parts = [
         shlex.quote(sys.executable),
         "-u",
@@ -74,7 +78,9 @@ def _codex_ready() -> bool:
     try:
         result = subprocess.run(
             ["codex", "login", "status"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         return result.returncode == 0
     except (subprocess.SubprocessError, OSError):
@@ -86,7 +92,11 @@ _CODEX_READY = _codex_ready()
 
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -122,7 +132,7 @@ def _make_review_exchange_runner(
 
     ``pair_registry`` defaults to a fresh in-memory registry; tests
     that want to inspect the registry across exchanges (e.g.
-    ``test_persistent_pair_survives_two_back_to_back_exchanges``)
+    ``test_persistent_pair_respawns_for_second_exchange_run``)
     pass one in. Pair filesystem state is derived from the coder
     worktree at run time so each test's temporary worktree is the
     isolation boundary.
@@ -130,6 +140,36 @@ def _make_review_exchange_runner(
     return PersistentReviewExchangeRunner(
         session_output,
         pair_registry or InMemoryPersistentExchangePairRegistry(),
+    )
+
+
+def _run_review_exchange_for_test(
+    cre: CompletionReviewExchange,
+    session_output: FileSystemSessionOutput,
+    *,
+    worktree: Path,
+    issue_number: int,
+    issue_title: str,
+    session_name: str,
+    agent_label: str,
+    events: object,
+    event_context: object,
+):
+    exchange_run = session_output.start_review_exchange_run(
+        worktree,
+        issue_number=issue_number,
+        parent_session_name=session_name,
+        agent_label=agent_label,
+    )
+    return cre.run_review_exchange_loop(
+        exchange_run=exchange_run,
+        worktree=worktree,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        session_name=session_name,
+        agent_label=agent_label,
+        events=events,
+        event_context=event_context,
     )
 
 
@@ -148,6 +188,7 @@ def _make_config(
     """
     config = Config()
     config.repo_root = tmp_path
+    config.config_path = _write_test_config(tmp_path)
     config.repo = "local/test"
     config.review_exchange_mode = "via-local-loop"
     config.review_exchange_max_rounds = 2
@@ -160,6 +201,16 @@ def _make_config(
     config.code_review_agent = "agent:reviewer"
     config.control_api_port = None
     return config
+
+
+def _write_test_config(tmp_path: Path) -> Path:
+    config_path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps({"validation": {"quick": {}, "publish": {}}}, indent=2),
+        encoding="utf-8",
+    )
+    return config_path.resolve()
 
 
 @pytest.fixture(autouse=True)
@@ -194,7 +245,9 @@ def pair_registry_with_cleanup():
         registry.shutdown_all(reason="test-cleanup")
 
 
-def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path: Path) -> None:
+def test_persistent_review_exchange_end_to_end_through_completion_owner(
+    tmp_path: Path,
+) -> None:
     """Drive ``CompletionReviewExchange.run_review_exchange_loop`` end-to-end
     against a real git worktree + stub agent. Asserts:
 
@@ -247,13 +300,14 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=4057,
         issue_title="Test integration",
         session_name="issue-4057",
         agent_label="agent:backend",
-        on_started=lambda run_dir: captured_started.setdefault("on_started_run_dir", run_dir),
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -292,12 +346,14 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
 
     # Chapters sidecar — at minimum the reviewer's prompt + feedback chapters.
     reviewer_chapters_path = run_dir / "reviewer" / "chapters.json"
-    assert reviewer_chapters_path.exists(), \
+    assert reviewer_chapters_path.exists(), (
         f"reviewer chapters.json missing at {reviewer_chapters_path}"
+    )
     reviewer_chapters_payload = json.loads(reviewer_chapters_path.read_text())
     assert reviewer_chapters_payload["role"] == "reviewer"
-    assert len(reviewer_chapters_payload["chapters"]) >= 2, \
+    assert len(reviewer_chapters_payload["chapters"]) >= 2, (
         "expected at least prompt + feedback chapters for reviewer round 1"
+    )
 
     # summary.json present and matches outcome
     summary_path = outcome.exchange_dir / "summary.json"
@@ -313,28 +369,24 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(tmp_path
         RunIdentity(issue_number=4057, run_dir=run_dir),
     )
     artifact = accessor.get_review_exchange_phase_terminal_recording(
-        round_index=1, role="reviewer",
+        round_index=1,
+        role="reviewer",
     )
     assert artifact.path == reviewer_recording
 
-    # B2: the reviewer sibling worktree PERSISTS past one exchange.
-    # The pair owns it for the lifetime of the issue; lifecycle
-    # release at issue-completion / reset / shutdown is what
-    # reclaims it. Calling ``shutdown_all`` here simulates that
-    # boundary so the test cleans up after itself.
+    # The reviewer sibling worktree persists until the pair is released.
+    # Calling ``shutdown_all`` here simulates that lifecycle boundary so
+    # the test cleans up after itself.
     sibling_pattern = list(coder_wt.parent.glob(f"{coder_wt.name}-review-*"))
     assert len(sibling_pattern) == 1, (
-        "reviewer worktree should still exist after the exchange — "
-        "B2 makes it pair-scoped, not per-exchange"
+        "reviewer worktree should still exist until the pair is released"
     )
 
     pair_registry.shutdown_all(reason="test-cleanup")
     sibling_pattern_after = list(coder_wt.parent.glob(f"{coder_wt.name}-review-*"))
-    # The on_release hook (B3 will wire it) is responsible for
-    # filesystem reclamation; B2 leaves it manual via this test
-    # cleanup so that bootstrap can choose a hook implementation
-    # without breaking this test. The directory may or may not be
-    # gone depending on bootstrap wiring — that's covered by
+    # The on_release hook is responsible for filesystem reclamation.
+    # The directory may or may not be gone depending on bootstrap wiring;
+    # that's covered by
     # ``test_persistent_exchange_pair_registry_inmemory``.
     del sibling_pattern_after
 
@@ -388,13 +440,14 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        _session_output_for_test,
         worktree=coder_wt,
         issue_number=4058,
         issue_title="Multi-round integration",
         session_name="issue-4058",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -404,11 +457,13 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
     assert outcome.reason == "reviewer_ok"
 
     round_completed = [
-        evt for evt in captured_events
+        evt
+        for evt in captured_events
         if evt.event_type == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
     ]
-    assert len(round_completed) == 2, \
+    assert len(round_completed) == 2, (
         f"expected exactly 2 round-completed events, got {len(round_completed)}"
+    )
     # Round 1 reviewer should be changes_requested, round 2 should be ok.
     payload_first = round_completed[0].data
     payload_second = round_completed[1].data
@@ -419,15 +474,17 @@ def test_persistent_review_exchange_multi_round_changes_then_ok(
     reviewer_chapters_path = run_dir / "reviewer" / "chapters.json"
     assert reviewer_chapters_path.exists()
     chapters_payload = json.loads(reviewer_chapters_path.read_text())
-    cycle_indices = sorted({
-        chapter["cycle_index"] for chapter in chapters_payload["chapters"]
-    })
-    assert cycle_indices == [1, 2], \
+    cycle_indices = sorted(
+        {chapter["cycle_index"] for chapter in chapters_payload["chapters"]}
+    )
+    assert cycle_indices == [1, 2], (
         f"expected reviewer chapters for rounds 1 and 2, got {cycle_indices}"
+    )
 
 
 def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex-style interactive launch works with the persistent exchange.
 
@@ -466,13 +523,14 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=4061,
         issue_title="Codex-shaped interactive integration",
         session_name="issue-4061",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=MagicMock(),
         event_context=EventContext(),
     )
@@ -553,19 +611,21 @@ def test_real_interactive_codex_reviewer_round_trips_through_exchange(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=4062,
         issue_title="Real interactive codex reviewer smoke",
         session_name="issue-4062",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=_Sink(),
         event_context=EventContext(),
     )
 
     round_completed = [
-        evt for evt in captured_events
+        evt
+        for evt in captured_events
         if evt.event_type == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
     ]
     assert round_completed, (
@@ -590,7 +650,9 @@ def test_real_interactive_codex_reviewer_round_trips_through_exchange(
 
 
 def test_one_shot_reviewer_respawns_after_addressable_nits(
-    tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
+    tmp_path: Path,
+    monkeypatch,
+    pair_registry_with_cleanup,
 ) -> None:
     """Regression for issue 358's review-exchange timeout.
 
@@ -608,7 +670,9 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
     reviewer_outcome_counter = tmp_path / "reviewer-outcome-counter.txt"
     monkeypatch.setenv("STUB_SPAWN_LOG", str(spawn_log))
     monkeypatch.setenv("STUB_REVIEWER_OUTCOMES", "ok_with_nit,ok")
-    monkeypatch.setenv("STUB_REVIEWER_OUTCOME_COUNTER_FILE", str(reviewer_outcome_counter))
+    monkeypatch.setenv(
+        "STUB_REVIEWER_OUTCOME_COUNTER_FILE", str(reviewer_outcome_counter)
+    )
     monkeypatch.setenv("STUB_EXIT_AFTER_RESPONSE_ROLES", "reviewer")
 
     agent = AgentConfig(
@@ -642,13 +706,14 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=358,
         issue_title="One-shot reviewer respawn",
         session_name="issue-358",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -682,12 +747,14 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
     assert [nit["id"] for nit in first_decision["nits"]] == ["N1"]
 
     role_timeouts = [
-        evt for evt in captured_events
+        evt
+        for evt in captured_events
         if evt.event_type == EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
     ]
     assert role_timeouts == []
     coder_prompts = [
-        evt for evt in captured_events
+        evt
+        for evt in captured_events
         if evt.event_type == EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
         and evt.data.get("role") == "coder"
     ]
@@ -695,7 +762,9 @@ def test_one_shot_reviewer_respawns_after_addressable_nits(
 
 
 def test_one_shot_coder_respawns_for_later_rework_turn(
-    tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
+    tmp_path: Path,
+    monkeypatch,
+    pair_registry_with_cleanup,
 ) -> None:
     """A one-shot coder process is replaced before later coder rework."""
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
@@ -704,7 +773,9 @@ def test_one_shot_coder_respawns_for_later_rework_turn(
 
     spawn_log = tmp_path / "stub-spawns.jsonl"
     monkeypatch.setenv("STUB_SPAWN_LOG", str(spawn_log))
-    monkeypatch.setenv("STUB_REVIEWER_OUTCOMES", "changes_requested,changes_requested,ok")
+    monkeypatch.setenv(
+        "STUB_REVIEWER_OUTCOMES", "changes_requested,changes_requested,ok"
+    )
     monkeypatch.setenv("STUB_EXIT_AFTER_RESPONSE_ROLES", "backend")
 
     agent = AgentConfig(
@@ -737,13 +808,14 @@ def test_one_shot_coder_respawns_for_later_rework_turn(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
         worktree=coder_wt,
         issue_number=359,
         issue_title="One-shot coder respawn",
         session_name="issue-359",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=_Sink(),
         event_context=EventContext(),
     )
@@ -757,9 +829,7 @@ def test_one_shot_coder_respawns_for_later_rework_turn(
         for line in spawn_log.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    coder_spawns = [
-        record for record in spawn_records if "backend" in record["role"]
-    ]
+    coder_spawns = [record for record in spawn_records if "backend" in record["role"]]
     assert len(coder_spawns) == 2, (
         "round 2 should start a fresh coder process after the first "
         f"one-shot coder exited; spawns={spawn_records}"
@@ -767,7 +837,8 @@ def test_one_shot_coder_respawns_for_later_rework_turn(
     assert len({record["pid"] for record in coder_spawns}) == 2
 
     role_timeouts = [
-        evt for evt in captured_events
+        evt
+        for evt in captured_events
         if evt.event_type == EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
     ]
     assert role_timeouts == []
@@ -813,19 +884,21 @@ def test_persistent_review_exchange_max_rounds_exhausted(
 
     from issue_orchestrator.events import EventContext
 
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        _session_output_for_test,
         worktree=coder_wt,
         issue_number=4059,
         issue_title="Max-rounds integration",
         session_name="issue-4059",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=MagicMock(),
         event_context=EventContext(),
     )
 
-    assert outcome.status == "stopped", \
+    assert outcome.status == "stopped", (
         f"unexpected outcome status: {outcome.status} (full: {outcome})"
+    )
     assert outcome.reason == "max_rounds_exceeded"
     assert outcome.rounds == 2
 
@@ -871,7 +944,9 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
         def append(self, issue_number: int, record: TimelineRecord) -> None:  # noqa: ARG002
             self.records.append(record)
 
-        def read(self, issue_number: int, limit: int | None = None) -> list[TimelineRecord]:  # noqa: ARG002
+        def read(
+            self, issue_number: int, limit: int | None = None
+        ) -> list[TimelineRecord]:  # noqa: ARG002
             return list(self.records)
 
         def delete(self, issue_number: int) -> int:  # noqa: ARG002
@@ -910,13 +985,14 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
     from issue_orchestrator.events import EventContext
 
     issue_number = 4060
-    outcome = cre.run_review_exchange_loop(
+    outcome = _run_review_exchange_for_test(
+        cre,
+        _session_output_for_test,
         worktree=coder_wt,
         issue_number=issue_number,
         issue_title="Two-round projection",
         session_name=f"issue-{issue_number}",
         agent_label="agent:backend",
-        on_started=lambda _run_dir: None,
         events=timeline_sink,
         event_context=EventContext(),
     )
@@ -930,8 +1006,7 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
     projected = project_timeline(records, issue_number=issue_number)
 
     round_completed = [
-        evt for evt in projected
-        if evt.event == "review_exchange.round_completed"
+        evt for evt in projected if evt.event == "review_exchange.round_completed"
     ]
     assert len(round_completed) == 2, (
         "expected two review_exchange.round_completed events in the "
@@ -983,23 +1058,12 @@ def test_two_rework_rounds_render_distinguishably_in_projected_timeline(
         )
 
 
-def test_persistent_pair_survives_two_back_to_back_exchanges(
-    tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
+def test_persistent_pair_respawns_for_second_exchange_run(
+    tmp_path: Path,
+    monkeypatch,
+    pair_registry_with_cleanup,
 ) -> None:
-    """The user-visible "1 process for the life of the exchanges" benefit.
-
-    This is the test ADR 0026's B2 commits to: spawn a pair on the
-    first exchange, run a second exchange for the same issue, and
-    assert the second exchange reuses *the same coder PID and the
-    same reviewer PID*. A regression where the registry's release
-    crept back into ``run_persistent_session_exchange`` would fail
-    here as fresh PIDs.
-
-    The agent stub responds ``ok`` to every reviewer prompt, so each
-    exchange completes in one round. Both calls run on the same
-    ``CompletionReviewExchange`` (and therefore the same registry
-    instance), which is what production wires.
-    """
+    """A cached pair from run N must be released before run N+1 uses it."""
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
@@ -1028,13 +1092,14 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
     from issue_orchestrator.events import EventContext
 
     def _run_one(session_name: str) -> "ReviewExchangeOutcome":  # noqa: F821
-        return cre.run_review_exchange_loop(
+        return _run_review_exchange_for_test(
+            cre,
+            session_output,
             worktree=coder_wt,
             issue_number=9001,
             issue_title="Persistence integration",
             session_name=session_name,
             agent_label="agent:backend",
-            on_started=lambda _run_dir: None,
             events=MagicMock(),
             event_context=EventContext(),
         )
@@ -1054,16 +1119,15 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
 
     snapshot_after_second = pair_registry.snapshot()
     assert len(snapshot_after_second) == 1, (
-        "second exchange must NOT have spawned a second pair — the "
-        "cached one should have been reused"
+        "second exchange should leave exactly one current pair cached"
     )
-    assert snapshot_after_second[0]["coder_pid"] == coder_pid_first, (
-        "coder PID changed between exchanges — the persistent-pair "
-        "contract is broken (B2 ADR 0026 regression)"
+    assert snapshot_after_second[0]["coder_pid"] != coder_pid_first, (
+        "coder PID was reused across exchange runs; the process env still "
+        "points at the run_dir/session that spawned it"
     )
-    assert snapshot_after_second[0]["reviewer_pid"] == reviewer_pid_first, (
-        "reviewer PID changed between exchanges — the persistent-pair "
-        "contract is broken (B2 ADR 0026 regression)"
+    assert snapshot_after_second[0]["reviewer_pid"] != reviewer_pid_first, (
+        "reviewer PID was reused across exchange runs; the process env still "
+        "points at the run_dir/session that spawned it"
     )
 
     # Recording-mirror manifest contract (post per-session-slice fix):
@@ -1088,9 +1152,9 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
         "per-session manifest indirection broke and the viewer would "
         "see exchange 1 content while looking at exchange 2"
     )
-    assert first_manifest["reviewer_recording"] != second_manifest["reviewer_recording"], (
-        "reviewer per-session slice path matched across exchanges"
-    )
+    assert (
+        first_manifest["reviewer_recording"] != second_manifest["reviewer_recording"]
+    ), "reviewer per-session slice path matched across exchanges"
     assert Path(first_manifest["coder_recording"]).is_relative_to(first_run_dir), (
         "exchange 1 coder slice escaped its run_dir"
     )
@@ -1100,13 +1164,17 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
 
     # Pair-scoped keys: must stay identical across exchanges (the
     # original PR #6212 invariant — one continuous PTY per pair).
-    assert first_manifest["coder_recording_pair"] == second_manifest["coder_recording_pair"], (
+    assert (
+        first_manifest["coder_recording_pair"]
+        == second_manifest["coder_recording_pair"]
+    ), (
         "pair-scoped coder recording path drifted between exchanges — "
         "both should point at the same continuous PTY capture"
     )
-    assert first_manifest["reviewer_recording_pair"] == second_manifest["reviewer_recording_pair"], (
-        "pair-scoped reviewer recording path drifted between exchanges"
-    )
+    assert (
+        first_manifest["reviewer_recording_pair"]
+        == second_manifest["reviewer_recording_pair"]
+    ), "pair-scoped reviewer recording path drifted between exchanges"
     assert Path(second_manifest["reviewer_recording"]).exists(), (
         "exchange 2's manifest-pointed reviewer slice is missing on disk"
     )
@@ -1115,7 +1183,8 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
         RunIdentity(issue_number=9001, run_dir=second_run_dir),
     )
     artifact = accessor.get_review_exchange_phase_terminal_recording(
-        round_index=1, role="reviewer",
+        round_index=1,
+        role="reviewer",
     )
     # ManifestAccessor follows the per-session ``<role>_recording`` key
     # (not the pair-scoped one) so the viewer renders this exchange's
@@ -1137,7 +1206,9 @@ def test_persistent_pair_survives_two_back_to_back_exchanges(
 
 
 def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
-    tmp_path: Path, monkeypatch, pair_registry_with_cleanup,
+    tmp_path: Path,
+    monkeypatch,
+    pair_registry_with_cleanup,
 ) -> None:
     """Pair-scoped paths beyond ``coder_recording``/``reviewer_recording``
     must also stay identical across exchanges.
@@ -1151,16 +1222,14 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
       - ``coder_completion_path``
       - ``validation_record_path``
 
-    The agent's environment is set once at spawn to point at these
-    stable paths (``ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE``,
-    ``ISSUE_ORCHESTRATOR_COMPLETION_PATH``, etc.). If the second
-    exchange writes to different paths the agent's recovery / replay
-    logic silently falls out of sync — the round 1 response on
-    exchange 2 lands in a file that no consumer is watching.
+    The agent's environment is set once per run-bound spawn to point at these
+    stable pair paths (``ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE``,
+    ``ISSUE_ORCHESTRATOR_COMPLETION_PATH``, etc.). The process itself is
+    respawned for each exchange run, but the pair-scoped files remain stable
+    so recovery / replay consumers keep one authoritative location.
 
-    Companion test ``test_persistent_pair_survives_two_back_to_back_exchanges``
-    pins recording-path stability; this one extends the same fixture
-    to cover the *write-side* paths (response, completion, validation
+    Companion tests pin run-bound process lifetime; this one extends the same
+    fixture to cover the *write-side* paths (response, completion, validation
     record) and the reviewer worktree directory itself.
     """
     coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
@@ -1193,13 +1262,14 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
     issue_number = 9101
 
     def _run_one(session_name: str):
-        return cre.run_review_exchange_loop(
+        return _run_review_exchange_for_test(
+            cre,
+            session_output,
             worktree=coder_wt,
             issue_number=issue_number,
             issue_title="Path-stability integration",
             session_name=session_name,
             agent_label="agent:backend",
-            on_started=lambda _run_dir: None,
             events=MagicMock(),
             event_context=EventContext(),
         )
@@ -1238,11 +1308,9 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
     assert second.status == "ok"
     cached_second = pair_registry._cache[issue_number]  # noqa: SLF001
 
-    # Identity check, not just equality — registry must return the
-    # same dataclass instance from the cache, never a clone.
-    assert cached_first is cached_second, (
-        "registry returned a different dataclass instance across "
-        "exchanges; pair caching is broken"
+    assert cached_first is not cached_second, (
+        "registry reused the same live process pair across exchange runs; "
+        "the second exchange would inherit stale run-scoped env"
     )
 
     paths_second = {
@@ -1254,18 +1322,31 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
         "coder_recording": cached_second.coder_recording_path,
         "reviewer_recording": cached_second.reviewer_recording_path,
     }
-    for label, path_first in paths_first.items():
+    stable_pair_labels = (
+        "coder_response",
+        "coder_completion",
+        "validation_record",
+        "coder_recording",
+        "reviewer_recording",
+    )
+    for label in stable_pair_labels:
+        path_first = paths_first[label]
         assert path_first == paths_second[label], (
-            f"{label} path drifted between exchanges. The agent's "
-            "env was set once at spawn to point at the first path; "
-            "writes from the second exchange land in a file no one "
-            "is watching.\n"
+            f"{label} pair path drifted between exchanges.\n"
             f"  first  ({label}): {path_first}\n"
             f"  second ({label}): {paths_second[label]}"
         )
+    assert paths_first["reviewer_worktree"] != paths_second["reviewer_worktree"], (
+        "reviewer worktree was reused across exchange runs; reviewer process "
+        "lifetime should be run-bound"
+    )
+    assert paths_first["reviewer_response"] != paths_second["reviewer_response"], (
+        "reviewer response path was reused across exchange runs; it belongs "
+        "inside the run-bound reviewer worktree"
+    )
 
     # Liveness check on the paths the scenario actually touched:
-    # the reviewer worktree must still be a live directory (it's
+    # the current reviewer worktree must still be a live directory (it's
     # what the reviewer agent runs in), and any file paths whose
     # parent dir doesn't exist would mean the second exchange
     # tore down what the first one set up. Response/completion
@@ -1279,8 +1360,12 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
         "the second exchange's release path may have torn it down"
     )
     for label in (
-        "coder_response", "reviewer_response", "coder_completion",
-        "validation_record", "coder_recording", "reviewer_recording",
+        "coder_response",
+        "reviewer_response",
+        "coder_completion",
+        "validation_record",
+        "coder_recording",
+        "reviewer_recording",
     ):
         parent = paths_second[label].parent
         assert parent.is_dir(), (

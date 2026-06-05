@@ -258,6 +258,11 @@ class RetryHistoryState:
             if d.issue_number != issue_number
             and d.pr_number not in superseded_pr_numbers
         ]
+        self._state.discovered_awaiting_merge_escalations = [
+            d for d in self._state.discovered_awaiting_merge_escalations
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
         self._state.immediate_cleanups = [
             c for c in self._state.immediate_cleanups
             if c.issue_number != issue_number

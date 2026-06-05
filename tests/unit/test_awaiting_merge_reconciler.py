@@ -642,6 +642,33 @@ def test_blocked_pr_with_all_checks_passing_escalates_immediately() -> None:
     assert "Branch protection" in esc.reason
 
 
+def test_post_publish_escalation_is_suppressed_when_pr_already_needs_human() -> None:
+    entry = _history_entry()
+    label_manager = _label_manager()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
+        "open",
+        mergeable_state="blocked",
+        labels=[label_manager.code_reviewed, label_manager.needs_human],
+        status_check_rollup="SUCCESS",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=label_manager,
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+    assert 228 not in state.awaiting_merge_checks_pending_since
+
+
 def test_dirty_pr_feedback_uses_conflict_copy() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])

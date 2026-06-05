@@ -24,6 +24,9 @@ import pytest
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.domain.review_artifacts import ReviewDecision
 from issue_orchestrator.domain.review_exchange import ReviewExchangeResponse
+from issue_orchestrator.domain.review_exchange_run import ReviewExchangeRun
+from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
+from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.execution import persistent_session_exchange as pse
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -33,6 +36,22 @@ from issue_orchestrator.ports import TraceEvent
 # ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
+
+
+def _start_exchange_run(
+    *,
+    session_output: FileSystemSessionOutput,
+    coder_worktree_path: Path,
+    issue_number: int,
+    coder_label: str,
+    parent_session_name: str = "coding-1",
+) -> ReviewExchangeRun:
+    return session_output.start_review_exchange_run(
+        coder_worktree_path,
+        issue_number=issue_number,
+        parent_session_name=parent_session_name,
+        agent_label=coder_label,
+    )
 
 
 class _Sink:
@@ -83,7 +102,46 @@ class _FakeSession:
 
 
 def _make_agent(prompt_path: Path) -> AgentConfig:
-    return AgentConfig(prompt_path=prompt_path, ai_system="claude-code", timeout_minutes=1)
+    return AgentConfig(
+        prompt_path=prompt_path, ai_system="claude-code", timeout_minutes=1
+    )
+
+
+def _runtime_config(tmp_path: Path) -> RuntimeConfigReference:
+    config_path = tmp_path / "issue-orchestrator.test.yaml"
+    if not config_path.exists():
+        config_path.write_text(
+            "validation:\n  quick:\n    cmd: 'true'\n", encoding="utf-8"
+        )
+    return RuntimeConfigReference.from_path(config_path)
+
+
+def _summary_payload(summary: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": "ok",
+        "reason": "reviewer_ok",
+        "completed_rounds": 1,
+        "response_text": None,
+        "timestamp": "2026-02-01T00:00:00+00:00",
+    }
+    payload.update(summary)
+    return ReviewExchangeSummaryV1.from_payload(payload).to_payload()
+
+
+def _binding_assets(run_dir: Path) -> pse.ReviewExchangeRunAssets:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "session_name": run_dir.name,
+                "started_at": "2026-02-01T00:00:00+00:00",
+                "worktree": str(run_dir.parent),
+                "agent_label": "agent:backend",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return pse.ReviewExchangeRunAssets.from_run_dir(run_dir)
 
 
 def _build_pty_writer(recording_path: Path) -> Any:
@@ -119,11 +177,9 @@ class _FakePairRegistry:
     """Fake registry used by every exchange test in this module.
 
     Records every spawn and release so tests can assert on pair
-    lifecycle. ``acquire`` always invokes the spawn callback (no
-    caching) which keeps B1 behavior identical to the pre-registry
-    world: every test's exchange spawns a fresh fake pair, releases
-    at the end. B2 will exercise the cache-hit path with separate
-    coverage that asserts spawn was *not* called.
+    lifecycle. ``acquire`` always invokes the spawn callback, which keeps
+    most tests focused on exchange behavior. Pair-contract tests below provide
+    explicit cache-hit coverage for release/respawn decisions.
     """
 
     def __init__(self) -> None:
@@ -172,15 +228,15 @@ def _patch_persistent_runner(
     """
     registry = _FakePairRegistry()
     state: dict[str, Any] = {
-        "opened": [], "rounds_seen": [], "prompts_seen": [],
+        "opened": [],
+        "rounds_seen": [],
+        "prompts_seen": [],
         "prompt_inboxes_seen": [],
         "run_dir": None,
         "registry": registry,
     }
     completion_script = (
-        list(coder_completion_script)
-        if coder_completion_script is not None
-        else None
+        list(coder_completion_script) if coder_completion_script is not None else None
     )
     validation_payload_script = (
         list(coder_validation_payload_script)
@@ -188,12 +244,21 @@ def _patch_persistent_runner(
         else None
     )
 
-    def _open(*, command, working_dir, env, recording_path=None,
-              additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+    def _open(
+        *,
+        command,
+        working_dir,
+        env,
+        recording_path=None,
+        additional_recording_paths=None,
+        mirror_path=None,
+    ):  # noqa: ARG001
         # Discriminate by the worktree's basename only — the full path may
         # contain ``reviewer`` because pytest names tmp dirs after the
         # test, which would mislabel both sessions.
-        role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        role = (
+            "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        )
         # Always provide a real ``MirroredTerminalRecordingWriter`` so
         # the runner's fail-fast ``_attach_slice_mirror`` step succeeds.
         # Production invariant: every PersistentSession opened with a
@@ -204,6 +269,7 @@ def _patch_persistent_runner(
         from issue_orchestrator.infra.terminal_recording import (
             MirroredTerminalRecordingWriter,
         )
+
         assert recording_path is not None, (
             "_patch_persistent_runner: production always passes a "
             "recording_path; the fixture mirrors that invariant"
@@ -243,13 +309,17 @@ def _patch_persistent_runner(
         state["prompts_seen"].append((role, prompt))
         prompt_inbox = Path(response_file).with_name("review-exchange-turn-prompt.md")
         if prompt_inbox.exists():
-            state["prompt_inboxes_seen"].append((
-                role,
-                prompt_inbox.read_text(encoding="utf-8"),
-                prompt,
-            ))
+            state["prompt_inboxes_seen"].append(
+                (
+                    role,
+                    prompt_inbox.read_text(encoding="utf-8"),
+                    prompt,
+                )
+            )
         if not response_script.get(role):
-            raise AssertionError(f"send_round called for {role} with no scripted response left")
+            raise AssertionError(
+                f"send_round called for {role} with no scripted response left"
+            )
         head = response_script[role].pop(0)
         if isinstance(head, Exception):
             raise head
@@ -296,14 +366,17 @@ def _patch_persistent_runner(
             else:
                 validation_payload = {"passed": True}
             validation_record.write_text(
-                json.dumps(validation_payload), encoding="utf-8",
+                json.dumps(validation_payload),
+                encoding="utf-8",
             )
             completion.write_text(
-                json.dumps({
-                    "outcome": "completed",
-                    "implementation": "stub",
-                    "validation_record_path": str(validation_record),
-                }),
+                json.dumps(
+                    {
+                        "outcome": "completed",
+                        "implementation": "stub",
+                        "validation_record_path": str(validation_record),
+                    }
+                ),
                 encoding="utf-8",
             )
         if raise_after is not None:
@@ -336,7 +409,8 @@ class TestRoleAttemptWorkspace:
     """
 
     def test_prepare_clears_response_inbox_and_reviewer_report(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         response = tmp_path / "review-response.json"
         report = tmp_path / "review-report.md"
@@ -360,7 +434,8 @@ class TestRoleAttemptWorkspace:
         )
 
     def test_prepare_clears_response_inbox_and_coder_completion(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         response = tmp_path / "review-response.json"
         completion = tmp_path / "completion-coder.json"
@@ -384,7 +459,8 @@ class TestRoleAttemptWorkspace:
         )
 
     def test_prepare_is_idempotent_when_artifacts_absent(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         response = tmp_path / "review-response.json"
         workspace = pse._RoleAttemptWorkspace(  # noqa: SLF001
@@ -404,7 +480,9 @@ class TestRoleAttemptWorkspace:
 
 class TestPersistentSessionExchangeHappyPath:
     def test_one_round_reviewer_ok_returns_status_ok(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -416,12 +494,24 @@ class TestPersistentSessionExchangeHappyPath:
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
-                "reviewer": [{"response_type": "ok", "response_text": "Looks good", "getting_closer": True}],
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Looks good",
+                        "getting_closer": True,
+                    }
+                ],
                 "coder": [],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -433,6 +523,7 @@ class TestPersistentSessionExchangeHappyPath:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -446,11 +537,13 @@ class TestPersistentSessionExchangeHappyPath:
         assert outcome.reviewer_response is not None
         assert outcome.reviewer_response.response_type == "ok"
         round_completed = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
         ]
         completed = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_COMPLETED
         ]
         assert len(round_completed) == 1
@@ -460,8 +553,7 @@ class TestPersistentSessionExchangeHappyPath:
         assert round_completed[0].data["review_abstraction_status"] == "no_issues"
         round_artifacts = round_completed[0].data["artifacts"]
         assert {
-            artifact["type"]: artifact["render_mode"]
-            for artifact in round_artifacts
+            artifact["type"]: artifact["render_mode"] for artifact in round_artifacts
         } == {"review_report": "markdown", "review_decision": "json"}
         assert completed[0].data["review_decision_verdict"] == "approved"
         assert completed[0].data["review_nit_policy"] == "surface"
@@ -471,7 +563,10 @@ class TestPersistentSessionExchangeHappyPath:
             for role, prompt, notice in state["prompt_inboxes_seen"]
             if role == "reviewer"
         )
-        assert "reviewer in a coder↔reviewer exchange for issue #42: Test" in reviewer_prompt
+        assert (
+            "reviewer in a coder↔reviewer exchange for issue #42: Test"
+            in reviewer_prompt
+        )
         assert "review-exchange-turn-prompt.md" in reviewer_notice
         assert len(reviewer_notice) < 512
         assert not (
@@ -479,7 +574,9 @@ class TestPersistentSessionExchangeHappyPath:
         ).exists()
 
     def test_two_round_exchange_changes_then_ok(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -499,7 +596,10 @@ class TestPersistentSessionExchangeHappyPath:
                             "risk": "medium",
                             "blocking_findings": [{"id": "F1"}],
                             "nits": [],
-                            "abstraction_review": {"status": "no_issues", "findings": []},
+                            "abstraction_review": {
+                                "status": "no_issues",
+                                "findings": [],
+                            },
                             "nit_policy": "surface",
                         },
                         "_authored_report_text": (
@@ -508,15 +608,29 @@ class TestPersistentSessionExchangeHappyPath:
                             "Fix the typo in the persisted report path.\n"
                         ),
                     },
-                    {"response_type": "ok", "response_text": "All good", "getting_closer": True},
+                    {
+                        "response_type": "ok",
+                        "response_text": "All good",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "Fixed typo", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "Fixed typo",
+                        "getting_closer": None,
+                    },
                 ],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -528,6 +642,7 @@ class TestPersistentSessionExchangeHappyPath:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -535,11 +650,13 @@ class TestPersistentSessionExchangeHappyPath:
         assert outcome.status == "ok"
         assert outcome.rounds == 2
         # Round order: reviewer round 1 → coder round 1 → reviewer round 2.
-        assert [role for role, _ in state["rounds_seen"]] == ["reviewer", "coder", "reviewer"]
-        # Both sessions opened. The pair is NOT released at exchange
-        # end — B2 ADR 0026 keeps the pair alive across exchanges so
-        # the issue can run multiple back-to-back exchanges with the
-        # same coder + reviewer processes.
+        assert [role for role, _ in state["rounds_seen"]] == [
+            "reviewer",
+            "coder",
+            "reviewer",
+        ]
+        # Both sessions opened and stay live through the multi-round
+        # exchange. Cross-run reuse is governed by the pair-contract tests.
         assert sorted(state["opened"]) == ["coder", "reviewer"]
         assert state["registry"].released == []
         assert len(state["registry"].acquired) == 1
@@ -560,7 +677,9 @@ class TestPersistentSessionExchangeHappyPath:
         assert "Reviewer feedback:" not in coder_prompt
 
     def test_address_nits_policy_routes_approval_through_coder_rework(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -580,7 +699,10 @@ class TestPersistentSessionExchangeHappyPath:
                             "risk": "low",
                             "blocking_findings": [],
                             "nits": [{"id": "N1", "title": "Tighten wording"}],
-                            "abstraction_review": {"status": "no_issues", "findings": []},
+                            "abstraction_review": {
+                                "status": "no_issues",
+                                "findings": [],
+                            },
                             "nit_policy": "address",
                         },
                     },
@@ -601,6 +723,12 @@ class TestPersistentSessionExchangeHappyPath:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -612,6 +740,7 @@ class TestPersistentSessionExchangeHappyPath:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -681,7 +810,8 @@ class TestPersistentSessionExchangeHappyPath:
 
 class TestPairValidationMirror:
     def test_current_validation_seed_replaces_existing_pair_record(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
@@ -710,7 +840,8 @@ class TestPairValidationMirror:
         }
 
     def test_current_validation_seed_is_mirrored_to_exchange_run_record(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
@@ -738,7 +869,8 @@ class TestPairValidationMirror:
         assert json.loads(run_record.read_text(encoding="utf-8")) == payload
 
     def test_missing_initial_validation_source_clears_stale_pair_and_run_records(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
@@ -773,7 +905,9 @@ class TestPairValidationMirror:
         assert not run_record.exists()
 
     def test_completion_validation_record_replaces_stale_pair_head(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
@@ -792,10 +926,12 @@ class TestPairValidationMirror:
             encoding="utf-8",
         )
         completion.write_text(
-            json.dumps({
-                "outcome": "completed",
-                "validation_record_path": str(current_record),
-            }),
+            json.dumps(
+                {
+                    "outcome": "completed",
+                    "validation_record_path": str(current_record),
+                }
+            ),
             encoding="utf-8",
         )
         monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
@@ -819,7 +955,9 @@ class TestPairValidationMirror:
         }
 
     def test_stale_completion_validation_head_fails_current_head_check(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
@@ -833,10 +971,12 @@ class TestPairValidationMirror:
             encoding="utf-8",
         )
         completion.write_text(
-            json.dumps({
-                "outcome": "completed",
-                "validation_record_path": str(stale_record),
-            }),
+            json.dumps(
+                {
+                    "outcome": "completed",
+                    "validation_record_path": str(stale_record),
+                }
+            ),
             encoding="utf-8",
         )
         monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
@@ -855,10 +995,14 @@ class TestPairValidationMirror:
 
         assert error is not None
         assert "does not match current HEAD" in error
-        assert json.loads(pair_record.read_text(encoding="utf-8"))["head_sha"] == "head-a"
+        assert (
+            json.loads(pair_record.read_text(encoding="utf-8"))["head_sha"] == "head-a"
+        )
 
     def test_completion_without_validation_source_clears_stale_pair_record(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
@@ -889,13 +1033,21 @@ class TestPairValidationMirror:
         assert not pair_record.exists()
 
     def test_completion_without_payload_uses_run_dir_validation_record(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         coder_wt = tmp_path / "coder-wt"
         pair_dir = coder_wt / ".issue-orchestrator" / "persistent-pairs" / "issue-42"
         pair_record = pair_dir / "validation-record.json"
         completion = pair_dir / "coder" / "completion-coder.json"
-        run_record = coder_wt / ".issue-orchestrator" / "sessions" / "run" / "validation-record.json"
+        run_record = (
+            coder_wt
+            / ".issue-orchestrator"
+            / "sessions"
+            / "run"
+            / "validation-record.json"
+        )
         completion.parent.mkdir(parents=True)
         run_record.parent.mkdir(parents=True)
         completion.write_text(json.dumps({"outcome": "completed"}), encoding="utf-8")
@@ -948,7 +1100,9 @@ class TestTurnArtifactsPersisted:
     """
 
     def test_two_round_exchange_persists_packet_and_result_per_turn(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from issue_orchestrator.domain.review_exchange_turn import (
             ReviewExchangeTurnPacket,
@@ -966,16 +1120,34 @@ class TestTurnArtifactsPersisted:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "Fix typo", "getting_closer": True},
-                    {"response_type": "ok", "response_text": "All good", "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "Fix typo",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "All good",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "Fixed typo", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "Fixed typo",
+                        "getting_closer": None,
+                    },
                 ],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -987,6 +1159,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1001,27 +1174,29 @@ class TestTurnArtifactsPersisted:
         # results, and start/complete contracts are attempt scoped so
         # retries cannot overwrite or borrow another prompt.
         artifact_names = sorted(p.name for p in turns_dir.iterdir())
-        assert artifact_names == sorted([
-            "round-1-coder-attempt-1.completed.json",
-            "round-1-coder-attempt-1.prompt.md",
-            "round-1-coder-attempt-1.result.json",
-            "round-1-coder-attempt-1.started.json",
-            "round-1-coder.packet.json",
-            "round-1-reviewer-attempt-1.completed.json",
-            "round-1-reviewer-attempt-1.prompt.md",
-            "round-1-reviewer-attempt-1.review-decision.json",
-            "round-1-reviewer-attempt-1.review-report.md",
-            "round-1-reviewer-attempt-1.result.json",
-            "round-1-reviewer-attempt-1.started.json",
-            "round-1-reviewer.packet.json",
-            "round-2-reviewer-attempt-1.completed.json",
-            "round-2-reviewer-attempt-1.prompt.md",
-            "round-2-reviewer-attempt-1.review-decision.json",
-            "round-2-reviewer-attempt-1.review-report.md",
-            "round-2-reviewer-attempt-1.result.json",
-            "round-2-reviewer-attempt-1.started.json",
-            "round-2-reviewer.packet.json",
-        ])
+        assert artifact_names == sorted(
+            [
+                "round-1-coder-attempt-1.completed.json",
+                "round-1-coder-attempt-1.prompt.md",
+                "round-1-coder-attempt-1.result.json",
+                "round-1-coder-attempt-1.started.json",
+                "round-1-coder.packet.json",
+                "round-1-reviewer-attempt-1.completed.json",
+                "round-1-reviewer-attempt-1.prompt.md",
+                "round-1-reviewer-attempt-1.review-decision.json",
+                "round-1-reviewer-attempt-1.review-report.md",
+                "round-1-reviewer-attempt-1.result.json",
+                "round-1-reviewer-attempt-1.started.json",
+                "round-1-reviewer.packet.json",
+                "round-2-reviewer-attempt-1.completed.json",
+                "round-2-reviewer-attempt-1.prompt.md",
+                "round-2-reviewer-attempt-1.review-decision.json",
+                "round-2-reviewer-attempt-1.review-report.md",
+                "round-2-reviewer-attempt-1.result.json",
+                "round-2-reviewer-attempt-1.started.json",
+                "round-2-reviewer.packet.json",
+            ]
+        )
 
         r1_started = json.loads(
             (turns_dir / "round-1-reviewer-attempt-1.started.json").read_text()
@@ -1044,7 +1219,9 @@ class TestTurnArtifactsPersisted:
 
         # Round 1 reviewer packet: typed, role REVIEWER, no prior
         # texts, validation off.
-        r1_packet_data = json.loads((turns_dir / "round-1-reviewer.packet.json").read_text())
+        r1_packet_data = json.loads(
+            (turns_dir / "round-1-reviewer.packet.json").read_text()
+        )
         r1_packet = ReviewExchangeTurnPacket.from_manifest(r1_packet_data)
         assert r1_packet is not None
         assert r1_packet.role is Role.REVIEWER
@@ -1080,9 +1257,7 @@ class TestTurnArtifactsPersisted:
 
         # Round 1 coder result: ok.
         r1_coder_result = ReviewExchangeTurnResult.from_manifest(
-            json.loads(
-                (turns_dir / "round-1-coder-attempt-1.result.json").read_text()
-            )
+            json.loads((turns_dir / "round-1-coder-attempt-1.result.json").read_text())
         )
         assert r1_coder_result is not None
         assert r1_coder_result.kind is TurnResultKind.OK
@@ -1107,7 +1282,9 @@ class TestTurnArtifactsPersisted:
         assert r2_review_result.kind is TurnResultKind.OK
 
     def test_timeout_persists_no_completion_result_with_packet(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Reviewer round-1 times out. The runner must still persist
         BOTH the packet (the orchestrator-side input) and a typed
@@ -1139,6 +1316,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1150,6 +1333,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1191,7 +1375,9 @@ class TestTurnArtifactsPersisted:
         ]
 
     def test_process_exit_before_response_preserves_precise_failure_reason(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from issue_orchestrator.domain.review_exchange_turn import (
             ReviewExchangeTurnResult,
@@ -1235,6 +1421,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1246,6 +1438,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1264,7 +1457,8 @@ class TestTurnArtifactsPersisted:
         assert result is not None
         assert result.protocol_error_reason == "process_exited_before_response"
         timeouts = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
         ]
         assert len(timeouts) == 1
@@ -1280,7 +1474,9 @@ class TestTurnArtifactsPersisted:
         )
 
     def test_process_exit_before_response_respawns_in_place_and_advances(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Round-2 reviewer one-shot exit → respawn in place, retry, advance.
 
@@ -1309,7 +1505,11 @@ class TestTurnArtifactsPersisted:
             response_script={
                 "reviewer": [
                     # Round 1: changes requested → coder reworks.
-                    {"response_type": "changes_requested", "response_text": "Fix typo", "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "Fix typo",
+                        "getting_closer": True,
+                    },
                     # Round 2: the one-shot reviewer exited cleanly before
                     # responding. Expect an in-place respawn + retry...
                     PersistentRoundError(
@@ -1317,10 +1517,18 @@ class TestTurnArtifactsPersisted:
                         failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
                     ),
                     # ...which the respawned reviewer answers.
-                    {"response_type": "ok", "response_text": "All good", "getting_closer": True},
+                    {
+                        "response_type": "ok",
+                        "response_text": "All good",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "Fixed typo", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "Fixed typo",
+                        "getting_closer": None,
+                    },
                 ],
             },
         )
@@ -1335,6 +1543,12 @@ class TestTurnArtifactsPersisted:
             return reviewer_wt
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1346,6 +1560,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1370,20 +1585,23 @@ class TestTurnArtifactsPersisted:
 
         # The pair was NOT released for a reviewer no-completion.
         assert (
-            42, "review-exchange-reviewer_no_completion",
+            42,
+            "review-exchange-reviewer_no_completion",
         ) not in state["registry"].released
 
         # A successful respawn-retry is not surfaced as a terminal role
         # timeout — only the warning log records the respawn.
         assert [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
         ] == []
 
         # The reviewer's two surfaced verdicts are the round-1 changes_requested
         # and the round-2 OK produced by the respawned process.
         reviewer_feedback = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK
             and evt.data["role"] == "reviewer"
         ]
@@ -1394,7 +1612,9 @@ class TestTurnArtifactsPersisted:
         assert reviewer_feedback[-1].data["round_index"] == 2
 
     def test_respawn_does_not_consume_stale_coder_completion(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A coder completion written by a dead pre-retry process must not
         satisfy the *respawned* coder turn's protocol guardrail.
@@ -1424,15 +1644,21 @@ class TestTurnArtifactsPersisted:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "Fix", "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "Fix",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
                     # Attempt A writes completion-coder.json (script True) then
                     # exits before the response JSON.
-                    {"_raise": PersistentRoundError(
-                        "Agent exited unexpectedly (code=0) before responding",
-                        failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
-                    )},
+                    {
+                        "_raise": PersistentRoundError(
+                            "Agent exited unexpectedly (code=0) before responding",
+                            failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
+                        )
+                    },
                     # Respawn + the two protocol retries each respond without
                     # running coding-done (no completion written).
                     {"response_type": "ok", "response_text": "no coding-done"},
@@ -1444,6 +1670,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1455,6 +1687,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1466,7 +1699,9 @@ class TestTurnArtifactsPersisted:
         assert state["opened"].count("coder") >= 2
 
     def test_respawn_does_not_pair_stale_reviewer_report(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A review report authored by a dead pre-retry process must not be
         paired with the *respawned* reviewer's decision.
@@ -1504,13 +1739,23 @@ class TestTurnArtifactsPersisted:
                         ),
                     },
                     # Respawn approves but writes no report.
-                    {"response_type": "ok", "response_text": "Looks good", "getting_closer": True},
+                    {
+                        "response_type": "ok",
+                        "response_text": "Looks good",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1522,6 +1767,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1531,7 +1777,8 @@ class TestTurnArtifactsPersisted:
         assert state["opened"].count("reviewer") >= 2
         assert outcome.exchange_dir is not None
         report_text = (
-            outcome.exchange_dir / "turns"
+            outcome.exchange_dir
+            / "turns"
             / "round-1-reviewer-attempt-1.review-report.md"
         ).read_text(encoding="utf-8")
         assert stale_marker not in report_text, (
@@ -1540,7 +1787,9 @@ class TestTurnArtifactsPersisted:
         )
 
     def test_role_timeout_does_not_respawn_the_process(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A genuine timeout must NOT respawn — the process is alive.
 
@@ -1568,6 +1817,12 @@ class TestTurnArtifactsPersisted:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1579,6 +1834,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1591,8 +1847,89 @@ class TestTurnArtifactsPersisted:
             (42, "review-exchange-reviewer_no_completion")
         ]
 
+    def test_prompt_not_accepted_respawns_in_place_and_advances(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A silent prompted reviewer is a stale/unusable process, not a verdict.
+
+        Regression for the tixmeup #290 shape: the prompt was written, the
+        reviewer stayed alive, but no response/report appeared. The exchange
+        should retry the same turn with a fresh process instead of waiting for
+        the full round timeout and then leaving the issue with no next action.
+        """
+        from issue_orchestrator.domain.review_exchange_failures import (
+            RoundFailureReason,
+        )
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        sink = _Sink()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    PersistentRoundTimeoutError(
+                        "prompt rendered but no terminal activity followed",
+                        failure_reason=RoundFailureReason.PROMPT_NOT_ACCEPTED,
+                    ),
+                    {
+                        "response_type": "ok",
+                        "response_text": "All good",
+                        "getting_closer": True,
+                    },
+                ],
+                "coder": [],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            events=sink,
+            event_context=EventContext(),
+        )
+
+        assert outcome.status == "ok"
+        assert outcome.reason == "reviewer_ok"
+        assert state["opened"].count("reviewer") == 2
+        assert state["registry"].released == []
+        assert [
+            evt
+            for evt in sink.events
+            if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
+        ] == []
+
     def test_coder_timeout_persists_no_completion_result_too(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Symmetric to the reviewer-timeout test, but for the coder.
         The two roles share one persistence helper, but a regression
@@ -1615,13 +1952,23 @@ class TestTurnArtifactsPersisted:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "fix x", "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "fix x",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [PersistentRoundTimeoutError("coder hung at 60s")],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1633,6 +1980,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1657,7 +2005,9 @@ class TestTurnArtifactsPersisted:
         ]
 
     def test_protocol_error_response_is_persisted_with_named_reason(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Agent emits a malformed response; runner persists the
         result as ``protocol_error`` with a named ``protocol_error_reason``
@@ -1684,15 +2034,29 @@ class TestTurnArtifactsPersisted:
                 # then approving on round 2 to terminate cleanly.
                 "reviewer": [
                     {"response_text": "I forgot to declare myself"},
-                    {"response_type": "ok", "response_text": "ok now", "getting_closer": True},
+                    {
+                        "response_type": "ok",
+                        "response_text": "ok now",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "fixed", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "fixed",
+                        "getting_closer": None,
+                    },
                 ],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1704,6 +2068,7 @@ class TestTurnArtifactsPersisted:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1711,9 +2076,7 @@ class TestTurnArtifactsPersisted:
 
         assert outcome.exchange_dir is not None
         result_path = (
-            outcome.exchange_dir
-            / "turns"
-            / "round-1-reviewer-attempt-1.result.json"
+            outcome.exchange_dir / "turns" / "round-1-reviewer-attempt-1.result.json"
         )
         assert result_path.exists()
         result = ReviewExchangeTurnResult.from_manifest(
@@ -1731,7 +2094,9 @@ class TestTurnArtifactsPersisted:
 
 class TestExchangeTerminationConditions:
     def test_max_no_progress_stops_exchange(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -1742,16 +2107,34 @@ class TestExchangeTerminationConditions:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "Keep trying", "getting_closer": False},
-                    {"response_type": "changes_requested", "response_text": "Still bad", "getting_closer": False},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "Keep trying",
+                        "getting_closer": False,
+                    },
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "Still bad",
+                        "getting_closer": False,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "Tried", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "Tried",
+                        "getting_closer": None,
+                    },
                 ],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1763,6 +2146,7 @@ class TestExchangeTerminationConditions:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=5,
             max_no_progress=2,
             require_validation=False,
@@ -1772,7 +2156,9 @@ class TestExchangeTerminationConditions:
         assert outcome.reason == "reviewer_reports_no_progress"
 
     def test_reviewer_ok_overridden_when_validation_required_but_missing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Reviewer returns ok in round 1 but validation-record.json is missing
         — the loop coerces the reviewer's verdict to changes_requested and
@@ -1795,18 +2181,40 @@ class TestExchangeTerminationConditions:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "x", "getting_closer": None},
-                    {"response_type": "ok", "response_text": "y", "getting_closer": None},
-                    {"response_type": "ok", "response_text": "z", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "x",
+                        "getting_closer": None,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "y",
+                        "getting_closer": None,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "z",
+                        "getting_closer": None,
+                    },
                 ],
             },
             write_coder_completion=False,
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1818,6 +2226,7 @@ class TestExchangeTerminationConditions:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=2,
             max_no_progress=5,
             require_validation=True,
@@ -1831,7 +2240,9 @@ class TestExchangeTerminationConditions:
         assert coder_calls, "coder turn must have been attempted"
 
     def test_reviewer_timeout_exits_with_no_completion(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -1840,7 +2251,10 @@ class TestExchangeTerminationConditions:
         sink = _Sink()
         ctx = EventContext()
 
-        from issue_orchestrator.execution.persistent_round_runner import PersistentRoundTimeoutError
+        from issue_orchestrator.execution.persistent_round_runner import (
+            PersistentRoundTimeoutError,
+        )
+
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
@@ -1850,6 +2264,12 @@ class TestExchangeTerminationConditions:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1861,6 +2281,7 @@ class TestExchangeTerminationConditions:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1883,7 +2304,9 @@ class TestExchangeTerminationConditions:
         )
 
     def test_exchange_exception_releases_persistent_pair(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Unexpected exchange-driver failures must not keep cached PTYs."""
         prompt_path = tmp_path / "p.md"
@@ -1903,6 +2326,12 @@ class TestExchangeTerminationConditions:
 
         with pytest.raises(RuntimeError, match="driver failed"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=state["registry"],
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1914,14 +2343,13 @@ class TestExchangeTerminationConditions:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=2,
                 require_validation=False,
             )
 
-        assert state["registry"].released == [
-            (42, "review-exchange-exception")
-        ]
+        assert state["registry"].released == [(42, "review-exchange-exception")]
 
 
 # ---------------------------------------------------------------------------
@@ -1931,7 +2359,9 @@ class TestExchangeTerminationConditions:
 
 class TestChapterSidecarAndEvents:
     def test_chapters_recorded_at_each_role_boundary(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -1942,16 +2372,34 @@ class TestChapterSidecarAndEvents:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "Fix", "getting_closer": True},
-                    {"response_type": "ok", "response_text": "Approved", "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "Fix",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "Approved",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "Fixed", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "Fixed",
+                        "getting_closer": None,
+                    },
                 ],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -1963,6 +2411,7 @@ class TestChapterSidecarAndEvents:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -1971,16 +2420,22 @@ class TestChapterSidecarAndEvents:
         # Reviewer side: 2 round-prompt chapters + 2 round-feedback chapters
         # Coder side: 1 round-prompt chapter + 1 round-feedback chapter
         run_dir = outcome.exchange_dir.parent  # type: ignore[union-attr]
-        reviewer_sidecar = session_output.read_exchange_chapters(run_dir, role="reviewer")
+        reviewer_sidecar = session_output.read_exchange_chapters(
+            run_dir, role="reviewer"
+        )
         coder_sidecar = session_output.read_exchange_chapters(run_dir, role="coder")
 
         assert reviewer_sidecar is not None
         assert coder_sidecar is not None
         # Reviewer wrote 4 chapters (prompt+feedback × 2 rounds).
-        reviewer_pattern = [(c.cycle_index, c.section) for c in reviewer_sidecar.chapters]
+        reviewer_pattern = [
+            (c.cycle_index, c.section) for c in reviewer_sidecar.chapters
+        ]
         assert reviewer_pattern == [
-            (1, "prompt"), (1, "feedback"),
-            (2, "prompt"), (2, "feedback"),
+            (1, "prompt"),
+            (1, "feedback"),
+            (2, "prompt"),
+            (2, "feedback"),
         ]
         # Coder wrote 2 chapters (prompt+feedback × 1 round; round 2 reviewer
         # approved, no coder turn).
@@ -1988,7 +2443,9 @@ class TestChapterSidecarAndEvents:
         assert coder_pattern == [(1, "prompt"), (1, "feedback")]
 
     def test_role_events_emit_in_expected_sequence(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2000,12 +2457,24 @@ class TestChapterSidecarAndEvents:
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
-                "reviewer": [{"response_type": "ok", "response_text": "Approved", "getting_closer": True}],
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Approved",
+                        "getting_closer": True,
+                    }
+                ],
                 "coder": [],
             },
         )
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2017,6 +2486,7 @@ class TestChapterSidecarAndEvents:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=2,
             require_validation=False,
@@ -2037,11 +2507,13 @@ class TestChapterSidecarAndEvents:
             assert expected in names, f"missing event {expected.value}"
 
         prompted = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
         ]
         feedback = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK
         ]
         assert len(prompted) == 1
@@ -2076,7 +2548,9 @@ class TestChapterSidecarAndEvents:
         ]
 
     def test_chapter_recorded_event_emitted_per_chapter(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Original PR 2c plan item 4 contract: chapters.json gets a sidecar
         AND ``REVIEW_EXCHANGE_CHAPTER_RECORDED`` fires for each chapter so
@@ -2093,12 +2567,16 @@ class TestChapterSidecarAndEvents:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested",
-                     "response_text": "Needs work",
-                     "getting_closer": True},
-                    {"response_type": "ok",
-                     "response_text": "Approved",
-                     "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "Needs work",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "Approved",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
                     {"response_type": "ok", "response_text": "Applied"},
@@ -2107,6 +2585,12 @@ class TestChapterSidecarAndEvents:
         )
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2118,6 +2602,7 @@ class TestChapterSidecarAndEvents:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=2,
             max_no_progress=3,
             require_validation=False,
@@ -2126,7 +2611,8 @@ class TestChapterSidecarAndEvents:
         )
 
         chapter_events = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type == EventName.REVIEW_EXCHANGE_CHAPTER_RECORDED
         ]
         # Two rounds × (reviewer prompt + reviewer feedback) = 4 reviewer chapters.
@@ -2154,7 +2640,9 @@ class TestChapterSidecarAndEvents:
 
 class TestCallerHooks:
     def test_before_reviewer_round_invoked_each_round(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2165,17 +2653,35 @@ class TestCallerHooks:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "fix", "getting_closer": True},
-                    {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "fix",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "fixed", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "fixed",
+                        "getting_closer": None,
+                    },
                 ],
             },
         )
 
         round_invocations: list[int] = []
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2187,6 +2693,7 @@ class TestCallerHooks:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=5,
             require_validation=False,
@@ -2195,8 +2702,10 @@ class TestCallerHooks:
         # Called once per reviewer round (rounds 1 and 2).
         assert round_invocations == [1, 2]
 
-    def test_on_started_called_with_run_dir(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    def test_exchange_run_assets_own_run_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2206,13 +2715,25 @@ class TestCallerHooks:
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
-                "reviewer": [{"response_type": "ok", "response_text": "lgtm", "getting_closer": True}],
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    }
+                ],
                 "coder": [],
             },
         )
 
-        observed: list[Path] = []
-        pse.run_persistent_session_exchange(
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt,
+            issue_number=42,
+            parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2224,18 +2745,20 @@ class TestCallerHooks:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=2,
             require_validation=False,
-            on_started=lambda d: observed.append(d),
         )
-        assert len(observed) == 1
-        assert observed[0].exists()
+        assert outcome.run_assets == exchange_run.assets
+        assert exchange_run.assets.run_dir.exists()
         # And the run dir contains the exchange artifacts.
-        assert (observed[0] / "review-exchange").is_dir()
+        assert exchange_run.assets.exchange_dir.is_dir()
 
     def test_initial_validation_record_is_available_to_reviewer_in_run_dir(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2244,7 +2767,8 @@ class TestCallerHooks:
         validation_payload = {"passed": True, "head_sha": "head-a"}
         current_record = tmp_path / "current-validation-record.json"
         current_record.write_text(
-            json.dumps(validation_payload), encoding="utf-8",
+            json.dumps(validation_payload),
+            encoding="utf-8",
         )
         monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-a")
 
@@ -2252,14 +2776,24 @@ class TestCallerHooks:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [],
             },
         )
 
-        observed: list[Path] = []
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt,
+            issue_number=42,
+            parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2271,19 +2805,19 @@ class TestCallerHooks:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=2,
             require_validation=True,
             initial_validation_record_path=current_record,
-            on_started=lambda d: observed.append(d),
         )
 
         assert outcome.status == "ok"
-        assert len(observed) == 1
-        run_record = observed[0] / "validation-record.json"
+        run_record = exchange_run.assets.validation_record_path
         assert json.loads(run_record.read_text(encoding="utf-8")) == validation_payload
         reviewer_prompt = next(
-            prompt for role, prompt, _notice in state["prompt_inboxes_seen"]
+            prompt
+            for role, prompt, _notice in state["prompt_inboxes_seen"]
             if role == "reviewer"
         )
         assert str(run_record) in reviewer_prompt
@@ -2292,14 +2826,17 @@ class TestCallerHooks:
         # domain/review_exchange.py for the full rationale.
         assert "do NOT run build, test, or validation commands" in reviewer_prompt
         reviewer_notice = next(
-            notice for role, _prompt, notice in state["prompt_inboxes_seen"]
+            notice
+            for role, _prompt, notice in state["prompt_inboxes_seen"]
             if role == "reviewer"
         )
         assert "review-exchange-turn-prompt.md" in reviewer_notice
         assert len(reviewer_notice) < 512
 
     def test_coder_validation_refresh_updates_reviewer_run_record(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2309,7 +2846,8 @@ class TestCallerHooks:
         refreshed_payload = {"passed": True, "head_sha": "head-b"}
         current_record = tmp_path / "current-validation-record.json"
         current_record.write_text(
-            json.dumps(initial_payload), encoding="utf-8",
+            json.dumps(initial_payload),
+            encoding="utf-8",
         )
         monkeypatch.setattr(pse, "get_repo_head_sha", lambda _: "head-b")
 
@@ -2322,7 +2860,11 @@ class TestCallerHooks:
                         "response_text": "please fix",
                         "getting_closer": True,
                     },
-                    {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
                     {"response_type": "ok", "response_text": "fixed"},
@@ -2331,8 +2873,14 @@ class TestCallerHooks:
             coder_validation_payload_script=[refreshed_payload],
         )
 
-        observed: list[Path] = []
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt,
+            issue_number=42,
+            parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2344,21 +2892,23 @@ class TestCallerHooks:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=2,
             max_no_progress=2,
             require_validation=True,
             initial_validation_record_path=current_record,
-            on_started=lambda d: observed.append(d),
         )
 
         assert outcome.status == "ok"
-        assert len(observed) == 1
-        run_record = observed[0] / "validation-record.json"
-        pair_record = tmp_path / "persistent-pairs" / "issue-42" / "validation-record.json"
+        run_record = exchange_run.assets.validation_record_path
+        pair_record = (
+            tmp_path / "persistent-pairs" / "issue-42" / "validation-record.json"
+        )
         assert json.loads(run_record.read_text(encoding="utf-8")) == refreshed_payload
         assert json.loads(pair_record.read_text(encoding="utf-8")) == refreshed_payload
         reviewer_prompts = [
-            prompt for role, prompt, _notice in state["prompt_inboxes_seen"]
+            prompt
+            for role, prompt, _notice in state["prompt_inboxes_seen"]
             if role == "reviewer"
         ]
         assert len(reviewer_prompts) == 2
@@ -2376,7 +2926,9 @@ class TestCoderProtocolGuardrail:
     round is treated as a protocol error and retried."""
 
     def test_missing_coder_completion_triggers_retries_then_protocol_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2392,19 +2944,40 @@ class TestCoderProtocolGuardrail:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "fix",
-                     "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "fix",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "x", "getting_closer": None},
-                    {"response_type": "ok", "response_text": "y", "getting_closer": None},
-                    {"response_type": "ok", "response_text": "z", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "x",
+                        "getting_closer": None,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "y",
+                        "getting_closer": None,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "z",
+                        "getting_closer": None,
+                    },
                 ],
             },
             write_coder_completion=False,
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2416,6 +2989,7 @@ class TestCoderProtocolGuardrail:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=5,
             require_validation=False,
@@ -2429,7 +3003,8 @@ class TestCoderProtocolGuardrail:
         coder_rounds = [r for r in state["rounds_seen"] if r[0] == "coder"]
         assert len(coder_rounds) == 3
         coder_prompts = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
             and evt.data.get("role") == "coder"
         ]
@@ -2445,7 +3020,8 @@ class TestCoderProtocolGuardrail:
         assert "coding-done completed" in prompt_paths[2].read_text(encoding="utf-8")
         assert outcome.exchange_dir is not None
         completed_paths = sorted(
-            p.name for p in outcome.exchange_dir.joinpath("turns").glob(
+            p.name
+            for p in outcome.exchange_dir.joinpath("turns").glob(
                 "round-1-coder-attempt-*.completed.json"
             )
         )
@@ -2464,7 +3040,9 @@ class TestCoderProtocolGuardrail:
         )
 
     def test_coder_protocol_retry_persists_distinct_attempt_artifacts(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A retry that succeeds must leave both attempt artifacts intact.
 
@@ -2517,6 +3095,12 @@ class TestCoderProtocolGuardrail:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2528,6 +3112,7 @@ class TestCoderProtocolGuardrail:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=5,
             require_validation=False,
@@ -2552,9 +3137,7 @@ class TestCoderProtocolGuardrail:
         assert "coding-done completed" in attempt_2_prompt_text
 
         attempt_1_result = ReviewExchangeTurnResult.from_manifest(
-            json.loads(
-                (turns_dir / "round-1-coder-attempt-1.result.json").read_text()
-            )
+            json.loads((turns_dir / "round-1-coder-attempt-1.result.json").read_text())
         )
         assert attempt_1_result is not None
         assert attempt_1_result.kind is TurnResultKind.PROTOCOL_ERROR
@@ -2562,30 +3145,30 @@ class TestCoderProtocolGuardrail:
         assert "'protocol_error'" in attempt_1_result.response_text
 
         attempt_2_result = ReviewExchangeTurnResult.from_manifest(
-            json.loads(
-                (turns_dir / "round-1-coder-attempt-2.result.json").read_text()
-            )
+            json.loads((turns_dir / "round-1-coder-attempt-2.result.json").read_text())
         )
         assert attempt_2_result is not None
         assert attempt_2_result.kind is TurnResultKind.OK
         assert attempt_2_result.response_text == "fixed"
 
         coder_prompts = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_PROMPTED
             and evt.data.get("role") == "coder"
         ]
         assert [evt.data["attempt_index"] for evt in coder_prompts] == [1, 2]
         assert [
-            Path(evt.data["artifact_refs"][0]["path"]).name
-            for evt in coder_prompts
+            Path(evt.data["artifact_refs"][0]["path"]).name for evt in coder_prompts
         ] == [
             "round-1-coder-attempt-1.prompt.md",
             "round-1-coder-attempt-2.prompt.md",
         ]
 
     def test_stale_round1_completion_does_not_satisfy_round2_guardrail(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Round 1's coder writes completion-coder.json. Round 2's coder
         does NOT refresh it. The runner must clear the stale artifact
@@ -2609,11 +3192,23 @@ class TestCoderProtocolGuardrail:
         from issue_orchestrator.execution import (
             persistent_session_exchange as pse_mod,
         )
+
         coder_call_count = {"n": 0}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             writer = _build_pty_writer(recording_path)
             completion_env = env.get("ISSUE_ORCHESTRATOR_COMPLETION_PATH")
@@ -2638,20 +3233,27 @@ class TestCoderProtocolGuardrail:
                     validation_dir.mkdir(parents=True, exist_ok=True)
                     validation_record = validation_dir / "validation-record.json"
                     validation_record.write_text(
-                        json.dumps({"passed": True}), encoding="utf-8",
+                        json.dumps({"passed": True}),
+                        encoding="utf-8",
                     )
                     completion.write_text(
-                        json.dumps({
-                            "outcome": "completed",
-                            "round": 1,
-                            "validation_record_path": str(validation_record),
-                        }),
+                        json.dumps(
+                            {
+                                "outcome": "completed",
+                                "round": 1,
+                                "validation_record_path": str(validation_record),
+                            }
+                        ),
                         encoding="utf-8",
                     )
                 # Round 2 and retries: do NOT write completion. The runner
                 # must have cleared the round-1 file before sending this
                 # prompt, so _validate_coder_completion will fail.
-                return {"response_type": "ok", "response_text": "x", "getting_closer": None}
+                return {
+                    "response_type": "ok",
+                    "response_text": "x",
+                    "getting_closer": None,
+                }
             # Reviewer side: round 1 changes_requested, round 2 ok.
             if not state["reviewer_responses"]:
                 raise AssertionError("reviewer responses exhausted")
@@ -2663,10 +3265,16 @@ class TestCoderProtocolGuardrail:
         # exercised.)
         state = {
             "reviewer_responses": [
-                {"response_type": "changes_requested", "response_text": "fix",
-                 "getting_closer": True},
-                {"response_type": "changes_requested", "response_text": "still fix",
-                 "getting_closer": True},
+                {
+                    "response_type": "changes_requested",
+                    "response_text": "fix",
+                    "getting_closer": True,
+                },
+                {
+                    "response_type": "changes_requested",
+                    "response_text": "still fix",
+                    "getting_closer": True,
+                },
             ],
             "registry": _FakePairRegistry(),
         }
@@ -2674,6 +3282,12 @@ class TestCoderProtocolGuardrail:
         monkeypatch.setattr(pse_mod, "send_round", _send)
 
         outcome = pse_mod.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2685,6 +3299,7 @@ class TestCoderProtocolGuardrail:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=5,
             require_validation=False,
@@ -2696,7 +3311,9 @@ class TestCoderProtocolGuardrail:
         assert coder_call_count["n"] == 4
 
     def test_coder_completion_present_passes_protocol(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Sanity: when the coder writes completion-coder.json (the helper's
         default), no retry path is taken — only one coder send_round per round."""
@@ -2709,17 +3326,34 @@ class TestCoderProtocolGuardrail:
             monkeypatch,
             response_script={
                 "reviewer": [
-                    {"response_type": "changes_requested", "response_text": "fix",
-                     "getting_closer": True},
-                    {"response_type": "ok", "response_text": "lgtm", "getting_closer": True},
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "fix",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    },
                 ],
                 "coder": [
-                    {"response_type": "ok", "response_text": "fixed", "getting_closer": None},
+                    {
+                        "response_type": "ok",
+                        "response_text": "fixed",
+                        "getting_closer": None,
+                    },
                 ],
             },
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2731,6 +3365,7 @@ class TestCoderProtocolGuardrail:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=2,
             max_no_progress=5,
             require_validation=False,
@@ -2746,7 +3381,9 @@ class TestTerminalEventsOnError:
     event so the timeline / publish cache observe a definitive end-of-exchange."""
 
     def test_invalid_reviewer_decision_json_halts_with_error_event(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2781,6 +3418,12 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2792,6 +3435,7 @@ class TestTerminalEventsOnError:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=5,
             require_validation=False,
@@ -2801,11 +3445,14 @@ class TestTerminalEventsOnError:
 
         assert outcome.status == "error"
         assert outcome.reason == "reviewer_decision_invalid"
-        assert outcome.summary["reason"] == "reviewer_decision_invalid"
-        assert "reviewer produced invalid decision JSON" in outcome.summary["detail"]
+        assert outcome.summary is not None
+        assert outcome.summary.reason == "reviewer_decision_invalid"
+        assert outcome.summary.detail is not None
+        assert "reviewer produced invalid decision JSON" in outcome.summary.detail
         assert [role for role, _ in state["rounds_seen"]] == ["reviewer"]
         terminal = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_COMPLETED
         ]
         assert len(terminal) == 1
@@ -2813,14 +3460,17 @@ class TestTerminalEventsOnError:
         assert terminal[0].data["reason"] == "reviewer_decision_invalid"
         assert "reviewer produced invalid decision JSON" in terminal[0].data["detail"]
         round_completed = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
         ]
         assert len(round_completed) == 1
         assert round_completed[0].data["coder_response_type"] is None
 
     def test_reviewer_timeout_emits_terminal_completed_event_with_error_status(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2832,6 +3482,7 @@ class TestTerminalEventsOnError:
         from issue_orchestrator.execution.persistent_round_runner import (
             PersistentRoundTimeoutError,
         )
+
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
@@ -2841,6 +3492,12 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2852,6 +3509,7 @@ class TestTerminalEventsOnError:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=5,
             require_validation=False,
@@ -2862,14 +3520,16 @@ class TestTerminalEventsOnError:
         assert outcome.status == "error"
         assert outcome.reason == "reviewer_no_completion"
         terminal = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_COMPLETED
         ]
         assert len(terminal) == 1
         assert terminal[0].data.get("status") == "error"
         assert terminal[0].data.get("reason") == "reviewer_no_completion"
         timeouts = [
-            evt for evt in sink.events
+            evt
+            for evt in sink.events
             if evt.event_type is EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT
         ]
         assert len(timeouts) == 1
@@ -2886,7 +3546,9 @@ class TestTerminalEventsOnError:
         assert all(Path(ref["path"]).exists() for ref in timeout_refs)
 
     def test_summary_status_matches_outcome_for_error_exits(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """summary.json's ``status`` must match the outcome's ``status``,
         not say "stopped"/"incomplete" while the outcome says "error"."""
@@ -2898,6 +3560,7 @@ class TestTerminalEventsOnError:
         from issue_orchestrator.execution.persistent_round_runner import (
             PersistentRoundTimeoutError,
         )
+
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
@@ -2907,6 +3570,12 @@ class TestTerminalEventsOnError:
         )
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2918,14 +3587,15 @@ class TestTerminalEventsOnError:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=5,
             require_validation=False,
         )
 
         assert outcome.summary is not None
-        assert outcome.summary["status"] == "error"
-        assert outcome.summary["reason"] == "reviewer_no_completion"
+        assert outcome.summary.status == "error"
+        assert outcome.summary.reason == "reviewer_no_completion"
 
 
 class TestRecordingContractFailLoud:
@@ -2934,7 +3604,9 @@ class TestRecordingContractFailLoud:
     silent skipped chapter."""
 
     def test_missing_recording_at_chapter_time_fails_exchange(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -2949,8 +3621,13 @@ class TestRecordingContractFailLoud:
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
-                "reviewer": [{"response_type": "ok", "response_text": "lgtm",
-                              "getting_closer": True}],
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    }
+                ],
                 "coder": [],
             },
             write_recording=False,
@@ -2958,6 +3635,12 @@ class TestRecordingContractFailLoud:
 
         with pytest.raises(RuntimeError, match="missing_file"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=state["registry"],
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -2969,6 +3652,7 @@ class TestRecordingContractFailLoud:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=5,
                 require_validation=False,
@@ -2983,7 +3667,9 @@ class TestRecordingContractFailLoud:
 
 class TestAtomicSummaryWrite:
     def test_summary_write_is_atomic_no_partial_file_visible(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The orchestrator polls summary.json from a different process
         while the exchange runs in the background. The write must be
@@ -3002,8 +3688,13 @@ class TestAtomicSummaryWrite:
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
-                "reviewer": [{"response_type": "ok", "response_text": "lgtm",
-                              "getting_closer": True}],
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "lgtm",
+                        "getting_closer": True,
+                    }
+                ],
                 "coder": [],
             },
         )
@@ -3019,9 +3710,16 @@ class TestAtomicSummaryWrite:
         # patch os.replace at that module's binding so we observe the
         # actual rename call from the runner's summary write path.
         from issue_orchestrator.infra import atomic_io
+
         monkeypatch.setattr(atomic_io.os, "replace", _capturing_replace)
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3033,6 +3731,7 @@ class TestAtomicSummaryWrite:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=5,
             require_validation=False,
@@ -3051,7 +3750,9 @@ class TestRoleEnvironmentScrubbing:
     CLAUDECODE, …) that the active path deliberately scrubs."""
 
     def test_forbidden_env_vars_are_scrubbed_from_role_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Pollute the orchestrator's env with the exact secrets the
         # filtered-env policy guards against.
@@ -3069,11 +3770,13 @@ class TestRoleEnvironmentScrubbing:
         response_file = run_dir / "reviewer" / "review-response.json"
 
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="reviewer",
             response_file=response_file,
             review_report_file=None,
             completion_path=run_dir / "reviewer" / "completion-reviewer.json",
             validation_output_dir=run_dir,
             worktree=worktree,
+            runtime_config=_runtime_config(tmp_path),
             agent_label="agent:reviewer",
             web_port=None,
             issue_number=4057,
@@ -3082,13 +3785,21 @@ class TestRoleEnvironmentScrubbing:
 
         # Forbidden vars must be absent.
         for forbidden in (
-            "GH_TOKEN", "GITHUB_TOKEN", "ISSUE_ORCHESTRATOR_API_TOKEN",
-            "CLAUDECODE", "SSH_AUTH_SOCK", "AWS_SECRET_ACCESS_KEY",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "ISSUE_ORCHESTRATOR_API_TOKEN",
+            "CLAUDECODE",
+            "SSH_AUTH_SOCK",
+            "AWS_SECRET_ACCESS_KEY",
         ):
             assert forbidden not in env, f"{forbidden} leaked into agent env"
+        assert "ISSUE_ORCHESTRATOR_RUN_DIR" not in env
+        assert "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR" not in env
 
     def test_required_overrides_are_present_in_role_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
         run_dir.mkdir(parents=True)
@@ -3098,11 +3809,13 @@ class TestRoleEnvironmentScrubbing:
         monkeypatch.setenv("GH_TOKEN", "ghp_fake")  # ensure scrubbing path runs
 
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="coder",
             response_file=response_file,
             review_report_file=None,
             completion_path=run_dir / "coder" / "completion-coder.json",
             validation_output_dir=run_dir,
             worktree=worktree,
+            runtime_config=_runtime_config(tmp_path),
             agent_label="agent:backend",
             web_port=8080,
             issue_number=4057,
@@ -3113,6 +3826,17 @@ class TestRoleEnvironmentScrubbing:
         assert env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] == str(response_file)
         assert env["ISSUE_ORCHESTRATOR_AGENT_LABEL"] == "agent:backend"
         assert env["ISSUE_ORCHESTRATOR_ISSUE_NUMBER"] == "4057"
+        assert env["ISSUE_ORCHESTRATOR_SESSION_ID"] == "exchange-1"
+        assert env["ISSUE_ORCHESTRATOR_RUN_DIR"] == str(run_dir)
+        assert env["ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR"] == str(run_dir)
+        assert env["ISSUE_ORCHESTRATOR_CONFIG_NAME"] == "issue-orchestrator.test.yaml"
+        assert env["ISSUE_ORCHESTRATOR_CONFIG_PATH"] == str(
+            _runtime_config(tmp_path).config_path
+        )
+        assert env["ORCHESTRATOR_CONFIG_NAME"] == "issue-orchestrator.test.yaml"
+        assert env["ORCHESTRATOR_CONFIG_PATH"] == str(
+            _runtime_config(tmp_path).config_path
+        )
         assert env["ORCHESTRATOR_SESSION_ID"] == "exchange-1"
         assert env["ORCHESTRATOR_API_PORT"] == "8080"
         # Git-safe defaults from the filtered-env helper.
@@ -3121,7 +3845,9 @@ class TestRoleEnvironmentScrubbing:
         assert "GH_TOKEN" not in env
 
     def test_callback_token_propagates_when_set_in_orchestrator_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """ALWAYS_PASSTHROUGH_ENV_VARS must reach the agent so it can call
         back into the loopback Control API for preflight-push / session-resume."""
@@ -3132,11 +3858,13 @@ class TestRoleEnvironmentScrubbing:
         worktree = tmp_path / "wt"
         worktree.mkdir()
         env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="reviewer",
             response_file=run_dir / "reviewer" / "review-response.json",
             review_report_file=worktree / ".issue-orchestrator" / "review-report.md",
             completion_path=run_dir / "reviewer" / "completion-reviewer.json",
             validation_output_dir=run_dir,
             worktree=worktree,
+            runtime_config=_runtime_config(tmp_path),
             agent_label="agent:reviewer",
             web_port=None,
             issue_number=4057,
@@ -3159,7 +3887,9 @@ class TestResponseFileInsideWorktree:
     """
 
     def test_response_paths_resolve_inside_role_worktrees(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -3168,26 +3898,51 @@ class TestResponseFileInsideWorktree:
 
         captured: dict[str, Path] = {}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             writer = _build_pty_writer(recording_path)
-            captured[f"{role}_response"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
+            captured[f"{role}_response"] = Path(
+                env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"]
+            )
             if "ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE" in env:
-                captured[f"{role}_report"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE"])
+                captured[f"{role}_report"] = Path(
+                    env["ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE"]
+                )
             captured[f"{role}_working_dir"] = Path(working_dir)
             return _FakeSession(role, log_writer=writer)
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
             captured.setdefault(f"{session.role}_response_arg", response_file)
-            return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
+            return {
+                "response_type": "ok",
+                "response_text": "ok",
+                "getting_closer": True,
+            }
 
         registry = _FakePairRegistry()
         monkeypatch.setattr(pse, "open_persistent_session", _open)
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=registry,
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3199,6 +3954,7 @@ class TestResponseFileInsideWorktree:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=2,
             require_validation=False,
@@ -3222,7 +3978,9 @@ class TestResponseFileInsideWorktree:
         assert captured["reviewer_response_arg"] == captured["reviewer_response"]
 
     def test_response_paths_are_outside_persistent_pair_root(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Belt-and-suspenders: reject any drift back into the base-repo
         persistent-pair dir, which is what the seatbelt sandbox rejects."""
@@ -3234,23 +3992,46 @@ class TestResponseFileInsideWorktree:
 
         captured: dict[str, Path] = {}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             writer = _build_pty_writer(recording_path)
             captured[role] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
             if "ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE" in env:
-                captured[f"{role}_report"] = Path(env["ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE"])
+                captured[f"{role}_report"] = Path(
+                    env["ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE"]
+                )
             return _FakeSession(role, log_writer=writer)
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
-            return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
+            return {
+                "response_type": "ok",
+                "response_text": "ok",
+                "getting_closer": True,
+            }
 
         monkeypatch.setattr(pse, "open_persistent_session", _open)
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=_FakePairRegistry(),
             persistent_pair_root=persistent_pair_root,
@@ -3262,6 +4043,7 @@ class TestResponseFileInsideWorktree:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=2,
             require_validation=False,
@@ -3286,7 +4068,9 @@ class TestPerSessionRecordingMirror:
     """
 
     def test_role_slice_files_seeded_and_manifest_points_at_them(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """At exchange start, a viewer hitting the run_dir mid-round must
         see the per-session slice files (not 404), and the manifest's
@@ -3301,13 +4085,24 @@ class TestPerSessionRecordingMirror:
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
-                "reviewer": [{"response_type": "ok", "response_text": "ok",
-                              "getting_closer": True}],
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "ok",
+                        "getting_closer": True,
+                    }
+                ],
                 "coder": [],
             },
         )
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3319,6 +4114,7 @@ class TestPerSessionRecordingMirror:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=3,
             max_no_progress=2,
             require_validation=False,
@@ -3330,7 +4126,8 @@ class TestPerSessionRecordingMirror:
         # real dir (which is the only one that holds manifest.json).
         runs = list((coder_wt / ".issue-orchestrator" / "sessions").iterdir())
         runs = [
-            r for r in runs
+            r
+            for r in runs
             if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name
         ]
         assert len(runs) == 1, f"expected one run_dir, got {runs}"
@@ -3359,7 +4156,9 @@ class TestPerSessionRecordingMirror:
         assert manifest["reviewer_recording"] != manifest["reviewer_recording_pair"]
 
     def test_cached_pair_with_missing_recording_paths_is_respawned(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A cached live pair whose recording files were removed cannot be
         repaired by touching the paths; its writers still point at the deleted
@@ -3372,24 +4171,45 @@ class TestPerSessionRecordingMirror:
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
-                "reviewer": [{"response_type": "ok", "response_text": "ok",
-                              "getting_closer": True}],
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "ok",
+                        "getting_closer": True,
+                    }
+                ],
                 "coder": [],
             },
         )
 
+        exchange_run = session_output.start_review_exchange_run(
+            coder_wt,
+            issue_number=42,
+            parent_session_name="coding-1",
+            agent_label="agent:backend",
+        )
         stale_pair_root = tmp_path / "stale-persistent-pairs" / "issue-42"
         stale_pair = pse.PersistentExchangePair(
             coder_session=_FakeSession("coder"),
             reviewer_session=_FakeSession("reviewer"),
             reviewer_worktree_path=reviewer_wt,
             issue_key=42,
+            exchange_run_id=exchange_run.run_id,
+            run_dir=exchange_run.assets.run_dir,
             created_at=0.0,
-            coder_response_path=coder_wt / ".issue-orchestrator" / "review-response.json",
-            reviewer_response_path=reviewer_wt / ".issue-orchestrator" / "review-response.json",
-            reviewer_report_path=reviewer_wt / ".issue-orchestrator" / "review-report.md",
+            coder_response_path=coder_wt
+            / ".issue-orchestrator"
+            / "review-response.json",
+            reviewer_response_path=reviewer_wt
+            / ".issue-orchestrator"
+            / "review-response.json",
+            reviewer_report_path=reviewer_wt
+            / ".issue-orchestrator"
+            / "review-report.md",
             coder_recording_path=stale_pair_root / "coder" / "terminal-recording.jsonl",
-            reviewer_recording_path=stale_pair_root / "reviewer" / "terminal-recording.jsonl",
+            reviewer_recording_path=stale_pair_root
+            / "reviewer"
+            / "terminal-recording.jsonl",
             coder_completion_path=stale_pair_root / "coder" / "completion-coder.json",
             validation_record_path=stale_pair_root / "validation-record.json",
         )
@@ -3411,6 +4231,7 @@ class TestPerSessionRecordingMirror:
         registry = _StaleThenFreshRegistry()
 
         outcome = pse.run_persistent_session_exchange(
+            exchange_run=exchange_run,
             session_output=session_output,
             pair_registry=registry,
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3422,15 +4243,14 @@ class TestPerSessionRecordingMirror:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=2,
             require_validation=False,
         )
 
         assert outcome.status == "ok"
-        assert registry.released == [
-            (42, "recording-contract-missing-on-acquire")
-        ]
+        assert registry.released == [(42, "recording-contract-missing-on-acquire")]
         assert state["opened"] == ["coder", "reviewer"]
 
     def test_respawned_pair_recording_contract_is_rechecked(
@@ -3443,6 +4263,7 @@ class TestPerSessionRecordingMirror:
         It must not become a fallback that admits a newly broken pair.
         """
         pair_root = tmp_path / "persistent-pairs" / "issue-42"
+        assets = _binding_assets(pair_root)
 
         def broken_pair() -> pse.PersistentExchangePair:
             return pse.PersistentExchangePair(
@@ -3450,13 +4271,16 @@ class TestPerSessionRecordingMirror:
                 reviewer_session=_FakeSession("reviewer"),
                 reviewer_worktree_path=tmp_path / "reviewer-wt",
                 issue_key=42,
+                exchange_run_id="run-42",
+                run_dir=pair_root,
                 created_at=0.0,
                 coder_response_path=tmp_path / "coder-response.json",
                 reviewer_response_path=tmp_path / "reviewer-response.json",
-                reviewer_report_path=tmp_path / "reviewer-wt" / ".issue-orchestrator" / "review-report.md",
-                coder_recording_path=(
-                    pair_root / "coder" / "terminal-recording.jsonl"
-                ),
+                reviewer_report_path=tmp_path
+                / "reviewer-wt"
+                / ".issue-orchestrator"
+                / "review-report.md",
+                coder_recording_path=(pair_root / "coder" / "terminal-recording.jsonl"),
                 reviewer_recording_path=(
                     pair_root / "reviewer" / "terminal-recording.jsonl"
                 ),
@@ -3482,6 +4306,10 @@ class TestPerSessionRecordingMirror:
             pse._acquire_pair_with_recording_contract(  # noqa: SLF001
                 pair_registry=registry,
                 issue_number=42,
+                exchange_run=pse._PairExchangeRunBinding(  # noqa: SLF001
+                    run_id="run-42",
+                    assets=assets,
+                ),
                 spawn=broken_pair,
             )
 
@@ -3493,8 +4321,110 @@ class TestPerSessionRecordingMirror:
         assert "no_writer" in str(exc_info.value)
         assert "missing_file" in str(exc_info.value)
 
+    def test_live_cached_pair_from_pruned_previous_run_is_released_before_use(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A live pair's env is run-scoped and cannot outlive its spawn run."""
+        pair_root = tmp_path / "persistent-pairs" / "issue-42"
+        first_run_dir = tmp_path / "sessions" / "run-1"
+        second_run_dir = tmp_path / "sessions" / "run-2"
+        second_assets = _binding_assets(second_run_dir)
+        coder_recording = pair_root / "coder" / "terminal-recording.jsonl"
+        reviewer_recording = pair_root / "reviewer" / "terminal-recording.jsonl"
+        old_pair = pse.PersistentExchangePair(
+            coder_session=_FakeSession(
+                "coder",
+                log_writer=_build_pty_writer(coder_recording),
+            ),
+            reviewer_session=_FakeSession(
+                "reviewer",
+                log_writer=_build_pty_writer(reviewer_recording),
+            ),
+            reviewer_worktree_path=tmp_path / "reviewer-wt",
+            issue_key=42,
+            exchange_run_id="run-1",
+            run_dir=first_run_dir,
+            created_at=0.0,
+            coder_response_path=tmp_path / "coder-response.json",
+            reviewer_response_path=tmp_path / "reviewer-response.json",
+            reviewer_report_path=tmp_path
+            / "reviewer-wt"
+            / ".issue-orchestrator"
+            / "review-report.md",
+            coder_recording_path=coder_recording,
+            reviewer_recording_path=reviewer_recording,
+            coder_completion_path=pair_root / "coder" / "completion-coder.json",
+            validation_record_path=pair_root / "validation-record.json",
+        )
+        fresh_pair = pse.PersistentExchangePair(
+            coder_session=_FakeSession(
+                "coder",
+                log_writer=_build_pty_writer(coder_recording),
+            ),
+            reviewer_session=_FakeSession(
+                "reviewer",
+                log_writer=_build_pty_writer(reviewer_recording),
+            ),
+            reviewer_worktree_path=tmp_path / "reviewer-wt",
+            issue_key=42,
+            exchange_run_id="run-2",
+            run_dir=second_run_dir,
+            created_at=0.0,
+            coder_response_path=tmp_path / "coder-response.json",
+            reviewer_response_path=tmp_path / "reviewer-response.json",
+            reviewer_report_path=tmp_path
+            / "reviewer-wt"
+            / ".issue-orchestrator"
+            / "review-report.md",
+            coder_recording_path=coder_recording,
+            reviewer_recording_path=reviewer_recording,
+            coder_completion_path=pair_root / "coder" / "completion-coder.json",
+            validation_record_path=pair_root / "validation-record.json",
+        )
+
+        class _CachedRegistry:
+            def __init__(self) -> None:
+                self.acquire_count = 0
+                self.released: list[tuple[int, str]] = []
+
+            def acquire(self, *, issue_key, spawn):  # noqa: ANN001, ANN201, ARG002
+                self.acquire_count += 1
+                if self.acquire_count == 1:
+                    return old_pair
+                return fresh_pair
+
+            def release(self, issue_key, *, reason):  # noqa: ANN001, ANN201
+                self.released.append((issue_key, reason))
+
+        registry = _CachedRegistry()
+        binding = pse._PairExchangeRunBinding(  # noqa: SLF001
+            run_id="run-2",
+            assets=second_assets,
+        )
+
+        acquired = pse._acquire_pair_with_recording_contract(  # noqa: SLF001
+            pair_registry=registry,
+            issue_number=42,
+            exchange_run=binding,
+            spawn=lambda: fresh_pair,
+        )
+
+        assert acquired is fresh_pair
+        assert registry.acquire_count == 2
+        assert registry.released == [
+            (42, "exchange-run-changed-on-acquire"),
+        ]
+        assert old_pair.exchange_run_id == "run-1"
+        assert old_pair.run_dir == first_run_dir
+        assert fresh_pair.exchange_run_id == "run-2"
+        assert fresh_pair.run_dir == second_run_dir
+        assert fresh_pair.coder_recording_path == coder_recording
+        assert fresh_pair.reviewer_recording_path == reviewer_recording
+
     def test_slice_base_freezes_at_construction_for_offset_translation(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """``slice_base`` is the immutable starting offset that defines
         the slice's "zero". Chapter sidecars store
@@ -3542,7 +4472,9 @@ class TestPerSessionRecordingMirror:
             cached.pair_to_slice_offset(50)
 
     def test_chapter_offsets_are_slice_relative_for_cached_pair(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """End-to-end chapter contract: when the manifest points at the
         per-session slice, chapter offsets must index INTO the slice,
@@ -3564,24 +4496,44 @@ class TestPerSessionRecordingMirror:
         # exchange whose chapters must record offsets relative to the
         # slice (which begins at index 50 of the pair recording).
         prior_pair_recording = (
-            tmp_path / "persistent-pairs" / "issue-42" / "reviewer"
+            tmp_path
+            / "persistent-pairs"
+            / "issue-42"
+            / "reviewer"
             / "terminal-recording.jsonl"
         )
         prior_pair_recording.parent.mkdir(parents=True, exist_ok=True)
         prior_pair_recording.write_text(
             "\n".join(
-                json.dumps({
-                    "schema_version": 1, "event_type": "resize",
-                    "offset_ms": i, "rows": 40, "cols": 120,
-                })
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "event_type": "resize",
+                        "offset_ms": i,
+                        "rows": 40,
+                        "cols": 120,
+                    }
+                )
                 for i in range(50)
-            ) + "\n",
+            )
+            + "\n",
             encoding="utf-8",
         )
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             # Reviewer writer appends to the pre-seeded pair recording.
@@ -3599,14 +4551,23 @@ class TestPerSessionRecordingMirror:
 
         def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
             writers[session.role].write(b"agent output\n")
-            return {"response_type": "ok", "response_text": "ok",
-                    "getting_closer": True}
+            return {
+                "response_type": "ok",
+                "response_text": "ok",
+                "getting_closer": True,
+            }
 
         monkeypatch.setattr(pse, "open_persistent_session", _open)
         monkeypatch.setattr(pse, "send_round", _send)
 
         try:
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3618,6 +4579,7 @@ class TestPerSessionRecordingMirror:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=2,
                 require_validation=False,
@@ -3630,9 +4592,11 @@ class TestPerSessionRecordingMirror:
         chapters_path = run_dir / "reviewer" / "chapters.json"
         chapters_data = json.loads(chapters_path.read_text(encoding="utf-8"))
         slice_lines = [
-            line for line in (
-                run_dir / "reviewer" / "terminal-recording.jsonl"
-            ).read_text(encoding="utf-8").splitlines() if line.strip()
+            line
+            for line in (run_dir / "reviewer" / "terminal-recording.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
         ]
         slice_event_count = len(slice_lines)
         # Every chapter offset must be reachable inside the slice file.
@@ -3648,6 +4612,7 @@ class TestPerSessionRecordingMirror:
                 "route's all_events[offset:] will return empty content."
             )
 
+
 class TestEndToEndTimelineReadback:
     """Exercise the full viewer-side read path against real artifacts.
 
@@ -3661,7 +4626,9 @@ class TestEndToEndTimelineReadback:
     """
 
     def test_per_session_slice_returns_real_agent_output_to_viewer(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """End-to-end: agent writes events to the pair recording during
         rounds, the chapter-driven mirror appends them to the run-dir
@@ -3686,9 +4653,20 @@ class TestEndToEndTimelineReadback:
         # flowing through the same writer used at session open.
         writers: dict[str, MirroredTerminalRecordingWriter] = {}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             writer = MirroredTerminalRecordingWriter(
@@ -3723,6 +4701,12 @@ class TestEndToEndTimelineReadback:
 
         try:
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=registry,
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3734,6 +4718,7 @@ class TestEndToEndTimelineReadback:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=2,
                 require_validation=False,
@@ -3750,7 +4735,8 @@ class TestEndToEndTimelineReadback:
             run_identity=RunIdentity(issue_number=42, run_dir=run_dir),
         )
         reviewer_stream = accessor.get_review_exchange_phase_terminal_recording(
-            round_index=1, role="reviewer",
+            round_index=1,
+            role="reviewer",
         )
         reviewer_path = reviewer_stream.path
         reviewer_text = reviewer_path.read_text(encoding="utf-8")
@@ -3761,12 +4747,14 @@ class TestEndToEndTimelineReadback:
         # Decode the slice and assert the agent's payload survived the
         # mirror round-trip.
         decoded = _decode_terminal_recording(reviewer_path)
-        assert any(
-            "agent reviewer" in chunk for chunk in decoded
-        ), f"reviewer slice did not contain agent output; events={decoded}"
+        assert any("agent reviewer" in chunk for chunk in decoded), (
+            f"reviewer slice did not contain agent output; events={decoded}"
+        )
 
     def test_viewer_accessor_reads_slice_not_pair_recording(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The manifest's ``<role>_recording`` key must point at the
         per-session slice (inside run_dir), not the pair-scoped
@@ -3785,13 +4773,24 @@ class TestEndToEndTimelineReadback:
         state = _patch_persistent_runner(
             monkeypatch,
             response_script={
-                "reviewer": [{"response_type": "ok", "response_text": "ok",
-                              "getting_closer": True}],
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "ok",
+                        "getting_closer": True,
+                    }
+                ],
                 "coder": [],
             },
         )
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=state["registry"],
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3803,6 +4802,7 @@ class TestEndToEndTimelineReadback:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=2,
             require_validation=False,
@@ -3816,7 +4816,9 @@ class TestEndToEndTimelineReadback:
         # without writing real PTY bytes — the slice is touched empty.
         # The point of this test is the *path*, not the content.
         reviewer_stream = accessor.get_review_exchange_phase_terminal_recording(
-            round_index=1, role="reviewer", allow_empty=True,
+            round_index=1,
+            role="reviewer",
+            allow_empty=True,
         )
         # The viewer must land inside the run_dir, not in the pair dir
         # under persistent-pairs/. Otherwise a worktree teardown leaves
@@ -3858,10 +4860,17 @@ class TestAgentEnvPathIsolation:
             "process env so agents/tools that need the repo root know "
             "where it is. Agents never write to this path."
         ),
+        "ISSUE_ORCHESTRATOR_CONFIG_PATH": (
+            "Read-only runtime config selected by the orchestrator owner and "
+            "injected so completion commands use the same authoritative "
+            "configuration. Agents never write to this path."
+        ),
     }
 
     def test_every_agent_path_env_var_is_inside_worktree_or_allowlisted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -3869,9 +4878,20 @@ class TestAgentEnvPathIsolation:
         session_output = FileSystemSessionOutput()
         captured: dict[str, dict[str, str]] = {}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             writer = _build_pty_writer(recording_path)
             captured[role] = {
@@ -3881,12 +4901,22 @@ class TestAgentEnvPathIsolation:
             return _FakeSession(role, log_writer=writer)
 
         def _send(session, **_):  # noqa: ANN003
-            return {"response_type": "ok", "response_text": "ok", "getting_closer": True}
+            return {
+                "response_type": "ok",
+                "response_text": "ok",
+                "getting_closer": True,
+            }
 
         monkeypatch.setattr(pse, "open_persistent_session", _open)
         monkeypatch.setattr(pse, "send_round", _send)
 
         pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
             session_output=session_output,
             pair_registry=_FakePairRegistry(),
             persistent_pair_root=tmp_path / "persistent-pairs",
@@ -3898,6 +4928,7 @@ class TestAgentEnvPathIsolation:
             reviewer_label="agent:reviewer",
             coder_agent=_make_agent(prompt_path),
             reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
             max_rounds=1,
             max_no_progress=2,
             require_validation=False,
@@ -3931,12 +4962,12 @@ class TestAgentEnvPathIsolation:
 
 class TestSliceIsolationAcrossExchanges:
     """The per-session slice for exchange N must contain ONLY events
-    produced during exchange N. With cached pairs, the pair recording
-    accumulates across every exchange the pair handles — we must not
-    leak prior content into the new exchange's slice."""
+    produced during exchange N."""
 
     def test_two_exchanges_on_cached_pair_have_independent_slices(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from issue_orchestrator.infra.terminal_recording import (
             MirroredTerminalRecordingWriter,
@@ -3948,8 +4979,8 @@ class TestSliceIsolationAcrossExchanges:
         session_output = FileSystemSessionOutput()
         writers: dict[str, MirroredTerminalRecordingWriter] = {}
 
-        # Cache pairs across acquire calls so exchange 2 reuses the same
-        # writer (== same pair recording) that exchange 1 wrote into.
+        # The fake registry offers a cached pair on exchange 2. The pair
+        # contract must reject it because the process env belongs to exchange 1.
         cached_pair: dict[str, Any] = {}
 
         class _CachingFakePairRegistry(_FakePairRegistry):
@@ -3959,12 +4990,27 @@ class TestSliceIsolationAcrossExchanges:
                 self.acquired.append((issue_key, cached_pair["pair"]))
                 return cached_pair["pair"]
 
+            def release(self, issue_key, *, reason):  # type: ignore[override]
+                super().release(issue_key, reason=reason)
+                cached_pair.pop("pair", None)
+
         registry = _CachingFakePairRegistry()
         round_payloads: dict[str, list[bytes]] = {"coder": [], "reviewer": []}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             writer = MirroredTerminalRecordingWriter(
@@ -3997,6 +5043,12 @@ class TestSliceIsolationAcrossExchanges:
             for n in (1, 2):
                 exchange_counter["n"] = n
                 pse.run_persistent_session_exchange(
+                    exchange_run=_start_exchange_run(
+                        session_output=session_output,
+                        coder_worktree_path=coder_wt,
+                        issue_number=42,
+                        coder_label="agent:backend",
+                    ),
                     session_output=session_output,
                     pair_registry=registry,
                     persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4008,6 +5060,7 @@ class TestSliceIsolationAcrossExchanges:
                     reviewer_label="agent:reviewer",
                     coder_agent=_make_agent(prompt_path),
                     reviewer_agent=_make_agent(prompt_path),
+                    runtime_config=_runtime_config(tmp_path),
                     max_rounds=1,
                     max_no_progress=2,
                     require_validation=False,
@@ -4018,7 +5071,8 @@ class TestSliceIsolationAcrossExchanges:
 
         runs = sorted(
             [
-                r for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
+                r
+                for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
                 if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name
             ],
             key=lambda p: p.stat().st_mtime,
@@ -4042,7 +5096,9 @@ class TestSliceIsolationAcrossExchanges:
             )
 
     def test_coder_and_reviewer_slices_dont_cross_contaminate(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Each role's mirror writes only to its own role's slice. If
         we accidentally pass coder_mirror to reviewer's _send_role_round
@@ -4058,9 +5114,20 @@ class TestSliceIsolationAcrossExchanges:
         session_output = FileSystemSessionOutput()
         writers: dict[str, MirroredTerminalRecordingWriter] = {}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             writer = MirroredTerminalRecordingWriter(
@@ -4098,12 +5165,21 @@ class TestSliceIsolationAcrossExchanges:
                 # First reviewer response: changes_requested. Second: ok.
                 if not _send.first_reviewer_done:  # type: ignore[attr-defined]
                     _send.first_reviewer_done = True  # type: ignore[attr-defined]
-                    return {"response_type": "changes_requested",
-                            "response_text": "fix x", "getting_closer": True}
-                return {"response_type": "ok", "response_text": "ok",
-                        "getting_closer": True}
-            return {"response_type": "ok", "response_text": "fixed",
-                    "getting_closer": True}
+                    return {
+                        "response_type": "changes_requested",
+                        "response_text": "fix x",
+                        "getting_closer": True,
+                    }
+                return {
+                    "response_type": "ok",
+                    "response_text": "ok",
+                    "getting_closer": True,
+                }
+            return {
+                "response_type": "ok",
+                "response_text": "fixed",
+                "getting_closer": True,
+            }
 
         _send.first_reviewer_done = False  # type: ignore[attr-defined]
 
@@ -4112,6 +5188,12 @@ class TestSliceIsolationAcrossExchanges:
 
         try:
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4123,6 +5205,7 @@ class TestSliceIsolationAcrossExchanges:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=3,
                 max_no_progress=2,
                 require_validation=False,
@@ -4136,11 +5219,15 @@ class TestSliceIsolationAcrossExchanges:
             _decode_terminal_recording(run_dir / "coder" / "terminal-recording.jsonl"),
         )
         reviewer_slice = "".join(
-            _decode_terminal_recording(run_dir / "reviewer" / "terminal-recording.jsonl"),
+            _decode_terminal_recording(
+                run_dir / "reviewer" / "terminal-recording.jsonl"
+            ),
         )
 
         assert "ROLE-MARKER-coder" in coder_slice, "coder slice missing coder marker"
-        assert "ROLE-MARKER-reviewer" in reviewer_slice, "reviewer slice missing reviewer marker"
+        assert "ROLE-MARKER-reviewer" in reviewer_slice, (
+            "reviewer slice missing reviewer marker"
+        )
         # The smoking gun: cross-contamination.
         assert "ROLE-MARKER-reviewer" not in coder_slice, (
             "reviewer marker leaked into coder slice — mirrors got crossed"
@@ -4150,7 +5237,9 @@ class TestSliceIsolationAcrossExchanges:
         )
 
     def test_concurrent_issues_have_isolated_slices(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Two issues running in parallel must not share manifest slice
         paths. A path collision would silently mix issue #360's reviewer
@@ -4171,19 +5260,27 @@ class TestSliceIsolationAcrossExchanges:
 
         worktrees = {360: _setup(360), 361: _setup(361)}
         writers_by_issue: dict[int, dict[str, MirroredTerminalRecordingWriter]] = {
-            360: {}, 361: {},
+            360: {},
+            361: {},
         }
         active_issue = {"n": 360}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = (
-                "reviewer" if "reviewer-wt-" in Path(working_dir).name else "coder"
-            )
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = "reviewer" if "reviewer-wt-" in Path(working_dir).name else "coder"
             assert recording_path is not None
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             writer = MirroredTerminalRecordingWriter(
-                recording_path, initial_rows=40, initial_cols=120,
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
             )
             writers_by_issue[active_issue["n"]][role] = writer
             session = _FakeSession(role)
@@ -4194,8 +5291,11 @@ class TestSliceIsolationAcrossExchanges:
             role = session.role
             issue = active_issue["n"]
             writers_by_issue[issue][role].write(f"ISSUE-{issue}-{role}\n".encode())
-            return {"response_type": "ok", "response_text": f"{role} ok",
-                    "getting_closer": True}
+            return {
+                "response_type": "ok",
+                "response_text": f"{role} ok",
+                "getting_closer": True,
+            }
 
         monkeypatch.setattr(pse, "open_persistent_session", _open)
         monkeypatch.setattr(pse, "send_round", _send)
@@ -4205,6 +5305,12 @@ class TestSliceIsolationAcrossExchanges:
             for issue, (coder_wt, reviewer_wt) in worktrees.items():
                 active_issue["n"] = issue
                 pse.run_persistent_session_exchange(
+                    exchange_run=_start_exchange_run(
+                        session_output=session_output,
+                        coder_worktree_path=coder_wt,
+                        issue_number=issue,
+                        coder_label="agent:backend",
+                    ),
                     session_output=session_output,
                     pair_registry=_FakePairRegistry(),
                     persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4216,6 +5322,7 @@ class TestSliceIsolationAcrossExchanges:
                     reviewer_label="agent:reviewer",
                     coder_agent=_make_agent(prompt_path),
                     reviewer_agent=_make_agent(prompt_path),
+                    runtime_config=_runtime_config(tmp_path),
                     max_rounds=1,
                     max_no_progress=2,
                     require_validation=False,
@@ -4228,7 +5335,9 @@ class TestSliceIsolationAcrossExchanges:
         for issue, (coder_wt, _) in worktrees.items():
             run_dir = _find_review_exchange_run_dir(coder_wt)
             reviewer_slice = "".join(
-                _decode_terminal_recording(run_dir / "reviewer" / "terminal-recording.jsonl"),
+                _decode_terminal_recording(
+                    run_dir / "reviewer" / "terminal-recording.jsonl"
+                ),
             )
             other = 360 if issue == 361 else 361
             assert f"ISSUE-{issue}-reviewer" in reviewer_slice
@@ -4263,35 +5372,47 @@ class TestLoopBoundCounting:
             )
             run_dir.mkdir()
             (run_dir / "manifest.json").write_text(
-                json.dumps({
-                    "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
-                    "review_exchange_dir": str(run_dir / "review-exchange"),
-                }),
+                json.dumps(
+                    {
+                        "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
+                        "review_exchange_dir": str(run_dir / "review-exchange"),
+                    }
+                ),
                 encoding="utf-8",
             )
             exchange_dir = run_dir / "review-exchange"
             exchange_dir.mkdir()
             (exchange_dir / "summary.json").write_text(
-                json.dumps(summary), encoding="utf-8",
+                json.dumps(_summary_payload(summary)),
+                encoding="utf-8",
             )
             # Force ascending mtime (idx=0 oldest, idx=N-1 newest).
             os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
         return FileSystemSessionOutput(), worktree
 
     def test_all_no_completion_summaries_count_to_their_total(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
-        so, wt = self._session_output_with_summaries(tmp_path, [
-            {"status": "error", "reason": "reviewer_no_completion"},
-            {"status": "error", "reason": "reviewer_no_completion"},
-            {"status": "error", "reason": "reviewer_no_completion"},
-        ])
-        assert so.count_consecutive_review_exchange_no_completion(
-            wt, "coding-1",
-        ) == 3
+        so, wt = self._session_output_with_summaries(
+            tmp_path,
+            [
+                {"status": "error", "reason": "reviewer_no_completion"},
+                {"status": "error", "reason": "reviewer_no_completion"},
+                {"status": "error", "reason": "reviewer_no_completion"},
+            ],
+        )
+        assert (
+            so.count_consecutive_review_exchange_no_completion(
+                wt,
+                "coding-1",
+            )
+            == 3
+        )
 
     def test_manifest_started_at_beats_touched_coding_dir_mtime(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """A touched coding run dir must not reset a newer timeout streak.
 
@@ -4322,30 +5443,38 @@ class TestLoopBoundCounting:
             exchange_dir = run_dir / "review-exchange"
             exchange_dir.mkdir()
             (run_dir / "manifest.json").write_text(
-                json.dumps({
-                    "started_at": f"2026-01-0{idx + 2}T00:00:00+00:00",
-                    "parent_session_name": "coding-1",
-                    "review_exchange_dir": str(exchange_dir),
-                }),
+                json.dumps(
+                    {
+                        "started_at": f"2026-01-0{idx + 2}T00:00:00+00:00",
+                        "parent_session_name": "coding-1",
+                        "review_exchange_dir": str(exchange_dir),
+                    }
+                ),
                 encoding="utf-8",
             )
             (exchange_dir / "summary.json").write_text(
-                json.dumps({
-                    "status": "error",
-                    "reason": "reviewer_no_completion",
-                }),
+                json.dumps(
+                    _summary_payload({
+                        "status": "error",
+                        "reason": "reviewer_no_completion",
+                    })
+                ),
                 encoding="utf-8",
             )
             os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
 
         so = FileSystemSessionOutput()
-        assert so.count_consecutive_review_exchange_no_completion(
-            worktree,
-            "coding-1",
-        ) == 3
+        assert (
+            so.count_consecutive_review_exchange_no_completion(
+                worktree,
+                "coding-1",
+            )
+            == 3
+        )
 
     def test_run_dir_timestamp_orders_partial_manifest_before_mtime(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """A partial manifest still has a durable timestamp in its run id."""
         worktree = tmp_path / "wt"
@@ -4366,59 +5495,84 @@ class TestLoopBoundCounting:
         exchange_dir = run_dir / "review-exchange"
         exchange_dir.mkdir()
         (run_dir / "manifest.json").write_text(
-            json.dumps({
-                "parent_session_name": "coding-1",
-                "review_exchange_dir": str(exchange_dir),
-            }),
+            json.dumps(
+                {
+                    "parent_session_name": "coding-1",
+                    "review_exchange_dir": str(exchange_dir),
+                }
+            ),
             encoding="utf-8",
         )
         (exchange_dir / "summary.json").write_text(
-            json.dumps({
-                "status": "error",
-                "reason": "reviewer_no_completion",
-            }),
+            json.dumps(
+                _summary_payload({
+                    "status": "error",
+                    "reason": "reviewer_no_completion",
+                })
+            ),
             encoding="utf-8",
         )
         os.utime(run_dir, (1700000000, 1700000000))
 
         so = FileSystemSessionOutput()
-        assert so.count_consecutive_review_exchange_no_completion(
-            worktree,
-            "coding-1",
-        ) == 1
+        assert (
+            so.count_consecutive_review_exchange_no_completion(
+                worktree,
+                "coding-1",
+            )
+            == 1
+        )
 
     def test_clean_ok_resets_count_to_zero(self, tmp_path: Path) -> None:
         # Sequence (oldest → newest): error, error, ok, error, error.
         # Newest-first traversal: error, error, ok → stop at ok.
-        so, wt = self._session_output_with_summaries(tmp_path, [
-            {"status": "error", "reason": "reviewer_no_completion"},
-            {"status": "error", "reason": "reviewer_no_completion"},
-            {"status": "ok", "reason": "reviewer_ok"},
-            {"status": "error", "reason": "reviewer_no_completion"},
-            {"status": "error", "reason": "reviewer_no_completion"},
-        ])
-        assert so.count_consecutive_review_exchange_no_completion(
-            wt, "coding-1",
-        ) == 2
+        so, wt = self._session_output_with_summaries(
+            tmp_path,
+            [
+                {"status": "error", "reason": "reviewer_no_completion"},
+                {"status": "error", "reason": "reviewer_no_completion"},
+                {"status": "ok", "reason": "reviewer_ok"},
+                {"status": "error", "reason": "reviewer_no_completion"},
+                {"status": "error", "reason": "reviewer_no_completion"},
+            ],
+        )
+        assert (
+            so.count_consecutive_review_exchange_no_completion(
+                wt,
+                "coding-1",
+            )
+            == 2
+        )
 
     def test_different_error_reason_resets_count(self, tmp_path: Path) -> None:
         # A coder_protocol_error is a different failure mode — not the
         # runaway we're trying to bound. Counter must stop at it.
-        so, wt = self._session_output_with_summaries(tmp_path, [
-            {"status": "error", "reason": "reviewer_no_completion"},
-            {"status": "error", "reason": "coder_protocol_error"},
-            {"status": "error", "reason": "reviewer_no_completion"},
-        ])
+        so, wt = self._session_output_with_summaries(
+            tmp_path,
+            [
+                {"status": "error", "reason": "reviewer_no_completion"},
+                {"status": "error", "reason": "coder_protocol_error"},
+                {"status": "error", "reason": "reviewer_no_completion"},
+            ],
+        )
         # Newest-first: error/no_completion (1), error/protocol_error (stop).
-        assert so.count_consecutive_review_exchange_no_completion(
-            wt, "coding-1",
-        ) == 1
+        assert (
+            so.count_consecutive_review_exchange_no_completion(
+                wt,
+                "coding-1",
+            )
+            == 1
+        )
 
     def test_no_summaries_returns_zero(self, tmp_path: Path) -> None:
         so, wt = self._session_output_with_summaries(tmp_path, [])
-        assert so.count_consecutive_review_exchange_no_completion(
-            wt, "coding-1",
-        ) == 0
+        assert (
+            so.count_consecutive_review_exchange_no_completion(
+                wt,
+                "coding-1",
+            )
+            == 0
+        )
 
     def test_coding_session_run_dir_resets_count(self, tmp_path: Path) -> None:
         """A non-review-exchange run_dir between failures must stop the
@@ -4445,15 +5599,19 @@ class TestLoopBoundCounting:
             )
             run_dir.mkdir()
             (run_dir / "manifest.json").write_text(
-                json.dumps({
-                    "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
-                    "review_exchange_dir": str(run_dir / "review-exchange"),
-                }), encoding="utf-8",
+                json.dumps(
+                    {
+                        "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
+                        "review_exchange_dir": str(run_dir / "review-exchange"),
+                    }
+                ),
+                encoding="utf-8",
             )
             exchange_dir = run_dir / "review-exchange"
             exchange_dir.mkdir()
             (exchange_dir / "summary.json").write_text(
-                json.dumps(summary), encoding="utf-8",
+                json.dumps(_summary_payload(summary)),
+                encoding="utf-8",
             )
             os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
 
@@ -4461,44 +5619,66 @@ class TestLoopBoundCounting:
             run_dir = sessions_dir / f"2026010{idx + 1}T000000Z__coding-1"
             run_dir.mkdir()
             (run_dir / "manifest.json").write_text(
-                json.dumps({
-                    "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
-                }), encoding="utf-8",
+                json.dumps(
+                    {
+                        "started_at": f"2026-01-0{idx + 1}T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
             )
             os.utime(run_dir, (1700000000 + idx * 100, 1700000000 + idx * 100))
 
         # idx 0, 1: failures from prior coding session A
-        _make_review_exchange(0, {"status": "error", "reason": "reviewer_no_completion"})
-        _make_review_exchange(1, {"status": "error", "reason": "reviewer_no_completion"})
+        _make_review_exchange(
+            0, {"status": "error", "reason": "reviewer_no_completion"}
+        )
+        _make_review_exchange(
+            1, {"status": "error", "reason": "reviewer_no_completion"}
+        )
         # idx 2: fresh coding session B kicked off (NEW coder turn)
         _make_coding(2)
         # idx 3: first review-exchange under B fails
-        _make_review_exchange(3, {"status": "error", "reason": "reviewer_no_completion"})
+        _make_review_exchange(
+            3, {"status": "error", "reason": "reviewer_no_completion"}
+        )
 
         so = FileSystemSessionOutput()
         # Newest-first walk: error (1), coding-1 (boundary — STOP).
         # Pre-fix this returned 3 (counts skipped the coding-1 dir).
-        assert so.count_consecutive_review_exchange_no_completion(
-            worktree, "coding-1",
-        ) == 1, (
+        assert (
+            so.count_consecutive_review_exchange_no_completion(
+                worktree,
+                "coding-1",
+            )
+            == 1
+        ), (
             "loop bound bled across a coding-session boundary; the new "
             "coder turn must reset the no-completion quota"
         )
 
     def test_boundary_excludes_pre_scratch_reset_failures(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
-        so, wt = self._session_output_with_summaries(tmp_path, [
-            {"status": "error", "reason": "reviewer_no_completion"},
-            {"status": "error", "reason": "reviewer_no_completion"},
-            {"status": "error", "reason": "reviewer_no_completion"},
-        ])
+        so, wt = self._session_output_with_summaries(
+            tmp_path,
+            [
+                {"status": "error", "reason": "reviewer_no_completion"},
+                {"status": "error", "reason": "reviewer_no_completion"},
+                {"status": "error", "reason": "reviewer_no_completion"},
+            ],
+        )
         # Only the newest summary (started_at 2026-01-03) is past the
         # boundary; the older two are pre-reset and don't count.
         boundary = "2026-01-03T00:00:00+00:00"
-        assert so.count_consecutive_review_exchange_no_completion(
-            wt, "coding-1", not_before_started_at=boundary,
-        ) == 1
+        assert (
+            so.count_consecutive_review_exchange_no_completion(
+                wt,
+                "coding-1",
+                not_before_started_at=boundary,
+            )
+            == 1
+        )
 
 
 class TestLoopBoundEscalation:
@@ -4514,6 +5694,7 @@ class TestLoopBoundEscalation:
         from issue_orchestrator.control.completion_action_planner import (
             has_review_exchange_errors,
         )
+
         sample = (
             "review_exchange: 3 consecutive reviewer/coder no-completion "
             "failures (max 3) — escalating to needs-human"
@@ -4552,7 +5733,8 @@ def _find_review_exchange_run_dir(coder_wt: Path) -> Path:
     """Locate the single timestamped review-exchange run_dir under a
     coder worktree (filtering symlinks the friendly-name layer creates)."""
     runs = [
-        r for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
+        r
+        for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
         if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name
     ]
     assert len(runs) == 1, f"expected one run_dir, got {runs}"
@@ -4601,7 +5783,8 @@ class TestContinuousSliceMirroring:
     """
 
     def test_writer_fans_writes_to_slice_continuously_with_no_chapters(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Writer-level test: ``add_mirror_recording`` makes every
         subsequent ``write`` fan out to both files. No chapter-driven
@@ -4664,7 +5847,9 @@ class TestContinuousSliceMirroring:
             writer.close()
 
     def test_slice_fills_mid_round_without_chapter_flush(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """End-to-end: drive an exchange where the agent emits output
         but the round never completes (round-end chapter never fires).
@@ -4685,9 +5870,20 @@ class TestContinuousSliceMirroring:
         session_output = FileSystemSessionOutput()
         writers: dict[str, MirroredTerminalRecordingWriter] = {}
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             writer = MirroredTerminalRecordingWriter(
@@ -4710,8 +5906,11 @@ class TestContinuousSliceMirroring:
             role = session.role
             # Multiple discrete writes during the round — each one is
             # an event drained from the PTY in production.
-            for chunk in (b"agent thinking step 1\n", b"agent thinking step 2\n",
-                          b"agent thinking step 3\n"):
+            for chunk in (
+                b"agent thinking step 1\n",
+                b"agent thinking step 2\n",
+                b"agent thinking step 3\n",
+            ):
                 writers[role].write(chunk)
             # Capture the slice file's bytes right now — AT THE MOMENT
             # the agent has emitted its output but BEFORE _send_role_round
@@ -4727,6 +5926,7 @@ class TestContinuousSliceMirroring:
             from issue_orchestrator.execution.persistent_round_runner import (
                 PersistentRoundTimeoutError,
             )
+
             raise PersistentRoundTimeoutError("simulated mid-round read")
 
         monkeypatch.setattr(pse, "open_persistent_session", _open)
@@ -4734,6 +5934,12 @@ class TestContinuousSliceMirroring:
 
         try:
             outcome = pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4745,6 +5951,7 @@ class TestContinuousSliceMirroring:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=2,
                 require_validation=False,
@@ -4761,8 +5968,11 @@ class TestContinuousSliceMirroring:
             "live mirroring is not attached at exchange start"
         )
         decoded = _decode_writer_output(slice_snapshots["reviewer"].decode("utf-8"))
-        for marker in ("agent thinking step 1", "agent thinking step 2",
-                       "agent thinking step 3"):
+        for marker in (
+            "agent thinking step 1",
+            "agent thinking step 2",
+            "agent thinking step 3",
+        ):
             assert marker in decoded, (
                 f"slice snapshot taken mid-round missing {marker!r}; "
                 "the writer is not fanning out to the slice in real time. "
@@ -4778,12 +5988,16 @@ class TestContinuousSliceMirroring:
             run_identity=RunIdentity(issue_number=42, run_dir=run_dir),
         )
         artifact = accessor.get_review_exchange_phase_terminal_recording(
-            round_index=1, role="reviewer", allow_empty=True,
+            round_index=1,
+            role="reviewer",
+            allow_empty=True,
         )
         assert artifact.path.is_relative_to(run_dir), artifact.path
 
     def test_attach_failure_propagates_loudly_no_silent_empty_timeline(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """If ``add_mirror_recording`` raises during attach, the exchange
         must propagate the failure (REVIEW_EXCHANGE_FAILED + re-raise),
@@ -4817,13 +6031,26 @@ class TestContinuousSliceMirroring:
             def add_mirror_recording(self, path, *, seed_resize=True):  # noqa: ARG002
                 raise OSError("simulated attach failure")
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             writer = _PoisonAttachWriter(
-                recording_path, initial_rows=40, initial_cols=120,
+                recording_path,
+                initial_rows=40,
+                initial_cols=120,
             )
             return _FakeSession(role, log_writer=writer)
 
@@ -4840,6 +6067,12 @@ class TestContinuousSliceMirroring:
 
         with pytest.raises(OSError, match="simulated attach failure"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4851,6 +6084,7 @@ class TestContinuousSliceMirroring:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=2,
                 require_validation=False,
@@ -4861,8 +6095,7 @@ class TestContinuousSliceMirroring:
         # The orchestrator must hear about the failure as a
         # definitive REVIEW_EXCHANGE_FAILED — not silent continuation.
         assert any(
-            evt.event_type is EventName.REVIEW_EXCHANGE_FAILED
-            for evt in sink.events
+            evt.event_type is EventName.REVIEW_EXCHANGE_FAILED for evt in sink.events
         ), (
             "attach failure did not surface as REVIEW_EXCHANGE_FAILED; "
             "the loop bound (PR #6267) cannot govern retries on a "
@@ -4870,7 +6103,9 @@ class TestContinuousSliceMirroring:
         )
 
     def test_missing_log_writer_fails_at_pair_recording_contract(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Production invariant: every PersistentSession opened with a
         recording_path carries a real writer. If a fixture (or a
@@ -4882,9 +6117,20 @@ class TestContinuousSliceMirroring:
         coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
         session_output = FileSystemSessionOutput()
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             # Simulated regression: session opened without a writer.
             return _FakeSession(role, log_writer=None)
 
@@ -4896,6 +6142,12 @@ class TestContinuousSliceMirroring:
 
         with pytest.raises(RuntimeError, match="no_writer"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=_FakePairRegistry(),
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4907,13 +6159,16 @@ class TestContinuousSliceMirroring:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=2,
                 require_validation=False,
             )
 
     def test_slice_detaches_at_exchange_end_no_leak_to_next_exchange(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``_detach_slice_mirror`` must run in a finally block so a
         subsequent exchange (cached pair, reused writer) doesn't keep
@@ -4937,9 +6192,24 @@ class TestContinuousSliceMirroring:
                 self.acquired.append((issue_key, cached_pair["pair"]))
                 return cached_pair["pair"]
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
-            role = "reviewer" if Path(working_dir).name.startswith("reviewer-wt") else "coder"
+            def release(self, issue_key, *, reason):  # type: ignore[override]
+                super().release(issue_key, reason=reason)
+                cached_pair.pop("pair", None)
+
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
+            role = (
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
+                else "coder"
+            )
             assert recording_path is not None
             recording_path.parent.mkdir(parents=True, exist_ok=True)
             writer = MirroredTerminalRecordingWriter(
@@ -4956,8 +6226,11 @@ class TestContinuousSliceMirroring:
             writers[session.role].write(
                 f"exchange-{exchange_n['n']}-{session.role}\n".encode(),
             )
-            return {"response_type": "ok", "response_text": "ok",
-                    "getting_closer": True}
+            return {
+                "response_type": "ok",
+                "response_text": "ok",
+                "getting_closer": True,
+            }
 
         monkeypatch.setattr(pse, "open_persistent_session", _open)
         monkeypatch.setattr(pse, "send_round", _send)
@@ -4966,6 +6239,12 @@ class TestContinuousSliceMirroring:
             for n in (1, 2):
                 exchange_n["n"] = n
                 pse.run_persistent_session_exchange(
+                    exchange_run=_start_exchange_run(
+                        session_output=session_output,
+                        coder_worktree_path=coder_wt,
+                        issue_number=42,
+                        coder_label="agent:backend",
+                    ),
                     session_output=session_output,
                     pair_registry=_CachingFakePairRegistry(),
                     persistent_pair_root=tmp_path / "persistent-pairs",
@@ -4977,6 +6256,7 @@ class TestContinuousSliceMirroring:
                     reviewer_label="agent:reviewer",
                     coder_agent=_make_agent(prompt_path),
                     reviewer_agent=_make_agent(prompt_path),
+                    runtime_config=_runtime_config(tmp_path),
                     max_rounds=1,
                     max_no_progress=2,
                     require_validation=False,
@@ -4987,8 +6267,11 @@ class TestContinuousSliceMirroring:
 
         # Find both exchange run_dirs in mtime order.
         runs = sorted(
-            [r for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
-             if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name],
+            [
+                r
+                for r in (coder_wt / ".issue-orchestrator" / "sessions").iterdir()
+                if r.is_dir() and not r.is_symlink() and "review-exchange" in r.name
+            ],
             key=lambda p: p.stat().st_mtime,
         )
         assert len(runs) == 2
@@ -5053,17 +6336,22 @@ class TestProductionLayoutCacheResolution:
 
     @staticmethod
     def _write_validation_record(
-        path: Path, *, head_sha: str, passed: bool = True,
+        path: Path,
+        *,
+        head_sha: str,
+        passed: bool = True,
     ) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps({
-                "schema_version": 1,
-                "suite": "agent_gate",
-                "head_sha": head_sha,
-                "passed": passed,
-                "exit_code": 0 if passed else 1,
-            }),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "suite": "agent_gate",
+                    "head_sha": head_sha,
+                    "passed": passed,
+                    "exit_code": 0 if passed else 1,
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -5092,7 +6380,8 @@ class TestProductionLayoutCacheResolution:
         if validation_passed is not None:
             summary["validation_passed"] = validation_passed
         (exchange_dir / "summary.json").write_text(
-            json.dumps(summary), encoding="utf-8",
+            json.dumps(ReviewExchangeSummaryV1.from_payload(summary).to_payload()),
+            encoding="utf-8",
         )
 
     def _build_completion_review_exchange(
@@ -5157,10 +6446,13 @@ class TestProductionLayoutCacheResolution:
         coder_run = sessions / f"20260506-100000Z__{coder_session_name}"
         coder_run.mkdir()
         (coder_run / "manifest.json").write_text(
-            json.dumps({
-                "started_at": "2026-05-06T10:00:00+00:00",
-                "session_name": coder_session_name,
-            }), encoding="utf-8",
+            json.dumps(
+                {
+                    "started_at": "2026-05-06T10:00:00+00:00",
+                    "session_name": coder_session_name,
+                }
+            ),
+            encoding="utf-8",
         )
         self._write_validation_record(
             coder_run / "validation-record.json",
@@ -5182,7 +6474,8 @@ class TestProductionLayoutCacheResolution:
         if parent != "<legacy>":
             manifest["parent_session_name"] = parent
         (exchange_run / "manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8",
+            json.dumps(manifest),
+            encoding="utf-8",
         )
         self._write_summary_with_facts(
             exchange_dir,
@@ -5199,7 +6492,8 @@ class TestProductionLayoutCacheResolution:
     # -----------------------------------------------------------------
 
     def test_reviewer_ok_summary_at_current_head_is_reused(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """The exact production scenario behind the runaway: coder
         ran validation at head X, review-exchange produced an OK
@@ -5208,6 +6502,9 @@ class TestProductionLayoutCacheResolution:
         must REUSE that OK. Pre-state-machine this returned None
         and the orchestrator spawned a redundant review-exchange
         every ~5 seconds until needs-human."""
+        from issue_orchestrator.control.completion_review_exchange import (
+            ReuseResumeResolution,
+        )
         from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
 
         worktree, coder_run = self._stage_run(
@@ -5218,7 +6515,8 @@ class TestProductionLayoutCacheResolution:
             review_head_sha="HEAD_X",
         )
         review = self._build_completion_review_exchange(
-            tmp_path, FileSystemSessionOutput(),
+            tmp_path,
+            FileSystemSessionOutput(),
         )
         resolution = review.decide_review_exchange_resumption(
             worktree=worktree,
@@ -5227,16 +6525,18 @@ class TestProductionLayoutCacheResolution:
             current_validation_record_path=coder_run / "validation-record.json",
         )
         assert resolution.decision is ResumeDecision.REUSE_APPROVAL
-        assert resolution.outcome is not None
-        assert resolution.outcome.status == "ok"
-        assert resolution.outcome.summary.get("head_sha") == "HEAD_X"
+        assert isinstance(resolution, ReuseResumeResolution)
+        assert resolution.cached.outcome.status == "ok"
+        assert resolution.cached.outcome.summary is not None
+        assert resolution.cached.outcome.summary.head_sha == "HEAD_X"
 
     # -----------------------------------------------------------------
     # State-table cells, one production-layout case each
     # -----------------------------------------------------------------
 
     def test_reviewer_ok_at_old_head_is_ignored_stale(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
 
@@ -5248,7 +6548,8 @@ class TestProductionLayoutCacheResolution:
             review_head_sha="HEAD_OLD",
         )
         review = self._build_completion_review_exchange(
-            tmp_path, FileSystemSessionOutput(),
+            tmp_path,
+            FileSystemSessionOutput(),
         )
         resolution = review.decide_review_exchange_resumption(
             worktree=worktree,
@@ -5259,7 +6560,8 @@ class TestProductionLayoutCacheResolution:
         assert resolution.decision is ResumeDecision.IGNORE_STALE
 
     def test_stopped_no_progress_at_current_head_reuses_halt(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
 
@@ -5271,7 +6573,8 @@ class TestProductionLayoutCacheResolution:
             review_head_sha="HEAD_X",
         )
         review = self._build_completion_review_exchange(
-            tmp_path, FileSystemSessionOutput(),
+            tmp_path,
+            FileSystemSessionOutput(),
         )
         resolution = review.decide_review_exchange_resumption(
             worktree=worktree,
@@ -5282,7 +6585,8 @@ class TestProductionLayoutCacheResolution:
         assert resolution.decision is ResumeDecision.REUSE_HALT
 
     def test_max_rounds_exceeded_at_current_head_reuses_halt(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         from issue_orchestrator.domain.review_exchange_resume import ResumeDecision
 
@@ -5294,7 +6598,8 @@ class TestProductionLayoutCacheResolution:
             review_head_sha="HEAD_X",
         )
         review = self._build_completion_review_exchange(
-            tmp_path, FileSystemSessionOutput(),
+            tmp_path,
+            FileSystemSessionOutput(),
         )
         resolution = review.decide_review_exchange_resumption(
             worktree=worktree,
@@ -5305,7 +6610,8 @@ class TestProductionLayoutCacheResolution:
         assert resolution.decision is ResumeDecision.REUSE_HALT
 
     def test_coder_protocol_error_at_current_head_reuses_halt(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Critical: ``coder_protocol_error`` is deterministic terminal —
         won't fix itself by retrying on the same head. Must reuse-halt
@@ -5321,7 +6627,8 @@ class TestProductionLayoutCacheResolution:
             review_head_sha="HEAD_X",
         )
         review = self._build_completion_review_exchange(
-            tmp_path, FileSystemSessionOutput(),
+            tmp_path,
+            FileSystemSessionOutput(),
         )
         resolution = review.decide_review_exchange_resumption(
             worktree=worktree,
@@ -5332,7 +6639,8 @@ class TestProductionLayoutCacheResolution:
         assert resolution.decision is ResumeDecision.REUSE_HALT
 
     def test_reviewer_no_completion_returns_count_and_retry(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """``*_no_completion`` errors do NOT cache-hit; caller spawns
         fresh and the budget governs retries. The loader returns
@@ -5350,7 +6658,8 @@ class TestProductionLayoutCacheResolution:
             validation_passed=True,
         )
         review = self._build_completion_review_exchange(
-            tmp_path, FileSystemSessionOutput(),
+            tmp_path,
+            FileSystemSessionOutput(),
         )
         resolution = review.decide_review_exchange_resumption(
             worktree=worktree,
@@ -5361,10 +6670,11 @@ class TestProductionLayoutCacheResolution:
         assert resolution.decision is ResumeDecision.COUNT_NO_COMPLETION_AND_RETRY
         # Outcome NOT populated for retry paths — caller must spawn
         # fresh, not reuse the failure.
-        assert resolution.outcome is None
+        assert not hasattr(resolution, "cached")
 
     def test_legacy_summary_without_head_sha_is_stale(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """Backwards compat: pre-state-machine summaries don't carry
         ``head_sha`` / ``validation_passed`` in the JSON. Under
@@ -5384,7 +6694,8 @@ class TestProductionLayoutCacheResolution:
             review_parent_session="<legacy>",
         )
         review = self._build_completion_review_exchange(
-            tmp_path, FileSystemSessionOutput(),
+            tmp_path,
+            FileSystemSessionOutput(),
         )
         resolution = review.decide_review_exchange_resumption(
             worktree=worktree,
@@ -5395,7 +6706,8 @@ class TestProductionLayoutCacheResolution:
         assert resolution.decision is ResumeDecision.IGNORE_STALE
 
     def test_parent_session_name_filter_isolates_coding_sessions(
-        self, tmp_path: Path,
+        self,
+        tmp_path: Path,
     ) -> None:
         """A review-exchange run whose ``parent_session_name`` doesn't
         match the requested session must be skipped. Coding session
@@ -5412,15 +6724,19 @@ class TestProductionLayoutCacheResolution:
             review_parent_session="coding-1",  # belongs to a DIFFERENT session
         )
         review = self._build_completion_review_exchange(
-            tmp_path, FileSystemSessionOutput(),
+            tmp_path,
+            FileSystemSessionOutput(),
         )
         resolution = review.decide_review_exchange_resumption(
             worktree=worktree,
             session_name="coding-2",
             require_validation=True,
             current_validation_record_path=(
-                worktree / ".issue-orchestrator" / "sessions"
-                / "20260506-100000Z__coding-2" / "validation-record.json"
+                worktree
+                / ".issue-orchestrator"
+                / "sessions"
+                / "20260506-100000Z__coding-2"
+                / "validation-record.json"
             ),
         )
         # The cached OK belongs to coding-1, not coding-2. Loader skips it.
@@ -5429,7 +6745,9 @@ class TestProductionLayoutCacheResolution:
 
 class TestSessionCleanup:
     def test_sessions_closed_even_on_round_exception(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -5450,6 +6768,12 @@ class TestSessionCleanup:
 
         with pytest.raises(RuntimeError, match="unexpected"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=state["registry"],
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -5461,6 +6785,7 @@ class TestSessionCleanup:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=2,
                 require_validation=False,
@@ -5468,9 +6793,7 @@ class TestSessionCleanup:
                 event_context=ctx,
             )
 
-        assert state["registry"].released == [
-            (42, "review-exchange-exception")
-        ]
+        assert state["registry"].released == [(42, "review-exchange-exception")]
         # And the failure event was emitted before raising.
         assert any(
             evt.event_type is EventName.REVIEW_EXCHANGE_FAILED for evt in sink.events
@@ -5491,7 +6814,9 @@ class TestSpawnPartialConstructionCleanup:
     """
 
     def test_coder_session_is_closed_when_reviewer_open_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         prompt_path = tmp_path / "p.md"
         prompt_path.write_text("Prompt", encoding="utf-8")
@@ -5501,10 +6826,18 @@ class TestSpawnPartialConstructionCleanup:
         opened_sessions: list[_FakeSession] = []
         closed_sessions: list[_FakeSession] = []
 
-        def _open(*, command, working_dir, env, recording_path=None,
-                  additional_recording_paths=None, mirror_path=None):  # noqa: ARG001
+        def _open(
+            *,
+            command,
+            working_dir,
+            env,
+            recording_path=None,
+            additional_recording_paths=None,
+            mirror_path=None,
+        ):  # noqa: ARG001
             role = (
-                "reviewer" if Path(working_dir).name.startswith("reviewer-wt")
+                "reviewer"
+                if Path(working_dir).name.startswith("reviewer-wt")
                 else "coder"
             )
             if role == "reviewer":
@@ -5526,6 +6859,12 @@ class TestSpawnPartialConstructionCleanup:
         registry = _FakePairRegistry()
         with pytest.raises(RuntimeError, match="reviewer pty bring-up failed"):
             pse.run_persistent_session_exchange(
+                exchange_run=_start_exchange_run(
+                    session_output=session_output,
+                    coder_worktree_path=coder_wt,
+                    issue_number=42,
+                    coder_label="agent:backend",
+                ),
                 session_output=session_output,
                 pair_registry=registry,
                 persistent_pair_root=tmp_path / "persistent-pairs",
@@ -5537,6 +6876,7 @@ class TestSpawnPartialConstructionCleanup:
                 reviewer_label="agent:reviewer",
                 coder_agent=_make_agent(prompt_path),
                 reviewer_agent=_make_agent(prompt_path),
+                runtime_config=_runtime_config(tmp_path),
                 max_rounds=1,
                 max_no_progress=2,
                 require_validation=False,
