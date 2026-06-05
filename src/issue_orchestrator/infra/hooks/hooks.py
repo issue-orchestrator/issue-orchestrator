@@ -32,6 +32,7 @@ from ._hook_test_runner import (
     is_blocked,
     run_hook_test_cases,
 )
+from ...adapters.hooks._process_group import run_command_in_process_group
 from ...adapters.hooks.codex import CodexAdapter
 from ._types import (
     AiAgentAdapter,
@@ -318,7 +319,7 @@ class ClaudeCodeAdapter(AiAgentAdapter):
             )
 
             try:
-                result = subprocess.run(
+                result = run_command_in_process_group(
                     [
                         "claude",
                         "--print",
@@ -328,8 +329,6 @@ class ClaudeCodeAdapter(AiAgentAdapter):
                         prompt,
                     ],
                     cwd=work_repo,
-                    capture_output=True,
-                    text=True,
                     env=_test_ai_gate_env(project_root),
                     timeout=timeout,
                 )
