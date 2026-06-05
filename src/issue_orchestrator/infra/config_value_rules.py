@@ -9,7 +9,22 @@ settings registry so each constraint has exactly one owner.
 
 from __future__ import annotations
 
+from typing import Any
+
 VALID_NIT_POLICIES = frozenset({"ignore", "surface", "address"})
+
+
+def normalize_optional_mapping(value: Any) -> Any:
+    """Normalize a YAML mapping value at load time.
+
+    YAML's empty-value spelling (``by_agent:`` with nothing under it)
+    parses as None and idiomatically means an empty mapping - treat it as
+    one. Real mappings are copied; any other shape passes through
+    unchanged so ``Config.validate()`` reports it loudly.
+    """
+    if value is None:
+        return {}
+    return dict(value) if isinstance(value, dict) else value
 
 
 def validate_review_nit_policy(default_policy: object, by_agent: object) -> list[str]:

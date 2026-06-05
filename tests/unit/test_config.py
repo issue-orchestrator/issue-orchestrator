@@ -2019,6 +2019,39 @@ review:
         assert any("review.nits.default_policy" in e for e in errors)
         assert any("review.nits.by_agent.agent:coder" in e for e in errors)
 
+    def test_review_nits_by_agent_empty_yaml_value_means_empty_mapping(self, tmp_path):
+        """`by_agent:` with nothing under it (YAML None) is the idiomatic
+        empty-mapping spelling and must keep loading as {} - not become a
+        validation error for configs that load fine today."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+
+review:
+  enabled: true
+  default: agent:reviewer
+  nits:
+    by_agent:
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.review_nits_by_agent == {}
+        assert not [e for e in config.validate() if "by_agent" in e]
+
     def test_review_nits_by_agent_non_mapping_fails_validation(self, tmp_path):
         """A non-mapping review.nits.by_agent must fail validate() loudly.
 

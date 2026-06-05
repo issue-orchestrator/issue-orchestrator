@@ -63,6 +63,14 @@ class UnsupportedSettingsFieldError(Exception):
     """
 
 
+_SCALAR_FORM_KINDS = {
+    "boolean": FORM_CONTROL_BOOLEAN,
+    "integer": FORM_CONTROL_INTEGER,
+    "number": FORM_CONTROL_NUMBER,
+    "string": FORM_CONTROL_STRING,
+}
+
+
 def classify_form_control(field_name: str, prop: dict[str, Any]) -> dict[str, Any]:
     """Classify a JSON-schema property into a form-control descriptor.
 
@@ -75,35 +83,67 @@ def classify_form_control(field_name: str, prop: dict[str, Any]) -> dict[str, An
     """
     if prop.get("enum") is not None:
         return {"kind": FORM_CONTROL_ENUM, "options": list(prop["enum"])}
-    prop_type = prop.get("type")
-    if prop_type == "boolean":
-        return {"kind": FORM_CONTROL_BOOLEAN}
-    if prop_type == "integer":
-        return {"kind": FORM_CONTROL_INTEGER}
-    if prop_type == "number":
-        return {"kind": FORM_CONTROL_NUMBER}
-    if prop_type == "string":
-        return {"kind": FORM_CONTROL_STRING}
-    if prop_type == "object":
-        additional = prop.get("additionalProperties")
-        if isinstance(additional, dict) and additional.get("enum"):
-            return {
-                "kind": FORM_CONTROL_DICT_ENUM,
-                "value_options": list(additional["enum"]),
-            }
+    if prop.get("const") is not None:
+        # Single-value Literal emits const, not enum; classifying it as a
+        # plain string would silently drop the value constraint.
         raise UnsupportedSettingsFieldError(
-            f"Settings field '{field_name}' is an object without an enum "
-            "additionalProperties value schema; the settings form cannot "
-            "project it. Extend classify_form_control() and the form "
-            "dispatches together."
+            f"Settings field '{field_name}' uses a single-value const schema "
+            f"{prop!r}; the form would degrade it to free text. Extend "
+            "classify_form_control() and the form dispatches together."
         )
+    prop_type = prop.get("type")
+    scalar_kind = _SCALAR_FORM_KINDS.get(prop_type) if isinstance(prop_type, str) else None
+    if scalar_kind is not None:
+        return {"kind": scalar_kind}
+    if prop_type == "object":
+        return _classify_object_control(field_name, prop)
     any_of = prop.get("anyOf")
     if isinstance(any_of, list):
-        types = sorted(
-            entry.get("type", "") for entry in any_of if isinstance(entry, dict)
+        return _classify_optional_control(field_name, prop, any_of)
+    raise UnsupportedSettingsFieldError(
+        f"Settings field '{field_name}' has no form-control projection for "
+        f"JSON schema {prop!r}. Extend classify_form_control() and the form "
+        "dispatches together."
+    )
+
+
+def _classify_object_control(field_name: str, prop: dict[str, Any]) -> dict[str, Any]:
+    """Classify an object-typed property (dict fields)."""
+    additional = prop.get("additionalProperties")
+    if isinstance(additional, dict) and additional.get("enum"):
+        return {
+            "kind": FORM_CONTROL_DICT_ENUM,
+            "value_options": list(additional["enum"]),
+        }
+    raise UnsupportedSettingsFieldError(
+        f"Settings field '{field_name}' is an object without an enum "
+        "additionalProperties value schema; the settings form cannot "
+        "project it. Extend classify_form_control() and the form "
+        "dispatches together."
+    )
+
+
+def _classify_optional_control(
+    field_name: str, prop: dict[str, Any], any_of: list[Any]
+) -> dict[str, Any]:
+    """Classify an anyOf property (Optional[...] fields)."""
+    entries = [entry for entry in any_of if isinstance(entry, dict)]
+    if any(
+        entry.get("enum") is not None or entry.get("const") is not None
+        for entry in entries
+    ):
+        # Optional[Literal[...]] emits anyOf with an enum/const entry;
+        # projecting it as optional_string would silently drop the
+        # value constraint into a free-text input.
+        raise UnsupportedSettingsFieldError(
+            f"Settings field '{field_name}' is an optional enum/const "
+            f"({prop!r}); the form would drop the value constraint. Add "
+            "an optional_enum kind to classify_form_control() and the "
+            "form dispatches before using this shape."
         )
-        if types == ["null", "string"]:
-            return {"kind": FORM_CONTROL_OPTIONAL_STRING}
+    types = sorted(entry.get("type", "") for entry in entries)
+    if types == ["null", "string"]:
+        return {"kind": FORM_CONTROL_OPTIONAL_STRING}
     raise UnsupportedSettingsFieldError(
         f"Settings field '{field_name}' has no form-control projection for "
         f"JSON schema {prop!r}. Extend classify_form_control() and the form "

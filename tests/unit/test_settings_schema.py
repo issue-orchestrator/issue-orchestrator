@@ -385,6 +385,23 @@ class TestFormControlClassification:
         with pytest.raises(UnsupportedSettingsFieldError):
             classify_form_control("review.maybe_count", prop)
 
+    def test_optional_enum_raises(self):
+        # Optional[Literal[...]] emits anyOf with an enum entry; classifying
+        # it as optional_string would silently drop the value constraint
+        # into a free-text input - the exact degradation this PR forbids.
+        prop = {
+            "anyOf": [{"enum": ["a", "b"], "type": "string"}, {"type": "null"}],
+        }
+        with pytest.raises(UnsupportedSettingsFieldError, match="optional enum/const"):
+            classify_form_control("review.maybe_mode", prop)
+
+    def test_single_value_literal_const_raises(self):
+        # Literal["only"] emits const (not enum); classifying it as a plain
+        # string would silently drop the value constraint.
+        prop = {"const": "only", "type": "string"}
+        with pytest.raises(UnsupportedSettingsFieldError, match="const schema"):
+            classify_form_control("review.fixed_mode", prop)
+
     def test_nits_by_agent_accepts_dict_rejects_string(self):
         # The exact bug shape: the old form posted the dict's Python repr
         # as a string. The schema must keep rejecting strings while the
