@@ -42,9 +42,9 @@ The dashboard is the concrete control surface: issues flow through Queued, Runni
 
 Behind that view, each issue moves through an explicit state machine backed by GitHub labels and isolated worktrees. Before advancing work, the orchestrator re-observes GitHub and the worktree, so crashes, human edits, dirty trees, and provider failures become recoverable states instead of silent corruption.
 
-The timeline makes the evidence inspectable: a review can request changes, a bounded rework cycle can run, validation can pass on the reviewed commit, and the orchestrator can publish a PR for human merge.
+The timeline makes the evidence inspectable: a review can request changes, feedback can be addressed and re-reviewed, validation can pass on the reviewed commit, and the orchestrator can publish a PR for human merge.
 
-![Issue timeline showing review feedback, bounded rework, a second validated cycle, validation passed, and PR creation.](docs/images/timeline-evidence.png)
+![Issue timeline showing review feedback, a second review cycle, validation passed, and PR creation.](docs/images/timeline-evidence.png)
 
 Timeline artifact buttons open details such as reviewer feedback, review reports, validation artifacts, and replayable coding sessions:
 
