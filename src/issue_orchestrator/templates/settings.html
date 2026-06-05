@@ -241,6 +241,34 @@
             cursor: pointer;
         }
 
+        /* Dict editor (map-typed fields) */
+        fieldset.dict-editor {
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            min-width: 0;
+        }
+        .dict-editor legend {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text);
+            padding: 0 6px;
+        }
+        .dict-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .dict-row .dict-key { flex: 1; min-width: 0; }
+        .dict-row .dict-value { width: auto; }
+        .field-error {
+            color: var(--danger);
+            font-size: 12px;
+            margin: 4px 0 8px;
+            white-space: pre-line;
+        }
+
         /* Restart Required Badge */
         .restart-badge {
             display: inline-block;
@@ -401,35 +429,67 @@
                 {% set ns.current_section = section %}
             {% endif %}
 
-            {# Render the form field based on type #}
+            {# Render the form field from its server-classified control kind.
+               The closed kind set is owned by settings_schema_support.py::
+               classify_form_control(); this dispatch and the collector in
+               static/js/settings_form_controls.js must cover the same set. #}
+            {% set control = prop.x_control %}
             <div class="form-group">
-                {% if prop.get('type') == 'boolean' %}
+                {% if control.kind == 'boolean' %}
                 <div class="checkbox-group">
                     <input type="checkbox" id="{{ field_id }}"
                            data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="boolean"
                            {{ 'checked' if tab_values[field_name] else '' }}>
                     <label for="{{ field_id }}">{{ prop.title }}</label>
                 </div>
-                {% elif prop.get('enum') is not none %}
+                {% elif control.kind == 'enum' %}
                 <label for="{{ field_id }}">{{ prop.title }}</label>
                 <select id="{{ field_id }}"
                         data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="enum">
-                    {% for opt in prop.enum %}
+                    {% for opt in control.options %}
                     <option value="{{ opt }}" {{ 'selected' if tab_values[field_name] == opt else '' }}>{{ opt | replace('_', ' ') | title }}</option>
                     {% endfor %}
                 </select>
-                {% elif prop.get('type') == 'integer' %}
+                {% elif control.kind == 'integer' %}
                 <label for="{{ field_id }}">{{ prop.title }}</label>
                 <input type="number" id="{{ field_id }}"
                        data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="integer"
                        min="{{ prop.get('minimum', '') }}" max="{{ prop.get('maximum', '') }}"
                        value="{{ tab_values[field_name] }}">
-                {% else %}
-                {# string or anyOf (Optional[str]) #}
+                {% elif control.kind == 'number' %}
+                <label for="{{ field_id }}">{{ prop.title }}</label>
+                <input type="number" id="{{ field_id }}" step="any"
+                       data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="number"
+                       min="{{ prop.get('minimum', '') }}" max="{{ prop.get('maximum', '') }}"
+                       value="{{ tab_values[field_name] }}">
+                {% elif control.kind == 'dict_enum' %}
+                <fieldset class="dict-editor" id="{{ field_id }}"
+                          data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="dict_enum"
+                          data-field-title="{{ prop.title }}"
+                          data-value-options='{{ control.value_options | tojson }}'
+                          data-initial='{{ tab_values[field_name] | tojson }}'
+                          aria-describedby="{{ field_id }}__error">
+                    <legend>{{ prop.title }}</legend>
+                    <div class="dict-rows"></div>
+                    <p class="field-error" id="{{ field_id }}__error" hidden></p>
+                    <button type="button" class="btn btn-secondary dict-add"
+                            aria-label="Add {{ prop.title }} entry">Add entry</button>
+                </fieldset>
+                {% elif control.kind == 'string' %}
                 <label for="{{ field_id }}">{{ prop.title }}</label>
                 <input type="text" id="{{ field_id }}"
                        data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="string"
+                       value="{{ tab_values[field_name] }}">
+                {% elif control.kind == 'optional_string' %}
+                <label for="{{ field_id }}">{{ prop.title }}</label>
+                <input type="text" id="{{ field_id }}"
+                       data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="optional_string"
                        value="{{ tab_values[field_name] if tab_values[field_name] is not none else '' }}">
+                {% else %}
+                {# Fail-fast: calling an undefined raises at render time. A new
+                   control kind requires extending this dispatch, never a
+                   silent text-input fallback. #}
+                {{ unsupported_settings_control_kind(control.kind) }}
                 {% endif %}
                 {% if prop.get('description') %}
                 <p class="hint">{{ prop.description }}</p>
@@ -472,11 +532,8 @@
     <script src="/static/js/theme_resolution.js"></script>
     <script src="/static/js/embedded_nav.js"></script>
     <script src="/static/js/settings_save_errors.js"></script>
+    <script src="/static/js/settings_form_controls.js"></script>
     <script>
-        // Schema metadata embedded from server (tab keys and field types)
-        const SCHEMA_TABS = {{ tabs_for_js | tojson }};
-        const SCHEMA_FIELDS = {{ schemas_for_js | tojson }};
-
         let originalSettings = {};
         let currentSettings = {};
         let hasChanges = false;
@@ -503,6 +560,9 @@
         if (!window.settingsSaveErrors) {
             throw new Error('settingsSaveErrors helper not loaded');
         }
+        if (!window.settingsFormControls) {
+            throw new Error('settingsFormControls helper not loaded');
+        }
         function dashboardHref() {
             return window.embeddedNav.buildHref('/', window.location.search);
         }
@@ -513,6 +573,9 @@
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
             applyTheme();
+            // Dict editors render their rows from data-initial; they must
+            // exist before the original-values snapshot is collected.
+            window.settingsFormControls.initDictEditors(document, checkForChanges);
             captureOriginalSettings();
             setupChangeListeners();
             const backLink = document.getElementById('backToDashboardLink');
@@ -525,30 +588,16 @@
         }
 
         function getFormValues() {
-            const result = {};
-            document.querySelectorAll('[data-tab][data-field]').forEach(el => {
-                const tab = el.dataset.tab;
-                const field = el.dataset.field;
-                const type = el.dataset.type;
-                if (!result[tab]) result[tab] = {};
-
-                if (type === 'boolean') {
-                    result[tab][field] = el.checked;
-                } else if (type === 'integer') {
-                    result[tab][field] = parseInt(el.value) || 0;
-                } else {
-                    result[tab][field] = el.value;
-                }
-            });
-            return result;
+            // Typed payload encoding is owned by settings_form_controls.js,
+            // dispatching on the server-classified data-type tokens.
+            return window.settingsFormControls.collectForm(document).payload;
         }
 
         function setupChangeListeners() {
-            const inputs = document.querySelectorAll('input, select');
-            inputs.forEach(input => {
-                input.addEventListener('change', checkForChanges);
-                input.addEventListener('input', checkForChanges);
-            });
+            // Document-level delegation so dynamically added dict-editor
+            // rows are tracked without re-binding.
+            document.addEventListener('change', checkForChanges);
+            document.addEventListener('input', checkForChanges);
         }
 
         function checkForChanges() {
@@ -591,39 +640,26 @@
         }
 
         function resetSettings() {
-            // Reset all inputs to original values
+            // Reset all controls to original values via the shared
+            // per-kind dispatch (fail-fast on unknown kinds).
             document.querySelectorAll('[data-tab][data-field]').forEach(el => {
                 const tab = el.dataset.tab;
                 const field = el.dataset.field;
-                const type = el.dataset.type;
                 const orig = originalSettings[tab] && originalSettings[tab][field];
-
-                if (type === 'boolean') {
-                    el.checked = !!orig;
-                } else {
-                    el.value = orig !== undefined ? orig : '';
-                }
+                window.settingsFormControls.resetFieldValue(el, orig);
             });
             checkForChanges();
         }
 
         async function saveSettings() {
-            // Collect form values grouped by tab key (matches API schema)
-            const payload = getFormValues();
-
-            // Convert Optional[str] empty strings to null for the API
-            for (const tabKey of Object.keys(payload)) {
-                const tabSchema = SCHEMA_FIELDS[tabKey];
-                if (!tabSchema || !tabSchema.properties) continue;
-                for (const [fieldName, fieldValue] of Object.entries(payload[tabKey])) {
-                    const prop = tabSchema.properties[fieldName];
-                    if (!prop) continue;
-                    // Optional string fields: empty string -> null
-                    const isOptionalString = prop.anyOf && prop.anyOf.some(t => t.type === 'null');
-                    if (isOptionalString && fieldValue === '') {
-                        payload[tabKey][fieldName] = null;
-                    }
-                }
+            // Collect the typed payload grouped by tab key (matches API
+            // schema). Field-level problems (e.g. dict rows with empty or
+            // duplicate keys) block the save with explicit messages.
+            const { payload, problems } = window.settingsFormControls.collectForm(
+                document, { reportProblems: true });
+            if (problems.length > 0) {
+                showStatus('Cannot save:\n- ' + problems.join('\n- '), 'error');
+                return;
             }
 
             try {
