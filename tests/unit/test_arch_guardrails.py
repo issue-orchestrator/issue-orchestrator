@@ -172,6 +172,20 @@ def test_blocks_raw_review_exchange_summary_get_in_execution(tmp_path: Path) -> 
     )
 
 
+def test_blocks_raw_review_exchange_summary_get_in_review_artifacts(
+    tmp_path: Path,
+) -> None:
+    code = "def f(summary):\n    return summary.get('artifacts')\n"
+    assert (
+        _run(
+            tmp_path,
+            code,
+            "src/issue_orchestrator/domain/review_artifacts.py",
+        )
+        == 2
+    )
+
+
 def test_blocks_review_exchange_summary_dict_parameter(tmp_path: Path) -> None:
     code = (
         "def store_review_exchange_summary(summary: dict[str, object]):\n"

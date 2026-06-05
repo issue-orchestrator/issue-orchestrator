@@ -280,6 +280,7 @@ def check_symbol_ref_rules(path: Path, tree: ast.AST, rules: dict) -> list[Viola
 
 _REVIEW_EXCHANGE_TYPED_SUMMARY_PATHS = frozenset(
     {
+        "src/issue_orchestrator/domain/review_artifacts.py",
         "src/issue_orchestrator/domain/review_exchange.py",
         "src/issue_orchestrator/ports/session_output.py",
         "src/issue_orchestrator/control/completion_review_exchange.py",
