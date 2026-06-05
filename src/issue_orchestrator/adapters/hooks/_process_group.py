@@ -28,34 +28,35 @@ def run_command_in_process_group(
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        terminate_process_group(process)
+        stdout, stderr = terminate_process_group(process)
         raise subprocess.TimeoutExpired(
             cmd=argv,
             timeout=timeout,
-            output=exc.output,
-            stderr=exc.stderr,
+            output=stdout or exc.output,
+            stderr=stderr or exc.stderr,
         ) from exc
     return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
 
 
-def terminate_process_group(process: subprocess.Popen[str]) -> None:
+def terminate_process_group(
+    process: subprocess.Popen[str],
+) -> tuple[str | None, str | None]:
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
-        return
+        return process.communicate()
     except OSError:
         process.terminate()
 
     try:
-        process.communicate(timeout=5)
-        return
+        return process.communicate(timeout=5)
     except subprocess.TimeoutExpired:
         pass
 
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
-        return
+        return process.communicate()
     except OSError:
         process.kill()
-    process.communicate()
+    return process.communicate()

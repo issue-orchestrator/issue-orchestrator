@@ -437,7 +437,7 @@ class TestClaudeCodeAdapter:
                 self.communicate_calls += 1
                 if self.communicate_calls <= 2:
                     raise subprocess.TimeoutExpired(["claude"], timeout)
-                return "", ""
+                return "stdout after kill", "stderr after kill"
 
         process = HangingProcess()
         killpg_calls: list[tuple[int, signal.Signals]] = []
@@ -452,7 +452,7 @@ class TestClaudeCodeAdapter:
         monkeypatch.setattr(_process_group.subprocess, "Popen", fake_popen)
         monkeypatch.setattr(_process_group.os, "killpg", fake_killpg)
 
-        with pytest.raises(subprocess.TimeoutExpired):
+        with pytest.raises(subprocess.TimeoutExpired) as exc_info:
             _process_group.run_command_in_process_group(
                 ["claude"],
                 cwd=temp_project,
@@ -465,6 +465,8 @@ class TestClaudeCodeAdapter:
             (process.pid, signal.SIGTERM),
             (process.pid, signal.SIGKILL),
         ]
+        assert exc_info.value.output == "stdout after kill"
+        assert exc_info.value.stderr == "stderr after kill"
 
     def test_ai_gate_reports_timeout_from_process_group_runner(
         self, adapter, temp_project, monkeypatch
