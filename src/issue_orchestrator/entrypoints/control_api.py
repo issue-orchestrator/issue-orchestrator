@@ -78,6 +78,7 @@ from .control_api_goal_pilot_support import (
     install_control_api_goal_pilot_dependencies,
 )
 from .control_api_e2e_runs import control_e2e_runs_router
+from .timeline_projection_boundary import timeline_projection_endpoint
 from .control_api_orchestrator_routes import control_orchestrator_router
 from .control_api_orchestrator_support import (
     ControlApiOrchestratorDependencies,
@@ -1114,6 +1115,7 @@ async def control_terminal_recording(
 
 
 @control_app.get("/api/issue-detail/{issue_number}")
+@timeline_projection_endpoint("control_issue_detail")
 async def control_issue_detail(
     issue_number: int,
     repo_root: str = Query(...),
@@ -1183,7 +1185,6 @@ async def control_issue_detail(
     )
     return JSONResponse(payload)
 
-
 class ControlAPIServer:
     """Manages the control API server lifecycle."""
 
@@ -1247,7 +1248,6 @@ class ControlAPIServer:
         # only into agent subprocesses — see agent_runner_env.py.
         os.environ.setdefault("ISSUE_ORCHESTRATOR_API_TOKEN", admin_token)
         os.environ["ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN"] = agent_callback_token
-
         config = uvicorn.Config(
             control_app,
             host="127.0.0.1",
