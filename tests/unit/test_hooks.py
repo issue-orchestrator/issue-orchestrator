@@ -419,6 +419,76 @@ class TestClaudeCodeAdapter:
         assert not result.success
         assert "hook_script_exists" in result.checks_failed[0]
 
+    def test_ai_gate_timeout_terminates_process_group(self, temp_project, monkeypatch):
+        import signal
+
+        from issue_orchestrator.adapters.hooks import _process_group
+
+        popen_kwargs = {}
+
+        class HangingProcess:
+            pid = 4242
+            returncode = None
+
+            def __init__(self):
+                self.communicate_calls = 0
+
+            def communicate(self, timeout=None):  # noqa: ANN001
+                self.communicate_calls += 1
+                if self.communicate_calls <= 2:
+                    raise subprocess.TimeoutExpired(["claude"], timeout)
+                return "stdout after kill", "stderr after kill"
+
+        process = HangingProcess()
+        killpg_calls: list[tuple[int, signal.Signals]] = []
+
+        def fake_popen(*args, **kwargs):  # noqa: ANN002, ANN003
+            popen_kwargs.update(kwargs)
+            return process
+
+        def fake_killpg(pid: int, sig: signal.Signals) -> None:
+            killpg_calls.append((pid, sig))
+
+        monkeypatch.setattr(_process_group.subprocess, "Popen", fake_popen)
+        monkeypatch.setattr(_process_group.os, "killpg", fake_killpg)
+
+        with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+            _process_group.run_command_in_process_group(
+                ["claude"],
+                cwd=temp_project,
+                env={},
+                timeout=1,
+            )
+
+        assert popen_kwargs["start_new_session"] is True
+        assert killpg_calls == [
+            (process.pid, signal.SIGTERM),
+            (process.pid, signal.SIGKILL),
+        ]
+        assert exc_info.value.output == "stdout after kill"
+        assert exc_info.value.stderr == "stderr after kill"
+
+    def test_ai_gate_reports_timeout_from_process_group_runner(
+        self, adapter, temp_project, monkeypatch
+    ):
+        from issue_orchestrator.infra.hooks import hooks as hooks_module
+
+        adapter.install_hooks(temp_project)
+
+        def raise_timeout(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise subprocess.TimeoutExpired(["claude"], kwargs["timeout"])
+
+        monkeypatch.setattr(
+            hooks_module,
+            "run_command_in_process_group",
+            raise_timeout,
+        )
+
+        success, message = adapter.test_ai_gate(temp_project, timeout=1)
+
+        assert success is False
+        assert "timed out after 1s" in message
+
     def test_hook_blocks_no_verify(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
         decision = evaluate_command("git push --no-verify")

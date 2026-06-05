@@ -37,6 +37,12 @@ import pytest
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.domain.review_exchange import ReviewExchangeOutcome
+from issue_orchestrator.domain.review_exchange_run import (
+    ReviewExchangeRun,
+    ReviewExchangeRunAssets,
+)
+from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSummaryV1
+from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.execution import persistent_review_exchange_runner as prer
 
 
@@ -59,11 +65,13 @@ def stub_lifecycle(monkeypatch, tmp_path):
         return "feature/test"
 
     def _create(*, coder_worktree, coder_branch, timestamp):
-        calls["create"].append({
-            "coder_worktree": coder_worktree,
-            "coder_branch": coder_branch,
-            "timestamp": timestamp,
-        })
+        calls["create"].append(
+            {
+                "coder_worktree": coder_worktree,
+                "coder_branch": coder_branch,
+                "timestamp": timestamp,
+            }
+        )
         return SimpleNamespace(
             path=tmp_path / "reviewer-wt",
             coder_branch=coder_branch,
@@ -84,19 +92,48 @@ def _make_agent(tmp_path: Path) -> AgentConfig:
     )
 
 
-def _canned_outcome() -> ReviewExchangeOutcome:
+def _make_exchange_run(tmp_path: Path) -> ReviewExchangeRun:
+    run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "r1__review-exchange-42"
+    return ReviewExchangeRun(
+        session_name="review-exchange-42",
+        run_id="r1",
+        parent_session_name="coding-42",
+        assets=ReviewExchangeRunAssets.from_run_dir(run_dir),
+    )
+
+
+def _runtime_config(tmp_path: Path) -> RuntimeConfigReference:
+    config_path = tmp_path / "issue-orchestrator.test.yaml"
+    if not config_path.exists():
+        config_path.write_text(
+            "validation:\n  quick:\n    cmd: 'true'\n", encoding="utf-8"
+        )
+    return RuntimeConfigReference.from_path(config_path)
+
+
+def _canned_outcome(exchange_run: ReviewExchangeRun) -> ReviewExchangeOutcome:
     return ReviewExchangeOutcome(
         status="ok",
         rounds=2,
         reason="reviewer_ok",
+        run_assets=exchange_run.assets,
         reviewer_response=None,
-        exchange_dir=None,
-        summary={"status": "ok", "completed_rounds": 2},
+        summary=ReviewExchangeSummaryV1.from_payload(
+            {
+                "status": "ok",
+                "reason": "reviewer_ok",
+                "completed_rounds": 2,
+                "response_text": None,
+                "timestamp": "2026-02-01T00:00:00+00:00",
+            }
+        ),
     )
 
 
 def _run(runner, tmp_path):
+    exchange_run = _make_exchange_run(tmp_path)
     return runner.run(
+        exchange_run=exchange_run,
         coder_worktree=tmp_path / "coder",
         issue_number=42,
         issue_title="t",
@@ -104,6 +141,7 @@ def _run(runner, tmp_path):
         reviewer_label="agent:reviewer",
         coder_agent=_make_agent(tmp_path),
         reviewer_agent=_make_agent(tmp_path),
+        runtime_config=_runtime_config(tmp_path),
         max_rounds=3,
         max_no_progress=3,
         require_validation=False,
@@ -118,7 +156,9 @@ def _make_runner(tmp_path: Path) -> "prer.PersistentReviewExchangeRunner":
 
 
 def test_run_threads_pair_registry_and_persistent_root_into_inner_runner(
-    monkeypatch, tmp_path: Path, stub_lifecycle,
+    monkeypatch,
+    tmp_path: Path,
+    stub_lifecycle,
 ):
     """The registry-owned pair lifecycle (B2 ADR 0026) hangs on the
     inner runner receiving the registry and pair-state root through
@@ -128,7 +168,7 @@ def test_run_threads_pair_registry_and_persistent_root_into_inner_runner(
 
     def _fake_inner(**kwargs):
         captured.update(kwargs)
-        return _canned_outcome()
+        return _canned_outcome(kwargs["exchange_run"])
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
     runner = _make_runner(tmp_path)
@@ -143,6 +183,7 @@ def test_run_threads_pair_registry_and_persistent_root_into_inner_runner(
     )
     assert captured["coder_worktree_path"] == tmp_path / "coder"
     assert captured["session_output"] is runner._session_output  # noqa: SLF001
+    assert captured["runtime_config"] == _runtime_config(tmp_path)
 
 
 def test_persistent_pair_root_helper_is_worktree_scoped(tmp_path: Path) -> None:
@@ -175,7 +216,9 @@ def test_job_timeout_budget_includes_coder_protocol_retries(tmp_path: Path) -> N
 
 
 def test_run_passes_reviewer_worktree_factory_invoked_lazily(
-    monkeypatch, tmp_path: Path, stub_lifecycle,
+    monkeypatch,
+    tmp_path: Path,
+    stub_lifecycle,
 ):
     """The factory is the seam B2 uses to keep worktree creation lazy:
     the inner runner only invokes it on a registry cache miss inside
@@ -191,7 +234,7 @@ def test_run_passes_reviewer_worktree_factory_invoked_lazily(
         # The fake inner runner deliberately does NOT call the factory;
         # we want to assert the runner passed a factory, not a path,
         # and that no worktree was created prematurely.
-        return _canned_outcome()
+        return _canned_outcome(kwargs["exchange_run"])
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
     runner = _make_runner(tmp_path)
@@ -215,7 +258,9 @@ def test_run_passes_reviewer_worktree_factory_invoked_lazily(
 
 
 def test_run_threads_coder_branch_for_inner_fast_forward(
-    monkeypatch, tmp_path: Path, stub_lifecycle,
+    monkeypatch,
+    tmp_path: Path,
+    stub_lifecycle,
 ):
     """The inner round-loop fast-forwards the reviewer worktree at the
     start of every reviewer round (including round 1 of any
@@ -228,7 +273,7 @@ def test_run_threads_coder_branch_for_inner_fast_forward(
 
     def _fake_inner(**kwargs):
         captured.update(kwargs)
-        return _canned_outcome()
+        return _canned_outcome(kwargs["exchange_run"])
 
     monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
     runner = _make_runner(tmp_path)
@@ -240,7 +285,9 @@ def test_run_threads_coder_branch_for_inner_fast_forward(
 
 
 def test_run_propagates_inner_exceptions_without_releasing_pair(
-    monkeypatch, tmp_path: Path, stub_lifecycle,
+    monkeypatch,
+    tmp_path: Path,
+    stub_lifecycle,
 ):
     """A mid-exchange failure must NOT release the registry pair —
     that's the user-visible "1 process for the lifetime of the
@@ -248,6 +295,7 @@ def test_run_propagates_inner_exceptions_without_releasing_pair(
     issue-completion / reset / shutdown sites, not on every error
     path. (B1 had the opposite invariant; B2 inverts it.)
     """
+
     def _explode(**_):
         raise RuntimeError("simulated runner failure")
 

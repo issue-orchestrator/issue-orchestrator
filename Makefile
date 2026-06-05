@@ -262,6 +262,9 @@ PARALLEL ?= auto
 UNIT_PARALLEL ?= $(PARALLEL)
 SIMULATED_PARALLEL ?= $(PARALLEL)
 INTEGRATION_PARALLEL ?= $(PARALLEL)
+# Live provider-backed integration tests share authenticated local CLIs and
+# provider account state. Run them serially unless explicitly overridden.
+INTEGRATION_AGENT_PARALLEL ?= 0
 INTEGRATION_AGENT_FILES := tests/integration/test_claude_execution.py tests/integration/test_codex_execution.py tests/integration/test_live_agent_chain.py
 # Keep this list in sync with the -k exclusion in test-simulated-core.
 # New agent-backed tests added to test_foreign_repo_lifecycle.py must be listed here
@@ -375,12 +378,12 @@ endif
 test-integration-no-infra: test-integration-core
 
 test-integration-agent: sync-deps
-ifeq ($(INTEGRATION_PARALLEL),0)
+ifeq ($(INTEGRATION_AGENT_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-agent,\
 		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "not live_codex" $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-integration-agent,\
-		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "not live_codex" -n $(INTEGRATION_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "not live_codex" -n $(INTEGRATION_AGENT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 	$(call TIMED_RUN,test-integration-agent-live-codex,\
 		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "live_codex" $(PYTEST_TIMINGS))
@@ -520,7 +523,7 @@ VALIDATE_AGENT_JOBS ?= 1
 VALIDATE_E2E_JOBS ?= 1
 
 define VALIDATE_CONFIG
-	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL) static_jobs=$(VALIDATE_STATIC_JOBS) test_jobs=$(VALIDATE_TEST_JOBS) web_jobs=$(VALIDATE_WEB_JOBS) agent_jobs=$(VALIDATE_AGENT_JOBS) e2e_jobs=$(VALIDATE_E2E_JOBS)"
+	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL) integration_agent_parallel=$(INTEGRATION_AGENT_PARALLEL) static_jobs=$(VALIDATE_STATIC_JOBS) test_jobs=$(VALIDATE_TEST_JOBS) web_jobs=$(VALIDATE_WEB_JOBS) agent_jobs=$(VALIDATE_AGENT_JOBS) e2e_jobs=$(VALIDATE_E2E_JOBS)"
 endef
 
 validate-raw:

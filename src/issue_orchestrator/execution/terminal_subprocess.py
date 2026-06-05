@@ -30,7 +30,6 @@ from ..infra.env import get_env
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
 from ..infra.sqlite_connection import open_sqlite
-from .session_output_adapter import FileSystemSessionOutput
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 
 logger = logging.getLogger(__name__)
@@ -270,9 +269,9 @@ class SubprocessPlugin:
                     run_dir = (working_dir / run_dir).resolve()
                 run_dir.mkdir(parents=True, exist_ok=True)
                 return run_dir / TERMINAL_RECORDING_FILENAME
-        session_output = FileSystemSessionOutput()
-        run_dir = session_output.ensure_run_dir(working_dir, session_name)
-        return run_dir / TERMINAL_RECORDING_FILENAME
+        raise ValueError(
+            "terminal session creation requires ISSUE_ORCHESTRATOR_RUN_DIR in command"
+        )
 
     def _build_process_command(self, command: str, working_dir: Path) -> str:
         """Build the full command with path and isolation prefix."""
@@ -486,6 +485,7 @@ class SubprocessPlugin:
                     "tab_name": record.tab_name,
                     "is_review": record.is_review,
                     "session_name": record.session_name,
+                    "run_dir": str(Path(record.log_path).parent),
                 })
             else:
                 self._cleanup_session(record.session_name)

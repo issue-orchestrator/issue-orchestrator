@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.execution.agent_runner import AgentRunner
-from issue_orchestrator.execution.agent_runner_types import AgentSpec
+from issue_orchestrator.execution.agent_runner_types import AgentSpec, RetryPolicy
 from issue_orchestrator.execution.persistent_round_runner import (
     close_persistent_session,
     open_persistent_session,
@@ -91,6 +91,15 @@ def _claude_authenticated() -> bool:
 _CLAUDE_READY = _claude_authenticated()
 
 
+def _live_provider_retry_policy() -> RetryPolicy:
+    return RetryPolicy(
+        max_attempts=2,
+        initial_backoff_seconds=1,
+        max_backoff_seconds=1,
+        jitter=False,
+    )
+
+
 @pytest.mark.skipif(not _CLAUDE_READY, reason="Claude CLI not installed or not authenticated")
 class TestLiveAgentChain:
     """Prove the full pexpect → bash → provider_runner → Claude chain works."""
@@ -120,6 +129,7 @@ class TestLiveAgentChain:
             working_dir=tmp_path,
             timeout_seconds=60,
             output_dir=run_dir,
+            retry_policy=_live_provider_retry_policy(),
         )
 
         result = SubprocessAgentRunner().run(spec)
@@ -150,6 +160,7 @@ class TestLiveAgentChain:
             timeout_seconds=60,
             log_path=log_path,
             output_dir=run_dir,
+            retry_policy=_live_provider_retry_policy(),
         )
 
         result = AgentRunner().run(spec)

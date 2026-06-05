@@ -3,50 +3,31 @@
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..domain.models import CompletionRecord, RequestedAction
 from ..domain.completion_finalization import ReviewExchangeRunningQuery
-from ..domain.review_exchange_resume import (
-    ResumeDecision,
-    ResumeFacts,
-    decide,
-)
+from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
+from ..domain.review_exchange_resume import ResumeDecision
 from ..domain.review_artifacts import review_artifacts_from_exchange_result
+from ..domain.runtime_config import RuntimeConfigReference
 from ..ports.background_job import NullBackgroundJobRunner
 from ..ports.review_exchange_runner import ReviewExchangeRunner
-from ..ports.session_output import ReviewExchangeSummary, SessionOutput
+from ..ports.session_output import SessionOutput
 from .background_job_supervisor import (
     BackgroundJobCancelledError,
     BackgroundJobTimeoutError,
     BackgroundJobSupervisor,
 )
 from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
+from .review_exchange_cache_resolution import (
+    ResumeResolution,
+    ReuseResumeResolution,
+    ReviewExchangeCacheResolver,
+)
 from .review_exchange_contracts import ReviewExchangeCanceller
 from .review_publish_pipeline import resolve_review_publish_pipeline
-
-
-@dataclass(frozen=True)
-class ResumeResolution:
-    """The cache loader's answer to "what should the next tick do?".
-
-    Replaces ``Outcome | None`` returns from the legacy loader. Bare
-    ``None`` is gone — every "no cache" reason is one of the named
-    ``ResumeDecision`` variants. Callers dispatch on ``decision`` and
-    consume ``outcome`` (populated for ``REUSE_APPROVAL`` /
-    ``REUSE_HALT``) and ``cache_metadata`` (populated whenever a
-    cached summary was found, regardless of decision).
-    """
-
-    decision: ResumeDecision
-    outcome: "ReviewExchangeOutcome | None" = None
-    cache_metadata: dict[str, str] = field(default_factory=dict)
-
-    @classmethod
-    def no_cache(cls) -> "ResumeResolution":
-        return cls(decision=ResumeDecision.NO_CACHE)
 
 
 if TYPE_CHECKING:
@@ -78,20 +59,20 @@ def is_review_exchange_job_for_issue(job_id: str, issue_number: int) -> bool:
     return job_id == base or job_id.startswith(f"{base}:")
 
 
-def _cached_review_event_metadata(exchange_outcome: "ReviewExchangeOutcome") -> dict[str, str]:
-    return dict(exchange_outcome.cache_metadata or {})
+def _cached_review_event_metadata(
+    exchange_outcome: "ReviewExchangeOutcome",
+) -> dict[str, str]:
+    if exchange_outcome.cache_metadata is None:
+        return {}
+    return exchange_outcome.cache_metadata.to_event_fields()
 
 
 def _review_exchange_summary_path(
     exchange_outcome: "ReviewExchangeOutcome",
-) -> str | None:
-    cache_metadata = exchange_outcome.cache_metadata or {}
-    cached_path = cache_metadata.get("review_cache_summary_path")
-    if cached_path:
-        return cached_path
-    if exchange_outcome.exchange_dir is None:
-        return None
-    return str(exchange_outcome.exchange_dir / "summary.json")
+) -> str:
+    if exchange_outcome.cache_metadata is not None:
+        return str(exchange_outcome.cache_metadata.summary_path)
+    return str(exchange_outcome.summary_path)
 
 
 def _single_line_log_value(value: object, *, max_chars: int = 500) -> str | None:
@@ -113,14 +94,18 @@ def _log_review_exchange_terminal_outcome(
     cached: bool,
     log: Callable[..., None],
 ) -> None:
-    summary = exchange_outcome.summary or {}
-    cache_metadata = exchange_outcome.cache_metadata or {}
+    summary = exchange_outcome.summary
     reviewer_text = (
         exchange_outcome.reviewer_response.response_text
         if exchange_outcome.reviewer_response is not None
-        else summary.get("response_text")
+        else summary.response_text
+        if summary is not None
+        else None
     )
-    head_sha = summary.get("head_sha") or cache_metadata.get("review_cache_head_sha")
+    head_sha = summary.head_sha if summary is not None else None
+    if not head_sha and exchange_outcome.cache_metadata is not None:
+        head_sha = exchange_outcome.cache_metadata.head_sha
+    validation_passed = summary.validation_passed if summary is not None else None
     log(
         "[REVIEW_EXCHANGE] %s "
         "issue=%d session=%s cached=%s status=%s reason=%s rounds=%s "
@@ -134,7 +119,7 @@ def _log_review_exchange_terminal_outcome(
         exchange_outcome.reason,
         exchange_outcome.rounds,
         head_sha,
-        summary.get("validation_passed"),
+        validation_passed,
         _review_exchange_summary_path(exchange_outcome),
         review_run_dir,
         _single_line_log_value(reviewer_text),
@@ -234,6 +219,7 @@ class CompletionReviewExchange:
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
         review_cache_boundary_started_at: str | None = None,
+        current_head_sha: str | None = None,
     ) -> tuple[Any, str | None, ReviewExchangeOutcome | None, bool, bool, bool]:
         """Resolve mode, run/poll review exchange, and report status.
 
@@ -278,8 +264,11 @@ class CompletionReviewExchange:
             session_name=session_name,
             agent_label=agent_label,
             initial_validation_record_path=(
-                Path(record.validation_record_path) if record.validation_record_path else None
+                Path(record.validation_record_path)
+                if record.validation_record_path
+                else None
             ),
+            current_head_sha=current_head_sha,
             review_cache_boundary_started_at=review_cache_boundary_started_at,
             errors=errors,
             actions_taken=actions_taken,
@@ -316,7 +305,9 @@ class CompletionReviewExchange:
         exchange_mode: str | None,
         exchange_result: ReviewExchangeOutcome | None,
     ) -> bool:
-        return exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
+        return (
+            exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
+        )
 
     def is_review_exchange_running(
         self,
@@ -393,6 +384,7 @@ class CompletionReviewExchange:
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
         review_cache_boundary_started_at: str | None = None,
+        current_head_sha: str | None = None,
     ) -> tuple[str | None, ReviewExchangeOutcome | None, bool, bool]:
         """Return (exchange_mode, outcome, halt, deferred).
 
@@ -410,7 +402,15 @@ class CompletionReviewExchange:
             return None, None, True, False
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False, False
-        reviewer_label = self.resolve_reviewer_label(agent_label) if agent_label else None
+        if not session_name:
+            errors.append(
+                f"{REVIEW_EXCHANGE_ERROR_PREFIX} review exchange requires session_name"
+            )
+            return exchange_mode, None, True, False
+        coder_label = self.require_review_exchange_agent_label(
+            agent_label, exchange_mode
+        )
+        reviewer_label = self.resolve_reviewer_label(coder_label)
         job_id = _review_exchange_job_id(issue_number, session_name)
         background_failure = self._take_background_failure(
             job_id=job_id,
@@ -427,6 +427,7 @@ class CompletionReviewExchange:
             session_name,
             require_validation=require_validation,
             current_validation_record_path=initial_validation_record_path,
+            current_head_sha=current_head_sha,
             not_before_started_at=review_cache_boundary_started_at,
         )
         early = self._dispatch_resume_decision(
@@ -468,6 +469,18 @@ class CompletionReviewExchange:
             )
 
         logger.info("Review exchange mode selected: %s", exchange_mode)
+        review_run = self._start_review_exchange_run(
+            worktree=worktree,
+            issue_number=issue_number,
+            parent_session_name=session_name,
+            agent_label=coder_label,
+        )
+        self._emit_review_started(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+            run_dir=review_run.assets.run_dir,
+        )
         submitted = self._submit_background_review_exchange(
             job_id=job_id,
             exchange_mode=exchange_mode,
@@ -475,9 +488,11 @@ class CompletionReviewExchange:
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
-            agent_label=agent_label,
+            agent_label=coder_label,
             reviewer_label=reviewer_label,
             initial_validation_record_path=initial_validation_record_path,
+            review_run=review_run,
+            current_head_sha=current_head_sha,
             run_review_exchange_loop=run_review_exchange_loop,
         )
         if submitted:
@@ -488,9 +503,7 @@ class CompletionReviewExchange:
 
         # No background runner wired — fall back to the legacy synchronous
         # path so tests and dev environments without a job runner still work.
-        logger.debug(
-            "[REVIEW_EXCHANGE] no background runner; running exchange inline"
-        )
+        logger.debug("[REVIEW_EXCHANGE] no background runner; running exchange inline")
         mode, outcome, halt = self._run_fresh_review_exchange(
             exchange_mode=exchange_mode,
             worktree=worktree,
@@ -500,6 +513,8 @@ class CompletionReviewExchange:
             agent_label=agent_label,
             reviewer_label=reviewer_label,
             initial_validation_record_path=initial_validation_record_path,
+            review_run=review_run,
+            current_head_sha=current_head_sha,
             errors=errors,
             actions_taken=actions_taken,
             run_review_exchange_loop=run_review_exchange_loop,
@@ -534,7 +549,9 @@ class CompletionReviewExchange:
                 failure.error.reason,
             )
             return failure
-        reason = f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job raised: {failure.error}"
+        reason = (
+            f"{REVIEW_EXCHANGE_ERROR_PREFIX} background job raised: {failure.error}"
+        )
         errors.append(reason)
         if cancel_error:
             errors.append(cancel_error)
@@ -672,6 +689,8 @@ class CompletionReviewExchange:
         agent_label: str | None,
         reviewer_label: str | None,
         initial_validation_record_path: Path | None,
+        review_run: ReviewExchangeRun,
+        current_head_sha: str | None,
         run_review_exchange_loop: RunReviewExchangeLoop,
     ) -> bool:
         """Start the review exchange in a background job; return True if accepted.
@@ -683,27 +702,15 @@ class CompletionReviewExchange:
         """
 
         def _job() -> None:
-            review_started_run_dir: Path | None = None
-
-            def _on_review_exchange_started(started_run_dir: Path) -> None:
-                nonlocal review_started_run_dir
-                review_started_run_dir = started_run_dir
-                self._emit_review_started(
-                    issue_number=issue_number,
-                    reviewer_label=reviewer_label,
-                    exchange_mode=exchange_mode,
-                    run_dir=started_run_dir,
-                )
-
             try:
                 outcome = run_review_exchange_loop(
+                    exchange_run=review_run,
                     worktree=worktree,
                     issue_number=issue_number,
                     issue_title=issue_title,
                     session_name=session_name,
                     agent_label=agent_label,
                     initial_validation_record_path=initial_validation_record_path,
-                    on_started=_on_review_exchange_started,
                 )
             except Exception:
                 logger.exception(
@@ -713,19 +720,11 @@ class CompletionReviewExchange:
                 )
                 raise
 
-            # Persist the summary so the next tick can observe completion.
-            # resolve_required_review_run_dir + store_review_exchange_summary
-            # together write the same marker as the synchronous path would.
-            if review_started_run_dir is None:
-                review_started_run_dir = self.resolve_review_exchange_run_dir(
-                    exchange_outcome=outcome,
-                    worktree=worktree,
-                    session_name=session_name,
-                )
+            self._require_matching_review_run(outcome, review_run)
             self.store_review_exchange_summary(
-                worktree=worktree,
-                session_name=session_name,
+                review_run=review_run,
                 exchange_result=outcome,
+                current_head_sha=current_head_sha,
             )
 
         return self._job_supervisor.submit(
@@ -759,26 +758,28 @@ class CompletionReviewExchange:
         """
         decision = resolution.decision
         if decision is ResumeDecision.REUSE_APPROVAL:
-            assert resolution.outcome is not None
+            if not isinstance(resolution, ReuseResumeResolution):
+                raise TypeError("REUSE_APPROVAL requires ReuseResumeResolution")
             mode, outcome, halt = self._handle_cached_review_exchange_outcome(
                 exchange_mode=exchange_mode,
-                existing_outcome=resolution.outcome,
+                existing_outcome=resolution.cached.outcome,
+                run_assets=resolution.cached.run_assets,
                 issue_number=issue_number,
                 session_name=session_name,
-                worktree=worktree,
                 reviewer_label=reviewer_label,
                 errors=errors,
                 actions_taken=actions_taken,
             )
             return mode, outcome, halt, False
         if decision is ResumeDecision.REUSE_HALT:
-            assert resolution.outcome is not None
+            if not isinstance(resolution, ReuseResumeResolution):
+                raise TypeError("REUSE_HALT requires ReuseResumeResolution")
             mode, outcome, halt = self._handle_cached_review_exchange_outcome(
                 exchange_mode=exchange_mode,
-                existing_outcome=resolution.outcome,
+                existing_outcome=resolution.cached.outcome,
+                run_assets=resolution.cached.run_assets,
                 issue_number=issue_number,
                 session_name=session_name,
-                worktree=worktree,
                 reviewer_label=reviewer_label,
                 errors=errors,
                 actions_taken=actions_taken,
@@ -812,17 +813,22 @@ class CompletionReviewExchange:
         max_failures = self._max_consecutive_review_exchange_failures()
         if session_name is None or max_failures <= 0:
             return None
-        consecutive = self._session_output.count_consecutive_review_exchange_no_completion(
-            worktree,
-            session_name,
-            not_before_started_at=review_cache_boundary_started_at,
+        consecutive = (
+            self._session_output.count_consecutive_review_exchange_no_completion(
+                worktree,
+                session_name,
+                not_before_started_at=review_cache_boundary_started_at,
+            )
         )
         if consecutive < max_failures:
             return None
         logger.error(
             "[REVIEW_EXCHANGE] no-completion runaway detected; "
             "halting issue=%d session=%s consecutive=%d max=%d",
-            issue_number, session_name, consecutive, max_failures,
+            issue_number,
+            session_name,
+            consecutive,
+            max_failures,
         )
         errors.append(
             f"{REVIEW_EXCHANGE_ERROR_PREFIX} {consecutive} consecutive "
@@ -836,19 +842,14 @@ class CompletionReviewExchange:
         *,
         exchange_mode: str,
         existing_outcome: ReviewExchangeOutcome,
+        run_assets: ReviewExchangeRunAssets,
         issue_number: int,
         session_name: str | None,
-        worktree: Path,
         reviewer_label: str | None,
         errors: list[str],
         actions_taken: list[str],
     ) -> tuple[str, ReviewExchangeOutcome, bool]:
-        review_run_dir = self.resolve_required_review_run_dir(
-            exchange_outcome=existing_outcome,
-            worktree=worktree,
-            session_name=session_name,
-            issue_number=issue_number,
-        )
+        review_run_dir = run_assets.run_dir
         cache_metadata = _cached_review_event_metadata(existing_outcome)
         self._emit_review_started(
             issue_number=issue_number,
@@ -918,44 +919,24 @@ class CompletionReviewExchange:
         agent_label: str | None,
         reviewer_label: str | None,
         initial_validation_record_path: Path | None,
+        review_run: ReviewExchangeRun,
+        current_head_sha: str | None,
         errors: list[str],
         actions_taken: list[str],
         run_review_exchange_loop: RunReviewExchangeLoop,
     ) -> tuple[str, ReviewExchangeOutcome, bool]:
-        review_started_run_dir: Path | None = None
-
-        def _on_review_exchange_started(started_run_dir: Path) -> None:
-            nonlocal review_started_run_dir
-            review_started_run_dir = started_run_dir
-            self._emit_review_started(
-                issue_number=issue_number,
-                reviewer_label=reviewer_label,
-                exchange_mode=exchange_mode,
-                run_dir=started_run_dir,
-            )
-
         exchange_result = run_review_exchange_loop(
+            exchange_run=review_run,
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
             agent_label=agent_label,
             initial_validation_record_path=initial_validation_record_path,
-            on_started=_on_review_exchange_started,
         )
-        review_run_dir = self.resolve_required_review_run_dir(
-            exchange_outcome=exchange_result,
-            worktree=worktree,
-            session_name=session_name,
-            issue_number=issue_number,
-        )
-        if review_started_run_dir is None:
-            self._emit_review_started(
-                issue_number=issue_number,
-                reviewer_label=reviewer_label,
-                exchange_mode=exchange_mode,
-                run_dir=review_run_dir,
-            )
+        self._require_matching_review_run(exchange_result, review_run)
+        run_assets = review_run.assets
+        review_run_dir = run_assets.run_dir
         if exchange_result.status != "ok":
             _log_review_exchange_halt(
                 issue_number=issue_number,
@@ -1001,9 +982,9 @@ class CompletionReviewExchange:
             artifacts=self._review_artifacts_from_outcome(exchange_result),
         )
         self.store_review_exchange_summary(
-            worktree=worktree,
-            session_name=session_name,
+            review_run=review_run,
             exchange_result=exchange_result,
+            current_head_sha=current_head_sha,
         )
         return exchange_mode, exchange_result, False
 
@@ -1014,7 +995,9 @@ class CompletionReviewExchange:
         if self._config is None:
             return 0
         max_failures = getattr(
-            self._config, "max_consecutive_review_exchange_failures", 0,
+            self._config,
+            "max_consecutive_review_exchange_failures",
+            0,
         )
         if not isinstance(max_failures, int) or max_failures < 0:
             return 0
@@ -1026,7 +1009,9 @@ class CompletionReviewExchange:
     ) -> list[dict[str, str]] | None:
         return review_artifacts_from_exchange_result(exchange_result) or None
 
-    def _review_exchange_job_timeout_seconds(self, agent_label: str | None) -> float | None:
+    def _review_exchange_job_timeout_seconds(
+        self, agent_label: str | None
+    ) -> float | None:
         """Return a hard wall-clock deadline for one deferred exchange job.
 
         The runner owns the round/retry budget and exposes the derived
@@ -1050,73 +1035,48 @@ class CompletionReviewExchange:
             max_rounds=max_rounds,
         )
 
-    def resolve_required_review_run_dir(
+    def _start_review_exchange_run(
         self,
         *,
-        exchange_outcome: ReviewExchangeOutcome | None,
         worktree: Path,
-        session_name: str | None,
         issue_number: int,
-    ) -> Path:
-        review_run_dir = self.resolve_review_exchange_run_dir(
-            exchange_outcome=exchange_outcome,
-            worktree=worktree,
-            session_name=session_name,
+        parent_session_name: str,
+        agent_label: str,
+    ) -> ReviewExchangeRun:
+        return self._session_output.start_review_exchange_run(
+            worktree,
+            issue_number=issue_number,
+            parent_session_name=parent_session_name,
+            agent_label=agent_label,
         )
-        if review_run_dir is None:
+
+    @staticmethod
+    def _require_matching_review_run(
+        exchange_result: ReviewExchangeOutcome,
+        review_run: ReviewExchangeRun,
+    ) -> None:
+        if exchange_result.run_assets != review_run.assets:
             raise RuntimeError(
-                f"review.started requires run_dir: issue={issue_number} session={session_name}"
+                "review exchange outcome assets do not match allocated run: "
+                f"allocated={review_run.assets.run_dir} "
+                f"outcome={exchange_result.run_assets.run_dir}"
             )
-        return review_run_dir
 
     def store_review_exchange_summary(
         self,
         *,
-        worktree: Path,
-        session_name: str | None,
+        review_run: ReviewExchangeRun,
         exchange_result: ReviewExchangeOutcome,
+        current_head_sha: str | None = None,
     ) -> None:
+        self._require_matching_review_run(exchange_result, review_run)
         if not exchange_result.summary:
             return
-        review_run_dir = self.resolve_review_exchange_run_dir(
-            exchange_outcome=exchange_result,
-            worktree=worktree,
-            session_name=session_name,
-        )
-        if review_run_dir is None:
-            return
-        review_session_name = review_run_dir.name.split("__", 1)[-1]
-        validation_record_path: Path | None = None
-        if exchange_result.exchange_dir:
-            # The record may be written by reviewer loop or by validation gate later.
-            validation_record_path = exchange_result.exchange_dir.parent / "validation-record.json"
+        summary = exchange_result.summary.with_head_sha_if_missing(current_head_sha)
         self._session_output.store_review_exchange_summary(
-            worktree,
-            review_session_name,
-            exchange_result.summary,
-            validation_record_path=validation_record_path,
+            review_run,
+            summary,
         )
-
-    def resolve_review_exchange_run_dir(
-        self,
-        *,
-        exchange_outcome: ReviewExchangeOutcome | None,
-        worktree: Path,
-        session_name: str | None,
-    ) -> Path | None:
-        """Resolve run_dir for review-exchange lifecycle events.
-
-        Prefer the dedicated review-exchange run dir; fall back to session run dir.
-        """
-        exchange_dir = getattr(exchange_outcome, "exchange_dir", None) if exchange_outcome else None
-        if exchange_dir:
-            try:
-                return Path(exchange_dir).parent
-            except TypeError:
-                logger.debug("Invalid exchange_dir on review exchange outcome: %r", exchange_dir)
-        if session_name:
-            return self._session_output.find_run_dir(worktree, session_name)
-        return None
 
     def decide_review_exchange_resumption(
         self,
@@ -1125,210 +1085,22 @@ class CompletionReviewExchange:
         *,
         require_validation: bool,
         current_validation_record_path: Path | None = None,
+        current_head_sha: str | None = None,
         not_before_started_at: str | None = None,
     ) -> ResumeResolution:
-        """Decide what the next tick should do with any cached summary.
-
-        Replaces the legacy ``load_existing_review_exchange_outcome``
-        which returned bare ``Outcome | None``. Bare ``None`` meant
-        seven different things (no summary / stale head / unvalidated /
-        retryable no-completion / malformed / boundary-crossed / etc.)
-        and forced every caller to reinfer policy. This method returns
-        a ``ResumeResolution`` whose ``decision`` field names exactly
-        what action the caller should take.
-
-        Pure dispatch: gathers facts from filesystem + cached summary,
-        feeds them into ``review_exchange_resume.decide``, and packages
-        the answer (plus a reconstituted outcome for the reuse cases).
-        Adding a new ``(status, reason)`` cell is a one-line change in
-        ``decide`` and a row in its parametrized state-table test;
-        nothing here moves.
-        """
-        if not session_name:
-            return ResumeResolution.no_cache()
-        cached = self._session_output.load_review_exchange_summary(
+        resolver = ReviewExchangeCacheResolver(
+            session_output=self._session_output,
+            validation_head_sha=self._validation_head_sha,
+            current_validation_failed=self._current_validation_explicitly_failed,
+            cached_validation_passed=self.review_exchange_validation_passed,
+        )
+        return resolver.decide_review_exchange_resumption(
             worktree,
             session_name,
-            not_before_started_at=not_before_started_at,
-        )
-        facts, cache_metadata = self._build_resume_facts(
-            cached=cached,
-            current_validation_record_path=current_validation_record_path,
             require_validation=require_validation,
-        )
-        decision = decide(facts)
-        logger.info(
-            "[REVIEW_EXCHANGE] resume decision=%s session=%s summary=%s "
-            "status=%s reason=%s cached_head_sha=%s current_head_sha=%s "
-            "cached_validation_passed=%s current_validation_failed=%s "
-            "require_validation=%s boundary=%s",
-            decision.value,
-            session_name,
-            cached.summary_path if cached else "(none)",
-            facts.status or "(none)",
-            facts.reason or "(none)",
-            facts.cached_head_sha or "(none)",
-            facts.current_head_sha or "(none)",
-            facts.cached_validation_passed,
-            facts.current_validation_failed,
-            require_validation,
-            not_before_started_at or "(none)",
-        )
-        if decision in (ResumeDecision.REUSE_APPROVAL, ResumeDecision.REUSE_HALT):
-            outcome = self._cached_outcome_from_summary(cached, cache_metadata)
-            if outcome is None:
-                # Defensive: decide() said reuse but the summary
-                # couldn't be reconstituted (status/rounds missing or
-                # malformed). Treat as INVALID_SUMMARY so the caller
-                # spawns fresh rather than reusing a corrupted record.
-                logger.warning(
-                    "[REVIEW_EXCHANGE] decide() returned %s but summary "
-                    "could not be reconstituted; treating as INVALID_SUMMARY: "
-                    "session=%s summary=%s",
-                    decision.value, session_name,
-                    cached.summary_path if cached else "(none)",
-                )
-                return ResumeResolution(
-                    decision=ResumeDecision.INVALID_SUMMARY,
-                    outcome=None,
-                    cache_metadata={},
-                )
-            return ResumeResolution(
-                decision=decision,
-                outcome=outcome,
-                cache_metadata=cache_metadata,
-            )
-        return ResumeResolution(
-            decision=decision,
-            outcome=None,
-            cache_metadata={},
-        )
-
-    def _build_resume_facts(
-        self,
-        *,
-        cached: ReviewExchangeSummary | None,
-        current_validation_record_path: Path | None,
-        require_validation: bool,
-    ) -> tuple[ResumeFacts, dict[str, str]]:
-        """Translate filesystem state + cached summary into ``ResumeFacts``.
-
-        Prefers the summary-embedded ``head_sha`` / ``validation_passed``
-        (the post-PR self-describing-summary contract). Falls back to
-        the legacy filesystem walk via ``cached.validation_record_path``
-        for summaries that predate the embedding.
-
-        Also produces ``cache_metadata`` (paths the caller logs / emits
-        on reuse). Returning both together keeps callers from re-walking
-        the same cached object.
-        """
-        if cached is None:
-            return (
-                ResumeFacts(
-                    status=None,
-                    reason=None,
-                    cached_head_sha=None,
-                    cached_validation_passed=None,
-                    current_head_sha=self._validation_head_sha(
-                        current_validation_record_path,
-                    ),
-                    current_validation_failed=self._current_validation_explicitly_failed(
-                        current_validation_record_path,
-                    ),
-                    no_completion_count=0,
-                    require_validation=require_validation,
-                ),
-                {},
-            )
-        status = cached.summary.get("status")
-        reason = cached.summary.get("reason")
-        # Prefer summary-embedded fields (PR self-describing summary).
-        # Fall back to filesystem-derived fields for legacy summaries.
-        embedded_head_sha = cached.summary.get("head_sha")
-        if isinstance(embedded_head_sha, str) and embedded_head_sha:
-            cached_head_sha: str | None = embedded_head_sha
-        else:
-            cached_head_sha = self._validation_head_sha(cached.validation_record_path)
-        embedded_passed = cached.summary.get("validation_passed")
-        if isinstance(embedded_passed, bool):
-            cached_validation_passed: bool | None = embedded_passed
-        elif cached.validation_record_path is not None and cached.validation_record_path.exists():
-            cached_validation_passed = self.review_exchange_validation_passed(
-                cached.validation_record_path,
-            )
-        else:
-            cached_validation_passed = None
-        cache_metadata: dict[str, str] = {
-            "review_cache_summary_path": str(cached.summary_path),
-        }
-        if cached.validation_record_path:
-            cache_metadata["review_cache_validation_record_path"] = str(
-                cached.validation_record_path,
-            )
-        if cached_head_sha:
-            cache_metadata["review_cache_head_sha"] = cached_head_sha
-        return (
-            ResumeFacts(
-                status=status if isinstance(status, str) else None,
-                reason=reason if isinstance(reason, str) else None,
-                cached_head_sha=cached_head_sha,
-                cached_validation_passed=cached_validation_passed,
-                current_head_sha=self._validation_head_sha(
-                    current_validation_record_path,
-                ),
-                current_validation_failed=self._current_validation_explicitly_failed(
-                    current_validation_record_path,
-                ),
-                no_completion_count=0,
-                require_validation=require_validation,
-            ),
-            cache_metadata,
-        )
-
-    def _cached_outcome_from_summary(
-        self,
-        cached: ReviewExchangeSummary | None,
-        cache_metadata: dict[str, str],
-    ) -> ReviewExchangeOutcome | None:
-        """Reconstitute a ``ReviewExchangeOutcome`` from the cached summary.
-
-        Returns None when the summary is missing required fields
-        (status, completed_rounds). Caller treats None as
-        ``INVALID_SUMMARY``.
-
-        The outcome's ``reason`` is the cached summary's real reason
-        (e.g. ``coder_protocol_error``, ``max_rounds_exceeded``,
-        ``reviewer_ok``) — losing that to a literal ``"cached_summary"``
-        would erase the actionable failure cause from operator-visible
-        error messages and event payloads. The "this is a replay"
-        signal lives on ``cache_metadata`` instead, which the emitters
-        already pass through as ``cached=True``.
-        """
-        if cached is None:
-            return None
-        status = cached.summary.get("status")
-        rounds = cached.summary.get("completed_rounds")
-        if not isinstance(status, str) or not isinstance(rounds, int):
-            return None
-        cached_reason = cached.summary.get("reason")
-        # Legacy summaries written before the state-machine refactor may
-        # not carry ``reason``; fall back so we never emit ``None``.
-        # Replay-vs-fresh is signalled separately via ``cached=True`` on
-        # the emitted events — we do not need to overload ``reason``.
-        reason = cached_reason if isinstance(cached_reason, str) and cached_reason else "cached_summary"
-        from ..domain.review_exchange import ReviewExchangeOutcome, ReviewExchangeResponse
-
-        return ReviewExchangeOutcome(
-            status=status,
-            rounds=rounds,
-            reason=reason,
-            reviewer_response=ReviewExchangeResponse(
-                response_type=status,
-                response_text=cached.summary.get("response_text") or "",
-            ),
-            exchange_dir=cached.exchange_dir,
-            summary=dict(cached.summary),
-            cache_metadata=cache_metadata,
+            current_validation_record_path=current_validation_record_path,
+            current_head_sha=current_head_sha,
+            not_before_started_at=not_before_started_at,
         )
 
     @staticmethod
@@ -1399,7 +1171,9 @@ class CompletionReviewExchange:
             if mode == "via-mcp":
                 from ..infra.review_exchange_registry import supports_mcp_pair
 
-                coder_system, reviewer_system = self.resolve_exchange_systems(agent_label)
+                coder_system, reviewer_system = self.resolve_exchange_systems(
+                    agent_label
+                )
                 if not supports_mcp_pair(coder_system, reviewer_system):
                     raise ValueError(
                         "Review exchange via-mcp requires a supported ai_system pair: "
@@ -1432,12 +1206,18 @@ class CompletionReviewExchange:
         if not self._config:
             raise ValueError("Review exchange requires config")
         if agent_label not in self._config.agents:
-            raise ValueError(f"Review exchange agent '{agent_label}' not found in config.agents")
+            raise ValueError(
+                f"Review exchange agent '{agent_label}' not found in config.agents"
+            )
         reviewer_label = self._config.get_reviewer_for_agent(agent_label)
         if not reviewer_label:
-            raise ValueError("Review exchange requires review.default or per-agent reviewer")
+            raise ValueError(
+                "Review exchange requires review.default or per-agent reviewer"
+            )
         if reviewer_label not in self._config.agents:
-            raise ValueError(f"Review exchange reviewer '{reviewer_label}' not found in config.agents")
+            raise ValueError(
+                f"Review exchange reviewer '{reviewer_label}' not found in config.agents"
+            )
         return reviewer_label
 
     def resolve_exchange_systems(self, agent_label: str) -> tuple[str, str]:
@@ -1447,19 +1227,28 @@ class CompletionReviewExchange:
         coder_system = self._config.agents[agent_label].ai_system
         reviewer_system = self._config.agents[reviewer_label].ai_system
         if not coder_system or not reviewer_system:
-            raise ValueError("Review exchange requires ai_system on coder and reviewer agents")
+            raise ValueError(
+                "Review exchange requires ai_system on coder and reviewer agents"
+            )
         return coder_system, reviewer_system
+
+    def runtime_config_reference(self) -> RuntimeConfigReference:
+        if not self._config:
+            raise ValueError("Review exchange requires config")
+        if self._config.config_path is None:
+            raise ValueError("Review exchange requires config_path")
+        return RuntimeConfigReference.from_path(self._config.config_path)
 
     def run_review_exchange_loop(
         self,
         *,
+        exchange_run: ReviewExchangeRun,
         worktree: Path,
         issue_number: int,
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
         initial_validation_record_path: Path | None = None,
-        on_started: Callable[[Path], None] | None = None,
         events: Any | None = None,
         event_context: Any | None = None,
     ) -> Any:
@@ -1481,6 +1270,7 @@ class CompletionReviewExchange:
         # into ``execution/`` directly (was done via ``importlib`` in the
         # cutover; replaced by the injected port per #6161).
         return self._review_exchange_runner.run(
+            exchange_run=exchange_run,
             coder_worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
@@ -1488,16 +1278,15 @@ class CompletionReviewExchange:
             reviewer_label=reviewer_label,
             coder_agent=coder_agent,
             reviewer_agent=reviewer_agent,
+            runtime_config=self.runtime_config_reference(),
             max_rounds=self._config.review_exchange_max_rounds,
             max_no_progress=self._config.review_exchange_max_no_progress,
             require_validation=self._config.review_exchange_require_validation,
             nit_policy=nit_policy,
-            parent_session_name=session_name,
             initial_validation_record_path=initial_validation_record_path,
             web_port=self._config.control_api_port,
             events=events,
             event_context=event_context,
-            on_started=on_started,
         )
 
 

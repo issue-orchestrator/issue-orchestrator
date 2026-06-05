@@ -20,11 +20,10 @@ no-progress termination, and event emission.
 
 from __future__ import annotations
 
-import enum
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -87,10 +86,13 @@ from ..domain.review_exchange_turn import (
     Role,
     TurnResultKind,
 )
+from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
+from ..domain.review_exchange_summary import ReviewExchangeReason, ReviewExchangeStatus, ReviewExchangeSummaryArtifactRef, ReviewExchangeSummaryV1, ReviewExchangeTerminalState
+from ..domain.runtime_config import RuntimeConfigReference
 from ..domain import review_exchange_turn_artifacts as turn_artifacts
 from ..events import EventContext, EventName
 from ..infra.env import ENV_PREFIX
-from ..infra.logging_config import get_repo_log_path, log_context
+from ..infra.logging_config import log_context
 from ..infra.repo_identity import get_repo_head_sha
 from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..ports import (
@@ -105,6 +107,7 @@ from .persistent_exchange_pair_registry_inmemory import (
     InMemoryPersistentExchangePairRegistry,
     PersistentExchangePair,
 )
+from . import persistent_pair_contract as _pair_contract
 from .persistent_round_runner import (
     PersistentRoundError,
     PersistentRoundTimeoutError,
@@ -117,6 +120,12 @@ from .persistent_round_runner import (
 from .recording_contract import recording_event_count
 
 logger = logging.getLogger(__name__)
+_acquire_pair_or_emit_failure = _pair_contract.acquire_pair_or_emit_failure
+_acquire_pair_with_recording_contract = (
+    _pair_contract.acquire_pair_with_recording_contract
+)
+_emit_review_exchange_failed = _pair_contract.emit_review_exchange_failed
+_PairExchangeRunBinding = _pair_contract.PairExchangeRunBinding
 
 _CODER_PROTOCOL_RETRY_LIMIT = 2
 
@@ -126,39 +135,6 @@ _CODER_PROTOCOL_RETRY_LIMIT = 2
 # prevents an infinite respawn loop if the prompt itself deterministically
 # crashes the agent before it can respond.
 _MAX_ROLE_RESPAWN_RETRIES = 1
-
-
-class _PairRecordingContractErrorKind(str, enum.Enum):
-    NO_WRITER = "no_writer"
-    PATH_MISMATCH = "path_mismatch"
-    MISSING_FILE = "missing_file"
-    NOT_A_FILE = "not_a_file"
-
-
-@dataclass(frozen=True)
-class _PairRecordingContractError:
-    role: Role
-    kind: _PairRecordingContractErrorKind
-    detail: str
-
-    def __str__(self) -> str:
-        return f"{self.role.value} {self.kind.value}: {self.detail}"
-
-
-class _PairRecordingContractViolation(RuntimeError):
-    def __init__(
-        self,
-        *,
-        issue_number: int,
-        errors: tuple[_PairRecordingContractError, ...],
-    ) -> None:
-        self.issue_number = issue_number
-        self.errors = errors
-        joined = "; ".join(str(error) for error in errors)
-        super().__init__(
-            f"persistent pair recording contract invalid after respawn "
-            f"issue={issue_number} errors={joined}"
-        )
 
 
 def review_exchange_supervisor_timeout_seconds(
@@ -344,136 +320,6 @@ def _prepare_session_slice(slice_path: Path) -> None:
     slice_path.touch(exist_ok=True)
 
 
-def _pair_recording_contract_errors(
-    pair: PersistentExchangePair,
-) -> tuple[_PairRecordingContractError, ...]:
-    """Return recording-path contract violations for a cached pair.
-
-    A live persistent pair writes to file handles opened when the pair was
-    spawned. If a reset or cleanup removes the pair-scoped recording path while
-    the process survives, touching the path would create a different file that
-    the existing writer will never use. The only correct recovery is to release
-    that cached pair and spawn a fresh one.
-    """
-    errors: list[_PairRecordingContractError] = []
-    for role, session, recording_path in (
-        (Role.CODER, pair.coder_session, pair.coder_recording_path),
-        (Role.REVIEWER, pair.reviewer_session, pair.reviewer_recording_path),
-    ):
-        writer = session.log_writer
-        if writer is None:
-            errors.append(
-                _PairRecordingContractError(
-                    role=role,
-                    kind=_PairRecordingContractErrorKind.NO_WRITER,
-                    detail="session has no terminal recording writer",
-                )
-            )
-        elif Path(writer.recording_path) != recording_path:
-            errors.append(
-                _PairRecordingContractError(
-                    role=role,
-                    kind=_PairRecordingContractErrorKind.PATH_MISMATCH,
-                    detail=(
-                        f"writer path {writer.recording_path} does not match "
-                        f"pair path {recording_path}"
-                    ),
-                )
-            )
-        if not recording_path.exists():
-            errors.append(
-                _PairRecordingContractError(
-                    role=role,
-                    kind=_PairRecordingContractErrorKind.MISSING_FILE,
-                    detail=f"recording path missing: {recording_path}",
-                )
-            )
-        elif not recording_path.is_file():
-            errors.append(
-                _PairRecordingContractError(
-                    role=role,
-                    kind=_PairRecordingContractErrorKind.NOT_A_FILE,
-                    detail=f"recording path is not a file: {recording_path}",
-                )
-            )
-    return tuple(errors)
-
-
-def _acquire_pair_with_recording_contract(
-    *,
-    pair_registry: InMemoryPersistentExchangePairRegistry,
-    issue_number: int,
-    spawn: Callable[[], PersistentExchangePair],
-) -> PersistentExchangePair:
-    """Acquire a pair, respawning once when cached recording paths vanished."""
-    pair = pair_registry.acquire(issue_key=issue_number, spawn=spawn)
-    recording_contract_errors = _pair_recording_contract_errors(pair)
-    if not recording_contract_errors:
-        return pair
-    logger.warning(
-        "[REVIEW_EXCHANGE] persistent pair has unusable recording "
-        "paths; releasing and respawning issue=%s errors=%s",
-        issue_number,
-        "; ".join(str(error) for error in recording_contract_errors),
-    )
-    pair_registry.release(
-        issue_number,
-        reason="recording-contract-missing-on-acquire",
-    )
-    pair = pair_registry.acquire(issue_key=issue_number, spawn=spawn)
-    respawn_errors = _pair_recording_contract_errors(pair)
-    if respawn_errors:
-        pair_registry.release(
-            issue_number,
-            reason="recording-contract-invalid-after-respawn",
-        )
-        raise _PairRecordingContractViolation(
-            issue_number=issue_number,
-            errors=respawn_errors,
-        )
-    return pair
-
-
-def _emit_review_exchange_failed(
-    *,
-    emit: Callable[[EventName, dict[str, Any]], None],
-    issue_number: int,
-    session_name: str,
-    exc: Exception,
-) -> None:
-    emit(EventName.REVIEW_EXCHANGE_FAILED, {
-        "issue_number": issue_number,
-        "session_name": session_name,
-        "round_index": 0,
-        "error": str(exc),
-        "exception_type": type(exc).__name__,
-    })
-
-
-def _acquire_pair_or_emit_failure(
-    *,
-    pair_registry: InMemoryPersistentExchangePairRegistry,
-    issue_number: int,
-    session_name: str,
-    spawn: Callable[[], PersistentExchangePair],
-    emit: Callable[[EventName, dict[str, Any]], None],
-) -> PersistentExchangePair:
-    try:
-        return _acquire_pair_with_recording_contract(
-            pair_registry=pair_registry,
-            issue_number=issue_number,
-            spawn=spawn,
-        )
-    except Exception as exc:
-        _emit_review_exchange_failed(
-            emit=emit,
-            issue_number=issue_number,
-            session_name=session_name,
-            exc=exc,
-        )
-        raise
-
-
 def _release_pair_after_no_completion(
     *,
     pair_registry: InMemoryPersistentExchangePairRegistry,
@@ -540,6 +386,7 @@ def _release_pair_after_exchange_exception(
 
 def run_persistent_session_exchange(  # noqa: PLR0913
     *,
+    exchange_run: ReviewExchangeRun,
     session_output: SessionOutput,
     pair_registry: InMemoryPersistentExchangePairRegistry,
     persistent_pair_root: Path,
@@ -552,66 +399,45 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     reviewer_label: str,
     coder_agent: AgentConfig,
     reviewer_agent: AgentConfig,
+    runtime_config: RuntimeConfigReference,
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
     nit_policy: str = "surface",
-    parent_session_name: str | None = None,
     initial_validation_record_path: Path | None = None,
     web_port: int | None = None,
     events: EventSink | None = None,
     event_context: EventContext | None = None,
-    on_started: Callable[[Path], None] | None = None,
     before_reviewer_round: Callable[[int], None] | None = None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange against a registry-owned persistent pair.
 
-    Acquires a pair from ``pair_registry``. On cache miss the spawn
-    closure invokes ``reviewer_worktree_factory`` to create the
-    reviewer worktree, opens both PTY-attached sessions with their
-    env pointing at *pair-scoped* response/recording files (under the
-    caller-supplied, worktree-scoped ``persistent_pair_root``), and
-    caches the pair. On cache hit the existing pair is reused — same
-    coder PID, same reviewer PID, same recording continuing where it
-    left off.
+    Acquires a pair from ``pair_registry``. The pair contract owner
+    requires the live role processes to have been spawned for this exact
+    exchange run binding, because their env contains run-scoped values
+    (``RUN_DIR``, ``SESSION_ID``, validation output dir). A cached pair from
+    any other exchange run is released and respawned before round code sees it.
 
-    The release at issue-lifetime boundaries (PR merge, reset-retry,
-    escalation, orchestrator shutdown) is the *caller's*
-    responsibility — this function does not release per exchange.
-    Holding the pair past one exchange is precisely the user-visible
-    benefit of the registry; ADR 0026 explains the lifecycle map.
-
-    ``reviewer_worktree_factory`` is invoked at most once per pair —
-    on the first cache miss for the issue. Subsequent exchanges reuse
-    the worktree stored on the cached pair and rely on the
-    ``before_reviewer_round`` callback to fast-forward it to the
-    coder's latest tip.
+    The release at broader issue-lifetime boundaries (PR merge, reset-retry,
+    escalation, orchestrator shutdown) is still the caller's responsibility.
+    This function also lets the pair contract release on run-binding changes,
+    process/recording contract failure, and exchange exceptions.
     """
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    session_name = f"review-exchange-{issue_number}-{timestamp}"
-    run = session_output.start_run(
-        coder_worktree_path,
-        session_name,
-        issue_number=issue_number,
-        agent_label=coder_label,
-        backend="persistent-pty",
-        orchestrator_log=str(get_repo_log_path(coder_worktree_path)),
-    )
-    run_dir = run.run_dir
-    run_id = run.run_id
+    session_name = exchange_run.session_name
+    run_dir = exchange_run.assets.run_dir
+    run_id = exchange_run.run_id
     exchange_run_id = run_id
-    exchange_dir = turn_artifacts.review_exchange_dir(run_dir)
+    run_assets = exchange_run.assets
+    exchange_dir = exchange_run.assets.exchange_dir
     exchange_dir.mkdir(parents=True, exist_ok=True)
     _write_review_exchange_manifest_header(
         session_output,
         run_dir,
         ReviewExchangeManifestHeader(
             exchange_dir=exchange_dir,
-            parent_session_name=parent_session_name,
+            parent_session_name=exchange_run.parent_session_name,
         ),
     )
-    if on_started is not None:
-        on_started(run_dir)
 
     def _emit(event_name: EventName, payload: dict[str, Any]) -> None:
         if events is None or event_context is None:
@@ -634,11 +460,10 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         "exchange_dir": str(exchange_dir),
     })
 
-    # Pair-scoped paths: the same physical files survive across every
-    # exchange the pair handles. The agent's env points at the pair-
-    # scoped completion / validation paths once at spawn; if the pair
-    # is reused for exchange 2, exchange 2's rounds read/write the
-    # same files.
+    # Pair-scoped paths: the same physical files survive for the role-process
+    # pair spawned for this exchange run. The process env is fixed at spawn, so
+    # a new exchange run gets a freshly spawned pair rather than rebinding this
+    # process to a different run_dir/session.
     #
     # The per-round response file is the one exception: the agent
     # writes it itself, and codex's per-shell-tool seatbelt sandbox
@@ -656,7 +481,9 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     pair_dir = persistent_pair_root / f"issue-{issue_number}"
     coder_pair_dir = pair_dir / "coder"
     reviewer_pair_dir = pair_dir / "reviewer"
-    coder_response = coder_worktree_path / ".issue-orchestrator" / "review-response.json"
+    coder_response = (
+        coder_worktree_path / ".issue-orchestrator" / "review-response.json"
+    )
     coder_recording = coder_pair_dir / TERMINAL_RECORDING_FILENAME
     reviewer_recording = reviewer_pair_dir / TERMINAL_RECORDING_FILENAME
     coder_completion = coder_pair_dir / "completion-coder.json"
@@ -685,7 +512,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         ).to_manifest_fields(),
     )
 
-    run_validation_record_path = run_dir / "validation-record.json"
+    run_validation_record_path = exchange_run.assets.validation_record_path
     pair_validation = _PairValidationMirror(
         pair_dir=pair_dir,
         record_path=pair_validation_record,
@@ -702,8 +529,12 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         # Reviewer response file lives inside the reviewer worktree
         # (writable root for the reviewer's seatbelt sandbox); see
         # the ``coder_response`` comment above for the full rationale.
-        reviewer_response = reviewer_wt_path / ".issue-orchestrator" / "review-response.json"
-        reviewer_report = reviewer_wt_path / ".issue-orchestrator" / REVIEW_REPORT_FILENAME
+        reviewer_response = (
+            reviewer_wt_path / ".issue-orchestrator" / "review-response.json"
+        )
+        reviewer_report = (
+            reviewer_wt_path / ".issue-orchestrator" / REVIEW_REPORT_FILENAME
+        )
         coder_spec = _RoleSessionSpec(
             role=Role.CODER,
             agent=coder_agent,
@@ -712,8 +543,9 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             recording_path=coder_recording,
             response_file=coder_response,
             completion_path=coder_completion,
-            validation_output_dir=pair_dir,
+            validation_output_dir=run_dir,
             review_report_file=None,
+            runtime_config=runtime_config,
             agent_label=coder_label,
             web_port=web_port,
             issue_number=issue_number,
@@ -741,8 +573,9 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 recording_path=reviewer_recording,
                 response_file=reviewer_response,
                 completion_path=reviewer_pair_dir / "completion-reviewer.json",
-                validation_output_dir=pair_dir,
+                validation_output_dir=run_dir,
                 review_report_file=reviewer_report,
+                runtime_config=runtime_config,
                 agent_label=reviewer_label,
                 web_port=web_port,
                 issue_number=issue_number,
@@ -754,11 +587,14 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             close_persistent_session(coder)
             raise
         from time import time as _wall_clock
+
         return PersistentExchangePair(
             coder_session=coder,
             reviewer_session=reviewer,
             reviewer_worktree_path=reviewer_wt_path,
             issue_key=issue_number,
+            exchange_run_id=exchange_run_id,
+            run_dir=run_dir,
             created_at=_wall_clock(),
             coder_response_path=coder_response,
             reviewer_response_path=reviewer_response,
@@ -773,6 +609,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         pair_registry=pair_registry,
         issue_number=issue_number,
         session_name=session_name,
+        exchange_run=_PairExchangeRunBinding.from_exchange_run(exchange_run),
         spawn=_spawn_pair,
         emit=_emit,
     )
@@ -790,6 +627,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 ReviewerWorktree,
                 fast_forward_reviewer_worktree,
             )
+
             fast_forward_reviewer_worktree(
                 ReviewerWorktree(
                     path=pair.reviewer_worktree_path,
@@ -809,10 +647,12 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     # role's ``MirroredTerminalRecordingWriter`` below so the slice
     # file fills in near real time, not just at chapter boundaries.
     coder_slice_base = recording_event_count(
-        pair.coder_recording_path, require_recording=False,
+        pair.coder_recording_path,
+        require_recording=False,
     )
     reviewer_slice_base = recording_event_count(
-        pair.reviewer_recording_path, require_recording=False,
+        pair.reviewer_recording_path,
+        require_recording=False,
     )
     coder_mirror = _RoleSliceMirror(
         pair_recording=pair.coder_recording_path,
@@ -834,8 +674,9 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             recording_path=pair.coder_recording_path,
             response_file=pair.coder_response_path,
             completion_path=pair.coder_completion_path,
-            validation_output_dir=pair_dir,
+            validation_output_dir=run_dir,
             review_report_file=None,
+            runtime_config=runtime_config,
             agent_label=coder_label,
             web_port=web_port,
             issue_number=issue_number,
@@ -854,8 +695,9 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             recording_path=pair.reviewer_recording_path,
             response_file=pair.reviewer_response_path,
             completion_path=reviewer_pair_dir / "completion-reviewer.json",
-            validation_output_dir=pair_dir,
+            validation_output_dir=run_dir,
             review_report_file=pair.reviewer_report_path,
+            runtime_config=runtime_config,
             agent_label=reviewer_label,
             web_port=web_port,
             issue_number=issue_number,
@@ -888,42 +730,45 @@ def run_persistent_session_exchange(  # noqa: PLR0913
         coder_session_owner.attach_slice_mirror()
         reviewer_session_owner.attach_slice_mirror()
         outcome = _drive_rounds(
-            session_output=session_output,
-            run_dir=run_dir,
-            exchange_dir=exchange_dir,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            session_name=session_name,
-            exchange_run_id=exchange_run_id,
-            coder_session_owner=coder_session_owner,
-            reviewer_session_owner=reviewer_session_owner,
-            # Round-loop reads/writes pair-scoped files (stable across
-            # exchanges) — never the run_dir-derived defaults that B1
-            # used. On cache hit, ``pair.coder_response_path`` points
-            # to the same file the agent's env was set to at spawn.
-            coder_response=pair.coder_response_path,
-            reviewer_response=pair.reviewer_response_path,
-            reviewer_report_path=pair.reviewer_report_path,
-            coder_recording=pair.coder_recording_path,
-            reviewer_recording=pair.reviewer_recording_path,
-            coder_completion_path=pair.coder_completion_path,
-            validation_record_path=pair.validation_record_path,
-            prompt_files=ReviewExchangePromptFiles(
-                validation_record=run_validation_record_path,
+            command=_DriveRoundsCommand(
+                session_output=session_output,
+                run_assets=run_assets,
+                run_dir=run_dir,
+                exchange_dir=exchange_dir,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                session_name=session_name,
+                exchange_run_id=exchange_run_id,
+                coder_session_owner=coder_session_owner,
+                reviewer_session_owner=reviewer_session_owner,
+                # Round-loop reads/writes pair-scoped files (stable across
+                # exchanges) — never the run_dir-derived defaults that B1
+                # used. On cache hit, ``pair.coder_response_path`` points
+                # to the same file the agent's env was set to at spawn.
+                coder_response=pair.coder_response_path,
+                reviewer_response=pair.reviewer_response_path,
+                reviewer_report_path=pair.reviewer_report_path,
+                coder_recording=pair.coder_recording_path,
+                reviewer_recording=pair.reviewer_recording_path,
+                coder_completion_path=pair.coder_completion_path,
+                validation_record_path=pair.validation_record_path,
+                prompt_files=ReviewExchangePromptFiles(
+                    validation_record=run_validation_record_path,
+                ),
+                pair_validation=pair_validation,
+                coder_timeout_seconds=coder_agent.timeout_minutes * 60,
+                reviewer_timeout_seconds=reviewer_agent.timeout_minutes * 60,
+                max_rounds=max_rounds,
+                max_no_progress=max_no_progress,
+                require_validation=require_validation,
+                nit_policy=_coerce_runtime_nit_policy(nit_policy),
+                coder_provider=_agent_provider(coder_agent),
+                reviewer_provider=_agent_provider(reviewer_agent),
+                before_reviewer_round=_ff_then_caller_hook,
+                emit=_emit,
+                coder_mirror=coder_mirror,
+                reviewer_mirror=reviewer_mirror,
             ),
-            pair_validation=pair_validation,
-            coder_timeout_seconds=coder_agent.timeout_minutes * 60,
-            reviewer_timeout_seconds=reviewer_agent.timeout_minutes * 60,
-            max_rounds=max_rounds,
-            max_no_progress=max_no_progress,
-            require_validation=require_validation,
-            nit_policy=_coerce_runtime_nit_policy(nit_policy),
-            coder_provider=_agent_provider(coder_agent),
-            reviewer_provider=_agent_provider(reviewer_agent),
-            before_reviewer_round=_ff_then_caller_hook,
-            emit=_emit,
-            coder_mirror=coder_mirror,
-            reviewer_mirror=reviewer_mirror,
         )
     except Exception as exc:
         _release_pair_after_exchange_exception(
@@ -960,8 +805,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
 class _PairValidationMirror:
     """Own the pair-scoped validation record's freshness contract.
 
-    The persistent pair lives across exchanges, but validation is only
-    valid for the coder worktree's current HEAD. This mirror is the
+    The persistent pair owns pair-scoped validation evidence, but validation is
+    only valid for the coder worktree's current HEAD. This mirror is the
     single owner for invalidating stale pair records, copying the
     current validation owner's record into pair scope, and asserting
     that a required validation record both passed and matches HEAD.
@@ -1013,7 +858,10 @@ class _PairValidationMirror:
         raw_path = payload.get("validation_record_path")
         if raw_path is not None:
             if not isinstance(raw_path, str) or not raw_path.strip():
-                return None, "completion validation_record_path must be a non-empty string"
+                return (
+                    None,
+                    "completion validation_record_path must be a non-empty string",
+                )
             return self._validated_worktree_path(raw_path)
         if run_validation_record_path.exists():
             return run_validation_record_path, None
@@ -1067,6 +915,7 @@ class _RoleSessionSpec:
     completion_path: Path
     validation_output_dir: Path
     review_report_file: Path | None
+    runtime_config: RuntimeConfigReference
     agent_label: str
     web_port: int | None
     issue_number: int
@@ -1248,51 +1097,35 @@ class _RoleAttemptWorkspace:
 
 
 def _open_role_session_from_spec(spec: _RoleSessionSpec) -> PersistentSession:
-    return _open_role_session(
-        role=spec.role.value,
-        agent=spec.agent,
-        worktree=spec.worktree,
-        run_dir=spec.run_dir,
-        recording_path=spec.recording_path,
-        response_file=spec.response_file,
-        completion_path=spec.completion_path,
-        validation_output_dir=spec.validation_output_dir,
-        review_report_file=spec.review_report_file,
-        agent_label=spec.agent_label,
-        web_port=spec.web_port,
-        issue_number=spec.issue_number,
-        issue_title=spec.issue_title,
-        session_name=spec.session_name,
-    )
+    return _open_role_session(spec)
 
 
-def _open_role_session(  # noqa: PLR0913
-    *,
-    role: str,
-    agent: AgentConfig,
-    worktree: Path,
-    run_dir: Path,
-    recording_path: Path,
-    response_file: Path,
-    completion_path: Path,
-    validation_output_dir: Path,
-    review_report_file: Path | None,
-    agent_label: str,
-    web_port: int | None,
-    issue_number: int,
-    issue_title: str,
-    session_name: str,
-) -> PersistentSession:
+def _open_role_session(spec: _RoleSessionSpec) -> PersistentSession:
     """Build the launch command + env for one role and open the persistent session.
 
-    Per-role files are stable for the pair lifetime: response/report files live
-    inside the role worktrees so sandboxed agents can write them, while
-    completion/validation mirrors live under the persistent pair root. ``run_dir``
-    is per-exchange and is used only for the chapter-mirror recording path so
-    the session viewer keeps seeing per-exchange snapshots.
+    Per-role files are stable for the pair lifetime within one exchange run:
+    response/report files live inside the role worktrees so sandboxed agents can
+    write them. Coder validation uses the exchange run dir because
+    ``coding-done`` must receive owner-injected run assets.
     """
+    role = spec.role.value
+    agent = spec.agent
+    worktree = spec.worktree
+    recording_path = spec.recording_path
+    response_file = spec.response_file
+    completion_path = spec.completion_path
+    validation_output_dir = spec.validation_output_dir
+    review_report_file = spec.review_report_file
+    agent_label = spec.agent_label
+    web_port = spec.web_port
+    issue_number = spec.issue_number
+    issue_title = spec.issue_title
+    session_name = spec.session_name
+
     bootstrap = _BOOTSTRAP_PROMPT_TEMPLATE.format(
-        role=role, issue_number=issue_number, issue_title=issue_title,
+        role=role,
+        issue_number=issue_number,
+        issue_title=issue_title,
     )
     bootstrap_agent = AgentConfig(
         prompt_path=agent.prompt_path,
@@ -1316,17 +1149,20 @@ def _open_role_session(  # noqa: PLR0913
         task_kind=f"review_exchange_{role}",
     )
     import shlex
+
     command = shlex.split(command_str)
 
     response_file.parent.mkdir(parents=True, exist_ok=True)
     completion_path.parent.mkdir(parents=True, exist_ok=True)
     validation_output_dir.mkdir(parents=True, exist_ok=True)
     env = _build_role_env(
+        role=role,
         response_file=response_file,
         review_report_file=review_report_file,
         completion_path=completion_path,
         validation_output_dir=validation_output_dir,
         worktree=worktree,
+        runtime_config=spec.runtime_config,
         agent_label=agent_label,
         web_port=web_port,
         issue_number=issue_number,
@@ -1341,24 +1177,27 @@ def _open_role_session(  # noqa: PLR0913
         # design tried to mirror the pair-scoped recording into
         # ``run_dir/<role>/terminal-recording.jsonl`` for backward
         # compat, but the writer's mirror paths are fixed at spawn
-        # time. On a registry cache hit (exchange 2+), the pair's
-        # writer keeps writing to exchange 1's run_dir mirror — the
-        # second exchange's run_dir would never see a recording.
+        # time. If a process were reused for another run, the writer
+        # would keep writing to the old run_dir mirror. The pair contract
+        # now releases on run-binding changes; this comment documents why
+        # static spawn-time mirror paths remain unsafe.
         # ManifestAccessor now reads ``coder_recording`` /
         # ``reviewer_recording`` from the per-exchange manifest
-        # instead (they point at the pair-scoped canonical file),
-        # which is the right shape: one continuous recording per
-        # pair, multiple exchanges referencing it via manifest.
+        # instead (they point at the current run's per-session slice),
+        # while ``<role>_recording_pair`` preserves the pair-scoped
+        # canonical file for diagnostics.
     )
 
 
 def _build_role_env(
     *,
+    role: str,
     response_file: Path,
     review_report_file: Path | None,
     completion_path: Path,
     validation_output_dir: Path,
     worktree: Path,
+    runtime_config: RuntimeConfigReference,
     agent_label: str,
     web_port: int | None,
     issue_number: int,
@@ -1375,23 +1214,27 @@ def _build_role_env(
     would let coder/reviewer agents run with admin GitHub tokens, the
     Control API admin bearer, etc.
 
-    The agent's env is set once at spawn and points at locations that survive
-    across every exchange the persistent pair handles. Agent-written
-    response/report files must be inside the role worktree; completion and
-    validation paths are orchestrator-managed and may live under the pair root.
+    The agent's env is set once at spawn, so these paths must be scoped to the
+    exchange run that owns the spawned process. Agent-written response/report
+    files must be inside the role worktree; coder validation paths use the
+    owner-provided run directory.
     """
     from ..control.isolation import build_runtime_tool_env
     from .agent_runner_env import build_filtered_env
 
     overrides: dict[str, str] = {
         f"{ENV_PREFIX}COMPLETION_PATH": str(completion_path),
-        f"{ENV_PREFIX}VALIDATION_OUTPUT_DIR": str(validation_output_dir),
+        f"{ENV_PREFIX}SESSION_ID": session_name,
         f"{ENV_PREFIX}AGENT_LABEL": agent_label,
         f"{ENV_PREFIX}ISSUE_NUMBER": str(issue_number),
         f"{ENV_PREFIX}REVIEW_RESPONSE_FILE": str(response_file),
         "ORCHESTRATOR_ISSUE_NUMBER": str(issue_number),
         "ORCHESTRATOR_SESSION_ID": session_name,
     }
+    overrides.update(runtime_config.to_env())
+    if role == Role.CODER.value:
+        overrides[f"{ENV_PREFIX}VALIDATION_OUTPUT_DIR"] = str(validation_output_dir)
+        overrides[f"{ENV_PREFIX}RUN_DIR"] = str(validation_output_dir)
     if review_report_file is not None:
         review_report_file.parent.mkdir(parents=True, exist_ok=True)
         overrides[f"{ENV_PREFIX}REVIEW_REPORT_FILE"] = str(review_report_file)
@@ -1620,10 +1463,11 @@ def _persist_turn_contract(
     return path
 
 
-def _reviewer_prompt_with_artifact_contract(prompt: str, *, nit_policy: NitPolicy) -> str:
+def _reviewer_prompt_with_artifact_contract(
+    prompt: str, *, nit_policy: NitPolicy
+) -> str:
     return (
-        prompt.rstrip()
-        + "\n\n"
+        prompt.rstrip() + "\n\n"
         "Review artifact contract:\n"
         "- Write a human-readable markdown review to "
         "$ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE.\n"
@@ -1746,7 +1590,9 @@ def _finalize_reviewer_decision(
     require_validation: bool,
     pair_validation: _PairValidationMirror,
 ) -> _ReviewerDecisionResult:
-    validation_error = pair_validation.current_validation_error() if require_validation else None
+    validation_error = (
+        pair_validation.current_validation_error() if require_validation else None
+    )
     if reviewer.response_type == "ok" and validation_error is not None:
         reviewer = ReviewExchangeResponse(
             response_type="changes_requested",
@@ -1840,39 +1686,74 @@ def _coder_rework_reason(
     return None
 
 
-def _drive_rounds(  # noqa: PLR0913
-    *,
-    session_output: SessionOutput,
-    run_dir: Path,
-    exchange_dir: Path,
-    issue_number: int,
-    issue_title: str,
-    session_name: str,
-    exchange_run_id: str,
-    coder_session_owner: _RoleSessionOwner,
-    reviewer_session_owner: _RoleSessionOwner,
-    coder_response: Path,
-    reviewer_response: Path,
-    reviewer_report_path: Path,
-    coder_recording: Path,
-    reviewer_recording: Path,
-    coder_completion_path: Path,
-    validation_record_path: Path,
-    prompt_files: ReviewExchangePromptFiles,
-    pair_validation: _PairValidationMirror,
-    coder_timeout_seconds: float,
-    reviewer_timeout_seconds: float,
-    max_rounds: int,
-    max_no_progress: int,
-    require_validation: bool,
-    nit_policy: NitPolicy,
-    coder_provider: AgentProvider,
-    reviewer_provider: AgentProvider,
-    before_reviewer_round: Callable[[int], None] | None,
-    emit: Callable[[EventName, dict[str, Any]], None],
-    coder_mirror: _RoleSliceMirror,
-    reviewer_mirror: _RoleSliceMirror,
-) -> ReviewExchangeOutcome:
+@dataclass(frozen=True)
+class _DriveRoundsCommand:
+    session_output: SessionOutput
+    run_assets: ReviewExchangeRunAssets
+    run_dir: Path
+    exchange_dir: Path
+    issue_number: int
+    issue_title: str
+    session_name: str
+    exchange_run_id: str
+    coder_session_owner: _RoleSessionOwner
+    reviewer_session_owner: _RoleSessionOwner
+    coder_response: Path
+    reviewer_response: Path
+    reviewer_report_path: Path
+    coder_recording: Path
+    reviewer_recording: Path
+    coder_completion_path: Path
+    validation_record_path: Path
+    prompt_files: ReviewExchangePromptFiles
+    pair_validation: _PairValidationMirror
+    coder_timeout_seconds: float
+    reviewer_timeout_seconds: float
+    max_rounds: int
+    max_no_progress: int
+    require_validation: bool
+    nit_policy: NitPolicy
+    coder_provider: AgentProvider
+    reviewer_provider: AgentProvider
+    before_reviewer_round: Callable[[int], None] | None
+    emit: Callable[[EventName, dict[str, Any]], None]
+    coder_mirror: _RoleSliceMirror
+    reviewer_mirror: _RoleSliceMirror
+
+
+def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
+    session_output = command.session_output
+    run_assets = command.run_assets
+    run_dir = command.run_dir
+    exchange_dir = command.exchange_dir
+    issue_number = command.issue_number
+    issue_title = command.issue_title
+    session_name = command.session_name
+    exchange_run_id = command.exchange_run_id
+    coder_session_owner = command.coder_session_owner
+    reviewer_session_owner = command.reviewer_session_owner
+    coder_response = command.coder_response
+    reviewer_response = command.reviewer_response
+    reviewer_report_path = command.reviewer_report_path
+    coder_recording = command.coder_recording
+    reviewer_recording = command.reviewer_recording
+    coder_completion_path = command.coder_completion_path
+    validation_record_path = command.validation_record_path
+    prompt_files = command.prompt_files
+    pair_validation = command.pair_validation
+    coder_timeout_seconds = command.coder_timeout_seconds
+    reviewer_timeout_seconds = command.reviewer_timeout_seconds
+    max_rounds = command.max_rounds
+    max_no_progress = command.max_no_progress
+    require_validation = command.require_validation
+    nit_policy = command.nit_policy
+    coder_provider = command.coder_provider
+    reviewer_provider = command.reviewer_provider
+    before_reviewer_round = command.before_reviewer_round
+    emit = command.emit
+    coder_mirror = command.coder_mirror
+    reviewer_mirror = command.reviewer_mirror
+
     no_progress_count = 0
     last_reviewer_text: str | None = None
     last_coder_text: str | None = None
@@ -1929,24 +1810,29 @@ def _drive_rounds(  # noqa: PLR0913
             role=Role.REVIEWER,
             provider=reviewer_provider,
         )
-        emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": round_index,
-        })
+        emit(
+            EventName.REVIEW_EXCHANGE_ROUND_STARTED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+            },
+        )
         _record_chapter(
-            session_output=session_output,
-            run_dir=run_dir,
-            role="reviewer",
-            recording_path=reviewer_recording,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            cycle_index=round_index,
-            section=CHAPTER_SECTION_PROMPT,
-            label=f"Round {round_index} reviewer prompt",
-            session_name=session_name,
-            emit=emit,
-            mirror=reviewer_mirror,
+            _ChapterRecordCommand(
+                session_output=session_output,
+                run_dir=run_dir,
+                role="reviewer",
+                recording_path=reviewer_recording,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                cycle_index=round_index,
+                section=CHAPTER_SECTION_PROMPT,
+                label=f"Round {round_index} reviewer prompt",
+                session_name=session_name,
+                emit=emit,
+                mirror=reviewer_mirror,
+            )
         )
         reviewer_started = _build_reviewer_turn_started(
             scope=reviewer_scope,
@@ -1962,38 +1848,44 @@ def _drive_rounds(  # noqa: PLR0913
             suffix="started",
             fields=reviewer_started.to_manifest_fields(),
         )
-        emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": round_index,
-            "attempt_index": 1,
-            "role": "reviewer",
-            "prompt_chars": len(reviewer_prompt_text),
-            "artifact_refs": _event_artifact_refs(reviewer_started.artifact_refs()),
-        })
+        emit(
+            EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+                "attempt_index": 1,
+                "role": "reviewer",
+                "prompt_chars": len(reviewer_prompt_text),
+                "artifact_refs": _event_artifact_refs(reviewer_started.artifact_refs()),
+            },
+        )
         reviewer = _send_role_round(
-            owner=reviewer_session_owner,
-            workspace=reviewer_workspace,
-            role=Role.REVIEWER,
-            turn_started=reviewer_started,
-            recording_path=reviewer_recording,
-            prompt=reviewer_prompt_text,
-            timeout_seconds=reviewer_timeout_seconds,
-            session_output=session_output,
-            run_dir=run_dir,
-            exchange_dir=exchange_dir,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            cycle_index=round_index,
-            session_name=session_name,
-            emit=emit,
-            mirror=reviewer_mirror,
+            _RoleRoundCommand(
+                owner=reviewer_session_owner,
+                workspace=reviewer_workspace,
+                role=Role.REVIEWER,
+                turn_started=reviewer_started,
+                recording_path=reviewer_recording,
+                prompt=reviewer_prompt_text,
+                timeout_seconds=reviewer_timeout_seconds,
+                session_output=session_output,
+                run_dir=run_dir,
+                exchange_dir=exchange_dir,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                cycle_index=round_index,
+                session_name=session_name,
+                emit=emit,
+                mirror=reviewer_mirror,
+            )
         )
         if reviewer is None:
             return _build_outcome_for_role_timeout(
+                run_assets=run_assets,
                 exchange_dir=exchange_dir,
                 round_index=round_index,
-                role="reviewer",
+                role=Role.REVIEWER,
                 last_reviewer=None,
                 emit=emit,
                 issue_number=issue_number,
@@ -2013,6 +1905,7 @@ def _drive_rounds(  # noqa: PLR0913
             )
         except ValueError as exc:
             return _build_outcome_for_reviewer_decision_error(
+                run_assets=run_assets,
                 exchange_dir=exchange_dir,
                 round_index=round_index,
                 reviewer=reviewer,
@@ -2033,6 +1926,7 @@ def _drive_rounds(  # noqa: PLR0913
 
         if reviewer.response_type == "ok":
             return _complete_with_reviewer_ok(
+                run_assets=run_assets,
                 exchange_dir=exchange_dir,
                 round_index=round_index,
                 reviewer=reviewer,
@@ -2049,6 +1943,7 @@ def _drive_rounds(  # noqa: PLR0913
             no_progress_count = 0
         if max_no_progress > 0 and no_progress_count >= max_no_progress:
             return _stop_for_no_progress(
+                run_assets=run_assets,
                 exchange_dir=exchange_dir,
                 round_index=round_index,
                 reviewer=reviewer,
@@ -2090,18 +1985,20 @@ def _drive_rounds(  # noqa: PLR0913
             provider=coder_provider,
         )
         _record_chapter(
-            session_output=session_output,
-            run_dir=run_dir,
-            role="coder",
-            recording_path=coder_recording,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            cycle_index=round_index,
-            section=CHAPTER_SECTION_PROMPT,
-            label=f"Round {round_index} coder prompt",
-            session_name=session_name,
-            emit=emit,
-            mirror=coder_mirror,
+            _ChapterRecordCommand(
+                session_output=session_output,
+                run_dir=run_dir,
+                role="coder",
+                recording_path=coder_recording,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                cycle_index=round_index,
+                section=CHAPTER_SECTION_PROMPT,
+                label=f"Round {round_index} coder prompt",
+                session_name=session_name,
+                emit=emit,
+                mirror=coder_mirror,
+            )
         )
         coder_started = _build_coder_turn_started(
             scope=coder_scope,
@@ -2130,28 +2027,31 @@ def _drive_rounds(  # noqa: PLR0913
             ),
         )
         coder = _send_role_round(
-            owner=coder_session_owner,
-            workspace=coder_workspace,
-            role=Role.CODER,
-            turn_started=coder_started,
-            recording_path=coder_recording,
-            prompt=coder_prompt_text,
-            timeout_seconds=coder_timeout_seconds,
-            session_output=session_output,
-            run_dir=run_dir,
-            exchange_dir=exchange_dir,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            cycle_index=round_index,
-            session_name=session_name,
-            emit=emit,
-            mirror=coder_mirror,
+            _RoleRoundCommand(
+                owner=coder_session_owner,
+                workspace=coder_workspace,
+                role=Role.CODER,
+                turn_started=coder_started,
+                recording_path=coder_recording,
+                prompt=coder_prompt_text,
+                timeout_seconds=coder_timeout_seconds,
+                session_output=session_output,
+                run_dir=run_dir,
+                exchange_dir=exchange_dir,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                cycle_index=round_index,
+                session_name=session_name,
+                emit=emit,
+                mirror=coder_mirror,
+            )
         )
         if coder is None:
             return _build_outcome_for_role_timeout(
+                run_assets=run_assets,
                 exchange_dir=exchange_dir,
                 round_index=round_index,
-                role="coder",
+                role=Role.CODER,
                 last_reviewer=reviewer,
                 emit=emit,
                 issue_number=issue_number,
@@ -2160,50 +2060,58 @@ def _drive_rounds(  # noqa: PLR0913
             )
 
         coder, protocol_outcome = _enforce_coder_protocol(
-            session_output=session_output,
-            coder_session_owner=coder_session_owner,
-            coder_workspace=coder_workspace,
-            coder=coder,
-            reviewer=reviewer,
-            coder_provider=coder_provider,
-            run_dir=run_dir,
-            exchange_dir=exchange_dir,
-            coder_response=coder_response,
-            coder_recording=coder_recording,
-            coder_completion_path=coder_completion_path,
-            validation_record_path=validation_record_path,
-            pair_validation=pair_validation,
-            coder_timeout_seconds=coder_timeout_seconds,
-            require_validation=require_validation,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            session_name=session_name,
-            cycle_index=round_index,
-            emit=emit,
-            coder_mirror=coder_mirror,
+            _CoderProtocolCommand(
+                session_output=session_output,
+                coder_session_owner=coder_session_owner,
+                coder_workspace=coder_workspace,
+                coder=coder,
+                reviewer=reviewer,
+                coder_provider=coder_provider,
+                run_dir=run_dir,
+                exchange_dir=exchange_dir,
+                coder_recording=coder_recording,
+                coder_completion_path=coder_completion_path,
+                validation_record_path=validation_record_path,
+                pair_validation=pair_validation,
+                run_assets=run_assets,
+                coder_timeout_seconds=coder_timeout_seconds,
+                require_validation=require_validation,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                session_name=session_name,
+                cycle_index=round_index,
+                emit=emit,
+                coder_mirror=coder_mirror,
+            )
         )
         if protocol_outcome is not None:
             return protocol_outcome
 
         decision = artifact_pair.decision
-        _emit_built_event(emit, make_review_exchange_round_completed_event({
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": round_index,
-            "reviewer_response_type": reviewer.response_type,
-            "reviewer_response_text": reviewer.response_text,
-            "review_decision_verdict": decision.verdict,
-            "review_nit_policy": decision.nit_policy,
-            "review_abstraction_status": decision.abstraction_review.status,
-            "artifacts": artifact_pair.to_event_artifacts(),
-            "coder_response_type": coder.response_type,
-            "coder_response_text": coder.response_text,
-        }))
+        _emit_built_event(
+            emit,
+            make_review_exchange_round_completed_event(
+                {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "reviewer_response_type": reviewer.response_type,
+                    "reviewer_response_text": reviewer.response_text,
+                    "review_decision_verdict": decision.verdict,
+                    "review_nit_policy": decision.nit_policy,
+                    "review_abstraction_status": decision.abstraction_review.status,
+                    "artifacts": artifact_pair.to_event_artifacts(),
+                    "coder_response_type": coder.response_type,
+                    "coder_response_text": coder.response_text,
+                }
+            ),
+        )
         last_coder_text = coder.response_text
 
     summary = _write_summary(
         exchange_dir, max_rounds,
-        status="stopped", reason="max_rounds_exceeded",
+        status=ReviewExchangeStatus.STOPPED,
+        reason=ReviewExchangeReason.MAX_ROUNDS_EXCEEDED,
         reviewer_response=None,
         validation_record_path=validation_record_path,
     )
@@ -2211,42 +2119,46 @@ def _drive_rounds(  # noqa: PLR0913
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": max_rounds,
-        "status": "stopped",
-        "reason": "max_rounds_exceeded",
+        "status": ReviewExchangeStatus.STOPPED.value,
+        "reason": ReviewExchangeReason.MAX_ROUNDS_EXCEEDED.value,
     }))
     return ReviewExchangeOutcome(
-        status="stopped",
+        status=ReviewExchangeStatus.STOPPED,
         rounds=max_rounds,
-        reason="max_rounds_exceeded",
+        reason=ReviewExchangeReason.MAX_ROUNDS_EXCEEDED,
+        run_assets=run_assets,
         reviewer_response=None,
-        exchange_dir=exchange_dir,
         summary=summary,
     )
 
 
-def _enforce_coder_protocol(  # noqa: PLR0913
-    *,
-    session_output: SessionOutput,
-    coder_session_owner: _RoleSessionOwner,
-    coder_workspace: _RoleAttemptWorkspace,
-    coder: ReviewExchangeResponse,
-    reviewer: ReviewExchangeResponse,
-    coder_provider: AgentProvider,
-    run_dir: Path,
-    exchange_dir: Path,
-    coder_response: Path,
-    coder_recording: Path,
-    coder_completion_path: Path,
-    validation_record_path: Path,
-    pair_validation: _PairValidationMirror,
-    coder_timeout_seconds: float,
-    require_validation: bool,
-    exchange_run_id: str,
-    issue_number: int,
-    session_name: str,
-    cycle_index: int,
-    emit: Callable[[EventName, dict[str, Any]], None],
-    coder_mirror: _RoleSliceMirror,
+@dataclass(frozen=True)
+class _CoderProtocolCommand:
+    session_output: SessionOutput
+    coder_session_owner: _RoleSessionOwner
+    coder_workspace: _RoleAttemptWorkspace
+    coder: ReviewExchangeResponse
+    reviewer: ReviewExchangeResponse
+    coder_provider: AgentProvider
+    run_dir: Path
+    exchange_dir: Path
+    coder_recording: Path
+    coder_completion_path: Path
+    validation_record_path: Path
+    pair_validation: _PairValidationMirror
+    run_assets: ReviewExchangeRunAssets
+    coder_timeout_seconds: float
+    require_validation: bool
+    exchange_run_id: str
+    issue_number: int
+    session_name: str
+    cycle_index: int
+    emit: Callable[[EventName, dict[str, Any]], None]
+    coder_mirror: _RoleSliceMirror
+
+
+def _enforce_coder_protocol(
+    command: _CoderProtocolCommand,
 ) -> tuple[ReviewExchangeResponse, ReviewExchangeOutcome | None]:
     """Validate the coder produced its completion-coder.json artifact, retry
     with a remediation prompt up to ``_CODER_PROTOCOL_RETRY_LIMIT`` times,
@@ -2256,6 +2168,28 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     Without this guardrail a coder could advance the exchange by writing
     only the review-response file while skipping coding-done.
     """
+    session_output = command.session_output
+    coder_session_owner = command.coder_session_owner
+    coder_workspace = command.coder_workspace
+    coder = command.coder
+    reviewer = command.reviewer
+    coder_provider = command.coder_provider
+    run_dir = command.run_dir
+    exchange_dir = command.exchange_dir
+    coder_recording = command.coder_recording
+    coder_completion_path = command.coder_completion_path
+    validation_record_path = command.validation_record_path
+    pair_validation = command.pair_validation
+    run_assets = command.run_assets
+    coder_timeout_seconds = command.coder_timeout_seconds
+    require_validation = command.require_validation
+    exchange_run_id = command.exchange_run_id
+    issue_number = command.issue_number
+    session_name = command.session_name
+    cycle_index = command.cycle_index
+    emit = command.emit
+    coder_mirror = command.coder_mirror
+
     protocol_error = _validate_coder_completion(
         completion_path=coder_completion_path,
         pair_validation=pair_validation,
@@ -2263,7 +2197,10 @@ def _enforce_coder_protocol(  # noqa: PLR0913
         require_validation=require_validation,
     )
     next_attempt_index = 2
-    while protocol_error is not None and next_attempt_index <= _CODER_PROTOCOL_RETRY_LIMIT + 1:
+    while (
+        protocol_error is not None
+        and next_attempt_index <= _CODER_PROTOCOL_RETRY_LIMIT + 1
+    ):
         attempt_index = next_attempt_index
         next_attempt_index += 1
         retry_prompt = (
@@ -2289,18 +2226,20 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             provider=coder_provider,
         )
         _record_chapter(
-            session_output=session_output,
-            run_dir=run_dir,
-            role="coder",
-            recording_path=coder_recording,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            cycle_index=cycle_index,
-            section=CHAPTER_SECTION_PROMPT,
-            label=f"Round {cycle_index} coder protocol-retry",
-            session_name=session_name,
-            emit=emit,
-            mirror=coder_mirror,
+            _ChapterRecordCommand(
+                session_output=session_output,
+                run_dir=run_dir,
+                role="coder",
+                recording_path=coder_recording,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                cycle_index=cycle_index,
+                section=CHAPTER_SECTION_PROMPT,
+                label=f"Round {cycle_index} coder protocol-retry",
+                session_name=session_name,
+                emit=emit,
+                mirror=coder_mirror,
+            )
         )
         retry_started = _build_coder_turn_started(
             scope=retry_scope,
@@ -2316,39 +2255,45 @@ def _enforce_coder_protocol(  # noqa: PLR0913
             suffix="started",
             fields=retry_started.to_manifest_fields(),
         )
-        emit(EventName.REVIEW_EXCHANGE_ROLE_PROMPTED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": cycle_index,
-            "attempt_index": attempt_index,
-            "role": "coder",
-            "prompt_chars": len(retry_prompt),
-            "protocol_retry": True,
-            "artifact_refs": _event_artifact_refs(retry_started.artifact_refs()),
-        })
+        emit(
+            EventName.REVIEW_EXCHANGE_ROLE_PROMPTED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": cycle_index,
+                "attempt_index": attempt_index,
+                "role": "coder",
+                "prompt_chars": len(retry_prompt),
+                "protocol_retry": True,
+                "artifact_refs": _event_artifact_refs(retry_started.artifact_refs()),
+            },
+        )
         retry_response = _send_role_round(
-            owner=coder_session_owner,
-            workspace=coder_workspace,
-            role=Role.CODER,
-            turn_started=retry_started,
-            recording_path=coder_recording,
-            prompt=retry_prompt,
-            timeout_seconds=coder_timeout_seconds,
-            session_output=session_output,
-            run_dir=run_dir,
-            exchange_dir=exchange_dir,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            cycle_index=cycle_index,
-            session_name=session_name,
-            emit=emit,
-            mirror=coder_mirror,
+            _RoleRoundCommand(
+                owner=coder_session_owner,
+                workspace=coder_workspace,
+                role=Role.CODER,
+                turn_started=retry_started,
+                recording_path=coder_recording,
+                prompt=retry_prompt,
+                timeout_seconds=coder_timeout_seconds,
+                session_output=session_output,
+                run_dir=run_dir,
+                exchange_dir=exchange_dir,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                cycle_index=cycle_index,
+                session_name=session_name,
+                emit=emit,
+                mirror=coder_mirror,
+            )
         )
         if retry_response is None:
             return coder, _build_outcome_for_role_timeout(
+                run_assets=run_assets,
                 exchange_dir=exchange_dir,
                 round_index=cycle_index,
-                role="coder",
+                role=Role.CODER,
                 last_reviewer=reviewer,
                 emit=emit,
                 issue_number=issue_number,
@@ -2364,6 +2309,7 @@ def _enforce_coder_protocol(  # noqa: PLR0913
         )
     if protocol_error is not None:
         return coder, _build_outcome_for_protocol_error(
+            run_assets=run_assets,
             exchange_dir=exchange_dir,
             round_index=cycle_index,
             last_reviewer=reviewer,
@@ -2377,26 +2323,28 @@ def _enforce_coder_protocol(  # noqa: PLR0913
     return coder, None
 
 
-def _send_role_round(  # noqa: PLR0913
-    *,
-    owner: _RoleSessionOwner,
-    workspace: _RoleAttemptWorkspace,
-    role: Role,
-    turn_started: ReviewerTurnStarted | CoderTurnStarted,
-    recording_path: Path,
-    prompt: str,
-    timeout_seconds: float,
-    session_output: SessionOutput,
-    run_dir: Path,
-    exchange_dir: Path,
-    exchange_run_id: str,
-    issue_number: int,
-    cycle_index: int,
-    session_name: str,
-    emit: Callable[[EventName, dict[str, Any]], None],
-    mirror: _RoleSliceMirror,
-    _respawn_retries: int = 0,
-) -> ReviewExchangeResponse | None:
+@dataclass(frozen=True)
+class _RoleRoundCommand:
+    owner: _RoleSessionOwner
+    workspace: _RoleAttemptWorkspace
+    role: Role
+    turn_started: ReviewerTurnStarted | CoderTurnStarted
+    recording_path: Path
+    prompt: str
+    timeout_seconds: float
+    session_output: SessionOutput
+    run_dir: Path
+    exchange_dir: Path
+    exchange_run_id: str
+    issue_number: int
+    cycle_index: int
+    session_name: str
+    emit: Callable[[EventName, dict[str, Any]], None]
+    mirror: _RoleSliceMirror
+    respawn_retries: int = 0
+
+
+def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | None:
     """Send one role's round prompt and convert the response to a domain object.
 
     Returns ``None`` if the role timed out or died — the caller emits
@@ -2417,6 +2365,24 @@ def _send_role_round(  # noqa: PLR0913
     ``<exchange_dir>/turns/round-<n>-<role>-attempt-<m>.result.json``
     for replay and diagnostics.
     """
+    owner = command.owner
+    workspace = command.workspace
+    role = command.role
+    turn_started = command.turn_started
+    recording_path = command.recording_path
+    prompt = command.prompt
+    timeout_seconds = command.timeout_seconds
+    session_output = command.session_output
+    run_dir = command.run_dir
+    exchange_dir = command.exchange_dir
+    exchange_run_id = command.exchange_run_id
+    issue_number = command.issue_number
+    cycle_index = command.cycle_index
+    session_name = command.session_name
+    emit = command.emit
+    mirror = command.mirror
+    respawn_retries = command.respawn_retries
+
     session = owner.ensure_live()
     workspace.prepare_for_attempt()
     role_value = role.value
@@ -2463,7 +2429,7 @@ def _send_role_round(  # noqa: PLR0913
         # turn rather than tearing the whole pair down and restarting round 1.
         if (
             is_process_unusable_failure(failure_reason)
-            and _respawn_retries < _MAX_ROLE_RESPAWN_RETRIES
+            and respawn_retries < _MAX_ROLE_RESPAWN_RETRIES
         ):
             logger.warning(
                 "[REVIEW_EXCHANGE] %s round %d had a dead/unusable process "
@@ -2473,7 +2439,7 @@ def _send_role_round(  # noqa: PLR0913
                 cycle_index,
                 failure_reason,
                 session.proc.pid,
-                _respawn_retries + 1,
+                respawn_retries + 1,
                 _MAX_ROLE_RESPAWN_RETRIES,
                 issue_number,
                 session_name,
@@ -2484,23 +2450,7 @@ def _send_role_round(  # noqa: PLR0913
             )
             owner.respawn()
             return _send_role_round(
-                owner=owner,
-                workspace=workspace,
-                role=role,
-                turn_started=turn_started,
-                recording_path=recording_path,
-                prompt=prompt,
-                timeout_seconds=timeout_seconds,
-                session_output=session_output,
-                run_dir=run_dir,
-                exchange_dir=exchange_dir,
-                exchange_run_id=exchange_run_id,
-                issue_number=issue_number,
-                cycle_index=cycle_index,
-                session_name=session_name,
-                emit=emit,
-                mirror=mirror,
-                _respawn_retries=_respawn_retries + 1,
+                replace(command, respawn_retries=respawn_retries + 1),
             )
         # The typed result artifact must exist on the failure path
         # too — this is the case operators most need to inspect, and
@@ -2520,21 +2470,23 @@ def _send_role_round(  # noqa: PLR0913
         )
         response = _legacy_response_from_typed_result(typed_result)
         _record_chapter(
-            session_output=session_output,
-            run_dir=run_dir,
-            role=role_value,
-            recording_path=recording_path,
-            exchange_run_id=exchange_run_id,
-            issue_number=issue_number,
-            cycle_index=cycle_index,
-            section=CHAPTER_SECTION_TIMEOUT,
-            label=(
-                f"Round {cycle_index} {role_value} "
-                f"{round_failure_chapter_label(failure_reason)}"
-            ),
-            session_name=session_name,
-            emit=emit,
-            mirror=mirror,
+            _ChapterRecordCommand(
+                session_output=session_output,
+                run_dir=run_dir,
+                role=role_value,
+                recording_path=recording_path,
+                exchange_run_id=exchange_run_id,
+                issue_number=issue_number,
+                cycle_index=cycle_index,
+                section=CHAPTER_SECTION_TIMEOUT,
+                label=(
+                    f"Round {cycle_index} {role_value} "
+                    f"{round_failure_chapter_label(failure_reason)}"
+                ),
+                session_name=session_name,
+                emit=emit,
+                mirror=mirror,
+            )
         )
         completed = _turn_completed(turn_started, result_path, response)
         _persist_turn_contract(
@@ -2545,17 +2497,20 @@ def _send_role_round(  # noqa: PLR0913
             suffix="completed",
             fields=completed.to_manifest_fields(),
         )
-        emit(EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": cycle_index,
-            "attempt_index": attempt_index,
-            "role": role_value,
-            "failure_reason": failure_reason,
-            "reason": "no_completion",
-            "detail": str(exc),
-            "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
-        })
+        emit(
+            EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": cycle_index,
+                "attempt_index": attempt_index,
+                "role": role_value,
+                "failure_reason": failure_reason,
+                "reason": "no_completion",
+                "detail": str(exc),
+                "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
+            },
+        )
         return None
 
     typed_result = ReviewExchangeTurnResult.from_agent_dict(parsed, raw_output=None)
@@ -2584,18 +2539,20 @@ def _send_role_round(  # noqa: PLR0913
         workspace.response_file,
     )
     _record_chapter(
-        session_output=session_output,
-        run_dir=run_dir,
-        role=role_value,
-        recording_path=recording_path,
-        exchange_run_id=exchange_run_id,
-        issue_number=issue_number,
-        cycle_index=cycle_index,
-        section=CHAPTER_SECTION_FEEDBACK,
-        label=f"Round {cycle_index} {role_value} feedback",
-        session_name=session_name,
-        emit=emit,
-        mirror=mirror,
+        _ChapterRecordCommand(
+            session_output=session_output,
+            run_dir=run_dir,
+            role=role_value,
+            recording_path=recording_path,
+            exchange_run_id=exchange_run_id,
+            issue_number=issue_number,
+            cycle_index=cycle_index,
+            section=CHAPTER_SECTION_FEEDBACK,
+            label=f"Round {cycle_index} {role_value} feedback",
+            session_name=session_name,
+            emit=emit,
+            mirror=mirror,
+        )
     )
     completed = _turn_completed(turn_started, result_path, response)
     _persist_turn_contract(
@@ -2606,16 +2563,19 @@ def _send_role_round(  # noqa: PLR0913
         suffix="completed",
         fields=completed.to_manifest_fields(),
     )
-    emit(EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK, {
-        "issue_number": issue_number,
-        "session_name": session_name,
-        "round_index": cycle_index,
-        "attempt_index": attempt_index,
-        "role": role_value,
-        "response_type": response.response_type,
-        "getting_closer": response.getting_closer,
-        "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
-    })
+    emit(
+        EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK,
+        {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": cycle_index,
+            "attempt_index": attempt_index,
+            "role": role_value,
+            "response_type": response.response_type,
+            "getting_closer": response.getting_closer,
+            "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
+        },
+    )
     return response
 
 
@@ -2631,7 +2591,9 @@ def _legacy_response_from_typed_result(
         return ReviewExchangeResponse(
             response_type="protocol_error",
             response_text=result.response_text,
-            getting_closer=result.getting_closer if result.getting_closer is not None else False,
+            getting_closer=result.getting_closer
+            if result.getting_closer is not None
+            else False,
             raw_json=result.raw_json,
             raw_output=result.raw_output,
         )
@@ -2645,7 +2607,8 @@ def _legacy_response_from_typed_result(
 
 
 def _persist_turn_packet(
-    exchange_dir: Path, packet: ReviewExchangeTurnPacket,
+    exchange_dir: Path,
+    packet: ReviewExchangeTurnPacket,
 ) -> None:
     """Write the per-turn input packet as a session artifact.
 
@@ -2701,6 +2664,7 @@ def _persist_turn_result(
 
 def _complete_with_reviewer_ok(
     *,
+    run_assets: ReviewExchangeRunAssets,
     exchange_dir: Path,
     round_index: int,
     reviewer: ReviewExchangeResponse,
@@ -2713,7 +2677,9 @@ def _complete_with_reviewer_ok(
 ) -> ReviewExchangeOutcome:
     summary = _write_summary(
         exchange_dir, round_index,
-        status="ok", reason="reviewer_ok", reviewer_response=reviewer,
+        status=ReviewExchangeStatus.OK,
+        reason=ReviewExchangeReason.REVIEWER_OK,
+        reviewer_response=reviewer,
         review_artifacts=review_artifacts,
         validation_record_path=validation_record_path,
     )
@@ -2733,25 +2699,26 @@ def _complete_with_reviewer_ok(
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
-        "status": "ok",
-        "reason": "reviewer_ok",
+        "status": ReviewExchangeStatus.OK.value,
+        "reason": ReviewExchangeReason.REVIEWER_OK.value,
         "review_decision_verdict": decision.verdict,
         "review_nit_policy": decision.nit_policy,
         "review_abstraction_status": decision.abstraction_review.status,
         "artifacts": review_artifacts,
     }))
     return ReviewExchangeOutcome(
-        status="ok",
+        status=ReviewExchangeStatus.OK,
         rounds=round_index,
-        reason="reviewer_ok",
+        reason=ReviewExchangeReason.REVIEWER_OK,
+        run_assets=run_assets,
         reviewer_response=reviewer,
-        exchange_dir=exchange_dir,
         summary=summary,
     )
 
 
 def _stop_for_no_progress(
     *,
+    run_assets: ReviewExchangeRunAssets,
     exchange_dir: Path,
     round_index: int,
     reviewer: ReviewExchangeResponse,
@@ -2764,7 +2731,8 @@ def _stop_for_no_progress(
 ) -> ReviewExchangeOutcome:
     summary = _write_summary(
         exchange_dir, round_index,
-        status="stopped", reason="reviewer_reports_no_progress",
+        status=ReviewExchangeStatus.STOPPED,
+        reason=ReviewExchangeReason.REVIEWER_REPORTS_NO_PROGRESS,
         reviewer_response=reviewer,
         review_artifacts=review_artifacts,
         validation_record_path=validation_record_path,
@@ -2785,25 +2753,26 @@ def _stop_for_no_progress(
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
-        "status": "stopped",
-        "reason": "reviewer_reports_no_progress",
+        "status": ReviewExchangeStatus.STOPPED.value,
+        "reason": ReviewExchangeReason.REVIEWER_REPORTS_NO_PROGRESS.value,
         "review_decision_verdict": decision.verdict,
         "review_nit_policy": decision.nit_policy,
         "review_abstraction_status": decision.abstraction_review.status,
         "artifacts": review_artifacts,
     }))
     return ReviewExchangeOutcome(
-        status="stopped",
+        status=ReviewExchangeStatus.STOPPED,
         rounds=round_index,
-        reason="reviewer_reports_no_progress",
+        reason=ReviewExchangeReason.REVIEWER_REPORTS_NO_PROGRESS,
+        run_assets=run_assets,
         reviewer_response=reviewer,
-        exchange_dir=exchange_dir,
         summary=summary,
     )
 
 
 def _build_outcome_for_reviewer_decision_error(
     *,
+    run_assets: ReviewExchangeRunAssets,
     exchange_dir: Path,
     round_index: int,
     reviewer: ReviewExchangeResponse,
@@ -2816,7 +2785,8 @@ def _build_outcome_for_reviewer_decision_error(
     detail = f"reviewer produced invalid decision JSON: {error}"
     summary = _write_summary(
         exchange_dir, round_index,
-        status="error", reason="reviewer_decision_invalid",
+        status=ReviewExchangeStatus.ERROR,
+        reason=ReviewExchangeReason.REVIEWER_DECISION_INVALID,
         reviewer_response=reviewer,
         validation_record_path=validation_record_path,
         detail=detail,
@@ -2834,64 +2804,69 @@ def _build_outcome_for_reviewer_decision_error(
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
-        "status": "error",
-        "reason": "reviewer_decision_invalid",
+        "status": ReviewExchangeStatus.ERROR.value,
+        "reason": ReviewExchangeReason.REVIEWER_DECISION_INVALID.value,
         "detail": detail,
     }))
     return ReviewExchangeOutcome(
-        status="error",
+        status=ReviewExchangeStatus.ERROR,
         rounds=round_index,
-        reason="reviewer_decision_invalid",
+        reason=ReviewExchangeReason.REVIEWER_DECISION_INVALID,
+        run_assets=run_assets,
         reviewer_response=reviewer,
-        exchange_dir=exchange_dir,
         summary=summary,
     )
 
 
 def _build_outcome_for_role_timeout(
     *,
+    run_assets: ReviewExchangeRunAssets,
     exchange_dir: Path,
     round_index: int,
-    role: str,
+    role: Role,
     last_reviewer: ReviewExchangeResponse | None,
     emit: Callable[[EventName, dict[str, Any]], None],
     issue_number: int,
     session_name: str,
     validation_record_path: Path,
 ) -> ReviewExchangeOutcome:
-    """Build the ``error`` outcome when a role times out / dies / fails protocol.
-
-    Persists the summary with matching ``status`` and emits the terminal
-    ``REVIEW_EXCHANGE_COMPLETED`` event so timeline / cache consumers see
-    a definitive end-of-exchange marker. Without the event the active
-    path's contract — every exchange ends with one COMPLETED or FAILED
-    event — is broken on the persistent path.
-    """
-    reason = f"{role}_no_completion"
+    """Build the terminal ``error`` outcome when a role fails to complete."""
+    reason = _no_completion_reason_for_role(role)
     summary = _write_summary(
         exchange_dir, round_index,
-        status="error", reason=reason, reviewer_response=last_reviewer,
+        status=ReviewExchangeStatus.ERROR,
+        reason=reason,
+        reviewer_response=last_reviewer,
         validation_record_path=validation_record_path,
     )
     _emit_built_event(emit, make_review_exchange_completed_event({
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
-        "status": "error",
-        "reason": reason,
+        "status": ReviewExchangeStatus.ERROR.value,
+        "reason": reason.value,
     }))
     return ReviewExchangeOutcome(
-        status="error",
+        status=ReviewExchangeStatus.ERROR,
         rounds=round_index,
         reason=reason,
+        run_assets=run_assets,
         reviewer_response=last_reviewer,
-        exchange_dir=exchange_dir,
         summary=summary,
     )
 
 
+def _no_completion_reason_for_role(role: Role) -> ReviewExchangeReason:
+    if role is Role.CODER:
+        return ReviewExchangeReason.CODER_NO_COMPLETION
+    if role is Role.REVIEWER:
+        return ReviewExchangeReason.REVIEWER_NO_COMPLETION
+    raise ValueError(f"unsupported review-exchange role: {role.value}")
+
+
 def _build_outcome_for_protocol_error(
     *,
+    run_assets: ReviewExchangeRunAssets,
     exchange_dir: Path,
     round_index: int,
     last_reviewer: ReviewExchangeResponse | None,
@@ -2910,7 +2885,8 @@ def _build_outcome_for_protocol_error(
     """
     summary = _write_summary(
         exchange_dir, round_index,
-        status="error", reason="coder_protocol_error",
+        status=ReviewExchangeStatus.ERROR,
+        reason=ReviewExchangeReason.CODER_PROTOCOL_ERROR,
         reviewer_response=last_reviewer,
         validation_record_path=validation_record_path,
     )
@@ -2928,16 +2904,16 @@ def _build_outcome_for_protocol_error(
         "issue_number": issue_number,
         "session_name": session_name,
         "rounds": round_index,
-        "status": "error",
-        "reason": "coder_protocol_error",
+        "status": ReviewExchangeStatus.ERROR.value,
+        "reason": ReviewExchangeReason.CODER_PROTOCOL_ERROR.value,
         "detail": protocol_error,
     }))
     return ReviewExchangeOutcome(
-        status="error",
+        status=ReviewExchangeStatus.ERROR,
         rounds=round_index,
-        reason="coder_protocol_error",
+        reason=ReviewExchangeReason.CODER_PROTOCOL_ERROR,
+        run_assets=run_assets,
         reviewer_response=last_reviewer,
-        exchange_dir=exchange_dir,
         summary=summary,
     )
 
@@ -2989,13 +2965,13 @@ def _write_summary(
     exchange_dir: Path,
     round_index: int,
     *,
-    status: str,
-    reason: str,
+    status: ReviewExchangeStatus,
+    reason: ReviewExchangeReason,
     reviewer_response: ReviewExchangeResponse | None,
     validation_record_path: Path | None,
     review_artifacts: list[dict[str, str]] | None = None,
     detail: str | None = None,
-) -> dict[str, Any]:
+) -> ReviewExchangeSummaryV1:
     """Persist summary.json atomically.
 
     The summary records *facts* about the exchange that just ran:
@@ -3021,23 +2997,23 @@ def _write_summary(
     know" rather than "validation explicitly failed." The cache
     loader's ``ResumeFacts`` mapping handles each case.
     """
-    summary: dict[str, Any] = {
-        "completed_rounds": round_index,
-        "status": status,
-        "response_text": reviewer_response.response_text if reviewer_response else None,
-        "reason": reason,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
+    terminal = ReviewExchangeTerminalState(status=status, reason=reason)
     head_sha, passed = _read_validation_facts(validation_record_path)
-    if head_sha is not None:
-        summary["head_sha"] = head_sha
-    if passed is not None:
-        summary["validation_passed"] = passed
-    if review_artifacts:
-        summary["artifacts"] = review_artifacts
-    if detail:
-        summary["detail"] = detail
-    _atomic_write_json(exchange_dir / "summary.json", summary)
+    artifacts = tuple(
+        ReviewExchangeSummaryArtifactRef.from_payload(artifact)
+        for artifact in (review_artifacts or [])
+    )
+    summary = ReviewExchangeSummaryV1(
+        completed_rounds=round_index,
+        terminal=terminal,
+        response_text=reviewer_response.response_text if reviewer_response else None,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        head_sha=head_sha,
+        validation_passed=passed,
+        artifacts=artifacts,
+        detail=detail,
+    )
+    _atomic_write_json(exchange_dir / "summary.json", summary.to_payload())
     return summary
 
 
@@ -3046,21 +3022,23 @@ def _write_summary(
 # ---------------------------------------------------------------------------
 
 
-def _record_chapter(  # noqa: PLR0913
-    *,
-    session_output: SessionOutput,
-    run_dir: Path,
-    role: str,
-    recording_path: Path,
-    exchange_run_id: str,
-    issue_number: int,
-    cycle_index: int,
-    section: str,
-    label: str,
-    session_name: str,
-    emit: Callable[[EventName, dict[str, Any]], None],
-    mirror: _RoleSliceMirror | None = None,
-) -> int:
+@dataclass(frozen=True)
+class _ChapterRecordCommand:
+    session_output: SessionOutput
+    run_dir: Path
+    role: str
+    recording_path: Path
+    exchange_run_id: str
+    issue_number: int
+    cycle_index: int
+    section: str
+    label: str
+    session_name: str
+    emit: Callable[[EventName, dict[str, Any]], None]
+    mirror: _RoleSliceMirror | None = None
+
+
+def _record_chapter(command: _ChapterRecordCommand) -> int:
     """Capture the recording's current event index, append a chapter,
     emit ``REVIEW_EXCHANGE_CHAPTER_RECORDED``, and (when ``mirror`` is
     provided) project the new events into the per-session run_dir slice.
@@ -3091,13 +3069,26 @@ def _record_chapter(  # noqa: PLR0913
     and the per-session slice on every event drained from the PTY,
     so chapters only own offset translation here.
     """
+    session_output = command.session_output
+    run_dir = command.run_dir
+    role = command.role
+    recording_path = command.recording_path
+    exchange_run_id = command.exchange_run_id
+    issue_number = command.issue_number
+    cycle_index = command.cycle_index
+    section = command.section
+    label = command.label
+    session_name = command.session_name
+    emit = command.emit
+    mirror = command.mirror
+
     pair_event_index = recording_event_count(recording_path)
     # Slice-relative when a mirror is in play so the viewer can scrub
     # the manifest-pointed slice directly. Without the translation, a
-    # cached pair on exchange 2 records pair-relative offsets in the
-    # hundreds while the slice file only holds dozens of events, and
-    # the web replay route slices ``all_events[chapter_offset:]`` to
-    # an empty window.
+    # pair recording with prior exchange content records pair-relative
+    # offsets in the hundreds while the slice file only holds dozens of
+    # events, and the web replay route slices ``all_events[chapter_offset:]``
+    # to an empty window.
     sidecar_event_index = (
         mirror.pair_to_slice_offset(pair_event_index)
         if mirror is not None
@@ -3114,15 +3105,18 @@ def _record_chapter(  # noqa: PLR0913
         recorded_at=datetime.now(timezone.utc).isoformat(),
         label=label,
     )
-    emit(EventName.REVIEW_EXCHANGE_CHAPTER_RECORDED, {
-        "issue_number": issue_number,
-        "session_name": session_name,
-        "round_index": cycle_index,
-        "role": role,
-        "section": section,
-        "recording_event_index": sidecar_event_index,
-        "label": label,
-    })
+    emit(
+        EventName.REVIEW_EXCHANGE_CHAPTER_RECORDED,
+        {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": cycle_index,
+            "role": role,
+            "section": section,
+            "recording_event_index": sidecar_event_index,
+            "label": label,
+        },
+    )
     return pair_event_index
 
 
@@ -3194,5 +3188,7 @@ def _validate_coder_completion(
 # ``_atomic_write_json`` is the shared helper from ``infra.atomic_io``;
 # re-export under the private name so the existing test that monkeypatches
 # ``pse.os.replace`` continues to find the same write path.
-from ..infra.atomic_io import atomic_write_json as _atomic_write_json  # noqa: E402
-from ..infra.atomic_io import atomic_write_bytes as _atomic_write_bytes  # noqa: E402
+from ..infra.atomic_io import (  # noqa: E402
+    atomic_write_bytes as _atomic_write_bytes,
+    atomic_write_json as _atomic_write_json,
+)

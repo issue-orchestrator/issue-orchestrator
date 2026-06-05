@@ -34,6 +34,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
+from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.view_models.dialogs import (
     build_blocked_issues_dialog,
     build_config_dialog,
@@ -174,6 +175,10 @@ def test_dashboard_view_model_matches_ui_openapi() -> None:
         terminal_id="review-12",
         worktree_path=Path("/tmp/worktree-12"),
         branch_name="feature/12",
+        run_assets=make_session_run_assets(
+            Path("/tmp/worktree-12"),
+            session_name="review-12",
+        ),
         started_at=datetime.now() - timedelta(minutes=3),
     )
 

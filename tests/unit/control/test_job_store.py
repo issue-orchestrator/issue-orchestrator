@@ -31,6 +31,31 @@ from issue_orchestrator.control.job_store import (
     get_default_db_path,
 )
 from issue_orchestrator.domain.models import PublishJob, PublishJobStatus
+from tests.unit.session_run_helpers import make_session_run_assets
+
+
+def make_publish_job(
+    worktree: Path,
+    *,
+    job_id: str,
+    issue_number: int,
+    session_key: str,
+    branch_name: str,
+    **kwargs: object,
+) -> PublishJob:
+    """Create a PublishJob with explicit typed run assets."""
+    return PublishJob(
+        job_id=job_id,
+        issue_number=issue_number,
+        session_key=session_key,
+        run_assets=make_session_run_assets(
+            worktree,
+            session_name=f"issue-{issue_number}",
+        ),
+        worktree_path=str(worktree),
+        branch_name=branch_name,
+        **kwargs,
+    )
 
 
 # ============================================================================
@@ -63,12 +88,12 @@ def sample_worktree(tmp_path: Path) -> Path:
 @pytest.fixture
 def sample_job(sample_worktree: Path) -> PublishJob:
     """Create a sample PublishJob for testing."""
-    return PublishJob(
+    return make_publish_job(
+        sample_worktree,
         job_id="job-123-abc",
         issue_number=123,
         session_key="code:123",
         status=PublishJobStatus.QUEUED,
-        worktree_path=str(sample_worktree),
         branch_name="issue-123-fix-bug",
         completion_path="completion.json",
         issue_title="Fix important bug",
@@ -527,18 +552,18 @@ class TestJobStoreQueries:
     ):
         """Verify get_active_jobs returns queued and running jobs."""
         # Create two jobs
-        job1 = PublishJob(
+        job1 = make_publish_job(
+            sample_worktree,
             job_id="job-1",
             issue_number=1,
             session_key="code:1",
-            worktree_path=str(sample_worktree),
             branch_name="branch-1",
         )
-        job2 = PublishJob(
+        job2 = make_publish_job(
+            sample_worktree,
             job_id="job-2",
             issue_number=2,
             session_key="code:2",
-            worktree_path=str(sample_worktree),
             branch_name="branch-2",
         )
 
@@ -567,11 +592,11 @@ class TestJobStoreQueries:
     ):
         """Verify get_recent_jobs returns jobs in order."""
         for i in range(5):
-            job = PublishJob(
+            job = make_publish_job(
+                sample_worktree,
                 job_id=f"job-{i}",
                 issue_number=i,
                 session_key=f"code:{i}",
-                worktree_path=str(sample_worktree),
                 branch_name=f"branch-{i}",
             )
             job_store.save_job(job)
@@ -604,11 +629,11 @@ class TestJobStoreValidateWorktrees:
         worktree_path = sample_worktree / "to_be_deleted"
         worktree_path.mkdir(parents=True)
 
-        job = PublishJob(
+        job = make_publish_job(
+            worktree_path,
             job_id="job-orphan",
             issue_number=123,
             session_key="code:123",
-            worktree_path=str(worktree_path),
             branch_name="branch",
         )
         job_store.save_job(job)
@@ -628,11 +653,11 @@ class TestJobStoreValidateWorktrees:
     ):
         """Verify jobs with identity mismatch are marked as worktree_gone."""
         # Create job with a worktree
-        job = PublishJob(
+        job = make_publish_job(
+            sample_worktree,
             job_id="job-mismatch",
             issue_number=123,
             session_key="code:123",
-            worktree_path=str(sample_worktree),
             branch_name="branch",
         )
         job_store.save_job(job)
@@ -684,21 +709,21 @@ class TestJobStoreCleanupOldJobs:
     """Tests for JobStore.cleanup_old_jobs()."""
 
     def test_deletes_old_terminal_jobs(
-        self, job_store: JobStore, sample_worktree: Path
+        self, job_store: JobStore, sample_worktree: Path, tmp_db_path: Path
     ):
         """Verify old terminal jobs are deleted."""
-        job = PublishJob(
+        job = make_publish_job(
+            sample_worktree,
             job_id="old-job",
             issue_number=123,
             session_key="code:123",
-            worktree_path=str(sample_worktree),
             branch_name="branch",
         )
         job_store.save_job(job)
         job_store.mark_succeeded(job.job_id)
 
         # Manually set finished_at to 40 days ago
-        conn = sqlite3.connect(str(job_store._db_path))
+        conn = sqlite3.connect(str(tmp_db_path))
         old_time = time.time() - (40 * 86400)
         conn.execute(
             "UPDATE publish_jobs SET finished_at = ? WHERE job_id = ?",
@@ -861,11 +886,12 @@ class TestJobStoreThreadSafety:
         def save_jobs(thread_id: int):
             try:
                 for i in range(jobs_per_thread):
-                    job = PublishJob(
+                    issue_number = thread_id * 100 + i
+                    job = make_publish_job(
+                        sample_worktree,
                         job_id=f"job-{thread_id}-{i}",
-                        issue_number=thread_id * 100 + i,
+                        issue_number=issue_number,
                         session_key=f"code:{thread_id}-{i}",
-                        worktree_path=str(sample_worktree),
                         branch_name=f"branch-{thread_id}-{i}",
                     )
                     store.save_job(job)
@@ -891,11 +917,11 @@ class TestJobStoreThreadSafety:
     def test_concurrent_updates(self, job_store: JobStore, sample_worktree: Path):
         """Verify concurrent status updates are handled correctly."""
         # Create a job
-        job = PublishJob(
+        job = make_publish_job(
+            sample_worktree,
             job_id="concurrent-job",
             issue_number=123,
             session_key="code:123",
-            worktree_path=str(sample_worktree),
             branch_name="branch",
         )
         job_store.save_job(job)

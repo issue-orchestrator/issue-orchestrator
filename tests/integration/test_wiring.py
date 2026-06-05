@@ -22,6 +22,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from tests.unit.session_run_helpers import make_session_run_assets
 # Import MockGitHubAdapter from conftest (it's available as fixture)
 
 
@@ -286,7 +287,7 @@ observability:
 class TestObserverWiring:
     """Test that observer correctly detects session states."""
 
-    def test_observer_detects_completed_session(self):
+    def test_observer_detects_completed_session(self, tmp_path: Path):
         """Verify observer detects when a session has completed."""
         from issue_orchestrator.observation import SessionObserver
         from issue_orchestrator.domain.models import Session, Issue, AgentConfig, SessionStatus
@@ -317,6 +318,9 @@ class TestObserverWiring:
         issue = Issue(number=789, title="Test", labels=["agent:test"])
         issue_key = FakeIssueKey(name="789")
         session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        worktree = tmp_path / "worktree-789"
+        worktree.mkdir(parents=True)
+        terminal_id = "orchestrator"
         session = Session(
             key=session_key,
             issue=issue,
@@ -324,10 +328,11 @@ class TestObserverWiring:
                 prompt_path=Path("test.md"),
                 timeout_minutes=60
             ),
-            terminal_id="orchestrator",
-            worktree_path=Path("/fake"),
+            terminal_id=terminal_id,
+            worktree_path=worktree,
             branch_name="789-test",
             started_at=datetime.now(),
+            run_assets=make_session_run_assets(worktree, session_name=terminal_id),
         )
 
         # check_session is NOT async - it's a regular method
@@ -335,7 +340,7 @@ class TestObserverWiring:
 
         assert status == SessionStatus.COMPLETED
 
-    def test_observer_detects_running_session(self):
+    def test_observer_detects_running_session(self, tmp_path: Path):
         """Verify observer detects when a session is still running."""
         from issue_orchestrator.observation import SessionObserver
         from issue_orchestrator.domain.models import Session, Issue, AgentConfig, SessionStatus
@@ -353,6 +358,9 @@ class TestObserverWiring:
         issue = Issue(number=101, title="Test", labels=["agent:test"])
         issue_key = FakeIssueKey(name="101")
         session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
+        worktree = tmp_path / "worktree-101"
+        worktree.mkdir(parents=True)
+        terminal_id = "orchestrator"
         session = Session(
             key=session_key,
             issue=issue,
@@ -360,10 +368,11 @@ class TestObserverWiring:
                 prompt_path=Path("test.md"),
                 timeout_minutes=60
             ),
-            terminal_id="orchestrator",
-            worktree_path=Path("/fake"),
+            terminal_id=terminal_id,
+            worktree_path=worktree,
             branch_name="101-test",
             started_at=datetime.now(),
+            run_assets=make_session_run_assets(worktree, session_name=terminal_id),
         )
 
         status = observer.check_session(session)

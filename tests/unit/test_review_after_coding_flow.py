@@ -45,6 +45,7 @@ from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.control.workflows.review_workflow import ReviewDecision
 from issue_orchestrator.ports import NullEventSink
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def make_config(**kwargs) -> Config:
@@ -107,6 +108,10 @@ def sample_session(sample_issue, sample_agent_config, tmp_path):
         terminal_id="issue-123",
         worktree_path=tmp_path / "worktree",
         branch_name="123-feature",
+        run_assets=make_session_run_assets(
+            tmp_path / "worktree",
+            session_name="issue-123",
+        ),
     )
 
 

@@ -28,15 +28,13 @@ _TRUNCATION_NOTICE = (
 def build_review_exchange_pr_comment_body(
     *,
     issue_number: int,
-    run_dir: Path | None,
+    run_dir: Path,
     exchange_dir: Path | None,
     artifacts: list[dict[str, str]],
     review_artifact_reader: ReviewArtifactReader,
     max_chars: int | None = None,
 ) -> str | None:
     """Return the review-exchange body appended to the PR completion comment."""
-    if run_dir is None:
-        return None
     transcript = _review_exchange_transcript_body(
         issue_number=issue_number,
         run_dir=run_dir,

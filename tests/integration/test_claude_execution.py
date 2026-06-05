@@ -6,6 +6,8 @@ and that the command escaping works correctly in real shells.
 
 import os
 import pytest
+import signal
+from collections.abc import Mapping
 
 pytestmark = [
     pytest.mark.integration,
@@ -20,6 +22,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from issue_orchestrator.infra.env import ENV_PREFIX
+from tests.unit.session_run_helpers import make_session_run_assets
 
 from .conftest import xdist_timeout
 
@@ -49,30 +52,16 @@ def _run_claude(
     timeout: int,
     retry_timeout: int | None = None,
     cwd: str | None = None,
-    env: dict | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     retry_timeout = retry_timeout or (timeout * 2)
     try:
-        return subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=cwd,
-            env=env,
-        )
+        return _run_claude_once(argv, timeout=timeout, cwd=cwd, env=env)
     except subprocess.TimeoutExpired as exc:
         # Live Claude CLI calls can intermittently stall under heavily parallelized
         # integration runs; retry once with a longer timeout before failing.
         try:
-            return subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=retry_timeout,
-                cwd=cwd,
-                env=env,
-            )
+            return _run_claude_once(argv, timeout=retry_timeout, cwd=cwd, env=env)
         except subprocess.TimeoutExpired as retry_exc:
             stdout = (retry_exc.stdout or exc.stdout or "")[:500]
             stderr = (retry_exc.stderr or exc.stderr or "")[:500]
@@ -82,6 +71,56 @@ def _run_claude(
                 f"stdout (truncated): {stdout}\n"
                 f"stderr (truncated): {stderr}"
             ) from retry_exc
+
+
+def _run_claude_once(
+    argv: list[str],
+    *,
+    timeout: float,
+    cwd: str | None,
+    env: Mapping[str, str] | None,
+) -> subprocess.CompletedProcess:
+    process = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = _terminate_claude_process(process)
+        raise subprocess.TimeoutExpired(
+            cmd=argv,
+            timeout=timeout,
+            output=stdout or exc.stdout,
+            stderr=stderr or exc.stderr,
+        ) from exc
+    return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def _terminate_claude_process(
+    process: subprocess.Popen[str],
+) -> tuple[str | None, str | None]:
+    _signal_process_group(process, signal.SIGTERM)
+    try:
+        return process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        _signal_process_group(process, signal.SIGKILL)
+        return process.communicate()
+
+
+def _signal_process_group(
+    process: subprocess.Popen[str],
+    sig: signal.Signals,
+) -> None:
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        return
 
 
 @pytest.fixture
@@ -104,20 +143,22 @@ class TestClaudeExecution:
         assert result.returncode == 0
         assert "claude" in result.stdout.lower() or "Claude" in result.stdout
 
-    def test_claude_simple_calculation(self):
-        """Run Claude with a simple calculation task to verify execution works.
+    def test_claude_print_single_turn_token(self):
+        """Run Claude with a deterministic token task to verify execution works.
 
         This tests that:
         1. Claude can be invoked via subprocess
         2. The --print flag works for non-interactive output
-        3. Claude can perform a simple task and return results
+        3. Claude can return a simple response
         """
+        expected_token = f"CLAUDE_PRINT_OK_{uuid4().hex}"
+
         # Use --print for non-interactive single-turn execution
         result = _run_claude(
             [
                 "claude",
                 "--print",  # Output response and exit (non-interactive)
-                "What is 2 + 2? Reply with just the number.",
+                f"Reply with exactly this token and nothing else: {expected_token}",
             ],
             timeout=xdist_timeout(60),  # Give Claude time to respond
         )
@@ -125,8 +166,9 @@ class TestClaudeExecution:
         # Claude should exit successfully
         assert result.returncode == 0, f"Claude failed: {result.stderr}"
 
-        # The output should contain "4"
-        assert "4" in result.stdout, f"Expected '4' in output: {result.stdout}"
+        assert expected_token in result.stdout, (
+            f"Expected {expected_token!r} in output: {result.stdout}"
+        )
 
     def test_claude_command_with_single_quotes(self):
         """Test that commands with single quotes work correctly via zsh -l -c wrapper.
@@ -465,7 +507,10 @@ class TestClaudeViaAdapterPath:
             monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(plugin_state_root))
 
             escaped_prompt = ISSUE_4057_PROMPT.replace('"', '\\"')
+            session_name = "issue-999"
+            run_assets = make_session_run_assets(worktree, session_name=session_name)
             claude_cmd = (
+                f"export {ENV_PREFIX}RUN_DIR='{run_assets.run_dir}' && "
                 "claude --print --dangerously-skip-permissions "
                 f"\"{escaped_prompt}\""
             )
@@ -476,28 +521,28 @@ class TestClaudeViaAdapterPath:
                 command=claude_cmd,
                 working_dir=str(worktree),
                 title="Claude subprocess integration",
-                session_name="issue-999",
+                session_name=session_name,
             )
             assert created is True
 
-            log_path = plugin._session_log_path(worktree, "issue-999")
+            log_path = run_assets.log_path
 
             # Confirm real #4057-like session startup and run-scoped log creation.
             import time
             deadline = time.monotonic() + 60
             session_became_live = False
             while time.monotonic() < deadline:
-                if plugin.session_exists(0, "issue-999"):
+                if plugin.session_exists(0, session_name):
                     session_became_live = True
                 if session_became_live and log_path.exists():
                     break
                 time.sleep(0.2)
             else:
-                plugin.kill_session(0, "issue-999")
+                plugin.kill_session(0, session_name)
                 raise AssertionError("Claude subprocess session did not become live with run-scoped log")
 
-            if plugin.session_exists(0, "issue-999"):
-                plugin.kill_session(0, "issue-999")
+            if plugin.session_exists(0, session_name):
+                plugin.kill_session(0, session_name)
                 exit_deadline = time.monotonic() + 30
                 while time.monotonic() < exit_deadline:
                     if not plugin.session_exists(0, "issue-999"):

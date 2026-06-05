@@ -29,7 +29,6 @@ from .agent_done import (
     load_validation_cmd,
     run_preflight_push_check,
     run_validation,
-    trigger_orchestrator_resume,
     validate_fields,
     write_completion_record,
     write_error_completion,
@@ -43,6 +42,8 @@ from .dirty_retry_budget import (
     record_rejection,
     reset_rejection_counter,
 )
+from .orchestrator_resume import trigger_orchestrator_resume
+from .orchestrator_run_assets import require_orchestrator_run_assets_for_session
 from ...infra.env import get_env
 from ...infra.logging_config import issue_log
 from ...infra.runtime_artifacts import (
@@ -59,6 +60,10 @@ CODING_STATUSES = [
     AgentStatus.BLOCKED,
     AgentStatus.NEEDS_HUMAN,
 ]
+
+
+def _is_managed_session() -> bool:
+    return bool(get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID"))
 
 
 def check_dirty_files(worktree_root: Path | None = None) -> list[str]:
@@ -328,9 +333,7 @@ def main() -> None:  # noqa: C901, PLR0912
     # both are set — the hypothetical "both set but disagree" case
     # favours the current contract, which is the behaviour the agent
     # prompts emit.
-    under_orchestrator = bool(
-        get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID")
-    )
+    managed = _is_managed_session()
 
     # 2. Check for dirty files (coding agents must commit everything)
     dirty_files = check_dirty_files(worktree_root)
@@ -340,41 +343,54 @@ def main() -> None:  # noqa: C901, PLR0912
             worktree_root=worktree_root,
             issue_number=issue_number,
             status=status,
-            under_orchestrator=under_orchestrator,
+            under_orchestrator=managed,
             phase="pre-validation",
         )
 
     # Dirty check passed — if a prior rejection left a non-zero counter
     # the agent has demonstrated recovery, so clear it. Subsequent
     # rejections start from scratch rather than continuing the streak.
-    if under_orchestrator:
+    if managed:
         reset_rejection_counter(worktree_root, get_session_id())
 
     # 3. Run quick validation if configured. This is the immediate feedback
     #    path for coding agents; deeper publish validation runs later through
     #    the orchestrator-controlled pre-push/pre-publish gate.
     validation_result = None
-    under_orchestrator = bool(get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID"))
     statuses_requiring_validation = {AgentStatus.COMPLETED}
+    assets = None
     if status in statuses_requiring_validation:
         validation_cmd, _ = load_validation_cmd(worktree_root)
         if validation_cmd:
             if not record.session_id:
                 logger.error("[coding-done] Validation requires session_id but none found")
                 sys.exit(1)
-            session_output_helper = FileSystemSessionOutput()
-            session_output_dir = session_output_helper.find_run_dir(
-                worktree_root, session_name=record.session_id
+            if managed:
+                assets = require_orchestrator_run_assets_for_session(
+                    worktree_root,
+                    record.session_id,
+                )
+            else:
+                assets = FileSystemSessionOutput().start_run(
+                    worktree_root,
+                    record.session_id,
+                )
+            validation_result = run_validation(
+                worktree_root,
+                session_output_dir=assets.run_dir,
+                verbose=args.verbose,
             )
-            if session_output_dir is None:
-                logger.error("[coding-done] Validation requires session output dir but not found for %s", record.session_id)
-                sys.exit(1)
-            validation_result = run_validation(worktree_root, session_output_dir=session_output_dir, verbose=args.verbose)
     elif status in {AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}:
         print(f"Note: Skipping validation for '{status}' status (agent is reporting a problem)")
 
-    if validation_result:
-        record_validation_artifacts(worktree_root, record.session_id, validation_result)
+    if validation_result and assets is not None:
+        validation_record_path = record_validation_artifacts(
+            worktree_root,
+            assets.validation_artifacts,
+            validation_result,
+        )
+        if validation_record_path is not None:
+            record.validation_record_path = str(validation_record_path)
 
     if validation_result and not validation_result.passed:
         print(f"\n{'='*60}")
@@ -418,9 +434,6 @@ def main() -> None:  # noqa: C901, PLR0912
             logger.info(issue_log(issue_number, "coding-done outcome: status=%s validation=FAILED"), status)
         sys.exit(1)
 
-    if validation_result and validation_result.record_path:
-        record.validation_record_path = validation_result.record_path
-
     # 3b. Re-check dirty tree AFTER validation. Closes the temporal
     #     variance with the orchestrator's publish gate: validate.sh can
     #     write to the tree (auto-formatters, generated artifacts,
@@ -437,7 +450,7 @@ def main() -> None:  # noqa: C901, PLR0912
                 worktree_root=worktree_root,
                 issue_number=issue_number,
                 status=status,
-                under_orchestrator=under_orchestrator,
+                under_orchestrator=managed,
                 phase="post-validation",
             )
 
@@ -447,7 +460,7 @@ def main() -> None:  # noqa: C901, PLR0912
     #    pre-push hook inside the session timeout, which can fail on flaky tests
     #    and leave the agent unable to complete at all.
     statuses_that_push = {AgentStatus.COMPLETED, AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}
-    if status in statuses_that_push and not under_orchestrator:
+    if status in statuses_that_push and not managed:
         would_succeed, error, fix_hint = run_preflight_push_check(worktree_root, verbose=args.verbose)
         if not would_succeed:
             print(f"\n{'='*60}")
@@ -463,7 +476,7 @@ def main() -> None:  # noqa: C901, PLR0912
             if issue_number:
                 logger.info(issue_log(issue_number, "coding-done outcome: status=%s push_preflight=FAILED"), status)
             sys.exit(1)
-    elif status in statuses_that_push and under_orchestrator:
+    elif status in statuses_that_push and managed:
         if args.verbose:
             print("Skipping push preflight (orchestrator handles pushing)")
 

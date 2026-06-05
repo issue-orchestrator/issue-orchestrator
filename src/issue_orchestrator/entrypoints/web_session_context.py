@@ -82,21 +82,17 @@ def resolve_issue_session_context(
     if not orchestrator:
         return IssueSessionContext()
 
-    from ..execution.session_output_adapter import FileSystemSessionOutput
-
-    session_output = FileSystemSessionOutput()
-
     for session in orchestrator.state.active_sessions:
         if session.issue.number == issue_number:
-            run_dir = session_output.find_run_dir(
-                session.worktree_path,
-                session_name=session.terminal_id,
-            )
             return IssueSessionContext(
                 worktree_path=session.worktree_path,
                 session_name=session.terminal_id,
-                run_dir=run_dir,
+                run_dir=session.run_assets.run_dir,
             )
+
+    from ..execution.session_output_adapter import FileSystemSessionOutput
+
+    session_output = FileSystemSessionOutput()
 
     history_entry = _latest_session_history_entry(orchestrator, issue_number)
     if history_entry:

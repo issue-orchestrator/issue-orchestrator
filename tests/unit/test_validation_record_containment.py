@@ -21,6 +21,16 @@ import pytest
 from issue_orchestrator.control.completion_processor import (
     _contain_validation_record_path,
 )
+from issue_orchestrator.domain.session_run import ValidationArtifactPaths
+
+
+def _validation_artifacts(run_dir: Path) -> ValidationArtifactPaths:
+    return ValidationArtifactPaths(
+        run_dir=run_dir.resolve(),
+        record_path=run_dir.resolve() / "validation-record.json",
+        stdout_path=run_dir.resolve() / "validation-stdout.log",
+        stderr_path=run_dir.resolve() / "validation-stderr.log",
+    )
 
 
 def _make_valid_record(worktree: Path) -> Path:
@@ -325,7 +335,6 @@ def test_attach_skips_manifest_when_copy_refuses(tmp_path: Path) -> None:
     manifest_path = run_dir / "manifest.json"
 
     session_output = MagicMock()
-    session_output.ensure_run_dir.return_value = run_dir
     def _update_manifest(_run_dir: Path, updates: dict) -> None:
         existing: dict = {}
         if manifest_path.exists():
@@ -340,7 +349,7 @@ def test_attach_skips_manifest_when_copy_refuses(tmp_path: Path) -> None:
     # Exercising the private helper is the point of this test.
     processor._attach_validation_artifacts(  # noqa: SLF001
         worktree=tmp_path,
-        session_name="s",
+        validation_artifacts=_validation_artifacts(run_dir),
         record=None,
         record_path=outside_rec,
     )
@@ -387,7 +396,6 @@ def test_attach_overwrites_stale_run_dir_record_with_authoritative_source(
 
     manifest_path = run_dir / "manifest.json"
     session_output = MagicMock()
-    session_output.ensure_run_dir.return_value = run_dir
 
     def _update_manifest(_run_dir: Path, updates: dict) -> None:
         existing: dict = {}
@@ -403,7 +411,7 @@ def test_attach_overwrites_stale_run_dir_record_with_authoritative_source(
 
     processor._attach_validation_artifacts(  # noqa: SLF001
         worktree=worktree,
-        session_name="run-1",
+        validation_artifacts=_validation_artifacts(run_dir),
         record=None,
         record_path=authoritative_path,
     )
@@ -440,7 +448,6 @@ def test_attach_does_not_truncate_when_record_path_is_run_dir_record(
 
     manifest_path = run_dir / "manifest.json"
     session_output = MagicMock()
-    session_output.ensure_run_dir.return_value = run_dir
 
     def _update_manifest(_run_dir: Path, updates: dict) -> None:
         existing: dict = {}
@@ -456,7 +463,7 @@ def test_attach_does_not_truncate_when_record_path_is_run_dir_record(
 
     processor._attach_validation_artifacts(  # noqa: SLF001
         worktree=worktree,
-        session_name="run-1",
+        validation_artifacts=_validation_artifacts(run_dir),
         record=None,
         record_path=record_path,
     )
@@ -498,7 +505,6 @@ def test_attach_refused_copy_does_not_fall_back_to_stale_run_dir_record(
 
     manifest_path = run_dir / "manifest.json"
     session_output = MagicMock()
-    session_output.ensure_run_dir.return_value = run_dir
 
     def _update_manifest(_run_dir: Path, updates: dict) -> None:
         existing: dict = {}
@@ -514,7 +520,7 @@ def test_attach_refused_copy_does_not_fall_back_to_stale_run_dir_record(
 
     processor._attach_validation_artifacts(  # noqa: SLF001
         worktree=worktree,
-        session_name="run-1",
+        validation_artifacts=_validation_artifacts(run_dir),
         record=None,
         record_path=rejected_source,
     )

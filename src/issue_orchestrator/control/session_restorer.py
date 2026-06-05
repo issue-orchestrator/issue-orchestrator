@@ -10,6 +10,7 @@ It handles:
 Called during startup to restore tracking for sessions that survived a restart.
 """
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
 from ..domain.issue_key import GitHubIssueKey
 from ..domain.session_key import SessionKey, TaskKind
 from ..domain.models import Issue, RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
+from ..domain.session_run import SessionRunAssets
 from ..ports import RepositoryHost, WorkingCopy
 from ..ports.session_runner import DiscoveredSession
 
@@ -125,6 +127,7 @@ class SessionRestorer:
         *,
         issue_number: int,
         session_name: str,
+        run_dir: Path,
         is_review: bool,
         already_tracked: list[Session],
         tab_name: str = "",
@@ -135,6 +138,7 @@ class SessionRestorer:
             tab_name=tab_name,
             is_review=is_review,
             session_name=session_name,
+            run_dir=str(run_dir),
         )
         return self.restore_sessions([discovered], already_tracked)
 
@@ -153,24 +157,23 @@ class SessionRestorer:
         is_review = session_info["is_review"]
         session_name = self.canonical_terminal_id(session_info)
 
+        # Skip if already tracking this session
+        if any(s.terminal_id == session_name for s in already_tracked):
+            logger.info("Session %s already tracked - skipping restore", session_name)
+            return None
+
+        run_assets = self._required_run_assets(session_info, session_name)
+        if run_assets is None:
+            return None
+
         # Determine session type and session_name
         restored_pr_number: int | None = None
         if is_review and not session_name.startswith(RETROSPECTIVE_REVIEW_TERMINAL_PREFIX):
             match = _REVIEW_SESSION_RE.match(session_name)
             restored_pr_number = int(match.group(1)) if match else issue_number
 
-        # Skip if already tracking this session
-        if any(s.terminal_id == session_name for s in already_tracked):
-            logger.info("Session %s already tracked - skipping restore", session_name)
-            return None
-
-        # Find the worktree
-        worktree_path, branch_name = self._find_worktree(issue_number)
-
-        if not worktree_path:
-            logger.warning("Could not find worktree for session %s - cleaning up orphaned issue", session_name)
-            self._cleanup_orphaned_issue(issue_number)
-            return None
+        worktree_path = run_assets.worktree_path
+        branch_name = self._get_branch_name(worktree_path)
 
         # Fetch single issue details to get agent type
         issue_obj = self.repository_host.get_issue(issue_number)
@@ -215,28 +218,48 @@ class SessionRestorer:
             terminal_id=session_name,
             worktree_path=worktree_path,
             branch_name=branch_name,
+            run_assets=run_assets,
             agent_label=agent_label_val,
             pr_number=restored_pr_number,
         )
 
-    def _find_worktree(self, issue_number: int) -> tuple[Optional[Path], str]:
-        """Find the worktree for an issue.
-
-        Returns:
-            Tuple of (worktree_path, branch_name) or (None, "unknown") if not found
-        """
-        worktree_path = None
-        branch_name = "unknown"
-
-        # Check the repo_root for the worktree
-        repo_root = self.config.repo_root
-        candidate_path = repo_root.parent / f"{repo_root.name}-{issue_number}"
-        if candidate_path.exists():
-            worktree_path = candidate_path
-            # Get branch name from worktree
-            branch_name = self._get_branch_name(candidate_path)
-
-        return worktree_path, branch_name
+    @staticmethod
+    def _required_run_assets(
+        session_info: DiscoveredSession,
+        session_name: str,
+    ) -> SessionRunAssets | None:
+        raw: object = session_info.get("run_dir")
+        if type(raw) is not str or not raw:
+            logger.warning(
+                "Discovered active session %s has no recorded run_dir - skipping",
+                session_name,
+            )
+            return None
+        run_dir = Path(raw)
+        manifest_path = run_dir / "manifest.json"
+        if not run_dir.exists() or not manifest_path.exists():
+            logger.warning(
+                "Discovered active session %s run assets are missing: %s - skipping",
+                session_name,
+                run_dir,
+            )
+            return None
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("manifest root must be an object")
+            return SessionRunAssets.from_manifest_payload(
+                run_dir=run_dir,
+                manifest=manifest,
+            )
+        except (OSError, json.JSONDecodeError, ValueError, TypeError) as exc:
+            logger.warning(
+                "Discovered active session %s has invalid run assets at %s: %s - skipping",
+                session_name,
+                run_dir,
+                exc,
+            )
+            return None
 
     def _get_branch_name(self, worktree_path: Path) -> str:
         """Get the current branch name for a worktree.
@@ -248,17 +271,6 @@ class SessionRestorer:
             logger.warning("Failed to get branch name for %s", worktree_path)
             return "unknown"
         return branch
-
-    def _cleanup_orphaned_issue(self, issue_number: int) -> None:
-        """Clean up an orphaned issue by removing the in-progress label.
-
-        Called when we find a session without a corresponding worktree.
-        """
-        logger.info(
-            "Orphaned issue #%d detected - stale labels will be handled by planner cleanup",
-            issue_number,
-        )
-        print(f"  Orphaned issue #{issue_number} (stale label cleanup deferred)")
 
     @staticmethod
     def _issue_number(session_info: DiscoveredSession) -> int:

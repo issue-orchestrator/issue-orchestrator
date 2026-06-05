@@ -17,6 +17,7 @@ from playwright.sync_api import Page
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
 from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
 import issue_orchestrator.entrypoints.web as web_module
@@ -70,6 +71,15 @@ class FlowWebMockOrchestrator(MockOrchestratorForWeb):
             title=title,
             labels=labels or ["agent:web", "in-progress"],
         )
+        session_name = f"issue-{issue_number}"
+        worktree_path = repo_root / "worktrees" / session_name
+        run_assets = FileSystemSessionOutput().start_run(
+            worktree_path=worktree_path,
+            session_name=session_name,
+            issue_number=issue_number,
+            agent_label="agent:web",
+            backend="fixture",
+        )
         session = Session(
             key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
             issue=issue,
@@ -78,10 +88,11 @@ class FlowWebMockOrchestrator(MockOrchestratorForWeb):
                 model="sonnet",
                 timeout_minutes=45,
             ),
-            terminal_id=f"issue-{issue_number}",
-            worktree_path=repo_root / "worktrees" / f"issue-{issue_number}",
+            terminal_id=session_name,
+            worktree_path=worktree_path,
             branch_name=f"feature/issue-{issue_number}",
             started_at=datetime.now() - timedelta(minutes=7),
+            run_assets=run_assets,
         )
         self.state.active_sessions.append(session)
 

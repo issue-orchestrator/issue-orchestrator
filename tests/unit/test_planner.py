@@ -53,6 +53,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def make_config(**kwargs) -> Config:
@@ -98,6 +99,10 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
         terminal_id=f"issue-{issue.number}",
         worktree_path=Path(f"/tmp/worktree-{issue.number}"),
         branch_name=f"issue-{issue.number}",
+        run_assets=make_session_run_assets(
+            Path(f"/tmp/worktree-{issue.number}"),
+            session_name=f"issue-{issue.number}",
+        ),
         started_at=datetime.now(),
         status=SessionStatus.RUNNING,
     )
@@ -325,6 +330,10 @@ class TestObservedCompletionLabels:
                 completion_path=".issue-orchestrator/completion.json",
             ),
             record=record,
+            run_assets=make_session_run_assets(
+                Path("/tmp/worktree-42"),
+                session_name="issue-42",
+            ),
         )
 
         snapshot = make_snapshot(
@@ -1617,6 +1626,7 @@ class TestPlanAwaitingMergeEscalations:
             issue_number=42,
             pr_number=100,
             pr_url="https://github.com/o/r/pull/100",
+            issue_key="M0-042",
             rework_cycle=1,
             kind="checks_pending_timeout",
             reason="Required GitHub checks have been pending for ~31 minute(s) ...",
@@ -1647,7 +1657,10 @@ class TestPlanAwaitingMergeEscalations:
         )
         from issue_orchestrator.control.actions import ActionType
 
-        config = make_config(code_review_agent="agent:reviewer")
+        config = make_config(
+            code_review_agent="agent:reviewer",
+            label_prefix="bot",
+        )
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
@@ -1655,6 +1668,7 @@ class TestPlanAwaitingMergeEscalations:
             issue_number=42,
             pr_number=100,
             pr_url="https://github.com/o/r/pull/100",
+            issue_key="M0-042",
             rework_cycle=1,
             kind="branch_protection_blocked",
             reason="Branch protection blocks merge despite all required checks passing.",
@@ -1670,8 +1684,12 @@ class TestPlanAwaitingMergeEscalations:
             a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN
         ]
         assert len(escalate_actions) == 1
-        assert escalate_actions[0].comment_override is not None
-        assert "branch protection" in escalate_actions[0].comment_override.lower()
+        action = escalate_actions[0]
+        assert action.needs_human_label == "bot:needs-human"
+        assert action.comment_override is not None
+        assert "branch protection" in action.comment_override.lower()
+        assert "`bot:needs-human`" in action.comment_override
+        assert "`blocked-needs-human`" not in action.comment_override
 
 
 class TestPlanDiscoveredFailures:

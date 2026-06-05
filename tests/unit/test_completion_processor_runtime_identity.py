@@ -61,14 +61,13 @@ def _make_pr_adapter() -> Mock:
     return adapter
 
 
-def _write_completion(worktree: Path, record: CompletionRecord) -> None:
-    record_dir = worktree / ".issue-orchestrator"
-    record_dir.mkdir(parents=True, exist_ok=True)
-    (record_dir / "completion.json").write_text(
+def _write_completion(worktree: Path, completion_path: str, record: CompletionRecord) -> None:
+    record_path = worktree / completion_path
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(
         json.dumps(record.to_dict()),
         encoding="utf-8",
     )
-    (record_dir / "sessions" / record.session_id).mkdir(parents=True)
 
 
 def test_completion_processor_stamps_runtime_identity_on_created_pr(
@@ -77,11 +76,12 @@ def test_completion_processor_stamps_runtime_identity_on_created_pr(
     label_adapter = Mock(spec=LabelAdapter)
     pr_adapter = _make_pr_adapter()
     git_adapter = _make_git_adapter()
+    session_output = FileSystemSessionOutput()
     processor = CompletionProcessor(
         label_adapter=label_adapter,
         pr_adapter=pr_adapter,
         git_adapter=git_adapter,
-        session_output=FileSystemSessionOutput(),
+        session_output=session_output,
         runtime_identity=RuntimeIdentity(
             package_version="1.2.3",
             source_commit_sha="abcdef1234567890abcdef1234567890abcdef12",
@@ -97,9 +97,29 @@ def test_completion_processor_stamps_runtime_identity_on_created_pr(
     )
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    _write_completion(worktree, record)
+    run_assets = session_output.start_run(
+        worktree,
+        record.session_id,
+        issue_number=123,
+        agent_label="agent:test",
+        backend="subprocess",
+    )
+    completion_path = (
+        f".issue-orchestrator/sessions/{run_assets.run_dir.name}/completion.json"
+    )
+    session_output.update_manifest(
+        run_assets.run_dir,
+        {"completion_path": completion_path},
+    )
+    _write_completion(worktree, completion_path, record)
 
-    result = processor.process(worktree, issue_number=123, issue_title="Add feature")
+    result = processor.process(
+        worktree,
+        issue_number=123,
+        issue_title="Add feature",
+        completion_path=completion_path,
+        run_assets=run_assets,
+    )
 
     assert result.success
     body = pr_adapter.create_pr.call_args.kwargs["body"]

@@ -1165,6 +1165,12 @@ def make_session(sample_agent_config, tmp_path):
             worktree_path = tmp_path / f"worktree-{issue_number}"
             worktree_path.mkdir(parents=True, exist_ok=True)
 
+        run_assets = FileSystemSessionOutput().start_run(
+            worktree_path=worktree_path,
+            session_name=terminal_id,
+            issue_number=issue_number,
+            agent_label=issue.agent_type,
+        )
         return Session(
             key=session_key,
             issue=issue,
@@ -1172,6 +1178,7 @@ def make_session(sample_agent_config, tmp_path):
             terminal_id=terminal_id,
             worktree_path=worktree_path,
             branch_name=branch_name,
+            run_assets=run_assets,
         )
 
     return _make_session

@@ -163,6 +163,11 @@ class GitHubAdapter:
         Per architecture: explicit invalidation rules for cache.
         """
         self._adapter_cache.invalidate_label_cache(issue_number)
+        self._adapter_cache.invalidate_pr_cache(
+            pr_number=issue_number,
+            issue_number=issue_number,
+        )
+        self._client.invalidate_pr_etag(issue_number)
 
     def invalidate_pr_cache(self, issue_number: int | None = None, branch: str | None = None) -> None:
         """Invalidate cached PR info.

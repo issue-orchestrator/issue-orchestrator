@@ -31,6 +31,7 @@ from issue_orchestrator.view_models.dashboard_flow import (
     exclude_flow_overlaps,
 )
 from issue_orchestrator.contracts.public import DashboardViewModelContract
+from tests.unit.session_run_helpers import make_session_run_assets
 
 
 @dataclass
@@ -72,6 +73,10 @@ def test_view_model_active_session_and_dashboard_data():
         terminal_id="review-12",
         worktree_path=Path("/tmp/worktree-12"),
         branch_name="feature/12",
+        run_assets=make_session_run_assets(
+            Path("/tmp/worktree-12"),
+            session_name="review-12",
+        ),
         started_at=datetime.now() - timedelta(minutes=5),
     )
 
@@ -142,6 +147,10 @@ def test_running_flow_card_uses_latest_timeline_snapshot():
         terminal_id="issue-409",
         worktree_path=Path("/tmp/worktree-409"),
         branch_name="feature/409",
+        run_assets=make_session_run_assets(
+            Path("/tmp/worktree-409"),
+            session_name="issue-409",
+        ),
         started_at=datetime.now() - timedelta(minutes=7),
     )
 
@@ -212,6 +221,10 @@ def test_active_item_prefers_canonical_issue_title_over_rework_title():
         terminal_id="rework-4057",
         worktree_path=Path("/tmp/worktree-4057"),
         branch_name="feature/4057",
+        run_assets=make_session_run_assets(
+            Path("/tmp/worktree-4057"),
+            session_name="rework-4057",
+        ),
         started_at=datetime.now() - timedelta(minutes=2),
     )
 
@@ -1355,6 +1368,10 @@ def test_completed_excludes_issues_visible_in_running_lane():
         terminal_id="issue-12",
         worktree_path=Path("/tmp/worktree-12"),
         branch_name="feature/12",
+        run_assets=make_session_run_assets(
+            Path("/tmp/worktree-12"),
+            session_name="issue-12",
+        ),
         started_at=datetime.now() - timedelta(minutes=1),
     )
     state = OrchestratorState(
