@@ -492,6 +492,7 @@
       "IssueItemPayload": {
         "type": "object",
         "additionalProperties": true,
+        "required": ["show_stale_badge"],
         "properties": {
           "issue_number": {
             "type": ["integer", "string", "null"]
@@ -502,6 +503,7 @@
           "action_hint": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
           "issue_url": {"type": ["string", "null"]},
+          "show_stale_badge": {"type": "boolean"},
           "open_run_command": {
             "oneOf": [
               {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
