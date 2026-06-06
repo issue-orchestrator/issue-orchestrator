@@ -65,7 +65,10 @@ from ..ports.run_evidence import (
 )
 from ..ports.session_output import SessionOutput, ValidationRecord, ValidationState
 from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
+from .completion_record_validation import CompletionRecordLoadResult
+from .invalid_completion_record import report_invalid_completion_record
 from .review_exchange_contracts import ReviewExchangeCanceller
+from .session_decision import SessionDecision
 from .session_run_resolution import resolve_run_assets
 from .validation import PublishGate
 
@@ -79,44 +82,6 @@ class ValidationFailureKind(str, Enum):
     VALIDATION_COMMAND = "validation_command"
     DIRTY_BEFORE_VALIDATION = "dirty_before_validation"
     DIRTY_AFTER_VALIDATION = "dirty_after_validation"
-
-
-@dataclass
-class SessionDecision:
-    """Decision about a session's outcome.
-
-    This is the result of processing an observation + completion record.
-    Contains the final status and any results from completion processing.
-    """
-
-    # The decided status
-    status: SessionStatus
-
-    # Processing result if completion.json was processed
-    processing_result: Optional["ProcessingResult"] = None
-
-    # Whether completion.json was found and processed
-    completion_processed: bool = False
-
-    # Whether this was a recovered timeout (timeout but completion.json existed)
-    recovered_from_timeout: bool = False
-
-    # Reason for the decision
-    reason: str = ""
-
-    # Validation gate results (if validation was run)
-    validation_passed: Optional[bool] = None
-    validation_error: Optional[str] = None
-    validation_error_file: Optional[Path] = None
-
-    # Optional blocked label override (e.g., provider unavailable)
-    blocked_label: Optional[str] = None
-    blocked_reason: Optional[str] = None
-
-    # Curated detail from CompletionRecord for trace event enrichment.
-    # Keys: implementation, problems, attempted, blocked_reason, blocked_by,
-    #        question, review_summary, review_issues, risk_level
-    completion_detail: Optional[dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -274,18 +239,20 @@ class SessionController:
         self._log_completion_lookup(
             worktree_path, issue_number, session_name, completion_path
         )
-        record = self.completion_processor.read_completion_record(
+        load_result = self.completion_processor.read_completion_record_result(
             worktree_path, completion_path
         )
+        record = load_result.record
 
         if record is None:
-            return self._handle_no_completion_record(
-                observation,
-                worktree_path,
-                issue_number,
-                session_name,
-                run_dir,
-                completion_path,
+            return self._handle_absent_completion_record(
+                observation=observation,
+                worktree_path=worktree_path,
+                issue_number=issue_number,
+                session_name=session_name,
+                run_dir=run_dir,
+                completion_path=completion_path,
+                load_result=load_result,
             )
 
         # Recover completed work from timed-out sessions when possible.
@@ -395,6 +362,37 @@ class SessionController:
             validation_error_file=validation_error_file,
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
+        )
+
+    def _handle_absent_completion_record(
+        self,
+        *,
+        observation: SessionObservationResult,
+        worktree_path: Path,
+        issue_number: int,
+        session_name: str,
+        run_dir: Path,
+        completion_path: str | None,
+        load_result: CompletionRecordLoadResult,
+    ) -> SessionDecision:
+        """Route absent completion state without collapsing invalid into missing."""
+        if load_result.invalid:
+            return self._handle_invalid_completion_record(
+                observation=observation,
+                worktree_path=worktree_path,
+                issue_number=issue_number,
+                session_name=session_name,
+                run_dir=run_dir,
+                completion_path=completion_path,
+                load_result=load_result,
+            )
+        return self._handle_no_completion_record(
+            observation,
+            worktree_path,
+            issue_number,
+            session_name,
+            run_dir,
+            completion_path,
         )
 
     def _handle_completion_finalization_preconditions(
@@ -861,6 +859,42 @@ class SessionController:
             logger.error(issue_log(issue_number, "LAST OUTPUT:\n%s"), session_log)
         return SessionDecision(
             status=SessionStatus.FAILED, reason="Terminated without completion record"
+        )
+
+    def _handle_invalid_completion_record(
+        self,
+        *,
+        observation: SessionObservationResult,
+        worktree_path: Path,
+        issue_number: int,
+        session_name: str,
+        run_dir: Path,
+        completion_path: str | None,
+        load_result: CompletionRecordLoadResult,
+    ) -> SessionDecision:
+        """Handle a present completion record that failed strict validation."""
+        debug_context = self._collect_completion_debug_context(
+            worktree_path=worktree_path,
+            run_dir=run_dir,
+            completion_path=completion_path,
+        )
+        report = report_invalid_completion_record(
+            observation=observation,
+            worktree_path=worktree_path,
+            issue_number=issue_number,
+            session_name=session_name,
+            run_dir=run_dir,
+            completion_path=completion_path,
+            load_result=load_result,
+            debug_context=debug_context,
+            session_output=self.session_output,
+            events=self.events,
+        )
+        return SessionDecision(
+            status=SessionStatus.FAILED,
+            reason=report.reason,
+            completion_detail=report.completion_detail,
+            diagnostic_path=report.diagnostic_path,
         )
 
     def _write_no_completion_diagnostic(

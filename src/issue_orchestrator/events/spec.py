@@ -62,6 +62,7 @@ EVENT_SPEC: dict[PublicEventName, EventSpec] = {
     PublicEventName.SESSION_TIMEOUT: EventSpec(phase='in_progress', step='timeout', status='failed', level='detail'),
     PublicEventName.SESSION_BLOCKED: EventSpec(phase='in_progress', step='blocked', status='failed', level='detail'),
     PublicEventName.SESSION_NO_COMPLETION_RECORD: EventSpec(phase='in_progress', step='no_completion_record', status='completed', level='detail'),
+    PublicEventName.SESSION_INVALID_COMPLETION_RECORD: EventSpec(phase='in_progress', step='invalid_completion_record', status='failed', level='detail'),
     PublicEventName.SESSION_PROCESSING_COMPLETED: EventSpec(phase='in_progress', step='processing_completed', status='completed', level='detail'),
     PublicEventName.SESSION_VALIDATION_PASSED: EventSpec(phase='orchestrator', step='validation_passed', status='completed', level='detail'),
     PublicEventName.SESSION_VALIDATION_FAILED: EventSpec(phase='orchestrator', step='validation_failed', status='failed', level='detail'),
