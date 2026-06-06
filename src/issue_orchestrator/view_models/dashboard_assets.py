@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 DASHBOARD_JS_CHUNKS: tuple[str, ...] = (
+    # Single owner for dashboard-local timestamp rendering.  Keep this
+    # first so every later chunk can call formatTimestamp().
+    "timestamp_formatting.js",
     "core.js",
     "session_replay.js",
     # ``validation_viewer.js`` defines the canonical JUnit viewer and

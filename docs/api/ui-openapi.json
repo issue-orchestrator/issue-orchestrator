@@ -499,6 +499,7 @@
           },
           "title": {"type": ["string", "null"]},
           "status": {"type": ["string", "null"]},
+          "runtime_label": {"type": ["string", "null"]},
           "action": {"type": ["string", "null"]},
           "action_hint": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
@@ -1033,7 +1034,8 @@
         "required": ["label", "value"],
         "properties": {
           "label": {"type": "string"},
-          "value": {"type": "string"}
+          "value": {"type": "string"},
+          "value_kind": {"type": "string", "enum": ["timestamp"]}
         }
       },
       "DialogSectionPayload": {

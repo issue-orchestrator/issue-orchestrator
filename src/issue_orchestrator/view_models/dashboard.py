@@ -29,6 +29,7 @@ from .dashboard_flow import build_flow_columns
 from .dashboard_flow import exclude_flow_overlaps
 from .dashboard_flow import select_issues_for_tab
 from .dashboard_flow import stamp_issue_item_stale_badge_visibility
+from .timestamp_values import dashboard_timestamp_source
 
 QUEUE_PAGE_SIZE = 20
 
@@ -866,6 +867,7 @@ def _build_history_items(state, config) -> HistoryLaneProjection:
 
         label_fields, display_title = _issue_label_fields(entry.issue_number, entry.title)
         merge_pending = entry.status == "completed" and bool(entry.pr_url)
+        history_time = _history_time_fields(entry)
         item = {
             "issue_number": entry.issue_number,
             **label_fields,
@@ -875,7 +877,9 @@ def _build_history_items(state, config) -> HistoryLaneProjection:
             "status_reason": status_reason,
             "detail_label": _history_status_label(entry.status),
             "detail_reason": status_reason,
-            "time": _format_history_time(entry),
+            "time": history_time[0],
+            "time_is_timestamp": history_time[1],
+            "runtime_label": f"{entry.runtime_minutes} min" if history_time[1] and entry.runtime_minutes else "",
             "action": "open",
             "action_icon": "↗",
             "action_hint": action_hint,
@@ -1116,16 +1120,12 @@ def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> tuple[l
     return items[start_idx:end_idx], total_pages, page
 
 
-def _format_history_time(entry) -> str:
+def _history_time_fields(entry) -> tuple[str, bool]:
     completed_at = getattr(entry, "completed_at", None)
-    runtime = entry.runtime_minutes
-    if runtime and completed_at:
-        return f"{runtime} min @ {completed_at}"
-    if runtime:
-        return f"{runtime} min"
     if completed_at:
-        return str(completed_at)
-    return "-"
+        return dashboard_timestamp_source(completed_at), True
+    runtime = entry.runtime_minutes
+    return (f"{runtime} min", False) if runtime else ("", False)
 
 
 def _normalize_tab(active_tab: str) -> str:

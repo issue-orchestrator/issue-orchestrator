@@ -704,6 +704,39 @@ def test_merged_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     assert view_model.scope_summary["in_scope_total"] == 1
 
 
+def test_history_completed_at_normalizes_naive_datetimes_to_utc_timestamp():
+    config = _make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Provider circuit breaker dashboard",
+                agent_type="agent:backend",
+                status="merged",
+                runtime_minutes=12,
+                completed_at=datetime(2026, 5, 12, 10, 0, 0),
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    history_item = next(
+        item for item in view_model.history_items if item["issue_number"] == 4057
+    )
+    assert history_item["time"] == "2026-05-12T10:00:00+00:00"
+    assert history_item["time_is_timestamp"] is True
+    assert history_item["runtime_label"] == "12 min"
+
+
 def test_closed_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     config = _make_config()
     pr_url = "https://github.com/test/repo/pull/4124"
@@ -1238,6 +1271,39 @@ def test_view_model_history_routing():
     assert 11 in blocked_numbers
 
 
+def test_history_items_expose_completed_at_as_timestamp_source():
+    config = _make_config()
+    completed_at = datetime(2026, 5, 12, 10, 0, tzinfo=timezone.utc)
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=12,
+                title="Merged",
+                agent_type="agent:web",
+                status="merged",
+                runtime_minutes=12,
+                completed_at=completed_at,
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="completed",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    item = view_model.completed_items[0]
+    assert item["time"] == completed_at.isoformat()
+    assert item["time_is_timestamp"] is True
+    assert item["runtime_label"] == "12 min"
+    assert "@" not in item["time"]
+
+
 def test_awaiting_merge_history_item_is_not_stale_when_startup_recovery_seeded_freshness():
     config = _make_config()
     agent_config = _make_agent_config()
@@ -1534,7 +1600,11 @@ def test_view_model_e2e_items_from_provider():
             "running": True,
             "needs_attention": True,
             "untriaged_count": 2,
-            "last_run": {"id": 7, "relative_time": "1h ago"},
+            "last_run": {
+                "id": 7,
+                "relative_time": "1h ago",
+                "started_at": "2026-05-12T10:00:00Z",
+            },
             "failed_tests": [
                 {"nodeid": "tests/test_a.py::test_x", "duration_seconds": 1.2},
             ],
@@ -1554,6 +1624,10 @@ def test_view_model_e2e_items_from_provider():
     assert any(item.get("e2e_running") for item in view_model.e2e_items)
     assert any(item.get("status") == "needs_attention" for item in view_model.e2e_items)
     assert all(item["show_stale_badge"] is False for item in view_model.e2e_items)
+    attention_item = next(item for item in view_model.e2e_items if item.get("status") == "needs_attention")
+    assert attention_item["started_at"] == "2026-05-12T10:00:00Z"
+    assert attention_item["time"] == "2026-05-12T10:00:00Z"
+    assert attention_item["time_is_timestamp"] is True
     e2e_vm = view_model.e2e_status.get("view_model", {})
     assert e2e_vm.get("badge", {}).get("state") in {"failed", "running", "passed", "warning", "idle"}
     assert isinstance(e2e_vm.get("runs"), list)
@@ -1646,6 +1720,31 @@ def test_e2e_recent_run_item_omits_note_when_none(tmp_path):
 
     assert len(items) == 1
     assert "note" not in items[0]
+
+
+def test_e2e_recent_run_item_exposes_timestamp_source_for_dashboard_formatting(tmp_path):
+    """Recent E2E rows carry timestamp data, not preformatted relative text."""
+    from issue_orchestrator.infra.e2e_db import E2EDB
+    from issue_orchestrator.view_models.dashboard_e2e import build_e2e_recent_run_items
+
+    config = _make_config()
+    orch_id = config.orchestrator_id
+
+    db = E2EDB(tmp_path / "e2e.db")
+    run_id = db.start_run(
+        repo_root=str(tmp_path),
+        orchestrator_id=orch_id,
+        pytest_args=[],
+    )
+    db.finish_run(run_id, status="passed", exit_code=0)
+
+    items = build_e2e_recent_run_items(db, config, {"enabled": True, "running": False})
+
+    assert len(items) == 1
+    assert items[0]["started_at"]
+    assert items[0]["time"] == items[0]["started_at"]
+    assert items[0]["time_is_timestamp"] is True
+    assert "relative_time" not in items[0]
 
 
 def test_e2e_recent_run_item_exposes_typed_open_run_command(tmp_path):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import re
@@ -271,7 +271,7 @@ def _hold_queued_issue(orchestrator: Any, issue_number: int) -> dict[str, Any]:
             runtime_minutes=0,
             status_reason="Cancelled from queue by operator",
             worktree_path=None,
-            completed_at=datetime.now(),
+            completed_at=datetime.now(timezone.utc),
         )
     )
     state.failed_this_cycle.add(issue_number)

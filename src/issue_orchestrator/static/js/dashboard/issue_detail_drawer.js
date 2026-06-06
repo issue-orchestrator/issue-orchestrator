@@ -620,7 +620,7 @@ async function openReviewFeedback(issueNumber, context = null) {
                     const roundNum = evt.round_index || '?';
                     const respType = evt.reviewer_response_type || 'unknown';
                     const label = respType === 'ok' ? 'Approved' : respType === 'changes_requested' ? 'Changes Requested' : respType;
-                    const time = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : '';
+                    const time = formatTimestamp(evt.timestamp || '');
                     html += `<div style="margin-bottom:10px;padding:8px;background:var(--bg);border-radius:4px;">
                         <div style="font-weight:600;font-size:12px;">Round ${escapeHtml(String(roundNum))}: ${escapeHtml(label)} ${time ? `<span style="font-weight:400;color:var(--text-muted);">${escapeHtml(time)}</span>` : ''}</div>
                         <pre style="font-size:11px;white-space:pre-wrap;background:var(--surface);padding:8px;border-radius:4px;margin:4px 0 0;max-height:200px;overflow:auto;">${escapeHtml(evt.reviewer_response_text)}</pre>
@@ -638,7 +638,7 @@ async function openReviewFeedback(issueNumber, context = null) {
                         evt.event === 'review.approved' ? 'Approved'
                             : evt.event === 'review.changes_requested' ? 'Changes Requested'
                                 : 'Review Comment Posted';
-                    const time = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : '';
+                    const time = formatTimestamp(evt.timestamp || '');
                     let commentLink = '';
                     if (evt.event === 'review.comment_added') {
                         const reviewComment = (evt.artifacts || []).find(a => a.type === 'review_comment' && a.value);

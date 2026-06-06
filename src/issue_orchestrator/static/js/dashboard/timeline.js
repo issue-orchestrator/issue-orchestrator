@@ -513,6 +513,9 @@ function openTimelineEventDetails(details) {
 }
 
 function _renderTimelineEventDetailRows(details) {
+    const valueKinds = details && typeof details.detail_value_kinds === 'object'
+        ? details.detail_value_kinds
+        : {};
     const preferred = [
         'event',
         'step',
@@ -533,10 +536,11 @@ function _renderTimelineEventDetailRows(details) {
         if (Object.prototype.hasOwnProperty.call(details, key)) keys.push(key);
     }
     for (const key of Object.keys(details).sort()) {
+        if (key === 'detail_value_kinds') continue;
         if (!keys.includes(key)) keys.push(key);
     }
     const rows = keys.map(key => {
-        const value = _timelineEventDetailValue(details[key]);
+        const value = _timelineEventDetailValue(details[key], valueKinds[key]);
         return `
             <div class="timeline-event-detail-row">
                 <dt>${escapeHtml(key)}</dt>
@@ -547,8 +551,11 @@ function _renderTimelineEventDetailRows(details) {
     return `<dl class="timeline-event-detail-list">${rows}</dl>`;
 }
 
-function _timelineEventDetailValue(value) {
+function _timelineEventDetailValue(value, valueKind = null) {
     if (value === null || value === undefined) return '';
+    if (valueKind === 'timestamp') {
+        return formatTimestamp(value, String(value));
+    }
     if (typeof value === 'object') return JSON.stringify(value, null, 2);
     return String(value);
 }
@@ -559,32 +566,6 @@ function formatPhaseLabel(phase) {
 
 function formatStepLabel(step) {
     return step.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());
-}
-
-function formatTimestamp(timestamp) {
-    if (!timestamp) return '';
-    const date = new Date(timestamp);
-    if (Number.isNaN(date.getTime())) return timestamp;
-    return date.toLocaleString();
-}
-
-function formatJourneyHeaderTimestamp(timestamp, fallback = '') {
-    if (!timestamp) return fallback;
-    const date = new Date(timestamp);
-    if (Number.isNaN(date.getTime())) return fallback || timestamp;
-    return date.toLocaleString();
-}
-
-function formatJourneyStepTimestamp(timestamp, fallback = '') {
-    if (!timestamp) return fallback;
-    const date = new Date(timestamp);
-    if (Number.isNaN(date.getTime())) return fallback || timestamp;
-    const now = new Date();
-    const sameDay = date.getFullYear() === now.getFullYear()
-        && date.getMonth() === now.getMonth()
-        && date.getDate() === now.getDate();
-    if (sameDay) return date.toLocaleTimeString();
-    return date.toLocaleString();
 }
 
 function openPhaseDetails() {

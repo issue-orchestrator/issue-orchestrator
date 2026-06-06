@@ -54,22 +54,6 @@
     // ── Meta line ────────────────────────────────────────────────
     // Compact secondary line: commit · branch · duration · started_at.
 
-    function _formatRelative(timestamp) {
-        if (!timestamp) return '';
-        try {
-            const dt = new Date(String(timestamp).replace(' ', 'T'));
-            if (!Number.isFinite(dt.getTime())) return '';
-            const now = new Date();
-            const delta = Math.max(0, (now - dt) / 1000);
-            if (delta < 60) return 'just now';
-            if (delta < 3600) return `${Math.floor(delta / 60)}m ago`;
-            if (delta < 86400) return `${Math.floor(delta / 3600)}h ago`;
-            return `${Math.floor(delta / 86400)}d ago`;
-        } catch (_) {
-            return '';
-        }
-    }
-
     function _renderMeta(summary) {
         const meta = [];
         if (summary.commit_sha) {
@@ -82,8 +66,8 @@
         if (typeof summary.duration_seconds === 'number' && Number.isFinite(summary.duration_seconds)) {
             meta.push(`<span class="e2e-run-meta-duration">${summary.duration_seconds.toFixed(1)}s</span>`);
         }
-        const rel = _formatRelative(summary.started_at);
-        if (rel) meta.push(`<span class="e2e-run-meta-time">${escapeHtml(rel)}</span>`);
+        const startedAt = formatTimestamp(summary.started_at);
+        if (startedAt) meta.push(`<span class="e2e-run-meta-time">${escapeHtml(startedAt)}</span>`);
         return meta.join(' · ');
     }
 

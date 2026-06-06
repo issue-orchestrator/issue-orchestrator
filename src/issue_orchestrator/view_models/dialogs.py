@@ -14,14 +14,14 @@ from ..domain.artifact_contracts import (
     validation_outcome_from_manifest_fields,
 )
 
-
 @dataclass(frozen=True)
 class DialogRow:
     label: str
     value: str
+    value_kind: Literal["timestamp"] | None = None
 
     def to_dict(self) -> dict[str, str]:
-        return {"label": self.label, "value": self.value}
+        return {"label": self.label, "value": self.value} | ({"value_kind": self.value_kind} if self.value_kind else {})
 
 
 @dataclass(frozen=True)
@@ -253,7 +253,7 @@ def _join_worktree_path(worktree: str, rel_path: Any) -> str:
 def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[DialogRow]:
     rows = [
         DialogRow("Session", ctx.session_name or "-"),
-        DialogRow("Started", ctx.started_at or "-"),
+        DialogRow("Started", ctx.started_at or "-", value_kind="timestamp"),
         DialogRow("Run ID", ctx.run_id or "-"),
         DialogRow("Backend", ctx.backend or "-"),
         DialogRow("Agent", ctx.agent_label or "-"),
@@ -268,7 +268,7 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
         DialogRow("Prompt Mode", ctx.claude_prompt_mode or "-"),
         DialogRow("Claude Session", ctx.claude_session_id or "-"),
         DialogRow("Retention Tier", ctx.retention_tier or "-"),
-        DialogRow("Retention Expires", ctx.retention_expires_at or "-"),
+        DialogRow("Retention Expires", ctx.retention_expires_at or "-", value_kind="timestamp"),
         DialogRow("Retention Pinned", ctx.retention_pinned or "-"),
         DialogRow("Worktree", ctx.worktree or "-"),
     ]
@@ -616,8 +616,8 @@ def _build_validation_failure_summary_rows(
         DialogRow("Suite", str(validation.get("suite") or "-")),
         DialogRow("Command", str(validation.get("command") or "-")),
         DialogRow("Exit Code", exit_code_display),
-        DialogRow("Started", str(validation.get("started_at") or "-")),
-        DialogRow("Ended", str(validation.get("ended_at") or "-")),
+        DialogRow("Started", str(validation.get("started_at") or "-"), value_kind="timestamp"),
+        DialogRow("Ended", str(validation.get("ended_at") or "-"), value_kind="timestamp"),
         DialogRow(
             "Failing Tests",
             str(len(failed_tests)) if failed_tests else "0",

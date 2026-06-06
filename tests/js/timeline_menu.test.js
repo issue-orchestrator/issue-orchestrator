@@ -91,6 +91,7 @@ function loadTimeline() {
         openTimelineEventDetails: () => {},
         openModal: () => {},
         modalOverlay: { classList: { add: () => {} } },
+        formatTimestamp: (value, fallback = '') => value ? `local:${String(value).slice(0, 10)}` : fallback,
     };
     vm.createContext(context);
     const source = fs.readFileSync(
@@ -185,6 +186,38 @@ test('bindTimelineEventActions binds the shared action delegate once', () => {
     assert.equal(container.listeners.length, 1);
     assert.equal(container.listeners[0].type, 'click');
     assert.equal(container.listeners[0].handler, context.handleTimelineEventActionsClick);
+});
+
+test('timeline event detail rows format timestamp fields locally', () => {
+    const context = loadTimeline();
+
+    const html = context._renderTimelineEventDetailRows({
+        event: 'session.started',
+        timestamp: '2026-05-12T10:00:00Z',
+        finished_at: '2026-05-12T10:00:00Z',
+        detail_value_kinds: {
+            timestamp: 'timestamp',
+            finished_at: 'timestamp',
+        },
+        summary: 'started',
+    });
+
+    assert.match(html, /<dt>timestamp<\/dt>/);
+    assert.match(html, /<dt>finished_at<\/dt>/);
+    assert.match(html, /local:2026-05-12/);
+    assert.doesNotMatch(html, /detail_value_kinds/);
+    assert.doesNotMatch(html, /2026-05-12T10:00:00Z/);
+});
+
+test('timeline event detail rows do not infer timestamps from field names', () => {
+    const context = loadTimeline();
+
+    const html = context._renderTimelineEventDetailRows({
+        started_at: '2026-05-12T10:00:00Z',
+    });
+
+    assert.match(html, /2026-05-12T10:00:00Z/);
+    assert.doesNotMatch(html, /local:2026-05-12/);
 });
 
 test('handleTimelineEventActionsClick toggles overflow menus through shared delegate', () => {
