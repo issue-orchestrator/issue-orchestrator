@@ -1,11 +1,9 @@
 """Drawer-facing journey overlay projection (issue #6310).
 
-This module owns the dict-shape→typed-model transition for the issue
-detail drawer.  Inputs are timeline events plus a neutral
-``IssueProjectionContext``; outputs are typed ``JourneyRun`` /
-``IssueCycle`` (extended with journey fields) / ``JourneyStep`` /
-``JourneyPhaseGroup`` / ``CycleArtifacts`` / ``CycleValidationBadge``
-models.
+This module owns the dict-shape→typed-model transition for the issue detail
+drawer. Inputs are timeline events plus ``IssueProjectionContext``; outputs are
+typed ``JourneyRun`` / ``IssueCycle`` / ``JourneyStep`` /
+``JourneyPhaseGroup`` / ``CycleArtifacts`` / ``CycleValidationBadge`` models.
 
 Separation of concerns (per reviewer guidance on PR #6312):
 
@@ -71,7 +69,8 @@ _logical_run_projector = LogicalRunProjector()
 _JOURNEY_NARRATIVE_MAP: dict[str, str] = {
     "session.started": "Code session started",
     "session.completed": "Agent completed{_summary}",
-    "session.failed": "Session failed{_summary}", "session.invalid_completion_record": "Completion record rejected{_summary}",
+    "session.failed": "Session failed{_summary}",
+    "session.invalid_completion_record": "Completion record rejected{_summary}",
     "session.timeout": "Session timed out",
     "session.blocked": "Agent blocked{_summary}",
     "session.validation_failed": "Validation failed{_summary}",
@@ -107,7 +106,8 @@ _SESSION_START_NAMES = frozenset(
 )
 
 _DIRECT_OUTCOME_LABELS = {
-    "session.completed": "Completed", "session.invalid_completion_record": "Failed",
+    "session.completed": "Completed",
+    "session.invalid_completion_record": "Failed",
     "review.changes_requested": "Changes Requested",
     "review.approved": "Approved",
     "review.escalated": "Escalated",

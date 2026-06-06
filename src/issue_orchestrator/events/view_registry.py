@@ -69,7 +69,7 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _user("agent.failed", "Agent session failed", "orchestrator"),
     ],
     "session.invalid_completion_record": [
-        _user("agent.invalid_completion_record", "Completion record rejected", "orchestrator"),
+        _ops("agent.invalid_completion_record", "Completion record rejected", "orchestrator"),
     ],
     "session.timeout": [
         _user("agent.timed_out", "Agent timed out", "orchestrator"),

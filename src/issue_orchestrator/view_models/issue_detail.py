@@ -597,6 +597,7 @@ def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -
         event_name=event_name,
         event_summary=event_summary,
         labels=labels,
+        event=blocking_event,
     )
     if specific is not None:
         return specific

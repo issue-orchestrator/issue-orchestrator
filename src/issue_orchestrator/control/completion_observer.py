@@ -39,7 +39,10 @@ from ..infra.logging_config import issue_log
 from ..infra.provider_resilience import ProviderStatus, read_provider_status, now_iso
 from ..ports.provider_resilience import ProviderErrorType
 from ..observation.observation import SessionObservation, SessionObservationResult
-from .completion_record_validation import load_completion_record
+from .completion_record_validation import (
+    CompletionRecordLoadResult,
+    load_completion_record_result,
+)
 from .session_run_resolution import resolve_session_run_dir
 
 if TYPE_CHECKING:
@@ -73,6 +76,10 @@ class ObservationDecision:
 
     # Provider status (if available)
     provider_status: ProviderStatus | None = None
+
+    # Typed load result when a completion record was checked. Invalid present
+    # records must not collapse into the same fact as a missing record.
+    completion_load_result: CompletionRecordLoadResult | None = None
 
 
 class CompletionObserver:
@@ -128,15 +135,19 @@ class CompletionObserver:
             )
 
         # Session has terminated - try to read completion record
-        record = self._read_completion_record(
+        load_result = self._read_completion_record_result(
             session.worktree_path,
             session.completion_path,
             issue_number,
         )
+        record = load_result.record
 
         if record is None:
             return self._handle_no_completion_record(
-                session, observation, issue_number
+                session,
+                observation,
+                issue_number,
+                completion_load_result=load_result,
             )
 
         # Found completion record - build observed completion
@@ -158,6 +169,7 @@ class CompletionObserver:
             observed=observed,
             recovered_from_timeout=recovered,
             reason=f"Observed completion record with outcome: {record.outcome.value}",
+            completion_load_result=load_result,
         )
 
     def _read_completion_record(
@@ -168,24 +180,38 @@ class CompletionObserver:
     ) -> CompletionRecord | None:
         """Read and validate a completion record from a worktree.
 
-        Delegates to ``load_completion_record`` — the single entry point
-        for parsing an untrusted completion record — so the per-file
-        size gate and field bounds apply uniformly on both the
-        observation and publish paths. See #6017 re-review-2 P3.
+        Delegates to the typed completion-record loader so the per-file size
+        gate and field bounds apply uniformly on both observation and publish
+        paths, while preserving invalid-vs-missing classification.
         """
+        return self._read_completion_record_result(
+            worktree=worktree,
+            completion_path=completion_path,
+            issue_number=issue_number,
+        ).record
+
+    def _read_completion_record_result(
+        self,
+        worktree: Path,
+        completion_path: str | None,
+        issue_number: int,
+    ) -> CompletionRecordLoadResult:
+        """Read and classify a completion record from a worktree."""
         record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
         logger.info(
             issue_log(issue_number, "Checking completion: path=%s exists=%s"),
             record_path,
             record_path.exists(),
         )
-        return load_completion_record(record_path)
+        return load_completion_record_result(record_path)
 
     def _handle_no_completion_record(
         self,
         session: Session,
         observation: SessionObservationResult,
         issue_number: int,
+        *,
+        completion_load_result: CompletionRecordLoadResult | None = None,
     ) -> ObservationDecision:
         """Handle case where no completion record exists.
 
@@ -193,8 +219,33 @@ class CompletionObserver:
         """
         session_log = self._get_session_log_tail(session)
         provider_status = self._read_provider_status(session)
+        load_result = completion_load_result
+        if load_result is not None and load_result.invalid:
+            error = load_result.error or "Completion record rejected"
+            failure = load_result.failure
+            reason = f"Completion record rejected: {error}"
+            logger.error(
+                issue_log(
+                    issue_number,
+                    "Session completion record rejected: session=%s failure=%s error=%s",
+                ),
+                session.terminal_id,
+                failure.value if failure else "unknown",
+                error,
+            )
+            return ObservationDecision(
+                status=SessionStatus.FAILED,
+                reason=reason,
+                session_log_tail=session_log,
+                provider_status=provider_status,
+                completion_load_result=load_result,
+            )
 
-        if provider_status and provider_status.error_type == ProviderErrorType.TRANSIENT and not provider_status.succeeded:
+        if (
+            provider_status
+            and provider_status.error_type == ProviderErrorType.TRANSIENT
+            and not provider_status.succeeded
+        ):
             record = CompletionRecord(
                 session_id=session.terminal_id,
                 timestamp=now_iso(),
@@ -208,6 +259,7 @@ class CompletionObserver:
                 observed=observed,
                 reason="Provider unavailable",
                 provider_status=provider_status,
+                completion_load_result=completion_load_result,
             )
 
         if observation.observation == SessionObservation.TIMED_OUT:
@@ -227,6 +279,7 @@ class CompletionObserver:
                 reason="Timed out without completion record",
                 session_log_tail=session_log,
                 provider_status=provider_status,
+                completion_load_result=completion_load_result,
             )
 
         # Session terminated without completion record = failed
@@ -244,6 +297,7 @@ class CompletionObserver:
             reason="Terminated without completion record",
             session_log_tail=session_log,
             provider_status=provider_status,
+            completion_load_result=completion_load_result,
         )
 
     def _read_provider_status(self, session: Session) -> ProviderStatus | None:

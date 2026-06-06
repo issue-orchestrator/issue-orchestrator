@@ -4,10 +4,7 @@ These helpers define the timeline semantics that both control and web surfaces
 render. The extraction is intentionally behavior-preserving: entrypoints remain
 composition roots while the event-shaping rules live in one owner module.
 
-This module is also the canonical import surface for operational scripts that
-need the same timeline filtering and grouping behavior. Keeping the rationale
-here avoids the drift that large entrypoint-local helper blocks were already
-causing before the extraction.
+This module is also the canonical import surface for operational scripts.
 """
 
 from __future__ import annotations
@@ -36,7 +33,8 @@ logger = logging.getLogger(__name__)
 _NOISY_TIMELINE_EVENTS = frozenset({"issue.labels_changed"})
 _TIMELINE_ARTIFACT_PATH_TYPES = frozenset({
     "chapter_sidecar",
-    "completion_record", "diagnostic",
+    "completion_record",
+    "diagnostic",
     "prompt",
     "review_response",
     "run_dir",
@@ -46,11 +44,13 @@ _TIMELINE_ARTIFACT_PATH_TYPES = frozenset({
 _REVIEW_ARTIFACT_TYPES = frozenset({"review_report", "review_decision"})
 _TIMELINE_START_EVENTS = frozenset({"session.started", "review.started", "rework.started"})
 _TIMELINE_FAILURE_EVENTS = frozenset({
-    "agent.invalid_completion_record", "issue.blocked",
+    "agent.invalid_completion_record",
+    "issue.blocked",
     "issue.needs_human",
     "issue.pr_rejected",
     "session.blocked",
-    "session.failed", "session.invalid_completion_record",
+    "session.failed",
+    "session.invalid_completion_record",
     "session.timeout",
     "session.validation_failed",
     "review.changes_requested",

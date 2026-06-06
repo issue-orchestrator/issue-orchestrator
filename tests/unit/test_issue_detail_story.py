@@ -245,6 +245,28 @@ def test_status_explanation_blocked_invalid_completion_record() -> None:
     )
 
 
+def test_status_explanation_blocked_invalid_completion_survives_terminal_failed_event() -> None:
+    ctx = _ctx(flow_stage="blocked", labels=("needs-human",))
+    events = [
+        {
+            "event": "agent.invalid_completion_record",
+            "source_event": "session.invalid_completion_record",
+            "summary": "Completion record rejected: invalid JSON: line 1",
+        },
+        {
+            "event": "agent.failed",
+            "source_event": "session.failed",
+            "failure_kind": "invalid_completion_record",
+            "completion_parse_error": "invalid JSON: line 1",
+            "summary": "Completion record rejected: invalid JSON: line 1",
+        },
+    ]
+
+    assert _build_status_explanation(ctx, events) == (
+        "Completion record rejected — invalid JSON: line 1"
+    )
+
+
 def test_status_explanation_awaiting_merge() -> None:
     ctx = _ctx(flow_stage="awaiting_merge", pr_number=4124)
     assert _build_status_explanation(ctx, []) == "PR #4124 approved — ready to merge"

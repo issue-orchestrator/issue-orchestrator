@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..domain.models import Session
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .completion_record_validation import CompletionRecordLoadFailure
 
 if TYPE_CHECKING:
     from .label_manager import LabelManager
@@ -46,6 +47,15 @@ def invalid_record_event_fields(detail: Mapping[str, Any] | None) -> dict[str, A
             }
         ]
     return payload
+
+
+def invalid_record_allows_interrupted_retry(detail: Mapping[str, Any] | None) -> bool:
+    """Return True when a rejected record is consistent with interrupted output."""
+    failure = _field(detail, "completion_load_failure")
+    return failure in {
+        CompletionRecordLoadFailure.INVALID_JSON.value,
+        CompletionRecordLoadFailure.UNREADABLE.value,
+    }
 
 
 def failure_event_reason(
@@ -107,7 +117,7 @@ def invalid_record_actions(
             AddLabelAction(
                 issue_number=issue_number,
                 label=labels.needs_human,
-                reason="Completion record rejected by orchestrator validation",
+                reason="Completion record could not be accepted by orchestrator",
                 expected=expected,
             ),
             AddCommentAction(
@@ -165,10 +175,7 @@ def _comment(
     lines = [
         f"**{title}**",
         "",
-        (
-            "The agent did call the completion command, but the completion JSON "
-            "was rejected by orchestrator validation."
-        ),
+        _comment_intro(failure),
         "",
         f"- Failure: `{failure}`",
         f"- Error: {parse_error}",
@@ -184,6 +191,18 @@ def _comment(
     )
     lines.append(_terminal_note(needs_human_label))
     return "\n".join(lines)
+
+
+def _comment_intro(failure: str) -> str:
+    if failure == CompletionRecordLoadFailure.UNREADABLE.value:
+        return (
+            "The agent did call the completion command, but the orchestrator "
+            "could not read the completion JSON from disk."
+        )
+    return (
+        "The agent did call the completion command, but the orchestrator "
+        "could not accept the completion JSON."
+    )
 
 
 def _append_optional(lines: list[str], label: str, value: str | None) -> None:

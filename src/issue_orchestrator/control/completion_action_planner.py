@@ -18,7 +18,10 @@ from .completion_types import (
     ERROR_PREFIX_PUSH,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
-from .invalid_record_actions import invalid_record_actions
+from .invalid_record_actions import (
+    invalid_record_actions,
+    invalid_record_allows_interrupted_retry,
+)
 from .label_manager import LabelManager
 from .reconciliation import ExpectedState, build_expected_for_mutation
 
@@ -224,7 +227,8 @@ class CompletionActionPlanner:
                 number=session.issue.number,
                 comment=(
                     f"🔁 **{session_kind.capitalize()} Session Interrupted**\n\n"
-                    f"The {session_kind} session exited without a completion record (`completion command`).\n\n"
+                    f"The {session_kind} session exited without a valid completion record "
+                    "(`completion command`).\n\n"
                     f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                     f"- Session: `{session.terminal_id}`\n\n"
                     "Auto-retry is enabled, so this will be retried on the next scheduler cycle.\n"
@@ -352,6 +356,13 @@ class CompletionActionPlanner:
             return tuple(self._generate_timeout_actions(session, expected))
 
         if status == SessionStatus.FAILED:
+            detail = completion_detail
+            if malformed_actions := self._maybe_malformed_record_relaunch_actions(
+                session,
+                expected,
+                detail,
+            ):
+                return tuple(malformed_actions)
             invalid_actions = invalid_record_actions(
                 session=session,
                 expected=expected,
@@ -580,6 +591,16 @@ class CompletionActionPlanner:
                 expected=expected,
             ),
         ]
+
+    def _maybe_malformed_record_relaunch_actions(
+        self,
+        session: Session,
+        expected: ExpectedState,
+        detail: Optional[dict[str, Any]],
+    ) -> list[Action] | None:
+        """Return relaunch actions when malformed output matches interruption policy."""
+        allowed = invalid_record_allows_interrupted_retry(detail)
+        return self._generate_interrupted_retry_actions(session, expected) if allowed else None
 
     def _generate_failure_actions(
         self,
