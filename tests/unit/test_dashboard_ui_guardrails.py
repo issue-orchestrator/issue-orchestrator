@@ -13,6 +13,8 @@ DASHBOARD_JS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dash
 DASHBOARD_CSS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "css" / "dashboard"
 DASHBOARD_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "dashboard.html"
 ISSUE_ROW_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
+DASHBOARD_VIEW_MODEL = ROOT / "src" / "issue_orchestrator" / "view_models" / "dashboard.py"
+DASHBOARD_E2E_VIEW_MODEL = ROOT / "src" / "issue_orchestrator" / "view_models" / "dashboard_e2e.py"
 UI_ACTION_CONTRACT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui_action_contract.js"
 BROWSER_AUTH_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "browser_auth.js"
 THEME_RESOLUTION_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "theme_resolution.js"
@@ -2506,6 +2508,68 @@ def test_journey_renders_local_timestamps_from_raw_event_times() -> None:
     assert "_formatIssueLifecycleHeaderTimestamp(run.timestamp" in run_summary_body
     assert "_formatIssueLifecycleHeaderTimestamp(cycle.timestamp" in cycle_summary_body
     assert "_formatIssueLifecycleStepTimestamp(" in step_body
+
+
+def test_dashboard_uses_single_local_timestamp_formatter() -> None:
+    chunks = list(DASHBOARD_JS_CHUNKS)
+    assert chunks[0] == "timestamp_formatting.js"
+    timestamp_src = _read(DASHBOARD_JS_DIR / "timestamp_formatting.js")
+    assert "function formatLocalTimestamp(" in timestamp_src
+    assert "function formatTimestamp(" in timestamp_src
+    assert "function formatJourneyHeaderTimestamp(" in timestamp_src
+    assert "function formatJourneyStepTimestamp(" in timestamp_src
+    assert "function formatDashboardTimestamps(" in timestamp_src
+
+    for chunk in DASHBOARD_JS_CHUNKS:
+        if chunk == "timestamp_formatting.js":
+            continue
+        src = _read(DASHBOARD_JS_DIR / chunk)
+        assert "function formatTimestamp(" not in src, (
+            f"{chunk} must not define a competing timestamp formatter"
+        )
+        assert "function formatJourneyHeaderTimestamp(" not in src
+        assert "function formatJourneyStepTimestamp(" not in src
+        assert "toLocaleTimeString(" not in src, (
+            f"{chunk} must use formatTimestamp(), not ad hoc time-only rendering"
+        )
+        assert not re.search(r"new Date\([^)]*\)\.toLocaleString\(", src), (
+            f"{chunk} must use formatTimestamp(), not raw Date#toLocaleString"
+        )
+
+    session_dialogs = _read(DASHBOARD_JS_DIR / "session_dialogs.js")
+    e2e_runs_list = _read(DASHBOARD_JS_DIR / "e2e_runs_list.js")
+    e2e_runtime = _read(DASHBOARD_JS_DIR / "e2e_runtime.js")
+    timeline_src = _read(DASHBOARD_JS_DIR / "timeline.js")
+    core = _read(DASHBOARD_JS_DIR / "core.js")
+    dashboard_template = _read(DASHBOARD_TEMPLATE)
+    issue_row = _read(ISSUE_ROW_TEMPLATE)
+    dashboard_view_model = _read(DASHBOARD_VIEW_MODEL)
+    dashboard_e2e = _read(DASHBOARD_E2E_VIEW_MODEL)
+    assert "row.value_kind === 'timestamp'" in session_dialogs
+    assert "formatTimestamp(rawValue, rawValue)" in session_dialogs
+    assert "rowName" not in session_dialogs
+    assert "['started', 'ended', 'retention expires']" not in session_dialogs
+    assert "detail_value_kinds" in timeline_src
+    assert "String(data.started_at || '-')" not in session_dialogs
+    assert "formatTimestamp(summary.started_at)" in e2e_runs_list
+    assert "_formatRelative(" not in e2e_runs_list
+    assert "formatE2ELastRunLabel(" in e2e_runtime
+    assert "formatTimestamp(run.started_at)" in e2e_runtime
+    assert "renderE2ELastRunTimestamp(" in e2e_runtime
+    assert "formatDashboardTimestamps(list)" in core
+    assert 'id="e2eLastRunLabel"' in dashboard_template
+    assert "data-started-at=" in dashboard_template
+    assert "e2e-last-run-time" in dashboard_template
+    assert "data-dashboard-timestamp=" in dashboard_template
+    assert "e2e_summary.last_run_label" not in dashboard_template
+    assert "data-dashboard-timestamp=" in issue_row
+    assert "Loading..." not in issue_row
+    assert "_history_time_fields(" in dashboard_view_model
+    assert "_format_history_time" not in dashboard_view_model
+    assert " min @ " not in dashboard_view_model
+    assert '"time_is_timestamp"' in dashboard_view_model
+    assert "_relative_time" not in dashboard_e2e
+    assert '"relative_time"' not in dashboard_e2e
 
 
 def test_journey_layout_uses_content_column_for_actions_and_detail() -> None:

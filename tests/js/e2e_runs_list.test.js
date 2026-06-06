@@ -65,6 +65,7 @@ function _baseStubs() {
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
         _humanizeSnakeCase: (s) => String(s || ''),
         showToast: () => {},
+        formatTimestamp: (value) => `local:${value}`,
         // Canonical viewer helpers — the row loader calls into them.
         // Default to identity-shaped stubs; individual tests can
         // override if they need to assert specific calls.
@@ -193,6 +194,23 @@ test('renderE2ERunsList: single-run case still renders as a 1-element list', () 
     const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
     const rowMatches = html.match(/<details class="e2e-run-row /g);
     assert.strictEqual(rowMatches.length, 1);
+});
+
+test('renderE2ERunRow: started_at meta uses the shared local timestamp formatter', () => {
+    const calls = [];
+    const ctx = _loadRunsListModule({
+        formatTimestamp: (value) => {
+            calls.push(value);
+            return 'LOCAL START';
+        },
+    });
+
+    const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
+
+    assert.ok(html.includes('<span class="e2e-run-meta-time">LOCAL START</span>'));
+    assert.ok(!html.includes('m ago'));
+    assert.ok(!html.includes('2026-05-12T10:00:00Z'));
+    assert.deepEqual(calls, ['2026-05-12T10:00:00Z']);
 });
 
 // ── Layer C: per-tone color matrix ─────────────────────────────────
