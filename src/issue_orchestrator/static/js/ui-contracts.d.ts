@@ -167,6 +167,7 @@ export interface DebugDialogPayload {
 export interface DialogRowPayload {
   label: string;
   value: string;
+  value_kind?: "timestamp";
 }
 
 export interface DialogSectionPayload {
@@ -520,6 +521,7 @@ export interface IssueItemPayload {
   issue_number?: number | string | null;
   issue_url?: string | null;
   open_run_command?: OpenE2ERunCommandPayload | null;
+  runtime_label?: string | null;
   show_stale_badge: boolean;
   status?: string | null;
   title?: string | null;

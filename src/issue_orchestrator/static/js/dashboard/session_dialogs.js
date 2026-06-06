@@ -5,7 +5,7 @@ function formatLogStreamObservation(obs) {
         const exists = fileObs.exists ? 'yes' : 'no';
         const bytes = Number.isFinite(fileObs.bytes) ? `${fileObs.bytes}B` : '?';
         const mtime = Number.isFinite(fileObs.mtime_epoch)
-            ? new Date(fileObs.mtime_epoch * 1000).toLocaleTimeString()
+            ? formatTimestamp(fileObs.mtime_epoch * 1000)
             : '—';
         return `${exists}, ${bytes}, ${mtime}`;
     };
@@ -197,8 +197,8 @@ function renderValidationDialog(data, issueNumber, runDir = null) {
             { label: 'Suite', value: String(data.suite || '-') },
             { label: 'Command', value: String(data.command || '-') },
             { label: 'Exit Code', value: String(data.exit_code ?? '-') },
-            { label: 'Started', value: String(data.started_at || '-') },
-            { label: 'Ended', value: String(data.ended_at || '-') },
+            { label: 'Started', value: formatTimestamp(data.started_at, '-') },
+            { label: 'Ended', value: formatTimestamp(data.ended_at, '-') },
         ];
 
     // Header chip row stays as the at-a-glance summary; body delegates
@@ -330,7 +330,7 @@ function renderDialogRows(rows, options = {}) {
     let html = '<div class="diag-rows">';
     for (const row of rows) {
         const label = escapeHtml(String(row.label || ''));
-        const rawValue = String(row.value || '-');
+        const rawValue = formatDialogRowValue(row);
         const value = escapeHtml(rawValue);
         html += '<div class="diag-row">';
         html += `<span class="diag-row-label">${label}</span>`;
@@ -343,6 +343,14 @@ function renderDialogRows(rows, options = {}) {
     }
     html += '</div>';
     return html;
+}
+
+function formatDialogRowValue(row) {
+    const rawValue = String((row && row.value) || '-');
+    if (row && row.value_kind === 'timestamp') {
+        return formatTimestamp(rawValue, rawValue);
+    }
+    return rawValue;
 }
 
 function renderDialogAction(action) {
