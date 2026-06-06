@@ -3,6 +3,7 @@
 For the full documentation index, see [docs/README.md](../README.md).
 
 - [Installation](installation.md)
+- [Feature List](features.md) - Product capabilities grouped by user problem
 - [Quickstart](quickstart.md)
 - [Tutorial](tutorial.md) - Hands-on walkthrough
 - [Configuration](configuration.md) - Getting started with config

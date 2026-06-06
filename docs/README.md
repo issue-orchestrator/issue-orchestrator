@@ -5,6 +5,7 @@
 Getting started with Issue Orchestrator:
 
 - [A Software Engineering Control Plane for Agentic Development](journeys/software-engineering-control-plane.md) - Public thesis and visual walkthrough
+- [Feature List](user/features.md) - Product capabilities grouped by user problem
 - [Installation](user/installation.md)
 - [Quickstart](user/quickstart.md)
 - [Tutorial](user/tutorial.md) - Hands-on walkthrough
