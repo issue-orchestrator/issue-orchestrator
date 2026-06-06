@@ -34,7 +34,7 @@ from issue_orchestrator.execution.persistent_round_runner import (
     open_persistent_session,
     send_round,
 )
-from tests.e2e.fixtures import is_claude_authenticated
+from tests.fixtures.live_agent_cli import is_claude_authenticated
 
 
 def _decoded_output(path: Path) -> str:

@@ -21,7 +21,10 @@ from issue_orchestrator.execution.persistent_round_runner import (
     open_persistent_session,
     send_round,
 )
-from tests.e2e.fixtures import is_claude_authenticated, is_claude_available
+from tests.fixtures.live_agent_cli import (
+    is_claude_authenticated,
+    is_claude_available,
+)
 
 # Only cheap checks may run at collection time: this module is imported by
 # every `pytest tests/e2e` invocation (including test-e2e-one and
