@@ -11,17 +11,15 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 
 PROJECT_NAME = "issue-orchestrator"
 DEFAULT_VALIDATION_COMMAND = ("make", "validate-pr")
 RELEASE_BRANCH = "main"
 RELEASE_REMOTE = "origin"
-RELEASE_METADATA_FILES = {"pyproject.toml", "uv.lock"}
 _STABLE_SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _SECTION_HEADER_RE = re.compile(r"^\s*\[([A-Za-z0-9_.-]+)\]\s*(?:#.*)?$")
 _VERSION_ASSIGNMENT_RE = re.compile(r'^(\s*version\s*=\s*)"([^"]*)"(\s*(?:#.*)?)$')
@@ -244,13 +242,7 @@ def read_installed_package_version(python_executable: Path, *, cwd: Path) -> str
         "-c",
         (f"from importlib.metadata import version; print(version({PROJECT_NAME!r}))"),
     ]
-    result = subprocess.run(  # noqa: S603
-        command,
-        cwd=cwd,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    result = run_optional_command(command, cwd=cwd)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
         raise ReleasePrepError(
@@ -412,15 +404,19 @@ def assert_remote_tag_absent(root: Path, tag_name: str) -> None:
             "ls-remote",
             "--exit-code",
             "--tags",
-            "origin",
+            RELEASE_REMOTE,
             f"refs/tags/{tag_name}",
         ],
         cwd=root,
     )
     if result.returncode == 0:
-        raise ReleasePrepError(f"Remote tag already exists on origin: {tag_name}")
+        raise ReleasePrepError(
+            f"Remote tag already exists on {RELEASE_REMOTE}: {tag_name}"
+        )
     if result.returncode != 2:
-        printable = f"git ls-remote --exit-code --tags origin refs/tags/{tag_name}"
+        printable = (
+            f"git ls-remote --exit-code --tags {RELEASE_REMOTE} refs/tags/{tag_name}"
+        )
         detail = result.stderr.strip() or result.stdout.strip()
         raise ReleasePrepError(
             f"Could not check remote tag availability: {printable}\n{detail}"
@@ -449,7 +445,7 @@ def confirm_release(
         answer = input_func(f"Type {tag_name} to release: ").strip()
     except EOFError as exc:
         raise ReleasePrepError(
-            f"Release confirmation required. Re-run with --yes to skip the prompt."
+            "Release confirmation required. Re-run with --yes to skip the prompt."
         ) from exc
     if answer != tag_name:
         raise ReleasePrepError(
@@ -475,7 +471,9 @@ def print_release_plan(
     print(
         f"  1. Require clean local {RELEASE_BRANCH} matching fetched {RELEASE_REMOTE}/{RELEASE_BRANCH}"
     )
-    print(f"  2. Set package version to {target_version} and refresh uv.lock")
+    print(
+        f"  2. Verify pyproject.toml and uv.lock already contain {target_version}"
+    )
     if options.sync_environment:
         print("  3. Sync .venv and verify installed package metadata")
     else:
@@ -484,14 +482,12 @@ def print_release_plan(
         print("  4. Skip validation")
     else:
         print(f"  4. Run validation: {' '.join(options.validation_command)}")
-    print("  5. Commit only pyproject.toml and uv.lock if they changed")
+    print("  5. Re-check that the git worktree is clean")
     print(f"  6. Create annotated tag {tag_name}")
     if options.push:
-        print(
-            f"  7. Push release commit to {RELEASE_REMOTE}/{RELEASE_BRANCH} with tags"
-        )
+        print(f"  7. Push only tag {tag_name} to {RELEASE_REMOTE}")
     else:
-        print("  7. Leave commit/tag local")
+        print("  7. Leave tag local")
     if options.create_github_release:
         print(f"  8. Create GitHub release {tag_name} with generated notes")
     else:
@@ -519,17 +515,17 @@ def print_dry_run_commands(
     if options.create_github_release:
         print("+ gh auth status")
         print(f"+ gh release view {tag_name}")
-    print(f"Would set [project].version to {target_version}")
-    print("+ uv lock")
+    print(f"Would verify pyproject.toml and uv.lock already contain {target_version}")
     if options.sync_environment:
         print("+ uv sync --frozen --all-extras")
     if not options.skip_validation:
         print("+ " + " ".join(shlex.quote(part) for part in options.validation_command))
-    print("+ git add pyproject.toml uv.lock")
-    print(f"+ git commit -m 'Release {tag_name}'  # only if release files changed")
+    print("+ git status --porcelain")
     print(f"+ git tag -a {tag_name} -m 'Release {tag_name}'")
     if options.push:
-        print(f"+ git push {RELEASE_REMOTE} HEAD:{RELEASE_BRANCH} --follow-tags")
+        print(
+            f"+ git push {RELEASE_REMOTE} refs/tags/{tag_name}:refs/tags/{tag_name}"
+        )
     if options.create_github_release:
         print(f"+ gh release create {tag_name} --generate-notes")
 
@@ -544,6 +540,8 @@ def run_release_preflight(
     assert_tool_available("git")
     if options.create_github_release:
         assert_tool_available("gh")
+    if options.sync_environment:
+        find_uv(options.uv_executable)
     assert_clean_worktree(paths.root)
     assert_origin_remote_exists(paths.root)
     fetch_origin_main(paths.root)
@@ -566,6 +564,8 @@ def run_release_dry_run_preflight(
     assert_tool_available("git")
     if options.create_github_release:
         assert_tool_available("gh")
+    if options.sync_environment:
+        find_uv(options.uv_executable)
     assert_clean_worktree(paths.root)
     assert_origin_remote_exists(paths.root)
     assert_current_branch_is_main(paths.root)
@@ -577,52 +577,6 @@ def run_release_dry_run_preflight(
         assert_github_release_absent(paths.root, tag_name)
 
 
-def commit_release_metadata_if_needed(paths: ReleasePaths, tag_name: str) -> None:
-    """Commit release metadata changes when pyproject/lock changed."""
-    assert_only_release_metadata_changed(paths.root)
-    run_command(["git", "add", "pyproject.toml", "uv.lock"], cwd=paths.root)
-    staged_files = run_captured_command(
-        ["git", "diff", "--cached", "--name-only"],
-        cwd=paths.root,
-    ).stdout.splitlines()
-    unexpected_files = sorted(set(staged_files) - RELEASE_METADATA_FILES)
-    if unexpected_files:
-        raise ReleasePrepError(
-            "Release would commit unexpected staged files:\n"
-            + "\n".join(unexpected_files)
-        )
-    if not staged_files:
-        print("No release metadata changes to commit; tagging current HEAD.")
-        return
-    run_command(["git", "commit", "-m", f"Release {tag_name}"], cwd=paths.root)
-
-
-def assert_only_release_metadata_changed(root: Path) -> None:
-    """Fail if any file other than release metadata is dirty."""
-    changed_files = set(
-        run_captured_command(
-            ["git", "diff", "--name-only"], cwd=root
-        ).stdout.splitlines()
-    )
-    changed_files.update(
-        run_captured_command(
-            ["git", "diff", "--cached", "--name-only"], cwd=root
-        ).stdout.splitlines()
-    )
-    changed_files.update(
-        run_captured_command(
-            ["git", "ls-files", "--others", "--exclude-standard"],
-            cwd=root,
-        ).stdout.splitlines()
-    )
-    unexpected_files = sorted(changed_files - RELEASE_METADATA_FILES)
-    if unexpected_files:
-        raise ReleasePrepError(
-            "Release changed unexpected files; only pyproject.toml and uv.lock may be dirty:\n"
-            + "\n".join(unexpected_files)
-        )
-
-
 def apply_release_metadata(
     *,
     paths: ReleasePaths,
@@ -630,23 +584,54 @@ def apply_release_metadata(
     options: ReleaseWorkflowOptions,
 ) -> None:
     """Update version files, refresh the lockfile, and verify metadata."""
+    uv = find_uv(options.uv_executable)
     previous_version = write_project_version(paths.pyproject, target_version)
     if previous_version == target_version:
         print(f"pyproject.toml already at {target_version}")
     else:
         print(f"Updated pyproject.toml: {previous_version} -> {target_version}")
 
-    uv = find_uv(options.uv_executable)
     run_command([uv, "lock"], cwd=paths.root)
     verify_project_and_lock_versions(paths, target_version)
+    sync_environment_if_requested(
+        paths=paths,
+        expected_version=target_version,
+        options=options,
+    )
 
-    if options.sync_environment:
-        run_command([uv, "sync", "--frozen", "--all-extras"], cwd=paths.root)
-        verify_installed_package_version(paths, target_version)
-    else:
+
+def verify_release_metadata_ready(
+    paths: ReleasePaths, target_version: str
+) -> None:
+    """Require the already-merged release metadata to match the target version."""
+    try:
+        verify_project_and_lock_versions(paths, target_version)
+    except ReleasePrepError as exc:
+        raise ReleasePrepError(
+            "Release version must already be present in pyproject.toml and uv.lock. "
+            f"Run `make prepare-release VERSION=v{target_version}`, merge that PR "
+            f"into {RELEASE_BRANCH}, then run release from the updated "
+            f"{RELEASE_BRANCH} branch.\n{exc}"
+        ) from exc
+    print(f"Version {target_version} already present in pyproject.toml and uv.lock.")
+
+
+def sync_environment_if_requested(
+    *,
+    paths: ReleasePaths,
+    expected_version: str,
+    options: ReleaseWorkflowOptions,
+) -> None:
+    """Sync the local environment before verifying installed package metadata."""
+    if not options.sync_environment:
         print(
             "Skipped environment sync; run uv sync --frozen --all-extras before opening Control Center."
         )
+        return
+
+    uv = find_uv(options.uv_executable)
+    run_command([uv, "sync", "--frozen", "--all-extras"], cwd=paths.root)
+    verify_installed_package_version(paths, expected_version)
 
 
 def run_release_validation(
@@ -660,7 +645,7 @@ def run_release_validation(
 
 
 def create_release_tag(paths: ReleasePaths, tag_name: str) -> None:
-    """Create the annotated release tag after local metadata is committed."""
+    """Create the annotated release tag on the verified release commit."""
     assert_local_tag_absent(paths.root, tag_name)
     run_command(
         ["git", "tag", "-a", tag_name, "-m", f"Release {tag_name}"], cwd=paths.root
@@ -670,14 +655,19 @@ def create_release_tag(paths: ReleasePaths, tag_name: str) -> None:
 def publish_release(
     paths: ReleasePaths, tag_name: str, options: ReleaseWorkflowOptions
 ) -> None:
-    """Push release refs and create the GitHub release when enabled."""
+    """Push the release tag and create the GitHub release when enabled."""
     if options.push:
         run_command(
-            ["git", "push", RELEASE_REMOTE, f"HEAD:{RELEASE_BRANCH}", "--follow-tags"],
+            [
+                "git",
+                "push",
+                RELEASE_REMOTE,
+                f"refs/tags/{tag_name}:refs/tags/{tag_name}",
+            ],
             cwd=paths.root,
         )
     else:
-        print("Skipped push; commit/tag remain local.")
+        print("Skipped push; tag remains local.")
 
     if options.create_github_release:
         run_command(
@@ -712,6 +702,7 @@ def run_release_workflow(
 
     if options.dry_run:
         run_release_dry_run_preflight(paths=paths, tag_name=tag_name, options=options)
+        verify_release_metadata_ready(paths, target_version)
         print_dry_run_commands(
             tag_name=tag_name,
             target_version=target_version,
@@ -720,12 +711,17 @@ def run_release_workflow(
         return
 
     run_release_preflight(paths=paths, tag_name=tag_name, options=options)
+    verify_release_metadata_ready(paths, target_version)
     if not options.assume_yes:
         confirm_release(tag_name=tag_name)
 
-    apply_release_metadata(paths=paths, target_version=target_version, options=options)
+    sync_environment_if_requested(
+        paths=paths,
+        expected_version=target_version,
+        options=options,
+    )
     run_release_validation(paths, options)
-    commit_release_metadata_if_needed(paths, tag_name)
+    assert_clean_worktree(paths.root)
     create_release_tag(paths, tag_name)
     publish_release(paths, tag_name, options)
     print("")
@@ -756,28 +752,26 @@ def prepare_release(
             print("Dry run: would run uv sync --frozen --all-extras")
         return
 
-    previous_version = write_project_version(paths.pyproject, target_version)
-    if previous_version == target_version:
-        print(f"pyproject.toml already at {target_version}")
-    else:
-        print(f"Updated pyproject.toml: {previous_version} -> {target_version}")
-
-    uv = find_uv(uv_executable)
-    run_command([uv, "lock"], cwd=paths.root)
-    verify_project_and_lock_versions(paths, target_version)
-
-    if sync_environment:
-        run_command([uv, "sync", "--frozen", "--all-extras"], cwd=paths.root)
-        verify_installed_package_version(paths, target_version)
-    else:
-        print(
-            "Skipped environment sync; run uv sync --frozen --all-extras before opening Control Center."
-        )
+    apply_release_metadata(
+        paths=paths,
+        target_version=target_version,
+        options=ReleaseWorkflowOptions(
+            dry_run=False,
+            sync_environment=sync_environment,
+            assume_yes=False,
+            skip_validation=True,
+            validation_command=(),
+            push=False,
+            create_github_release=False,
+            uv_executable=uv_executable,
+        ),
+    )
 
     print("")
     print(f"Release file prep complete for {tag_name}.")
     print(
-        f"Run `make release VERSION={tag_name}` from a clean tree to complete the release."
+        f"Merge these files to {RELEASE_BRANCH}, then run `make release VERSION={tag_name}` "
+        f"from the updated clean {RELEASE_BRANCH} branch."
     )
 
 
@@ -786,8 +780,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run the issue-orchestrator release workflow. By default this asks "
-            "for confirmation, updates release metadata, validates, commits, "
-            "tags, pushes, and creates the GitHub release."
+            "for confirmation, verifies release metadata already exists on "
+            "main, validates, tags, pushes the tag, and creates the GitHub release."
         )
     )
     parser.add_argument("version", help="Release version, e.g. 1.0.0 or v1.0.0")
@@ -830,7 +824,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--local-only",
         action="store_true",
-        help="Commit and tag locally, but do not push or create a GitHub release.",
+        help="Tag locally, but do not push or create a GitHub release.",
     )
     parser.add_argument(
         "--no-gh-release",

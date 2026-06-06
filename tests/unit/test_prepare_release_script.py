@@ -157,21 +157,46 @@ def test_full_release_dry_run_prints_single_workflow_without_mutating_files(
 
     prepare_release.run_release_workflow(
         paths=paths,
-        version="v1.0.0",
+        version="v0.9.0",
         options=_workflow_options(),
     )
 
     output = capsys.readouterr().out
-    assert "Preparing full issue-orchestrator release v1.0.0" in output
+    assert "Preparing full issue-orchestrator release v0.9.0" in output
+    assert "Version 0.9.0 already present in pyproject.toml and uv.lock." in output
     assert "Dry run: no files, git refs, or GitHub releases will be changed." in output
     assert "+ git status --porcelain" in output
     assert "+ git ls-remote --exit-code origin refs/heads/main" in output
     assert "+ make validate-pr" in output
-    assert "+ git push origin HEAD:main --follow-tags" in output
-    assert "+ gh release create v1.0.0 --generate-notes" in output
-    assert preflight_calls == ["v1.0.0"]
+    assert "+ git push origin refs/tags/v0.9.0:refs/tags/v0.9.0" in output
+    assert "+ gh release create v0.9.0 --generate-notes" in output
+    assert "git commit" not in output
+    assert "HEAD:main" not in output
+    assert preflight_calls == ["v0.9.0"]
     assert prepare_release.read_project_version(tmp_path / "pyproject.toml") == "0.9.0"
     assert prepare_release.read_lock_project_version(tmp_path / "uv.lock") == "0.9.0"
+
+
+def test_full_release_requires_version_already_merged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pyproject(tmp_path / "pyproject.toml", version="0.9.0")
+    _write_lock(tmp_path / "uv.lock", version="0.9.0")
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_dry_run_preflight",
+        lambda *, paths, tag_name, options: None,
+    )
+
+    with pytest.raises(prepare_release.ReleasePrepError, match="prepare-release"):
+        prepare_release.run_release_workflow(
+            paths=paths,
+            version="v1.0.0",
+            options=_workflow_options(),
+        )
 
 
 def test_full_release_rejects_github_release_without_push(tmp_path: Path) -> None:
@@ -230,20 +255,111 @@ def test_assert_head_matches_remote_main_rejects_outdated_remote_main(
         prepare_release.assert_head_matches_remote_main(tmp_path)
 
 
-def test_assert_only_release_metadata_changed_rejects_unexpected_file(
+def test_apply_release_metadata_resolves_uv_before_mutating_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_run_captured_command(command, *, cwd):  # noqa: ANN001
-        if command == ["git", "diff", "--name-only"]:
-            return _completed(stdout="pyproject.toml\nREADME.md\n")
-        return _completed()
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+    events: list[str] = []
+
+    def fake_find_uv(_explicit_uv):  # noqa: ANN001
+        events.append("find_uv")
+        return "uv"
+
+    def fake_write_project_version(_pyproject, _version):  # noqa: ANN001
+        events.append("write_project_version")
+        return "0.9.0"
+
+    monkeypatch.setattr(prepare_release, "find_uv", fake_find_uv)
+    monkeypatch.setattr(prepare_release, "write_project_version", fake_write_project_version)
+    monkeypatch.setattr(
+        prepare_release,
+        "run_command",
+        lambda _command, *, cwd: events.append("run_command"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "verify_project_and_lock_versions",
+        lambda _paths, _version: events.append("verify_versions"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "sync_environment_if_requested",
+        lambda *, paths, expected_version, options: events.append("sync_environment"),
+    )
+
+    prepare_release.apply_release_metadata(
+        paths=paths,
+        target_version="1.0.0",
+        options=_workflow_options(dry_run=False),
+    )
+
+    assert events[:2] == ["find_uv", "write_project_version"]
+
+
+def test_full_release_rechecks_clean_tree_after_validation_before_tag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pyproject(tmp_path / "pyproject.toml", version="1.0.0")
+    _write_lock(tmp_path / "uv.lock", version="1.0.0")
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+    calls: list[str] = []
 
     monkeypatch.setattr(
         prepare_release,
-        "run_captured_command",
-        fake_run_captured_command,
+        "run_release_preflight",
+        lambda *, paths, tag_name, options: calls.append("preflight"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "verify_release_metadata_ready",
+        lambda _paths, _version: calls.append("verify_metadata"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "confirm_release",
+        lambda *, tag_name: calls.append("confirm"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "sync_environment_if_requested",
+        lambda *, paths, expected_version, options: calls.append("sync"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_validation",
+        lambda _paths, _options: calls.append("validate"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_clean_worktree",
+        lambda _root: calls.append("clean_after_validation"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "create_release_tag",
+        lambda _paths, _tag_name: calls.append("tag"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "publish_release",
+        lambda _paths, _tag_name, _options: calls.append("publish"),
     )
 
-    with pytest.raises(prepare_release.ReleasePrepError, match="README.md"):
-        prepare_release.assert_only_release_metadata_changed(tmp_path)
+    prepare_release.run_release_workflow(
+        paths=paths,
+        version="v1.0.0",
+        options=_workflow_options(dry_run=False),
+    )
+
+    assert calls == [
+        "preflight",
+        "verify_metadata",
+        "confirm",
+        "sync",
+        "validate",
+        "clean_after_validation",
+        "tag",
+        "publish",
+    ]
