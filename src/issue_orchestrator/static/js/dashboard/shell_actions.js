@@ -77,7 +77,7 @@ function formatNextRun(nextInfo) {
     if (reason === 'interval' && nextInfo.next_run_at) {
         const when = new Date(nextInfo.next_run_at);
         const deltaMs = when.getTime() - Date.now();
-        const timeStr = when.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+        const timeStr = formatTimestamp(when);
         return `Next: in ${formatRelativeMillis(deltaMs)} (at ${timeStr})`;
     }
     if (reason === 'main_unchanged') return 'Next: waiting for main change';

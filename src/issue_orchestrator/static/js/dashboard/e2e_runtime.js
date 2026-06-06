@@ -17,6 +17,7 @@ let e2eLastStatusData = {
 // E2E Progress Polling - polls while E2E is running or E2E tab is active
 let e2ePollingInterval = null;
 let e2eLastProgressState = null;
+let pinnedNoticeText = null;
 
 function e2eBadgeStateFromStatus(data) {
     if (data?.running) return 'running';
@@ -42,6 +43,59 @@ function updateE2EHeaderBadge(data) {
     if (statusIcon) {
         statusIcon.textContent = statusIcons[state] || '○';
     }
+}
+
+function formatE2ELastRunLabel(run) {
+    const startedAt = run && run.started_at ? formatTimestamp(run.started_at) : '';
+    return startedAt || 'No runs yet';
+}
+
+function renderE2ELastRunTimestamp(target, startedAt) {
+    if (!startedAt) {
+        target.textContent = 'Last run: No runs yet';
+        return;
+    }
+    if (target.dataset) {
+        target.dataset.startedAt = startedAt;
+    }
+    if (
+        typeof document === 'undefined'
+        || typeof document.createElement !== 'function'
+        || typeof target.appendChild !== 'function'
+    ) {
+        target.textContent = `Last run: ${formatE2ELastRunLabel({ started_at: startedAt })}`;
+        return;
+    }
+    target.textContent = 'Last run: ';
+    const timestampEl = document.createElement('span');
+    timestampEl.className = 'e2e-last-run-time';
+    if (timestampEl.dataset) {
+        timestampEl.dataset.dashboardTimestamp = startedAt;
+        timestampEl.dataset.dashboardTimestampFallback = startedAt;
+    } else if (typeof timestampEl.setAttribute === 'function') {
+        timestampEl.setAttribute('data-dashboard-timestamp', startedAt);
+        timestampEl.setAttribute('data-dashboard-timestamp-fallback', startedAt);
+    }
+    timestampEl.textContent = startedAt;
+    target.appendChild(timestampEl);
+    if (typeof formatDashboardTimestampElement === 'function') {
+        formatDashboardTimestampElement(timestampEl);
+    } else {
+        timestampEl.textContent = formatE2ELastRunLabel({ started_at: startedAt });
+    }
+}
+
+function updateE2ELastRunLabel(run = e2eLastRun) {
+    const target = document.getElementById('e2eLastRunLabel');
+    if (!target) return;
+    if (pinnedNoticeText) {
+        target.textContent = pinnedNoticeText;
+        return;
+    }
+    const startedAt = run && run.started_at
+        ? run.started_at
+        : (target.dataset ? target.dataset.startedAt : '');
+    renderE2ELastRunTimestamp(target, startedAt);
 }
 
 function startE2EPolling() {
@@ -162,6 +216,7 @@ async function updateE2EProgress() {
         e2eLastProgressState = stateKey;
 
         updateE2EHeaderBadge(data);
+        updateE2ELastRunLabel(e2eLastRun);
 
         // Stop polling when not running
         if (!data.running) {
@@ -197,6 +252,7 @@ async function startE2E(forceRestart = false) {
         const data = await res.json();
         if (res.ok) {
             showToast('E2E tests started');
+            pinnedNoticeText = null;
             // Update header badge to running state
             updateE2EHeaderBadge({ running: true, last_run: e2eLastRun });
 
@@ -236,6 +292,7 @@ async function stopE2E() {
         if (res.ok) {
             showToast('E2E tests stopped');
             stopE2EPolling();
+            pinnedNoticeText = 'Stopped';
             // Update header badge to stopped state
             updateE2EHeaderBadge({ running: false, last_run: e2eLastRun });
 
@@ -246,7 +303,7 @@ async function stopE2E() {
                     <button class="issue-action-btn start-btn" onclick="startE2E()" id="e2eStartBtn">
                         <span aria-hidden="true">▶</span> Start E2E Tests
                     </button>
-                    <span class="e2e-last-run">Stopped</span>
+                    <span class="e2e-last-run" id="e2eLastRunLabel">Stopped</span>
                 `;
             }
         } else {
@@ -257,10 +314,12 @@ async function stopE2E() {
     }
 }
 
-// Start polling if E2E is already running on page load
-if (window.dashboardData.e2eRunning) {
-document.addEventListener('DOMContentLoaded', () => startE2EPolling());
-}
+document.addEventListener('DOMContentLoaded', () => {
+    updateE2ELastRunLabel(e2eLastRun);
+    if (window.dashboardData.e2eRunning) {
+        startE2EPolling();
+    }
+});
 
 async function showE2ELogs() {
     if (!e2eLastRun) {
@@ -643,7 +702,7 @@ function renderTestFailureDetail(data) {
                 <div class="test-failure-nodeid">${escapeHtml(test.nodeid)}</div>
                 <div class="test-failure-meta">
                     <span>${statusParts.join(' · ')}</span>
-                    ${run.started_at ? `<span><strong>Run:</strong> ${new Date(run.started_at).toLocaleString()}</span>` : ''}
+                    ${run.started_at ? `<span><strong>Run:</strong> ${escapeHtml(formatTimestamp(run.started_at))}</span>` : ''}
                     ${run.commit_sha ? `<span><strong>Commit:</strong> ${run.commit_sha.substring(0, 7)}</span>` : ''}
                 </div>
             </div>

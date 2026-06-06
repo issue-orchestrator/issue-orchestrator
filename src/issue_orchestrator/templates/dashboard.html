@@ -332,7 +332,8 @@
                             <span class="e2e-progress-text">Running...</span>
                             {% else %}
                             <button class="issue-action-btn start-btn" onclick="startE2E()" id="e2eStartBtn"><span aria-hidden="true">▶</span> Start E2E</button>
-                            <span class="e2e-last-run">Last run: {{ e2e_summary.last_run_label if e2e_summary.last_run_label else 'No runs yet' }}</span>
+                            {% set e2e_last_run_started_at = e2e_summary.last_run_started_at if e2e_summary.last_run_started_at else '' %}
+                            <span class="e2e-last-run" id="e2eLastRunLabel" data-started-at="{{ e2e_last_run_started_at | e }}">Last run: {% if e2e_last_run_started_at %}<span class="e2e-last-run-time" data-dashboard-timestamp="{{ e2e_last_run_started_at | e }}" data-dashboard-timestamp-fallback="{{ e2e_last_run_started_at | e }}">{{ e2e_last_run_started_at }}</span>{% else %}No runs yet{% endif %}</span>
                             {% endif %}
                         </div>
                     </div>

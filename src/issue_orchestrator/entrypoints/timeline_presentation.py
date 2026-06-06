@@ -30,6 +30,7 @@ from ..execution.manifest_accessor import (
 )
 from ..execution.timeline_artifact_expectations import event_requires_run_dir
 from ..timeline import MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION, TIMELINE_SCHEMA_VERSION
+from ..view_models.timestamp_values import DETAIL_VALUE_KINDS_KEY, timeline_detail_value_kinds
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,6 @@ _ORCHESTRATOR_ONLY_EVENTS = frozenset({
     "session.processing_completed",
     "completion.lookup",
 })
-
-
 def _load_test_result_backfill(
     e2e_db_path: Optional[Path], run_id: int,
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -258,6 +257,8 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
     decorated: list[dict[str, Any]] = []
     for event in events:
         event_with_actions = dict(event)
+        if detail_value_kinds := timeline_detail_value_kinds(event):
+            event_with_actions[DETAIL_VALUE_KINDS_KEY] = detail_value_kinds
         try:
             event_with_actions["actions"] = _timeline_event_actions(event, issue_number)
         except Exception as exc:
@@ -285,7 +286,6 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
             event_with_actions["actions_error"] = error_message
         decorated.append(event_with_actions)
     return decorated
-
 
 def _timeline_event_fallback_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
     """Build safe fallback actions when strict run-scoped decoration fails."""

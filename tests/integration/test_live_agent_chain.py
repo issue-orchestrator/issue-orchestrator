@@ -34,6 +34,7 @@ from issue_orchestrator.execution.persistent_round_runner import (
     open_persistent_session,
     send_round,
 )
+from tests.fixtures.live_agent_cli import is_claude_authenticated
 
 
 def _decoded_output(path: Path) -> str:
@@ -65,30 +66,11 @@ def _decoded_output(path: Path) -> str:
 # Markers / skip conditions
 # ---------------------------------------------------------------------------
 
-_CLAUDE_INSTALLED = shutil.which("claude") is not None
-
-
-def _claude_authenticated() -> bool:
-    """Check if Claude CLI is installed AND authenticated.
-
-    Runs a minimal -p invocation.  Must scrub CLAUDECODE from the
-    environment so the probe works when tests run inside a Claude Code
-    session (nested-session guard).
-    """
-    if not _CLAUDE_INSTALLED:
-        return False
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        result = subprocess.run(
-            ["claude", "-p", "--model", "haiku", "Reply with OK"],
-            capture_output=True, text=True, timeout=30, env=env,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-_CLAUDE_READY = _claude_authenticated()
+# Import-time probe is acceptable here: this module is only collected by the
+# dedicated live-agent lanes (test-integration-agent / heavy runs), where a
+# real provider round-trip is proportionate. The whole-suite e2e module
+# (tests/e2e/test_live_agent_transport.py) defers the same probe to runtime.
+_CLAUDE_READY = is_claude_authenticated()
 
 
 def _live_provider_retry_policy() -> RetryPolicy:
@@ -347,82 +329,6 @@ class TestLiveAgentChain:
             f"Log:\n{raw_log}"
         )
 
-    # ------------------------------------------------------------------
-    # Layer 5: THE PERSISTENT PATH — open_persistent_session + send_round.
-    #
-    # This is the review-exchange path (a long-lived interactive claude driven
-    # across rounds by injecting prompts on its PTY), distinct from the -p
-    # one-shot layers above. It is where the tixmeup #277/#290 hang lived:
-    # send_round used to terminate prompts with "\n", which a raw-mode TUI does
-    # NOT treat as Enter, so the prompt rendered into the input box but was
-    # never submitted and the round hung. send_round now submits with "\r".
-    # This proves the fix against REAL claude across TWO rounds (the exact
-    # scenario that hung), which no stub can establish.
-    # ------------------------------------------------------------------
-
-    def test_persistent_send_round_two_rounds_real_claude(self) -> None:
-        # Run under the repo worktree (a trusted git repo) so the interactive
-        # first-run "trust this folder?" dialog never blocks — mirrors
-        # production, where review-exchange worktrees are trusted. /tmp would
-        # trigger that dialog for an interactive session.
-        repo_root = Path(__file__).resolve().parents[2]
-        work_dir = Path(tempfile.mkdtemp(prefix=".live-send-round-", dir=repo_root))
-        response_file = work_dir / "review-response.json"
-        system_prompt = (
-            "You are an automated review-exchange test agent. Every time you "
-            "receive a message, immediately use the Bash tool to run exactly:\n"
-            '  printf \'{"response_type":"ok"}\' > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"\n'
-            "then keep waiting for the next message. Do not exit on your own."
-        )
-        # Scrub CLAUDECODE so the nested-session guard does not block claude
-        # when these tests run inside a Claude Code session (same as the
-        # auth probe above).
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        env["PATH"] = self._venv_path_prefix()
-        env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] = str(response_file)
-
-        session = open_persistent_session(
-            command=[
-                "claude", "--model", "haiku",
-                "--permission-mode", "bypassPermissions",
-                "--append-system-prompt", system_prompt,
-            ],
-            working_dir=work_dir,
-            env=env,
-        )
-        try:
-            # Let claude boot to its idle input prompt (trusted dir -> no dialog).
-            from issue_orchestrator.execution.persistent_round_runner import (
-                _drain_pty_output,
-            )
-            boot_deadline = time.monotonic() + 25
-            while time.monotonic() < boot_deadline:
-                _drain_pty_output(session)
-                if session.proc.poll() is not None:
-                    pytest.fail(f"claude exited during boot, code={session.proc.poll()}")
-                time.sleep(0.3)
-
-            for n in (1, 2):
-                response_file.unlink(missing_ok=True)
-                result = send_round(
-                    session,
-                    prompt=f"round {n}: respond now",
-                    response_file=response_file,
-                    timeout_seconds=60,
-                    poll_interval_seconds=0.3,
-                    role_label=f"coder@round-{n}",
-                )
-                assert result == {"response_type": "ok"}, (
-                    f"round {n} not answered — a \\r-terminated prompt must "
-                    f"submit to real claude. Got: {result}"
-                )
-                assert session.proc.poll() is None, (
-                    f"claude exited after round {n}"
-                )
-        finally:
-            close_persistent_session(session)
-            shutil.rmtree(work_dir, ignore_errors=True)
-
     @staticmethod
     def _wait_for_pty_idle(
         session: object, *, quiet_seconds: float, max_wait: float,
@@ -473,7 +379,9 @@ class TestLiveAgentChain:
             "You are the reviewer in a persistent review exchange. Wait for "
             "the orchestrator to send each turn via stdin, write exactly one "
             "line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE for "
-            "each turn, then keep waiting for the next prompt."
+            "each turn, then keep waiting for the next prompt. This setup "
+            "message is NOT a turn: do not write to the response file until "
+            "a review turn arrives via stdin."
         )
         task = (
             "Run exactly this one shell command and nothing else (no "
@@ -500,7 +408,13 @@ class TestLiveAgentChain:
             )
 
             for n in (1, 2, 3):
-                self._wait_for_pty_idle(session, quiet_seconds=3.0, max_wait=30.0)
+                # max_wait must comfortably exceed codex's worst-case turn
+                # time: if the settle gives up while codex is still chewing
+                # on the bootstrap, codex's late improvised write can land
+                # AFTER the unlink below and be misread as round n's answer
+                # (seen live: bootstrap reply "Ready for review prompts."
+                # failing round 1 under a loaded validate run).
+                self._wait_for_pty_idle(session, quiet_seconds=3.0, max_wait=120.0)
                 response_file.unlink(missing_ok=True)
                 result = send_round(
                     session,
