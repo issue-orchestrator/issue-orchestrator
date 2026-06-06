@@ -155,10 +155,18 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "E) whether the bounded owner/port/command abstraction is strong enough, "
         "not merely whether the diff works\n"
         f"{prior}\n"
-        "Write exactly one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"
-        '  {"response_type":"ok","getting_closer":true,"response_text":"Looks good."}\n'
-        '  {"response_type":"changes_requested","getting_closer":true,"response_text":"Fix X."}\n'
-        '  {"response_type":"disagree","getting_closer":false,"response_text":"Wrong approach."}\n'
+        "Write exactly one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE. "
+        "Include the `turn_token`, `round_index`, and `attempt_index` fields "
+        "shown at the top of this prompt:\n"
+        '  {"turn_token":"<copy-from-prompt>","round_index":1,'
+        '"attempt_index":1,"response_type":"ok","getting_closer":true,'
+        '"response_text":"Looks good."}\n'
+        '  {"turn_token":"<copy-from-prompt>","round_index":1,'
+        '"attempt_index":1,"response_type":"changes_requested",'
+        '"getting_closer":true,"response_text":"Fix X."}\n'
+        '  {"turn_token":"<copy-from-prompt>","round_index":1,'
+        '"attempt_index":1,"response_type":"disagree",'
+        '"getting_closer":false,"response_text":"Wrong approach."}\n'
     )
 
 
@@ -190,7 +198,8 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "2. Commit all changes (clean working tree required).\n"
         "3. Run `prepush-check --dirty-only -v` and fix any dirty-worktree failure.\n"
         "4. Run `coding-done completed --implementation '...' --problems '...'`\n"
-        "5. Write one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE\n"
+        "5. Write one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE "
+        "including the turn identity fields shown at the top of this prompt\n"
         "Runtime-managed metadata under `.issue-orchestrator/` and `.claude/` "
         "is ignored by the orchestrator dirty guard. Tracked project files, "
         "generated sources, lock files, schemas, and other repo changes must "
@@ -201,8 +210,12 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "\n"
         "After coding-done succeeds, write your JSON response to "
         "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"
-        '  {"response_type":"ok","response_text":"Applied fixes..."}\n'
-        '  {"response_type":"disagree","response_text":"This is wrong because..."}\n'
+        '  {"turn_token":"<copy-from-prompt>","round_index":1,'
+        '"attempt_index":1,"response_type":"ok",'
+        '"response_text":"Applied fixes..."}\n'
+        '  {"turn_token":"<copy-from-prompt>","round_index":1,'
+        '"attempt_index":1,"response_type":"disagree",'
+        '"response_text":"This is wrong because..."}\n'
     )
 
 

@@ -81,6 +81,7 @@ from ..domain.review_artifacts import (
 from ..domain.review_exchange_resume import is_no_completion_reason
 from ..domain.review_exchange_turn import (
     ReviewExchangePromptFiles,
+    ReviewExchangeTurnIdentity,
     ReviewExchangeTurnPacket,
     ReviewExchangeTurnResult,
     Role,
@@ -117,6 +118,7 @@ from .persistent_round_runner import (
     persistent_round_failure_reason,
     send_round,
 )
+from .review_exchange_turn_identity import build_prompt_inbox_notice, build_turn_identity_verifier, prepare_turn_prompt
 from .recording_contract import recording_event_count
 
 logger = logging.getLogger(__name__)
@@ -1094,6 +1096,9 @@ class _RoleAttemptWorkspace:
         for path in self.side_artifact_paths:
             path.unlink(missing_ok=True)
 
+    def clear_outputs_after_rejected_response(self) -> None:
+        for path in (self.response_file, *self.side_artifact_paths):
+            path.unlink(missing_ok=True)
 
 # ---------------------------------------------------------------------------
 # Session bring-up
@@ -1338,22 +1343,6 @@ def _clear_role_prompt_inbox(response_file: Path) -> None:
     _role_prompt_inbox_path(response_file).unlink(missing_ok=True)
 
 
-def _build_prompt_inbox_notice(
-    *,
-    role: Role,
-    round_index: int,
-    attempt_index: int,
-    prompt_path: Path,
-) -> str:
-    return (
-        f"Review-exchange {role.value} turn round={round_index} "
-        f"attempt={attempt_index} is ready.\n"
-        f"Read the full instructions from: {prompt_path}\n"
-        "Follow that file exactly, then write one JSON response line to "
-        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
-    )
-
-
 def _persist_turn_prompt(
     exchange_dir: Path,
     *,
@@ -1499,7 +1488,8 @@ def _reviewer_prompt_with_artifact_contract(
         "nits through coder rework before PR creation.\n"
         "\n"
         "Example JSON shape:\n"
-        '{"response_type":"ok","getting_closer":true,'
+        '{"turn_token":"<copy-from-prompt>","round_index":1,'
+        '"attempt_index":1,"response_type":"ok","getting_closer":true,'
         '"response_text":"Looks good.",'
         '"decision":{"verdict":"approved","risk":"low",'
         '"blocking_findings":[],"nits":[],'
@@ -1795,10 +1785,11 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
             last_reviewer_text=last_reviewer_text,
         )
         _persist_turn_packet(exchange_dir, reviewer_packet)
-        reviewer_prompt_text = _reviewer_prompt_with_artifact_contract(
+        reviewer_prompt_base = _reviewer_prompt_with_artifact_contract(
             build_reviewer_prompt(reviewer_packet),
             nit_policy=nit_policy,
         )
+        reviewer_prompt_text, reviewer_identity = prepare_turn_prompt(reviewer_prompt_base, round_index=round_index, attempt_index=1)
         reviewer_prompt_path = _persist_turn_prompt(
             exchange_dir,
             round_index=round_index,
@@ -1870,6 +1861,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
                 workspace=reviewer_workspace,
                 role=Role.REVIEWER,
                 turn_started=reviewer_started,
+                turn_identity=reviewer_identity,
                 recording_path=reviewer_recording,
                 prompt=reviewer_prompt_text,
                 timeout_seconds=reviewer_timeout_seconds,
@@ -1972,7 +1964,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
             reviewer_feedback=artifact_pair.report_path.read_text(encoding="utf-8"),
         )
         _persist_turn_packet(exchange_dir, coder_packet)
-        coder_prompt_text = build_coder_prompt(coder_packet)
+        coder_prompt_text, coder_identity = prepare_turn_prompt(build_coder_prompt(coder_packet), round_index=round_index, attempt_index=1)
         coder_prompt_path = _persist_turn_prompt(
             exchange_dir,
             round_index=round_index,
@@ -2036,6 +2028,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
                 workspace=coder_workspace,
                 role=Role.CODER,
                 turn_started=coder_started,
+                turn_identity=coder_identity,
                 recording_path=coder_recording,
                 prompt=coder_prompt_text,
                 timeout_seconds=coder_timeout_seconds,
@@ -2207,13 +2200,14 @@ def _enforce_coder_protocol(
     ):
         attempt_index = next_attempt_index
         next_attempt_index += 1
-        retry_prompt = (
+        retry_prompt_base = (
             f"{protocol_error}\n"
             "Run `coding-done completed --implementation '...' --problems '...'` "
             "(or `coding-done blocked --reason '...' --attempted '...'` if you "
             "cannot continue), then write your one-line JSON response again to "
             "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
         )
+        retry_prompt, retry_identity = prepare_turn_prompt(retry_prompt_base, round_index=cycle_index, attempt_index=attempt_index)
         retry_prompt_path = _persist_turn_prompt(
             exchange_dir,
             round_index=cycle_index,
@@ -2278,6 +2272,7 @@ def _enforce_coder_protocol(
                 workspace=coder_workspace,
                 role=Role.CODER,
                 turn_started=retry_started,
+                turn_identity=retry_identity,
                 recording_path=coder_recording,
                 prompt=retry_prompt,
                 timeout_seconds=coder_timeout_seconds,
@@ -2333,6 +2328,7 @@ class _RoleRoundCommand:
     workspace: _RoleAttemptWorkspace
     role: Role
     turn_started: ReviewerTurnStarted | CoderTurnStarted
+    turn_identity: ReviewExchangeTurnIdentity
     recording_path: Path
     prompt: str
     timeout_seconds: float
@@ -2373,6 +2369,7 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
     workspace = command.workspace
     role = command.role
     turn_started = command.turn_started
+    turn_identity = command.turn_identity
     recording_path = command.recording_path
     prompt = command.prompt
     timeout_seconds = command.timeout_seconds
@@ -2392,10 +2389,11 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
     role_value = role.value
     attempt_index = turn_started.scope.attempt_index.value
     prompt_inbox_path = _write_role_prompt_inbox(workspace.response_file, prompt)
-    pty_notice = _build_prompt_inbox_notice(
+    pty_notice = build_prompt_inbox_notice(
         role=role,
         round_index=cycle_index,
         attempt_index=attempt_index,
+        identity=turn_identity,
         prompt_path=prompt_inbox_path,
     )
     try:
@@ -2409,6 +2407,8 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
             # cross-referencing PIDs (#6160 e2e regression: 17 minutes
             # of unattributed silence).
             role_label=f"{role_value}@round-{cycle_index}",
+            response_verifier=build_turn_identity_verifier(turn_identity),
+            on_rejected_response=workspace.clear_outputs_after_rejected_response,
         )
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
         failure_reason = persistent_round_failure_reason(exc)
@@ -2517,7 +2517,7 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
         )
         return None
 
-    typed_result = ReviewExchangeTurnResult.from_agent_dict(parsed, raw_output=None)
+    typed_result = ReviewExchangeTurnResult.from_agent_dict(parsed, raw_output=None, expected_identity=turn_identity)
     result_path = _persist_turn_result(
         exchange_dir,
         round_index=cycle_index,

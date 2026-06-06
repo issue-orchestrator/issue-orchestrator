@@ -20,7 +20,6 @@ cleanly on stdin EOF.
 from __future__ import annotations
 
 import fcntl
-import json
 import logging
 import os
 import select
@@ -30,7 +29,7 @@ import struct
 import subprocess
 import termios
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +43,18 @@ from ..infra.terminal_recording import MirroredTerminalRecordingWriter
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "PersistentRoundError",
+    "PersistentRoundTimeoutError",
+    "PersistentSession",
+    "ResponseRejection",
+    "ResponseVerifier",
+    "close_persistent_session",
+    "open_persistent_session",
+    "persistent_round_failure_reason",
+    "send_round",
+]
+
 _DEFAULT_PTY_COLS = 120
 _DEFAULT_PTY_ROWS = 40
 _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
@@ -54,14 +65,18 @@ _DEFAULT_PROMPT_ACCEPTANCE_IDLE_SECONDS = 120.0
 # Echo-settle window between writing the prompt text and the standalone
 # Enter ("\r") that submits it — see the two-write contract in send_round.
 _ENTER_SETTLE_QUIET_SECONDS = 0.3
-
-# Heartbeat cadence for the ``send_round`` poll loop. Without this, a
-# wedged agent shows up as 17 minutes of total log silence (#6160 e2e
-# regression). The heartbeat logs the deadline countdown, recording
-# growth, and the agent's process state so the next reproduction tells
-# us *which* step is wedged instead of just "something hung."
-_SEND_ROUND_HEARTBEAT_SECONDS = 30.0
 _PTY_WRITE_HEARTBEAT_SECONDS = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseRejection:
+    """Reason a parsed response file belongs to no current round."""
+
+    reason: str
+    detail: str
+
+
+ResponseVerifier = Callable[[Mapping[str, Any]], ResponseRejection | None]
 
 
 class PersistentRoundError(RuntimeError):
@@ -297,7 +312,9 @@ def _write_prompt_with_timeout_diagnostics(
             drain_output=lambda: _drain_pty_output(session),
         )
     except PersistentRoundTimeoutError as exc:
-        recording_size = _safe_recording_size(session)
+        from .persistent_round_response_wait import safe_recording_size
+
+        recording_size = safe_recording_size(session)
         logger.warning(
             "[send_round] prompt write timeout role=%s pid=%d alive=%s "
             "closed=%s response_file=%s prompt_bytes=%d write_timeout=%.1fs "
@@ -363,7 +380,9 @@ def _submit_prompt_with_enter(
             write_timeout_seconds=write_timeout_seconds,
         )
     except PersistentRoundError:
-        recovered = _try_read_response(response_file)
+        from .persistent_round_response_wait import try_read_response
+
+        recovered = try_read_response(response_file)
         if recovered is None:
             raise
         logger.info(
@@ -387,6 +406,8 @@ def send_round(
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     role_label: str | None = None,
+    response_verifier: ResponseVerifier | None = None,
+    on_rejected_response: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Inject ``prompt`` into the persistent agent and wait for its response file.
 
@@ -412,6 +433,11 @@ def send_round(
     stay alive without producing any PTY/recording activity or response after
     prompt delivery. This catches the "prompt rendered, agent never engaged"
     failure mode before the full round timeout.
+
+    ``response_verifier`` lets an owner reject parsed-but-stale response
+    files, such as a review-exchange response carrying the wrong turn
+    identity. Rejected responses are unlinked and polling continues within
+    the same round deadline.
 
     ``now`` and ``sleep`` are injectable for deterministic tests.
     """
@@ -449,13 +475,30 @@ def send_round(
         write_timeout_seconds=write_timeout_seconds,
     )
     if recovered is not None:
-        return recovered
+        from .persistent_round_response_wait import (
+            discard_rejected_response,
+            response_rejection,
+        )
+
+        rejection = response_rejection(recovered, response_verifier)
+        if rejection is None:
+            return recovered
+        discard_rejected_response(
+            session,
+            response_file=response_file,
+            rejection=rejection,
+            label=label,
+            elapsed_seconds=now() - started_at,
+            on_rejected_response=on_rejected_response,
+        )
     write_elapsed = now() - started_at
     logger.info(
         "[send_round] prompt written role=%s bytes=%d in %.3fs",
         label, written, write_elapsed,
     )
-    return _wait_for_round_response(
+    from .persistent_round_response_wait import wait_for_round_response
+
+    return wait_for_round_response(
         session,
         response_file=response_file,
         started_at=started_at,
@@ -467,193 +510,11 @@ def send_round(
         now=now,
         sleep=sleep,
         label=label,
+        response_verifier=response_verifier,
+        on_rejected_response=on_rejected_response,
+        drain_pty_output=_drain_pty_output,
+        drain_pty_output_until_quiet=_drain_pty_output_until_quiet,
     )
-
-
-def _wait_for_round_response(
-    session: PersistentSession,
-    *,
-    response_file: Path,
-    started_at: float,
-    deadline: float,
-    timeout_seconds: float,
-    poll_interval_seconds: float,
-    response_drain_seconds: float,
-    prompt_acceptance_idle_seconds: float | None,
-    now: Callable[[], float],
-    sleep: Callable[[float], None],
-    label: str,
-) -> dict[str, Any]:
-    """Poll until the response file parses as JSON, the agent exits, or the
-    deadline expires.
-
-    An agent that exits is given one final response-file read — one-shot
-    agents legitimately answer and then terminate. Exit without a valid
-    response distinguishes "invalid JSON left behind" from "never answered"
-    via the round failure reason, which drives the respawn logic upstream.
-    """
-    last_heartbeat = now()
-    last_activity_at = last_heartbeat
-    last_recording_size = _safe_recording_size(session)
-    poll_iter = 0
-    bytes_drained_total = 0
-    while now() < deadline:
-        poll_iter += 1
-        # Track how much we drained so the heartbeat can show
-        # "agent has produced N bytes since the prompt was sent" —
-        # zero bytes drained over a long interval means the agent
-        # hasn't even read its prompt yet, which is the failure
-        # mode that hung the test.
-        current = now()
-        drained = _drain_pty_output(session)
-        bytes_drained_total += drained
-        recording_size = _safe_recording_size(session)
-        recording_grew = (
-            last_recording_size is not None
-            and recording_size is not None
-            and recording_size > last_recording_size
-        )
-        if drained or recording_grew:
-            last_activity_at = current
-        if recording_size is not None:
-            last_recording_size = recording_size
-        parsed = _try_read_response(response_file)
-        if parsed is not None:
-            _drain_pty_output_until_quiet(
-                session,
-                quiet_seconds=response_drain_seconds,
-                now=now,
-                sleep=sleep,
-            )
-            logger.info(
-                "[send_round] response received role=%s pid=%d in %.1fs "
-                "(poll_iters=%d bytes_drained=%d)",
-                label, session.proc.pid, now() - started_at,
-                poll_iter, bytes_drained_total,
-            )
-            return parsed
-        ret = session.proc.poll()
-        if ret is not None:
-            final = _try_read_response(response_file)
-            if final is not None:
-                logger.info(
-                    "[send_round] response received at exit role=%s pid=%d "
-                    "exit_code=%d in %.1fs",
-                    label, session.proc.pid, ret, now() - started_at,
-                )
-                return final
-            if response_file.exists():
-                logger.warning(
-                    "[send_round] agent exited with invalid JSON role=%s pid=%d "
-                    "exit_code=%d response_file=%s",
-                    label, session.proc.pid, ret, response_file,
-                )
-                raise PersistentRoundError(
-                    f"Agent exited (code={ret}) leaving invalid JSON in {response_file}",
-                    failure_reason=RoundFailureReason.INVALID_RESPONSE,
-                )
-            logger.warning(
-                "[send_round] agent exited before responding role=%s pid=%d "
-                "exit_code=%d after %.1fs (poll_iters=%d bytes_drained=%d)",
-                label, session.proc.pid, ret, now() - started_at,
-                poll_iter, bytes_drained_total,
-            )
-            raise PersistentRoundError(
-                f"Agent exited unexpectedly (code={ret}) before responding",
-                failure_reason=RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE,
-            )
-        idle_for = now() - last_activity_at
-        if (
-            prompt_acceptance_idle_seconds is not None
-            and idle_for >= prompt_acceptance_idle_seconds
-        ):
-            logger.warning(
-                "[send_round] prompt not accepted role=%s pid=%d after %.1fs idle "
-                "(elapsed=%.1fs poll_iters=%d bytes_drained=%d "
-                "response_file_exists=%s recording_bytes=%s)",
-                label,
-                session.proc.pid,
-                idle_for,
-                now() - started_at,
-                poll_iter,
-                bytes_drained_total,
-                response_file.exists(),
-                recording_size if recording_size is not None else "n/a",
-            )
-            raise PersistentRoundTimeoutError(
-                "Agent did not produce terminal output or a response after "
-                f"prompt delivery for {idle_for:.1f}s",
-                failure_reason=RoundFailureReason.PROMPT_NOT_ACCEPTED,
-            )
-        if now() - last_heartbeat >= _SEND_ROUND_HEARTBEAT_SECONDS:
-            logger.info(
-                "[send_round] heartbeat role=%s pid=%d alive=%s elapsed=%.0fs "
-                "deadline_in=%.0fs poll_iters=%d bytes_drained=%d "
-                "idle_for=%.0fs response_file_exists=%s recording_bytes=%s",
-                label, session.proc.pid,
-                session.proc.poll() is None,
-                now() - started_at, deadline - now(),
-                poll_iter, bytes_drained_total,
-                idle_for,
-                response_file.exists(),
-                recording_size if recording_size is not None else "n/a",
-            )
-            last_heartbeat = now()
-        sleep(poll_interval_seconds)
-    logger.warning(
-        "[send_round] timeout role=%s pid=%d after %.1fs "
-        "(poll_iters=%d bytes_drained=%d response_file_exists=%s)",
-        label, session.proc.pid, timeout_seconds,
-        poll_iter, bytes_drained_total, response_file.exists(),
-    )
-    raise PersistentRoundTimeoutError(
-        f"Agent did not produce valid JSON in {response_file} within {timeout_seconds}s"
-    )
-
-
-def _safe_recording_size(session: PersistentSession) -> int | None:
-    """Best-effort read of the role recording's current size in bytes.
-
-    Used by ``send_round``'s heartbeat to surface "is the agent
-    producing output at all" — non-zero growth between heartbeats
-    means the agent is alive and emitting; zero growth means it
-    hasn't even started rendering its prompt yet (or the TUI is
-    wedged on a startup dialog with no auto-responder).
-    """
-    log_writer = session.log_writer
-    if log_writer is None:
-        return None
-    recording_path = getattr(log_writer, "recording_path", None)
-    if recording_path is None or not recording_path.exists():
-        return None
-    try:
-        return recording_path.stat().st_size
-    except OSError:
-        return None
-
-
-def _try_read_response(response_file: Path) -> dict[str, Any] | None:
-    """Return the parsed JSON if the file exists and parses, else None.
-
-    A returned ``None`` covers both "file not yet present" and "file
-    present but the writer hasn't finished a complete JSON document yet"
-    — both cases call for continued polling rather than escalation.
-    """
-    if not response_file.exists():
-        return None
-    try:
-        text = response_file.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if not text.strip():
-        return None
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    return parsed
 
 
 def close_persistent_session(

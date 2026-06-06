@@ -27,6 +27,7 @@ from issue_orchestrator.execution.persistent_round_runner import (
     close_persistent_session,
     open_persistent_session,
     persistent_round_failure_reason,
+    ResponseRejection,
     send_round,
 )
 from issue_orchestrator.execution.recording_contract import recording_event_count
@@ -478,6 +479,126 @@ class TestPersistentSessionFailureModes:
         )
 
         assert response == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Parsed-response verifier — stale files are discarded, not completed
+# ---------------------------------------------------------------------------
+
+
+class TestResponseVerifierDiscard:
+    def test_rejected_response_is_unlinked_and_polling_continues(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner as prr
+
+        class _Proc:
+            pid = 411
+
+            def poll(self) -> None:
+                return None
+
+        response_file = tmp_path / "response.json"
+        stale = {"turn_token": "stale", "response_type": "ok"}
+        fresh = {"turn_token": "fresh", "response_type": "ok"}
+        writes = [stale, fresh]
+        clock = _FakeClock()
+        rejected: list[str] = []
+        cleaned: list[bool] = []
+
+        monkeypatch.setattr(
+            prr,
+            "_submit_prompt_with_enter",
+            lambda _session, payload, **_kwargs: (len(payload) + 1, None),
+        )
+        monkeypatch.setattr(prr, "_drain_pty_output", lambda _session: 0)
+        monkeypatch.setattr(
+            prr,
+            "_drain_pty_output_until_quiet",
+            lambda *_args, **_kwargs: None,
+        )
+
+        def _verify(parsed: dict[str, object]) -> ResponseRejection | None:
+            if parsed.get("turn_token") == "fresh":
+                return None
+            rejected.append(str(parsed.get("turn_token")))
+            return ResponseRejection(
+                reason="turn_token_mismatch",
+                detail="stale response",
+            )
+
+        def _sleep(seconds: float) -> None:
+            clock.value += seconds
+            if not response_file.exists() and writes:
+                response_file.write_text(json.dumps(writes.pop(0)), encoding="utf-8")
+
+        result = send_round(
+            prr.PersistentSession(proc=_Proc(), master_fd=99),  # type: ignore[arg-type]
+            prompt="review",
+            response_file=response_file,
+            timeout_seconds=5.0,
+            poll_interval_seconds=0.1,
+            now=clock.now,
+            sleep=_sleep,
+            response_verifier=_verify,
+            on_rejected_response=lambda: cleaned.append(True),
+        )
+
+        assert result == fresh
+        assert rejected == ["stale"]
+        assert cleaned == [True]
+
+    def test_timeout_reports_last_rejected_response(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from issue_orchestrator.execution import persistent_round_runner as prr
+
+        class _Proc:
+            pid = 412
+
+            def poll(self) -> None:
+                return None
+
+        response_file = tmp_path / "response.json"
+        clock = _FakeClock()
+        monkeypatch.setattr(
+            prr,
+            "_submit_prompt_with_enter",
+            lambda _session, payload, **_kwargs: (len(payload) + 1, None),
+        )
+        monkeypatch.setattr(prr, "_drain_pty_output", lambda _session: 0)
+
+        def _sleep(seconds: float) -> None:
+            clock.value += seconds
+            if not response_file.exists():
+                response_file.write_text(
+                    json.dumps({"turn_token": "stale"}),
+                    encoding="utf-8",
+                )
+
+        with pytest.raises(PersistentRoundTimeoutError) as exc_info:
+            send_round(
+                prr.PersistentSession(proc=_Proc(), master_fd=99),  # type: ignore[arg-type]
+                prompt="review",
+                response_file=response_file,
+                timeout_seconds=0.3,
+                poll_interval_seconds=0.1,
+                prompt_acceptance_idle_seconds=None,
+                now=clock.now,
+                sleep=_sleep,
+                response_verifier=lambda _parsed: ResponseRejection(
+                    reason="turn_token_mismatch",
+                    detail="stale response",
+                ),
+            )
+
+        assert persistent_round_failure_reason(exc_info.value) == "timeout"
+        assert "turn_token_mismatch" in str(exc_info.value)
+        assert "stale response" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,17 @@ from pathlib import Path
 from typing import Any
 
 
+def _add_shared_fixture_helper_path() -> None:
+    for parent in Path(__file__).resolve().parents:
+        helper_dir = parent / "tests" / "fixtures"
+        if (helper_dir / "review_exchange_identity_helper.py").exists():
+            sys.path.insert(0, str(helper_dir))
+            return
+
+
+_add_shared_fixture_helper_path()
+from review_exchange_identity_helper import turn_identity_from_prompt_text  # noqa: E402
+
 RESPONSE_FILE = os.environ.get("ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE")
 REVIEW_REPORT_FILE = os.environ.get("ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE")
 AGENT_LABEL = os.environ.get("ISSUE_ORCHESTRATOR_AGENT_LABEL", "")
@@ -48,7 +59,7 @@ def _initial_coding_session() -> None:
 
 def _coder_review_loop(response_file: Path) -> None:
     round_index = 0
-    for _prompt in _prompt_stream():
+    for prompt in _prompt_stream():
         round_index += 1
         print(f"coder review-exchange round {round_index}", flush=True)
         _ensure_git_identity()
@@ -57,9 +68,11 @@ def _coder_review_loop(response_file: Path) -> None:
             f"E2E double review rework round {round_index}",
         )
         _coding_done(f"E2E double review rework round {round_index}")
+        turn_identity = turn_identity_from_prompt_text(prompt)
         _write_json(
             response_file,
             {
+                **turn_identity,
                 "response_type": "ok",
                 "response_text": f"Applied E2E rework round {round_index}",
                 "getting_closer": True,
@@ -69,10 +82,11 @@ def _coder_review_loop(response_file: Path) -> None:
 
 def _reviewer_loop(response_file: Path) -> None:
     round_index = _read_counter()
-    for _prompt in _prompt_stream():
+    for prompt in _prompt_stream():
         round_index += 1
         print(f"reviewer review-exchange round {round_index}", flush=True)
         _write_counter(round_index)
+        turn_identity = turn_identity_from_prompt_text(prompt)
         if round_index == 1:
             _write_review_report(
                 "# Review Report\n\n"
@@ -84,6 +98,7 @@ def _reviewer_loop(response_file: Path) -> None:
                 "Final abstraction pass: no issues found.\n"
             )
             payload: dict[str, Any] = {
+                **turn_identity,
                 "response_type": "changes_requested",
                 "response_text": "Round 1 intentionally requires rework",
                 "getting_closer": True,
@@ -115,6 +130,7 @@ def _reviewer_loop(response_file: Path) -> None:
                 "Final abstraction pass: no issues found.\n"
             )
             payload = {
+                **turn_identity,
                 "response_type": "ok",
                 "response_text": "Round 2 approves the rework",
                 "getting_closer": True,

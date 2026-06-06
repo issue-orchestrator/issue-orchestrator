@@ -31,6 +31,9 @@ from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.execution import persistent_session_exchange as pse
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports import TraceEvent
+from tests.fixtures.review_exchange_identity_helper import (
+    turn_identity_from_prompt_text,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +235,8 @@ def _patch_persistent_runner(
         "rounds_seen": [],
         "prompts_seen": [],
         "prompt_inboxes_seen": [],
+        "turn_identities_seen": [],
+        "discarded_responses": [],
         "run_dir": None,
         "registry": registry,
     }
@@ -303,85 +308,117 @@ def _patch_persistent_runner(
             log_writer=writer,
         )
 
-    def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+    def _send(  # noqa: ARG001
+        session,
+        *,
+        prompt,
+        response_file,
+        timeout_seconds,
+        response_verifier=None,
+        on_rejected_response=None,
+        **_,
+    ):
         role = session.role
         state["rounds_seen"].append((role, prompt[:40]))
         state["prompts_seen"].append((role, prompt))
         prompt_inbox = Path(response_file).with_name("review-exchange-turn-prompt.md")
+        turn_identity = None
         if prompt_inbox.exists():
+            prompt_inbox_text = prompt_inbox.read_text(encoding="utf-8")
+            turn_identity = turn_identity_from_prompt_text(prompt_inbox_text)
+            state["turn_identities_seen"].append((role, turn_identity))
             state["prompt_inboxes_seen"].append(
                 (
                     role,
-                    prompt_inbox.read_text(encoding="utf-8"),
+                    prompt_inbox_text,
                     prompt,
                 )
             )
-        if not response_script.get(role):
-            raise AssertionError(
-                f"send_round called for {role} with no scripted response left"
-            )
-        head = response_script[role].pop(0)
-        if isinstance(head, Exception):
-            raise head
-        # A dict entry may carry ``_raise`` to model a process that writes its
-        # side artifact(s) for this turn and *then* exits before producing the
-        # response JSON — the stale-side-artifact case the respawn retry must
-        # not consume. Side artifacts below are written first, then we raise.
-        raise_after = head.pop("_raise", None)
-        authored_report_text = head.pop("_authored_report_text", None)
-        if role == "reviewer" and authored_report_text is not None:
-            report_path = session.review_report_path
-            assert report_path is not None
-            report_path.parent.mkdir(parents=True, exist_ok=True)
-            report_path.write_text(str(authored_report_text), encoding="utf-8")
-        # Stub the coder's completion artifact write so the protocol
-        # guardrail in pse._validate_coder_completion has the file it expects.
-        should_write_completion = write_coder_completion
-        if role == "coder" and completion_script is not None:
-            if not completion_script:
-                raise AssertionError("test fixture: coder_completion_script exhausted")
-            should_write_completion = completion_script.pop(0)
-        if role == "coder" and should_write_completion:
-            completion = session.completion_path
-            assert completion is not None, (
-                "test fixture: coder fake session must have completion_path "
-                "captured from env at open time"
-            )
-            state["completion_path"] = completion
-            completion.parent.mkdir(parents=True, exist_ok=True)
-            # Also stub a passing validation-record.json by default so
-            # require_validation=True tests don't blow up on the coder
-            # guardrail. Tests exercising missing-validation set
-            # ``write_coder_completion=False``.
-            validation_dir = session.validation_output_dir
-            assert validation_dir is not None
-            validation_dir.mkdir(parents=True, exist_ok=True)
-            validation_record = validation_dir / "validation-record.json"
-            if validation_payload_script is not None:
-                if not validation_payload_script:
-                    raise AssertionError(
-                        "test fixture: coder_validation_payload_script exhausted"
+        while True:
+            if not response_script.get(role):
+                raise AssertionError(
+                    f"send_round called for {role} with no scripted response left"
+                )
+            head = response_script[role].pop(0)
+            if isinstance(head, Exception):
+                raise head
+            head = dict(head)
+            auto_turn_identity = bool(head.pop("_auto_turn_identity", True))
+            if auto_turn_identity:
+                if turn_identity is None:
+                    turn_identity = turn_identity_from_prompt_text(prompt)
+                for field, value in turn_identity.items():
+                    head.setdefault(field, value)
+            if response_verifier is not None:
+                rejection = response_verifier(head)
+                if rejection is not None:
+                    state["discarded_responses"].append(
+                        (role, rejection.reason, dict(head)),
                     )
-                validation_payload = validation_payload_script.pop(0)
-            else:
-                validation_payload = {"passed": True}
-            validation_record.write_text(
-                json.dumps(validation_payload),
-                encoding="utf-8",
-            )
-            completion.write_text(
-                json.dumps(
-                    {
-                        "outcome": "completed",
-                        "implementation": "stub",
-                        "validation_record_path": str(validation_record),
-                    }
-                ),
-                encoding="utf-8",
-            )
-        if raise_after is not None:
-            raise raise_after
-        return head
+                    if on_rejected_response is not None:
+                        on_rejected_response()
+                    continue
+            # A dict entry may carry ``_raise`` to model a process that writes its
+            # side artifact(s) for this turn and *then* exits before producing the
+            # response JSON — the stale-side-artifact case the respawn retry must
+            # not consume. Side artifacts below are written first, then we raise.
+            raise_after = head.pop("_raise", None)
+            authored_report_text = head.pop("_authored_report_text", None)
+            if role == "reviewer" and authored_report_text is not None:
+                report_path = session.review_report_path
+                assert report_path is not None
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text(str(authored_report_text), encoding="utf-8")
+            # Stub the coder's completion artifact write so the protocol
+            # guardrail in pse._validate_coder_completion has the file it expects.
+            should_write_completion = write_coder_completion
+            if role == "coder" and completion_script is not None:
+                if not completion_script:
+                    raise AssertionError(
+                        "test fixture: coder_completion_script exhausted"
+                    )
+                should_write_completion = completion_script.pop(0)
+            if role == "coder" and should_write_completion:
+                completion = session.completion_path
+                assert completion is not None, (
+                    "test fixture: coder fake session must have completion_path "
+                    "captured from env at open time"
+                )
+                state["completion_path"] = completion
+                completion.parent.mkdir(parents=True, exist_ok=True)
+                # Also stub a passing validation-record.json by default so
+                # require_validation=True tests don't blow up on the coder
+                # guardrail. Tests exercising missing-validation set
+                # ``write_coder_completion=False``.
+                validation_dir = session.validation_output_dir
+                assert validation_dir is not None
+                validation_dir.mkdir(parents=True, exist_ok=True)
+                validation_record = validation_dir / "validation-record.json"
+                if validation_payload_script is not None:
+                    if not validation_payload_script:
+                        raise AssertionError(
+                            "test fixture: coder_validation_payload_script exhausted"
+                        )
+                    validation_payload = validation_payload_script.pop(0)
+                else:
+                    validation_payload = {"passed": True}
+                validation_record.write_text(
+                    json.dumps(validation_payload),
+                    encoding="utf-8",
+                )
+                completion.write_text(
+                    json.dumps(
+                        {
+                            "outcome": "completed",
+                            "implementation": "stub",
+                            "validation_record_path": str(validation_record),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            if raise_after is not None:
+                raise raise_after
+            return head
 
     monkeypatch.setattr(pse, "open_persistent_session", _open)
     monkeypatch.setattr(pse, "send_round", _send)
@@ -471,6 +508,27 @@ class TestRoleAttemptWorkspace:
         # reset must be a no-op rather than raising.
         workspace.prepare_for_attempt()
         assert not response.exists()
+
+    def test_rejected_response_cleanup_preserves_current_prompt_inbox(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        response = tmp_path / "review-response.json"
+        side_artifact = tmp_path / "completion-coder.json"
+        inbox = pse._role_prompt_inbox_path(response)  # noqa: SLF001
+        response.write_text("{}", encoding="utf-8")
+        side_artifact.write_text('{"outcome": "completed"}', encoding="utf-8")
+        inbox.write_text("current prompt", encoding="utf-8")
+
+        workspace = pse._RoleAttemptWorkspace(  # noqa: SLF001
+            response_file=response,
+            side_artifact_paths=(side_artifact,),
+        )
+        workspace.clear_outputs_after_rejected_response()
+
+        assert not response.exists()
+        assert not side_artifact.exists()
+        assert inbox.read_text(encoding="utf-8") == "current prompt"
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +625,11 @@ class TestPersistentSessionExchangeHappyPath:
             "reviewer in a coder↔reviewer exchange for issue #42: Test"
             in reviewer_prompt
         )
+        turn_identity = turn_identity_from_prompt_text(reviewer_prompt)
+        assert turn_identity["round_index"] == 1
+        assert turn_identity["attempt_index"] == 1
+        assert f"token={turn_identity['turn_token']}" in reviewer_notice
+        assert "Echo `turn_token`" in reviewer_notice
         assert "review-exchange-turn-prompt.md" in reviewer_notice
         assert len(reviewer_notice) < 512
         assert not (
@@ -2085,6 +2148,178 @@ class TestTurnArtifactsPersisted:
         assert result is not None
         assert result.kind is TurnResultKind.PROTOCOL_ERROR
         assert result.protocol_error_reason == "missing_response_type"
+
+    def test_reviewer_stale_turn_identity_response_is_discarded_in_same_turn(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A valid-looking response must still prove it belongs to this turn.
+
+        The pair-scoped response file is reused across rounds and protocol
+        retries. A stale writer can leave syntactically valid JSON after
+        the workspace reset; the poll loop must discard it and keep the same
+        reviewer turn alive for the fresh response.
+        """
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "_auto_turn_identity": False,
+                        "response_type": "ok",
+                        "response_text": "stale response without identity",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "fresh approval",
+                        "getting_closer": True,
+                    },
+                ],
+                "coder": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "should not be called",
+                    },
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.status == "ok"
+        assert [role for role, _prompt in state["rounds_seen"]] == ["reviewer"]
+        assert state["discarded_responses"][0][0:2] == (
+            "reviewer",
+            "missing_turn_token",
+        )
+        assert outcome.exchange_dir is not None
+        result_path = (
+            outcome.exchange_dir / "turns" / "round-1-reviewer-attempt-1.result.json"
+        )
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.OK
+        assert result.response_text == "fresh approval"
+        assert result.protocol_error_reason is None
+
+    def test_coder_stale_turn_identity_response_is_discarded_in_same_turn(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Coder stale responses are discarded before completion validation."""
+        from issue_orchestrator.domain.review_exchange_turn import (
+            ReviewExchangeTurnResult,
+            TurnResultKind,
+        )
+
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "please fix",
+                        "getting_closer": True,
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "fresh approval",
+                        "getting_closer": True,
+                    },
+                ],
+                "coder": [
+                    {
+                        "turn_token": "stale-token",
+                        "response_type": "ok",
+                        "response_text": "stale coder response",
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "fresh coder response",
+                    },
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.status == "ok"
+        assert ("coder", "turn_token_mismatch") == state["discarded_responses"][0][0:2]
+        assert outcome.exchange_dir is not None
+        result_path = (
+            outcome.exchange_dir / "turns" / "round-1-coder-attempt-1.result.json"
+        )
+        result = ReviewExchangeTurnResult.from_manifest(
+            json.loads(result_path.read_text())
+        )
+        assert result is not None
+        assert result.kind is TurnResultKind.OK
+        assert result.response_text == "fresh coder response"
+        assert result.protocol_error_reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -5454,10 +5689,12 @@ class TestLoopBoundCounting:
             )
             (exchange_dir / "summary.json").write_text(
                 json.dumps(
-                    _summary_payload({
-                        "status": "error",
-                        "reason": "reviewer_no_completion",
-                    })
+                    _summary_payload(
+                        {
+                            "status": "error",
+                            "reason": "reviewer_no_completion",
+                        }
+                    )
                 ),
                 encoding="utf-8",
             )
@@ -5505,10 +5742,12 @@ class TestLoopBoundCounting:
         )
         (exchange_dir / "summary.json").write_text(
             json.dumps(
-                _summary_payload({
-                    "status": "error",
-                    "reason": "reviewer_no_completion",
-                })
+                _summary_payload(
+                    {
+                        "status": "error",
+                        "reason": "reviewer_no_completion",
+                    }
+                )
             ),
             encoding="utf-8",
         )

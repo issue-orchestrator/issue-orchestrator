@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+from review_exchange_identity_helper import turn_identity_from_prompt_text
+
 
 response_file = Path(os.environ["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
 completion_path_rel = os.environ["ISSUE_ORCHESTRATOR_COMPLETION_PATH"]
@@ -92,10 +94,12 @@ def _reviewer_payload(outcome: str, round_index: int) -> dict[str, object]:
                 "verdict": "approved",
                 "risk": "low",
                 "blocking_findings": [],
-                "nits": [{
-                    "id": "N1",
-                    "title": "Use precise wording in the audit note",
-                }],
+                "nits": [
+                    {
+                        "id": "N1",
+                        "title": "Use precise wording in the audit note",
+                    }
+                ],
                 "tests_reviewed": ["stub validation"],
                 "abstraction_review": {
                     "status": "no_issues",
@@ -174,6 +178,7 @@ while True:
     if not prompt_text:
         continue
     round_index += 1
+    turn_identity = turn_identity_from_prompt_text(prompt_text)
     if "reviewer" in role:
         outcome_index = _next_reviewer_outcome_index(round_index)
         outcome = (
@@ -185,6 +190,7 @@ while True:
         _write_review_report_if_needed(outcome)
     else:
         payload = _coder_payload(round_index)
+    payload = {**turn_identity, **payload}
     time.sleep(0.02)
     response_file.parent.mkdir(parents=True, exist_ok=True)
     response_file.write_text(json.dumps(payload), encoding="utf-8")

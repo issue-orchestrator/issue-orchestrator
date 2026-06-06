@@ -18,6 +18,7 @@ from issue_orchestrator.domain.review_exchange import (
 )
 from issue_orchestrator.domain.review_exchange_turn import (
     ReviewExchangePromptFiles,
+    ReviewExchangeTurnIdentity,
     ReviewExchangeTurnPacket,
     ReviewExchangeTurnResult,
     Role,
@@ -88,16 +89,20 @@ class TestReviewExchangeTurnPacketRoundTrip:
         assert "reviewer_feedback" not in fields
         assert "prompt_files" not in fields
 
-    @pytest.mark.parametrize("missing_key", [
-        "issue_number",
-        "issue_title",
-        "round_index",
-        "role",
-        "require_validation",
-        "run_dir",
-    ])
+    @pytest.mark.parametrize(
+        "missing_key",
+        [
+            "issue_number",
+            "issue_title",
+            "round_index",
+            "role",
+            "require_validation",
+            "run_dir",
+        ],
+    )
     def test_from_manifest_returns_none_when_required_field_missing(
-        self, missing_key: str,
+        self,
+        missing_key: str,
     ) -> None:
         full = {
             "issue_number": 1,
@@ -114,14 +119,19 @@ class TestReviewExchangeTurnPacketRoundTrip:
         # The role enum is closed; any string outside the enum is
         # rejected wholesale rather than coerced to one of the two
         # valid values.
-        assert ReviewExchangeTurnPacket.from_manifest({
-            "issue_number": 1,
-            "issue_title": "t",
-            "round_index": 1,
-            "role": "supervisor",  # not a valid Role
-            "require_validation": True,
-            "run_dir": "/r",
-        }) is None
+        assert (
+            ReviewExchangeTurnPacket.from_manifest(
+                {
+                    "issue_number": 1,
+                    "issue_title": "t",
+                    "round_index": 1,
+                    "role": "supervisor",  # not a valid Role
+                    "require_validation": True,
+                    "run_dir": "/r",
+                }
+            )
+            is None
+        )
 
     def test_from_manifest_returns_none_for_wrong_typed_fields(self) -> None:
         for bad_field, bad_value in [
@@ -147,29 +157,36 @@ class TestReviewExchangeTurnPacketRoundTrip:
             )
 
     def test_from_manifest_returns_none_for_wrong_typed_prompt_files(self) -> None:
-        assert ReviewExchangeTurnPacket.from_manifest({
-            "issue_number": 1,
-            "issue_title": "t",
-            "round_index": 1,
-            "role": "reviewer",
-            "require_validation": True,
-            "run_dir": "/r",
-            "prompt_files": {"validation_record": ""},
-        }) is None
+        assert (
+            ReviewExchangeTurnPacket.from_manifest(
+                {
+                    "issue_number": 1,
+                    "issue_title": "t",
+                    "round_index": 1,
+                    "role": "reviewer",
+                    "require_validation": True,
+                    "run_dir": "/r",
+                    "prompt_files": {"validation_record": ""},
+                }
+            )
+            is None
+        )
 
     def test_from_manifest_ignores_wrong_typed_optional_fields(self) -> None:
         # A wrong-typed optional field is treated as "unset" rather
         # than as a hard rejection of the whole packet.
-        recovered = ReviewExchangeTurnPacket.from_manifest({
-            "issue_number": 1,
-            "issue_title": "t",
-            "round_index": 1,
-            "role": "reviewer",
-            "require_validation": True,
-            "run_dir": "/r",
-            "last_coder_text": 42,  # wrong type
-            "reviewer_feedback": ["a", "b"],  # wrong type
-        })
+        recovered = ReviewExchangeTurnPacket.from_manifest(
+            {
+                "issue_number": 1,
+                "issue_title": "t",
+                "round_index": 1,
+                "role": "reviewer",
+                "require_validation": True,
+                "run_dir": "/r",
+                "last_coder_text": 42,  # wrong type
+                "reviewer_feedback": ["a", "b"],  # wrong type
+            }
+        )
         assert recovered is not None
         assert recovered.last_coder_text is None
         assert recovered.reviewer_feedback is None
@@ -242,38 +259,65 @@ class TestBuildCoderPrompt:
         assert ".issue-orchestrator/" in prompt
         assert "Reviewer report:" in prompt
 
+
 # ---------------------------------------------------------------------------
 # ReviewExchangeTurnResult.from_agent_dict — every parser branch
 # ---------------------------------------------------------------------------
 
 
 class TestReviewExchangeTurnResultFromAgentDict:
+    def test_expected_turn_identity_accepts_matching_response(self) -> None:
+        identity = ReviewExchangeTurnIdentity(
+            turn_token="turn-123",
+            round_index=2,
+            attempt_index=3,
+        )
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "turn_token": "turn-123",
+                "round_index": 2,
+                "attempt_index": 3,
+                "response_type": "ok",
+                "response_text": "Looks good.",
+            },
+            expected_identity=identity,
+        )
+
+        assert result.kind is TurnResultKind.OK
+        assert result.protocol_error_reason is None
+
     def test_ok_response_parses_to_ok_kind(self) -> None:
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_type": "ok",
-            "response_text": "Looks good.",
-            "getting_closer": True,
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_type": "ok",
+                "response_text": "Looks good.",
+                "getting_closer": True,
+            }
+        )
         assert result.kind is TurnResultKind.OK
         assert result.response_text == "Looks good."
         assert result.getting_closer is True
         assert result.protocol_error_reason is None
 
     def test_changes_requested_response_parses_to_changes_requested_kind(self) -> None:
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_type": "changes_requested",
-            "response_text": "Fix the null check.",
-            "getting_closer": False,
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_type": "changes_requested",
+                "response_text": "Fix the null check.",
+                "getting_closer": False,
+            }
+        )
         assert result.kind is TurnResultKind.CHANGES_REQUESTED
         assert result.getting_closer is False
         assert result.protocol_error_reason is None
 
     def test_disagree_response_parses_to_disagree_kind(self) -> None:
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_type": "disagree",
-            "response_text": "This is wrong because X.",
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_type": "disagree",
+                "response_text": "This is wrong because X.",
+            }
+        )
         assert result.kind is TurnResultKind.DISAGREE
         assert result.getting_closer is None  # absent in the dict
 
@@ -281,10 +325,12 @@ class TestReviewExchangeTurnResultFromAgentDict:
         # Agents often emit trailing whitespace; the orchestrator
         # downstream concatenates the text into prompts where extra
         # whitespace shifts indentation in unhelpful ways.
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_type": "ok",
-            "response_text": "   Trim me   ",
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_type": "ok",
+                "response_text": "   Trim me   ",
+            }
+        )
         assert result.response_text == "Trim me"
 
     def test_none_input_is_protocol_error_missing_response(self) -> None:
@@ -295,24 +341,30 @@ class TestReviewExchangeTurnResultFromAgentDict:
         assert result.getting_closer is False
 
     def test_missing_response_type_is_protocol_error(self) -> None:
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_text": "I forgot to declare myself.",
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_text": "I forgot to declare myself.",
+            }
+        )
         assert result.kind is TurnResultKind.PROTOCOL_ERROR
         assert result.protocol_error_reason == "missing_response_type"
 
     def test_empty_response_type_is_protocol_error(self) -> None:
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_type": "   ",
-            "response_text": "ok",
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_type": "   ",
+                "response_text": "ok",
+            }
+        )
         assert result.kind is TurnResultKind.PROTOCOL_ERROR
         assert result.protocol_error_reason == "missing_response_type"
 
     def test_missing_response_text_is_protocol_error(self) -> None:
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_type": "ok",
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_type": "ok",
+            }
+        )
         assert result.kind is TurnResultKind.PROTOCOL_ERROR
         assert result.protocol_error_reason == "missing_response_text"
 
@@ -320,10 +372,12 @@ class TestReviewExchangeTurnResultFromAgentDict:
         # The set of valid response_type strings is closed; an agent
         # writing "wat" gets a named protocol error rather than
         # silently being treated as a known kind.
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_type": "wat",
-            "response_text": "I've gone rogue.",
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_type": "wat",
+                "response_text": "I've gone rogue.",
+            }
+        )
         assert result.kind is TurnResultKind.PROTOCOL_ERROR
         assert result.protocol_error_reason == "unknown_response_type"
         # The raw input is preserved on the result so downstream
@@ -335,13 +389,93 @@ class TestReviewExchangeTurnResultFromAgentDict:
         # An agent emitting ``getting_closer="true"`` (string) is not
         # a protocol error — the field is optional, so we drop it
         # rather than rejecting the whole response.
-        result = ReviewExchangeTurnResult.from_agent_dict({
-            "response_type": "ok",
-            "response_text": "ok",
-            "getting_closer": "yes-please",
-        })
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {
+                "response_type": "ok",
+                "response_text": "ok",
+                "getting_closer": "yes-please",
+            }
+        )
         assert result.kind is TurnResultKind.OK
         assert result.getting_closer is None
+
+    @pytest.mark.parametrize(
+        ("payload_updates", "reason"),
+        [
+            ({}, "missing_turn_token"),
+            ({"turn_token": "old-token"}, "turn_token_mismatch"),
+            (
+                {
+                    "turn_token": "turn-123",
+                    "round_index": "2",
+                },
+                "invalid_round_index",
+            ),
+            (
+                {
+                    "turn_token": "turn-123",
+                    "round_index": 1,
+                },
+                "round_index_mismatch",
+            ),
+            (
+                {
+                    "turn_token": "turn-123",
+                    "round_index": 2,
+                    "attempt_index": "3",
+                },
+                "invalid_attempt_index",
+            ),
+            (
+                {
+                    "turn_token": "turn-123",
+                    "round_index": 2,
+                    "attempt_index": 1,
+                },
+                "attempt_index_mismatch",
+            ),
+        ],
+    )
+    def test_expected_turn_identity_rejects_missing_or_mismatched_fields(
+        self,
+        payload_updates: dict[str, object],
+        reason: str,
+    ) -> None:
+        identity = ReviewExchangeTurnIdentity(
+            turn_token="turn-123",
+            round_index=2,
+            attempt_index=3,
+        )
+        payload: dict[str, object] = {
+            "response_type": "ok",
+            "response_text": "Looks good.",
+        }
+        payload.update(payload_updates)
+
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            payload,
+            expected_identity=identity,
+        )
+
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == reason
+        assert result.getting_closer is False
+        assert "current review-exchange turn identity" in result.response_text
+
+    def test_expected_turn_identity_is_checked_before_response_shape(self) -> None:
+        identity = ReviewExchangeTurnIdentity(
+            turn_token="turn-123",
+            round_index=2,
+            attempt_index=3,
+        )
+
+        result = ReviewExchangeTurnResult.from_agent_dict(
+            {"response_text": "Malformed stale response"},
+            expected_identity=identity,
+        )
+
+        assert result.kind is TurnResultKind.PROTOCOL_ERROR
+        assert result.protocol_error_reason == "missing_turn_token"
 
 
 class TestReviewExchangeTurnResultForNoCompletion:
@@ -434,17 +568,32 @@ class TestReviewExchangeTurnResultRoundTrip:
         assert fields == {"kind": "ok", "response_text": "ok"}
 
     def test_from_manifest_returns_none_when_kind_unknown(self) -> None:
-        assert ReviewExchangeTurnResult.from_manifest({
-            "kind": "celebrate",
-            "response_text": "yay",
-        }) is None
+        assert (
+            ReviewExchangeTurnResult.from_manifest(
+                {
+                    "kind": "celebrate",
+                    "response_text": "yay",
+                }
+            )
+            is None
+        )
 
     def test_from_manifest_returns_none_when_required_field_missing(self) -> None:
-        assert ReviewExchangeTurnResult.from_manifest({
-            "kind": "ok",
-            # response_text missing
-        }) is None
-        assert ReviewExchangeTurnResult.from_manifest({
-            "response_text": "ok",
-            # kind missing
-        }) is None
+        assert (
+            ReviewExchangeTurnResult.from_manifest(
+                {
+                    "kind": "ok",
+                    # response_text missing
+                }
+            )
+            is None
+        )
+        assert (
+            ReviewExchangeTurnResult.from_manifest(
+                {
+                    "response_text": "ok",
+                    # kind missing
+                }
+            )
+            is None
+        )

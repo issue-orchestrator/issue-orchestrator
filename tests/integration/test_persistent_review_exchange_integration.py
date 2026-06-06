@@ -20,6 +20,7 @@ summary writes, chapter sidecars, reviewer-worktree lifecycle.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pty
 import shlex
@@ -46,6 +47,9 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.ports import TraceEvent
+from tests.fixtures.review_exchange_identity_helper import (
+    turn_identity_from_prompt_text,
+)
 
 
 _INTERACTIVE_REVIEW_AGENT = (
@@ -240,6 +244,10 @@ def _write_test_config(tmp_path: Path) -> Path:
     return config_path.resolve()
 
 
+def _turn_identity_from_prompt_file(path: Path) -> dict[str, object]:
+    return turn_identity_from_prompt_text(path.read_text(encoding="utf-8"))
+
+
 @pytest.fixture(autouse=True)
 def _clear_simulated_scenario_stubs(monkeypatch):
     """Override the simulated-scenarios autouse stubs that bypass the
@@ -388,6 +396,18 @@ def test_persistent_review_exchange_end_to_end_through_completion_owner(
     summary = json.loads(summary_path.read_text())
     assert summary["status"] == "ok"
     assert summary["reason"] == "reviewer_ok"
+
+    turns_dir = outcome.exchange_dir / "turns"
+    reviewer_prompt_path = turns_dir / "round-1-reviewer-attempt-1.prompt.md"
+    reviewer_identity = _turn_identity_from_prompt_file(reviewer_prompt_path)
+    assert reviewer_identity["round_index"] == 1
+    assert reviewer_identity["attempt_index"] == 1
+    reviewer_result = json.loads(
+        (turns_dir / "round-1-reviewer-attempt-1.result.json").read_text(
+            encoding="utf-8",
+        ),
+    )
+    assert reviewer_result["kind"] == "ok"
 
     # Manifest accessor resolves the persistent layout — regression for
     # the #6160 finding that the accessor was hardcoded to the old
@@ -733,6 +753,66 @@ def test_synthetic_raw_tui_review_exchange_suppresses_bootstrap_response(
     assert all(
         evt.data["reviewer_response_text"] != "Ready for review prompts."
         for evt in round_completed
+    )
+
+
+def test_synthetic_raw_tui_stale_response_is_discarded_before_turn_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Identity-less stale JSON is discarded, then the same turn succeeds."""
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Synthetic TUI prompt", encoding="utf-8")
+
+    monkeypatch.setenv(
+        "SYNTHETIC_TUI_WRITE_STALE_BEFORE_FIRST_TURN_RESPONSE",
+        "reviewer",
+    )
+    caplog.set_level(
+        logging.WARNING,
+        logger="issue_orchestrator.execution.persistent_round_runner",
+    )
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="codex",
+        timeout_minutes=1,
+        command=_synthetic_review_exchange_tui_command(),
+    )
+    config = _make_config(tmp_path, agent)
+    config.review_exchange_max_rounds = 2
+
+    session_output = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=session_output,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_make_review_exchange_runner(session_output),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
+        worktree=coder_wt,
+        issue_number=6543,
+        issue_title="Discard stale review exchange response",
+        session_name="issue-6543",
+        agent_label="agent:backend",
+        events=MagicMock(),
+        event_context=EventContext(),
+    )
+
+    assert outcome.status == "ok", f"unexpected outcome: {outcome}"
+    assert outcome.rounds == 1
+    assert any(
+        "discarding rejected response" in record.getMessage()
+        and "missing_turn_token" in record.getMessage()
+        for record in caplog.records
     )
 
 

@@ -11,8 +11,11 @@ import json
 import os
 import sys
 import termios
+import time
 import tty
 from pathlib import Path
+
+from review_exchange_identity_helper import turn_identity_from_prompt_text
 
 
 response_file = Path(os.environ["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"])
@@ -125,6 +128,36 @@ def _coder_payload(round_index: int) -> dict[str, object]:
     }
 
 
+def _should_write_stale_before_turn(round_index: int) -> bool:
+    target = os.environ.get("SYNTHETIC_TUI_WRITE_STALE_BEFORE_FIRST_TURN_RESPONSE")
+    if round_index != 1 or not target:
+        return False
+    if target == "1":
+        return True
+    return target in role
+
+
+def _write_stale_turn_response_and_wait_for_discard() -> None:
+    response_file.parent.mkdir(parents=True, exist_ok=True)
+    response_file.write_text(
+        json.dumps(
+            {
+                "response_type": "ok",
+                "getting_closer": True,
+                "response_text": "Stale bootstrap acknowledgement.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    _emit(f"[synthetic-{role}] wrote stale response")
+    deadline = time.monotonic() + 5
+    while response_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if response_file.exists():
+        raise RuntimeError("stale response was not discarded")
+    _emit(f"[synthetic-{role}] stale response discarded")
+
+
 def _is_framework_prompt_inbox_notice(prompt_text: str) -> bool:
     lowered = prompt_text.lower()
     return (
@@ -135,12 +168,16 @@ def _is_framework_prompt_inbox_notice(prompt_text: str) -> bool:
     )
 
 
-def _write_turn_response(round_index: int) -> None:
+def _write_turn_response(round_index: int, prompt_text: str) -> None:
+    if _should_write_stale_before_turn(round_index):
+        _write_stale_turn_response_and_wait_for_discard()
+    turn_identity = turn_identity_from_prompt_text(prompt_text)
     payload = (
         _reviewer_payload(round_index)
         if "reviewer" in role
         else _coder_payload(round_index)
     )
+    payload = {**turn_identity, **payload}
     response_file.parent.mkdir(parents=True, exist_ok=True)
     response_file.write_text(json.dumps(payload), encoding="utf-8")
     _emit(f"[synthetic-{role}] wrote round {round_index}")
@@ -167,4 +204,4 @@ while True:
     if not prompt_text:
         continue
     round_index += 1
-    _write_turn_response(round_index)
+    _write_turn_response(round_index, prompt_text)

@@ -26,6 +26,7 @@ Replaces three loose seams:
 
 Public API:
     ReviewExchangePromptFiles — injected file references for prompts
+    ReviewExchangeTurnIdentity — per-attempt response correlation token
     ReviewExchangeTurnPacket — typed inputs for one role's round
     TurnResultKind — enum naming each result variant
     ReviewExchangeTurnResult — typed parsed result (kind + payload)
@@ -119,6 +120,73 @@ class ReviewExchangePromptFiles:
         return cls(validation_record=validation_record)
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewExchangeTurnIdentity:
+    """Per-attempt identity agents must echo in response JSON.
+
+    Persistent review exchange uses pair-scoped response files. Clearing the
+    file before a prompt is necessary but not sufficient: a late writer from a
+    previous round or retry can still race in after the clear and leave
+    valid-looking JSON. This value object is the mechanical trust boundary for
+    the current turn attempt.
+    """
+
+    turn_token: str
+    round_index: int
+    attempt_index: int
+
+    def __post_init__(self) -> None:
+        if not self.turn_token.strip():
+            raise ValueError("turn identity requires non-empty turn_token")
+        if type(self.round_index) is not int or self.round_index < 1:
+            raise ValueError("turn identity requires positive round_index")
+        if type(self.attempt_index) is not int or self.attempt_index < 1:
+            raise ValueError("turn identity requires positive attempt_index")
+
+    def to_response_fields(self) -> dict[str, str | int]:
+        """Return the exact JSON fields the agent must echo."""
+        return {
+            "turn_token": self.turn_token,
+            "round_index": self.round_index,
+            "attempt_index": self.attempt_index,
+        }
+
+    def mismatch_reason(self, parsed: Mapping[str, Any]) -> str | None:
+        """Return a named protocol-error reason, or None when it matches."""
+        turn_token = parsed.get("turn_token")
+        if not isinstance(turn_token, str) or not turn_token.strip():
+            return "missing_turn_token"
+        if turn_token != self.turn_token:
+            return "turn_token_mismatch"
+        round_index = parsed.get("round_index")
+        if "round_index" not in parsed:
+            return "missing_round_index"
+        if type(round_index) is not int:
+            return "invalid_round_index"
+        if round_index != self.round_index:
+            return "round_index_mismatch"
+        attempt_index = parsed.get("attempt_index")
+        if "attempt_index" not in parsed:
+            return "missing_attempt_index"
+        if type(attempt_index) is not int:
+            return "invalid_attempt_index"
+        if attempt_index != self.attempt_index:
+            return "attempt_index_mismatch"
+        return None
+
+    def mismatch_detail(self, parsed: Mapping[str, Any]) -> str:
+        """Human-readable detail for a response identity protocol error."""
+        got = {
+            "turn_token": parsed.get("turn_token"),
+            "round_index": parsed.get("round_index"),
+            "attempt_index": parsed.get("attempt_index"),
+        }
+        return (
+            "Agent response did not echo the current review-exchange turn "
+            f"identity: expected {self.to_response_fields()}, got {got}"
+        )
+
+
 @dataclass(frozen=True)
 class ReviewExchangeTurnPacket:
     """Typed input bundle for one role's turn in the exchange.
@@ -177,7 +245,8 @@ class ReviewExchangeTurnPacket:
 
     @classmethod
     def from_manifest(
-        cls, manifest: Mapping[str, Any],
+        cls,
+        manifest: Mapping[str, Any],
     ) -> "ReviewExchangeTurnPacket | None":
         """Recover a packet from its persisted manifest dict.
 
@@ -229,9 +298,15 @@ class ReviewExchangeTurnPacket:
             require_validation=require_validation,
             run_dir=Path(run_dir_raw),
             prompt_files=prompt_files,
-            last_coder_text=last_coder_text if isinstance(last_coder_text, str) else None,
-            last_reviewer_text=last_reviewer_text if isinstance(last_reviewer_text, str) else None,
-            reviewer_feedback=reviewer_feedback if isinstance(reviewer_feedback, str) else None,
+            last_coder_text=last_coder_text
+            if isinstance(last_coder_text, str)
+            else None,
+            last_reviewer_text=last_reviewer_text
+            if isinstance(last_reviewer_text, str)
+            else None,
+            reviewer_feedback=reviewer_feedback
+            if isinstance(reviewer_feedback, str)
+            else None,
         )
 
 
@@ -291,14 +366,17 @@ class ReviewExchangeTurnResult:
         parsed: Mapping[str, Any] | None,
         *,
         raw_output: str | None = None,
+        expected_identity: ReviewExchangeTurnIdentity | None = None,
     ) -> "ReviewExchangeTurnResult":
         """Construct from the agent's JSON response dict.
 
         Centralises the protocol contract: the agent must write
         ``{response_type, response_text, [getting_closer]}`` where
         ``response_type`` is one of ``ok`` / ``changes_requested`` /
-        ``disagree``. Anything else is a protocol error with a named
-        reason.
+        ``disagree``. Persistent exchange callers also pass
+        ``expected_identity`` so the agent must echo the current
+        ``turn_token`` / ``round_index`` / ``attempt_index``. Anything
+        else is a protocol error with a named reason.
         """
         if parsed is None:
             return cls(
@@ -309,6 +387,17 @@ class ReviewExchangeTurnResult:
                 raw_output=raw_output,
                 protocol_error_reason="missing_response",
             )
+        if expected_identity is not None:
+            mismatch_reason = expected_identity.mismatch_reason(parsed)
+            if mismatch_reason is not None:
+                return cls(
+                    kind=TurnResultKind.PROTOCOL_ERROR,
+                    response_text=expected_identity.mismatch_detail(parsed),
+                    getting_closer=False,
+                    raw_json=dict(parsed),
+                    raw_output=raw_output,
+                    protocol_error_reason=mismatch_reason,
+                )
         response_type_raw = parsed.get("response_type")
         response_text_raw = parsed.get("response_text")
         getting_closer = parsed.get("getting_closer")
@@ -335,8 +424,7 @@ class ReviewExchangeTurnResult:
             return cls(
                 kind=TurnResultKind.PROTOCOL_ERROR,
                 response_text=(
-                    f"Agent wrote unrecognized response_type "
-                    f"{response_type_raw!r}"
+                    f"Agent wrote unrecognized response_type {response_type_raw!r}"
                 ),
                 getting_closer=False,
                 raw_json=dict(parsed),
@@ -368,7 +456,8 @@ class ReviewExchangeTurnResult:
 
     @classmethod
     def from_manifest(
-        cls, fields: Mapping[str, Any],
+        cls,
+        fields: Mapping[str, Any],
     ) -> "ReviewExchangeTurnResult | None":
         """Recover a result from its persisted manifest dict.
 
