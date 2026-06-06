@@ -50,8 +50,11 @@ class FakeElement {
         this.style = { display: '' };
         this.classList = new FakeClassList(initialClasses);
         this.attributes = {};
+        this.dataset = {};
         this.textContent = '';
         this.focusCalls = [];
+        this.children = [];
+        this.removed = false;
     }
 
     getAttribute(name) {
@@ -64,6 +67,16 @@ class FakeElement {
 
     focus(options) {
         this.focusCalls.push(options || null);
+    }
+
+    addEventListener() {}
+
+    prepend(child) {
+        this.children.unshift(child);
+    }
+
+    remove() {
+        this.removed = true;
     }
 }
 
@@ -82,7 +95,13 @@ function makeStorage(initial = null) {
     };
 }
 
-function loadControls({ isEmbedded = false, storedPrefs = null } = {}) {
+function loadControls({
+    isEmbedded = false,
+    storedPrefs = null,
+    querySelectorAll = () => [],
+    dashboardData = { paused: false, githubUsage: {} },
+    fetch = async () => ({ ok: true, json: async () => ({}) }),
+} = {}) {
     const ids = [
         'settingsMenu',
         'ghUsageWrap',
@@ -113,12 +132,18 @@ function loadControls({ isEmbedded = false, storedPrefs = null } = {}) {
             getElementById(id) {
                 return elements[id] || null;
             },
-            querySelectorAll() {
-                return [];
+            createElement(tagName) {
+                const el = new FakeElement(tagName);
+                el.tagName = String(tagName).toUpperCase();
+                return el;
+            },
+            querySelectorAll,
+            querySelector() {
+                return null;
             },
         },
         window: {
-            dashboardData: { paused: false, githubUsage: {} },
+            dashboardData,
             clearInterval() {},
             setInterval() {},
         },
@@ -130,12 +155,15 @@ function loadControls({ isEmbedded = false, storedPrefs = null } = {}) {
             balanced: { enabled: true, staleSeconds: 900, cooldownSeconds: 120 },
         },
         FLOW_BUDGET_MULTIPLIER: { medium: 1 },
+        issueRefreshInFlight: new Set(),
+        issueRefreshLastAttempt: new Map(),
+        flowRefreshObserver: null,
         networkSyncTimer: null,
         isEmbedded,
         hideSettingsMenu() {
             elements.settingsMenu.classList.remove('visible');
         },
-        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        fetch,
     };
     vm.createContext(context);
     vm.runInContext(fs.readFileSync(controlsRefreshPath, 'utf8'), context);
@@ -222,4 +250,107 @@ test('renderGitHubUsage keeps standalone and embedded values in sync', () => {
     for (const id of ['ghUsageReset', 'ghUsageResetEmbedded']) {
         assert.equal(elements[id].textContent, '-');
     }
+});
+
+test('updateIssueCardFreshness can keep raw stale fact while hiding stale badge', () => {
+    const actionRow = new FakeElement('actions');
+    const staleDot = new FakeElement('staleDot', ['stale-dot']);
+    const card = new FakeElement('card');
+    card.querySelector = (selector) => {
+        if (selector === '.card-head-actions') return actionRow;
+        if (selector === '.attention-actions') return null;
+        if (selector === '.stale-dot') return staleDot;
+        return null;
+    };
+    const { context } = loadControls({
+        querySelectorAll: (selector) => selector.includes('.issue-card') ? [card] : [],
+    });
+
+    context.updateIssueCardFreshness(277, {
+        is_stale: true,
+        show_stale_badge: false,
+        stale_reason: 'Older than 15m stale threshold',
+    });
+
+    assert.equal(card.dataset.stale, 'true');
+    assert.equal(card.dataset.showStaleBadge, 'false');
+    assert.equal(staleDot.removed, true);
+});
+
+test('updateIssueCardFreshness shows stale badge when payload requests it', () => {
+    const actionRow = new FakeElement('actions');
+    const card = new FakeElement('card');
+    card.staleDot = null;
+    card.querySelector = (selector) => {
+        if (selector === '.card-head-actions') return actionRow;
+        if (selector === '.attention-actions') return null;
+        if (selector === '.stale-dot') return card.staleDot;
+        return null;
+    };
+    actionRow.prepend = (child) => {
+        card.staleDot = child;
+        actionRow.children.unshift(child);
+    };
+    const { context } = loadControls({
+        querySelectorAll: (selector) => selector.includes('.issue-card') ? [card] : [],
+    });
+
+    context.updateIssueCardFreshness(287, {
+        is_stale: true,
+        show_stale_badge: true,
+        stale_reason: 'Needs refresh',
+    });
+
+    assert.equal(card.dataset.stale, 'true');
+    assert.equal(card.dataset.showStaleBadge, 'true');
+    assert.equal(card.staleDot.className, 'stale-dot');
+    assert.equal(card.staleDot.title, 'Needs refresh');
+    assert.equal(card.staleDot.getAttribute('aria-label'), 'Needs refresh');
+});
+
+test('maybeRefreshVisibleCard skips hidden stale badges', () => {
+    let fetchCalls = 0;
+    const card = new FakeElement('card');
+    card.dataset.issue = '277';
+    card.dataset.stale = 'true';
+    card.dataset.showStaleBadge = 'false';
+    const { context } = loadControls({
+        dashboardData: {
+            paused: false,
+            githubUsage: {},
+            refresh: { flowLazyEnabled: true },
+        },
+        fetch: async () => {
+            fetchCalls += 1;
+            return { ok: true, json: async () => ({}) };
+        },
+    });
+
+    context.maybeRefreshVisibleCard(card);
+
+    assert.equal(fetchCalls, 0);
+});
+
+test('maybeRefreshVisibleCard refreshes visible stale badges', async () => {
+    let fetchCalls = 0;
+    const card = new FakeElement('card');
+    card.dataset.issue = '287';
+    card.dataset.stale = 'true';
+    card.dataset.showStaleBadge = 'true';
+    const { context } = loadControls({
+        dashboardData: {
+            paused: false,
+            githubUsage: {},
+            refresh: { flowLazyEnabled: true },
+        },
+        fetch: async () => {
+            fetchCalls += 1;
+            return { ok: true, json: async () => ({}) };
+        },
+    });
+
+    context.maybeRefreshVisibleCard(card);
+
+    assert.equal(fetchCalls, 1);
+    await new Promise(resolve => setImmediate(resolve));
 });

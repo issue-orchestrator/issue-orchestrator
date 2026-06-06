@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Literal
 
 from ..domain.issue_key import format_issue_label
+
+StaleBadgeVisibilityMode = Literal["when_stale", "when_stale_and_merge_pending", "never"]
 
 
 def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
@@ -27,6 +30,7 @@ def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
     labels: list[Any] = raw_labels if isinstance(raw_labels, list) else []
     labels_str = ",".join(str(label) for label in labels)
     stale = "true" if bool(card.get("is_stale")) else "false"
+    show_stale_badge = "true" if bool(card["show_stale_badge"]) else "false"
     parts = [
         _s(card.get("card_id")),
         _s(card.get("issue_number")),
@@ -37,6 +41,7 @@ def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
         _s(card.get("phase")),
         _s(card.get("summary")),
         stale,
+        show_stale_badge,
         _s(card.get("stale_reason")),
         _s(card.get("issue_url")),
         _s(card.get("pr_url")),
@@ -95,11 +100,29 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         "github_hint": github_title,
         "last_refreshed_label": item.get("last_refreshed_label", "unknown"),
         "is_stale": bool(item.get("is_stale", False)),
+        "show_stale_badge": bool(item["show_stale_badge"]),
         "stale_reason": item.get("stale_reason", ""),
         "last_refreshed_age_seconds": item.get("last_refreshed_age_seconds", -1),
     }
     card["fingerprint"] = compute_compact_card_fingerprint(card)
     return card
+
+
+def stamp_issue_item_stale_badge_visibility(
+    items: Iterable[dict[str, Any]],
+    *,
+    mode: StaleBadgeVisibilityMode,
+) -> None:
+    """Stamp the required issue-item stale badge display policy."""
+    for item in items:
+        if mode == "when_stale":
+            item["show_stale_badge"] = bool(item["is_stale"])
+        elif mode == "when_stale_and_merge_pending":
+            item["show_stale_badge"] = bool(item["is_stale"]) and bool(item["merge_pending"])
+        elif mode == "never":
+            item["show_stale_badge"] = False
+        else:
+            raise ValueError(f"unknown stale badge visibility mode: {mode}")
 
 
 def exclude_flow_overlaps(
@@ -175,10 +198,14 @@ def apply_lane_precedence(
     awaiting_merge_items: list[dict[str, Any]],
     completed_items: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Enforce single-lane ownership across non-running lanes.
+    """Enforce lane ownership and card stale-badge visibility.
 
     Precedence:
     running > blocked > awaiting-merge > queued > completed
+
+    Mutates returned items, and the active items input, to stamp
+    ``show_stale_badge``. Completed lane staleness remains a raw
+    diagnostic fact but is not surfaced as an operator warning.
     """
     active_numbers = _issue_numbers(active_items)
     blocked_filtered = _exclude_issue_numbers(blocked_items, active_numbers)
@@ -194,6 +221,11 @@ def apply_lane_precedence(
         completed_items,
         active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
     )
+    stamp_issue_item_stale_badge_visibility(active_items, mode="when_stale")
+    stamp_issue_item_stale_badge_visibility(blocked_filtered, mode="when_stale")
+    stamp_issue_item_stale_badge_visibility(awaiting_filtered, mode="when_stale")
+    stamp_issue_item_stale_badge_visibility(queue_filtered, mode="when_stale")
+    stamp_issue_item_stale_badge_visibility(completed_filtered, mode="never")
     return queue_filtered, blocked_filtered, awaiting_filtered, completed_filtered
 
 

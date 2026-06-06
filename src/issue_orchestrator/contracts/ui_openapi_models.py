@@ -531,6 +531,7 @@ class IssueItemPayload(BaseModel):
     issue_number: int | str | None = None
     issue_url: str | None = None
     open_run_command: OpenE2ERunCommandPayload | None = None
+    show_stale_badge: bool
     status: str | None = None
     title: str | None = None
     url: str | None = None

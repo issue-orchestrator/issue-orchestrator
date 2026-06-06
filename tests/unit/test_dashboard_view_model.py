@@ -700,6 +700,7 @@ def test_merged_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     assert history_item["detail_label"] == "Merged"
     assert history_item["merge_pending"] is False
     assert history_item["pr_url"] == pr_url
+    assert history_item["show_stale_badge"] is False
     assert view_model.scope_summary["in_scope_total"] == 1
 
 
@@ -754,6 +755,7 @@ def test_closed_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     assert history_item["detail_label"] == "Closed"
     assert history_item["merge_pending"] is False
     assert history_item["pr_url"] == pr_url
+    assert history_item["show_stale_badge"] is False
     assert view_model.scope_summary["in_scope_total"] == 1
 
 
@@ -1275,6 +1277,107 @@ def test_awaiting_merge_history_item_is_not_stale_when_startup_recovery_seeded_f
     assert awaiting_card["last_refreshed_age_seconds"] is not None
 
 
+def test_completed_history_keeps_stale_fact_but_hides_stale_badge():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    config.flow_refresh_stale_seconds = 900
+    now = datetime.now(timezone.utc).timestamp()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Merged terminal issue",
+                agent_type="agent:web",
+                status="closed",
+                runtime_minutes=0,
+                pr_url="https://github.com/owner/repo/pull/5337",
+                status_reason="PR closed; awaiting merge reconciled",
+            )
+        ],
+        issue_last_refreshed_at={4057: now - 3600},
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    completed_card = next(
+        item for item in view_model.completed_items if item["issue_number"] == 4057
+    )
+    assert completed_card["is_stale"] is True
+    assert completed_card["stale_reason"] == "Older than 15m stale threshold"
+    assert completed_card["show_stale_badge"] is False
+    history_item = next(
+        item for item in view_model.history_items if item["issue_number"] == 4057
+    )
+    assert history_item["is_stale"] is True
+    assert history_item["show_stale_badge"] is False
+
+    completed_column = next(col for col in view_model.flow_columns if col["id"] == "completed")
+    column_card = next(
+        item for item in completed_column["items"] if item["issue_number"] == 4057
+    )
+    assert column_card["is_stale"] is True
+    assert column_card["show_stale_badge"] is False
+
+
+def test_awaiting_merge_history_stale_fact_shows_stale_badge():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    config.flow_refresh_stale_seconds = 900
+    now = datetime.now(timezone.utc).timestamp()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4058,
+                title="Awaiting merge issue",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=0,
+                pr_url="https://github.com/owner/repo/pull/5338",
+                status_reason="PR created successfully",
+            )
+        ],
+        issue_last_refreshed_at={4058: now - 3600},
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    awaiting_card = next(
+        item for item in view_model.awaiting_merge_items if item["issue_number"] == 4058
+    )
+    assert awaiting_card["is_stale"] is True
+    assert awaiting_card["show_stale_badge"] is True
+    history_item = next(
+        item for item in view_model.history_items if item["issue_number"] == 4058
+    )
+    assert history_item["is_stale"] is True
+    assert history_item["show_stale_badge"] is True
+
+    awaiting_column = next(col for col in view_model.flow_columns if col["id"] == "awaiting-merge")
+    column_card = next(
+        item for item in awaiting_column["items"] if item["issue_number"] == 4058
+    )
+    assert column_card["is_stale"] is True
+    assert column_card["show_stale_badge"] is True
+
+
 def test_exclude_flow_overlaps_handles_string_issue_numbers():
     backlog_items = [{"issue_number": 4070, "title": "Backlog"}]
     queue_items = [{"issue_number": "4070", "title": "Queued"}]
@@ -1291,14 +1394,28 @@ def test_exclude_flow_overlaps_handles_string_issue_numbers():
 
 
 def test_lane_precedence_enforces_single_lane_membership():
-    queue_items = [{"issue_number": 1, "title": "Queue 1"}, {"issue_number": 5, "title": "Queue 5"}]
-    active_items = [
-        {"issue_number": 2, "title": "Running 2a"},
-        {"issue_number": 2, "title": "Running 2b"},  # Multiple running cards for same issue are allowed
+    queue_items = [
+        {"issue_number": 1, "title": "Queue 1", "is_stale": False},
+        {"issue_number": 5, "title": "Queue 5", "is_stale": True},
     ]
-    blocked_items = [{"issue_number": 2, "title": "Blocked 2"}, {"issue_number": 3, "title": "Blocked 3"}]
-    awaiting_merge_items = [{"issue_number": 3, "title": "Awaiting 3"}, {"issue_number": 4, "title": "Awaiting 4"}]
-    completed_items = [{"issue_number": 1, "title": "Done 1"}, {"issue_number": 4, "title": "Done 4"}, {"issue_number": 6, "title": "Done 6"}]
+    active_items = [
+        {"issue_number": 2, "title": "Running 2a", "is_stale": False},
+        # Multiple running cards for same issue are allowed
+        {"issue_number": 2, "title": "Running 2b", "is_stale": True},
+    ]
+    blocked_items = [
+        {"issue_number": 2, "title": "Blocked 2", "is_stale": True},
+        {"issue_number": 3, "title": "Blocked 3", "is_stale": True},
+    ]
+    awaiting_merge_items = [
+        {"issue_number": 3, "title": "Awaiting 3", "is_stale": True},
+        {"issue_number": 4, "title": "Awaiting 4", "is_stale": True},
+    ]
+    completed_items = [
+        {"issue_number": 1, "title": "Done 1", "is_stale": True},
+        {"issue_number": 4, "title": "Done 4", "is_stale": True},
+        {"issue_number": 6, "title": "Done 6", "is_stale": True},
+    ]
 
     queue_out, blocked_out, awaiting_out, completed_out = apply_lane_precedence(
         queue_items=queue_items,
@@ -1312,6 +1429,10 @@ def test_lane_precedence_enforces_single_lane_membership():
     assert [i["issue_number"] for i in awaiting_out] == [4]  # #3 suppressed by blocked
     assert [i["issue_number"] for i in queue_out] == [1, 5]  # unchanged here
     assert [i["issue_number"] for i in completed_out] == [6]  # #1/#4 suppressed by queue/awaiting
+    assert [i["show_stale_badge"] for i in queue_out] == [False, True]
+    assert [i["show_stale_badge"] for i in blocked_out] == [True]
+    assert [i["show_stale_badge"] for i in awaiting_out] == [True]
+    assert [i["show_stale_badge"] for i in completed_out] == [False]
 
 
 def test_normalize_status_reason_drops_sync_noise() -> None:
@@ -1432,6 +1553,7 @@ def test_view_model_e2e_items_from_provider():
     assert view_model.issues == view_model.e2e_items
     assert any(item.get("e2e_running") for item in view_model.e2e_items)
     assert any(item.get("status") == "needs_attention" for item in view_model.e2e_items)
+    assert all(item["show_stale_badge"] is False for item in view_model.e2e_items)
     e2e_vm = view_model.e2e_status.get("view_model", {})
     assert e2e_vm.get("badge", {}).get("state") in {"failed", "running", "passed", "warning", "idle"}
     assert isinstance(e2e_vm.get("runs"), list)
