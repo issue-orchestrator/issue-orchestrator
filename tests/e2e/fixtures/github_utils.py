@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+from functools import cache
 from pathlib import Path
 
 from issue_orchestrator.adapters.github import resolve_github_token
@@ -92,6 +93,32 @@ def is_github_connection_error(error_message: str) -> bool:
 def is_claude_available() -> bool:
     """Check if claude CLI is available."""
     return shutil.which("claude") is not None
+
+
+@cache
+def is_claude_authenticated() -> bool:
+    """Check if the Claude CLI is installed AND authenticated.
+
+    Runs a minimal ``-p`` invocation against a real model, so this is a
+    live (and billable) probe — call it from test bodies or lane-scoped
+    module setup, never at e2e collection time. Must scrub ``CLAUDECODE``
+    from the environment so the probe works when tests run inside a
+    Claude Code session (nested-session guard).
+    """
+    if not is_claude_available():
+        return False
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        result = subprocess.run(
+            ["claude", "-p", "--model", "haiku", "Reply with OK"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
 
 
 def is_github_reachable(repo: str) -> bool:

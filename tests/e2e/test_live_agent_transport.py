@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -22,29 +21,13 @@ from issue_orchestrator.execution.persistent_round_runner import (
     open_persistent_session,
     send_round,
 )
-from tests.e2e.fixtures import get_test_repo, is_gh_authenticated, is_github_reachable
+from tests.e2e.fixtures import is_claude_authenticated, is_claude_available
 
-
-def _claude_authenticated() -> bool:
-    """Return whether the local Claude CLI can run a minimal prompt."""
-    if shutil.which("claude") is None:
-        return False
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        result = subprocess.run(
-            ["claude", "-p", "--model", "haiku", "Reply with OK"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=env,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-_CLAUDE_READY = _claude_authenticated()
-
+# Only cheap checks may run at collection time: this module is imported by
+# every `pytest tests/e2e` invocation (including test-e2e-one and
+# --collect-only), so the live auth probe is deferred into the test body via
+# is_claude_authenticated(). No GitHub gating: this test drives a local
+# Claude PTY and never touches the GitHub API (test_gh_activity_limit=0).
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.live,
@@ -56,14 +39,9 @@ pytestmark = [
         test_gh_activity_limit=0,
         system_gh_activity_limit=20,
     ),
-    pytest.mark.skipif(not is_gh_authenticated(), reason="GitHub CLI not authenticated"),
     pytest.mark.skipif(
-        not is_github_reachable(get_test_repo()),
-        reason="GitHub API not reachable",
-    ),
-    pytest.mark.skipif(
-        not _CLAUDE_READY,
-        reason="Claude CLI not installed or not authenticated",
+        not is_claude_available(),
+        reason="Claude CLI not installed",
     ),
 ]
 
@@ -83,6 +61,13 @@ def test_persistent_send_round_two_rounds_real_claude() -> None:
     rendered into the input box but was never submitted. This proves the
     ``"\r"`` fix against real Claude across two rounds.
     """
+    if not is_claude_authenticated():
+        pytest.skip("Claude CLI not authenticated")
+
+    # Run under the repo worktree (a trusted git repo) so the interactive
+    # first-run "trust this folder?" dialog never blocks — mirrors
+    # production, where review-exchange worktrees are trusted. /tmp would
+    # trigger that dialog for an interactive session.
     repo_root = Path(__file__).resolve().parents[2]
     work_dir = Path(tempfile.mkdtemp(prefix=".live-send-round-", dir=repo_root))
     response_file = work_dir / "review-response.json"
@@ -93,6 +78,9 @@ def test_persistent_send_round_two_rounds_real_claude() -> None:
         '\'{"response_type":"ok"}\' > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"\n'
         "then keep waiting for the next message. Do not exit on your own."
     )
+    # Scrub CLAUDECODE so the nested-session guard does not block claude
+    # when this test runs inside a Claude Code session (same scrub as the
+    # is_claude_authenticated probe).
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     env["PATH"] = _venv_path_prefix()
     env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] = str(response_file)
@@ -115,6 +103,7 @@ def test_persistent_send_round_two_rounds_real_claude() -> None:
             _drain_pty_output,
         )
 
+        # Let claude boot to its idle input prompt (trusted dir -> no dialog).
         boot_deadline = time.monotonic() + 25
         while time.monotonic() < boot_deadline:
             _drain_pty_output(session)

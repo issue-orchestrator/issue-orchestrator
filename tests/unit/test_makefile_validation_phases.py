@@ -241,4 +241,9 @@ def test_live_agent_transport_is_scheduled_by_e2e_not_agent_integration():
         "tests/e2e/test_live_agent_transport.py" not in line
         for line in integration_lines
     )
-    _find_line(e2e_lines, "tests/e2e")
+    # The e2e lane must actually collect the transport test: pin that the
+    # pytest invocation targets the whole tests/e2e dir with no --ignore and
+    # no -m deselection.
+    e2e_pytest_line = e2e_lines[_find_line(e2e_lines, "tests/e2e")]
+    assert "--ignore" not in e2e_pytest_line
+    assert " -m " not in f" {e2e_pytest_line} "

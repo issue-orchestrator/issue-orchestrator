@@ -34,6 +34,7 @@ from issue_orchestrator.execution.persistent_round_runner import (
     open_persistent_session,
     send_round,
 )
+from tests.e2e.fixtures import is_claude_authenticated
 
 
 def _decoded_output(path: Path) -> str:
@@ -65,30 +66,11 @@ def _decoded_output(path: Path) -> str:
 # Markers / skip conditions
 # ---------------------------------------------------------------------------
 
-_CLAUDE_INSTALLED = shutil.which("claude") is not None
-
-
-def _claude_authenticated() -> bool:
-    """Check if Claude CLI is installed AND authenticated.
-
-    Runs a minimal -p invocation.  Must scrub CLAUDECODE from the
-    environment so the probe works when tests run inside a Claude Code
-    session (nested-session guard).
-    """
-    if not _CLAUDE_INSTALLED:
-        return False
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        result = subprocess.run(
-            ["claude", "-p", "--model", "haiku", "Reply with OK"],
-            capture_output=True, text=True, timeout=30, env=env,
-        )
-        return result.returncode == 0
-    except (subprocess.SubprocessError, OSError):
-        return False
-
-
-_CLAUDE_READY = _claude_authenticated()
+# Import-time probe is acceptable here: this module is only collected by the
+# dedicated live-agent lanes (test-integration-agent / heavy runs), where a
+# real provider round-trip is proportionate. The whole-suite e2e module
+# (tests/e2e/test_live_agent_transport.py) defers the same probe to runtime.
+_CLAUDE_READY = is_claude_authenticated()
 
 
 def _live_provider_retry_policy() -> RetryPolicy:
