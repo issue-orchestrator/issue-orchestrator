@@ -133,7 +133,7 @@ def _record_observed_completion(
     state.discovered_failures.append(DiscoveredFailure(
         session.issue.number,
         session.issue.title,
-        decision.status.value,
+        _observed_failure_reason(decision),
     ))
     state.failed_this_cycle.add(session.issue.number)
     logger.warning(
@@ -141,6 +141,13 @@ def _record_observed_completion(
         session.issue.number,
         decision.status.value,
     )
+
+
+def _observed_failure_reason(decision: "ObservationDecision") -> str:
+    load_result = decision.completion_load_result
+    if load_result is not None and load_result.invalid:
+        return "invalid_completion_record"
+    return decision.status.value
 
 
 def _warn_if_slow(obs_elapsed: float, session: Session) -> None:

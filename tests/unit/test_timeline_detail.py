@@ -120,6 +120,44 @@ class TestValidationFailedDetail:
         assert "3 lint errors" in detail
 
 
+class TestInvalidCompletionRecordDetail:
+    def test_includes_failure_and_completion_path(self) -> None:
+        data = {
+            "completion_load_failure": "invalid_schema",
+            "completion_parse_error": "follow_up_issues exceeds maximum count (6 > 5)",
+            "completion_path_absolute": "/tmp/wt/.issue-orchestrator/completion-agent_backend.json",
+        }
+        detail = _detail_from_data(
+            "session.invalid_completion_record",
+            data,
+            "Completion record rejected: follow_up_issues exceeds maximum count (6 > 5)",
+        )
+
+        assert detail is not None
+        assert "Failure: invalid_schema" in detail
+        assert "Completion: /tmp/wt/.issue-orchestrator/completion-agent_backend.json" in detail
+        assert detail.count("follow_up_issues exceeds") == 0
+
+    def test_session_failed_can_explain_invalid_completion_record(self) -> None:
+        data = {
+            "failure_kind": "invalid_completion_record",
+            "completion_load_failure": "invalid_schema",
+            "completion_parse_error": "follow_up_issues exceeds maximum count (6 > 5)",
+            "completion_path_absolute": "/tmp/wt/.issue-orchestrator/completion-agent_backend.json",
+            "runtime_minutes": 12.0,
+        }
+        detail = _detail_from_data(
+            "session.failed",
+            data,
+            "Completion record rejected: follow_up_issues exceeds maximum count (6 > 5)",
+        )
+
+        assert detail is not None
+        assert "Ran 12 min" in detail
+        assert "Failure: invalid_schema" in detail
+        assert "Completion: /tmp/wt/.issue-orchestrator/completion-agent_backend.json" in detail
+
+
 class TestNoDetail:
     def test_unknown_event(self) -> None:
         detail = _detail_from_data("some.unknown_event", {}, None)

@@ -95,6 +95,7 @@ class TestTimelineActionWiring:
             {"event": "review.comment_added", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": TIMELINE_SCHEMA_VERSION},
             {"event": "session.completed", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": TIMELINE_SCHEMA_VERSION},
             {"event": "session.failed", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": TIMELINE_SCHEMA_VERSION},
+            {"event": "agent.invalid_completion_record", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": TIMELINE_SCHEMA_VERSION},
             {"event": "validation.failed", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": TIMELINE_SCHEMA_VERSION},
             {
                 "event": "session.completed",
@@ -357,6 +358,8 @@ class TestTimelineActionWiring:
         completion_path.write_text('{"status":"completed"}\n', encoding="utf-8")
         validation_path = worktree / ".issue-orchestrator" / "validation.json"
         validation_path.write_text('{"ok":true}\n', encoding="utf-8")
+        diagnostic_path = run.run_dir / "invalid-completion-1.json"
+        diagnostic_path.write_text('{"kind":"invalid-completion-record"}\n', encoding="utf-8")
 
         event = {
             "event": "review.comment_added",
@@ -367,6 +370,7 @@ class TestTimelineActionWiring:
                 {"type": "pull_request", "label": "PR", "value": "https://github.com/org/repo/pull/4124"},
                 {"type": "review_comment", "label": "Review Comment", "value": "https://github.com/org/repo/pull/4124#discussion_r1"},
                 {"type": "completion_record", "label": "Completion", "value": str(completion_path)},
+                {"type": "diagnostic", "label": "Invalid Completion Diagnostic", "value": str(diagnostic_path)},
                 {"type": "worktree", "label": "Worktree", "value": str(worktree)},
                 {"type": "validation", "label": "Validation", "value": str(validation_path)},
                 {"type": "run_dir", "label": "Run Dir", "value": run_dir},
@@ -393,6 +397,7 @@ class TestTimelineActionWiring:
         assert "Open PR ↗" in open_url_labels
         assert "Open Review Comment ↗" in open_url_labels
         assert str(completion_path) in open_paths
+        assert str(diagnostic_path) in open_paths
         assert str(worktree) in open_paths
         assert str(validation_path) in open_paths
         assert run_dir in open_paths

@@ -633,13 +633,24 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
             issues = ", ".join(f"#{n}" for n in blocked_by)
             parts.append(f"Blocked by: {issues}")
 
-    elif event_name in ("session.timeout", "session.failed"):
+    elif event_name in (
+        "session.timeout",
+        "session.failed",
+        "session.invalid_completion_record",
+    ):
         runtime = data.get("runtime_minutes")
         timeout = data.get("timeout_minutes")
         if runtime is not None and timeout is not None:
             parts.append(f"Ran {runtime:.0f} min (limit: {timeout} min)")
         elif runtime is not None:
             parts.append(f"Ran {runtime:.0f} min")
+        parts.extend(
+            _invalid_completion_detail_parts(
+                data,
+                summary_str,
+                require_failure_kind=event_name != "session.invalid_completion_record",
+            )
+        )
         _add_if_new(parts, data.get("problems"), summary_str)
 
     elif event_name == "session.completed":
@@ -723,6 +734,25 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
     if len(text) > max_detail:
         text = text[: max_detail - 1] + "\u2026"
     return text
+
+
+def _invalid_completion_detail_parts(
+    data: dict[str, Any],
+    summary: str,
+    *,
+    require_failure_kind: bool,
+) -> list[str]:
+    if require_failure_kind and data.get("failure_kind") != "invalid_completion_record":
+        return []
+    parts: list[str] = []
+    failure = data.get("completion_load_failure")
+    if isinstance(failure, str) and failure:
+        parts.append(f"Failure: {failure}")
+    _add_if_new(parts, data.get("completion_parse_error"), summary)
+    completion_path = data.get("completion_path_absolute")
+    if isinstance(completion_path, str) and completion_path:
+        parts.append(f"Completion: {completion_path}")
+    return parts
 
 
 def _add_if_new(parts: list[str], value: Any, summary: str) -> None:
