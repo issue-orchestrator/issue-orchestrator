@@ -231,3 +231,14 @@ def test_agent_backed_integration_allows_explicit_parallel_override():
 
     assert " -n 2 " in f" {non_live_pytest_line} "
     assert " -n " not in f" {live_codex_pytest_line} "
+
+
+def test_live_agent_transport_is_scheduled_by_e2e_not_agent_integration():
+    integration_lines = _dry_run("test-integration-agent")
+    e2e_lines = _dry_run("test-e2e")
+
+    assert all(
+        "tests/e2e/test_live_agent_transport.py" not in line
+        for line in integration_lines
+    )
+    _find_line(e2e_lines, "tests/e2e")
