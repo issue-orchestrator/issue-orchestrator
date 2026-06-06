@@ -38,6 +38,7 @@ That is the critical bridge for agentic tests: a non-agentic suite is still debu
 There are now two useful layers for onboarding and orchestration journeys:
 
 - regular `tests/e2e` live coverage for issue pickup, session execution, review, and PR paths
+- live agent transport acceptance for provider-dependent TUI contracts such as persistent prompt injection
 - `heavy_e2e` journey coverage for broader flows such as onboarding, where a test may create a temp repo, run the setup wizard, install guardrails, and validate local doctor/guardrail behavior end to end
 - an opt-in live agent-guided onboarding acceptance that lets a real `codex` or `claude-code` session onboard a GitHub-backed repo, then proves the first issue can launch
 
