@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps release prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -16,6 +16,7 @@ help:
 	@echo "  install             Install dev dependencies (assumes venv exists)"
 	@echo "  upgrade-deps        Update uv.lock after changing pyproject.toml"
 	@echo "  release             Run full release flow (use VERSION=v1.0.0 ARGS=--dry-run)"
+	@echo "  release-pr          Create release metadata PR (use VERSION=v1.0.0)"
 	@echo "  prepare-release     Bump release files only (use VERSION=v1.0.0)"
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  lint-arch           Run import-linter + AST guardrails"
@@ -209,6 +210,13 @@ release:
 		exit 2; \
 	fi
 	@$(SYSTEM_PYTHON) scripts/prepare_release.py "$(VERSION)" $(ARGS)
+
+release-pr:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make release-pr VERSION=v1.0.0"; \
+		exit 2; \
+	fi
+	@$(SYSTEM_PYTHON) scripts/prepare_release.py "$(VERSION)" --prepare-pr $(ARGS)
 
 prepare-release:
 	@if [ -z "$(VERSION)" ]; then \

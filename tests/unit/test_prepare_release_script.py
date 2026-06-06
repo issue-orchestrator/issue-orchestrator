@@ -40,6 +40,22 @@ def _workflow_options(**overrides):
     return prepare_release.ReleaseWorkflowOptions(**defaults)
 
 
+def _release_pr_options(**overrides):
+    defaults = {
+        "dry_run": True,
+        "sync_environment": True,
+        "assume_yes": False,
+        "skip_validation": False,
+        "validation_command": ("make", "validate-pr"),
+        "push": True,
+        "create_pull_request": True,
+        "branch_name": None,
+        "uv_executable": None,
+    }
+    defaults.update(overrides)
+    return prepare_release.ReleasePrOptions(**defaults)
+
+
 def _write_pyproject(path: Path, *, version: str = "0.9.0") -> None:
     path.write_text(
         f"""[project]
@@ -212,6 +228,145 @@ def test_full_release_rejects_github_release_without_push(tmp_path: Path) -> Non
         )
 
 
+def test_release_pr_dry_run_prints_single_workflow_without_mutating_files(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pyproject(tmp_path / "pyproject.toml")
+    _write_lock(tmp_path / "uv.lock")
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+    preflight_calls: list[str] = []
+
+    def fake_dry_run_preflight(*, paths, tag_name, branch_name, options):  # noqa: ANN001
+        preflight_calls.append(f"{branch_name}:{tag_name}")
+
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_pr_dry_run_preflight",
+        fake_dry_run_preflight,
+    )
+
+    prepare_release.run_release_pr_workflow(
+        paths=paths,
+        version="v1.0.0",
+        options=_release_pr_options(),
+    )
+
+    output = capsys.readouterr().out
+    assert "Preparing release bump PR for v1.0.0" in output
+    assert "Release PR branch: release-v1.0.0" in output
+    assert "Dry run: no files, branches, commits, pushes, or PRs" in output
+    assert "+ git status --porcelain" in output
+    assert "+ git switch --create release-v1.0.0 --no-track origin/main" in output
+    assert "Would set [project].version to 1.0.0" in output
+    assert "+ git commit -s -m 'Release v1.0.0'" in output
+    assert "+ make validate-pr" in output
+    assert "+ git push -u origin release-v1.0.0" in output
+    assert "gh pr create --base main --head release-v1.0.0" in output
+    assert preflight_calls == ["release-v1.0.0:v1.0.0"]
+    assert prepare_release.read_project_version(tmp_path / "pyproject.toml") == "0.9.0"
+    assert prepare_release.read_lock_project_version(tmp_path / "uv.lock") == "0.9.0"
+
+
+def test_release_pr_rejects_pull_request_without_push(tmp_path: Path) -> None:
+    _write_pyproject(tmp_path / "pyproject.toml")
+    _write_lock(tmp_path / "uv.lock")
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+
+    with pytest.raises(prepare_release.ReleasePrepError, match="local-only"):
+        prepare_release.run_release_pr_workflow(
+            paths=paths,
+            version="v1.0.0",
+            options=_release_pr_options(push=False, create_pull_request=True),
+        )
+
+
+def test_release_pr_dry_run_preflight_checks_remote_main_without_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_tool_available",
+        lambda executable: calls.append(f"tool:{executable}"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "find_uv",
+        lambda uv_executable: calls.append("uv"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_clean_worktree",
+        lambda root: calls.append("clean"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_origin_remote_exists",
+        lambda root: calls.append("remote"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "remote_main_sha",
+        lambda root: calls.append("remote_main") or "abc123",
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_valid_branch_name",
+        lambda root, branch_name: calls.append("branch_name"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_local_branch_absent",
+        lambda root, branch_name: calls.append("local_branch"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_remote_branch_absent",
+        lambda root, branch_name: calls.append("remote_branch"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_local_tag_absent",
+        lambda root, tag_name: calls.append("local_tag"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_remote_tag_absent",
+        lambda root, tag_name: calls.append("remote_tag"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_github_release_absent",
+        lambda root, tag_name: calls.append("gh_release"),
+    )
+
+    prepare_release.run_release_pr_dry_run_preflight(
+        paths=prepare_release.ReleasePaths.from_root(tmp_path),
+        tag_name="v1.0.0",
+        branch_name="release-v1.0.0",
+        options=_release_pr_options(),
+    )
+
+    assert calls == [
+        "tool:git",
+        "tool:gh",
+        "uv",
+        "clean",
+        "remote",
+        "remote_main",
+        "branch_name",
+        "local_branch",
+        "remote_branch",
+        "local_tag",
+        "remote_tag",
+        "gh_release",
+    ]
+
+
 def test_assert_current_branch_is_main_rejects_other_branch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -253,6 +408,23 @@ def test_assert_head_matches_remote_main_rejects_outdated_remote_main(
         prepare_release.ReleasePrepError, match="current remote origin/main"
     ):
         prepare_release.assert_head_matches_remote_main(tmp_path)
+
+
+def test_commit_release_metadata_rejects_unexpected_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        prepare_release,
+        "release_metadata_changed_files",
+        lambda _root: {"pyproject.toml", "README.md"},
+    )
+
+    with pytest.raises(prepare_release.ReleasePrepError, match="README.md"):
+        prepare_release.commit_release_metadata(
+            prepare_release.ReleasePaths.from_root(tmp_path),
+            "v1.0.0",
+        )
 
 
 def test_apply_release_metadata_resolves_uv_before_mutating_files(
@@ -298,6 +470,76 @@ def test_apply_release_metadata_resolves_uv_before_mutating_files(
     )
 
     assert events[:2] == ["find_uv", "write_project_version"]
+
+
+def test_release_pr_workflow_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pyproject(tmp_path / "pyproject.toml", version="0.9.0")
+    _write_lock(tmp_path / "uv.lock", version="0.9.0")
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_pr_preflight",
+        lambda *, paths, tag_name, branch_name, options: calls.append("preflight"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "confirm_release",
+        lambda *, tag_name: calls.append("confirm"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "create_release_pr_branch",
+        lambda _paths, _branch_name: calls.append("branch"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "apply_release_metadata",
+        lambda *, paths, target_version, sync_environment, uv_executable: calls.append(
+            "metadata"
+        ),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "commit_release_metadata",
+        lambda _paths, _tag_name: calls.append("commit"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_pr_validation",
+        lambda _paths, _options: calls.append("validate"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "assert_clean_worktree",
+        lambda _root: calls.append("clean_after_validation"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "publish_release_pr",
+        lambda _paths, *, tag_name, branch_name, options: calls.append("publish"),
+    )
+
+    prepare_release.run_release_pr_workflow(
+        paths=paths,
+        version="v1.0.0",
+        options=_release_pr_options(dry_run=False),
+    )
+
+    assert calls == [
+        "preflight",
+        "confirm",
+        "branch",
+        "metadata",
+        "commit",
+        "validate",
+        "clean_after_validation",
+        "publish",
+    ]
 
 
 def test_full_release_rechecks_clean_tree_after_validation_before_tag(
