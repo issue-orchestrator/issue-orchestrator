@@ -637,7 +637,7 @@ class CompletionHandler:
             pr_url=pr_url,
             status_reason=status_reason,
             worktree_path=session.worktree_path,
-            completed_at=datetime.now(),
+            completed_at=datetime.now(timezone.utc),
         )
 
     def _emit_trace_events(

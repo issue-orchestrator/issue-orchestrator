@@ -178,6 +178,7 @@ class DialogRowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     label: str
     value: str
+    value_kind: Literal['timestamp'] | None = None
 
 class DialogSectionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -531,6 +532,7 @@ class IssueItemPayload(BaseModel):
     issue_number: int | str | None = None
     issue_url: str | None = None
     open_run_command: OpenE2ERunCommandPayload | None = None
+    runtime_label: str | None = None
     show_stale_badge: bool
     status: str | None = None
     title: str | None = None

@@ -395,8 +395,8 @@ def test_build_validation_failure_dialog_includes_failed_tests_and_artifacts():
         {"label": "Suite", "value": "publish_gate"},
         {"label": "Command", "value": "make validate"},
         {"label": "Exit Code", "value": "2"},
-        {"label": "Started", "value": "2026-03-22T04:53:14Z"},
-        {"label": "Ended", "value": "2026-03-22T04:53:58Z"},
+        {"label": "Started", "value": "2026-03-22T04:53:14Z", "value_kind": "timestamp"},
+        {"label": "Ended", "value": "2026-03-22T04:53:58Z", "value_kind": "timestamp"},
         {"label": "Failing Tests", "value": "1"},
     ]
     assert dialog["action_sections"] == [

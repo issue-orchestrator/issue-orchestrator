@@ -39,6 +39,10 @@ function loadSessionDialogs() {
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
         escapeAttr: (value) => String(value == null ? '' : value)
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
+        formatTimestamp: (value, fallback = '') => {
+            if (!value || value === '-') return fallback;
+            return `local:${String(value).slice(0, 10)}`;
+        },
     };
     vm.createContext(context);
     // ``validation_viewer.js`` defines ``renderCanonicalValidationViewer``
@@ -157,6 +161,39 @@ test('failed run: surfaces failing test node-ids inside the canonical viewer', (
 test('failed run: outcome chip is is-warn red', () => {
     const { html } = renderValidationDialog(_FAILED_PAYLOAD, 4242);
     assert.match(html, /diag-chip is-warn">failed<\/span>/);
+});
+
+test('summary timestamp rows render through the local formatter', () => {
+    const payload = {
+        ..._FAILED_PAYLOAD,
+        summary_rows: [
+            { label: 'Started At', value: '2026-05-05T00:00:00Z', value_kind: 'timestamp' },
+            { label: 'Completed', value: '2026-05-05T00:00:30Z', value_kind: 'timestamp' },
+            { label: 'Outcome', value: 'Failed' },
+        ],
+    };
+
+    const { html } = renderValidationDialog(payload, 4242);
+
+    assert.match(html, /local:2026-05-05/);
+    assert.doesNotMatch(html, /2026-05-05T00:00:00Z/);
+    assert.doesNotMatch(html, /2026-05-05T00:00:30Z/);
+});
+
+test('summary timestamp-like labels stay raw without typed value_kind', () => {
+    const payload = {
+        ..._FAILED_PAYLOAD,
+        summary_rows: [
+            { label: 'Started', value: '2026-05-05T00:00:00Z' },
+            { label: 'Retention Expires', value: '2026-05-06T00:00:00Z' },
+        ],
+    };
+
+    const { html } = renderValidationDialog(payload, 4242);
+
+    assert.match(html, /2026-05-05T00:00:00Z/);
+    assert.match(html, /2026-05-06T00:00:00Z/);
+    assert.doesNotMatch(html, /local:2026-05-05/);
 });
 
 test('payload missing status field falls back to failed rendering (back-compat)', () => {
