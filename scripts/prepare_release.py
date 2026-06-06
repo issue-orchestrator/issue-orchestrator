@@ -581,10 +581,11 @@ def apply_release_metadata(
     *,
     paths: ReleasePaths,
     target_version: str,
-    options: ReleaseWorkflowOptions,
+    sync_environment: bool,
+    uv_executable: str | None,
 ) -> None:
     """Update version files, refresh the lockfile, and verify metadata."""
-    uv = find_uv(options.uv_executable)
+    uv = find_uv(uv_executable)
     previous_version = write_project_version(paths.pyproject, target_version)
     if previous_version == target_version:
         print(f"pyproject.toml already at {target_version}")
@@ -596,7 +597,8 @@ def apply_release_metadata(
     sync_environment_if_requested(
         paths=paths,
         expected_version=target_version,
-        options=options,
+        sync_environment=sync_environment,
+        uv_executable=uv_executable,
     )
 
 
@@ -620,16 +622,17 @@ def sync_environment_if_requested(
     *,
     paths: ReleasePaths,
     expected_version: str,
-    options: ReleaseWorkflowOptions,
+    sync_environment: bool,
+    uv_executable: str | None,
 ) -> None:
     """Sync the local environment before verifying installed package metadata."""
-    if not options.sync_environment:
+    if not sync_environment:
         print(
             "Skipped environment sync; run uv sync --frozen --all-extras before opening Control Center."
         )
         return
 
-    uv = find_uv(options.uv_executable)
+    uv = find_uv(uv_executable)
     run_command([uv, "sync", "--frozen", "--all-extras"], cwd=paths.root)
     verify_installed_package_version(paths, expected_version)
 
@@ -718,7 +721,8 @@ def run_release_workflow(
     sync_environment_if_requested(
         paths=paths,
         expected_version=target_version,
-        options=options,
+        sync_environment=options.sync_environment,
+        uv_executable=options.uv_executable,
     )
     run_release_validation(paths, options)
     assert_clean_worktree(paths.root)
@@ -755,16 +759,8 @@ def prepare_release(
     apply_release_metadata(
         paths=paths,
         target_version=target_version,
-        options=ReleaseWorkflowOptions(
-            dry_run=False,
-            sync_environment=sync_environment,
-            assume_yes=False,
-            skip_validation=True,
-            validation_command=(),
-            push=False,
-            create_github_release=False,
-            uv_executable=uv_executable,
-        ),
+        sync_environment=sync_environment,
+        uv_executable=uv_executable,
     )
 
     print("")

@@ -3,15 +3,15 @@
 Use the release scripts in two steps so the version bump goes through normal
 branch protection before the tag is published.
 
-First prepare the version files, commit them, open a PR, and merge that PR to
-`main`:
+First update the version files:
 
 ```bash
 make prepare-release VERSION=v1.0.0
 ```
 
-Then update local `main` to the merge commit and run the final release from a
-clean checkout:
+Then commit `pyproject.toml` and `uv.lock`, open a PR, and merge that PR to
+`main` through the normal review gate. After the PR is merged, update local
+`main` to the merge commit and run the final release from a clean checkout:
 
 ```bash
 make release VERSION=v1.0.0

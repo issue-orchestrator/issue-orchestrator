@@ -285,13 +285,16 @@ def test_apply_release_metadata_resolves_uv_before_mutating_files(
     monkeypatch.setattr(
         prepare_release,
         "sync_environment_if_requested",
-        lambda *, paths, expected_version, options: events.append("sync_environment"),
+        lambda *, paths, expected_version, sync_environment, uv_executable: events.append(
+            "sync_environment"
+        ),
     )
 
     prepare_release.apply_release_metadata(
         paths=paths,
         target_version="1.0.0",
-        options=_workflow_options(dry_run=False),
+        sync_environment=True,
+        uv_executable=None,
     )
 
     assert events[:2] == ["find_uv", "write_project_version"]
@@ -324,7 +327,9 @@ def test_full_release_rechecks_clean_tree_after_validation_before_tag(
     monkeypatch.setattr(
         prepare_release,
         "sync_environment_if_requested",
-        lambda *, paths, expected_version, options: calls.append("sync"),
+        lambda *, paths, expected_version, sync_environment, uv_executable: calls.append(
+            "sync"
+        ),
     )
     monkeypatch.setattr(
         prepare_release,
