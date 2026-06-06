@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import json
 import os
+import pty
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -49,6 +51,11 @@ from issue_orchestrator.ports import TraceEvent
 _INTERACTIVE_REVIEW_AGENT = (
     Path(__file__).resolve().parents[1] / "fixtures" / "interactive_review_agent.py"
 )
+_SYNTHETIC_REVIEW_EXCHANGE_TUI = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "synthetic_review_exchange_tui.py"
+)
 
 
 def _interactive_review_agent_command(
@@ -62,6 +69,17 @@ def _interactive_review_agent_command(
     if include_initial_prompt_arg:
         parts.append("'{initial_prompt}'")
     return " ".join(parts)
+
+
+def _synthetic_review_exchange_tui_command() -> str:
+    return " ".join(
+        [
+            shlex.quote(sys.executable),
+            "-u",
+            shlex.quote(str(_SYNTHETIC_REVIEW_EXCHANGE_TUI)),
+            "'{initial_prompt}'",
+        ]
+    )
 
 
 def _codex_ready() -> bool:
@@ -98,6 +116,15 @@ def _git(cwd: Path, *args: str) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def _wait_for_path(path: Path, *, timeout_seconds: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"{path} did not appear within {timeout_seconds}s")
 
 
 def _bootstrap_git_worktree(tmp_path: Path) -> tuple[Path, str]:
@@ -546,6 +573,167 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
     assert spawn_records
     assert all(record["initial_prompt_present"] for record in spawn_records)
     assert all(record["initial_prompt_contains_wait"] for record in spawn_records)
+
+
+def test_synthetic_tui_writes_bootstrap_response_when_guard_missing(
+    tmp_path: Path,
+) -> None:
+    """Tripwire for the guarded framework test's fixture branch.
+
+    The framework test below asserts the synthetic TUI does *not* write a
+    bootstrap response because the orchestrator prompt says setup is not a
+    turn. This companion proves the fixture would write the bogus
+    ``"Ready for review prompts."`` response if that guard disappeared.
+    """
+    response_file = tmp_path / "review-response.json"
+    completion_path = tmp_path / "completion.json"
+    spawn_log = tmp_path / "synthetic-tui-spawns.jsonl"
+    env = dict(os.environ)
+    env.update(
+        {
+            "ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE": str(response_file),
+            "ISSUE_ORCHESTRATOR_COMPLETION_PATH": str(completion_path),
+            "ISSUE_ORCHESTRATOR_AGENT_LABEL": "agent:reviewer",
+            "SYNTHETIC_TUI_SPAWN_LOG": str(spawn_log),
+            "SYNTHETIC_TUI_WRITE_BOOTSTRAP_IF_UNGUARDED": "1",
+        }
+    )
+
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            str(_SYNTHETIC_REVIEW_EXCHANGE_TUI),
+            "unguarded bootstrap prompt",
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+    )
+    os.close(slave_fd)
+    try:
+        _wait_for_path(response_file)
+        payload = json.loads(response_file.read_text(encoding="utf-8"))
+        assert payload == {
+            "response_type": "ok",
+            "getting_closer": True,
+            "response_text": "Ready for review prompts.",
+        }
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        os.close(master_fd)
+
+    spawn_records = [
+        json.loads(line)
+        for line in spawn_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(spawn_records) == 1
+    assert spawn_records[0]["initial_prompt_present"] is True
+    assert spawn_records[0]["bootstrap_not_turn_instruction"] is False
+    assert spawn_records[0]["wrote_bootstrap_response"] is True
+
+
+def test_synthetic_raw_tui_review_exchange_suppresses_bootstrap_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Framework-shaped approximation of the live persistent TUI path.
+
+    This runs through ``CompletionReviewExchange`` and
+    ``PersistentReviewExchangeRunner`` with a deterministic raw-mode local
+    process instead of Claude/Codex. The fixture would write the same
+    bootstrap ``"Ready for review prompts."`` response that made the live
+    Codex transport check flaky unless the orchestrator bootstrap explicitly
+    says setup is not a turn. Round prompts still travel through the real
+    prompt-inbox + ``send_round`` PTY path and submit only on ``\r``.
+    """
+    coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Synthetic TUI prompt", encoding="utf-8")
+
+    spawn_log = tmp_path / "synthetic-tui-spawns.jsonl"
+    monkeypatch.setenv("SYNTHETIC_TUI_SPAWN_LOG", str(spawn_log))
+    monkeypatch.setenv("SYNTHETIC_TUI_REVIEWER_OUTCOMES", "changes_requested,ok")
+    monkeypatch.setenv("SYNTHETIC_TUI_WRITE_BOOTSTRAP_IF_UNGUARDED", "1")
+
+    agent = AgentConfig(
+        prompt_path=prompt_path,
+        ai_system="codex",
+        timeout_minutes=1,
+        command=_synthetic_review_exchange_tui_command(),
+    )
+    config = _make_config(tmp_path, agent)
+    config.review_exchange_max_rounds = 3
+
+    captured_events: list[TraceEvent] = []
+
+    class _Sink:
+        def publish(self, event):
+            captured_events.append(event)
+
+    session_output = FileSystemSessionOutput()
+    cre = CompletionReviewExchange(
+        config=config,
+        session_output=session_output,
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_make_review_exchange_runner(session_output),
+    )
+
+    from issue_orchestrator.events import EventContext
+
+    outcome = _run_review_exchange_for_test(
+        cre,
+        session_output,
+        worktree=coder_wt,
+        issue_number=4063,
+        issue_title="Synthetic raw TUI review exchange",
+        session_name="issue-4063",
+        agent_label="agent:backend",
+        events=_Sink(),
+        event_context=EventContext(),
+    )
+
+    assert outcome.status == "ok", f"unexpected outcome: {outcome}"
+    assert outcome.rounds == 2
+    assert outcome.reason == "reviewer_ok"
+    assert outcome.reviewer_response is not None
+    assert outcome.reviewer_response.response_text == (
+        "Synthetic reviewer approved round 2"
+    )
+
+    spawn_records = [
+        json.loads(line)
+        for line in spawn_log.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert spawn_records
+    assert all(record["initial_prompt_present"] for record in spawn_records)
+    assert all(record["bootstrap_not_turn_instruction"] for record in spawn_records)
+    assert not any(record["wrote_bootstrap_response"] for record in spawn_records)
+
+    round_completed = [
+        evt
+        for evt in captured_events
+        if evt.event_type == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED
+    ]
+    assert [evt.data["reviewer_response_type"] for evt in round_completed] == [
+        "changes_requested",
+        "ok",
+    ]
+    assert all(
+        evt.data["reviewer_response_text"] != "Ready for review prompts."
+        for evt in round_completed
+    )
 
 
 @pytest.mark.skipif(not _CODEX_READY, reason="codex CLI not installed or not logged in")

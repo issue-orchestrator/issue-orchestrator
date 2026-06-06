@@ -165,12 +165,16 @@ def review_exchange_supervisor_timeout_seconds(
     return float(per_round * rounds + grace_seconds)
 
 
+# The synthetic raw-TUI fixture keys off the "setup message is not a turn"
+# wording as a drift tripwire for the bootstrap-response race.
 _BOOTSTRAP_PROMPT_TEMPLATE = (
     "You are the {role} in a coder↔reviewer review exchange for issue "
     "#{issue_number}: {issue_title}.\n\n"
     "Wait for the orchestrator to send your role-specific instructions via "
     "stdin. The orchestrator may send the full prompt directly, or it may "
-    "send a short notice pointing at a prompt file in this worktree. For "
+    "send a short notice pointing at a prompt file in this worktree. This "
+    "bootstrap setup message is not a turn: do not write to "
+    "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE until a turn arrives via stdin. For "
     "each turn, read the full instructions and follow them. Reviewers also "
     "write the human-readable report to $ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE. "
     "Each role writes exactly one line of JSON to the file at "
