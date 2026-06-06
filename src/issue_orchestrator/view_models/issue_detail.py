@@ -16,16 +16,14 @@ from ..domain.event_taxonomy import (
 )
 from ..domain.logical_run_projection import LogicalRunProjector
 from ..events import EventName
+from .blocked_explanations import invalid_or_validation_blocked_explanation
 # Canonical event-set ownership lives in ``view_models.lifecycle_event_sets``
 # (issue #6310 AC-4).  Issue_detail aliases ``OUTCOME_EVENTS`` and
 # ``BLOCKED_EVENT_NAMES`` for blocked-detail derivation and the AC-4 guard
 # test.  Journey projection (typed cycles, runs, validation badge) is built
 # by ``view_models.journey_projection`` — see the typed pipeline call in
 # ``build_issue_detail_view_model``.
-from .journey_projection import (
-    build_journey_cycles_from_events,
-    build_journey_runs,
-)
+from .journey_projection import build_journey_cycles_from_events, build_journey_runs
 from .lifecycle_event_sets import (
     BLOCKED_EVENT_NAMES as _CANONICAL_BLOCKED_EVENT_NAMES,
     OUTCOME_EVENTS as _CANONICAL_OUTCOME_EVENTS,
@@ -136,9 +134,6 @@ def _projection_context_from_story_context(
         current_rework_cycle=context.current_rework_cycle,
         max_rework_cycles=context.max_rework_cycles,
     )
-
-
-
 
 # ---------------------------------------------------------------------------
 # View filtering
@@ -598,10 +593,13 @@ def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -
     if event_name == "session.timeout":
         return f"Timed out \u2014 agent didn't invoke completion command"
 
-    # Validation failed
-    if event_name == "session.validation_failed" or "validation-failed" in labels:
-        reason = event_summary or "project tests did not pass"
-        return f"Validation failed \u2014 {reason}"
+    specific = invalid_or_validation_blocked_explanation(
+        event_name=event_name,
+        event_summary=event_summary,
+        labels=labels,
+    )
+    if specific is not None:
+        return specific
 
     # Needs human
     if any(l in labels for l in ("blocked-needs-human", "needs-human")):
@@ -699,6 +697,7 @@ _NARRATIVE_MAP: dict[str, str] = {
     "session.started": "Code session started",
     "session.completed": "Agent completed{_summary}",
     "session.failed": "Session failed{_summary}",
+    "session.invalid_completion_record": "Completion record rejected{_summary}",
     "session.timeout": "Session timed out",
     "session.blocked": "Agent blocked{_summary}",
     "session.validation_failed": "Validation failed{_summary}",

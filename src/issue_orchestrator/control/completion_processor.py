@@ -72,6 +72,7 @@ from .completion_failure_reporting import (
     build_processing_failure_comment,
 )
 from .completion_record_validation import (
+    CompletionRecordLoadResult,
     CompletionRecordValidator,
     WorktreeValidationFailure,
     WorktreeValidationResult,
@@ -588,6 +589,13 @@ class CompletionProcessor:
         self, worktree: Path, completion_path: str | None = None
     ) -> CompletionRecord | None:
         return self._record_validator.read_completion_record(worktree, completion_path)
+
+    def read_completion_record_result(
+        self, worktree: Path, completion_path: str | None = None
+    ) -> CompletionRecordLoadResult:
+        return self._record_validator.read_completion_record_result(
+            worktree, completion_path
+        )
 
     def _resolve_agent_label_from_completion_path(
         self, completion_path: str | None

@@ -224,6 +224,27 @@ def test_status_explanation_blocked_publish_failed_uses_publish_event_reason() -
     assert result == "Publishing failed: Push failed: ERROR: Test-skipping patterns detected"
 
 
+def test_status_explanation_blocked_invalid_completion_record() -> None:
+    ctx = _ctx(flow_stage="blocked", labels=("needs-human",))
+    events = [
+        {
+            "event": "agent.invalid_completion_record",
+            "source_event": "session.invalid_completion_record",
+            "summary": (
+                "Completion record rejected: "
+                "follow_up_issues exceeds maximum count (6 > 5)"
+            ),
+        }
+    ]
+
+    result = _build_status_explanation(ctx, events)
+
+    assert result == (
+        "Completion record rejected — "
+        "follow_up_issues exceeds maximum count (6 > 5)"
+    )
+
+
 def test_status_explanation_awaiting_merge() -> None:
     ctx = _ctx(flow_stage="awaiting_merge", pr_number=4124)
     assert _build_status_explanation(ctx, []) == "PR #4124 approved — ready to merge"

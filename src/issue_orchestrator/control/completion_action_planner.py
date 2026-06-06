@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
 from ..domain.triage_manifest import TriageManifest
@@ -18,6 +18,7 @@ from .completion_types import (
     ERROR_PREFIX_PUSH,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
+from .invalid_record_actions import invalid_record_actions
 from .label_manager import LabelManager
 from .reconciliation import ExpectedState, build_expected_for_mutation
 
@@ -309,6 +310,7 @@ class CompletionActionPlanner:
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
         pr_url: Optional[str] = None,
+        completion_detail: Optional[dict[str, Any]] = None,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -350,6 +352,15 @@ class CompletionActionPlanner:
             return tuple(self._generate_timeout_actions(session, expected))
 
         if status == SessionStatus.FAILED:
+            invalid_actions = invalid_record_actions(
+                session=session,
+                expected=expected,
+                labels=self._lm,
+                detail=completion_detail,
+                diagnostic_path=diagnostic_path,
+            )
+            if invalid_actions is not None:
+                return tuple(invalid_actions)
             return tuple(self._generate_failure_actions(session, expected))
 
         if status == SessionStatus.BLOCKED:

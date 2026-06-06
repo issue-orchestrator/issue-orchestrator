@@ -18,6 +18,8 @@ exactly by parallel classifiers diverging quietly.  These tests catch a
 re-introduction at unit-test time, not at Playwright time.
 """
 
+# ruff: noqa: SLF001
+
 from __future__ import annotations
 
 from issue_orchestrator.view_models import (
@@ -85,7 +87,14 @@ def test_classify_coding_terminal_event_dispatches_to_correct_bucket() -> None:
     for name in ("agent.blocked", "session.blocked", "issue.blocked"):
         assert classifiers.classify_coding_terminal_event(name) == "blocked", name
     # failed bucket
-    for name in ("agent.failed", "agent.timed_out", "session.failed", "session.timeout"):
+    for name in (
+        "agent.failed",
+        "agent.invalid_completion_record",
+        "agent.timed_out",
+        "session.failed",
+        "session.invalid_completion_record",
+        "session.timeout",
+    ):
         assert classifiers.classify_coding_terminal_event(name) == "failed", name
     # publish_failed bucket
     assert classifiers.classify_coding_terminal_event("publish.failed") == "publish_failed"

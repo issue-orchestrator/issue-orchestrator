@@ -71,7 +71,7 @@ _logical_run_projector = LogicalRunProjector()
 _JOURNEY_NARRATIVE_MAP: dict[str, str] = {
     "session.started": "Code session started",
     "session.completed": "Agent completed{_summary}",
-    "session.failed": "Session failed{_summary}",
+    "session.failed": "Session failed{_summary}", "session.invalid_completion_record": "Completion record rejected{_summary}",
     "session.timeout": "Session timed out",
     "session.blocked": "Agent blocked{_summary}",
     "session.validation_failed": "Validation failed{_summary}",
@@ -107,7 +107,7 @@ _SESSION_START_NAMES = frozenset(
 )
 
 _DIRECT_OUTCOME_LABELS = {
-    "session.completed": "Completed",
+    "session.completed": "Completed", "session.invalid_completion_record": "Failed",
     "review.changes_requested": "Changes Requested",
     "review.approved": "Approved",
     "review.escalated": "Escalated",
