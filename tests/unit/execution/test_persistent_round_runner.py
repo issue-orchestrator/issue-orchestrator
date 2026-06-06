@@ -761,8 +761,8 @@ class TestWriteFullHandlesNonBlockingPtyWrites:
 # raw mode and only "submits" the accumulated line on \r, treating \n as a
 # literal. This reproduces the real-agent behavior deterministically (no
 # agent CLI needed), so the regression is guarded in plain unit runs. The real
-# Claude TUI acceptance lives in tests/e2e/test_live_agent_transport.py; the
-# real Codex acceptance lives in tests/integration/test_live_agent_chain.py.
+# Claude and Codex TUI acceptances live in
+# tests/e2e/test_live_agent_transport.py.
 # ---------------------------------------------------------------------------
 
 _RAW_MODE_SUBMIT_STUB = textwrap.dedent(r"""
@@ -807,9 +807,8 @@ class TestPromptSubmissionTerminator:
         as its own write. codex's TUI treats a \\r batched with the prompt as
         a literal newline inside its input box (the prompt renders but never
         submits — the tixmeup #277/#290 hang class), and \\n never submits to
-        any raw-mode TUI. Validated against real claude in
-        tests/e2e/test_live_agent_transport.py and real codex in
-        tests/integration/test_live_agent_chain.py."""
+        any raw-mode TUI. Validated against real claude and real codex in
+        tests/e2e/test_live_agent_transport.py."""
         from issue_orchestrator.execution import persistent_round_runner as prr
 
         writes: list[bytes] = []
