@@ -71,19 +71,19 @@ def _make_agent_config() -> AgentConfig:
 
 
 def test_compact_card_derives_label_from_issue_key_and_number():
-    card = compact_card({"issue_number": 274, "issue_key": "M9-009", "title": "x"})
+    card = compact_card({"issue_number": 274, "issue_key": "M9-009", "title": "x", "show_stale_badge": False})
     assert card["issue_label"] == "M9-009 · #274"
     assert card["issue_key"] == "M9-009"
 
 
 def test_compact_card_falls_back_to_number_only_when_no_key():
-    card = compact_card({"issue_number": 274, "title": "x"})
+    card = compact_card({"issue_number": 274, "title": "x", "show_stale_badge": False})
     assert card["issue_label"] == "#274"
     assert card["issue_key"] is None
 
 
 def test_compact_card_uses_precomputed_issue_label_when_provided():
-    card = compact_card({"issue_number": 1, "issue_label": "custom · #1"})
+    card = compact_card({"issue_number": 1, "issue_label": "custom · #1", "show_stale_badge": False})
     assert card["issue_label"] == "custom · #1"
 
 

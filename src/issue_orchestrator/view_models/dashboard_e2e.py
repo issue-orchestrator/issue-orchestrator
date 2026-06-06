@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import copy
 import logging
 import threading
@@ -18,6 +17,7 @@ from .lifecycle_semantics import (
     RecentE2ERunSummary,
     RecentE2ERunsPayload,
 )
+from .dashboard_flow import stamp_issue_item_stale_badge_visibility
 
 # Mirror the tone Literal so the tone dict + the OutcomeBadge call
 # site agree at type-check time.  PR #6333 round-3 (lifecycle
@@ -58,24 +58,6 @@ def invalidate_e2e_status_cache(config: Any) -> None:
         _E2E_STATUS_CACHE.pop(key, None)
 
 
-def _relative_time(dt_str: str) -> str:
-    """Convert ISO timestamp to relative time like '2h ago'."""
-    try:
-        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        delta = now - dt
-
-        if delta.days > 0:
-            return f"{delta.days}d ago"
-        hours = delta.seconds // 3600
-        if hours > 0:
-            return f"{hours}h ago"
-        minutes = delta.seconds // 60
-        return f"{minutes}m ago" if minutes > 0 else "just now"
-    except (ValueError, TypeError):
-        return ""
-
-
 def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
     if not e2e_status.get("running"):
         return []
@@ -98,6 +80,7 @@ def _build_e2e_attention_items(e2e_status: dict[str, Any]) -> list[dict[str, Any
     untriaged = e2e_status["untriaged_count"]
     last_run = e2e_status.get("last_run", {})
     run_id = last_run.get("id", "?")
+    started_at = str(last_run.get("started_at") or "")
     failed_tests_data = []
     failed_tests = e2e_status.get("failed_tests", [])
     for ft in failed_tests:
@@ -122,8 +105,9 @@ def _build_e2e_attention_items(e2e_status: dict[str, Any]) -> list[dict[str, Any
         "e2e_run_id": run_id,
         "open_run_command": _open_run_command_payload(run_id),
         "results_action": _e2e_run_results_action(run_id),
-        "relative_time": last_run.get("relative_time", ""),
-        "time": last_run.get("relative_time", ""),
+        "started_at": started_at,
+        "time": started_at,
+        "time_is_timestamp": bool(started_at),
     }]
 
 
@@ -182,7 +166,7 @@ def build_e2e_recent_run_items(db: Any, config: Any, e2e_status: dict[str, Any])
         if run_issue and not run_issue.closed_at:
             continue
 
-        relative_time = _relative_time(run.started_at) if run.started_at else ""
+        started_at = str(run.started_at or "")
         item: dict[str, Any] = {
             "issue_number": f"E2E-{run.id}",
             "title": run.commit_sha[:7] if run.commit_sha else "no commit",
@@ -195,8 +179,9 @@ def build_e2e_recent_run_items(db: Any, config: Any, e2e_status: dict[str, Any])
             "e2e_run_id": run.id,
             "open_run_command": _open_run_command_payload(run.id),
             "results_action": _e2e_run_results_action(run.id),
-            "relative_time": relative_time,
-            "time": relative_time,
+            "started_at": started_at,
+            "time": started_at,
+            "time_is_timestamp": bool(started_at),
             "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
         }
         if run.note:
@@ -368,6 +353,7 @@ def build_e2e_items(config: Any, e2e_status: dict[str, Any]) -> list[dict[str, A
     items.extend(_build_e2e_running_items(e2e_status))
     items.extend(_build_e2e_attention_items(e2e_status))
     items.extend(_build_e2e_db_items(config, e2e_status))
+    stamp_issue_item_stale_badge_visibility(items, mode="never")
     return items
 
 
@@ -408,8 +394,6 @@ def _load_e2e_database_state(
         run_obj = db.latest_run(orchestrator_id)
         last_run = run_obj.to_dict() if run_obj else None
         failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)] if run_obj else []
-        if last_run and last_run.get("started_at"):
-            last_run["relative_time"] = _relative_time(last_run["started_at"])
         untriaged_count = (
             _count_untriaged_failures(db, run_obj)
             if run_obj and run_obj.status == "failed" and failed_tests
@@ -512,7 +496,7 @@ def build_e2e_view_model(
             "needs_attention": needs_attention,
             "untriaged_count": untriaged_count,
             "last_status": last_run.get("status", "unknown"),
-            "last_run_label": last_run.get("relative_time") or last_run.get("started_at") or "No runs yet",
+            "last_run_started_at": last_run.get("started_at", ""),
             "results_action": _e2e_run_results_action(last_run.get("id")),
             "next_run_at": next_run.get("next_run_at", ""),
             "next_run_reason": next_run.get("next_run_reason", ""),

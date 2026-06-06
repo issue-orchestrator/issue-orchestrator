@@ -30,6 +30,7 @@ from issue_orchestrator.domain.models import (
     Issue,
     OrchestratorState,
     Session,
+    SessionHistoryEntry,
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
@@ -197,6 +198,53 @@ def test_dashboard_view_model_matches_ui_openapi() -> None:
     validator.validate(view_model.to_dict())
 
 
+def test_dashboard_view_model_history_and_e2e_items_match_ui_openapi() -> None:
+    """Real history/E2E producers must stamp required IssueItem fields."""
+    config = _make_config()
+    config.e2e.enabled = True
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    now = datetime.now().timestamp()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Closed completed issue",
+                agent_type="agent:web",
+                status="closed",
+                runtime_minutes=12,
+                pr_url="https://github.com/test/repo/pull/4057",
+            ),
+        ],
+        issue_last_refreshed_at={4057: now - 3600},
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="e2e",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {
+            "enabled": True,
+            "running": True,
+            "needs_attention": True,
+            "untriaged_count": 1,
+            "last_run": {"id": 88, "relative_time": "1m ago"},
+            "failed_tests": [
+                {"nodeid": "tests/e2e/test_example.py::test_fails", "duration_seconds": 0.4},
+            ],
+        },
+    )
+
+    assert view_model.history_items
+    assert view_model.e2e_items
+    assert all("show_stale_badge" in item for item in view_model.history_items)
+    assert all("show_stale_badge" in item for item in view_model.e2e_items)
+    _validator("DashboardViewModelPayload").validate(view_model.to_dict())
+
+
 def test_view_model_snapshot_payload_matches_ui_openapi() -> None:
     config = _make_config()
     state = OrchestratorState(startup_status="complete")
@@ -247,6 +295,7 @@ def test_issue_item_open_run_command_validates_against_ui_openapi() -> None:
         "action_hint": "View run details",
         "is_e2e": True,
         "e2e_run_id": 88,
+        "show_stale_badge": False,
         "open_run_command": {
             "kind": "open_e2e_run",
             "label": "Open E2E Run",
@@ -315,6 +364,31 @@ def test_issue_item_open_run_command_validates_against_ui_openapi() -> None:
         validator.validate(bad_run_id_negative)
 
 
+def test_issue_item_stale_badge_visibility_contract_is_required_boolean() -> None:
+    """``show_stale_badge`` is the required display policy for stale chrome.
+
+    ``is_stale`` remains a raw data freshness fact.  The UI must not infer
+    whether to show the warning badge from that fact.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import IssueItemPayload
+    from pydantic import ValidationError
+
+    validator = _validator("IssueItemPayload")
+
+    validator.validate({"show_stale_badge": False})
+    IssueItemPayload.model_validate({"show_stale_badge": False})
+
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({})
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate({"show_stale_badge": None})
+
+    with pytest.raises(ValidationError):
+        IssueItemPayload.model_validate({})
+    with pytest.raises(ValidationError):
+        IssueItemPayload.model_validate({"show_stale_badge": None})
+
+
 def test_issue_item_open_run_command_pydantic_rejects_non_positive_run_id() -> None:
     """The GENERATED Pydantic contract must enforce the same
     ``run_id >= 1`` invariant the canonical model enforces.
@@ -333,6 +407,7 @@ def test_issue_item_open_run_command_pydantic_rejects_non_positive_run_id() -> N
     # Valid → succeeds.
     valid = IssueItemPayload.model_validate({
         "issue_number": "E2E-88",
+        "show_stale_badge": False,
         "open_run_command": {
             "kind": "open_e2e_run",
             "label": "Open E2E Run",
@@ -347,6 +422,7 @@ def test_issue_item_open_run_command_pydantic_rejects_non_positive_run_id() -> N
     with pytest.raises(ValidationError, match="greater than or equal to 1"):
         IssueItemPayload.model_validate({
             "issue_number": "E2E-88",
+            "show_stale_badge": False,
             "open_run_command": {
                 "kind": "open_e2e_run",
                 "label": "Open E2E Run",
@@ -359,6 +435,7 @@ def test_issue_item_open_run_command_pydantic_rejects_non_positive_run_id() -> N
     with pytest.raises(ValidationError, match="greater than or equal to 1"):
         IssueItemPayload.model_validate({
             "issue_number": "E2E-88",
+            "show_stale_badge": False,
             "open_run_command": {
                 "kind": "open_e2e_run",
                 "label": "Open E2E Run",
@@ -388,6 +465,7 @@ def test_issue_item_open_run_command_strict_int_rejects_string_and_boolean() -> 
     with pytest.raises(ValidationError):
         IssueItemPayload.model_validate({
             "issue_number": "E2E-88",
+            "show_stale_badge": False,
             "open_run_command": {
                 "kind": "open_e2e_run",
                 "label": "Open E2E Run",
@@ -400,6 +478,7 @@ def test_issue_item_open_run_command_strict_int_rejects_string_and_boolean() -> 
     with pytest.raises(ValidationError):
         IssueItemPayload.model_validate({
             "issue_number": "E2E-88",
+            "show_stale_badge": False,
             "open_run_command": {
                 "kind": "open_e2e_run",
                 "label": "Open E2E Run",
@@ -412,6 +491,7 @@ def test_issue_item_open_run_command_strict_int_rejects_string_and_boolean() -> 
     with pytest.raises(ValidationError):
         IssueItemPayload.model_validate({
             "issue_number": "E2E-88",
+            "show_stale_badge": False,
             "open_run_command": {
                 "kind": "open_e2e_run",
                 "label": "Open E2E Run",

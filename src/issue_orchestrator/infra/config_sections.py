@@ -35,6 +35,7 @@ from .config_models import (
     ValidationConfig,
 )
 from .config_paths import get_section, resolve_relative_path
+from .config_value_rules import normalize_optional_mapping
 
 if TYPE_CHECKING:
     from .config import Config
@@ -437,8 +438,7 @@ def load_review_section(config: "Config", review_section: dict) -> None:
             "default_policy",
             "surface",
         )
-        by_agent = nits_section.get("by_agent", {})
-        config.review_nits_by_agent = dict(by_agent) if isinstance(by_agent, dict) else {}
+        config.review_nits_by_agent = normalize_optional_mapping(nits_section.get("by_agent", {}))
     exchange_section = review_section.get("exchange", {})
     config.review_exchange_mode = exchange_section.get("mode", "via-local-loop")
     probe_section = exchange_section.get("probe", {})

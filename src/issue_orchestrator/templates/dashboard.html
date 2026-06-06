@@ -213,13 +213,13 @@
                     <div class="column-cards">
                         {% if column["items"] %}
                             {% for card in column["items"] %}
-                            <div class="issue-card" data-card-id="{{ card.card_id }}" data-card-fingerprint="{{ card.fingerprint }}" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
+                            <div class="issue-card" data-card-id="{{ card.card_id }}" data-card-fingerprint="{{ card.fingerprint }}" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-show-stale-badge="{{ 'true' if card.show_stale_badge else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
                                 <div class="card-top">
                                     <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue {{ card.issue_label or '#' ~ card.issue_number }}">
                                         {{ card.issue_label or '#' ~ card.issue_number }} {{ card.title }}
                                     </button>
                                     <div class="card-head-actions">
-                                        {% if card.is_stale %}
+                                        {% if card.show_stale_badge %}
                                         <span class="stale-dot" title="{{ card.stale_reason or 'Issue may be stale' }}" aria-label="Issue data may be stale"></span>
                                         {% endif %}
                                         <button class="card-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ card.issue_number }} from GitHub" aria-label="Refresh issue #{{ card.issue_number }}">&#x27F3;</button>
@@ -257,12 +257,12 @@
                                 {% endif %}
                                 {% endif %}
                                 {% set orch_labels = card.orchestrator_labels or [] %}
-                                {% if orch_labels or card.is_stale %}
+                                {% if orch_labels or card.show_stale_badge %}
                                 <div class="card-badges">
                                     {% for label in orch_labels %}
                                     <span class="badge badge-orch">{{ label }}</span>
                                     {% endfor %}
-                                    {% if card.is_stale %}
+                                    {% if card.show_stale_badge %}
                                     <span class="badge badge-stale" title="Data may be stale">stale</span>
                                     {% endif %}
                                 </div>
@@ -332,7 +332,8 @@
                             <span class="e2e-progress-text">Running...</span>
                             {% else %}
                             <button class="issue-action-btn start-btn" onclick="startE2E()" id="e2eStartBtn"><span aria-hidden="true">▶</span> Start E2E</button>
-                            <span class="e2e-last-run">Last run: {{ e2e_summary.last_run_label if e2e_summary.last_run_label else 'No runs yet' }}</span>
+                            {% set e2e_last_run_started_at = e2e_summary.last_run_started_at if e2e_summary.last_run_started_at else '' %}
+                            <span class="e2e-last-run" id="e2eLastRunLabel" data-started-at="{{ e2e_last_run_started_at | e }}">Last run: {% if e2e_last_run_started_at %}<span class="e2e-last-run-time" data-dashboard-timestamp="{{ e2e_last_run_started_at | e }}" data-dashboard-timestamp-fallback="{{ e2e_last_run_started_at | e }}">{{ e2e_last_run_started_at }}</span>{% else %}No runs yet{% endif %}</span>
                             {% endif %}
                         </div>
                     </div>
@@ -377,7 +378,7 @@
         <div class="issue-detail-header">
             <div class="issue-detail-heading">
                 <h2 id="issueDetailTitle">Issue Detail</h2>
-                <div class="issue-detail-status" id="issueDetailStatus">Loading issue detail...</div>
+                <div class="issue-detail-status" id="issueDetailStatus" role="status" aria-live="polite" aria-atomic="true">Loading issue detail...</div>
             </div>
             <button class="modal-close" id="issueDetailCloseBtn" onclick="closeIssueDetail()" aria-label="Close issue detail">&times;</button>
         </div>

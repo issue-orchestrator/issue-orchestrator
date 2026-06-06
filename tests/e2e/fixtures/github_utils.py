@@ -6,6 +6,10 @@ import subprocess
 from pathlib import Path
 
 from issue_orchestrator.adapters.github import resolve_github_token
+from tests.fixtures.live_agent_cli import (
+    is_claude_authenticated,
+    is_claude_available,
+)
 
 from .github_client import _github_adapter
 
@@ -87,11 +91,6 @@ def is_github_connection_error(error_message: str) -> bool:
     ]
     error_lower = error_message.lower()
     return any(indicator in error_lower for indicator in indicators)
-
-
-def is_claude_available() -> bool:
-    """Check if claude CLI is available."""
-    return shutil.which("claude") is not None
 
 
 def is_github_reachable(repo: str) -> bool:

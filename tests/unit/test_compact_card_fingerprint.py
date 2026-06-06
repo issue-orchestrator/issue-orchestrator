@@ -59,6 +59,7 @@ REPRESENTATIVE_CARDS: list[dict[str, Any]] = [
         "phase_age": "5m",
         "summary": "",
         "is_stale": False,
+        "show_stale_badge": False,
         "stale_reason": "",
         "issue_url": "https://example.test/101",
         "pr_url": "",
@@ -79,6 +80,7 @@ REPRESENTATIVE_CARDS: list[dict[str, Any]] = [
         "phase_age": "12s",
         "summary": "in flight",
         "is_stale": True,
+        "show_stale_badge": False,
         "stale_reason": "no event in 30m",
         "issue_url": "https://example.test/202",
         "pr_url": "https://example.test/pr/202",
@@ -92,6 +94,7 @@ REPRESENTATIVE_CARDS: list[dict[str, Any]] = [
     {
         "card_id": "issue-303",
         "issue_number": 303,
+        "show_stale_badge": False,
     },
 ]
 
@@ -120,6 +123,7 @@ def test_compact_card_attaches_fingerprint_field() -> None:
         "title": "Coverage",
         "status": "queued",
         "flow_stage_label": "Queued",
+        "show_stale_badge": False,
     })
     assert "fingerprint" in card
     assert card["fingerprint"] == compute_compact_card_fingerprint(card)
@@ -130,4 +134,12 @@ def test_phase_change_does_change_fingerprint() -> None:
     base = dict(REPRESENTATIVE_CARDS[1])
     other = dict(base)
     other["phase"] = "Reviewing"
+    assert compute_compact_card_fingerprint(base) != compute_compact_card_fingerprint(other)
+
+
+def test_stale_badge_visibility_change_does_change_fingerprint() -> None:
+    base = dict(REPRESENTATIVE_CARDS[1])
+    base["show_stale_badge"] = False
+    other = dict(base)
+    other["show_stale_badge"] = True
     assert compute_compact_card_fingerprint(base) != compute_compact_card_fingerprint(other)

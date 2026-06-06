@@ -272,7 +272,11 @@ def _doctor_payload(orchestrator: "Orchestrator | None") -> dict[str, Any]:
     return result.to_dict()
 
 
-@web_diagnostics_router.get("/api/dialog/info", response_model=InfoDialogPayload)
+@web_diagnostics_router.get(
+    "/api/dialog/info",
+    response_model=InfoDialogPayload,
+    response_model_exclude_none=True,
+)
 async def get_info_dialog(
     orchestrator: WebOrchestratorDependency,
     deps: WebDiagnosticsDependency,
@@ -301,7 +305,11 @@ async def get_config_dialog(
     )
 
 
-@web_diagnostics_router.get("/api/dialog/debug", response_model=DebugDialogPayload)
+@web_diagnostics_router.get(
+    "/api/dialog/debug",
+    response_model=DebugDialogPayload,
+    response_model_exclude_none=True,
+)
 async def get_debug_dialog(
     orchestrator: WebOrchestratorDependency,
 ) -> DebugDialogPayload | JSONResponse:
@@ -329,6 +337,7 @@ async def get_doctor_dialog(
 @web_diagnostics_router.get(
     "/api/dialog/session-diagnostics/{issue_number}",
     response_model=SessionDiagnosticsDialogPayload,
+    response_model_exclude_none=True,
 )
 async def get_session_diagnostics_dialog(
     issue_number: int,
@@ -352,6 +361,7 @@ async def get_session_diagnostics_dialog(
 @web_diagnostics_router.get(
     "/api/dialog/validation-failure/{issue_number}",
     response_model=ValidationFailureDialogPayload,
+    response_model_exclude_none=True,
 )
 async def get_validation_failure_dialog(
     issue_number: int,

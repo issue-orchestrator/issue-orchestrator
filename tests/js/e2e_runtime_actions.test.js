@@ -34,6 +34,7 @@ function loadE2ERuntime(overrides = {}) {
             }
         },
         showUnifiedRunView: (runId) => calls.push(['show_unified_run_view', runId]),
+        formatTimestamp: (value) => `local:${String(value).slice(0, 10)}`,
         document: {
             addEventListener: () => {},
             getElementById: () => null,
@@ -165,4 +166,69 @@ test('latest run results action shows a toast when no run exists', () => {
 
     assert.deepEqual(ctx.calls, []);
     assert.deepEqual(ctx.toasts, [['No E2E run data available', true]]);
+});
+
+test('last run label renders started_at through the shared timestamp formatter', () => {
+    const label = {
+        dataset: { startedAt: '' },
+        textContent: '',
+    };
+    loadE2ERuntime({
+        document: {
+            addEventListener: (event, handler) => {
+                if (event === 'DOMContentLoaded') handler();
+            },
+            getElementById: (id) => (id === 'e2eLastRunLabel' ? label : null),
+        },
+        window: {
+            location: { search: '' },
+            dashboardData: {
+                repoRoot: '/tmp/repo',
+                configName: 'default.yaml',
+                e2eRunning: false,
+                e2eLastRun: { id: 44, status: 'passed', started_at: '2026-05-12T10:00:00Z' },
+                e2eNeedsAttention: false,
+                e2eFailedTests: [],
+            },
+        },
+    });
+
+    assert.equal(label.textContent, 'Last run: local:2026-05-12');
+    assert.equal(label.dataset.startedAt, '2026-05-12T10:00:00Z');
+});
+
+test('stopped last-run label survives a later progress-label refresh', async () => {
+    const label = {
+        dataset: { startedAt: '2026-05-12T10:00:00Z' },
+        textContent: '',
+    };
+    const controls = { innerHTML: '' };
+    const ctx = loadE2ERuntime({
+        fetch: async () => ({ ok: true, json: async () => ({}) }),
+        document: {
+            addEventListener: () => {},
+            getElementById: (id) => {
+                if (id === 'e2eLastRunLabel') return label;
+                if (id === 'e2eControls') return controls;
+                return null;
+            },
+        },
+        window: {
+            location: { search: '' },
+            dashboardData: {
+                repoRoot: '/tmp/repo',
+                configName: 'default.yaml',
+                e2eRunning: true,
+                e2eLastRun: { id: 44, status: 'running', started_at: '2026-05-12T10:00:00Z' },
+                e2eNeedsAttention: false,
+                e2eFailedTests: [],
+            },
+        },
+    });
+
+    await ctx.stopE2E();
+    ctx.updateE2ELastRunLabel({ started_at: '2026-05-12T10:00:00Z' });
+
+    assert.match(controls.innerHTML, /Stopped/);
+    assert.equal(label.textContent, 'Stopped');
 });
