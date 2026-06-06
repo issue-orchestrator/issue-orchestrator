@@ -27,6 +27,7 @@ from .timeline_presentation import (
     _build_timeline_cycles,
     _promote_e2e_test_event_fields,
 )
+from .timeline_projection_boundary import TIMELINE_PROJECTION_BOUNDARY_EXCEPTIONS, timeline_projection_endpoint
 from ..view_models.lifecycle_projection import project_e2e_suite_lifecycle_container_for_run
 
 logger = logging.getLogger(__name__)
@@ -361,6 +362,7 @@ async def e2e_run_details(
 
 
 @control_e2e_runs_router.get("/control/e2e/run/{run_id}/timeline", response_model=E2ERunTimelinePayload)
+@timeline_projection_endpoint("control_e2e_run_timeline", issue_number_key=None)
 async def e2e_run_timeline_endpoint(
     run_id: int,
     deps: ControlApiE2EDependency,
@@ -454,13 +456,14 @@ async def e2e_run_timeline_endpoint(
                 }
             ),
         )
+    except TIMELINE_PROJECTION_BOUNDARY_EXCEPTIONS:
+        raise
     except Exception as exc:
         logger.exception("Failed to get E2E run timeline: %s", exc)
         return JSONResponse(
             {"error": "db_error", "detail": str(exc)},
             status_code=500,
         )
-
 
 def _e2e_run_lifecycle_payload(
     *,
@@ -477,14 +480,11 @@ def _e2e_run_lifecycle_payload(
         mode="json",
     )
 
-
 def _validated_e2e_run_timeline_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return E2ERunTimelinePayload.model_validate(payload).model_dump(
         mode="json",
         exclude_unset=True,
     )
-
-
 @control_e2e_runs_router.get("/control/e2e/logs/{run_id}")
 async def e2e_logs(
     run_id: int,

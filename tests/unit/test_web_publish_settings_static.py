@@ -428,6 +428,82 @@ class TestSettingsEndpoints:
             finally:
                 web._orchestrator = None
 
+    def test_get_settings_payload_round_trips_through_post(self):
+        """The full GET /api/settings body must be POST-valid unchanged.
+
+        Regression for the settings save failing with "nits_by_agent: Input
+        should be a valid dictionary": any GET->edit->POST flow posts ALL
+        fields, so a single field that does not round-trip bricks every
+        save regardless of what the user changed.
+        """
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.review_nits_by_agent = {"agent:frontend": "address"}
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                get_response = client.get("/api/settings")
+                assert get_response.status_code == 200
+
+                post_response = client.post("/api/settings", json=get_response.json())
+                assert post_response.status_code == 200, post_response.json()
+                assert post_response.json()["success"] is True
+                assert mock_orch.config.review_nits_by_agent == {
+                    "agent:frontend": "address"
+                }
+            finally:
+                web._orchestrator = None
+
+    def test_post_settings_rejects_stringified_nits_by_agent(self):
+        """A stringified dict (the old form encoding bug shape) is a 400."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.post(
+                "/api/settings", json={"review": {"nits_by_agent": "{}"}}
+            )
+
+            assert response.status_code == 400
+            data = response.json()
+            assert any(err["name"] == "nits_by_agent" for err in data["errors"])
+        finally:
+            web._orchestrator = None
+
+    def test_settings_page_renders_dict_editor_for_nits_by_agent(self):
+        """/settings renders the dict field as a dict_enum control with its
+        value embedded as JSON, never as a Python-repr text input."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.review_nits_by_agent = {"agent:frontend": "address"}
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/settings")
+
+            assert response.status_code == 200
+            html = response.text
+            assert 'data-type="dict_enum"' in html
+            assert 'data-initial=\'{"agent:frontend": "address"}\'' in html
+            assert "settings_form_controls.js" in html
+            # The old hand-rolled schema interpretation must stay gone.
+            assert "SCHEMA_FIELDS" not in html
+        finally:
+            web._orchestrator = None
+
     def test_post_settings_rejects_invalid_values_via_pydantic(self):
         """POST /api/settings rejects out-of-range values via Pydantic validation."""
         from issue_orchestrator.entrypoints import web
@@ -557,8 +633,14 @@ class TestSettingsEndpoints:
         finally:
             web._orchestrator = None
 
-    def test_settings_page_embeds_schema_json(self):
-        """GET /settings embeds schema JSON for client-side validation."""
+    def test_settings_page_uses_server_classified_control_tokens(self):
+        """GET /settings carries server-classified data-type tokens and the
+        shared form-controls module instead of embedded schema JSON.
+
+        The form must never re-interpret the JSON schema client-side; the
+        old SCHEMA_TABS/SCHEMA_FIELDS bootstrap (and its hand-rolled type
+        dispatch) is the drift that broke dict-typed fields.
+        """
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
@@ -569,34 +651,35 @@ class TestSettingsEndpoints:
             response = client.get("/settings")
 
             html = response.text
-            assert "SCHEMA_TABS" in html
-            assert "SCHEMA_FIELDS" in html
-            assert "const SCHEMA_TABS = [" in html
-            assert "const SCHEMA_FIELDS = {" in html
+            assert '<script src="/static/js/settings_form_controls.js"></script>' in html
+            for kind in (
+                "boolean",
+                "enum",
+                "integer",
+                "number",
+                "string",
+                "optional_string",
+                "dict_enum",
+            ):
+                assert f'data-type="{kind}"' in html, f"missing control kind {kind}"
+            assert "SCHEMA_TABS" not in html
+            assert "SCHEMA_FIELDS" not in html
         finally:
             web._orchestrator = None
 
-    def test_settings_page_uses_tojson_for_inline_schema_bootstrap(self):
-        """GET /settings must neutralize script-closing text in inline schema JSON."""
+    def test_settings_page_uses_tojson_for_dict_initial_json(self):
+        """GET /settings must neutralize script-closing text in the dict
+        editor's embedded JSON (agent labels are config-controlled text)."""
         from issue_orchestrator.entrypoints import web
-        from issue_orchestrator.infra.settings_schema import get_settings_json_schema
 
         payload = '</script><script>window.__xss_probe__=1</script>'
-        custom_schema = get_settings_json_schema()
-        custom_schema["advanced"]["properties"]["dangerous"] = {
-            "type": "string",
-            "description": payload,
-        }
         mock_orch = create_mock_orchestrator()
+        mock_orch.config.review_nits_by_agent = {payload: "address"}
 
         web._orchestrator = mock_orch
         try:
-            with patch(
-                "issue_orchestrator.entrypoints.web_settings_routes.get_settings_json_schema",
-                return_value=custom_schema,
-            ):
-                client = TestClient(app)
-                response = client.get("/settings")
+            client = TestClient(app)
+            response = client.get("/settings")
 
             html = response.text
             assert response.status_code == 200
@@ -653,10 +736,13 @@ class TestSettingsEndpoints:
         assert 'onclick="cancelSettings()"' in html
         assert "window.embeddedNav.buildHref('/', window.location.search)" in html
         assert "window.settingsSaveErrors.formatSaveErrorMessage" in html
-        assert "const SCHEMA_TABS = [" in html
-        assert "const SCHEMA_FIELDS = {" in html
-        assert "const SCHEMA_TABS = [&#34;" not in html
-        assert "const SCHEMA_FIELDS = {&#34;" not in html
+        # Form encoding is owned by the shared controls module, loaded
+        # before the inline script that calls it.
+        assert '<script src="/static/js/settings_form_controls.js"></script>' in html
+        assert html.index('/static/js/settings_save_errors.js') < html.index(
+            '/static/js/settings_form_controls.js'
+        )
+        assert "window.settingsFormControls.collectForm(document)" in html
         # Old ad-hoc helpers and literal URLs must be gone.
         assert "settingsIsEmbedded" not in html
         assert "'/?embedded=1'" not in html

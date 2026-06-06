@@ -35,6 +35,7 @@ from .timeline_presentation import (
     _promote_e2e_test_event_fields,
     _retain_semantic_timeline_events,
 )
+from .timeline_projection_boundary import timeline_projection_endpoint
 from .web_session_context import (
     WebOrchestratorDependency,
     issue_title_for,
@@ -471,7 +472,6 @@ def _finalize_issue_detail_payload(
             )
     return payload
 
-
 @web_issue_detail_router.get("/api/timeline/{issue_number}")
 async def get_issue_timeline(
     issue_number: int,
@@ -521,10 +521,10 @@ async def get_issue_timeline(
         payload["diagnostic"] = diagnostic
     return JSONResponse(payload)
 
-
 @web_issue_detail_router.get(
     "/api/issue-detail/{issue_number}", response_model=IssueDetailPayload
 )
+@timeline_projection_endpoint("issue_detail")
 async def get_issue_detail(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
@@ -618,12 +618,12 @@ async def get_recent_e2e_runs(
 
     return await asyncio.to_thread(_build)
 
-
 @web_issue_detail_router.get(
     "/api/e2e-run-detail/{run_id}",
     response_model=E2ERunDetailPayload,
     response_model_exclude_unset=True,
 )
+@timeline_projection_endpoint("e2e_run_detail", issue_number_key=None)
 async def get_e2e_run_detail(
     run_id: int,
     orchestrator: WebOrchestratorDependency,
@@ -813,6 +813,7 @@ async def get_e2e_run_test_output(
     "/api/e2e-run/{run_id}/issue-detail/{issue_number}",
     response_model=IssueDetailPayload,
 )
+@timeline_projection_endpoint("e2e_issue_detail")
 async def get_e2e_issue_detail(
     run_id: int,
     issue_number: int,
@@ -926,7 +927,6 @@ async def get_e2e_issue_detail(
         events=events,
     )
     return IssueDetailPayload.model_validate(payload)
-
 
 def _dashboard_lifecycle_payload(
     *,

@@ -520,6 +520,7 @@ export interface IssueItemPayload {
   issue_number?: number | string | null;
   issue_url?: string | null;
   open_run_command?: OpenE2ERunCommandPayload | null;
+  show_stale_badge: boolean;
   status?: string | null;
   title?: string | null;
   url?: string | null;

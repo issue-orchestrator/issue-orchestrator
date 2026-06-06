@@ -12,6 +12,7 @@ test('computeCompactCardFingerprint is stable for identical card payload', () =>
         phase_age: '2m',
         summary: 'Summary: Blocked',
         is_stale: false,
+        show_stale_badge: false,
         stale_reason: '',
         issue_url: 'https://example.test/10',
         orchestrator_labels: ['agent:backend', 'blocked'],
@@ -28,6 +29,7 @@ test('computeCompactCardFingerprint ignores volatile freshness age fields', () =
         phase: 'Queued',
         phase_age: '2m',
         orchestrator_labels: ['agent:backend'],
+        show_stale_badge: false,
         last_refreshed_age_seconds: 12,
     });
     const changedAge = compactCardState.computeCompactCardFingerprint({
@@ -36,6 +38,7 @@ test('computeCompactCardFingerprint ignores volatile freshness age fields', () =
         phase: 'Queued',
         phase_age: '2m',
         orchestrator_labels: ['agent:backend'],
+        show_stale_badge: false,
         last_refreshed_age_seconds: 48,
     });
     assert.equal(baseline, changedAge);
@@ -47,12 +50,14 @@ test('computeCompactCardFingerprint changes when rendered fields change', () => 
         title: 'A',
         phase: 'Queued',
         orchestrator_labels: ['agent:backend'],
+        show_stale_badge: false,
     });
     const changed = compactCardState.computeCompactCardFingerprint({
         issue_number: 10,
         title: 'B',
         phase: 'Queued',
         orchestrator_labels: ['agent:backend'],
+        show_stale_badge: false,
     });
     assert.notEqual(baseline, changed);
 });
@@ -64,12 +69,14 @@ test('computeCompactCardFingerprint changes when issue label gains a logical key
         issue_number: 4057,
         title: 'Surface circuit breaker',
         issue_label: '#4057',
+        show_stale_badge: false,
     });
     const after = compactCardState.computeCompactCardFingerprint({
         issue_number: 4057,
         title: 'Surface circuit breaker',
         issue_key: 'M9-009',
         issue_label: 'M9-009 · #4057',
+        show_stale_badge: false,
     });
     assert.notEqual(before, after);
 });
@@ -86,6 +93,7 @@ test('computeCompactCardFingerprint ignores phase_age tick changes', () => {
         phase: 'Coding',
         phase_age: '2s',
         state_label: 'running',
+        show_stale_badge: false,
     });
     const after = compactCardState.computeCompactCardFingerprint({
         issue_number: 10,
@@ -93,6 +101,25 @@ test('computeCompactCardFingerprint ignores phase_age tick changes', () => {
         phase: 'Coding',
         phase_age: '12s',
         state_label: 'running',
+        show_stale_badge: false,
     });
     assert.equal(before, after);
+});
+
+test('computeCompactCardFingerprint changes when stale badge visibility changes', () => {
+    const before = compactCardState.computeCompactCardFingerprint({
+        issue_number: 10,
+        title: 'Terminal task',
+        phase: 'Done',
+        is_stale: true,
+        show_stale_badge: false,
+    });
+    const after = compactCardState.computeCompactCardFingerprint({
+        issue_number: 10,
+        title: 'Terminal task',
+        phase: 'Done',
+        is_stale: true,
+        show_stale_badge: true,
+    });
+    assert.notEqual(before, after);
 });

@@ -18,6 +18,7 @@ from .lifecycle_semantics import (
     RecentE2ERunSummary,
     RecentE2ERunsPayload,
 )
+from .dashboard_flow import stamp_issue_item_stale_badge_visibility
 
 # Mirror the tone Literal so the tone dict + the OutcomeBadge call
 # site agree at type-check time.  PR #6333 round-3 (lifecycle
@@ -368,6 +369,7 @@ def build_e2e_items(config: Any, e2e_status: dict[str, Any]) -> list[dict[str, A
     items.extend(_build_e2e_running_items(e2e_status))
     items.extend(_build_e2e_attention_items(e2e_status))
     items.extend(_build_e2e_db_items(config, e2e_status))
+    stamp_issue_item_stale_badge_visibility(items, mode="never")
     return items
 
 

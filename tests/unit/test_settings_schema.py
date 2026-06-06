@@ -11,7 +11,11 @@ from issue_orchestrator.infra.settings_schema import (
     DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
     DOCTOR_CHECK_PATH_EXISTS,
     DOCTOR_CHECK_REFERENCES_AGENT,
+    FORM_CONTROL_DICT_ENUM,
+    FORM_CONTROL_KINDS,
     TAB_DEFINITIONS,
+    UnsupportedSettingsFieldError,
+    classify_form_control,
     AdvancedSettings,
     ConcurrencySettings,
     E2ESettings,
@@ -330,6 +334,86 @@ class TestFromConfig:
         assert "validation" in tabs
         for key, model in tabs.items():
             assert model is not None
+
+
+# ---------------------------------------------------------------------------
+# Form-control classification (the form projection guardrail)
+# ---------------------------------------------------------------------------
+
+class TestFormControlClassification:
+    """Every registry field must project to a supported form control.
+
+    The settings form renders and collects by dispatching on x_control
+    produced by classify_form_control(). A field shape outside the closed
+    kind set must fail HERE (and at page render), never silently degrade
+    to a text input whose posted string strict POST validation rejects.
+    Regression for the "nits_by_agent: Input should be a valid dictionary"
+    save failure: the dict-typed field fell through the template's
+    catch-all text-input branch.
+    """
+
+    def test_every_field_classifies_to_supported_kind(self):
+        schemas = get_settings_json_schema()
+        for tab_key, schema in schemas.items():
+            for field_name, prop in schema["properties"].items():
+                control = prop.get("x_control")
+                assert control is not None, f"{tab_key}.{field_name} missing x_control"
+                assert control["kind"] in FORM_CONTROL_KINDS, (
+                    f"{tab_key}.{field_name} classified to unknown kind "
+                    f"{control['kind']!r}"
+                )
+
+    def test_nits_by_agent_is_dict_enum_with_policy_options(self):
+        schemas = get_settings_json_schema()
+        control = schemas["review"]["properties"]["nits_by_agent"]["x_control"]
+        assert control["kind"] == FORM_CONTROL_DICT_ENUM
+        assert control["value_options"] == ["ignore", "surface", "address"]
+
+    def test_object_without_enum_values_raises(self):
+        prop = {"type": "object", "additionalProperties": {"type": "string"}}
+        with pytest.raises(UnsupportedSettingsFieldError, match="review.free_form"):
+            classify_form_control("review.free_form", prop)
+
+    def test_unknown_shape_raises(self):
+        with pytest.raises(UnsupportedSettingsFieldError, match="review.items"):
+            classify_form_control("review.items", {"type": "array"})
+
+    def test_optional_int_raises(self):
+        # Optional[int] is not in the closed set yet; growing the registry
+        # this way must fail loudly until the projection supports it.
+        prop = {"anyOf": [{"type": "integer"}, {"type": "null"}]}
+        with pytest.raises(UnsupportedSettingsFieldError):
+            classify_form_control("review.maybe_count", prop)
+
+    def test_optional_enum_raises(self):
+        # Optional[Literal[...]] emits anyOf with an enum entry; classifying
+        # it as optional_string would silently drop the value constraint
+        # into a free-text input - the exact degradation this PR forbids.
+        prop = {
+            "anyOf": [{"enum": ["a", "b"], "type": "string"}, {"type": "null"}],
+        }
+        with pytest.raises(UnsupportedSettingsFieldError, match="optional enum/const"):
+            classify_form_control("review.maybe_mode", prop)
+
+    def test_single_value_literal_const_raises(self):
+        # Literal["only"] emits const (not enum); classifying it as a plain
+        # string would silently drop the value constraint.
+        prop = {"const": "only", "type": "string"}
+        with pytest.raises(UnsupportedSettingsFieldError, match="const schema"):
+            classify_form_control("review.fixed_mode", prop)
+
+    def test_nits_by_agent_accepts_dict_rejects_string(self):
+        # The exact bug shape: the old form posted the dict's Python repr
+        # as a string. The schema must keep rejecting strings while the
+        # form now posts a real object.
+        model = ReviewSettings.model_validate(
+            {"nits_by_agent": {"agent:frontend": "address"}}
+        )
+        assert model.nits_by_agent == {"agent:frontend": "address"}
+        with pytest.raises(ValidationError, match="nits_by_agent"):
+            ReviewSettings.model_validate({"nits_by_agent": "{}"})
+        with pytest.raises(ValidationError, match="nits_by_agent"):
+            ReviewSettings.model_validate({"nits_by_agent": {"agent:frontend": "bogus"}})
 
 
 # ---------------------------------------------------------------------------
