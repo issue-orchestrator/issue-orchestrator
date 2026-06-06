@@ -379,7 +379,9 @@ class TestLiveAgentChain:
             "You are the reviewer in a persistent review exchange. Wait for "
             "the orchestrator to send each turn via stdin, write exactly one "
             "line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE for "
-            "each turn, then keep waiting for the next prompt."
+            "each turn, then keep waiting for the next prompt. This setup "
+            "message is NOT a turn: do not write to the response file until "
+            "a review turn arrives via stdin."
         )
         task = (
             "Run exactly this one shell command and nothing else (no "
@@ -406,7 +408,13 @@ class TestLiveAgentChain:
             )
 
             for n in (1, 2, 3):
-                self._wait_for_pty_idle(session, quiet_seconds=3.0, max_wait=30.0)
+                # max_wait must comfortably exceed codex's worst-case turn
+                # time: if the settle gives up while codex is still chewing
+                # on the bootstrap, codex's late improvised write can land
+                # AFTER the unlink below and be misread as round n's answer
+                # (seen live: bootstrap reply "Ready for review prompts."
+                # failing round 1 under a loaded validate run).
+                self._wait_for_pty_idle(session, quiet_seconds=3.0, max_wait=120.0)
                 response_file.unlink(missing_ok=True)
                 result = send_round(
                     session,
