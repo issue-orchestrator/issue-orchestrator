@@ -233,8 +233,16 @@ class TestFollowUpIssuesBounds:
         assert len(rec.follow_up_issues) == 2
         assert isinstance(rec.follow_up_issues[0], ProposedFollowUpIssue)
 
-    def test_rejects_too_many(self):
+    def test_accepts_audit_sized_follow_up_set(self):
         items = [self._follow_up() for _ in range(6)]
+        rec = CompletionRecord.from_dict(
+            _minimal_payload(follow_up_issues=items)
+        )
+        assert rec.follow_up_issues is not None
+        assert len(rec.follow_up_issues) == 6
+
+    def test_rejects_too_many(self):
+        items = [self._follow_up() for _ in range(51)]
         with pytest.raises(ValueError, match="follow_up_issues exceeds"):
             CompletionRecord.from_dict(
                 _minimal_payload(follow_up_issues=items)

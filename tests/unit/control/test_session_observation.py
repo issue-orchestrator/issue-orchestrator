@@ -2,6 +2,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from issue_orchestrator.control.active_sessions import append_unique_active_sessions, has_active_terminal
+from issue_orchestrator.control.completion_record_validation import (
+    CompletionRecordLoadFailure,
+    CompletionRecordLoadResult,
+)
 from issue_orchestrator.control.completion_observer import ObservationDecision
 from issue_orchestrator.control.session_observation import (
     observe_active_sessions,
@@ -154,6 +158,41 @@ def test_observe_active_sessions_records_terminal_failure_and_releases_claim(
     ]
     assert events.events[0].data["session_name"] == "issue-7"
     assert events.events[1].data["lease_id"] == "lease-7"
+
+
+def test_observe_active_sessions_preserves_invalid_completion_failure_kind(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, issue_number=7, terminal_id="issue-7")
+    state = OrchestratorState(active_sessions=[session])
+    observer = MagicMock()
+    terminal_observation = SessionObservationResult(
+        observation=SessionObservation.TERMINATED,
+        session_exists=False,
+    )
+    observer.observe_session.return_value = terminal_observation
+    completion_observer = MagicMock()
+    completion_observer.observe_completion.return_value = ObservationDecision(
+        status=SessionStatus.FAILED,
+        completion_load_result=CompletionRecordLoadResult(
+            path=tmp_path / "completion.json",
+            failure=CompletionRecordLoadFailure.INVALID_JSON,
+            error="Invalid JSON: line 1",
+            exists=True,
+            size=3,
+        ),
+    )
+    kill_session = MagicMock()
+
+    observe_active_sessions(
+        state,
+        observer,
+        completion_observer,
+        kill_session,
+    )
+
+    assert state.discovered_failures[0].failure_reason == "invalid_completion_record"
+    assert state.failed_this_cycle == {7}
 
 
 def test_observe_active_sessions_skips_duplicate_snapshot_entries(tmp_path: Path) -> None:

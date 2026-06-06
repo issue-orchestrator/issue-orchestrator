@@ -16,6 +16,7 @@ _TERMINAL_EVENTS = frozenset(
         "issue.needs_human",
         "issue.completed",
         "session.failed",
+        "session.invalid_completion_record",
         "session.timeout",
         "session.blocked",
     }

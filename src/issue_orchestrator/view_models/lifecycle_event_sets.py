@@ -37,8 +37,10 @@ CODING_BLOCKED_EVENTS: frozenset[str] = frozenset(
 CODING_FAILED_EVENTS: frozenset[str] = frozenset(
     {
         "agent.failed",
+        "agent.invalid_completion_record",
         "agent.timed_out",
         "session.failed",
+        "session.invalid_completion_record",
         "session.timeout",
     }
 )
@@ -91,6 +93,7 @@ VALIDATION_FAILED_EVENTS: frozenset[str] = frozenset(
 OUTCOME_EVENTS: frozenset[str] = frozenset(
     {
         "session.failed",
+        "session.invalid_completion_record",
         "session.timeout",
         "session.blocked",
         "session.completed",
@@ -113,6 +116,7 @@ BLOCKED_EVENT_NAMES: frozenset[str] = frozenset(
     {
         "session.timeout",
         "session.failed",
+        "session.invalid_completion_record",
         "session.blocked",
         "session.validation_failed",
         "issue.blocked",

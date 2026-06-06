@@ -161,6 +161,18 @@ def test_session_failed_then_new_start_starts_new_logical_run() -> None:
     assert out.logical_phase == "coding"
 
 
+def test_invalid_completion_record_then_new_start_starts_new_logical_run() -> None:
+    out = enrich_logical_semantics(
+        event_name="session.started",
+        event_data={"task": "code"},
+        previous_event_name="session.invalid_completion_record",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+    )
+    assert out.logical_run == 2
+    assert out.logical_cycle == 1
+    assert out.logical_phase == "coding"
+
+
 def test_validation_retry_needed_increments_logical_cycle() -> None:
     out = enrich_logical_semantics(
         event_name="session.validation_retry_needed",

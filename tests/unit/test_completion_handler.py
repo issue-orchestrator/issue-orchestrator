@@ -1867,6 +1867,153 @@ class TestLabelActionGeneration:
         assert remove_label is not None
         assert remove_label.label == config.get_label_in_progress()
 
+    def test_invalid_completion_record_uses_specific_failure_comment_and_event(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Invalid completion JSON is not described as a missing command."""
+        config.retry.interrupted_sessions.enabled = False
+        issue = make_issue(number=456)
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        completion_path = tmp_worktree / ".issue-orchestrator" / "completion-agent_backend.json"
+        diagnostic_path = tmp_worktree / ".issue-orchestrator" / "sessions" / "run" / "invalid-completion-1.json"
+        detail = {
+            "failure_kind": "invalid_completion_record",
+            "failure_reason": (
+                "Completion record rejected: "
+                "follow_up_issues exceeds maximum count (6 > 5)"
+            ),
+            "completion_load_failure": "invalid_schema",
+            "completion_parse_error": "follow_up_issues exceeds maximum count (6 > 5)",
+            "completion_path_absolute": str(completion_path),
+            "diagnostic_path": str(diagnostic_path),
+        }
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.FAILED,
+            diagnostic_path=str(diagnostic_path),
+            completion_detail=detail,
+        )
+
+        assert result.history_entry.status == "failed"
+        assert "Completion record rejected" in result.history_entry.status_reason
+        assert "without PR" not in result.history_entry.status_reason
+
+        comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
+        assert "Completion Record Rejected" in comment.comment
+        assert "did call the completion command" in comment.comment
+        assert "follow_up_issues exceeds maximum count" in comment.comment
+        assert "terminated without calling" not in comment.comment
+
+        add_label = next(a for a in result.actions if isinstance(a, AddLabelAction))
+        assert add_label.label == "needs-human"
+        remove_label = next(a for a in result.actions if isinstance(a, RemoveLabelAction))
+        assert remove_label.label == config.get_label_in_progress()
+
+        failed_events = events.get_events(str(EventName.SESSION_FAILED))
+        assert len(failed_events) >= 1
+        payload = failed_events[0].data
+        assert payload["failure_kind"] == "invalid_completion_record"
+        assert payload["completion_load_failure"] == "invalid_schema"
+        assert payload["completion_path_absolute"] == str(completion_path)
+        assert payload["diagnostic_path"] == str(diagnostic_path)
+        assert "follow_up_issues exceeds maximum count" in payload["error"]
+
+    def test_invalid_json_completion_record_uses_interrupted_retry_when_enabled(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Malformed JSON is treated like interrupted output for retry policy."""
+        config.retry.interrupted_sessions.enabled = True
+        issue = make_issue(number=456)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-456")
+        repository_host = make_repository_host(
+            issue_info=SimpleNamespace(labels=["agent:test"])
+        )
+        handler = make_handler(config, repository_host=repository_host)
+        detail = {
+            "failure_kind": "invalid_completion_record",
+            "failure_reason": "Completion record rejected: Invalid JSON: line 1",
+            "completion_load_failure": "invalid_json",
+            "completion_parse_error": "Invalid JSON: line 1",
+        }
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.FAILED,
+            completion_detail=detail,
+        )
+
+        add_labels = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
+
+        assert config.retry.interrupted_sessions.coding_guard_label in add_labels
+        assert "needs-human" not in add_labels
+        assert "Auto-retry is enabled" in comment.comment
+        assert "without a valid completion record" in comment.comment
+
+    def test_invalid_schema_completion_record_does_not_use_interrupted_retry(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Schema-invalid records surface for human repair instead of auto-retry."""
+        config.retry.interrupted_sessions.enabled = True
+        issue = make_issue(number=456)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-456")
+        repository_host = make_repository_host(
+            issue_info=SimpleNamespace(labels=["agent:test"])
+        )
+        handler = make_handler(config, repository_host=repository_host)
+        detail = {
+            "failure_kind": "invalid_completion_record",
+            "failure_reason": (
+                "Completion record rejected: "
+                "follow_up_issues exceeds maximum count (6 > 5)"
+            ),
+            "completion_load_failure": "invalid_schema",
+            "completion_parse_error": "follow_up_issues exceeds maximum count (6 > 5)",
+        }
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.FAILED,
+            completion_detail=detail,
+        )
+
+        add_labels = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
+
+        assert "needs-human" in add_labels
+        assert config.retry.interrupted_sessions.coding_guard_label not in add_labels
+        assert "Completion Record Rejected" in comment.comment
+        assert "could not accept the completion JSON" in comment.comment
+
+    def test_unreadable_completion_record_comment_names_read_failure(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Unreadable completion files are not described as validation rejects."""
+        config.retry.interrupted_sessions.enabled = False
+        issue = make_issue(number=456)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-456")
+        handler = make_handler(config)
+        detail = {
+            "failure_kind": "invalid_completion_record",
+            "failure_reason": "Completion record rejected: permission denied",
+            "completion_load_failure": "unreadable",
+            "completion_parse_error": "permission denied",
+        }
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.FAILED,
+            completion_detail=detail,
+        )
+
+        comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
+
+        assert "could not read the completion JSON from disk" in comment.comment
+        assert "rejected by orchestrator validation" not in comment.comment
+
     def test_review_failure_adds_comment_only(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

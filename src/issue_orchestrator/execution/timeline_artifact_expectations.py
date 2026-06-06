@@ -18,9 +18,18 @@ RUN_SCOPED_TIMELINE_EVENTS: frozenset[str] = frozenset({
     "session.validation_passed",
     "session.validation_retry_needed",
     "session.validation_failed",
+    "session.invalid_completion_record",
     "review.started",
     "rework.started",
 }) | REVIEW_PHASE_LOG_TIMELINE_EVENTS
+
+_EXISTING_PATH_REQUIREMENTS: dict[str, tuple[str, str]] = {
+    "session.completed": ("completion_path_absolute", "missing_path"),
+    "session.invalid_completion_record": (
+        "completion_path_absolute",
+        "missing_completion_record",
+    ),
+}
 
 
 def event_requires_run_dir(event_name: str) -> bool:
@@ -41,13 +50,10 @@ def validate_event_artifact_expectations(event_name: str, payload: dict[str, Any
         _require_run_dir_with_session_artifact(event_name, payload)
         return
 
-    if event_name == "session.completed":
-        completion_path = _required_path_value(event_name, payload, "completion_path_absolute")
-        if not completion_path.exists():
-            raise RuntimeError(
-                "timeline artifact invariant failed: event="
-                f"{event_name} missing_path={completion_path}"
-            )
+    path_requirement = _EXISTING_PATH_REQUIREMENTS.get(event_name)
+    if path_requirement is not None:
+        field, missing_label = path_requirement
+        _require_existing_path(event_name, payload, field, missing_label)
         return
 
     if event_name == "review.comment_added":
@@ -69,6 +75,20 @@ def _require_run_dir_with_session_artifact(event_name: str, payload: dict[str, A
         raise RuntimeError(
             "timeline artifact invariant failed: event="
             f"{event_name} session_artifact_missing={','.join(str(path) for path in candidates)}"
+        )
+
+
+def _require_existing_path(
+    event_name: str,
+    payload: dict[str, Any],
+    field: str,
+    missing_label: str,
+) -> None:
+    path = _required_path_value(event_name, payload, field)
+    if not path.exists():
+        raise RuntimeError(
+            "timeline artifact invariant failed: event="
+            f"{event_name} {missing_label}={path}"
         )
 
 
