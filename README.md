@@ -115,7 +115,7 @@ Reference docs:
 - **User:** [Installation](docs/user/installation.md) · [Tutorial](docs/user/tutorial.md) · [Configuration](docs/user/configuration.md) · [Configuration Reference](docs/user/configuration_reference.md) · [FAQ](docs/user/faq.md)
 - **Architecture:** [Overview](docs/architecture/README.md) · [Internal Architecture](docs/architecture/internal-architecture.md) · [ADRs](docs/architecture/ADR/README.md) · [Guardrails](docs/design/guardrails.md) · [Hooks](docs/architecture/hooks.md)
 - **Development:** [Testing](docs/development/TESTING.md) · [Creating Guardrails](docs/development/CREATE_GUARDRAILS.md) · [Troubleshooting](docs/development/TROUBLESHOOTING.md) · [Review Workflow](docs/development/REVIEW_WORKFLOW.md)
-- **Features:** [E2E Runner](docs/user/e2e.md) · [VS Code](docs/user/vscode.md)
+- **Features:** [Feature List](docs/user/features.md) · [E2E Runner](docs/user/e2e.md) · [VS Code](docs/user/vscode.md)
 
 ## License and contributions
 
