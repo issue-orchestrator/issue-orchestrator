@@ -653,8 +653,10 @@ def release_pr_body(tag_name: str) -> str:
     """Return the pull request body for the generated release bump PR."""
     return (
         f"Prepare {tag_name} release metadata.\n\n"
-        "After this PR is merged to main, run:\n\n"
-        f"```bash\nmake release VERSION={tag_name}\n```"
+        "After this PR is merged to main, update your local checkout to the "
+        "merged commit and run the final release:\n\n"
+        f"```bash\n{remediate_outdated_local_main()}\n"
+        f"make release VERSION={tag_name}\n```"
     )
 
 
@@ -1163,9 +1165,9 @@ def run_release_pr_workflow(
         raise
     print("")
     print(f"Release PR ready for {tag_name}.")
-    print(
-        f"After it is merged, run `make release VERSION={tag_name}` from any clean checkout."
-    )
+    print("After it is merged, update your checkout to the merged commit and release:")
+    print(f"  {remediate_outdated_local_main()}")
+    print(f"  make release VERSION={tag_name}")
 
 
 def prepare_release(

@@ -665,6 +665,62 @@ def test_release_pr_workflow_order(
     ]
 
 
+def test_release_pr_body_includes_main_switch_handoff() -> None:
+    body = prepare_release.release_pr_body("v1.0.0")
+
+    assert "git switch main && git pull --ff-only origin main" in body
+    assert "make release VERSION=v1.0.0" in body
+
+
+def test_release_pr_success_message_includes_main_switch_handoff(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pyproject(tmp_path / "pyproject.toml", version="0.9.0")
+    _write_lock(tmp_path / "uv.lock", version="0.9.0")
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_pr_preflight",
+        lambda *, paths, tag_name, branch_name, options: None,
+    )
+    monkeypatch.setattr(prepare_release, "confirm_release", lambda *, tag_name: None)
+    monkeypatch.setattr(
+        prepare_release, "create_release_pr_branch", lambda _paths, _branch_name: None
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "apply_release_metadata",
+        lambda *, paths, target_version, sync_environment, uv_executable: None,
+    )
+    monkeypatch.setattr(
+        prepare_release, "commit_release_metadata", lambda _paths, _tag_name: None
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_validation",
+        lambda _paths, *, skip_validation, validation_command: None,
+    )
+    monkeypatch.setattr(prepare_release, "assert_clean_worktree", lambda _root: None)
+    monkeypatch.setattr(
+        prepare_release,
+        "publish_release_pr",
+        lambda _paths, *, tag_name, branch_name, options: None,
+    )
+
+    prepare_release.run_release_pr_workflow(
+        paths=paths,
+        version="v1.0.0",
+        options=_release_pr_options(dry_run=False),
+    )
+
+    output = capsys.readouterr().out
+    assert "git switch main && git pull --ff-only origin main" in output
+    assert "make release VERSION=v1.0.0" in output
+
+
 def test_release_pr_failure_after_branch_prints_recovery_hint(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
