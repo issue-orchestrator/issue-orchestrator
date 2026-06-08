@@ -6,11 +6,16 @@ from types import SimpleNamespace
 
 from issue_orchestrator.domain.models import SessionHistoryEntry
 from issue_orchestrator.entrypoints.web_issue_detail_routes import _determine_issue_flow_stage
-from issue_orchestrator.timeline import TIMELINE_SCHEMA_VERSION
+from issue_orchestrator.events import EventName
+from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
+from issue_orchestrator.ports import TraceEvent
+from issue_orchestrator.ports.timeline_store import TimelineRecord
+from issue_orchestrator.timeline import TIMELINE_SCHEMA_VERSION, TimelineStream
 from issue_orchestrator.view_models.issue_detail import (
     IssueStoryContext,
     _build_journey_steps,
     _build_status_explanation,
+    _filter_events_by_view,
     build_issue_detail_view_model,
     filter_last_run_cycles,
 )
@@ -107,6 +112,41 @@ def _evt(
         "agent": agent,
         "artifacts": artifacts or [],
     }
+
+
+class _RecordingTimelineStore:
+    def __init__(self) -> None:
+        self.records: list[TimelineRecord] = []
+
+    def append(self, _issue_number: int, record: TimelineRecord) -> None:
+        self.records.append(record)
+
+    def read(
+        self,
+        _issue_number: int,
+        limit: int | None = None,
+    ) -> list[TimelineRecord]:
+        if limit is None:
+            return list(self.records)
+        return self.records[-limit:]
+
+    def delete(self, _issue_number: int) -> int:
+        deleted = len(self.records)
+        self.records.clear()
+        return deleted
+
+
+def _project_user_events_from_trace_events(
+    issue_number: int,
+    trace_events: list[TraceEvent],
+) -> list[dict[str, object]]:
+    store = _RecordingTimelineStore()
+    writer = DefaultTimelineWriter(store)
+    for event in trace_events:
+        writer.record(event)
+    stream = TimelineStream.from_records(issue_number, store.records)
+    events = stream.to_dict()["events"]
+    return _filter_events_by_view(events, "user")
 
 
 def test_status_explanation_running_review() -> None:
@@ -222,6 +262,73 @@ def test_status_explanation_blocked_publish_failed_uses_publish_event_reason() -
     result = _build_status_explanation(ctx, events)
 
     assert result == "Publishing failed: Push failed: ERROR: Test-skipping patterns detected"
+
+
+def test_status_explanation_blocked_invalid_completion_record() -> None:
+    ctx = _ctx(flow_stage="blocked", labels=("needs-human",))
+    events = [
+        {
+            "event": "agent.invalid_completion_record",
+            "source_event": "session.invalid_completion_record",
+            "summary": (
+                "Completion record rejected: "
+                "follow_up_issues exceeds maximum count (6 > 5)"
+            ),
+        }
+    ]
+
+    result = _build_status_explanation(ctx, events)
+
+    assert result == (
+        "Completion record rejected — "
+        "follow_up_issues exceeds maximum count (6 > 5)"
+    )
+
+
+def test_status_explanation_blocked_invalid_completion_survives_terminal_failed_event(
+    tmp_path,
+) -> None:
+    ctx = _ctx(flow_stage="blocked", labels=("needs-human",))
+    issue_number = 4124
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    completion_path = tmp_path / "completion-agent_backend.json"
+    completion_path.write_text('{"outcome":"completed"}\n', encoding="utf-8")
+    reason = "Completion record rejected: invalid JSON: line 1"
+    events = _project_user_events_from_trace_events(
+        issue_number,
+        [
+            TraceEvent(
+                EventName.SESSION_INVALID_COMPLETION_RECORD,
+                {
+                    "issue_number": issue_number,
+                    "task": "code",
+                    "run_dir": str(run_dir),
+                    "summary": reason,
+                    "completion_path_absolute": str(completion_path),
+                },
+            ),
+            TraceEvent(
+                EventName.SESSION_FAILED,
+                {
+                    "issue_number": issue_number,
+                    "task": "code",
+                    "reason": reason,
+                    "failure_kind": "invalid_completion_record",
+                    "completion_parse_error": "invalid JSON: line 1",
+                },
+            ),
+        ],
+    )
+
+    assert not any(event.get("event") == "agent.invalid_completion_record" for event in events)
+    assert events[-1]["event"] == "agent.failed"
+    assert events[-1]["source_event"] == "session.failed"
+    assert "failure_kind" not in events[-1]
+
+    assert _build_status_explanation(ctx, events) == (
+        "Completion record rejected — invalid JSON: line 1"
+    )
 
 
 def test_status_explanation_awaiting_merge() -> None:

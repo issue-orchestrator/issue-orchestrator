@@ -1,3 +1,6 @@
+{% set issue_time = issue.time if issue.time else '' %}
+{% set issue_time_is_timestamp = issue.time_is_timestamp if issue.time_is_timestamp else false %}
+{% set issue_runtime_label = issue.runtime_label if issue.runtime_label else '' %}
 <div class="issue-row-group" data-issue="{{ issue.issue_number }}">
     <div class="issue-row {% if issue.status == 'active' %}active-row{% elif issue.status == 'slow' %}slow-row{% endif %}"
          role="button"
@@ -7,7 +10,7 @@
          data-issue="{{ issue.issue_number }}"
          data-title="{{ issue.title }}"
          data-agent="{{ issue.agent_type }}"
-         data-time="{{ issue.time if issue.time else '' }}"
+         data-time="{{ issue_time | e }}"
          data-action="{{ issue.action }}"
          data-url="{{ issue.url }}"
          data-issue-url="{{ issue.issue_url }}"
@@ -85,7 +88,13 @@
             <span class="detail-link-indicator" aria-hidden="true">↗</span>
             {% endif %}
         </span>
-        <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
+        <span class="issue-time"{% if not issue_runtime_label and issue_time_is_timestamp and issue_time %} data-dashboard-timestamp="{{ issue_time | e }}" data-dashboard-timestamp-fallback="-"{% endif %}>
+            {%- if issue_runtime_label and issue_time_is_timestamp and issue_time -%}
+            <span class="issue-runtime">{{ issue_runtime_label }}</span><span aria-hidden="true"> · </span><span data-dashboard-timestamp="{{ issue_time | e }}" data-dashboard-timestamp-fallback="-">{{ issue_time }}</span>
+            {%- else -%}
+            {{ issue_time if issue_time else '-' }}
+            {%- endif -%}
+        </span>
         <span class="issue-actions">
             <button class="issue-row-menu-btn"
                     onclick="openRowActionsMenu(event, this)"

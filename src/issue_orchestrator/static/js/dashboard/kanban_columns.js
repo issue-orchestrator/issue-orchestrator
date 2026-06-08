@@ -139,10 +139,12 @@ function renderCompactCardHtml(card) {
     const n = card.issue_number;
     const cardId = String(card.card_id || `issue-${n}`);
     const staleAttr = card.is_stale ? 'true' : 'false';
-    const staleDot = card.is_stale
+    const showStaleBadge = Boolean(card.show_stale_badge);
+    const showStaleBadgeAttr = showStaleBadge ? 'true' : 'false';
+    const staleDot = showStaleBadge
         ? `<span class="stale-dot" title="${card.stale_reason || 'Issue may be stale'}" aria-label="Issue data may be stale"></span>`
         : '';
-    const staleBadge = card.is_stale
+    const staleBadge = showStaleBadge
         ? '<span class="badge badge-stale" title="Data may be stale">stale</span>'
         : '';
     const ghLink = buildCompactGithubLink(card);
@@ -180,7 +182,7 @@ function renderCompactCardHtml(card) {
     const issueLabel = card.issue_label || `#${n}`;
     const issueLabelHtml = escapeHtml(String(issueLabel));
     const issueLabelAttr = escapeAttr(String(issueLabel));
-    return `<div class="issue-card" data-card-id="${cardId}" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
+    return `<div class="issue-card" data-card-id="${cardId}" data-issue="${n}" data-stale="${staleAttr}" data-show-stale-badge="${showStaleBadgeAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
         <div class="card-top">
             <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Focus issue ${issueLabelAttr}">
                 ${issueLabelHtml} ${escapeHtml(String(card.title || ''))}

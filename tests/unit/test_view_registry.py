@@ -94,6 +94,18 @@ class TestFanOut:
         assert "ops" in spec.views
         assert "debug" in spec.views
 
+    def test_invalid_completion_record_is_ops_only_to_avoid_duplicate_user_rows(self):
+        specs = fan_out("session.invalid_completion_record")
+
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.name == "agent.invalid_completion_record"
+        assert spec.narrative == "Completion record rejected"
+        assert spec.phase == "orchestrator"
+        assert "user" not in spec.views
+        assert "ops" in spec.views
+        assert "debug" in spec.views
+
 
 class TestFilterEventsByView:
     def test_user_view_filters_debug_events(self):

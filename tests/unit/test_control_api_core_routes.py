@@ -318,6 +318,22 @@ class TestControlCenterTemplate:
         assert "nav-repo-list" not in body
         assert "nav-repo-item" not in body
 
+    def test_control_center_ui_renders_runtime_version_in_sidebar_footer(
+        self,
+        client_without_orchestrator,
+        monkeypatch,
+    ):
+        from issue_orchestrator.infra import runtime_identity
+
+        sha = "abcdef1234567890abcdef1234567890abcdef12"
+        monkeypatch.setattr(runtime_identity, "__version__", "1.2.3")
+        monkeypatch.setattr(runtime_identity, "resolve_cc_commit_sha", lambda: sha)
+
+        response = client_without_orchestrator.get("/")
+
+        assert response.status_code == 200
+        assert "v1.2.3 (abcdef1)" in response.text
+
     def test_control_center_shell_is_not_cached(self, client_without_orchestrator):
         response = client_without_orchestrator.get("/")
 

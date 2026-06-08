@@ -50,6 +50,11 @@ from .completion_action_planner import (
     critical_processing_errors,
     has_review_exchange_errors,
 )
+from .invalid_record_actions import (
+    failure_event_reason,
+    invalid_record_event_fields,
+    invalid_record_failure_reason,
+)
 from .reconciliation import build_expected_for_mutation
 from .retrospective_review_completion import retrospective_review_completion_actions
 from .session_run_resolution import resolve_session_run_dir
@@ -263,6 +268,8 @@ class CompletionHandler:
             )
             history_status = SessionStatus.FAILED
             history_status_reason = "Review exchange halted"
+        else:
+            history_status_reason = invalid_record_failure_reason(completion_detail)
 
         # Create history entry
         history_entry = self._create_history_entry(
@@ -305,6 +312,7 @@ class CompletionHandler:
                 blocked_label=blocked_label,
                 blocked_reason=blocked_reason,
                 pr_url=pr_url,
+                completion_detail=completion_detail,
             )
         )
         completion_actions.extend(
@@ -637,7 +645,7 @@ class CompletionHandler:
             pr_url=pr_url,
             status_reason=status_reason,
             worktree_path=session.worktree_path,
-            completed_at=datetime.now(),
+            completed_at=datetime.now(timezone.utc),
         )
 
     def _emit_trace_events(
@@ -661,7 +669,7 @@ class CompletionHandler:
         if status == SessionStatus.COMPLETED:
             self._emit_completed_events(session, pr_url, pr_number, detail)
         elif status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
-            self._emit_failure_event(session, status)
+            self._emit_failure_event(session, status, detail)
         elif status == SessionStatus.BLOCKED:
             self._emit_blocked_event(session, blocked_reason, detail)
         elif status == SessionStatus.NEEDS_HUMAN:
@@ -719,12 +727,13 @@ class CompletionHandler:
         self,
         session: Session,
         status: SessionStatus,
+        detail: dict[str, Any],
     ) -> None:
         """Emit SESSION_FAILED event for failed or timed-out sessions."""
-        reason = (
-            f"Exceeded {session.agent_config.timeout_minutes} min timeout"
-            if status == SessionStatus.TIMED_OUT
-            else "Session ended without PR or status update"
+        reason = failure_event_reason(
+            expired=status == SessionStatus.TIMED_OUT,
+            timeout_minutes=session.agent_config.timeout_minutes,
+            detail=detail,
         )
         payload: dict[str, Any] = {
             "issue_number": session.issue.number,
@@ -736,6 +745,7 @@ class CompletionHandler:
             "runtime_minutes": session.runtime_minutes,
             "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
         }
+        payload.update(invalid_record_event_fields(detail))
         run_dir = self._resolve_session_run_dir(session)
         payload["run_dir"] = str(run_dir)
         self.events.publish(make_trace_event(EventName.SESSION_FAILED, payload))

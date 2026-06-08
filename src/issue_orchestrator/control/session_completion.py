@@ -436,6 +436,7 @@ def process_active_sessions(
                 diagnostic_path = decision.processing_result.diagnostic_path
             review_exchange_completed = decision.processing_result.review_exchange_completed
             review_exchange_halted = decision.processing_result.review_exchange_halted
+        diagnostic_path = decision.diagnostic_path or diagnostic_path
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
             observer, worktree_manager, kill_session_fn, config,

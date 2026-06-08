@@ -7,7 +7,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -378,7 +378,7 @@ class PublishRecoveryService:
                 pr_url=pr_url,
                 status_reason=history_reason,
                 worktree_path=Path(worktree_path) if worktree_path else None,
-                completed_at=datetime.now(),
+                completed_at=datetime.now(timezone.utc),
             )
         )
 

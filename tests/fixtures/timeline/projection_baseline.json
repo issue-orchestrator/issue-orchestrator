@@ -755,6 +755,12 @@
     "status": "failed",
     "step": "failed"
   },
+  "session.invalid_completion_record": {
+    "level": "detail",
+    "phase": "in_progress",
+    "status": "failed",
+    "step": "invalid_completion_record"
+  },
   "session.launched": {
     "level": "detail",
     "phase": "in_progress",

@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -15,6 +15,9 @@ help:
 	@echo "  worktree-setup      Full worktree setup: venv + vscode extensions + playwright"
 	@echo "  install             Install dev dependencies (assumes venv exists)"
 	@echo "  upgrade-deps        Update uv.lock after changing pyproject.toml"
+	@echo "  release             Run full release flow (use VERSION=v1.0.0 ARGS=--dry-run)"
+	@echo "  release-pr          Create release metadata PR (use VERSION=v1.0.0)"
+	@echo "  prepare-release     Bump release files only (use VERSION=v1.0.0)"
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  lint-complexity     Check cyclomatic complexity (C901) and branch count (PLR0912)"
@@ -201,6 +204,27 @@ endif
 	@echo ""
 	@echo "Done! Commit uv.lock with your changes."
 
+release:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make release VERSION=v1.0.0"; \
+		exit 2; \
+	fi
+	@$(SYSTEM_PYTHON) scripts/prepare_release.py "$(VERSION)" $(ARGS)
+
+release-pr:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make release-pr VERSION=v1.0.0"; \
+		exit 2; \
+	fi
+	@$(SYSTEM_PYTHON) scripts/prepare_release.py "$(VERSION)" --prepare-pr $(ARGS)
+
+prepare-release:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make prepare-release VERSION=v1.0.0"; \
+		exit 2; \
+	fi
+	@$(SYSTEM_PYTHON) scripts/prepare_release.py "$(VERSION)" --prepare-only $(ARGS)
+
 PYRIGHT ?= .venv/bin/pyright --pythonpath .venv/bin/python
 PYTEST ?= .venv/bin/pytest
 PYTEST_DURATIONS ?= 10
@@ -380,13 +404,11 @@ test-integration-no-infra: test-integration-core
 test-integration-agent: sync-deps
 ifeq ($(INTEGRATION_AGENT_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-agent,\
-		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "not live_codex" $(PYTEST_TIMINGS))
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS))
 else
 	$(call TIMED_RUN,test-integration-agent,\
-		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "not live_codex" -n $(INTEGRATION_AGENT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
+		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -n $(INTEGRATION_AGENT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
-	$(call TIMED_RUN,test-integration-agent-live-codex,\
-		$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -m "live_codex" $(PYTEST_TIMINGS))
 
 # Full integration tests including infrastructure-dependent ones (run in CI)
 test-integration-full: sync-deps

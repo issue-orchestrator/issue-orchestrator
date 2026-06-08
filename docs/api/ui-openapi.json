@@ -492,16 +492,19 @@
       "IssueItemPayload": {
         "type": "object",
         "additionalProperties": true,
+        "required": ["show_stale_badge"],
         "properties": {
           "issue_number": {
             "type": ["integer", "string", "null"]
           },
           "title": {"type": ["string", "null"]},
           "status": {"type": ["string", "null"]},
+          "runtime_label": {"type": ["string", "null"]},
           "action": {"type": ["string", "null"]},
           "action_hint": {"type": ["string", "null"]},
           "url": {"type": ["string", "null"]},
           "issue_url": {"type": ["string", "null"]},
+          "show_stale_badge": {"type": "boolean"},
           "open_run_command": {
             "oneOf": [
               {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
@@ -1031,7 +1034,8 @@
         "required": ["label", "value"],
         "properties": {
           "label": {"type": "string"},
-          "value": {"type": "string"}
+          "value": {"type": "string"},
+          "value_kind": {"type": "string", "enum": ["timestamp"]}
         }
       },
       "DialogSectionPayload": {

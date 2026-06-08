@@ -20,6 +20,8 @@ from issue_orchestrator.control.session_controller import (
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.control.completion_types import ProcessingResult
 from issue_orchestrator.control.completion_record_validation import (
+    CompletionRecordLoadFailure,
+    CompletionRecordLoadResult,
     WorktreeValidationFailure,
     WorktreeValidationResult,
 )
@@ -130,6 +132,7 @@ class MockCompletionProcessor:
 
     def __init__(self):
         self.completion_record: CompletionRecord | None = None
+        self.completion_load_result: CompletionRecordLoadResult | None = None
         self.process_calls: list[dict] = []
         self.worktree_state_valid = True
         self.worktree_state_reason = ""
@@ -147,6 +150,24 @@ class MockCompletionProcessor:
         self, worktree_path: Path, completion_path: str | None = None
     ) -> CompletionRecord | None:
         return self.completion_record
+
+    def read_completion_record_result(
+        self, worktree_path: Path, completion_path: str | None = None
+    ) -> CompletionRecordLoadResult:
+        if self.completion_load_result is not None:
+            return self.completion_load_result
+        path = worktree_path / (completion_path or ".issue-orchestrator/completion.json")
+        if self.completion_record is None:
+            return CompletionRecordLoadResult(
+                path=path,
+                failure=CompletionRecordLoadFailure.MISSING,
+                error="Completion record not found",
+            )
+        return CompletionRecordLoadResult(
+            path=path,
+            record=self.completion_record,
+            exists=True,
+        )
 
     def process(
         self,
@@ -291,6 +312,69 @@ class TestSessionControllerTerminated:
         assert decision.status == SessionStatus.FAILED
         assert not decision.completion_processed
         assert "without completion record" in decision.reason
+
+    def test_terminated_with_invalid_completion_record_surfaces_parse_failure(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Present-but-invalid completion JSON is not reported as missing."""
+        worktree = tmp_path / "worktree"
+        completion_rel = ".issue-orchestrator/completion-agent_backend.json"
+        completion_path = worktree / completion_rel
+        completion_path.parent.mkdir(parents=True, exist_ok=True)
+        completion_path.write_text('{"outcome": "completed"}\n', encoding="utf-8")
+
+        processor = MockCompletionProcessor()
+        processor.completion_load_result = CompletionRecordLoadResult(
+            path=completion_path,
+            failure=CompletionRecordLoadFailure.INVALID_SCHEMA,
+            error="follow_up_issues exceeds maximum count (6 > 5)",
+            exists=True,
+            size=completion_path.stat().st_size,
+        )
+        event_sink = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=event_sink,
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+
+        decision = decide_with_run_assets(
+            controller,
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+            completion_path=completion_rel,
+        )
+
+        assert decision.status == SessionStatus.FAILED
+        assert decision.completion_processed is False
+        assert processor.process_calls == []
+        assert decision.reason.startswith("Completion record rejected")
+        assert decision.completion_detail is not None
+        assert decision.completion_detail["failure_kind"] == "invalid_completion_record"
+        assert decision.completion_detail["completion_load_failure"] == "invalid_schema"
+        assert "follow_up_issues exceeds" in decision.completion_detail["completion_parse_error"]
+        assert decision.diagnostic_path is not None
+        diagnostic_path = Path(decision.diagnostic_path)
+        assert diagnostic_path.exists()
+        diagnostic = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+        assert diagnostic["kind"] == "invalid-completion-record"
+
+        invalid_events = [
+            event
+            for event in event_sink.events
+            if event.name == EventName.SESSION_INVALID_COMPLETION_RECORD
+        ]
+        assert len(invalid_events) == 1
+        payload = invalid_events[0].data
+        assert payload["completion_load_failure"] == "invalid_schema"
+        assert "follow_up_issues exceeds" in payload["completion_parse_error"]
+        assert payload["completion_path_absolute"] == str(completion_path.resolve())
+        assert payload["diagnostic_path"] == str(diagnostic_path)
 
     def test_terminated_with_completed_record_is_completed(self):
         """Session that exits with completed outcome = COMPLETED."""

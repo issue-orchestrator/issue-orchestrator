@@ -4,10 +4,7 @@ These helpers define the timeline semantics that both control and web surfaces
 render. The extraction is intentionally behavior-preserving: entrypoints remain
 composition roots while the event-shaping rules live in one owner module.
 
-This module is also the canonical import surface for operational scripts that
-need the same timeline filtering and grouping behavior. Keeping the rationale
-here avoids the drift that large entrypoint-local helper blocks were already
-causing before the extraction.
+This module is also the canonical import surface for operational scripts.
 """
 
 from __future__ import annotations
@@ -30,6 +27,7 @@ from ..execution.manifest_accessor import (
 )
 from ..execution.timeline_artifact_expectations import event_requires_run_dir
 from ..timeline import MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION, TIMELINE_SCHEMA_VERSION
+from ..view_models.timestamp_values import DETAIL_VALUE_KINDS_KEY, timeline_detail_value_kinds
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +35,7 @@ _NOISY_TIMELINE_EVENTS = frozenset({"issue.labels_changed"})
 _TIMELINE_ARTIFACT_PATH_TYPES = frozenset({
     "chapter_sidecar",
     "completion_record",
+    "diagnostic",
     "prompt",
     "review_response",
     "run_dir",
@@ -46,11 +45,13 @@ _TIMELINE_ARTIFACT_PATH_TYPES = frozenset({
 _REVIEW_ARTIFACT_TYPES = frozenset({"review_report", "review_decision"})
 _TIMELINE_START_EVENTS = frozenset({"session.started", "review.started", "rework.started"})
 _TIMELINE_FAILURE_EVENTS = frozenset({
+    "agent.invalid_completion_record",
     "issue.blocked",
     "issue.needs_human",
     "issue.pr_rejected",
     "session.blocked",
     "session.failed",
+    "session.invalid_completion_record",
     "session.timeout",
     "session.validation_failed",
     "review.changes_requested",
@@ -78,8 +79,6 @@ _ORCHESTRATOR_ONLY_EVENTS = frozenset({
     "session.processing_completed",
     "completion.lookup",
 })
-
-
 def _load_test_result_backfill(
     e2e_db_path: Optional[Path], run_id: int,
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -258,6 +257,8 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
     decorated: list[dict[str, Any]] = []
     for event in events:
         event_with_actions = dict(event)
+        if detail_value_kinds := timeline_detail_value_kinds(event):
+            event_with_actions[DETAIL_VALUE_KINDS_KEY] = detail_value_kinds
         try:
             event_with_actions["actions"] = _timeline_event_actions(event, issue_number)
         except Exception as exc:
@@ -285,7 +286,6 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
             event_with_actions["actions_error"] = error_message
         decorated.append(event_with_actions)
     return decorated
-
 
 def _timeline_event_fallback_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
     """Build safe fallback actions when strict run-scoped decoration fails."""

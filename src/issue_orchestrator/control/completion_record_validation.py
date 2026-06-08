@@ -39,6 +39,36 @@ class WorktreeValidationFailure(Enum):
     DIRTY_POLICY = "dirty_policy"
 
 
+class CompletionRecordLoadFailure(str, Enum):
+    """Typed reason a completion record could not be loaded."""
+
+    MISSING = "missing"
+    UNREADABLE = "unreadable"
+    OVERSIZED = "oversized"
+    INVALID_JSON = "invalid_json"
+    INVALID_SCHEMA = "invalid_schema"
+
+
+@dataclass(frozen=True)
+class CompletionRecordLoadResult:
+    """Result of parsing an untrusted completion record file."""
+
+    path: Path
+    record: CompletionRecord | None = None
+    failure: CompletionRecordLoadFailure | None = None
+    error: str | None = None
+    exists: bool = False
+    size: int | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.record is not None
+
+    @property
+    def invalid(self) -> bool:
+        return self.failure not in (None, CompletionRecordLoadFailure.MISSING)
+
+
 @dataclass(frozen=True)
 class WorktreeValidationResult:
     ok: bool
@@ -82,6 +112,16 @@ class WorktreeValidationResult:
 def load_completion_record(record_path: Path) -> CompletionRecord | None:
     """Read and validate a single completion record file.
 
+    Compatibility wrapper for call sites that only need record-or-none.
+    New control paths should use ``load_completion_record_result`` so
+    missing files and invalid records stay distinguishable.
+    """
+    return load_completion_record_result(record_path).record
+
+
+def load_completion_record_result(record_path: Path) -> CompletionRecordLoadResult:
+    """Read and validate a single completion record file.
+
     This is the ONE entry point for parsing an untrusted completion
     record: applies the per-file size gate BEFORE ``json.load`` runs,
     then delegates to ``CompletionRecord.from_dict`` for field-level
@@ -89,26 +129,40 @@ def load_completion_record(record_path: Path) -> CompletionRecord | None:
     that scans sessions for completions) must route through this
     function so an agent cannot bypass the gate by hitting a
     duplicate reader — that was the bug flagged in #6017 re-review-2
-    P3. Returns ``None`` for any failure mode (missing file, oversized
-    file, malformed JSON, invalid record); callers log context.
+    P3. Returns a typed result so callers can distinguish a genuinely
+    missing completion record from one that was present but rejected.
     """
     if not record_path.exists():
         logger.info("No completion record found at %s", record_path)
-        return None
+        return CompletionRecordLoadResult(
+            path=record_path,
+            failure=CompletionRecordLoadFailure.MISSING,
+            error="Completion record not found",
+        )
 
     try:
         size = record_path.stat().st_size
     except OSError as exc:
         logger.error("Could not stat completion record %s: %s", record_path, exc)
-        return None
-    if size > _MAX_COMPLETION_FILE_BYTES:
-        logger.error(
-            "Completion record %s is %d bytes, exceeds max %d",
-            record_path,
-            size,
-            _MAX_COMPLETION_FILE_BYTES,
+        return CompletionRecordLoadResult(
+            path=record_path,
+            failure=CompletionRecordLoadFailure.UNREADABLE,
+            error=f"Could not stat completion record: {exc}",
+            exists=True,
         )
-        return None
+    if size > _MAX_COMPLETION_FILE_BYTES:
+        error = (
+            f"Completion record is {size} bytes, exceeds max "
+            f"{_MAX_COMPLETION_FILE_BYTES}"
+        )
+        logger.error("%s: %s", record_path, error)
+        return CompletionRecordLoadResult(
+            path=record_path,
+            failure=CompletionRecordLoadFailure.OVERSIZED,
+            error=error,
+            exists=True,
+            size=size,
+        )
 
     try:
         with open(record_path) as f:
@@ -120,13 +174,30 @@ def load_completion_record(record_path: Path) -> CompletionRecord | None:
             record.session_id,
             record_path,
         )
-        return record
+        return CompletionRecordLoadResult(
+            path=record_path,
+            record=record,
+            exists=True,
+            size=size,
+        )
     except json.JSONDecodeError as exc:
         logger.error("Invalid JSON in completion record %s: %s", record_path, exc)
-        return None
+        return CompletionRecordLoadResult(
+            path=record_path,
+            failure=CompletionRecordLoadFailure.INVALID_JSON,
+            error=f"Invalid JSON: {exc}",
+            exists=True,
+            size=size,
+        )
     except ValueError as exc:
         logger.error("Invalid completion record %s: %s", record_path, exc)
-        return None
+        return CompletionRecordLoadResult(
+            path=record_path,
+            failure=CompletionRecordLoadFailure.INVALID_SCHEMA,
+            error=str(exc),
+            exists=True,
+            size=size,
+        )
 
 
 class CompletionValidationGitAdapter(Protocol):
@@ -167,8 +238,14 @@ class CompletionRecordValidator:
         self, worktree: Path, completion_path: str | None = None
     ) -> CompletionRecord | None:
         """Read and validate a completion record from a worktree."""
+        return self.read_completion_record_result(worktree, completion_path).record
+
+    def read_completion_record_result(
+        self, worktree: Path, completion_path: str | None = None
+    ) -> CompletionRecordLoadResult:
+        """Read and validate a completion record from a worktree."""
         record_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
-        return load_completion_record(record_path)
+        return load_completion_record_result(record_path)
 
     def resolve_agent_label_from_completion_path(
         self, completion_path: str | None

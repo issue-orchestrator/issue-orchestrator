@@ -184,7 +184,10 @@ _PR_LABEL_MAX_COUNT = 20
 # underscore/slash/colon thereafter.
 _PR_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/:\-]{0,49}$")
 
-_FOLLOW_UP_ISSUES_MAX = 5
+# Completion records may legitimately propose several follow-up issues after
+# audit-style tasks. Keep a generous parser bound for direct in-memory callers;
+# any tighter side-effect throttle belongs in the issue publishing policy.
+_FOLLOW_UP_ISSUES_MAX = 50
 _FOLLOW_UP_TITLE_MAX_BYTES = 255
 _FOLLOW_UP_REASON_MAX_BYTES = 4 * 1024
 _FOLLOW_UP_EVIDENCE_MAX_BYTES = 4 * 1024

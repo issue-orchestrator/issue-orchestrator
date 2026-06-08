@@ -13,6 +13,8 @@ DASHBOARD_JS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "dash
 DASHBOARD_CSS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "css" / "dashboard"
 DASHBOARD_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "dashboard.html"
 ISSUE_ROW_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
+DASHBOARD_VIEW_MODEL = ROOT / "src" / "issue_orchestrator" / "view_models" / "dashboard.py"
+DASHBOARD_E2E_VIEW_MODEL = ROOT / "src" / "issue_orchestrator" / "view_models" / "dashboard_e2e.py"
 UI_ACTION_CONTRACT_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui_action_contract.js"
 BROWSER_AUTH_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "browser_auth.js"
 THEME_RESOLUTION_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "theme_resolution.js"
@@ -206,6 +208,16 @@ def test_blocked_bulk_buttons_default_disabled_in_template() -> None:
     assert re.search(r'onclick="bulkResetRetryFromScratch\(\)"\s+disabled', html)
     assert re.search(r'onclick="bulkMarkViewed\(\)"\s+disabled', html)
     assert re.search(r'onclick="bulkClearViewed\(\)"\s+disabled', html)
+
+
+def test_issue_detail_status_is_live_region() -> None:
+    html = _read(DASHBOARD_TEMPLATE)
+    match = re.search(r"<div[^>]*\bid=\"issueDetailStatus\"[^>]*>", html)
+    assert match is not None
+    status_tag = match.group(0)
+    assert 'role="status"' in status_tag
+    assert 'aria-live="polite"' in status_tag
+    assert 'aria-atomic="true"' in status_tag
 
 
 def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template() -> None:
@@ -1418,8 +1430,14 @@ def test_settings_page_uses_shared_embedded_nav_helper() -> None:
     assert 'id="cancelSettingsBtn"' in tmpl
     assert 'onclick="cancelSettings()"' in tmpl
     assert "window.embeddedNav.buildHref('/', window.location.search)" in tmpl
-    assert "{{ tabs_for_js | tojson }}" in tmpl
-    assert "{{ schemas_for_js | tojson }}" in tmpl
+    # Dict-editor JSON embeds must go through tojson (XSS neutralization);
+    # the old tabs_for_js/schemas_for_js client-side schema bootstrap is
+    # gone by design (form encoding is server-classified, see
+    # test_settings_form_dispatches_cover_the_classifier_kind_set).
+    assert "{{ control.value_options | tojson }}" in tmpl
+    assert "{{ tab_values[field_name] | tojson }}" in tmpl
+    assert "tabs_for_js" not in tmpl
+    assert "schemas_for_js" not in tmpl
     # Old ad-hoc helpers / literals must be gone.
     assert "settingsIsEmbedded" not in tmpl
     assert "'/?embedded=1'" not in tmpl
@@ -1449,6 +1467,41 @@ def test_theme_resolution_uses_shared_embedded_nav_helper() -> None:
     assert "window.embeddedNav.resolveEffectiveTheme" in settings_apply
     # The old inlined system-only fallback must be gone.
     assert "storedTheme === 'system'" not in settings_apply
+
+
+SETTINGS_FORM_CONTROLS_JS = (
+    ROOT / "src" / "issue_orchestrator" / "static" / "js" / "settings_form_controls.js"
+)
+
+
+def test_settings_form_dispatches_cover_the_classifier_kind_set() -> None:
+    """Template render and JS collect must cover exactly the closed control
+    kind set owned by classify_form_control().
+
+    Regression for "nits_by_agent: Input should be a valid dictionary": the
+    template's catch-all `else -> text input` silently mis-rendered the
+    first dict-typed registry field, so every settings save posted a
+    Python-repr string that strict POST validation rejected. The catch-all
+    is gone; a kind missing from either dispatch must fail HERE.
+    """
+    from issue_orchestrator.infra.settings_schema import FORM_CONTROL_KINDS
+
+    tmpl = _read(SETTINGS_TEMPLATE)
+    js = _read(SETTINGS_FORM_CONTROLS_JS)
+    for kind in FORM_CONTROL_KINDS:
+        assert f"control.kind == '{kind}'" in tmpl, (
+            f"settings.html has no render branch for control kind {kind!r}"
+        )
+        assert f"{kind}: (el)" in js, (
+            f"settings_form_controls.js has no collector for control kind {kind!r}"
+        )
+    # The template must fail loudly on an unknown kind, never fall back to
+    # a text input; the JS collector throws via the dispatch lookup.
+    assert "unsupported_settings_control_kind(control.kind)" in tmpl
+    assert "Unsupported settings control kind" in js
+    # The form must not re-interpret the JSON schema client-side.
+    assert "SCHEMA_FIELDS" not in tmpl
+    assert "anyOf" not in tmpl
 
 
 def test_all_dashboard_js_node_tests_pass() -> None:
@@ -2455,6 +2508,68 @@ def test_journey_renders_local_timestamps_from_raw_event_times() -> None:
     assert "_formatIssueLifecycleHeaderTimestamp(run.timestamp" in run_summary_body
     assert "_formatIssueLifecycleHeaderTimestamp(cycle.timestamp" in cycle_summary_body
     assert "_formatIssueLifecycleStepTimestamp(" in step_body
+
+
+def test_dashboard_uses_single_local_timestamp_formatter() -> None:
+    chunks = list(DASHBOARD_JS_CHUNKS)
+    assert chunks[0] == "timestamp_formatting.js"
+    timestamp_src = _read(DASHBOARD_JS_DIR / "timestamp_formatting.js")
+    assert "function formatLocalTimestamp(" in timestamp_src
+    assert "function formatTimestamp(" in timestamp_src
+    assert "function formatJourneyHeaderTimestamp(" in timestamp_src
+    assert "function formatJourneyStepTimestamp(" in timestamp_src
+    assert "function formatDashboardTimestamps(" in timestamp_src
+
+    for chunk in DASHBOARD_JS_CHUNKS:
+        if chunk == "timestamp_formatting.js":
+            continue
+        src = _read(DASHBOARD_JS_DIR / chunk)
+        assert "function formatTimestamp(" not in src, (
+            f"{chunk} must not define a competing timestamp formatter"
+        )
+        assert "function formatJourneyHeaderTimestamp(" not in src
+        assert "function formatJourneyStepTimestamp(" not in src
+        assert "toLocaleTimeString(" not in src, (
+            f"{chunk} must use formatTimestamp(), not ad hoc time-only rendering"
+        )
+        assert not re.search(r"new Date\([^)]*\)\.toLocaleString\(", src), (
+            f"{chunk} must use formatTimestamp(), not raw Date#toLocaleString"
+        )
+
+    session_dialogs = _read(DASHBOARD_JS_DIR / "session_dialogs.js")
+    e2e_runs_list = _read(DASHBOARD_JS_DIR / "e2e_runs_list.js")
+    e2e_runtime = _read(DASHBOARD_JS_DIR / "e2e_runtime.js")
+    timeline_src = _read(DASHBOARD_JS_DIR / "timeline.js")
+    core = _read(DASHBOARD_JS_DIR / "core.js")
+    dashboard_template = _read(DASHBOARD_TEMPLATE)
+    issue_row = _read(ISSUE_ROW_TEMPLATE)
+    dashboard_view_model = _read(DASHBOARD_VIEW_MODEL)
+    dashboard_e2e = _read(DASHBOARD_E2E_VIEW_MODEL)
+    assert "row.value_kind === 'timestamp'" in session_dialogs
+    assert "formatTimestamp(rawValue, rawValue)" in session_dialogs
+    assert "rowName" not in session_dialogs
+    assert "['started', 'ended', 'retention expires']" not in session_dialogs
+    assert "detail_value_kinds" in timeline_src
+    assert "String(data.started_at || '-')" not in session_dialogs
+    assert "formatTimestamp(summary.started_at)" in e2e_runs_list
+    assert "_formatRelative(" not in e2e_runs_list
+    assert "formatE2ELastRunLabel(" in e2e_runtime
+    assert "formatTimestamp(run.started_at)" in e2e_runtime
+    assert "renderE2ELastRunTimestamp(" in e2e_runtime
+    assert "formatDashboardTimestamps(list)" in core
+    assert 'id="e2eLastRunLabel"' in dashboard_template
+    assert "data-started-at=" in dashboard_template
+    assert "e2e-last-run-time" in dashboard_template
+    assert "data-dashboard-timestamp=" in dashboard_template
+    assert "e2e_summary.last_run_label" not in dashboard_template
+    assert "data-dashboard-timestamp=" in issue_row
+    assert "Loading..." not in issue_row
+    assert "_history_time_fields(" in dashboard_view_model
+    assert "_format_history_time" not in dashboard_view_model
+    assert " min @ " not in dashboard_view_model
+    assert '"time_is_timestamp"' in dashboard_view_model
+    assert "_relative_time" not in dashboard_e2e
+    assert '"relative_time"' not in dashboard_e2e
 
 
 def test_journey_layout_uses_content_column_for_actions_and_detail() -> None:

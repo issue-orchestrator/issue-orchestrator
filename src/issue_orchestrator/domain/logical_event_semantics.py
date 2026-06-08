@@ -10,36 +10,54 @@ from typing import Any
 
 from .event_taxonomy import EventIntent, infer_event_intent
 
-_TERMINAL_EVENTS = frozenset({
-    "issue.blocked",
-    "issue.needs_human",
-    "issue.completed",
-    "session.failed",
-    "session.timeout",
-    "session.blocked",
-})
+_TERMINAL_EVENTS = frozenset(
+    {
+        "issue.blocked",
+        "issue.needs_human",
+        "issue.completed",
+        "session.failed",
+        "session.invalid_completion_record",
+        "session.timeout",
+        "session.blocked",
+    }
+)
 _RUN_RESTART_EVENTS = frozenset({"issue.unblocked"})
-_CYCLE_BOUNDARY_EVENTS = frozenset({
-    "session.validation_retry_needed",
-})
-_ITERATION_START_EVENTS = frozenset({
-    "session.started",
-    "rework.started",
-    "rework.launching",
-    "review.started",
-    "review_exchange.started",
-})
-_ROUND_CURRENT_CYCLE_EVENTS = frozenset({
-    "review_exchange.round_started",
-    "review_exchange.round_completed",
-})
-_ROUND_NEXT_CYCLE_EVENTS = frozenset({
-    "review.rework_started",
-    "review.rework_completed",
-})
-_ROUND_COUNT_EVENTS = frozenset({
-    "review_exchange.completed",
-})
+_CYCLE_BOUNDARY_EVENTS = frozenset(
+    {
+        "session.validation_retry_needed",
+    }
+)
+_ITERATION_START_EVENTS = frozenset(
+    {
+        "session.started",
+        "rework.started",
+        "rework.launching",
+        "review.started",
+        "review_exchange.started",
+    }
+)
+_ROUND_CURRENT_CYCLE_EVENTS = frozenset(
+    {
+        "review_exchange.round_started",
+        "review_exchange.round_completed",
+    }
+)
+_ROUND_NEXT_CYCLE_EVENTS = frozenset(
+    {
+        "review.rework_started",
+        "review.rework_completed",
+    }
+)
+_ROUND_COUNT_EVENTS = frozenset(
+    {
+        "review_exchange.completed",
+    }
+)
+_REWORK_ATTEMPT_START_EVENTS = frozenset(
+    {
+        "rework.started",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -67,15 +85,20 @@ def enrich_logical_semantics(
     task_value = task if isinstance(task, str) else None
     intent = infer_event_intent(event_name=event_name, task=task_value)
 
-    prev_run = _as_positive_int(previous_data.get("logical_run") if previous_data else None)
-    prev_cycle = _as_positive_int(previous_data.get("logical_cycle") if previous_data else None)
-    prev_restart_pending = bool(previous_data.get("_logical_restart_pending")) if previous_data else False
+    prev_run = _as_positive_int(
+        previous_data.get("logical_run") if previous_data else None
+    )
+    prev_cycle = _as_positive_int(
+        previous_data.get("logical_cycle") if previous_data else None
+    )
+    prev_restart_pending = (
+        bool(previous_data.get("_logical_restart_pending")) if previous_data else False
+    )
     logical_run = prev_run or 1
 
     restart_due_to_transition = (
-        (previous_event_name in _TERMINAL_EVENTS or prev_restart_pending)
-        and event_name in _ITERATION_START_EVENTS
-    )
+        previous_event_name in _TERMINAL_EVENTS or prev_restart_pending
+    ) and event_name in _ITERATION_START_EVENTS
     restart_due_to_event = prev_run is not None and event_name in _RUN_RESTART_EVENTS
     # Orchestrator restart: instance_id changed between consecutive events
     restart_due_to_instance = bool(
@@ -92,7 +115,13 @@ def enrich_logical_semantics(
     if signal_cycle is not None and (
         logical_run == (prev_run or 1) or signal_cycle > 1
     ):
-        logical_cycle = signal_cycle
+        logical_cycle = _logical_cycle_from_rework_signal(
+            event_name=event_name,
+            event_data=event_data,
+            signal_cycle=signal_cycle,
+            previous_cycle=prev_cycle,
+            same_logical_run=logical_run == (prev_run or 1),
+        )
         rework_driven = True
     elif logical_run != (prev_run or 1):
         logical_cycle = 1
@@ -107,7 +136,9 @@ def enrich_logical_semantics(
         logical_cycle = (prev_cycle or 1) + 1
     else:
         logical_cycle = prev_cycle or 1
-        rework_driven = bool(previous_data and previous_data.get("_logical_rework_driven"))
+        rework_driven = bool(
+            previous_data and previous_data.get("_logical_rework_driven")
+        )
 
     logical_phase = _phase_for_intent(intent)
     if rework_driven and logical_cycle > 1 and logical_phase == "coding":
@@ -152,6 +183,37 @@ def _cycle_from_signal(value: Any) -> int | None:
     if isinstance(value, int) and value >= 0:
         return value + 1
     return None
+
+
+def _logical_cycle_from_rework_signal(
+    *,
+    event_name: str,
+    event_data: dict[str, Any],
+    signal_cycle: int,
+    previous_cycle: int | None,
+    same_logical_run: bool,
+) -> int:
+    if previous_cycle is None or not same_logical_run:
+        return signal_cycle
+    if (
+        _starts_new_positive_rework_attempt(
+            event_name=event_name,
+            event_data=event_data,
+        )
+        and signal_cycle <= previous_cycle
+    ):
+        return previous_cycle + 1
+    return max(signal_cycle, previous_cycle)
+
+
+def _starts_new_positive_rework_attempt(
+    *,
+    event_name: str,
+    event_data: dict[str, Any],
+) -> bool:
+    return event_name in _REWORK_ATTEMPT_START_EVENTS and _cycle_from_signal(
+        event_data.get("rework_cycle")
+    ) not in (None, 1)
 
 
 def _cycle_from_review_round(event_name: str, event_data: dict[str, Any]) -> int | None:

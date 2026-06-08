@@ -38,13 +38,15 @@ Issue-Orchestrator does not know what "good" means for your codebase. Your proje
 
 The dashboard is the concrete control surface: issues flow through Queued, Running, Blocked, Awaiting Merge, and Completed columns. Selecting an issue opens its timeline: review cycles, rework rounds, validation results, session recordings, transcripts, and failure diagnostics.
 
-![Issue-Orchestrator dashboard showing Queued, Running, Blocked, Awaiting Merge, and Completed columns.](docs/images/dashboard.png)
+![Issue-Orchestrator dashboard for a target repo showing Queued 5, Running 2, Blocked 1, Awaiting Merge 1, and Completed 4 columns with real issue cards.](docs/images/dashboard.png)
 
 Behind that view, each issue moves through an explicit state machine backed by GitHub labels and isolated worktrees. Before advancing work, the orchestrator re-observes GitHub and the worktree, so crashes, human edits, dirty trees, and provider failures become recoverable states instead of silent corruption.
 
-![An issue timeline exposes review cycles, validation results, orchestrator decisions, and artifacts such as agent sessions and test results.](docs/images/control-plane-carousel/slide3-evidence.png)
+The timeline makes the evidence inspectable: a review can request changes, feedback can be addressed and re-reviewed, validation can pass on the reviewed commit, and the orchestrator can publish a PR for human merge.
 
-One of those artifacts is a replayable coding session:
+![Issue timeline showing review feedback, a second review cycle, validation passed, and PR creation.](docs/images/timeline-evidence.png)
+
+Timeline artifact buttons open details such as reviewer feedback, review reports, validation artifacts, and replayable coding sessions:
 
 ![Coding session replay showing terminal output, playback controls, and a summary of the agent's completed work and tests.](docs/images/ui-session.png)
 
@@ -113,7 +115,7 @@ Reference docs:
 - **User:** [Installation](docs/user/installation.md) · [Tutorial](docs/user/tutorial.md) · [Configuration](docs/user/configuration.md) · [Configuration Reference](docs/user/configuration_reference.md) · [FAQ](docs/user/faq.md)
 - **Architecture:** [Overview](docs/architecture/README.md) · [Internal Architecture](docs/architecture/internal-architecture.md) · [ADRs](docs/architecture/ADR/README.md) · [Guardrails](docs/design/guardrails.md) · [Hooks](docs/architecture/hooks.md)
 - **Development:** [Testing](docs/development/TESTING.md) · [Creating Guardrails](docs/development/CREATE_GUARDRAILS.md) · [Troubleshooting](docs/development/TROUBLESHOOTING.md) · [Review Workflow](docs/development/REVIEW_WORKFLOW.md)
-- **Features:** [E2E Runner](docs/user/e2e.md) · [VS Code](docs/user/vscode.md)
+- **Features:** [Feature List](docs/user/features.md) · [E2E Runner](docs/user/e2e.md) · [VS Code](docs/user/vscode.md)
 
 ## License and contributions
 

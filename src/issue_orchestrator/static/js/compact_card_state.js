@@ -24,6 +24,7 @@
         const phase = card?.phase ?? '';
         const summary = card?.summary ?? '';
         const stale = Boolean(card?.is_stale);
+        const showStaleBadge = Boolean(card?.show_stale_badge);
         const staleReason = card?.stale_reason ?? '';
         const issueUrl = card?.issue_url ?? '';
         const prUrl = card?.pr_url ?? '';
@@ -42,6 +43,7 @@
             phase,
             summary,
             stale,
+            showStaleBadge,
             staleReason,
             issueUrl,
             prUrl,

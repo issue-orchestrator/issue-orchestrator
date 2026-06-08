@@ -471,6 +471,7 @@ async function refreshIssueRows(vm, rowsOverride = null) {
         insertAfter = node;
     });
 
+    formatDashboardTimestamps(list);
     ensureEmptyState(vm, rows.length > 0);
     updateActionHints();
     initVisibilityObserver();

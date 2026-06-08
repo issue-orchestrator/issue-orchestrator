@@ -34,11 +34,12 @@ LIVE_ONBOARDING_ENABLED = os.environ.get(
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.live,
+    pytest.mark.live_agent,
     pytest.mark.heavy_e2e,
     pytest.mark.requires_infra,
     pytest.mark.asyncio,
     pytest.mark.timeout(45 * 60),
-    pytest.mark.xdist_group("agent-guided-onboarding"),
+    pytest.mark.xdist_group("live-agent"),
     pytest.mark.skipif(
         not LIVE_ONBOARDING_ENABLED,
         reason="Set E2E_AGENT_GUIDED_ONBOARDING=1 to run live agent-guided onboarding acceptance.",

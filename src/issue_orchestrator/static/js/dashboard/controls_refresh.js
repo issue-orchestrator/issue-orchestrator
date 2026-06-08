@@ -397,10 +397,12 @@ function updateIssueCardFreshness(issueNumber, freshness) {
         if (typeof freshness.last_refreshed_age_seconds === 'number') {
             card.dataset.lastRefreshAgeSeconds = String(freshness.last_refreshed_age_seconds);
         }
+        const showStaleBadge = Boolean(freshness.show_stale_badge);
         card.dataset.stale = freshness.is_stale ? 'true' : 'false';
+        card.dataset.showStaleBadge = showStaleBadge ? 'true' : 'false';
         const actionRow = card.querySelector('.card-head-actions') || card.querySelector('.attention-actions');
         let staleDot = card.querySelector('.stale-dot');
-        if (freshness.is_stale) {
+        if (showStaleBadge) {
             if (!staleDot && actionRow) {
                 staleDot = document.createElement('span');
                 staleDot.className = 'stale-dot';
@@ -445,6 +447,7 @@ async function refreshIssueCard(issueNumber, triggerEl = null, options = {}) {
         }
         updateIssueCardFreshness(issueNumber, {
             is_stale: false,
+            show_stale_badge: false,
             stale_reason: '',
             last_refreshed_age_seconds: 0,
             last_refreshed_label: 'just now',
@@ -470,6 +473,9 @@ function maybeRefreshVisibleCard(card) {
         return;
     }
     if (card.dataset.stale !== 'true') {
+        return;
+    }
+    if (card.dataset.showStaleBadge === 'false') {
         return;
     }
     const cfg = currentRefreshConfig();
