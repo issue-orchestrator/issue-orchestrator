@@ -377,8 +377,12 @@ def test_assert_current_branch_is_main_rejects_other_branch(
         lambda _command, *, cwd: _completed(stdout="feature\n"),
     )
 
-    with pytest.raises(prepare_release.ReleasePrepError, match="local branch 'main'"):
+    with pytest.raises(prepare_release.ReleasePrepError) as exc_info:
         prepare_release.assert_current_branch_is_main(tmp_path)
+
+    message = str(exc_info.value)
+    assert "local branch 'main'" in message
+    assert "git switch main && git pull --ff-only origin main" in message
 
 
 def test_assert_head_matches_origin_main_rejects_outdated_main(
@@ -393,8 +397,12 @@ def test_assert_head_matches_origin_main_rejects_outdated_main(
 
     monkeypatch.setattr(prepare_release, "git_rev_parse", fake_rev_parse)
 
-    with pytest.raises(prepare_release.ReleasePrepError, match="origin/main"):
+    with pytest.raises(prepare_release.ReleasePrepError) as exc_info:
         prepare_release.assert_head_matches_origin_main(tmp_path)
+
+    message = str(exc_info.value)
+    assert "origin/main" in message
+    assert "git switch main && git pull --ff-only origin main" in message
 
 
 def test_assert_head_matches_remote_main_rejects_outdated_remote_main(
@@ -404,10 +412,12 @@ def test_assert_head_matches_remote_main_rejects_outdated_remote_main(
     monkeypatch.setattr(prepare_release, "git_rev_parse", lambda _root, _ref: "aaa")
     monkeypatch.setattr(prepare_release, "remote_main_sha", lambda _root: "bbb")
 
-    with pytest.raises(
-        prepare_release.ReleasePrepError, match="current remote origin/main"
-    ):
+    with pytest.raises(prepare_release.ReleasePrepError) as exc_info:
         prepare_release.assert_head_matches_remote_main(tmp_path)
+
+    message = str(exc_info.value)
+    assert "current remote origin/main" in message
+    assert "git switch main && git pull --ff-only origin main" in message
 
 
 def test_commit_release_metadata_rejects_unexpected_file(

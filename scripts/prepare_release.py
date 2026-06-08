@@ -345,6 +345,19 @@ def fetch_origin_main(root: Path) -> None:
     )
 
 
+def remediate_outdated_local_main() -> str:
+    """Return the command that updates a local checkout to the merged release.
+
+    ``make release-pr`` leaves the checkout on the release PR branch, so after
+    that PR merges the operator must switch back to ``main`` and fast-forward to
+    the merge commit before ``make release`` can verify and tag it.
+    """
+    return (
+        f"git switch {RELEASE_BRANCH} && "
+        f"git pull --ff-only {RELEASE_REMOTE} {RELEASE_BRANCH}"
+    )
+
+
 def assert_current_branch_is_main(root: Path) -> None:
     """Require releases to be run from the local main branch."""
     result = run_captured_command(["git", "branch", "--show-current"], cwd=root)
@@ -352,7 +365,9 @@ def assert_current_branch_is_main(root: Path) -> None:
     if current_branch != RELEASE_BRANCH:
         raise ReleasePrepError(
             f"Release must run from local branch {RELEASE_BRANCH!r}; "
-            f"current branch is {current_branch or '<detached HEAD>'!r}"
+            f"current branch is {current_branch or '<detached HEAD>'!r}.\n"
+            f"Update your checkout to the merged release commit, then re-run:\n"
+            f"  {remediate_outdated_local_main()}"
         )
 
 
@@ -371,7 +386,9 @@ def assert_head_matches_origin_main(root: Path) -> None:
         raise ReleasePrepError(
             f"Release must start from {RELEASE_REMOTE}/{RELEASE_BRANCH}.\n"
             f"HEAD: {head_sha}\n"
-            f"{RELEASE_REMOTE}/{RELEASE_BRANCH}: {origin_main_sha}"
+            f"{RELEASE_REMOTE}/{RELEASE_BRANCH}: {origin_main_sha}\n"
+            f"Update your checkout to the merged release commit, then re-run:\n"
+            f"  {remediate_outdated_local_main()}"
         )
 
 
@@ -408,7 +425,9 @@ def assert_head_matches_remote_main(root: Path) -> None:
         raise ReleasePrepError(
             f"Release must start from current remote {RELEASE_REMOTE}/{RELEASE_BRANCH}.\n"
             f"HEAD: {head_sha}\n"
-            f"{RELEASE_REMOTE}/{RELEASE_BRANCH}: {origin_main_sha}"
+            f"{RELEASE_REMOTE}/{RELEASE_BRANCH}: {origin_main_sha}\n"
+            f"Update your checkout to the merged release commit, then re-run:\n"
+            f"  {remediate_outdated_local_main()}"
         )
 
 
