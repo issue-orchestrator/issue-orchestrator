@@ -8,14 +8,8 @@
 # The scripts directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Find the orchestrator's venv by going up from the scripts dir
-# Structure: .../issue-orchestrator/src/issue_orchestrator/scripts/
-#                                   ^-- 3 levels up to issue-orchestrator
-# We need: .../issue-orchestrator/.venv/bin/reviewer-done
-ORCHESTRATOR_ROOT="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
-REVIEWER_DONE="$ORCHESTRATOR_ROOT/.venv/bin/reviewer-done"
-
-if [[ -x "$REVIEWER_DONE" ]]; then
+source "$SCRIPT_DIR/completion-wrapper-lib.sh"
+if REVIEWER_DONE="$(completion_wrapper_resolve "$SCRIPT_DIR" "reviewer-done")"; then
     exec "$REVIEWER_DONE" "$@"
 fi
 
@@ -31,8 +25,10 @@ echo "╠═══════════════════════�
 echo "║                                                                ║" >&2
 echo "║  The issue-orchestrator package may not be installed.         ║" >&2
 echo "║                                                                ║" >&2
-echo "║  Expected location:                                           ║" >&2
-echo "║  $REVIEWER_DONE" >&2
+echo "║  Checked locations:                                           ║" >&2
+for REVIEWER_DONE in "${completion_candidate_paths[@]}"; do
+    echo "║  $REVIEWER_DONE" >&2
+done
 echo "║                                                                ║" >&2
 echo "╚════════════════════════════════════════════════════════════════╝" >&2
 exit 1
