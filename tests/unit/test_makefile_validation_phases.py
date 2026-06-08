@@ -1,5 +1,6 @@
 """Tests for Makefile validation phase orchestration."""
 
+import ast
 import os
 import re
 import shutil
@@ -81,6 +82,37 @@ def _assert_no_job_count(line: str) -> None:
     assert not re.search(r"(?:^|\s)-j\s*\d+(?:\s|$)", line), line
 
 
+def _makefile_variable_words(name: str) -> list[str]:
+    makefile = REPO_ROOT / "Makefile"
+    match = re.search(
+        rf"^{re.escape(name)}\s*:?=\s*(.+)$",
+        makefile.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert match is not None, f"Makefile variable {name} not found"
+    return match.group(1).split()
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        if parent is None:
+            return None
+        return f"{parent}.{node.attr}"
+    return None
+
+
+def _has_live_codex_marker(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return any(
+        _dotted_name(node) == "pytest.mark.live_codex"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+    )
+
+
 def test_validate_impl_runs_core_phases_with_separate_job_caps():
     lines = _dry_run("_validate-impl")
 
@@ -142,20 +174,16 @@ def test_agent_validation_targets_emit_timing_markers():
 
     starts = _matching_indexes(integration_lines, "[validate-timing] START target=$target")
     ends = _matching_indexes(integration_lines, "[validate-timing] END target=$target")
-    assert len(starts) == 2
-    assert len(ends) == 2
+    assert len(starts) == 1
+    assert len(ends) == 1
 
     agent_index = _find_line(integration_lines, 'target="test-integration-agent"')
-    live_codex_index = _find_line(
-        integration_lines,
-        'target="test-integration-agent-live-codex"',
+    assert starts == [agent_index]
+    assert all(
+        'target="test-integration-agent-live-codex"' not in line
+        for line in integration_lines
     )
-    non_live_marker_index = _find_line(integration_lines, '-m "not live_codex"')
-    live_marker_index = _find_line(integration_lines, '-m "live_codex"')
-
-    assert agent_index < live_codex_index
-    assert non_live_marker_index == agent_index
-    assert live_marker_index == live_codex_index
+    assert all("live_codex" not in line for line in integration_lines)
 
 
 def test_core_validation_runs_live_codex_marker_serially():
@@ -185,52 +213,49 @@ def test_core_validation_runs_live_codex_marker_serially():
 
 def test_agent_backed_integration_runs_serial_by_default():
     lines = _dry_run("test-integration-agent")
-    non_live_pytest_line = lines[
+    pytest_line = lines[
         _find_line(
             lines,
             "tests/integration/test_claude_execution.py",
             "tests/integration/test_codex_execution.py",
             "tests/integration/test_live_agent_chain.py",
-            '-m "not live_codex"',
-        )
-    ]
-    live_codex_pytest_line = lines[
-        _find_line(
-            lines,
-            "tests/integration/test_claude_execution.py",
-            "tests/integration/test_codex_execution.py",
-            "tests/integration/test_live_agent_chain.py",
-            '-m "live_codex"',
         )
     ]
 
-    assert " -n " not in f" {non_live_pytest_line} "
-    assert " -n " not in f" {live_codex_pytest_line} "
+    assert " -n " not in f" {pytest_line} "
+    assert " -m " not in f" {pytest_line} "
+    assert all("test-integration-agent-live-codex" not in line for line in lines)
 
 
 def test_agent_backed_integration_allows_explicit_parallel_override():
     lines = _dry_run("test-integration-agent", INTEGRATION_AGENT_PARALLEL="2")
-    non_live_pytest_line = lines[
+    pytest_line = lines[
         _find_line(
             lines,
             "tests/integration/test_claude_execution.py",
             "tests/integration/test_codex_execution.py",
             "tests/integration/test_live_agent_chain.py",
-            '-m "not live_codex"',
-        )
-    ]
-    live_codex_pytest_line = lines[
-        _find_line(
-            lines,
-            "tests/integration/test_claude_execution.py",
-            "tests/integration/test_codex_execution.py",
-            "tests/integration/test_live_agent_chain.py",
-            '-m "live_codex"',
         )
     ]
 
-    assert " -n 2 " in f" {non_live_pytest_line} "
-    assert " -n " not in f" {live_codex_pytest_line} "
+    assert " -n 2 " in f" {pytest_line} "
+    assert " -m " not in f" {pytest_line} "
+    assert all("test-integration-agent-live-codex" not in line for line in lines)
+
+
+def test_agent_backed_integration_files_do_not_reintroduce_live_codex_marker():
+    agent_files = _makefile_variable_words("INTEGRATION_AGENT_FILES")
+
+    offenders = [
+        path
+        for path in agent_files
+        if _has_live_codex_marker(REPO_ROOT / path)
+    ]
+
+    assert offenders == [], (
+        "live_codex tests in INTEGRATION_AGENT_FILES would run in the main "
+        f"agent phase instead of a serial live-provider lane: {offenders}"
+    )
 
 
 def test_live_agent_transport_is_scheduled_by_e2e_not_agent_integration():
