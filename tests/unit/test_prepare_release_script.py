@@ -19,9 +19,9 @@ sys.modules[SPEC.name] = prepare_release
 SPEC.loader.exec_module(prepare_release)
 
 
-def _completed(stdout: str = "", returncode: int = 0):
+def _completed(stdout: str = "", returncode: int = 0, stderr: str = ""):
     return subprocess.CompletedProcess(
-        args=[], returncode=returncode, stdout=stdout, stderr=""
+        args=[], returncode=returncode, stdout=stdout, stderr=stderr
     )
 
 
@@ -427,6 +427,119 @@ def test_commit_release_metadata_rejects_unexpected_file(
         )
 
 
+def test_commit_release_metadata_commits_only_expected_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        prepare_release,
+        "release_metadata_changed_files",
+        lambda _root: {"pyproject.toml", "uv.lock"},
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "run_captured_command",
+        lambda command, *, cwd: _completed(stdout="pyproject.toml\nuv.lock\n"),
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "run_command",
+        lambda command, *, cwd: commands.append(tuple(command)),
+    )
+
+    prepare_release.commit_release_metadata(
+        prepare_release.ReleasePaths.from_root(tmp_path),
+        "v1.0.0",
+    )
+
+    assert commands == [
+        ("git", "add", "pyproject.toml", "uv.lock"),
+        ("git", "commit", "-s", "-m", "Release v1.0.0"),
+    ]
+
+
+def test_commit_release_metadata_rejects_no_metadata_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        prepare_release,
+        "release_metadata_changed_files",
+        lambda _root: set(),
+    )
+
+    with pytest.raises(prepare_release.ReleasePrepError, match="did not change"):
+        prepare_release.commit_release_metadata(
+            prepare_release.ReleasePaths.from_root(tmp_path),
+            "v1.0.0",
+        )
+
+
+def test_release_metadata_changed_files_unions_all_dirty_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_captured(command, *, cwd):  # noqa: ANN001
+        command_key = tuple(command)
+        outputs = {
+            ("git", "diff", "--name-only"): "pyproject.toml\n",
+            ("git", "diff", "--cached", "--name-only"): "uv.lock\n",
+            ("git", "ls-files", "--others", "--exclude-standard"): "notes.txt\n",
+        }
+        return _completed(stdout=outputs[command_key])
+
+    monkeypatch.setattr(prepare_release, "run_captured_command", fake_run_captured)
+
+    assert prepare_release.release_metadata_changed_files(tmp_path) == {
+        "pyproject.toml",
+        "uv.lock",
+        "notes.txt",
+    }
+
+
+def test_assert_valid_branch_name_rejects_git_invalid_branch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        prepare_release,
+        "run_optional_command",
+        lambda command, *, cwd: _completed(returncode=1, stderr="fatal: invalid"),
+    )
+
+    with pytest.raises(prepare_release.ReleasePrepError, match="Invalid release branch"):
+        prepare_release.assert_valid_branch_name(tmp_path, "bad branch")
+
+
+def test_assert_local_branch_absent_rejects_unexpected_git_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        prepare_release,
+        "run_optional_command",
+        lambda command, *, cwd: _completed(returncode=128),
+    )
+
+    with pytest.raises(prepare_release.ReleasePrepError, match="Could not check"):
+        prepare_release.assert_local_branch_absent(tmp_path, "release-v1.0.0")
+
+
+def test_assert_remote_branch_absent_rejects_unexpected_git_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        prepare_release,
+        "run_optional_command",
+        lambda command, *, cwd: _completed(returncode=128, stderr="fatal: network"),
+    )
+
+    with pytest.raises(prepare_release.ReleasePrepError, match="fatal: network"):
+        prepare_release.assert_remote_branch_absent(tmp_path, "release-v1.0.0")
+
+
 def test_apply_release_metadata_resolves_uv_before_mutating_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -510,8 +623,8 @@ def test_release_pr_workflow_order(
     )
     monkeypatch.setattr(
         prepare_release,
-        "run_release_pr_validation",
-        lambda _paths, _options: calls.append("validate"),
+        "run_release_validation",
+        lambda _paths, *, skip_validation, validation_command: calls.append("validate"),
     )
     monkeypatch.setattr(
         prepare_release,
@@ -540,6 +653,50 @@ def test_release_pr_workflow_order(
         "clean_after_validation",
         "publish",
     ]
+
+
+def test_release_pr_failure_after_branch_prints_recovery_hint(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pyproject(tmp_path / "pyproject.toml", version="0.9.0")
+    _write_lock(tmp_path / "uv.lock", version="0.9.0")
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_pr_preflight",
+        lambda *, paths, tag_name, branch_name, options: None,
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "confirm_release",
+        lambda *, tag_name: None,
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "create_release_pr_branch",
+        lambda _paths, _branch_name: None,
+    )
+
+    def fail_metadata(**_kwargs):  # noqa: ANN003
+        raise prepare_release.ReleasePrepError("metadata failed")
+
+    monkeypatch.setattr(prepare_release, "apply_release_metadata", fail_metadata)
+
+    with pytest.raises(prepare_release.ReleasePrepError, match="metadata failed"):
+        prepare_release.run_release_pr_workflow(
+            paths=paths,
+            version="v1.0.0",
+            options=_release_pr_options(dry_run=False),
+        )
+
+    stderr = capsys.readouterr().err
+    assert "stopped after creating the local release branch" in stderr
+    assert "git switch -" in stderr
+    assert "git branch -D release-v1.0.0" in stderr
+    assert "git push origin --delete release-v1.0.0" in stderr
 
 
 def test_full_release_rechecks_clean_tree_after_validation_before_tag(
@@ -576,7 +733,7 @@ def test_full_release_rechecks_clean_tree_after_validation_before_tag(
     monkeypatch.setattr(
         prepare_release,
         "run_release_validation",
-        lambda _paths, _options: calls.append("validate"),
+        lambda _paths, *, skip_validation, validation_command: calls.append("validate"),
     )
     monkeypatch.setattr(
         prepare_release,
@@ -610,3 +767,30 @@ def test_full_release_rechecks_clean_tree_after_validation_before_tag(
         "tag",
         "publish",
     ]
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["v1.0.0", "--no-pr"], "--no-pr requires --prepare-pr"),
+        (["v1.0.0", "--release-branch", "release-test"], "--release-branch requires"),
+        (
+            ["v1.0.0", "--prepare-pr", "--no-gh-release"],
+            "--no-gh-release only applies",
+        ),
+        (
+            ["v1.0.0", "--prepare-only", "--local-only"],
+            "--local-only only applies",
+        ),
+    ],
+)
+def test_main_rejects_mode_scoped_flags(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    message: str,
+) -> None:
+    result = prepare_release.main([*argv, "--project-root", str(tmp_path)])
+
+    assert result == 1
+    assert message in capsys.readouterr().err

@@ -921,21 +921,16 @@ def commit_release_metadata(paths: ReleasePaths, tag_name: str) -> None:
 
 
 def run_release_validation(
-    paths: ReleasePaths, options: ReleaseWorkflowOptions
+    paths: ReleasePaths,
+    *,
+    skip_validation: bool,
+    validation_command: tuple[str, ...],
 ) -> None:
     """Run the configured release validation phase."""
-    if options.skip_validation:
+    if skip_validation:
         print("Skipped validation.")
         return
-    run_command(options.validation_command, cwd=paths.root)
-
-
-def run_release_pr_validation(paths: ReleasePaths, options: ReleasePrOptions) -> None:
-    """Run validation before pushing the release PR branch."""
-    if options.skip_validation:
-        print("Skipped validation.")
-        return
-    run_command(options.validation_command, cwd=paths.root)
+    run_command(validation_command, cwd=paths.root)
 
 
 def create_release_tag(paths: ReleasePaths, tag_name: str) -> None:
@@ -1005,6 +1000,19 @@ def publish_release_pr(
         print("Skipped pull request creation.")
 
 
+def print_release_pr_recovery_hint(branch_name: str) -> None:
+    """Print operator recovery guidance after a release PR branch failure."""
+    print(
+        "\nRelease PR workflow stopped after creating the local release branch.",
+        file=sys.stderr,
+    )
+    print(f"Current branch may be {branch_name!r}. To discard and retry:", file=sys.stderr)
+    print("  git switch -", file=sys.stderr)
+    print(f"  git branch -D {branch_name}", file=sys.stderr)
+    print("If the branch was pushed before the failure, also run:", file=sys.stderr)
+    print(f"  git push {RELEASE_REMOTE} --delete {branch_name}", file=sys.stderr)
+
+
 def run_release_workflow(
     *,
     paths: ReleasePaths,
@@ -1049,7 +1057,11 @@ def run_release_workflow(
         sync_environment=options.sync_environment,
         uv_executable=options.uv_executable,
     )
-    run_release_validation(paths, options)
+    run_release_validation(
+        paths,
+        skip_validation=options.skip_validation,
+        validation_command=options.validation_command,
+    )
     assert_clean_worktree(paths.root)
     create_release_tag(paths, tag_name)
     publish_release(paths, tag_name, options)
@@ -1107,21 +1119,29 @@ def run_release_pr_workflow(
         confirm_release(tag_name=tag_name)
 
     create_release_pr_branch(paths, branch_name)
-    apply_release_metadata(
-        paths=paths,
-        target_version=target_version,
-        sync_environment=options.sync_environment,
-        uv_executable=options.uv_executable,
-    )
-    commit_release_metadata(paths, tag_name)
-    run_release_pr_validation(paths, options)
-    assert_clean_worktree(paths.root)
-    publish_release_pr(
-        paths,
-        tag_name=tag_name,
-        branch_name=branch_name,
-        options=options,
-    )
+    try:
+        apply_release_metadata(
+            paths=paths,
+            target_version=target_version,
+            sync_environment=options.sync_environment,
+            uv_executable=options.uv_executable,
+        )
+        commit_release_metadata(paths, tag_name)
+        run_release_validation(
+            paths,
+            skip_validation=options.skip_validation,
+            validation_command=options.validation_command,
+        )
+        assert_clean_worktree(paths.root)
+        publish_release_pr(
+            paths,
+            tag_name=tag_name,
+            branch_name=branch_name,
+            options=options,
+        )
+    except ReleasePrepError:
+        print_release_pr_recovery_hint(branch_name)
+        raise
     print("")
     print(f"Release PR ready for {tag_name}.")
     print(
@@ -1256,6 +1276,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths = ReleasePaths.from_root(args.project_root)
         if args.prepare_only and args.prepare_pr:
             raise ReleasePrepError("--prepare-only and --prepare-pr are mutually exclusive")
+        if args.no_pr and not args.prepare_pr:
+            raise ReleasePrepError("--no-pr requires --prepare-pr")
+        if args.release_branch and not args.prepare_pr:
+            raise ReleasePrepError("--release-branch requires --prepare-pr")
+        if args.no_gh_release and (args.prepare_only or args.prepare_pr):
+            raise ReleasePrepError("--no-gh-release only applies to final release")
+        if args.local_only and args.prepare_only:
+            raise ReleasePrepError(
+                "--local-only only applies to final release or --prepare-pr"
+            )
         if args.prepare_pr:
             run_release_pr_workflow(
                 paths=paths,

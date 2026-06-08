@@ -12,7 +12,9 @@ make release-pr VERSION=v1.0.0
 The script fetches `origin/main`, creates a `release-v1.0.0` branch from it,
 updates `pyproject.toml` and `uv.lock`, syncs `.venv`, commits the release
 metadata with signoff, runs `make validate-pr`, pushes the branch, and opens the
-pull request.
+pull request. On success, your checkout remains on the release PR branch. If a
+step fails after that branch is created, the script prints local and remote
+branch cleanup commands before retrying.
 
 Review and merge that PR to `main` through the normal gate. After it is merged,
 run the final release from a clean checkout:
