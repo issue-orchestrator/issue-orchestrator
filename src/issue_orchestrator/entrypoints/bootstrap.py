@@ -99,7 +99,7 @@ if TYPE_CHECKING:
     from ..execution.persistent_exchange_pair_registry_inmemory import (
         InMemoryPersistentExchangePairRegistry,
     )
-    from ..execution.review_exchange_turn_mailbox import TurnMailbox
+    from ..ports.turn_mailbox import TurnMailbox
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -791,8 +791,8 @@ def build_orchestrator(
     # agent-facing ``exchange-respond`` Control API handler. One instance,
     # shared by the runner (which opens/awaits slots) and InfraServices
     # (which the Control API reads to deliver verdicts).
-    from ..execution.review_exchange_turn_mailbox import TurnMailbox
-    turn_mailbox = TurnMailbox()
+    from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
+    turn_mailbox = InMemoryTurnMailbox()
 
     # Wire the registry into action_applier so ``_apply_escalate``
     # and ``_apply_reconcile_history_entry`` can release the pair at
@@ -1104,8 +1104,8 @@ def build_orchestrator_for_testing(
         cancel_issue_review_exchange,
     )
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
-    from ..execution.review_exchange_turn_mailbox import TurnMailbox
-    turn_mailbox = TurnMailbox()
+    from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
+    turn_mailbox = InMemoryTurnMailbox()
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor

@@ -12,9 +12,9 @@ import threading
 import pytest
 
 from issue_orchestrator.execution.review_exchange_turn_mailbox import (
-    DeliveryStatus,
-    TurnMailbox,
+    InMemoryTurnMailbox,
 )
+from issue_orchestrator.ports.turn_mailbox import DeliveryStatus
 
 KEY = "/wt/.issue-orchestrator/review-response.json"
 OTHER_KEY = "/wt-review/.issue-orchestrator/review-response.json"
@@ -22,7 +22,7 @@ OTHER_KEY = "/wt-review/.issue-orchestrator/review-response.json"
 
 class TestHappyPath:
     def test_open_deliver_take_round_trips_payload(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="reviewer-r1-a1")
 
         result = mailbox.deliver(KEY, {"response_type": "ok", "response_text": "good"})
@@ -36,7 +36,7 @@ class TestHappyPath:
         }
 
     def test_deliver_copies_payload_so_caller_mutation_does_not_leak(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="t")
         payload = {"response_type": "ok"}
         mailbox.deliver(KEY, payload)
@@ -47,13 +47,13 @@ class TestHappyPath:
 
 class TestRejection:
     def test_deliver_without_open_slot_is_rejected(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         result = mailbox.deliver(KEY, {"response_type": "ok"})
         assert result.status is DeliveryStatus.NO_OPEN_SLOT
         assert result.turn_id is None
 
     def test_second_deliver_into_filled_slot_is_rejected(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="t")
         assert mailbox.deliver(KEY, {"response_type": "ok"}).accepted
         second = mailbox.deliver(KEY, {"response_type": "disagree"})
@@ -65,7 +65,7 @@ class TestRejection:
     def test_deliver_after_take_but_before_close_is_rejected(self) -> None:
         # A duplicate submission arriving after the worker already consumed
         # the verdict must not overwrite or re-deliver.
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="t")
         mailbox.deliver(KEY, {"response_type": "ok"})
         assert mailbox.try_take(KEY) == {"response_type": "ok"}
@@ -73,7 +73,7 @@ class TestRejection:
         assert late.status is DeliveryStatus.ALREADY_DELIVERED
 
     def test_deliver_after_close_is_rejected(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="t")
         mailbox.close(KEY)
         assert mailbox.deliver(KEY, {"response_type": "ok"}).status is (
@@ -83,22 +83,22 @@ class TestRejection:
 
 class TestTake:
     def test_take_before_deliver_returns_none(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="t")
         assert mailbox.try_take(KEY) is None
 
     def test_take_without_open_returns_none(self) -> None:
-        assert TurnMailbox().try_take(KEY) is None
+        assert InMemoryTurnMailbox().try_take(KEY) is None
 
     def test_take_is_one_shot(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="t")
         mailbox.deliver(KEY, {"response_type": "ok"})
         assert mailbox.try_take(KEY) == {"response_type": "ok"}
         assert mailbox.try_take(KEY) is None
 
     def test_take_after_close_returns_none(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="t")
         mailbox.deliver(KEY, {"response_type": "ok"})
         mailbox.close(KEY)
@@ -107,7 +107,7 @@ class TestTake:
 
 class TestSupersede:
     def test_open_supersedes_undelivered_prior_turn(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="r1")
         # New turn opens before the prior one ever received a verdict.
         mailbox.open(KEY, turn_id="r2")
@@ -116,7 +116,7 @@ class TestSupersede:
         assert mailbox.try_take(KEY) == {"response_type": "ok"}
 
     def test_open_supersedes_delivered_but_untaken_prior_turn(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="r1")
         mailbox.deliver(KEY, {"response_type": "stale"})
         # Worker never took it (e.g. the prior turn timed out); the next turn
@@ -127,7 +127,7 @@ class TestSupersede:
 
 class TestIsolation:
     def test_distinct_keys_do_not_interfere(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="coder")
         mailbox.open(OTHER_KEY, turn_id="reviewer")
         mailbox.deliver(KEY, {"role": "coder"})
@@ -140,14 +140,14 @@ class TestIsolation:
 class TestValidation:
     def test_open_rejects_empty_key(self) -> None:
         with pytest.raises(ValueError, match="key must be non-empty"):
-            TurnMailbox().open("", turn_id="t")
+            InMemoryTurnMailbox().open("", turn_id="t")
 
     def test_open_rejects_empty_turn_id(self) -> None:
         with pytest.raises(ValueError, match="turn_id must be non-empty"):
-            TurnMailbox().open(KEY, turn_id="")
+            InMemoryTurnMailbox().open(KEY, turn_id="")
 
     def test_close_is_idempotent(self) -> None:
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.close(KEY)  # never opened
         mailbox.open(KEY, turn_id="t")
         mailbox.close(KEY)
@@ -159,7 +159,7 @@ class TestConcurrency:
         # Models many simultaneous exchange-respond calls racing into the
         # same open slot: the mailbox must accept exactly one and reject the
         # rest as ALREADY_DELIVERED — never two ACCEPTED.
-        mailbox = TurnMailbox()
+        mailbox = InMemoryTurnMailbox()
         mailbox.open(KEY, turn_id="t")
         results = []
         results_lock = threading.Lock()

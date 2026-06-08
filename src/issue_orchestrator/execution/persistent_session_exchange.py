@@ -86,7 +86,7 @@ from ..domain.review_exchange_turn import (
     Role,
     TurnResultKind,
 )
-from .review_exchange_turn_mailbox import TurnMailbox
+from ..ports.turn_mailbox import TurnMailbox
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.review_exchange_summary import ReviewExchangeReason, ReviewExchangeStatus, ReviewExchangeSummaryArtifactRef, ReviewExchangeSummaryV1, ReviewExchangeTerminalState
 from ..domain.runtime_config import RuntimeConfigReference
@@ -2417,11 +2417,16 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
     mailbox_key = str(workspace.response_file)
     response_reader: Callable[[], dict[str, Any] | None] | None = None
     if turn_mailbox is not None:
-        turn_mailbox.open(
+        mailbox = turn_mailbox
+        mailbox.open(
             mailbox_key,
             turn_id=f"{role_value}-r{cycle_index}-a{attempt_index}",
         )
-        response_reader = lambda: turn_mailbox.try_take(mailbox_key)  # noqa: E731
+
+        def _read_from_mailbox() -> dict[str, Any] | None:
+            return mailbox.try_take(mailbox_key)
+
+        response_reader = _read_from_mailbox
     try:
         parsed = send_round(
             session,

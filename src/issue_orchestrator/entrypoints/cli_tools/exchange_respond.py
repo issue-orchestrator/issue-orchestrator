@@ -192,7 +192,8 @@ def safe_main() -> None:
         sys.exit(main())
     except SystemExit:
         raise
-    except Exception as exc:  # noqa: BLE001 - last-resort guard for an agent CLI
+    except Exception as exc:
+        # Last-resort guard for an agent CLI: never crash without a message.
         print(f"exchange-respond: internal error: {exc}", file=sys.stderr)
         sys.exit(1)
 

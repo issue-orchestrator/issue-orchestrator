@@ -33,7 +33,7 @@ from .persistent_session_exchange import (
     review_exchange_supervisor_timeout_seconds,
     run_persistent_session_exchange,
 )
-from .review_exchange_turn_mailbox import TurnMailbox
+from ..ports.turn_mailbox import TurnMailbox
 from .reviewer_worktree import (
     create_reviewer_worktree,
     resolve_current_branch,

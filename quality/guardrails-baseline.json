@@ -1377,12 +1377,12 @@
       "value": 865
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/bootstrap.py": {
-      "detail": "1235 lines exceeds budget 800",
+      "detail": "1260 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1235
+      "value": 1260
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/cli.py": {
       "detail": "964 lines exceeds budget 800",
@@ -1401,12 +1401,12 @@
       "value": 1649
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/control_api.py": {
-      "detail": "1289 lines exceeds budget 800",
+      "detail": "1291 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/control_api.py",
       "path": "src/issue_orchestrator/entrypoints/control_api.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1289
+      "value": 1291
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/control_api_e2e_runs.py": {
       "detail": "950 lines exceeds budget 800",
@@ -1472,13 +1472,21 @@
       "rule_id": "oversized_control_hotspots",
       "value": 910
     },
+    "oversized_control_hotspots:src/issue_orchestrator/execution/persistent_round_runner.py": {
+      "detail": "814 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/execution/persistent_round_runner.py",
+      "path": "src/issue_orchestrator/execution/persistent_round_runner.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 814
+    },
     "oversized_control_hotspots:src/issue_orchestrator/execution/persistent_session_exchange.py": {
-      "detail": "3198 lines exceeds budget 800",
+      "detail": "3237 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 3198
+      "value": 3237
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/session_output_adapter.py": {
       "detail": "1641 lines exceeds budget 800",
@@ -1900,6 +1908,14 @@
       "detail": "line 364: # noqa: ANN201",
       "kind": "ruff_noqa_suppression",
       "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-364",
+      "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
+      "rule_id": "ruff_noqa_suppressions",
+      "value": 1
+    },
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-365": {
+      "detail": "line 365: # noqa: ANN201",
+      "kind": "ruff_noqa_suppression",
+      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-365",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
@@ -3229,6 +3245,22 @@
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/dirty_retry_budget.py:issue-orchestrator.raw-public-seam-dict-return:8bbc13f28d20",
       "path": "src/issue_orchestrator/entrypoints/cli_tools/dirty_retry_budget.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py:issue-orchestrator.raw-public-seam-dict-parameter:3f2471f150ee": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 134: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py:issue-orchestrator.raw-public-seam-dict-parameter:3f2471f150ee",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py",
+      "rule_id": "semgrep_typed_seams",
+      "value": 1
+    },
+    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py:issue-orchestrator.raw-public-seam-dict-return:103667cf043a": {
+      "detail": "issue-orchestrator.raw-public-seam-dict-return line 97: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py:issue-orchestrator.raw-public-seam-dict-return:103667cf043a",
+      "path": "src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py",
       "rule_id": "semgrep_typed_seams",
       "value": 1
     },

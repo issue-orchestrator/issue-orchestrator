@@ -43,39 +43,15 @@ which had this same window plus the bootstrap/late-write/torn-read ones.
 
 from __future__ import annotations
 
-import enum
 import logging
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ..ports.turn_mailbox import DeliveryResult, DeliveryStatus
+
 logger = logging.getLogger(__name__)
-
-
-class DeliveryStatus(enum.Enum):
-    """Outcome of an attempt to deliver a verdict into a turn slot."""
-
-    ACCEPTED = "accepted"
-    NO_OPEN_SLOT = "no_open_slot"
-    ALREADY_DELIVERED = "already_delivered"
-
-
-@dataclass(frozen=True)
-class DeliveryResult:
-    """Result of :meth:`TurnMailbox.deliver`.
-
-    ``turn_id`` is the orchestrator-side identity of the slot the delivery
-    was matched against (``None`` when no slot was open). It is for logging
-    and diagnostics only — the agent never sees or supplies it.
-    """
-
-    status: DeliveryStatus
-    turn_id: str | None = None
-
-    @property
-    def accepted(self) -> bool:
-        return self.status is DeliveryStatus.ACCEPTED
 
 
 @dataclass
@@ -85,13 +61,14 @@ class _OpenSlot:
     taken: bool = False
 
 
-class TurnMailbox:
-    """Thread-safe, one-shot-per-turn rendezvous keyed by an opaque string.
+class InMemoryTurnMailbox:
+    """In-process implementation of the ``TurnMailbox`` port.
 
-    The exchange worker thread calls :meth:`open` then polls
-    :meth:`try_take`; the control-API handler thread calls :meth:`deliver`.
-    All state transitions are guarded by a single lock — the operations are
-    O(1), so coarse locking is both correct and cheap.
+    Thread-safe, one-shot-per-turn rendezvous keyed by an opaque string. The
+    exchange worker thread calls :meth:`open` then polls :meth:`try_take`; the
+    control-API handler thread calls :meth:`deliver`. All state transitions
+    are guarded by a single lock — the operations are O(1), so coarse locking
+    is both correct and cheap.
     """
 
     def __init__(self) -> None:

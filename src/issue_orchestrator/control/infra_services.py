@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from ..ports.persistent_exchange_pair_registry import (
         PersistentExchangePairRegistry,
     )
-    from ..execution.review_exchange_turn_mailbox import TurnMailbox
+    from ..ports.turn_mailbox import TurnMailbox
     from ..ports.timeline_reader import TimelineReader
     from ..ports.timeline_store import TimelineStore
     from ..ports.timeline_writer import TimelineWriter

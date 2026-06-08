@@ -392,20 +392,11 @@ def send_round(
 ) -> dict[str, Any]:
     """Inject ``prompt`` into the persistent agent and wait for its response.
 
-    The response arrives through one of two channels, selected by
-    ``response_reader``:
-
-    - ``None`` (default): the agent writes JSON to ``response_file`` and the
-      loop polls the filesystem. Stale response files are removed before the
-      prompt is sent so the appearance of the file is unambiguously this
-      round's response.
-    - provided: the orchestrator-owned ``TurnMailbox`` is the channel. The
-      agent submits via ``exchange-respond`` and the loop polls the mailbox
-      via ``response_reader`` instead of the filesystem. No file is touched —
-      turn correlation is decided server-side, not by file timing.
-
-    The PTY pumping, exit detection, idle-timeout, and heartbeat behaviour is
-    identical for both channels; only the response source differs.
+    The response source is selected by ``response_reader``: ``None`` (default)
+    polls ``response_file`` on disk (stale files are cleared first); when
+    provided, the loop polls that callable (the orchestrator-owned
+    ``TurnMailbox``, fed by ``exchange-respond``) and touches no file. The PTY
+    pumping, exit/idle detection, and heartbeats are identical either way.
 
     A response file that exists but does not yet parse as JSON is treated
     as still-being-written: the loop keeps polling until the JSON parses,
