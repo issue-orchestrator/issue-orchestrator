@@ -20,6 +20,7 @@ PROJECT_NAME = "issue-orchestrator"
 DEFAULT_VALIDATION_COMMAND = ("make", "validate-pr")
 RELEASE_BRANCH = "main"
 RELEASE_REMOTE = "origin"
+RELEASE_METADATA_FILES = {"pyproject.toml", "uv.lock"}
 _STABLE_SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 _SECTION_HEADER_RE = re.compile(r"^\s*\[([A-Za-z0-9_.-]+)\]\s*(?:#.*)?$")
 _VERSION_ASSIGNMENT_RE = re.compile(r'^(\s*version\s*=\s*)"([^"]*)"(\s*(?:#.*)?)$')
@@ -60,6 +61,21 @@ class ReleaseWorkflowOptions:
     validation_command: tuple[str, ...]
     push: bool
     create_github_release: bool
+    uv_executable: str | None
+
+
+@dataclass(frozen=True)
+class ReleasePrOptions:
+    """Options for creating the release bump pull request."""
+
+    dry_run: bool
+    sync_environment: bool
+    assume_yes: bool
+    skip_validation: bool
+    validation_command: tuple[str, ...]
+    push: bool
+    create_pull_request: bool
+    branch_name: str | None
     uv_executable: str | None
 
 
@@ -305,6 +321,16 @@ def assert_origin_remote_exists(root: Path) -> None:
         raise ReleasePrepError(f"Git remote {RELEASE_REMOTE!r} has no URL")
 
 
+def assert_valid_branch_name(root: Path, branch_name: str) -> None:
+    """Fail if git would reject the release PR branch name."""
+    result = run_optional_command(
+        ["git", "check-ref-format", "--branch", branch_name], cwd=root
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise ReleasePrepError(f"Invalid release branch name {branch_name!r}: {detail}")
+
+
 def fetch_origin_main(root: Path) -> None:
     """Fetch the release branch and tags before comparing local state."""
     run_command(
@@ -396,6 +422,42 @@ def assert_local_tag_absent(root: Path, tag_name: str) -> None:
         raise ReleasePrepError(f"Local tag already exists: {tag_name}")
 
 
+def assert_local_branch_absent(root: Path, branch_name: str) -> None:
+    """Fail if the release PR branch already exists locally."""
+    result = run_optional_command(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"],
+        cwd=root,
+    )
+    if result.returncode == 0:
+        raise ReleasePrepError(f"Local release branch already exists: {branch_name}")
+    if result.returncode != 1:
+        raise ReleasePrepError(f"Could not check local branch: {branch_name}")
+
+
+def assert_remote_branch_absent(root: Path, branch_name: str) -> None:
+    """Fail if the release PR branch already exists on origin."""
+    result = run_optional_command(
+        [
+            "git",
+            "ls-remote",
+            "--exit-code",
+            "--heads",
+            RELEASE_REMOTE,
+            f"refs/heads/{branch_name}",
+        ],
+        cwd=root,
+    )
+    if result.returncode == 0:
+        raise ReleasePrepError(
+            f"Remote release branch already exists on {RELEASE_REMOTE}: {branch_name}"
+        )
+    if result.returncode != 2:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise ReleasePrepError(
+            f"Could not check remote release branch {branch_name!r}:\n{detail}"
+        )
+
+
 def assert_remote_tag_absent(root: Path, tag_name: str) -> None:
     """Fail if the release tag already exists on origin."""
     result = run_optional_command(
@@ -433,6 +495,39 @@ def assert_github_release_absent(root: Path, tag_name: str) -> None:
     release_result = run_optional_command(["gh", "release", "view", tag_name], cwd=root)
     if release_result.returncode == 0:
         raise ReleasePrepError(f"GitHub release already exists: {tag_name}")
+
+
+def release_metadata_changed_files(root: Path) -> set[str]:
+    """Return dirty files across worktree, index, and untracked paths."""
+    changed_files = set(
+        run_captured_command(
+            ["git", "diff", "--name-only"], cwd=root
+        ).stdout.splitlines()
+    )
+    changed_files.update(
+        run_captured_command(
+            ["git", "diff", "--cached", "--name-only"], cwd=root
+        ).stdout.splitlines()
+    )
+    changed_files.update(
+        run_captured_command(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=root,
+        ).stdout.splitlines()
+    )
+    return changed_files
+
+
+def assert_only_release_metadata_changed(root: Path) -> set[str]:
+    """Fail if the release PR would commit anything except release metadata."""
+    changed_files = release_metadata_changed_files(root)
+    unexpected_files = sorted(changed_files - RELEASE_METADATA_FILES)
+    if unexpected_files:
+        raise ReleasePrepError(
+            "Release PR changed unexpected files; only pyproject.toml and uv.lock "
+            "may be dirty:\n" + "\n".join(unexpected_files)
+        )
+    return changed_files
 
 
 def confirm_release(
@@ -530,6 +625,101 @@ def print_dry_run_commands(
         print(f"+ gh release create {tag_name} --generate-notes")
 
 
+def default_release_pr_branch_name(tag_name: str) -> str:
+    """Return the deterministic branch name for a release bump PR."""
+    return f"release-{tag_name}"
+
+
+def release_pr_body(tag_name: str) -> str:
+    """Return the pull request body for the generated release bump PR."""
+    return (
+        f"Prepare {tag_name} release metadata.\n\n"
+        "After this PR is merged to main, run:\n\n"
+        f"```bash\nmake release VERSION={tag_name}\n```"
+    )
+
+
+def print_release_pr_plan(
+    *,
+    tag_name: str,
+    target_version: str,
+    current_project_version: str,
+    current_lock_version: str,
+    branch_name: str,
+    options: ReleasePrOptions,
+) -> None:
+    """Print the release PR creation plan before confirmation."""
+    print(f"Preparing release bump PR for {tag_name}")
+    print(f"Current pyproject version: {current_project_version}")
+    print(f"Current uv.lock version: {current_lock_version}")
+    print(f"Release PR branch: {branch_name}")
+    print("")
+    print("Plan:")
+    print(f"  1. Require a clean worktree and fetch {RELEASE_REMOTE}/{RELEASE_BRANCH}")
+    print(f"  2. Create {branch_name} from {RELEASE_REMOTE}/{RELEASE_BRANCH}")
+    print(f"  3. Set package version to {target_version} and refresh uv.lock")
+    if options.sync_environment:
+        print("  4. Sync .venv and verify installed package metadata")
+    else:
+        print("  4. Skip .venv sync and installed metadata verification")
+    print("  5. Commit only pyproject.toml and uv.lock with signoff")
+    if options.skip_validation:
+        print("  6. Skip validation")
+    else:
+        print(f"  6. Run validation: {' '.join(options.validation_command)}")
+    if options.push:
+        print(f"  7. Push {branch_name} to {RELEASE_REMOTE}")
+    else:
+        print("  7. Leave release PR branch local")
+    if options.create_pull_request:
+        print(f"  8. Open pull request for {tag_name}")
+    else:
+        print("  8. Skip pull request creation")
+
+
+def print_release_pr_dry_run_commands(
+    *,
+    tag_name: str,
+    target_version: str,
+    branch_name: str,
+    options: ReleasePrOptions,
+) -> None:
+    """Print the commands the release PR workflow would run."""
+    print("")
+    print("Dry run: no files, branches, commits, pushes, or PRs will be changed.")
+    print("+ git status --porcelain")
+    print(f"+ git remote get-url {RELEASE_REMOTE}")
+    print(f"+ git ls-remote --exit-code {RELEASE_REMOTE} refs/heads/{RELEASE_BRANCH}")
+    print(f"+ git show-ref --verify --quiet refs/heads/{branch_name}")
+    if options.push:
+        print(
+            f"+ git ls-remote --exit-code --heads {RELEASE_REMOTE} refs/heads/{branch_name}"
+        )
+    print(f"+ git ls-remote --exit-code --tags {RELEASE_REMOTE} refs/tags/{tag_name}")
+    if options.create_pull_request:
+        print("+ gh auth status")
+        print(f"+ gh release view {tag_name}")
+    print(
+        f"+ git switch --create {branch_name} --no-track {RELEASE_REMOTE}/{RELEASE_BRANCH}"
+    )
+    print(f"Would set [project].version to {target_version}")
+    print("+ uv lock")
+    if options.sync_environment:
+        print("+ uv sync --frozen --all-extras")
+    print("+ git add pyproject.toml uv.lock")
+    print(f"+ git commit -s -m 'Release {tag_name}'")
+    if not options.skip_validation:
+        print("+ " + " ".join(shlex.quote(part) for part in options.validation_command))
+    if options.push:
+        print(f"+ git push -u {RELEASE_REMOTE} {branch_name}")
+    if options.create_pull_request:
+        print(
+            "+ gh pr create "
+            f"--base {RELEASE_BRANCH} --head {branch_name} "
+            f"--title 'Release {tag_name}' --body <generated>"
+        )
+
+
 def run_release_preflight(
     *,
     paths: ReleasePaths,
@@ -551,6 +741,56 @@ def run_release_preflight(
     if options.push:
         assert_remote_tag_absent(paths.root, tag_name)
     if options.create_github_release:
+        assert_github_release_absent(paths.root, tag_name)
+
+
+def run_release_pr_preflight(
+    *,
+    paths: ReleasePaths,
+    tag_name: str,
+    branch_name: str,
+    options: ReleasePrOptions,
+) -> None:
+    """Run fail-fast checks before creating a release bump PR."""
+    assert_tool_available("git")
+    if options.create_pull_request:
+        assert_tool_available("gh")
+    find_uv(options.uv_executable)
+    assert_clean_worktree(paths.root)
+    assert_origin_remote_exists(paths.root)
+    assert_valid_branch_name(paths.root, branch_name)
+    fetch_origin_main(paths.root)
+    assert_local_branch_absent(paths.root, branch_name)
+    if options.push:
+        assert_remote_branch_absent(paths.root, branch_name)
+    assert_local_tag_absent(paths.root, tag_name)
+    assert_remote_tag_absent(paths.root, tag_name)
+    if options.create_pull_request:
+        assert_github_release_absent(paths.root, tag_name)
+
+
+def run_release_pr_dry_run_preflight(
+    *,
+    paths: ReleasePaths,
+    tag_name: str,
+    branch_name: str,
+    options: ReleasePrOptions,
+) -> None:
+    """Run read-only checks before a dry-run release bump PR."""
+    assert_tool_available("git")
+    if options.create_pull_request:
+        assert_tool_available("gh")
+    find_uv(options.uv_executable)
+    assert_clean_worktree(paths.root)
+    assert_origin_remote_exists(paths.root)
+    remote_main_sha(paths.root)
+    assert_valid_branch_name(paths.root, branch_name)
+    assert_local_branch_absent(paths.root, branch_name)
+    if options.push:
+        assert_remote_branch_absent(paths.root, branch_name)
+    assert_local_tag_absent(paths.root, tag_name)
+    assert_remote_tag_absent(paths.root, tag_name)
+    if options.create_pull_request:
         assert_github_release_absent(paths.root, tag_name)
 
 
@@ -637,14 +877,60 @@ def sync_environment_if_requested(
     verify_installed_package_version(paths, expected_version)
 
 
+def create_release_pr_branch(paths: ReleasePaths, branch_name: str) -> None:
+    """Create the release PR branch from fetched origin/main."""
+    run_command(
+        [
+            "git",
+            "switch",
+            "--create",
+            branch_name,
+            "--no-track",
+            f"{RELEASE_REMOTE}/{RELEASE_BRANCH}",
+        ],
+        cwd=paths.root,
+    )
+
+
+def commit_release_metadata(paths: ReleasePaths, tag_name: str) -> None:
+    """Stage and commit only release metadata files."""
+    changed_files = assert_only_release_metadata_changed(paths.root)
+    if not changed_files:
+        raise ReleasePrepError(
+            "Release metadata did not change. "
+            f"{tag_name} may already be prepared on this branch."
+        )
+
+    run_command(["git", "add", "pyproject.toml", "uv.lock"], cwd=paths.root)
+    staged_files = set(
+        run_captured_command(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=paths.root,
+        ).stdout.splitlines()
+    )
+    unexpected_files = sorted(staged_files - RELEASE_METADATA_FILES)
+    if unexpected_files:
+        raise ReleasePrepError(
+            "Release PR would commit unexpected staged files:\n"
+            + "\n".join(unexpected_files)
+        )
+    if not staged_files:
+        raise ReleasePrepError("Release metadata did not stage any changes.")
+
+    run_command(["git", "commit", "-s", "-m", f"Release {tag_name}"], cwd=paths.root)
+
+
 def run_release_validation(
-    paths: ReleasePaths, options: ReleaseWorkflowOptions
+    paths: ReleasePaths,
+    *,
+    skip_validation: bool,
+    validation_command: tuple[str, ...],
 ) -> None:
     """Run the configured release validation phase."""
-    if options.skip_validation:
+    if skip_validation:
         print("Skipped validation.")
         return
-    run_command(options.validation_command, cwd=paths.root)
+    run_command(validation_command, cwd=paths.root)
 
 
 def create_release_tag(paths: ReleasePaths, tag_name: str) -> None:
@@ -678,6 +964,53 @@ def publish_release(
         )
     else:
         print("Skipped GitHub release creation.")
+
+
+def publish_release_pr(
+    paths: ReleasePaths,
+    *,
+    tag_name: str,
+    branch_name: str,
+    options: ReleasePrOptions,
+) -> None:
+    """Push the release branch and create the release bump PR."""
+    if options.push:
+        run_command(["git", "push", "-u", RELEASE_REMOTE, branch_name], cwd=paths.root)
+    else:
+        print("Skipped push; release PR branch remains local.")
+
+    if options.create_pull_request:
+        run_command(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--base",
+                RELEASE_BRANCH,
+                "--head",
+                branch_name,
+                "--title",
+                f"Release {tag_name}",
+                "--body",
+                release_pr_body(tag_name),
+            ],
+            cwd=paths.root,
+        )
+    else:
+        print("Skipped pull request creation.")
+
+
+def print_release_pr_recovery_hint(branch_name: str) -> None:
+    """Print operator recovery guidance after a release PR branch failure."""
+    print(
+        "\nRelease PR workflow stopped after creating the local release branch.",
+        file=sys.stderr,
+    )
+    print(f"Current branch may be {branch_name!r}. To discard and retry:", file=sys.stderr)
+    print("  git switch -", file=sys.stderr)
+    print(f"  git branch -D {branch_name}", file=sys.stderr)
+    print("If the branch was pushed before the failure, also run:", file=sys.stderr)
+    print(f"  git push {RELEASE_REMOTE} --delete {branch_name}", file=sys.stderr)
 
 
 def run_release_workflow(
@@ -724,12 +1057,96 @@ def run_release_workflow(
         sync_environment=options.sync_environment,
         uv_executable=options.uv_executable,
     )
-    run_release_validation(paths, options)
+    run_release_validation(
+        paths,
+        skip_validation=options.skip_validation,
+        validation_command=options.validation_command,
+    )
     assert_clean_worktree(paths.root)
     create_release_tag(paths, tag_name)
     publish_release(paths, tag_name, options)
     print("")
     print(f"Release complete: {tag_name}")
+
+
+def run_release_pr_workflow(
+    *,
+    paths: ReleasePaths,
+    version: str,
+    options: ReleasePrOptions,
+) -> None:
+    """Create the release metadata PR with minimal operator steps."""
+    if not options.push and options.create_pull_request:
+        raise ReleasePrepError("--local-only cannot create a pull request")
+
+    target_version = normalize_release_version(version)
+    tag_name = f"v{target_version}"
+    branch_name = options.branch_name or default_release_pr_branch_name(tag_name)
+    current_project_version = read_project_version(paths.pyproject)
+    current_lock_version = read_lock_project_version(paths.lockfile)
+
+    print_release_pr_plan(
+        tag_name=tag_name,
+        target_version=target_version,
+        current_project_version=current_project_version,
+        current_lock_version=current_lock_version,
+        branch_name=branch_name,
+        options=options,
+    )
+
+    if options.dry_run:
+        run_release_pr_dry_run_preflight(
+            paths=paths,
+            tag_name=tag_name,
+            branch_name=branch_name,
+            options=options,
+        )
+        print_release_pr_dry_run_commands(
+            tag_name=tag_name,
+            target_version=target_version,
+            branch_name=branch_name,
+            options=options,
+        )
+        return
+
+    run_release_pr_preflight(
+        paths=paths,
+        tag_name=tag_name,
+        branch_name=branch_name,
+        options=options,
+    )
+    if not options.assume_yes:
+        confirm_release(tag_name=tag_name)
+
+    create_release_pr_branch(paths, branch_name)
+    try:
+        apply_release_metadata(
+            paths=paths,
+            target_version=target_version,
+            sync_environment=options.sync_environment,
+            uv_executable=options.uv_executable,
+        )
+        commit_release_metadata(paths, tag_name)
+        run_release_validation(
+            paths,
+            skip_validation=options.skip_validation,
+            validation_command=options.validation_command,
+        )
+        assert_clean_worktree(paths.root)
+        publish_release_pr(
+            paths,
+            tag_name=tag_name,
+            branch_name=branch_name,
+            options=options,
+        )
+    except ReleasePrepError:
+        print_release_pr_recovery_hint(branch_name)
+        raise
+    print("")
+    print(f"Release PR ready for {tag_name}.")
+    print(
+        f"After it is merged, run `make release VERSION={tag_name}` from any clean checkout."
+    )
 
 
 def prepare_release(
@@ -793,6 +1210,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only bump pyproject.toml, refresh uv.lock, and verify local metadata.",
     )
     parser.add_argument(
+        "--prepare-pr",
+        action="store_true",
+        help="Create, validate, push, and open the release metadata pull request.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Show what would happen without changing files, git refs, or GitHub releases.",
@@ -820,7 +1242,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--local-only",
         action="store_true",
-        help="Tag locally, but do not push or create a GitHub release.",
+        help=(
+            "For release: tag locally, but do not push or create a GitHub release. "
+            "For --prepare-pr: commit locally, but do not push or create a PR."
+        ),
+    )
+    parser.add_argument(
+        "--no-pr",
+        action="store_true",
+        help="With --prepare-pr, push the release branch but skip pull request creation.",
+    )
+    parser.add_argument(
+        "--release-branch",
+        help="With --prepare-pr, use this branch name instead of release-vX.Y.Z.",
     )
     parser.add_argument(
         "--no-gh-release",
@@ -840,7 +1274,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         paths = ReleasePaths.from_root(args.project_root)
-        if args.prepare_only:
+        if args.prepare_only and args.prepare_pr:
+            raise ReleasePrepError("--prepare-only and --prepare-pr are mutually exclusive")
+        if args.no_pr and not args.prepare_pr:
+            raise ReleasePrepError("--no-pr requires --prepare-pr")
+        if args.release_branch and not args.prepare_pr:
+            raise ReleasePrepError("--release-branch requires --prepare-pr")
+        if args.no_gh_release and (args.prepare_only or args.prepare_pr):
+            raise ReleasePrepError("--no-gh-release only applies to final release")
+        if args.local_only and args.prepare_only:
+            raise ReleasePrepError(
+                "--local-only only applies to final release or --prepare-pr"
+            )
+        if args.prepare_pr:
+            run_release_pr_workflow(
+                paths=paths,
+                version=args.version,
+                options=ReleasePrOptions(
+                    dry_run=args.dry_run,
+                    sync_environment=not args.no_sync,
+                    assume_yes=args.yes,
+                    skip_validation=args.skip_validation,
+                    validation_command=parse_command(args.validation_command),
+                    push=not args.local_only,
+                    create_pull_request=not args.local_only and not args.no_pr,
+                    branch_name=args.release_branch,
+                    uv_executable=args.uv,
+                ),
+            )
+        elif args.prepare_only:
             prepare_release(
                 paths=paths,
                 version=args.version,
