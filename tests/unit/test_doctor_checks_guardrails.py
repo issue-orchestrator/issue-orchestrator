@@ -81,6 +81,16 @@ def test_completion_wrapper_resolves_venv_from_snapshot_context(
     )
     target.chmod(0o755)
 
+    decoy_bin = tmp_path / "launch" / ".venv" / "bin"
+    decoy_bin.mkdir(parents=True)
+    decoy = decoy_bin / command_name
+    decoy.write_text(
+        "#!/bin/sh\n"
+        f"printf 'decoy-{command_name}:%s\\n' \"$1\"\n",
+        encoding="utf-8",
+    )
+    decoy.chmod(0o755)
+
     env = {
         "PATH": "/usr/bin:/bin",
     }

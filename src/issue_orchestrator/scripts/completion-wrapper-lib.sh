@@ -9,9 +9,6 @@ completion_wrapper_candidates() {
 
     completion_candidate_paths=()
 
-    if [[ -n "${ISSUE_ORCHESTRATOR_VENV_BIN:-}" ]]; then
-        completion_candidate_paths+=("$ISSUE_ORCHESTRATOR_VENV_BIN/$command_name")
-    fi
     if [[ -n "${ISSUE_ORCHESTRATOR_CC_REPO_ROOT:-}" ]]; then
         completion_candidate_paths+=("$ISSUE_ORCHESTRATOR_CC_REPO_ROOT/.venv/bin/$command_name")
     fi
