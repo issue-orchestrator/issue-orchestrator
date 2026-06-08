@@ -33,6 +33,7 @@ from .persistent_session_exchange import (
     review_exchange_supervisor_timeout_seconds,
     run_persistent_session_exchange,
 )
+from .review_exchange_turn_mailbox import TurnMailbox
 from .reviewer_worktree import (
     create_reviewer_worktree,
     resolve_current_branch,
@@ -64,9 +65,12 @@ class PersistentReviewExchangeRunner:
         self,
         session_output: SessionOutput,
         pair_registry: InMemoryPersistentExchangePairRegistry,
+        *,
+        turn_mailbox: "TurnMailbox | None" = None,
     ) -> None:
         self._session_output = session_output
         self._pair_registry = pair_registry
+        self._turn_mailbox = turn_mailbox
 
     def job_timeout_seconds(
         self,
@@ -145,4 +149,5 @@ class PersistentReviewExchangeRunner:
             web_port=web_port,
             events=events,
             event_context=event_context,
+            turn_mailbox=self._turn_mailbox,
         )

@@ -939,3 +939,66 @@ class TestCloseSession:
         close_persistent_session(session)
         close_persistent_session(session)
         assert session.closed is True
+
+
+class TestSendRoundResponseReaderChannel:
+    """send_round can take its response from an injected reader (the
+    TurnMailbox channel) instead of the response file. The PTY pumping is
+    unchanged; only the response source differs.
+    """
+
+    def test_reader_value_is_returned_and_file_is_ignored(
+        self, tmp_path: Path,
+    ) -> None:
+        # The stub agent writes its own JSON to the response file, but with a
+        # reader provided send_round must return the reader's value — proving
+        # the file is not consulted when the mailbox is the channel.
+        stub = _write_stub_agent(tmp_path)
+        response_file = tmp_path / "response.json"
+        verdict = {"response_type": "ok", "response_text": "delivered via mailbox"}
+
+        session = open_persistent_session(
+            command=_stub_command(stub),
+            working_dir=tmp_path,
+            env=_stub_env(response_file),
+        )
+        try:
+            response = send_round(
+                session,
+                prompt="hello",
+                response_file=response_file,
+                timeout_seconds=5,
+                response_reader=lambda: verdict,
+            )
+        finally:
+            close_persistent_session(session)
+
+        assert response == verdict
+
+    def test_reader_channel_does_not_unlink_the_response_file(
+        self, tmp_path: Path,
+    ) -> None:
+        # The file channel clears the response file before each round; the
+        # reader channel must leave the filesystem untouched.
+        stub = _write_stub_agent(tmp_path)
+        response_file = tmp_path / "response.json"
+        sentinel = tmp_path / "sentinel.json"
+        sentinel.write_text("{}", encoding="utf-8")
+
+        session = open_persistent_session(
+            command=_stub_command(stub),
+            working_dir=tmp_path,
+            env=_stub_env(response_file),
+        )
+        try:
+            send_round(
+                session,
+                prompt="hello",
+                response_file=sentinel,
+                timeout_seconds=5,
+                response_reader=lambda: {"response_type": "ok", "response_text": "x"},
+            )
+        finally:
+            close_persistent_session(session)
+
+        assert sentinel.exists()

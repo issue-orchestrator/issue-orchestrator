@@ -86,6 +86,7 @@ from ..domain.review_exchange_turn import (
     Role,
     TurnResultKind,
 )
+from .review_exchange_turn_mailbox import TurnMailbox
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.review_exchange_summary import ReviewExchangeReason, ReviewExchangeStatus, ReviewExchangeSummaryArtifactRef, ReviewExchangeSummaryV1, ReviewExchangeTerminalState
 from ..domain.runtime_config import RuntimeConfigReference
@@ -409,6 +410,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     events: EventSink | None = None,
     event_context: EventContext | None = None,
     before_reviewer_round: Callable[[int], None] | None = None,
+    turn_mailbox: "TurnMailbox | None" = None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange against a registry-owned persistent pair.
 
@@ -768,6 +770,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 emit=_emit,
                 coder_mirror=coder_mirror,
                 reviewer_mirror=reviewer_mirror,
+                turn_mailbox=turn_mailbox,
             ),
         )
     except Exception as exc:
@@ -1719,6 +1722,7 @@ class _DriveRoundsCommand:
     emit: Callable[[EventName, dict[str, Any]], None]
     coder_mirror: _RoleSliceMirror
     reviewer_mirror: _RoleSliceMirror
+    turn_mailbox: "TurnMailbox | None" = None
 
 
 def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
@@ -1753,6 +1757,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
     emit = command.emit
     coder_mirror = command.coder_mirror
     reviewer_mirror = command.reviewer_mirror
+    turn_mailbox = command.turn_mailbox
 
     no_progress_count = 0
     last_reviewer_text: str | None = None
@@ -1878,6 +1883,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
                 session_name=session_name,
                 emit=emit,
                 mirror=reviewer_mirror,
+                turn_mailbox=turn_mailbox,
             )
         )
         if reviewer is None:
@@ -2044,6 +2050,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
                 session_name=session_name,
                 emit=emit,
                 mirror=coder_mirror,
+                turn_mailbox=turn_mailbox,
             )
         )
         if coder is None:
@@ -2082,6 +2089,7 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
                 cycle_index=round_index,
                 emit=emit,
                 coder_mirror=coder_mirror,
+                turn_mailbox=turn_mailbox,
             )
         )
         if protocol_outcome is not None:
@@ -2155,6 +2163,7 @@ class _CoderProtocolCommand:
     cycle_index: int
     emit: Callable[[EventName, dict[str, Any]], None]
     coder_mirror: _RoleSliceMirror
+    turn_mailbox: "TurnMailbox | None" = None
 
 
 def _enforce_coder_protocol(
@@ -2189,6 +2198,7 @@ def _enforce_coder_protocol(
     cycle_index = command.cycle_index
     emit = command.emit
     coder_mirror = command.coder_mirror
+    turn_mailbox = command.turn_mailbox
 
     protocol_error = _validate_coder_completion(
         completion_path=coder_completion_path,
@@ -2286,6 +2296,7 @@ def _enforce_coder_protocol(
                 session_name=session_name,
                 emit=emit,
                 mirror=coder_mirror,
+                turn_mailbox=turn_mailbox,
             )
         )
         if retry_response is None:
@@ -2341,6 +2352,7 @@ class _RoleRoundCommand:
     session_name: str
     emit: Callable[[EventName, dict[str, Any]], None]
     mirror: _RoleSliceMirror
+    turn_mailbox: "TurnMailbox | None" = None
     respawn_retries: int = 0
 
 
@@ -2381,6 +2393,7 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
     session_name = command.session_name
     emit = command.emit
     mirror = command.mirror
+    turn_mailbox = command.turn_mailbox
     respawn_retries = command.respawn_retries
 
     session = owner.ensure_live()
@@ -2394,6 +2407,21 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
         attempt_index=attempt_index,
         prompt_path=prompt_inbox_path,
     )
+    # Open the orchestrator-owned rendezvous for this turn before prompting,
+    # so the agent's exchange-respond delivery has a slot to land in. The
+    # routing key is the per-role response-file path (stable, already in the
+    # agent's env) — used purely as an opaque identifier; nothing is written
+    # to or read from that path. ``response_reader`` makes send_round poll
+    # the mailbox instead of the filesystem. When no mailbox is wired (older
+    # call sites / unit stubs), send_round falls back to file polling.
+    mailbox_key = str(workspace.response_file)
+    response_reader: Callable[[], dict[str, Any] | None] | None = None
+    if turn_mailbox is not None:
+        turn_mailbox.open(
+            mailbox_key,
+            turn_id=f"{role_value}-r{cycle_index}-a{attempt_index}",
+        )
+        response_reader = lambda: turn_mailbox.try_take(mailbox_key)  # noqa: E731
     try:
         parsed = send_round(
             session,
@@ -2405,8 +2433,14 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
             # cross-referencing PIDs (#6160 e2e regression: 17 minutes
             # of unattributed silence).
             role_label=f"{role_value}@round-{cycle_index}",
+            response_reader=response_reader,
         )
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
+        # Release the slot before respawn/return so a straggling delivery
+        # from this failed attempt is rejected (NO_OPEN_SLOT) rather than
+        # landing in a later turn's slot. A respawn re-opens a fresh slot.
+        if turn_mailbox is not None:
+            turn_mailbox.close(mailbox_key)
         failure_reason = persistent_round_failure_reason(exc)
         logger.warning(
             "[REVIEW_EXCHANGE] %s round failed issue=%s session_name=%s "
@@ -2513,6 +2547,10 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
         )
         return None
 
+    # Verdict received: release the slot so any duplicate/straggling delivery
+    # for this turn is rejected rather than buffered for the next turn.
+    if turn_mailbox is not None:
+        turn_mailbox.close(mailbox_key)
     typed_result = ReviewExchangeTurnResult.from_agent_dict(parsed, raw_output=None)
     result_path = _persist_turn_result(
         exchange_dir,

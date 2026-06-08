@@ -62,6 +62,59 @@ async def preflight_push(request: Request) -> JSONResponse:
     })
 
 
+@control_issue_router.post("/api/review-exchange/respond")
+async def review_exchange_respond(
+    request: Request,
+    deps: ControlApiIssueDependency,
+) -> JSONResponse:
+    """Deliver a review-exchange turn verdict into the orchestrator-owned slot.
+
+    Called by the ``exchange-respond`` agent CLI. The orchestrator binds the
+    delivery to the turn it currently has open for ``key`` (the per-role
+    routing identifier) — the agent supplies only its verdict, never the
+    turn identity. Returns the delivery status so the CLI can report it; the
+    HTTP status is 200 for any well-formed delivery (accepted or rejected),
+    reserving 4xx/5xx for malformed requests or a missing orchestrator.
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse(
+            {"status": "error", "detail": "Invalid JSON body"}, status_code=400
+        )
+    key = body.get("key")
+    payload = body.get("payload")
+    if not isinstance(key, str) or not key:
+        return JSONResponse(
+            {"status": "error", "detail": "key is required"}, status_code=400
+        )
+    if not isinstance(payload, dict):
+        return JSONResponse(
+            {"status": "error", "detail": "payload object is required"},
+            status_code=400,
+        )
+    orchestrator = deps.get_orchestrator()
+    if orchestrator is None:
+        return JSONResponse(
+            {"status": "error", "detail": "Orchestrator not initialized"},
+            status_code=503,
+        )
+    mailbox = orchestrator.deps.services.turn_mailbox
+    if mailbox is None:
+        return JSONResponse(
+            {"status": "error", "detail": "Turn mailbox not configured"},
+            status_code=503,
+        )
+    result = mailbox.deliver(key, payload)
+    logger.info(
+        "[REVIEW_EXCHANGE] verdict delivery key=%s status=%s turn_id=%s",
+        key,
+        result.status.value,
+        result.turn_id,
+    )
+    return JSONResponse({"status": result.status.value, "turn_id": result.turn_id})
+
+
 @control_issue_router.post("/api/issues/{issue_number}/resume")
 async def resume_issue(
     issue_number: int,

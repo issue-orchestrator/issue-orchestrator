@@ -99,6 +99,7 @@ if TYPE_CHECKING:
     from ..execution.persistent_exchange_pair_registry_inmemory import (
         InMemoryPersistentExchangePairRegistry,
     )
+    from ..execution.review_exchange_turn_mailbox import TurnMailbox
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -407,6 +408,7 @@ def _create_completion_components(
     background_job_supervisor: "BackgroundJobSupervisor | None" = None,
     pair_registry: "InMemoryPersistentExchangePairRegistry | None" = None,
     attempt_store: "AttemptStore | None" = None,
+    turn_mailbox: "TurnMailbox | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -446,7 +448,14 @@ def _create_completion_components(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output, pair_registry),
+        # Go-live gated (#6549): the mailbox + exchange-respond endpoint are
+        # wired and the slot/await path is in place, but the runner is not
+        # switched onto the mailbox until the agent-side cutover (prompts +
+        # fixtures) and integration coverage land. Passing None keeps the
+        # exchange on the file channel so production is unaffected meanwhile.
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, pair_registry, turn_mailbox=None,
+        ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -778,6 +787,13 @@ def build_orchestrator(
     # reach it through ``deps.pair_registry``.
     pair_registry = _build_pair_registry_with_worktree_hook()
 
+    # Process-scoped rendezvous between the exchange worker thread and the
+    # agent-facing ``exchange-respond`` Control API handler. One instance,
+    # shared by the runner (which opens/awaits slots) and InfraServices
+    # (which the Control API reads to deliver verdicts).
+    from ..execution.review_exchange_turn_mailbox import TurnMailbox
+    turn_mailbox = TurnMailbox()
+
     # Wire the registry into action_applier so ``_apply_escalate``
     # and ``_apply_reconcile_history_entry`` can release the pair at
     # their lifecycle boundaries (escalation, await-merge terminal).
@@ -795,6 +811,7 @@ def build_orchestrator(
         background_job_supervisor=background_job_supervisor,
         pair_registry=pair_registry,
         attempt_store=attempt_store,
+        turn_mailbox=turn_mailbox,
     )
 
     # Create async completion components (observer + executor)
@@ -868,6 +885,7 @@ def build_orchestrator(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         pair_registry=pair_registry,
+        turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
         instance_id=instance_id,
         state_health_check=timeline_store.check_health,
@@ -1086,6 +1104,8 @@ def build_orchestrator_for_testing(
         cancel_issue_review_exchange,
     )
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
+    from ..execution.review_exchange_turn_mailbox import TurnMailbox
+    turn_mailbox = TurnMailbox()
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor
@@ -1106,7 +1126,11 @@ def build_orchestrator_for_testing(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output, pair_registry_for_testing),
+        # Go-live gated (#6549) — see build_orchestrator. None keeps the
+        # exchange on the file channel until the agent-side cutover lands.
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, pair_registry_for_testing, turn_mailbox=None,
+        ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -1196,6 +1220,7 @@ def build_orchestrator_for_testing(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         pair_registry=pair_registry_for_testing,
+        turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
     )
 

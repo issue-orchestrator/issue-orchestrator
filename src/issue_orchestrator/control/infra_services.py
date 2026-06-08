@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from ..ports.persistent_exchange_pair_registry import (
         PersistentExchangePairRegistry,
     )
+    from ..execution.review_exchange_turn_mailbox import TurnMailbox
     from ..ports.timeline_reader import TimelineReader
     from ..ports.timeline_store import TimelineStore
     from ..ports.timeline_writer import TimelineWriter
@@ -50,6 +51,7 @@ class InfraServices:
     goal_pilot_store: "GoalPilotStore"
     attempt_store: "AttemptStore"
     pair_registry: "PersistentExchangePairRegistry | None" = None
+    turn_mailbox: "TurnMailbox | None" = None
     background_job_supervisor: "BackgroundJobSupervisor | None" = None
     instance_id: str = ""
     state_health_check: Callable[[], None] = field(default=_noop_health_check)
