@@ -377,8 +377,12 @@ def test_assert_current_branch_is_main_rejects_other_branch(
         lambda _command, *, cwd: _completed(stdout="feature\n"),
     )
 
-    with pytest.raises(prepare_release.ReleasePrepError, match="local branch 'main'"):
+    with pytest.raises(prepare_release.ReleasePrepError) as exc_info:
         prepare_release.assert_current_branch_is_main(tmp_path)
+
+    message = str(exc_info.value)
+    assert "local branch 'main'" in message
+    assert "git switch main && git pull --ff-only origin main" in message
 
 
 def test_assert_head_matches_origin_main_rejects_outdated_main(
@@ -393,8 +397,12 @@ def test_assert_head_matches_origin_main_rejects_outdated_main(
 
     monkeypatch.setattr(prepare_release, "git_rev_parse", fake_rev_parse)
 
-    with pytest.raises(prepare_release.ReleasePrepError, match="origin/main"):
+    with pytest.raises(prepare_release.ReleasePrepError) as exc_info:
         prepare_release.assert_head_matches_origin_main(tmp_path)
+
+    message = str(exc_info.value)
+    assert "origin/main" in message
+    assert "git switch main && git pull --ff-only origin main" in message
 
 
 def test_assert_head_matches_remote_main_rejects_outdated_remote_main(
@@ -404,10 +412,12 @@ def test_assert_head_matches_remote_main_rejects_outdated_remote_main(
     monkeypatch.setattr(prepare_release, "git_rev_parse", lambda _root, _ref: "aaa")
     monkeypatch.setattr(prepare_release, "remote_main_sha", lambda _root: "bbb")
 
-    with pytest.raises(
-        prepare_release.ReleasePrepError, match="current remote origin/main"
-    ):
+    with pytest.raises(prepare_release.ReleasePrepError) as exc_info:
         prepare_release.assert_head_matches_remote_main(tmp_path)
+
+    message = str(exc_info.value)
+    assert "current remote origin/main" in message
+    assert "git switch main && git pull --ff-only origin main" in message
 
 
 def test_commit_release_metadata_rejects_unexpected_file(
@@ -653,6 +663,62 @@ def test_release_pr_workflow_order(
         "clean_after_validation",
         "publish",
     ]
+
+
+def test_release_pr_body_includes_main_switch_handoff() -> None:
+    body = prepare_release.release_pr_body("v1.0.0")
+
+    assert "git switch main && git pull --ff-only origin main" in body
+    assert "make release VERSION=v1.0.0" in body
+
+
+def test_release_pr_success_message_includes_main_switch_handoff(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_pyproject(tmp_path / "pyproject.toml", version="0.9.0")
+    _write_lock(tmp_path / "uv.lock", version="0.9.0")
+    paths = prepare_release.ReleasePaths.from_root(tmp_path)
+
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_pr_preflight",
+        lambda *, paths, tag_name, branch_name, options: None,
+    )
+    monkeypatch.setattr(prepare_release, "confirm_release", lambda *, tag_name: None)
+    monkeypatch.setattr(
+        prepare_release, "create_release_pr_branch", lambda _paths, _branch_name: None
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "apply_release_metadata",
+        lambda *, paths, target_version, sync_environment, uv_executable: None,
+    )
+    monkeypatch.setattr(
+        prepare_release, "commit_release_metadata", lambda _paths, _tag_name: None
+    )
+    monkeypatch.setattr(
+        prepare_release,
+        "run_release_validation",
+        lambda _paths, *, skip_validation, validation_command: None,
+    )
+    monkeypatch.setattr(prepare_release, "assert_clean_worktree", lambda _root: None)
+    monkeypatch.setattr(
+        prepare_release,
+        "publish_release_pr",
+        lambda _paths, *, tag_name, branch_name, options: None,
+    )
+
+    prepare_release.run_release_pr_workflow(
+        paths=paths,
+        version="v1.0.0",
+        options=_release_pr_options(dry_run=False),
+    )
+
+    output = capsys.readouterr().out
+    assert "git switch main && git pull --ff-only origin main" in output
+    assert "make release VERSION=v1.0.0" in output
 
 
 def test_release_pr_failure_after_branch_prints_recovery_hint(
