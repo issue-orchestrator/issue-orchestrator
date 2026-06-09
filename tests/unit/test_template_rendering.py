@@ -306,6 +306,53 @@ def test_completed_column_renders_merged_history_card(jinja_env):
     assert menu_btn.get("data-pr-url") == "https://example.test/pr/7"
 
 
+def test_completed_card_phase_age_is_hydrated_by_dashboard_timestamp_localizer(jinja_env):
+    """A completed card's phase-age is the UTC completion timestamp. It must be
+    emitted with the shared [data-dashboard-timestamp] marker so the client
+    localizes it to the viewer's timezone instead of showing raw GMT.
+    """
+    from datetime import timezone
+
+    completed_at = datetime(2026, 6, 9, 1, 52, 59, tzinfo=timezone.utc)
+    config = make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=392,
+                title="Audit tixmeup",
+                agent_type="agent:web",
+                status="merged",
+                runtime_minutes=9,
+                pr_url="https://example.test/pr/392",
+                status_reason="PR merged; awaiting merge reconciled",
+                completed_at=completed_at,
+            )
+        ],
+    )
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="kanban",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    completed_card = soup.select_one('[data-column="completed"] .issue-card[data-issue="392"]')
+    assert completed_card is not None
+    age_el = completed_card.select_one(".card-phase-age")
+    assert age_el is not None
+    marker = age_el.select_one("[data-dashboard-timestamp]")
+    assert marker is not None, "completed card phase-age must carry the localization marker"
+    iso = completed_at.isoformat()
+    assert marker["data-dashboard-timestamp"] == iso
+    assert marker["data-dashboard-timestamp-fallback"] == "-"
+    # Pre-hydration text is the raw source value; the localizer overwrites it.
+    assert marker.get_text(strip=True) == iso
+    # The separator lives outside the marked element so localization can't eat it.
+    assert age_el.get_text(" ", strip=True).startswith("·")
+
+
 def test_awaiting_merge_template_renders_one_pr_card_when_queue_and_history_overlap(jinja_env):
     config = make_config()
     config.agents = {"agent:web": make_agent_config()}

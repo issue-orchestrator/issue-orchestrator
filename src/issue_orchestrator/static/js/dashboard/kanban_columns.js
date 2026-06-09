@@ -135,6 +135,21 @@ function buildCompactGithubLink(card) {
     return `<a class="card-gh${extraClass}" href="${escapeAttr(githubUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(title)}" aria-label="${escapeAttr(ariaLabel)}">${escapeHtml(label)}</a>`;
 }
 
+// Single source of truth for the phase-age portion of a compact card.
+// Timestamps participate in the dashboard-wide [data-dashboard-timestamp]
+// localizer (the same mechanism issue_row.html uses), so UTC→local
+// conversion lives in exactly one place (formatDashboardTimestampElement).
+// Relative labels ("5 min") have no timezone and render as-is.
+function compactCardPhaseAgeInnerHtml(card) {
+    if (!card.phase_age) return '';
+    const raw = String(card.phase_age);
+    if (card.time_is_timestamp) {
+        return '<span aria-hidden="true"> &middot; </span>'
+            + `<span data-dashboard-timestamp="${escapeAttr(raw)}" data-dashboard-timestamp-fallback="-">${escapeHtml(raw)}</span>`;
+    }
+    return ` &middot; ${escapeHtml(raw)}`;
+}
+
 function renderCompactCardHtml(card) {
     const n = card.issue_number;
     const cardId = String(card.card_id || `issue-${n}`);
@@ -164,8 +179,7 @@ function renderCompactCardHtml(card) {
         title="More actions for issue #${n}"
         aria-label="More actions for issue #${n}">&#x22EE;</button>`;
     const phaseLine = card.phase || card.state_label || '';
-    const ageStr = card.phase_age ? ` &middot; ${card.phase_age}` : '';
-    const phaseLineHtml = `<span class="card-phase-text">${escapeHtml(String(phaseLine))}</span><span class="card-phase-age">${ageStr}</span>`;
+    const phaseLineHtml = `<span class="card-phase-text">${escapeHtml(String(phaseLine))}</span><span class="card-phase-age">${compactCardPhaseAgeInnerHtml(card)}</span>`;
     const queueWaitLine = card.queue_wait_reason
         ? `<div class="card-line card-wait">${escapeHtml(String(card.queue_wait_reason))}</div>`
         : '';
@@ -208,6 +222,19 @@ function syncCompactCardPhaseAge(node, card) {
     // be replaced on every refresh. Instead, sync it in place.
     const ageEl = node.querySelector('.card-phase-age');
     if (!ageEl) return;
+    if (card.time_is_timestamp) {
+        // Timestamps are owned by the shared [data-dashboard-timestamp]
+        // localizer. Only touch the DOM when the underlying timestamp
+        // actually changed — re-running the localizer on an unchanged value
+        // would rewrite textContent and trip the MutationObserver flash the
+        // fingerprint design exists to avoid.
+        const marked = ageEl.querySelector('[data-dashboard-timestamp]');
+        const raw = card.phase_age ? String(card.phase_age) : '';
+        if (marked && marked.dataset.dashboardTimestamp === raw) return;
+        ageEl.innerHTML = compactCardPhaseAgeInnerHtml(card);
+        formatDashboardTimestamps(ageEl);
+        return;
+    }
     const desired = card.phase_age ? ' · ' + String(card.phase_age) : '';
     if (ageEl.textContent !== desired) {
         ageEl.textContent = desired;
@@ -246,6 +273,10 @@ function renderCompactCards(container, items) {
             const newNode = wrapper.firstElementChild;
             if (!newNode) continue;
             newNode.dataset.cardFingerprint = nextFingerprint;
+            // Localize any timestamp phase-age on freshly built nodes. Reused
+            // SSR/prior nodes are handled by syncCompactCardPhaseAge (and the
+            // DOMContentLoaded document scan) so this never re-touches them.
+            formatDashboardTimestamps(newNode);
             if (existing) {
                 existing.replaceWith(newNode);
             } else if (insertAfter) {
