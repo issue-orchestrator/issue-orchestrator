@@ -2580,6 +2580,57 @@ class TestProcessActiveSessions:
         mock_completion_handler.process_completion.assert_not_called()
         mock_action_applier.apply_actions.assert_not_called()
 
+    def test_attributes_tick_phase_to_issue_being_handled(self, sample_agent_config, tmp_path):
+        """While a session's (synchronous) completion runs, the tick phase names
+        the issue, so a stall during publish shows up on the dashboard as
+        'active_sessions:#392' rather than a generic 'active_sessions'."""
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.observation.observation import SessionObservationResult
+
+        issue = Issue(number=392, title="Test", labels=["agent:backend"])
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-392",
+            worktree_path=tmp_path / "worktree",
+            branch_name="392-feature",
+            run_assets=make_session_run_assets(tmp_path / "worktree", session_name="issue-392"),
+        )
+
+        state = OrchestratorState()
+        state.active_sessions = [session]
+
+        mock_observer = MagicMock()
+        mock_observer.observe_session.return_value = SessionObservationResult.terminated()
+
+        captured_phase = {}
+
+        def capture_phase(*args, **kwargs):
+            # The heavy publish work happens inside decide_outcome; capture what
+            # the dashboard would read if it sampled mid-stall.
+            captured_phase["value"] = state.current_tick_phase
+            return SessionDecision(
+                status=SessionStatus.RUNNING,
+                reason="deferred",
+            )
+
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.side_effect = capture_phase
+
+        process_active_sessions(
+            state=state,
+            observer=mock_observer,
+            session_controller=mock_controller,
+            completion_handler=MagicMock(),
+            action_applier=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=MagicMock(),
+            config=MagicMock(),
+        )
+
+        assert captured_phase["value"] == "active_sessions:#392"
+
     def test_completion_event_fires_once_across_many_ticks_of_deferred_session(
         self, sample_agent_config, tmp_path
     ):

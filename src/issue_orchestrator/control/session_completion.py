@@ -394,6 +394,12 @@ def process_active_sessions(
             )
             continue
         session_start = time.monotonic()
+        # Attribute the tick to this issue while we handle it. Completion
+        # handling (validation gate + push + PR) runs synchronously here and can
+        # take minutes; if it overruns the heartbeat budget the dashboard reads
+        # current_tick_phase to explain the stall — naming the issue turns a
+        # generic "(phase: active_sessions)" into "(phase: active_sessions:#392)".
+        state.current_tick_phase = f"active_sessions:#{session.issue.number}"
         obs = observer.observe_session(session)
         if obs.observation == SessionObservation.RUNNING:
             continue

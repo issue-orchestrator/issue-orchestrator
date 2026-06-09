@@ -37,6 +37,7 @@ from .queue_cache import (
     record_issue_refreshes,
 )
 from .reconciliation import ReconciliationRequired, get_pause_label
+from .tick_telemetry import report_slow_tick
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
     ClosedIssueHistoryMutation,
@@ -1387,8 +1388,7 @@ def run_tick(
         }),
     ))
     tick_elapsed = time.monotonic() - tick_start
-    if tick_elapsed > 10:
-        logger.warning("[LOOP] Tick took %.1fs", tick_elapsed)
+    report_slow_tick(events, event_context, state, tick_elapsed, active_elapsed)
     state.current_tick_phase = ""
     state.last_tick_completed_at = time.time()
     return loop_iteration, True

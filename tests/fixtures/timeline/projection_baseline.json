@@ -887,6 +887,12 @@
     "status": "completed",
     "step": "tick.completed"
   },
+  "tick.slow": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "tick.slow"
+  },
   "tick.started": {
     "level": "detail",
     "phase": "system",
