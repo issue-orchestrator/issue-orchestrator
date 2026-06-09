@@ -64,7 +64,7 @@ def check_e2e_runner(config: Config) -> list[Check]:
     checks: list[Check] = []
 
     if config.e2e.enabled:
-        repo_root = Path.cwd()
+        repo_root = config.repo_root
         e2e_parts: list[str] = []
         summary_parts, validation_checks = _e2e_summary_parts(config, repo_root)
         e2e_parts.extend(summary_parts)

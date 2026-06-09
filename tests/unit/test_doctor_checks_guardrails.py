@@ -9,12 +9,50 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.command_runner import CommandResult
 from issue_orchestrator.infra.doctor.checks import guardrails as guardrail_checks
 
 
 class _UnusedRunner:
     def run(self, *args, **kwargs):  # pragma: no cover - should never be called
         raise AssertionError("runner should not be invoked in this test")
+
+
+def test_check_guardrails_uses_config_repo_root_not_cwd(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Path] = {}
+    repo_root = tmp_path / "repo"
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True)
+
+    def _create_worktree(**kwargs):
+        captured["repo_root"] = kwargs["repo_root"]
+        return tmp_path / "missing-worktree", "doctor-branch", "created", None, False, 0, 0
+
+    class _Runner:
+        def run(self, *args, **kwargs) -> CommandResult:  # pragma: no cover - cleanup skipped
+            raise AssertionError("runner should not be invoked")
+
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.worktree._worktree.create_worktree",
+        _create_worktree,
+    )
+    monkeypatch.setattr(
+        guardrail_checks,
+        "check_guardrails_in_worktree_impl",
+        lambda worktree_path, runner: [],
+    )
+    monkeypatch.chdir(scripts_dir)
+
+    config = Config(repo="BruceBGordon/tixmeup")
+    config.repo_root = repo_root
+    checks = guardrail_checks.check_guardrails(config, _Runner())
+
+    assert captured["repo_root"] == repo_root
+    assert next(check for check in checks if check.name == "Test Worktree").status == "ok"
 
 
 def test_check_guardrails_prepends_active_venv_bin(monkeypatch, tmp_path: Path) -> None:
