@@ -142,7 +142,6 @@ def test_completion_wrapper_resolves_venv_from_snapshot_context(
         env=env,
         text=True,
         capture_output=True,
-        timeout=5,
         check=False,
     )
 

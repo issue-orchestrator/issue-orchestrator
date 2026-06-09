@@ -6,7 +6,12 @@
 # in the orchestrator's venv.
 
 # The scripts directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${SCRIPT_SOURCE%/*}"
+if [[ "$SCRIPT_DIR" == "$SCRIPT_SOURCE" ]]; then
+    SCRIPT_DIR="."
+fi
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 
 source "$SCRIPT_DIR/completion-wrapper-lib.sh"
 if REVIEWER_DONE="$(completion_wrapper_resolve "$SCRIPT_DIR" "reviewer-done")"; then
