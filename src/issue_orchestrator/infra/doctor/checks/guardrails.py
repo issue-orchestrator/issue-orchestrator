@@ -332,7 +332,7 @@ def check_guardrails(config: Config, runner: CommandRunner | None) -> list[Check
             detail="Skipped (no CommandRunner provided)",
         )]
 
-    repo_root = Path.cwd()
+    repo_root = config.repo_root
     worktree_base = str(config.worktree_base) if config.worktree_base else "../"
     return _check_guardrails_in_worktree(
         repo_root,
