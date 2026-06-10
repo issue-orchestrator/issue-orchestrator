@@ -66,6 +66,7 @@ Thumbs.db
 .githooks/pre-push.log
 .githooks/*.log
 .issue-orchestrator/session-identity-*.json
+.issue-orchestrator/session-latest.json
 .issue-orchestrator/failure-diagnostic-*.json
 .issue-orchestrator/logs/
 .issue-orchestrator/*.db
@@ -98,3 +99,16 @@ worktrees/
 
 # Local generated documentation previews
 .preview/
+
+# Lint / type-check caches
+.ruff_cache/
+.import_linter_cache/
+
+# Credentials / secrets — defense-in-depth (none are committed; prevents accidents)
+.env
+.env.*
+*.pem
+*.key
+id_rsa
+.pypirc
+.npmrc
