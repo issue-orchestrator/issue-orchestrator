@@ -1,6 +1,6 @@
 [project]
 name = "issue-orchestrator"
-version = "0.9.0"
+version = "0.10.0"
 description = "Orchestrate AI agents working on GitHub issues in parallel"
 readme = "README.md"
 license = "Apache-2.0"
