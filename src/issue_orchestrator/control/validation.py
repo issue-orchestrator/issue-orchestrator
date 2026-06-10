@@ -18,9 +18,9 @@ from pathlib import Path
 from typing import Optional
 
 from ..domain.attempt import Attempt, AttemptKey
+from ..infra import validation_timings as timings
 from ..infra.atomic_json import atomic_write_json
 from ..infra.emit import emit_event
-from ..infra.validation_timings import append_validation_timing, build_timing_envelope
 from ..ports import CommandRunner, CommandResult, WorkingCopy
 from ..ports.attempt_store import AttemptStore
 from ..ports.session_output import ValidationRecord
@@ -46,9 +46,7 @@ def _is_session_run_dir(path: Path, worktree: Path) -> bool:
     except ValueError:
         return False
     parts = rel.parts
-    return (
-        len(parts) >= 3 and parts[0] == ".issue-orchestrator" and parts[1] == "sessions"
-    )
+    return len(parts) >= 3 and parts[:2] == (".issue-orchestrator", "sessions")
 
 
 @dataclass
@@ -235,6 +233,7 @@ class ValidationRunner:
 
         ended_at = datetime.now(timezone.utc)
         passed = exit_code == 0
+        timings.record_gate_timings(suite, self.store.worktree, command, stdout, stderr)
 
         # Write stdout/stderr files to session output dir
         session_output_dir.mkdir(parents=True, exist_ok=True)
@@ -487,12 +486,12 @@ class PublishGate:
             "record_timed_out": record.timed_out if record else None,
         }
         payload.update(
-            build_timing_envelope(
+            timings.build_timing_envelope(
                 wall_started_at=wall_started_at,
                 monotonic_started_at=monotonic_started_at,
             )
         )
-        append_validation_timing(self.worktree, payload)
+        timings.append_validation_timing(self.worktree, payload)
 
     def _validate_attempt_key_head(self, head_sha: str) -> None:
         if self.attempt_key is None:
