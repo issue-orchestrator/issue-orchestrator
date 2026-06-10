@@ -32,6 +32,19 @@ def _shared_timing_records(worktree: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in timings_file.read_text().splitlines()]
 
 
+def _timing_marker_command() -> str:
+    return (
+        "printf '%s\\n' "
+        "'[validate-timing] CONFIG validate_jobs=10 unit_parallel=auto "
+        "simulated_parallel=auto integration_parallel=auto "
+        "integration_agent_parallel=0 static_jobs=10 test_jobs=1 "
+        "web_jobs=1 agent_jobs=1 e2e_jobs=1' "
+        "'[validate-timing] START target=test-unit at=2026-03-14T09:10:13-0600' "
+        "'[validate-timing] END target=test-unit status=0 elapsed=12s "
+        "at=2026-03-14T09:10:25-0600'"
+    )
+
+
 class TestValidationRecord:
     """Tests for ValidationRecord dataclass."""
 
@@ -318,16 +331,7 @@ class TestValidationRunner:
     ):
         """Raw publish commands should still emit structured per-target timings."""
         (temp_worktree / ".git").mkdir()
-        command = (
-            "printf '%s\\n' "
-            "'[validate-timing] CONFIG validate_jobs=10 unit_parallel=auto "
-            "simulated_parallel=auto integration_parallel=auto "
-            "integration_agent_parallel=0 static_jobs=10 test_jobs=1 "
-            "web_jobs=1 agent_jobs=1 e2e_jobs=1' "
-            "'[validate-timing] START target=test-unit at=2026-03-14T09:10:13-0600' "
-            "'[validate-timing] END target=test-unit status=0 elapsed=12s "
-            "at=2026-03-14T09:10:25-0600'"
-        )
+        command = _timing_marker_command()
 
         runner.run(
             suite="publish_gate",
@@ -348,6 +352,26 @@ class TestValidationRunner:
         assert target_record["integration_agent_parallel"] == "0"
         assert target_record["started_at"] == "2026-03-14T09:10:13-0600"
         assert target_record["ended_at"] == "2026-03-14T09:10:25-0600"
+
+    def test_run_does_not_append_target_timing_records_for_agent_gate(
+        self,
+        runner,
+        temp_worktree,
+        session_output_dir,
+    ):
+        """Captured timing markers only produce target timings for publish gate."""
+        (temp_worktree / ".git").mkdir()
+
+        runner.run(
+            suite="agent_gate",
+            head_sha="agenttiming123",
+            command=_timing_marker_command(),
+            timeout_seconds=10,
+            session_output_dir=session_output_dir,
+        )
+
+        records = _shared_timing_records(temp_worktree)
+        assert not [record for record in records if record["kind"] == "target_timing"]
 
     def test_run_does_not_write_record_to_non_session_dir(self, runner, temp_worktree):
         """Non-session output dirs should not get run-scoped validation-record.json."""

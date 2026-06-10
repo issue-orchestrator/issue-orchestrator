@@ -233,7 +233,6 @@ class ValidationRunner:
 
         ended_at = datetime.now(timezone.utc)
         passed = exit_code == 0
-        timings.record_gate_timings(suite, self.store.worktree, command, stdout, stderr)
 
         # Write stdout/stderr files to session output dir
         session_output_dir.mkdir(parents=True, exist_ok=True)
@@ -297,6 +296,7 @@ class ValidationRunner:
                 "duration_seconds": duration_seconds,
             },
         )
+        timings.record_gate_timings(suite, self.store.worktree, command, stdout, stderr)
 
         return record
 
