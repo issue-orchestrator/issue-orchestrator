@@ -1460,7 +1460,10 @@ def test_persistent_review_exchange_end_to_end_through_mailbox(
         agent = AgentConfig(
             prompt_path=prompt_path,
             ai_system="claude-code",
-            timeout_minutes=1,
+            # Generous round timeout: this test spawns two real agent
+            # subprocesses plus a PTY and an HTTP server, and runs under the
+            # parallel validate-pr load where CPU is saturated.
+            timeout_minutes=3,
             command=_interactive_review_agent_command(),
         )
         config = _make_config(tmp_path, agent)
