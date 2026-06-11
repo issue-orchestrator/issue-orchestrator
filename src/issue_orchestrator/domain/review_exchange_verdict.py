@@ -38,8 +38,8 @@ class ExchangeVerdict:
     decision: Mapping[str, Any] | None
 
     @classmethod
-    def from_wire(cls, raw: Mapping[str, Any]) -> "ExchangeVerdict":
-        """Build from a decoded JSON object. Raises if ``raw`` is not a mapping.
+    def from_wire(cls, raw: object) -> "ExchangeVerdict":
+        """Build from a decoded JSON value. Raises if ``raw`` is not a mapping.
 
         Field types are normalised (wrong-typed fields become ``None``) so the
         serialised form is exactly what the orchestrator parser expects to see;

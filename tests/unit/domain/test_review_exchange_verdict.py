@@ -24,7 +24,7 @@ class TestFromWire:
     def test_non_mapping_payload_is_rejected(self) -> None:
         for bad in (None, [1, 2], "ok", 5):
             with pytest.raises(ValueError, match="must be a JSON object"):
-                ExchangeVerdict.from_wire(bad)  # type: ignore[arg-type]
+                ExchangeVerdict.from_wire(bad)
 
     def test_wrong_typed_fields_become_none_and_are_omitted(self) -> None:
         # Preserves the legacy file-channel outcome: a missing/odd response_type
