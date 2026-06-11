@@ -368,6 +368,30 @@ def test_compact_cards_sync_phase_age_in_place_when_fingerprint_matches() -> Non
     assert "card-phase-age" in card_html_body
 
 
+def test_compact_card_phase_age_has_single_render_source() -> None:
+    """The phase-age display string must be produced in exactly one place
+    (compactCardPhaseAgeInnerHtml), used by both the initial builder and the
+    in-place sync — not duplicated across them. Timestamp localization is
+    delegated to the one shared [data-dashboard-timestamp] localizer rather
+    than re-implemented per render site.
+    """
+    js = _read(DASHBOARD_JS)
+    builder = _function_body(js, "renderCompactCardHtml")
+    sync = _function_body(js, "syncCompactCardPhaseAge")
+    helper = _function_body(js, "compactCardPhaseAgeInnerHtml")
+
+    # Both render paths delegate to the single helper.
+    assert "compactCardPhaseAgeInnerHtml(card)" in builder
+    assert "compactCardPhaseAgeInnerHtml(card)" in sync
+    # The marker is emitted only in the one helper, gated on time_is_timestamp.
+    assert "data-dashboard-timestamp" in helper
+    assert "time_is_timestamp" in helper
+    assert "data-dashboard-timestamp" not in builder
+    # Timestamp cards are handed to the shared localizer; the sync does not
+    # format time itself.
+    assert "formatDashboardTimestamps" in sync
+
+
 def test_first_refresh_holds_data_booting_through_dom_mutations() -> None:
     """`data-booting` suppresses CSS transitions during boot. The boot
     handler must `await` the first refreshViewModel before clearing
