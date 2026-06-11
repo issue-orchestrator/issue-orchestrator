@@ -35,6 +35,7 @@ MANAGED_VERIFY_MARKERS = (MANAGED_VERIFY_MARKER, LEGACY_MANAGED_VERIFY_MARKER)
 MANAGED_HELPER_MARKERS = (MANAGED_HELPER_MARKER, LEGACY_MANAGED_HELPER_MARKER)
 VERIFY_PR_RELATIVE_PATH = Path("scripts/verify-pr.sh")
 HELPER_RELATIVE_PATH = Path("scripts/agent-hooks/block_no_verify.py")
+POST_VERIFY_HOOK_RELATIVE_PATH = Path("repo-specific/hooks/post-verify")
 
 
 @dataclass
@@ -491,6 +492,39 @@ def _render_helper_script(source_path: Path) -> str:
 
 def _render_repo_pre_push_hook(verify_script: Path, repo_root: Path) -> str:
     verify_rel = verify_script.relative_to(repo_root)
+    post_verify_hook_exists = (repo_root / POST_VERIFY_HOOK_RELATIVE_PATH).exists()
+    post_verify_variable = ""
+    post_verify_function = ""
+    post_verify_call = ""
+    if post_verify_hook_exists:
+        post_verify_variable = (
+            f'POST_VERIFY_HOOK="$REPO_ROOT/{POST_VERIFY_HOOK_RELATIVE_PATH.as_posix()}"\n'
+        )
+        post_verify_function = """
+run_post_verify_hook() {
+  if [ ! -f "$POST_VERIFY_HOOK" ]; then
+    log "post-verify-skipped"
+    return 0
+  fi
+
+  if [ ! -x "$POST_VERIFY_HOOK" ]; then
+    log "post-verify-not-executable path=$POST_VERIFY_HOOK"
+    echo "pre-push: post-verify hook is not executable: $POST_VERIFY_HOOK" >&2
+    return 1
+  fi
+
+  log "post-verify-starting"
+  if "$POST_VERIFY_HOOK" "$@"; then
+    log "post-verify exit=0"
+  else
+    local post_verify_exit=$?
+    log "post-verify exit=$post_verify_exit"
+    return "$post_verify_exit"
+  fi
+}
+"""
+        post_verify_call = '\nrun_post_verify_hook "$@"\n'
+
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
@@ -501,6 +535,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 LOG_FILE="$HOOK_DIR/pre-push.log"
 PROJECT_HOOK="$HOOK_DIR/pre-push.project"
 VERIFY_SCRIPT="$REPO_ROOT/{verify_rel.as_posix()}"
+{post_verify_variable.rstrip()}
 MANAGED_MARKER='{MANAGED_PRE_PUSH_MARKER}'
 LEGACY_MANAGED_MARKER='{LEGACY_MANAGED_PRE_PUSH_MARKER}'
 
@@ -513,6 +548,7 @@ log "repo-pre-push-started"
 is_managed_wrapper() {{
   grep -qF "$MANAGED_MARKER" "$1" 2>/dev/null || grep -qF "$LEGACY_MANAGED_MARKER" "$1" 2>/dev/null
 }}
+{post_verify_function.rstrip()}
 
 # Recursion guard: never exec pre-push.project if it contains the managed
 # marker. That means it is a copy of this wrapper (corruption) and executing
@@ -554,6 +590,7 @@ else
   log "verify-pr exit=$verify_exit"
   exit "$verify_exit"
 fi
+{post_verify_call.rstrip()}
 
 log "repo-pre-push-completed"
 """

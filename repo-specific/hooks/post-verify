@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PYTHON_BIN=""
+
+if [ -n "${ISSUE_ORCHESTRATOR_PYTHON:-}" ] && [ -x "${ISSUE_ORCHESTRATOR_PYTHON}" ]; then
+  PYTHON_BIN="${ISSUE_ORCHESTRATOR_PYTHON}"
+elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+  PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+else
+  echo "post-verify: python3 not found; cannot run pre-push runtime budget guard" >&2
+  exit 1
+fi
+
+exec "$PYTHON_BIN" \
+  "$REPO_ROOT/repo-specific/scripts/check_prepush_runtime_budget.py" \
+  --config "$REPO_ROOT/repo-specific/config/pre-push-runtime-budget.yaml"

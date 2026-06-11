@@ -8,6 +8,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 LOG_FILE="$HOOK_DIR/pre-push.log"
 PROJECT_HOOK="$HOOK_DIR/pre-push.project"
 VERIFY_SCRIPT="$REPO_ROOT/scripts/verify-pr.sh"
+POST_VERIFY_HOOK="$REPO_ROOT/repo-specific/hooks/post-verify"
 MANAGED_MARKER='Managed by issue-orchestrator setup-guardrails: pre-push'
 LEGACY_MANAGED_MARKER='Managed by issue-orchestrator harden-repo: pre-push'
 
@@ -19,6 +20,28 @@ log "repo-pre-push-started"
 
 is_managed_wrapper() {
   grep -qF "$MANAGED_MARKER" "$1" 2>/dev/null || grep -qF "$LEGACY_MANAGED_MARKER" "$1" 2>/dev/null
+}
+
+run_post_verify_hook() {
+  if [ ! -f "$POST_VERIFY_HOOK" ]; then
+    log "post-verify-skipped"
+    return 0
+  fi
+
+  if [ ! -x "$POST_VERIFY_HOOK" ]; then
+    log "post-verify-not-executable path=$POST_VERIFY_HOOK"
+    echo "pre-push: post-verify hook is not executable: $POST_VERIFY_HOOK" >&2
+    return 1
+  fi
+
+  log "post-verify-starting"
+  if "$POST_VERIFY_HOOK" "$@"; then
+    log "post-verify exit=0"
+  else
+    local post_verify_exit=$?
+    log "post-verify exit=$post_verify_exit"
+    return "$post_verify_exit"
+  fi
 }
 
 # Recursion guard: never exec pre-push.project if it contains the managed
@@ -61,5 +84,7 @@ else
   log "verify-pr exit=$verify_exit"
   exit "$verify_exit"
 fi
+
+run_post_verify_hook "$@"
 
 log "repo-pre-push-completed"
