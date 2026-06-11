@@ -16,8 +16,17 @@ pull request. On success, your checkout remains on the release PR branch. If a
 step fails after that branch is created, the script prints local and remote
 branch cleanup commands before retrying.
 
-Review and merge that PR to `main` through the normal gate. After it is merged,
-run the final release from a clean checkout:
+Review and merge that PR to `main` through the normal gate.
+
+`make release-pr` leaves your checkout on the release PR branch, and the final
+release requires local `main` to match the merged `origin/main` exactly. So
+after the PR merges, switch back and fast-forward to the merge commit:
+
+```bash
+git switch main && git pull --ff-only origin main
+```
+
+Then run the final release from that clean, up-to-date checkout:
 
 ```bash
 make release VERSION=v1.0.0

@@ -9,12 +9,15 @@ from ...provider_cli_diagnostics import provider_cli_missing_detail
 from ....ports.command_runner import CommandRunner
 
 
-def check_working_directory(runner: CommandRunner | None) -> list[Check]:
+def check_working_directory(
+    runner: CommandRunner | None,
+    repo_root: Path | None = None,
+) -> list[Check]:
     checks: list[Check] = []
     if runner is None:
         return checks
 
-    repo_root = Path.cwd()
+    repo_root = repo_root or Path.cwd()
     try:
         from ....adapters.git.git_cli import GitCLI
         git = GitCLI(runner=runner)
@@ -127,7 +130,7 @@ def _check_agent_scripts(config: Config) -> Check:
 
 def _check_retry_templates(config: Config) -> Check | None:
     """Check if retry templates exist. Returns None if no templates configured."""
-    repo_root = Path.cwd()
+    repo_root = config.repo_root
     missing_templates = []
 
     if config.retry and config.retry.retry_prompt_template:
@@ -188,7 +191,7 @@ def _check_agent_prompts(
     runner: CommandRunner | None = None,
 ) -> Check | None:
     """Ensure repo-local prompt files are available from the worktree seed ref."""
-    repo_root = Path.cwd()
+    repo_root = config.repo_root
     if not (repo_root / ".git").exists():
         return None
 

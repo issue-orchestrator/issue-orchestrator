@@ -9,6 +9,7 @@ from issue_orchestrator.infra.launcher import (
     launch_subprocess,
     preflight,
 )
+from issue_orchestrator.execution.command_runner import LocalCommandRunner
 from issue_orchestrator.infra.doctor.types import Check, DoctorResult
 
 
@@ -76,6 +77,18 @@ class TestLaunchResult:
 
 
 class TestPreflight:
+    def test_preflight_defaults_to_command_runner(self, mock_config):
+        captured: dict[str, object] = {}
+
+        def doctor(**kwargs: object) -> DoctorResult:
+            captured.update(kwargs)
+            return DoctorResult(checks=[Check(name="Test", status="ok", detail="good")])
+
+        result = preflight(mock_config, doctor_fn=doctor)
+
+        assert result.launched is False
+        assert isinstance(captured["runner"], LocalCommandRunner)
+
     def test_preflight_ok(self, mock_config):
         result = preflight(mock_config, doctor_fn=_ok_doctor)
         assert result.status == "ok"
@@ -100,6 +113,21 @@ class TestLaunchPreflightOnly:
 
 
 class TestLaunchSubprocess:
+    def test_launch_subprocess_defaults_to_command_runner(self, mock_config, tmp_path):
+        captured: dict[str, object] = {}
+
+        def doctor(**kwargs: object) -> DoctorResult:
+            captured.update(kwargs)
+            return DoctorResult(checks=[Check(name="Test", status="ok", detail="good")])
+
+        sv = _mock_supervisor()
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=doctor, supervisor_ops=sv
+        )
+
+        assert result.launched is True
+        assert isinstance(captured["runner"], LocalCommandRunner)
+
     def test_launch_ok(self, mock_config, tmp_path):
         sv = _mock_supervisor()
         result = launch_subprocess(

@@ -1,7 +1,6 @@
 """Tests for schema-driven doctor checks."""
 
 from pathlib import Path
-from unittest.mock import patch
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.config import Config, E2EConfig
@@ -29,40 +28,59 @@ class TestRunSchemaChecks:
         (tmp_path / "tests" / "e2e" / "quarantine.txt").touch()
 
         cfg = Config()
+        cfg.repo_root = tmp_path
         cfg.e2e = E2EConfig(
             enabled=True,
             quarantine_file="tests/e2e/quarantine.txt",
             pytest_args=["tests/e2e", "-v"],
         )
 
-        with patch("issue_orchestrator.infra.doctor.checks.schema.Path") as MockPath:
-            MockPath.cwd.return_value = tmp_path
-            # Make (tmp_path / path).exists() work
-            MockPath.__truediv__ = lambda self, other: tmp_path / other
-            checks = run_schema_checks(cfg)
+        checks = run_schema_checks(cfg)
 
         # No path-related failures
         path_failures = [c for c in checks if "not found" in c.detail]
         assert len(path_failures) == 0
 
-    def test_path_exists_check_warns(self):
+    def test_path_exists_check_warns(self, tmp_path):
         """Path check should warn when the path is missing."""
         cfg = Config()
+        cfg.repo_root = tmp_path
         cfg.e2e = E2EConfig(
             enabled=True,
             quarantine_file="nonexistent/quarantine.txt",
             pytest_args=["tests/e2e", "-v"],
         )
 
-        # Use a temp dir that definitely lacks the paths
-        with patch("issue_orchestrator.infra.doctor.checks.schema.Path") as MockPath:
-            mock_cwd = Path("/tmp/test_doctor_empty")
-            MockPath.cwd.return_value = mock_cwd
-            checks = run_schema_checks(cfg)
+        checks = run_schema_checks(cfg)
 
         quarantine_checks = [c for c in checks if "quarantine" in c.detail.lower() or "Quarantine" in c.name]
         assert len(quarantine_checks) >= 1
         assert quarantine_checks[0].status == "warning"
+
+    def test_path_checks_use_config_repo_root_not_cwd(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """Launching from a repo subdirectory must still check target repo paths."""
+        repo_root = tmp_path / "repo"
+        scripts_dir = repo_root / "scripts"
+        (repo_root / "tests" / "e2e").mkdir(parents=True)
+        (repo_root / "tests" / "e2e" / "quarantine.txt").touch()
+        scripts_dir.mkdir()
+
+        cfg = Config()
+        cfg.repo_root = repo_root
+        cfg.e2e = E2EConfig(
+            enabled=True,
+            quarantine_file="tests/e2e/quarantine.txt",
+            pytest_args=["tests/e2e", "-v"],
+        )
+
+        monkeypatch.chdir(scripts_dir)
+        checks = run_schema_checks(cfg)
+
+        assert not any("not found" in c.detail for c in checks)
 
     def test_references_agent_check_passes(self):
         """Agent reference check should pass when agent exists."""

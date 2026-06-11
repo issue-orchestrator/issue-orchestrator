@@ -6,16 +6,15 @@
 # in the orchestrator's venv.
 
 # The scripts directory
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${SCRIPT_SOURCE%/*}"
+if [[ "$SCRIPT_DIR" == "$SCRIPT_SOURCE" ]]; then
+    SCRIPT_DIR="."
+fi
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 
-# Find the orchestrator's venv by going up from the scripts dir
-# Structure: .../issue-orchestrator/src/issue_orchestrator/scripts/
-#                                   ^-- 3 levels up to issue-orchestrator
-# We need: .../issue-orchestrator/.venv/bin/coding-done
-ORCHESTRATOR_ROOT="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
-CODING_DONE="$ORCHESTRATOR_ROOT/.venv/bin/coding-done"
-
-if [[ -x "$CODING_DONE" ]]; then
+source "$SCRIPT_DIR/completion-wrapper-lib.sh"
+if CODING_DONE="$(completion_wrapper_resolve "$SCRIPT_DIR" "coding-done")"; then
     exec "$CODING_DONE" "$@"
 fi
 
@@ -31,8 +30,10 @@ echo "╠═══════════════════════�
 echo "║                                                                ║" >&2
 echo "║  The issue-orchestrator package may not be installed.         ║" >&2
 echo "║                                                                ║" >&2
-echo "║  Expected location:                                           ║" >&2
-echo "║  $CODING_DONE" >&2
+echo "║  Checked locations:                                           ║" >&2
+for CODING_DONE in "${completion_candidate_paths[@]}"; do
+    echo "║  $CODING_DONE" >&2
+done
 echo "║                                                                ║" >&2
 echo "╚════════════════════════════════════════════════════════════════╝" >&2
 exit 1
