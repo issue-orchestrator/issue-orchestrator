@@ -1,0 +1,16 @@
+# Repo-specific pre-push runtime guardrail for issue-orchestrator.
+#
+# The guard reads the shared .git/issue-orchestrator/validate-timings.jsonl
+# records emitted by prepush_check and fails the hook when the latest uncached,
+# successful publish validation for the current HEAD exceeds either budget.
+#
+# Maintainers should run `make validate-pr` to seed the pre-push cache. The
+# command below is the recorded inner publish command used to select timing
+# records; running the raw target directly bypasses the cache-aware wrapper.
+pre_push_runtime:
+  enabled: true
+  command: "make validate-pr-raw"
+  metric: "validation_elapsed_seconds"
+  baseline_seconds: 540
+  max_increase_seconds: 240
+  max_seconds: 900
