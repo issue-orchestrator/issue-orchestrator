@@ -29,6 +29,7 @@ import sys
 import urllib.error
 import urllib.request
 
+from ...domain.review_exchange_verdict import ExchangeVerdict
 from .orchestrator_resume import api_request_headers
 
 _VALID_RESPONSE_TYPES = ("ok", "changes_requested", "disagree")
@@ -94,10 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_payload(args: argparse.Namespace) -> dict[str, object]:
-    """Construct the verdict payload the orchestrator's parser consumes.
+def build_verdict(args: argparse.Namespace) -> ExchangeVerdict:
+    """Construct the typed verdict from CLI args.
 
-    Mirrors the JSON shape agents previously wrote to the response file:
+    Mirrors the shape agents previously wrote to the response file:
     ``{response_type, response_text, [getting_closer], [decision]}``.
     """
     if args.full_json is not None:
@@ -107,19 +108,14 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
             raise ValueError(f"--json is not valid JSON: {exc}") from exc
         if not isinstance(payload, dict):
             raise ValueError("--json must be a JSON object")
-        return payload
+        return ExchangeVerdict.from_wire(payload)
 
     if args.response_type is None:
         raise ValueError("response_type is required (or pass --json)")
     if not args.text or not args.text.strip():
         raise ValueError("--text is required")
 
-    payload: dict[str, object] = {
-        "response_type": args.response_type,
-        "response_text": args.text,
-    }
-    if args.getting_closer is not None:
-        payload["getting_closer"] = args.getting_closer
+    decision = None
     if args.decision_json is not None:
         try:
             decision = json.loads(args.decision_json)
@@ -127,14 +123,18 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
             raise ValueError(f"--decision-json is not valid JSON: {exc}") from exc
         if not isinstance(decision, dict):
             raise ValueError("--decision-json must be a JSON object")
-        payload["decision"] = decision
-    return payload
+    return ExchangeVerdict(
+        response_type=args.response_type,
+        response_text=args.text,
+        getting_closer=args.getting_closer,
+        decision=decision,
+    )
 
 
-def _deliver(key: str, port: str, payload: dict[str, object]) -> tuple[bool, str]:
+def _deliver(key: str, port: str, verdict: ExchangeVerdict) -> tuple[bool, str]:
     """POST the verdict to the Control API. Returns (accepted, message)."""
     url = f"http://localhost:{port}/api/review-exchange/respond"
-    body = json.dumps({"key": key, "payload": payload}).encode("utf-8")
+    body = json.dumps({"key": key, "payload": dict(verdict.to_wire())}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
@@ -157,7 +157,7 @@ def _deliver(key: str, port: str, payload: dict[str, object]) -> tuple[bool, str
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        payload = build_payload(args)
+        verdict = build_verdict(args)
     except ValueError as exc:
         print(f"exchange-respond: {exc}", file=sys.stderr)
         return 1
@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    accepted, message = _deliver(key, port, payload)
+    accepted, message = _deliver(key, port, verdict)
     if accepted:
         print(f"exchange-respond: {message}")
         return 0

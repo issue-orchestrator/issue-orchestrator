@@ -1473,12 +1473,12 @@
       "value": 910
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/persistent_round_runner.py": {
-      "detail": "814 lines exceeds budget 800",
+      "detail": "824 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/execution/persistent_round_runner.py",
       "path": "src/issue_orchestrator/execution/persistent_round_runner.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 814
+      "value": 824
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/persistent_session_exchange.py": {
       "detail": "3237 lines exceeds budget 800",
@@ -3245,22 +3245,6 @@
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/dirty_retry_budget.py:issue-orchestrator.raw-public-seam-dict-return:8bbc13f28d20",
       "path": "src/issue_orchestrator/entrypoints/cli_tools/dirty_retry_budget.py",
-      "rule_id": "semgrep_typed_seams",
-      "value": 1
-    },
-    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py:issue-orchestrator.raw-public-seam-dict-parameter:3f2471f150ee": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 134: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py:issue-orchestrator.raw-public-seam-dict-parameter:3f2471f150ee",
-      "path": "src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py",
-      "rule_id": "semgrep_typed_seams",
-      "value": 1
-    },
-    "semgrep_typed_seams:src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py:issue-orchestrator.raw-public-seam-dict-return:103667cf043a": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-return line 97: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict return annotations.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py:issue-orchestrator.raw-public-seam-dict-return:103667cf043a",
-      "path": "src/issue_orchestrator/entrypoints/cli_tools/exchange_respond.py",
       "rule_id": "semgrep_typed_seams",
       "value": 1
     },

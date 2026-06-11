@@ -19,6 +19,7 @@ from ..control.queue_cache import QueueCache
 from ..control.reconciliation import ReconciliationRequired, build_expected_for_mutation
 from ..control.worktree_manager import get_worktree_path
 from ..domain.models import get_completion_path
+from ..domain.review_exchange_verdict import ExchangeVerdict
 from ..domain.session_run import SessionRunAssets
 from ..infra.env import ENV_PREFIX
 from .control_api_issue_support import ControlApiIssueDependency, StateLockFn
@@ -83,16 +84,14 @@ async def review_exchange_respond(
             {"status": "error", "detail": "Invalid JSON body"}, status_code=400
         )
     key = body.get("key")
-    payload = body.get("payload")
     if not isinstance(key, str) or not key:
         return JSONResponse(
             {"status": "error", "detail": "key is required"}, status_code=400
         )
-    if not isinstance(payload, dict):
-        return JSONResponse(
-            {"status": "error", "detail": "payload object is required"},
-            status_code=400,
-        )
+    try:
+        verdict = ExchangeVerdict.from_wire(body.get("payload"))
+    except ValueError as exc:
+        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=400)
     orchestrator = deps.get_orchestrator()
     if orchestrator is None:
         return JSONResponse(
@@ -105,7 +104,7 @@ async def review_exchange_respond(
             {"status": "error", "detail": "Turn mailbox not configured"},
             status_code=503,
         )
-    result = mailbox.deliver(key, payload)
+    result = mailbox.deliver(key, dict(verdict.to_wire()))
     logger.info(
         "[REVIEW_EXCHANGE] verdict delivery key=%s status=%s turn_id=%s",
         key,
