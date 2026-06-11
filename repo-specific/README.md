@@ -7,6 +7,8 @@ These are NOT framework examples - they are our working configuration.
 
 - `prompts/` - Prompts for agents working on this repo
 - `scripts/` - Repo-maintainer scripts (not framework/user-facing)
+- `hooks/` - Repo-maintainer hook extensions run by local guardrails
+- `config/` - Repo-maintainer guardrail/profiling configuration
 - `Makefile` - Repo-maintainer targets (for internal profiling/workflows)
 
 ## What does NOT belong here

@@ -77,6 +77,15 @@ These are installed and refreshed in the target project by `issue-orchestrator s
 | Execpolicy rules (Codex) | Codex CLI | `.codex/rules/orchestrator.rules` | Blocks dangerous commands outside sandbox | **YES** |
 | AGENTS.md / CLAUDE.md | Policy | `AGENTS.md` (`CLAUDE.md` symlink for compatibility) | Documents prohibited actions | Advisory |
 
+Managed pre-push guardrails also support an optional
+`repo-specific/hooks/post-verify` extension point. When that hook exists during
+`setup-guardrails` or guardrail repair, the rendered wrapper runs it after
+`scripts/verify-pr.sh` succeeds and before the push is allowed. The hook receives
+the normal pre-push remote arguments (`remote-name` and `remote-url`), but not
+the refs stdin stream because the verify step may already consume it. Re-run
+guardrail setup or repair after adding the hook so the managed wrapper includes
+the dispatch.
+
 ## AI Agent Support Matrix
 
 | AI Agent | Hook Mechanism | Can Block `--no-verify` | Supported |
