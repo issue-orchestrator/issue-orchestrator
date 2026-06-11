@@ -448,13 +448,11 @@ def _create_completion_components(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        # Go-live gated (#6549): the mailbox + exchange-respond endpoint are
-        # wired and the slot/await path is in place, but the runner is not
-        # switched onto the mailbox until the agent-side cutover (prompts +
-        # fixtures) and integration coverage land. Passing None keeps the
-        # exchange on the file channel so production is unaffected meanwhile.
+        # The review exchange delivers verdicts through the orchestrator-owned
+        # mailbox: agents run `exchange-respond`, the Control API delivers into
+        # the open turn slot, and send_round polls the mailbox (#6549).
         review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, pair_registry, turn_mailbox=None,
+            session_output, pair_registry, turn_mailbox=turn_mailbox,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
@@ -1126,10 +1124,8 @@ def build_orchestrator_for_testing(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        # Go-live gated (#6549) — see build_orchestrator. None keeps the
-        # exchange on the file channel until the agent-side cutover lands.
         review_exchange_runner=PersistentReviewExchangeRunner(
-            session_output, pair_registry_for_testing, turn_mailbox=None,
+            session_output, pair_registry_for_testing, turn_mailbox=turn_mailbox,
         ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),

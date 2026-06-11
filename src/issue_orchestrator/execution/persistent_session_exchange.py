@@ -174,8 +174,8 @@ _BOOTSTRAP_PROMPT_TEMPLATE = (
     "send a short notice pointing at a prompt file in this worktree. For "
     "each turn, read the full instructions and follow them. Reviewers also "
     "write the human-readable report to $ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE. "
-    "Each role writes exactly one line of JSON to the file at "
-    "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE. "
+    "Each role submits its verdict for the turn by running the "
+    "`exchange-respond` command (never by writing a file). "
     "Then wait for the next prompt. Do not exit on your own; the orchestrator "
     "will terminate you when the exchange is done.\n"
 )
@@ -1348,8 +1348,8 @@ def _build_prompt_inbox_notice(
         f"Review-exchange {role.value} turn round={round_index} "
         f"attempt={attempt_index} is ready.\n"
         f"Read the full instructions from: {prompt_path}\n"
-        "Follow that file exactly, then write one JSON response line to "
-        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
+        "Follow that file exactly, then submit your verdict by running "
+        "`exchange-respond <ok|changes_requested|disagree> --text \"...\"`."
     )
 
 
@@ -1474,9 +1474,10 @@ def _reviewer_prompt_with_artifact_contract(
         "Review artifact contract:\n"
         "- Write a human-readable markdown review to "
         "$ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE.\n"
-        "- Also write the existing one-line JSON response to "
-        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE.\n"
-        "- The JSON must include a `decision` object with: "
+        "- Submit your verdict by running `exchange-respond "
+        "<ok|changes_requested|disagree> --text \"...\" "
+        "--decision-json '{...}'`.\n"
+        "- The `--decision-json` object must include: "
         "verdict, risk, blocking_findings, nits, tests_reviewed, "
         "abstraction_review, nit_policy.\n"
         "- Put review content in markdown; JSON item entries may be ID-only.\n"
@@ -2217,8 +2218,8 @@ def _enforce_coder_protocol(
             f"{protocol_error}\n"
             "Run `coding-done completed --implementation '...' --problems '...'` "
             "(or `coding-done blocked --reason '...' --attempted '...'` if you "
-            "cannot continue), then write your one-line JSON response again to "
-            "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
+            "cannot continue), then submit your verdict again by running "
+            "`exchange-respond <ok|disagree> --text '...'`."
         )
         retry_prompt_path = _persist_turn_prompt(
             exchange_dir,

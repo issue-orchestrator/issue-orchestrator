@@ -1388,3 +1388,114 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
 
     # Cleanup is guaranteed by the ``pair_registry_with_cleanup``
     # fixture's finally-block, even if any of the assertions above fail.
+
+
+def test_persistent_review_exchange_end_to_end_through_mailbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Activate the orchestrator-owned mailbox end to end (PR #6550 finding 1).
+
+    The interactive fixture runs the real ``exchange-respond`` CLI, which
+    POSTs to a live Control-API-shaped server backed by the real
+    ``InMemoryTurnMailbox``; ``send_round`` polls that mailbox (no response
+    file). Proves the fixture/CLI -> endpoint -> mailbox -> send_round path.
+    """
+    import http.server
+    import threading
+
+    from issue_orchestrator.domain.review_exchange_verdict import ExchangeVerdict
+    from issue_orchestrator.execution.review_exchange_turn_mailbox import (
+        InMemoryTurnMailbox,
+    )
+
+    token = "test-agent-callback-token"
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN", token)
+
+    mailbox = InMemoryTurnMailbox()
+
+    class _Server(http.server.ThreadingHTTPServer):
+        daemon_threads = True
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - stdlib handler contract
+            if self.path != "/api/review-exchange/respond":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.headers.get("Authorization") != f"Bearer {token}":
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
+            body = json.loads(
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            )
+            try:
+                verdict = ExchangeVerdict.from_wire(body.get("payload"))
+            except ValueError:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"status":"error"}')
+                return
+            result = mailbox.deliver(body.get("key"), dict(verdict.to_wire()))
+            deliveries.append(result.status.value)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": result.status.value}).encode())
+
+        def log_message(self, *_args) -> None:  # silence per-request logging
+            return
+
+    deliveries: list[str] = []
+    server = _Server(("127.0.0.1", 0), _Handler)
+    port = server.server_address[1]
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    try:
+        coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+        prompt_path = tmp_path / "prompt.md"
+        prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+        agent = AgentConfig(
+            prompt_path=prompt_path,
+            ai_system="claude-code",
+            timeout_minutes=1,
+            command=_interactive_review_agent_command(),
+        )
+        config = _make_config(tmp_path, agent)
+        config.control_api_port = port  # flows to the agent env as the API port
+
+        session_output = FileSystemSessionOutput()
+        runner = PersistentReviewExchangeRunner(
+            session_output,
+            InMemoryPersistentExchangePairRegistry(),
+            turn_mailbox=mailbox,
+        )
+        cre = CompletionReviewExchange(
+            config=config,
+            session_output=session_output,
+            emit_review_started=lambda **_: None,
+            emit_review_outcome=lambda **_: None,
+            review_exchange_runner=runner,
+        )
+
+        from issue_orchestrator.events import EventContext
+
+        outcome = _run_review_exchange_for_test(
+            cre,
+            session_output,
+            worktree=coder_wt,
+            issue_number=4058,
+            issue_title="Mailbox e2e",
+            session_name="issue-4058",
+            agent_label="agent:backend",
+            events=MagicMock(),
+            event_context=EventContext(),
+        )
+    finally:
+        server.shutdown()
+
+    assert outcome.status == "ok", f"unexpected outcome: {outcome}"
+    # The verdict reached the orchestrator through the mailbox, not a file.
+    assert deliveries and deliveries[0] == "accepted"

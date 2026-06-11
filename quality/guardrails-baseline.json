@@ -1481,12 +1481,12 @@
       "value": 824
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/persistent_session_exchange.py": {
-      "detail": "3237 lines exceeds budget 800",
+      "detail": "3238 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "path": "src/issue_orchestrator/execution/persistent_session_exchange.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 3237
+      "value": 3238
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/session_output_adapter.py": {
       "detail": "1641 lines exceeds budget 800",
