@@ -448,7 +448,8 @@ def send_round(
     # When the mailbox is the channel, nothing is read from or written to
     # ``response_file`` — so there is no stale file to clear and the read is
     # the mailbox poll.
-    if response_reader is None:
+    file_channel = response_reader is None
+    if file_channel:
         response_file.unlink(missing_ok=True)
         read_response: Callable[[], dict[str, Any] | None] = (
             lambda: _try_read_response(response_file)
@@ -484,6 +485,7 @@ def send_round(
         sleep=sleep,
         label=label,
         read_response=read_response,
+        file_channel=file_channel,
     )
 
 
@@ -501,6 +503,7 @@ def _wait_for_round_response(
     sleep: Callable[[float], None],
     label: str,
     read_response: Callable[[], dict[str, Any] | None],
+    file_channel: bool,
 ) -> dict[str, Any]:
     """Poll until the response arrives (via ``read_response``), the agent
     exits, or the deadline expires.
@@ -560,7 +563,14 @@ def _wait_for_round_response(
                     label, session.proc.pid, ret, now() - started_at,
                 )
                 return final
-            if response_file.exists():
+            # "Invalid JSON left behind" is a file-channel concept only. In
+            # mailbox mode the response file is not the channel, so a stale or
+            # legacy file an agent leaves behind must NOT downgrade the round to
+            # the non-respawnable INVALID_RESPONSE — an exit without a mailbox
+            # delivery is a process that exited before responding (respawnable),
+            # honouring the fail-safe contract that a forgotten exchange-respond
+            # degrades to retry, never a wrong/missing classification.
+            if file_channel and response_file.exists():
                 logger.warning(
                     "[send_round] agent exited with invalid JSON role=%s pid=%d "
                     "exit_code=%d response_file=%s",
