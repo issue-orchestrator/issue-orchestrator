@@ -44,11 +44,21 @@ def _install_orchestrator(mailbox) -> None:
     )
 
 
+_ISSUE_DEPS_STATE_KEY = "control_api_issue_dependencies"
+_UNSET = object()
+
+
 @pytest.fixture
 def client_with_mailbox():
-    """TestClient with agent-callback auth + a real mailbox-backed orchestrator."""
+    """TestClient with agent-callback auth + a real mailbox-backed orchestrator.
+
+    Saves and restores the shared ``control_app`` token + issue-dependency
+    state so installing a fake mailbox-backed orchestrator here does not leak
+    into other tests that share the module-global app.
+    """
     prev_admin = get_configured_api_token()
     prev_agent = get_configured_agent_callback_token()
+    prev_issue_deps = getattr(control_app.state, _ISSUE_DEPS_STATE_KEY, _UNSET)
     configure_api_token("test-admin-token", agent_callback=AGENT_TOKEN)
     mailbox = InMemoryTurnMailbox()
     _install_orchestrator(mailbox)
@@ -56,6 +66,11 @@ def client_with_mailbox():
         yield TestClient(control_app), mailbox
     finally:
         configure_api_token(prev_admin, agent_callback=prev_agent)
+        if prev_issue_deps is _UNSET:
+            if hasattr(control_app.state, _ISSUE_DEPS_STATE_KEY):
+                delattr(control_app.state, _ISSUE_DEPS_STATE_KEY)
+        else:
+            setattr(control_app.state, _ISSUE_DEPS_STATE_KEY, prev_issue_deps)
 
 
 def _post(client, payload):
