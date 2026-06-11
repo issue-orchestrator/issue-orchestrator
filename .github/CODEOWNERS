@@ -1,0 +1,8 @@
+# Code owners for issue-orchestrator.
+#
+# Used to automatically request review from the listed owner(s) when a pull
+# request touches matching paths. Pairs with the "Require review from Code
+# Owners" branch-protection setting on `main`.
+
+# Default owner for everything in the repository.
+* @BruceBGordon
