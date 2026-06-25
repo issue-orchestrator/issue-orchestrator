@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Token Rotation"
+  short_description: "Rotate repo GitHub PATs safely"
+  default_prompt: "Use $github-token-rotation to rotate an expiring issue-orchestrator GitHub token."
