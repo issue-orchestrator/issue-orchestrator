@@ -17,6 +17,7 @@ class _ReadablePersistentSession(Protocol):
     master_fd: int
     closed: bool
     log_writer: MirroredTerminalRecordingWriter | None
+    output_observer: Callable[[bytes], None] | None
 
 
 def drain_pty_output_until_quiet(
@@ -52,6 +53,8 @@ def drain_pty_output_until_quiet(
             return
         if session.log_writer is not None:
             session.log_writer.write(chunk)
+        if session.output_observer is not None:
+            session.output_observer(chunk)
         deadline = now() + quiet_seconds
 
 

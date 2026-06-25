@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import shlex
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Protocol
 
 from .session_interactions import (
@@ -11,27 +13,59 @@ from .session_interactions import (
     builtin_session_interaction_rules,
 )
 
+_STARTUP_INTERACTION_TIMEOUT_SECONDS = 3.0
+_STARTUP_INTERACTION_POLL_SECONDS = 0.05
+
 
 class _WritablePersistentSession(Protocol):
     master_fd: int
     closed: bool
 
 
-def persistent_interaction_handler(
+@dataclass
+class PersistentInteractionState:
+    handler: SessionInteractionHandler
+    prepared: bool = False
+
+    def observe(self, data: bytes) -> None:
+        self.handler.on_output(data)
+
+
+def persistent_interaction_state(
     command: list[str],
-) -> SessionInteractionHandler | None:
+) -> PersistentInteractionState | None:
     rules = builtin_session_interaction_rules(shlex.join(command))
     if not rules:
         return None
     label = command[0].rsplit("/", 1)[-1] if command else "persistent-agent"
-    return SessionInteractionHandler(session_name=label, rules=rules)
+    handler = SessionInteractionHandler(session_name=label, rules=rules)
+    return PersistentInteractionState(handler=handler)
 
 
 def bind_interaction_sender(
     session: _WritablePersistentSession,
-    handler: SessionInteractionHandler,
+    state: PersistentInteractionState,
 ) -> None:
-    handler.bind_sender(lambda text: _send_interaction_line(session, text))
+    state.handler.bind_sender(lambda text: _send_interaction_line(session, text))
+
+
+def prepare_startup_interactions(
+    state: PersistentInteractionState | None,
+    *,
+    drain_output: Callable[[], None],
+    now: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> None:
+    if state is None or state.prepared:
+        return
+
+    deadline = now() + _STARTUP_INTERACTION_TIMEOUT_SECONDS
+    while now() < deadline:
+        drain_output()
+        if state.handler.all_rules_fired:
+            break
+        sleep(min(_STARTUP_INTERACTION_POLL_SECONDS, max(deadline - now(), 0.0)))
+    state.prepared = True
 
 
 def _send_interaction_line(session: _WritablePersistentSession, text: str) -> bool:

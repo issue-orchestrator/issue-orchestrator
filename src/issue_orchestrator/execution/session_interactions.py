@@ -82,6 +82,11 @@ class SessionInteractionHandler:
         """Attach a line-oriented sender once the PTY session exists."""
         self._sender = sender
 
+    @property
+    def all_rules_fired(self) -> bool:
+        """Whether every configured one-shot rule has fired."""
+        return all(compiled.rule.name in self._fired_rules for compiled in self._rules)
+
     def on_output(self, data: bytes | str) -> None:
         """Observe PTY output and fire matching rules."""
         text = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else data

@@ -43,8 +43,10 @@ from ..infra.shutdown_signals import child_signal_reset_preexec
 from ..infra.terminal_recording import MirroredTerminalRecordingWriter
 from .persistent_round_io import drain_pty_output_until_quiet
 from .persistent_round_interactions import (
+    PersistentInteractionState,
     bind_interaction_sender,
-    persistent_interaction_handler,
+    persistent_interaction_state,
+    prepare_startup_interactions,
 )
 
 logger = logging.getLogger(__name__)
@@ -122,6 +124,8 @@ class PersistentSession:
     proc: subprocess.Popen[bytes]
     master_fd: int
     log_writer: MirroredTerminalRecordingWriter | None = None
+    interaction_state: PersistentInteractionState | None = None
+    output_observer: Callable[[bytes], None] | None = None
     closed: bool = False
 
     @property
@@ -153,15 +157,13 @@ def open_persistent_session(
     _set_pty_noncanonical(slave_fd)
 
     log_writer: MirroredTerminalRecordingWriter | None = None
-    interaction_handler = None
+    interaction_state = persistent_interaction_state(command)
     if recording_path is not None:
         recording_path.parent.mkdir(parents=True, exist_ok=True)
-        interaction_handler = persistent_interaction_handler(command)
         log_writer = MirroredTerminalRecordingWriter(
             recording_path,
             additional_recording_paths=additional_recording_paths or [],
             mirror_path=mirror_path,
-            on_output=interaction_handler.on_output if interaction_handler else None,
             initial_rows=rows,
             initial_cols=cols,
         )
@@ -194,10 +196,11 @@ def open_persistent_session(
         proc=proc,
         master_fd=master_fd,
         log_writer=log_writer,
+        interaction_state=interaction_state,
+        output_observer=interaction_state.observe if interaction_state else None,
     )
-    if interaction_handler is not None:
-        bind_interaction_sender(session, interaction_handler)
-        drain_pty_output_until_quiet(session, quiet_seconds=0.3)
+    if interaction_state is not None:
+        bind_interaction_sender(session, interaction_state)
     return session
 
 
@@ -455,6 +458,17 @@ def send_round(
         timeout_seconds, write_timeout_seconds, poll_interval_seconds,
     )
 
+    prepare_startup_interactions(
+        session.interaction_state,
+        drain_output=lambda: drain_pty_output_until_quiet(
+            session,
+            quiet_seconds=0.3,
+            now=now,
+            sleep=sleep,
+        ),
+        now=now,
+        sleep=sleep,
+    )
     response_file.unlink(missing_ok=True)
     write_deadline = started_at + min(timeout_seconds, write_timeout_seconds)
     written, recovered = _submit_prompt_with_enter(
@@ -751,6 +765,8 @@ def _drain_pty_output(session: PersistentSession) -> int:
         drained += len(chunk)
         if session.log_writer is not None:
             session.log_writer.write(chunk)
+        if session.output_observer is not None:
+            session.output_observer(chunk)
 
 
 def _set_pty_geometry(slave_fd: int, *, rows: int, cols: int) -> None:

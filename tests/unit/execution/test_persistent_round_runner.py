@@ -382,6 +382,98 @@ class TestPersistentSessionLifecycle:
         assert trust_marker.read_text(encoding="utf-8") == "b'\\n'"
         assert response == {"prompt": "real round", "ack": True}
 
+    def test_startup_interaction_waits_for_late_trust_prompt_without_recording(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        response_file = tmp_path / "response.json"
+        trust_marker = tmp_path / "trust-byte.txt"
+        trust_gate = tmp_path / "show-trust"
+        prompt_ready = tmp_path / "trust-rendered"
+        script = tmp_path / "late_trust_then_round.py"
+        script.write_text(
+            textwrap.dedent("""
+                import json
+                import os
+                import sys
+                import time
+                from pathlib import Path
+
+                response_file = Path(os.environ["STUB_RESPONSE_FILE"])
+                trust_marker = Path(os.environ["STUB_TRUST_MARKER"])
+                trust_gate = Path(os.environ["STUB_TRUST_GATE"])
+                prompt_ready = Path(os.environ["STUB_PROMPT_READY"])
+                fd = sys.stdin.fileno()
+
+                while not trust_gate.exists():
+                    time.sleep(0.01)
+
+                print("Do you trust the contents of this directory?", flush=True)
+                print("1. Yes, continue", flush=True)
+                print("2. No, quit", flush=True)
+                prompt_ready.write_text("ready", encoding="utf-8")
+
+                first = os.read(fd, 1)
+                trust_marker.write_text(repr(first), encoding="utf-8")
+                if first != b"\\n":
+                    sys.exit(9)
+
+                buf = bytearray()
+                while True:
+                    chunk = os.read(fd, 1)
+                    if not chunk:
+                        sys.exit(10)
+                    if chunk == b"\\n":
+                        prompt = buf.decode("utf-8")
+                        response_file.write_text(
+                            json.dumps({"prompt": prompt, "ack": True}),
+                            encoding="utf-8",
+                        )
+                        sys.exit(0)
+                    buf.extend(chunk)
+            """).strip(),
+            encoding="utf-8",
+        )
+        env = _stub_env(
+            response_file,
+            STUB_TRUST_MARKER=str(trust_marker),
+            STUB_TRUST_GATE=str(trust_gate),
+            STUB_PROMPT_READY=str(prompt_ready),
+        )
+        codex_bin = tmp_path / "codex"
+        codex_bin.symlink_to(sys.executable)
+        clock = _FakeClock()
+        gate_opened = False
+
+        def sleeper(seconds: float) -> None:
+            nonlocal gate_opened
+            clock.value += seconds
+            if not gate_opened and clock.value >= 0.35:
+                gate_opened = True
+                trust_gate.touch()
+                _wait_until(prompt_ready.exists)
+
+        session = open_persistent_session(
+            command=[str(codex_bin), "-u", str(script)],
+            working_dir=tmp_path,
+            env=env,
+        )
+        try:
+            response = send_round(
+                session,
+                prompt="real round",
+                response_file=response_file,
+                timeout_seconds=5,
+                now=clock.now,
+                sleep=sleeper,
+            )
+        finally:
+            close_persistent_session(session)
+
+        assert gate_opened
+        assert trust_marker.read_text(encoding="utf-8") == "b'\\n'"
+        assert response == {"prompt": "real round", "ack": True}
+
 
 # ---------------------------------------------------------------------------
 # Failure modes — driven by gates / injected clock instead of wall-clock races
