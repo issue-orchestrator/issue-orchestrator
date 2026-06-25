@@ -23,6 +23,7 @@ class ClaudeCodeProvider(CLIProvider):
         "sonnet": "sonnet",
         "opus": "opus",
     }
+    EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
     @property
     def name(self) -> str:
@@ -56,6 +57,8 @@ class ClaudeCodeProvider(CLIProvider):
             model: Model name (haiku, sonnet, opus, or full model ID). None for default.
             **kwargs: Additional options:
                 - permission_mode: Permission handling mode (default: bypassPermissions)
+                - effort: Claude effort level (low, medium, high, xhigh, max)
+                - reasoning_effort: Alias for effort
                 - system_prompt: Additional system prompt text
                 - max_turns: Maximum conversation turns
         """
@@ -65,6 +68,10 @@ class ClaudeCodeProvider(CLIProvider):
         if model:
             resolved_model = self.MODEL_ALIASES.get(model, model)
             cmd.extend(["--model", resolved_model])
+
+        effort = self._resolve_effort(kwargs)
+        if effort:
+            cmd.extend(["--effort", effort])
 
         # Permission mode (default to bypassPermissions for automation)
         permission_mode = kwargs.get("permission_mode", "bypassPermissions")
@@ -95,3 +102,28 @@ class ClaudeCodeProvider(CLIProvider):
             cmd.append(prompt)
 
         return cmd
+
+    @classmethod
+    def _resolve_effort(cls, kwargs: dict[str, str]) -> str | None:
+        effort = cls._normalize_effort(kwargs.get("effort"))
+        reasoning_effort = cls._normalize_effort(kwargs.get("reasoning_effort"))
+        if effort and reasoning_effort and effort != reasoning_effort:
+            raise ValueError(
+                "Claude effort and reasoning_effort must match when both are set"
+            )
+        normalized = effort or reasoning_effort
+        if normalized is None:
+            return None
+        if normalized not in cls.EFFORT_LEVELS:
+            allowed = ", ".join(cls.EFFORT_LEVELS)
+            raise ValueError(
+                f"Claude effort must be one of {allowed}; got {normalized!r}"
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_effort(value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        return normalized or None

@@ -41,6 +41,13 @@ from ..domain.review_exchange_failures import (
 )
 from ..infra.shutdown_signals import child_signal_reset_preexec
 from ..infra.terminal_recording import MirroredTerminalRecordingWriter
+from .persistent_round_io import drain_pty_output_until_quiet
+from .persistent_round_interactions import (
+    PersistentInteractionState,
+    bind_interaction_sender,
+    persistent_interaction_state,
+    prepare_startup_interactions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +124,8 @@ class PersistentSession:
     proc: subprocess.Popen[bytes]
     master_fd: int
     log_writer: MirroredTerminalRecordingWriter | None = None
+    interaction_state: PersistentInteractionState | None = None
+    output_observer: Callable[[bytes], None] | None = None
     closed: bool = False
 
     @property
@@ -148,6 +157,7 @@ def open_persistent_session(
     _set_pty_noncanonical(slave_fd)
 
     log_writer: MirroredTerminalRecordingWriter | None = None
+    interaction_state = persistent_interaction_state(command)
     if recording_path is not None:
         recording_path.parent.mkdir(parents=True, exist_ok=True)
         log_writer = MirroredTerminalRecordingWriter(
@@ -182,7 +192,16 @@ def open_persistent_session(
         command[0] if command else "?",
         proc.pid,
     )
-    return PersistentSession(proc=proc, master_fd=master_fd, log_writer=log_writer)
+    session = PersistentSession(
+        proc=proc,
+        master_fd=master_fd,
+        log_writer=log_writer,
+        interaction_state=interaction_state,
+        output_observer=interaction_state.observe if interaction_state else None,
+    )
+    if interaction_state is not None:
+        bind_interaction_sender(session, interaction_state)
+    return session
 
 
 def _write_full(
@@ -351,7 +370,7 @@ def _submit_prompt_with_enter(
         timeout_seconds=timeout_seconds,
         write_timeout_seconds=write_timeout_seconds,
     )
-    _drain_pty_output_until_quiet(
+    drain_pty_output_until_quiet(
         session, quiet_seconds=_ENTER_SETTLE_QUIET_SECONDS, now=now, sleep=sleep,
     )
     try:
@@ -439,6 +458,17 @@ def send_round(
         timeout_seconds, write_timeout_seconds, poll_interval_seconds,
     )
 
+    prepare_startup_interactions(
+        session.interaction_state,
+        drain_output=lambda: drain_pty_output_until_quiet(
+            session,
+            quiet_seconds=0.3,
+            now=now,
+            sleep=sleep,
+        ),
+        now=now,
+        sleep=sleep,
+    )
     response_file.unlink(missing_ok=True)
     write_deadline = started_at + min(timeout_seconds, write_timeout_seconds)
     written, recovered = _submit_prompt_with_enter(
@@ -519,7 +549,7 @@ def _wait_for_round_response(
             last_recording_size = recording_size
         parsed = _try_read_response(response_file)
         if parsed is not None:
-            _drain_pty_output_until_quiet(
+            drain_pty_output_until_quiet(
                 session,
                 quiet_seconds=response_drain_seconds,
                 now=now,
@@ -735,43 +765,8 @@ def _drain_pty_output(session: PersistentSession) -> int:
         drained += len(chunk)
         if session.log_writer is not None:
             session.log_writer.write(chunk)
-
-
-def _drain_pty_output_until_quiet(
-    session: PersistentSession,
-    *,
-    quiet_seconds: float,
-    now: Callable[[], float] = time.monotonic,
-    sleep: Callable[[float], None] = time.sleep,
-) -> None:
-    """Keep reading until ``quiet_seconds`` of no output, or 1s hard cap."""
-    deadline = now() + quiet_seconds
-    hard_cap = now() + max(quiet_seconds, 1.0)
-    while now() < deadline and now() < hard_cap:
-        if session.closed:
-            return
-        try:
-            ready, _, _ = select.select([session.master_fd], [], [], 0)
-        except OSError:
-            logger.debug(
-                "[send_round] quiet-drain skipped for closed fd=%d pid=%d",
-                session.master_fd,
-                session.proc.pid,
-            )
-            return
-        if not ready:
-            sleep(min(quiet_seconds / 4, 0.05))
-            continue
-        try:
-            chunk = os.read(session.master_fd, 4096)
-        except (BlockingIOError, OSError):
-            sleep(min(quiet_seconds / 4, 0.05))
-            continue
-        if not chunk:
-            return
-        if session.log_writer is not None:
-            session.log_writer.write(chunk)
-        deadline = now() + quiet_seconds
+        if session.output_observer is not None:
+            session.output_observer(chunk)
 
 
 def _set_pty_geometry(slave_fd: int, *, rows: int, cols: int) -> None:
