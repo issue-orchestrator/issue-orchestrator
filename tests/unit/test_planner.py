@@ -20,6 +20,7 @@ from issue_orchestrator.control.planner_types import (
 )
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.control.actions import (
     ActionType,
     LaunchSessionAction,
@@ -135,6 +136,16 @@ class StaticIssueChecker:
     def __init__(self, states: dict[int, str], milestone: str | None = "M1"):
         self.states = states
         self.milestone = milestone
+
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        state = self.states.get(issue_number)
+        if state is None:
+            return None
+        return DependencyIssueSnapshot(state=state, milestone=self.milestone)
 
     def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
         return self.states.get(issue_number)

@@ -23,21 +23,21 @@ from ..domain.dependencies import (
 from ..domain.issue_key import GitHubIssueKey
 from ..events import EventName
 from ..ports import EventSink,  make_trace_event, IssueResolver
-from ..ports.repository_host import RepositoryHostError
+from ..ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
 
 logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
 class IssueStateChecker(Protocol):
-    """Protocol for checking issue state and milestone."""
+    """Protocol for checking dependency issue state and milestone."""
 
-    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
-        """Get the state of an issue ('open', 'closed', or None if not found)."""
-        ...
-
-    def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
-        """Get the milestone name of an issue (or None if no milestone)."""
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        """Get dependency issue facts, or None if not found."""
         ...
 
 
@@ -219,20 +219,19 @@ class DependencyEvaluator:
     ) -> Dependency:
         """Check the state of a dependency issue."""
         try:
-            state = self.issue_checker.get_issue_state(issue_number, repo)
-            dep_milestone = self.issue_checker.get_issue_milestone(issue_number, repo)
+            snapshot = self.issue_checker.get_dependency_issue_snapshot(issue_number, repo)
 
-            if state is None:
-                return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.MISSING, error="Issue not found or inaccessible", milestone=dep_milestone)
+            if snapshot is None:
+                return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.MISSING, error="Issue not found or inaccessible")
 
             # Check milestone scope
-            milestone_error = self._check_milestone_scope(dep_milestone, source_milestone)
+            milestone_error = self._check_milestone_scope(snapshot.milestone, source_milestone)
             if milestone_error:
-                return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.CROSS_MILESTONE, error=milestone_error, milestone=dep_milestone)
+                return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.CROSS_MILESTONE, error=milestone_error, milestone=snapshot.milestone)
 
             # Check open/closed state
-            dep_state = DependencyState.SATISFIED if state.lower() == "closed" else DependencyState.UNSATISFIED
-            return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=dep_state, milestone=dep_milestone)
+            dep_state = DependencyState.SATISFIED if snapshot.state.lower() == "closed" else DependencyState.UNSATISFIED
+            return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=dep_state, milestone=snapshot.milestone)
 
         except Exception as e:
             logger.debug("Error checking dependency %s: %s", ref.external_id or f"#{issue_number}", e)

@@ -23,6 +23,7 @@ from issue_orchestrator.domain.dependencies import (
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 
 
 # =============================================================================
@@ -40,8 +41,30 @@ class MockIssueChecker:
         self.cross_repo_milestones: dict[tuple[int, str], str | None] = {}  # (number, repo) -> milestone
         self.error_on: set[int] = set()  # issues that raise errors
         self._default_milestone = default_milestone  # Default milestone for issues not in milestones dict
+        self.snapshot_calls: list[tuple[int, str | None]] = []
+        self.state_calls: list[tuple[int, str | None]] = []
+        self.milestone_calls: list[tuple[int, str | None]] = []
+
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        self.snapshot_calls.append((issue_number, repo))
+        if issue_number in self.error_on:
+            raise Exception("Transient API error")
+        if repo:
+            state = self.cross_repo_issues.get((issue_number, repo))
+            milestone = self.cross_repo_milestones.get((issue_number, repo), self._default_milestone)
+        else:
+            state = self.issues.get(issue_number)
+            milestone = self.milestones.get(issue_number, self._default_milestone)
+        if state is None:
+            return None
+        return DependencyIssueSnapshot(state=state, milestone=milestone)
 
     def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+        self.state_calls.append((issue_number, repo))
         if issue_number in self.error_on:
             raise Exception("Transient API error")
         if repo:
@@ -49,6 +72,7 @@ class MockIssueChecker:
         return self.issues.get(issue_number)
 
     def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+        self.milestone_calls.append((issue_number, repo))
         if issue_number in self.error_on:
             raise Exception("Transient API error")
         if repo:
@@ -333,6 +357,9 @@ class TestDependencyGraphEvaluation:
         assert report.runnable
         assert len(report.satisfied) == 3
         assert len(report.all_dependencies) == 3
+        assert checker.snapshot_calls == [(10, None), (20, None), (30, None)]
+        assert checker.state_calls == []
+        assert checker.milestone_calls == []
 
     def test_single_unsatisfied_blocks_even_with_many_satisfied(self, evaluator, checker):
         """One unsatisfied dependency blocks the issue."""

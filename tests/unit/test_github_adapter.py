@@ -18,6 +18,7 @@ from issue_orchestrator.adapters.github.http_client import GitHubHttpError, GitH
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.ports.verification import VerificationResult, FailureType
 
@@ -1277,6 +1278,40 @@ class TestWriteVerification:
 
 class TestRepositoryOperations:
     """Test repository-related operations."""
+
+    def test_get_dependency_issue_snapshot_same_repo_fetches_once(self, adapter, mock_http_client):
+        """Dependency snapshot reads state and milestone from one issue payload."""
+        mock_http_client.get_issue.return_value = {
+            "number": 42,
+            "state": "open",
+            "title": "Test",
+            "labels": [],
+            "milestone": {"title": "M1"},
+        }
+
+        snapshot = adapter.get_dependency_issue_snapshot(42)
+
+        assert snapshot == DependencyIssueSnapshot(state="open", milestone="M1")
+        mock_http_client.get_issue.assert_called_once_with(42)
+
+    def test_get_dependency_issue_snapshot_different_repo_fetches_once(self, adapter):
+        """Cross-repo dependency snapshots use one temp-client issue read."""
+        with patch("issue_orchestrator.adapters.github.github_adapter.GitHubHttpClient") as mock_client_class:
+            mock_temp_client = MagicMock()
+            mock_client_class.return_value = mock_temp_client
+            mock_temp_client.get_issue.return_value = {
+                "number": 42,
+                "state": "closed",
+                "title": "Test",
+                "labels": [],
+                "milestone": {"title": "M0"},
+            }
+
+            snapshot = adapter.get_dependency_issue_snapshot(42, repo="other/repo")
+
+            assert snapshot == DependencyIssueSnapshot(state="closed", milestone="M0")
+            mock_temp_client.get_issue.assert_called_once_with(42)
+            mock_temp_client.close.assert_called_once()
 
     def test_get_issue_state_same_repo(self, adapter, mock_http_client):
         """Test getting issue state from same repo."""

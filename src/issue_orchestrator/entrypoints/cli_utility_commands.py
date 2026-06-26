@@ -5,7 +5,42 @@ from pathlib import Path
 
 from rich.console import Console
 
+from ..ports.repository_host import DependencyIssueSnapshot
+
 console = Console()
+
+
+class _DemoIssueChecker:
+    """Mock checker simulating GitHub issue states."""
+
+    def __init__(self):
+        # Issue #1 is closed (satisfied), others are open
+        self.states = {1: "closed", 2: "open", 3: "open", 4: "open", 5: "open"}
+        # All mock issues are in M1 for demo purposes
+        self.milestones = {1: "M1", 2: "M1", 3: "M1", 4: "M1", 5: "M1"}
+
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        state = self.states.get(issue_number)
+        if state is None:
+            return None
+        return DependencyIssueSnapshot(
+            state=state,
+            milestone=self.milestones.get(issue_number),
+        )
+
+    def get_issue_state(
+        self, issue_number: int, repo: str | None = None
+    ) -> str | None:
+        return self.states.get(issue_number)
+
+    def get_issue_milestone(
+        self, issue_number: int, repo: str | None = None
+    ) -> str | None:
+        return self.milestones.get(issue_number)
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -149,26 +184,6 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: ARG001, C901 - demo flow
     console.print(table)
     console.print()
 
-    # Create a mock issue checker
-    class MockIssueChecker:
-        """Mock checker simulating GitHub issue states."""
-
-        def __init__(self):
-            # Issue #1 is closed (satisfied), others are open
-            self.states = {1: "closed", 2: "open", 3: "open", 4: "open", 5: "open"}
-            # All mock issues are in M1 for demo purposes
-            self.milestones = {1: "M1", 2: "M1", 3: "M1", 4: "M1", 5: "M1"}
-
-        def get_issue_state(
-            self, issue_number: int, repo: str | None = None
-        ) -> str | None:
-            return self.states.get(issue_number)
-
-        def get_issue_milestone(
-            self, issue_number: int, repo: str | None = None
-        ) -> str | None:
-            return self.milestones.get(issue_number)
-
     class CollectingEventSink:
         """Collects events for display."""
 
@@ -178,7 +193,7 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: ARG001, C901 - demo flow
         def publish(self, event):
             self.events.append(event)
 
-    checker = MockIssueChecker()
+    checker = _DemoIssueChecker()
     events = CollectingEventSink()
 
     # Create config first so we can use foundation_milestone
