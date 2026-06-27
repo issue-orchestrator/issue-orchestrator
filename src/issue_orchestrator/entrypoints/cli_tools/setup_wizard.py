@@ -1550,8 +1550,8 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
                 "then run 'issue-orchestrator setup-guardrails'."
             )
 
-    # AI provider key setup
-    if prompter.yes_no("\nSet up AI provider API keys now?", default=True):
+    # Optional AI provider key setup
+    if prompter.yes_no("\nSet up optional AI provider API keys now?", default=False):
         setup_ai_providers(prompter)
 
     # MCP review exchange probe (if configured)

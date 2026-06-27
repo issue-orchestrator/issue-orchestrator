@@ -244,15 +244,15 @@ def apply_changes(
 
 def setup_ai_providers(prompter: Prompter) -> None:
     """Ask about AI providers and help store keys in keyring."""
-    from ...infra.ai_keys import AI_PROVIDERS, read_ai_key, store_ai_key
+    from ...infra.ai_keys import get_ai_providers, read_ai_key, store_ai_key
 
     prompter.print("\n" + "=" * 50)
     prompter.print("AI PROVIDER SETUP")
     prompter.print("=" * 50)
-    prompter.print("\nYour agents need API keys to authenticate with AI providers.")
+    prompter.print("\nSome agent providers can authenticate with API keys.")
     prompter.print("Keys are stored securely in your system keyring.\n")
 
-    for key_name, info in AI_PROVIDERS.items():
+    for key_name, info in get_ai_providers().items():
         existing = read_ai_key(key_name)
         if existing:
             status = "[configured]"
@@ -260,15 +260,14 @@ def setup_ai_providers(prompter: Prompter) -> None:
             if not prompter.yes_no(f"  Update {info['name']} key?", default=False):
                 continue
         else:
-            if not prompter.yes_no(
-                f"Configure {info['name']}?", default=key_name == "ANTHROPIC_API_KEY"
-            ):
+            if not prompter.yes_no(f"Configure {info['name']}?", default=False):
                 continue
 
         # Show setup instructions.
         prompter.print(f"\n  --- {info['name']} Setup ---")
-        if info.get("setup_cmd"):
-            prompter.print(f"  Run in another terminal: {info['setup_cmd']}")
+        setup_cmd = info.get("setup_cmd")
+        if setup_cmd:
+            prompter.print(f"  Run in another terminal: {setup_cmd}")
             prompter.print("  Then paste the key here.")
         else:
             prompter.print(f"  {info.get('setup_help', '')}")

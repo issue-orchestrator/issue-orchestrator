@@ -56,7 +56,7 @@ Each worktree session starts with:
 ```bash
 # Removed from environment
 unset GITHUB_TOKEN GH_TOKEN SSH_AUTH_SOCK
-unset AWS_* ANTHROPIC_API_KEY OPENAI_API_KEY
+unset AWS_* OPENAI_API_KEY GOOGLE_API_KEY
 
 # Isolated HOME (no credential helpers)
 export HOME=/tmp/issue-orchestrator-worktrees/issue-123/.home
