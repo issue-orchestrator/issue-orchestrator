@@ -446,12 +446,17 @@ class TestPersistentSessionLifecycle:
         gate_opened = False
 
         def sleeper(seconds: float) -> None:
+            import time as _time
+
             nonlocal gate_opened
             clock.value += seconds
             if not gate_opened and clock.value >= 0.35:
                 gate_opened = True
                 trust_gate.touch()
                 _wait_until(prompt_ready.exists)
+            # The fake clock drives runner deadlines; this tiny real-time yield
+            # only lets the PTY child consume stdin under xdist CPU contention.
+            _time.sleep(min(seconds, 0.02))
 
         session = open_persistent_session(
             command=[str(codex_bin), "-u", str(script)],

@@ -16,10 +16,12 @@ from issue_orchestrator.control.isolation import (
     get_orchestrator_socket_path,
     build_runtime_tool_env,
     build_runtime_tool_env_assignments,
+    build_runtime_tool_path,
     build_env_unset_commands,
     build_git_safe_commands,
     build_home_isolation_command,
     build_isolation_prefix,
+    get_runtime_scripts_dir,
     verify_env_scrubbed,
     all_env_scrubbed,
 )
@@ -104,7 +106,10 @@ class TestRuntimeToolEnv:
             },
         )
 
-        assert env["PATH"] == f"{worktree / '.venv' / 'bin'}{os.pathsep}/bin"
+        assert env["PATH"] == (
+            f"{worktree / '.venv' / 'bin'}"
+            f"{os.pathsep}{get_runtime_scripts_dir()}{os.pathsep}/bin"
+        )
         assert env[GRADLE_USER_HOME_ENV] == str(get_gradle_user_home(worktree))
 
     def test_build_runtime_tool_env_prepends_worktree_venv_bin(self, tmp_path):
@@ -114,7 +119,10 @@ class TestRuntimeToolEnv:
 
         env = build_runtime_tool_env(worktree, base_env={"PATH": "/bin"})
 
-        assert env["PATH"] == f"{worktree / '.venv' / 'bin'}{os.pathsep}/bin"
+        assert env["PATH"] == (
+            f"{worktree / '.venv' / 'bin'}"
+            f"{os.pathsep}{get_runtime_scripts_dir()}{os.pathsep}/bin"
+        )
 
     def test_build_runtime_tool_env_empty_base_preserves_process_path(
         self,
@@ -128,7 +136,21 @@ class TestRuntimeToolEnv:
         env = build_runtime_tool_env(worktree, base_env={})
 
         assert env["PATH"] == (
-            f"{worktree / '.venv' / 'bin'}{os.pathsep}/usr/local/bin:/bin"
+            f"{worktree / '.venv' / 'bin'}"
+            f"{os.pathsep}{get_runtime_scripts_dir()}"
+            f"{os.pathsep}/usr/local/bin:/bin"
+        )
+
+    def test_build_runtime_tool_path_orders_worktree_before_wrappers(self):
+        """Repo-local tools should win, then package wrappers, then ambient PATH."""
+        worktree = Path("/path/to/worktree")
+
+        path = build_runtime_tool_path(worktree, "/usr/bin:/bin")
+
+        assert path == (
+            f"{worktree / '.venv' / 'bin'}"
+            f"{os.pathsep}{get_runtime_scripts_dir()}"
+            f"{os.pathsep}/usr/bin:/bin"
         )
 
     def test_build_runtime_tool_env_assignments_quotes_spaces(self):
@@ -140,7 +162,8 @@ class TestRuntimeToolEnv:
         assert assignments == [
             f"{GRADLE_USER_HOME_ENV}="
             "'/path/with spaces/worktree/.issue-orchestrator/tool-homes/gradle'",
-            "PATH='/path/with spaces/worktree/.venv/bin':$PATH",
+            "PATH='/path/with spaces/worktree/.venv/bin':"
+            f"{shlex.quote(str(get_runtime_scripts_dir()))}:$PATH",
         ]
 
     def test_build_runtime_tool_env_assignments_prepends_worktree_venv(self, tmp_path):
@@ -152,7 +175,8 @@ class TestRuntimeToolEnv:
         assert assignments == [
             f"{GRADLE_USER_HOME_ENV}="
             f"{shlex.quote(str(get_gradle_user_home(worktree)))}",
-            f"PATH={shlex.quote(str(worktree / '.venv' / 'bin'))}:$PATH",
+            f"PATH={shlex.quote(str(worktree / '.venv' / 'bin'))}:"
+            f"{shlex.quote(str(get_runtime_scripts_dir()))}:$PATH",
         ]
 
 

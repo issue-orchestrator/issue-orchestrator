@@ -3844,6 +3844,39 @@ class TestRoleEnvironmentScrubbing:
         # And GH_TOKEN was still scrubbed (sanity).
         assert "GH_TOKEN" not in env
 
+    def test_role_env_exposes_exchange_respond_wrapper(self, tmp_path: Path) -> None:
+        """Mailbox mode depends on the agent finding ``exchange-respond``."""
+        from issue_orchestrator.control.isolation import get_runtime_scripts_dir
+
+        run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="reviewer",
+            response_file=run_dir / "reviewer" / "review-response.json",
+            review_report_file=worktree / ".issue-orchestrator" / "review-report.md",
+            completion_path=run_dir / "reviewer" / "completion-reviewer.json",
+            validation_output_dir=run_dir,
+            worktree=worktree,
+            runtime_config=_runtime_config(tmp_path),
+            agent_label="agent:reviewer",
+            web_port=8080,
+            issue_number=4057,
+            session_name="exchange-1",
+        )
+
+        path_entries = env["PATH"].split(os.pathsep)
+        scripts_dir = get_runtime_scripts_dir()
+        assert path_entries[:2] == [
+            str(worktree / ".venv" / "bin"),
+            str(scripts_dir),
+        ]
+        exchange_respond = scripts_dir / "exchange-respond"
+        assert exchange_respond.exists()
+        assert os.access(exchange_respond, os.X_OK)
+
     def test_callback_token_propagates_when_set_in_orchestrator_env(
         self,
         tmp_path: Path,

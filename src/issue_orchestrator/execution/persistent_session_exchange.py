@@ -1349,7 +1349,8 @@ def _build_prompt_inbox_notice(
         f"attempt={attempt_index} is ready.\n"
         f"Read the full instructions from: {prompt_path}\n"
         "Follow that file exactly, then submit your verdict by running "
-        "`exchange-respond <ok|changes_requested|disagree> --text \"...\"`."
+        "`exchange-respond <ok|changes_requested|disagree> --text \"...\"`; "
+        "never write a response file."
     )
 
 
@@ -1476,7 +1477,8 @@ def _reviewer_prompt_with_artifact_contract(
         "$ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE.\n"
         "- Submit your verdict by running `exchange-respond "
         "<ok|changes_requested|disagree> --text \"...\" "
-        "--decision-json '{...}'`.\n"
+        "--decision-json '{...}'`; the response-file env var is routing "
+        "metadata, not an output path.\n"
         "- The `--decision-json` object must include: "
         "verdict, risk, blocking_findings, nits, tests_reviewed, "
         "abstraction_review, nit_policy.\n"
@@ -1498,14 +1500,12 @@ def _reviewer_prompt_with_artifact_contract(
         "`approved` decision in your JSON; the orchestrator will route those "
         "nits through coder rework before PR creation.\n"
         "\n"
-        "Example JSON shape:\n"
-        '{"response_type":"ok","getting_closer":true,'
-        '"response_text":"Looks good.",'
-        '"decision":{"verdict":"approved","risk":"low",'
-        '"blocking_findings":[],"nits":[],'
-        '"tests_reviewed":["pytest tests/unit -q"],'
-        '"abstraction_review":{"status":"no_issues","findings":[]},'
-        f'"nit_policy":"{nit_policy}"}}'
+        "Example command:\n"
+        "exchange-respond ok --getting-closer --text \"Looks good.\" "
+        f"--decision-json '{{\"verdict\":\"approved\",\"risk\":\"low\","
+        "\"blocking_findings\":[],\"nits\":[],\"tests_reviewed\":[\"pytest tests/unit -q\"],"
+        "\"abstraction_review\":{\"status\":\"no_issues\",\"findings\":[]},"
+        f"\"nit_policy\":\"{nit_policy}\"}}'"
         "\n"
     )
 
