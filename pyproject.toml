@@ -72,6 +72,10 @@ issue-orchestrator-mcp = "issue_orchestrator.entrypoints.mcp_server:main"
 # tmux = "issue_orchestrator.adapters.terminal_tmux:TmuxPlugin"
 # iterm2 = "issue_orchestrator.adapters.terminal_iterm:ITermPlugin"
 
+# Optional packages can contribute API-key metadata without hardcoding
+# provider-specific key names in the core package.
+[project.entry-points."issue_orchestrator.ai_provider_keys"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

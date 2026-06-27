@@ -40,9 +40,10 @@ repository or your account, so each new Codespace gets it automatically.
 Provider auth depends on how you use each CLI:
 
 - Claude Code:
-  - If you use subscription/CLI login, authenticate `claude` inside the
-    Codespace.
-  - If you use API keys instead, set `ANTHROPIC_API_KEY`.
+  - Authenticate `claude` inside the Codespace using your CLI/subscription
+    login.
+  - Provider-specific API-key auth is supplied by optional external
+    provider-key packages when installed.
 - Codex / OpenAI:
   - The devcontainer installs `codex`.
   - Run `codex login` inside the Codespace.

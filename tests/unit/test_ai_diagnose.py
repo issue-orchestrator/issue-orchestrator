@@ -35,12 +35,12 @@ class TestGetSafeEnv:
         assert "GH_TOKEN" not in safe_env
         assert "HOME" in safe_env
 
-    def test_strips_anthropic_api_key(self) -> None:
-        """ANTHROPIC_API_KEY is stripped from environment."""
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-xxx", "SHELL": "/bin/bash"}):
+    def test_strips_provider_api_key(self) -> None:
+        """Registered provider API keys are stripped from environment."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-xxx", "SHELL": "/bin/bash"}):
             safe_env = _get_safe_env()
 
-        assert "ANTHROPIC_API_KEY" not in safe_env
+        assert "OPENAI_API_KEY" not in safe_env
         assert "SHELL" in safe_env
 
     def test_strips_issue_orch_github_token(self) -> None:
