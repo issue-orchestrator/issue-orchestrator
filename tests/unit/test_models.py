@@ -197,6 +197,27 @@ class TestAgentConfig:
 
         assert "--permission-mode bypassPermissions" in command
 
+    def test_claude_opus_effort_reaches_launch_command(self, tmp_path):
+        """Claude model and effort are configured through model/provider_args."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Sample prompt")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            model="opus",
+            provider_args={"effort": "xhigh"},
+        )
+
+        command = config.get_command(
+            issue_number=1, issue_title="Title", worktree=tmp_path
+        )
+
+        import shlex
+
+        tokens = shlex.split(command)
+        assert tokens[:5] == ["claude", "--model", "opus", "--effort", "xhigh"]
+
     def test_review_task_kind_defaults_to_review_initial_prompt(self, tmp_path):
         """Review launches without an explicit initial_prompt get the review
         default, never the coding-flavored field default."""

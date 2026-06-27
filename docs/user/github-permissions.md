@@ -21,6 +21,21 @@ export ISSUE_ORCH_GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 | Pull requests | Read and write |
 | Metadata | Read (automatic) |
 
+## Rotating an Expiring Token
+
+If GitHub warns that a token is expiring, generate an equivalent token when
+GitHub offers that option. Then update the auth source that issue-orchestrator
+actually uses:
+
+- exported env var: replace the variable and restart the process
+- repo-scoped Keychain entry: replace the configured service/account entry
+- global keychain fallback: rerun `issue-orchestrator auth store`
+- GitHub CLI auth: refresh the relevant `gh auth` login
+
+Run `issue-orchestrator --config <config-path> doctor` afterward and confirm it
+authenticates to the target repo. For the exact resolution order and Keychain
+commands, see [GitHub Token Setup (Developer)](../development/GITHUB_TOKEN_SETUP.md#rotate-an-expiring-token).
+
 ### Option 2: Classic PAT
 
 1. Go to https://github.com/settings/tokens/new
