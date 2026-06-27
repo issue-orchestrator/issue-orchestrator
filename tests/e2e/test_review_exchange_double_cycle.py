@@ -8,6 +8,7 @@ orchestrator process, GitHub issue/PR flow, worktree/session creation,
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import json
 import re
@@ -35,6 +36,9 @@ _CODER_LABEL = "agent:e2e-double"
 _REVIEWER_LABEL = "agent:e2e-double-reviewer"
 _ISSUE_TITLE = "[M0-730] [E2E-DOUBLE-REVIEW] Review exchange double cycle"
 _HEX_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_REVIEWER_PROCESS_STARTED_RE = re.compile(
+    rf"agent process started pid=(\d+) label={re.escape(_REVIEWER_LABEL)}"
+)
 
 
 @pytest.mark.e2e
@@ -104,6 +108,10 @@ async def test_local_review_exchange_runs_double_review_cycle_with_typed_run_ass
 
         payload = completed.get("payload", {})
         _assert_exchange_completed_payload(payload, issue_number=issue_number)
+        _assert_no_reviewer_prompt_acceptance_timeouts(
+            runtime.watcher,
+            issue_number=issue_number,
+        )
 
         run_dir = Path(str(payload["run_dir"]))
         await _assert_double_review_run_artifacts(
@@ -161,8 +169,11 @@ def _double_review_config(
             model="sonnet",
             command=command,
             meta_agent="claude-code",
-            ai_system="claude-code",
-            provider_args={"permission_mode": "bypassPermissions"},
+            ai_system="codex",
+            provider_args={
+                "execution_mode": "interactive",
+                "permission_mode": "bypassPermissions",
+            },
         ),
     }
     return config
@@ -292,6 +303,27 @@ def _review_escalation_events(
         ):
             events.append(event)
     return events
+
+
+def _assert_no_reviewer_prompt_acceptance_timeouts(
+    watcher: OrchestratorWatcher,
+    *,
+    issue_number: int,
+) -> None:
+    offenders = []
+    for event in watcher.view.global_events:
+        payload = event.get("payload", {}) or {}
+        if (
+            event.get("type") == EventName.REVIEW_EXCHANGE_ROLE_TIMEOUT.value
+            and payload.get("issue_number") == issue_number
+            and payload.get("role") == "reviewer"
+            and payload.get("failure_reason") == "prompt_not_accepted"
+        ):
+            offenders.append(event)
+    assert not offenders, (
+        "Codex-shaped reviewer should respawn before round 2 instead of "
+        f"hitting prompt_not_accepted: {offenders}"
+    )
 
 
 def _assert_exchange_completed_payload(
@@ -474,6 +506,7 @@ async def _assert_double_review_run_artifacts(
     )
     await _wait_for_file(coder_recording, non_empty=True)
     await _wait_for_file(reviewer_recording, non_empty=True)
+    _assert_codex_shaped_reviewer_respawned(reviewer_recording)
     await _assert_chapters(run_dir / "coder" / "chapters.json", role="coder")
     await _assert_chapters(run_dir / "reviewer" / "chapters.json", role="reviewer")
     assert Path(manifest["persistent_pair_dir"]).is_dir()
@@ -481,6 +514,33 @@ async def _assert_double_review_run_artifacts(
     assert Path(manifest["reviewer_recording_pair"]).is_file()
     assert manifest["artifacts"]["validation_record"]["path"] == str(validation_record)
     assert manifest["artifacts"]["review_exchange_summary"]["path"] == str(summary_path)
+
+
+def _assert_codex_shaped_reviewer_respawned(recording_path: Path) -> None:
+    text = _terminal_recording_text(recording_path)
+    reviewer_pids = _REVIEWER_PROCESS_STARTED_RE.findall(text)
+    assert len(reviewer_pids) == 2, (
+        "Codex-shaped reviewer should start one process for round 1 and "
+        f"a fresh process for round 2; saw {reviewer_pids!r} in {recording_path}"
+    )
+    assert len(set(reviewer_pids)) == 2, (
+        "Codex-shaped reviewer process starts should use distinct pids; "
+        f"saw {reviewer_pids!r}"
+    )
+
+
+def _terminal_recording_text(recording_path: Path) -> str:
+    chunks: list[str] = []
+    for raw_line in recording_path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            continue
+        event = json.loads(raw_line)
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if isinstance(data_b64, str) and data_b64:
+            chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="replace"))
+    return "".join(chunks)
 
 
 async def _assert_turn_packet(path: Path, expected: dict[str, Any]) -> None:
