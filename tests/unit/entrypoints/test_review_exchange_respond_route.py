@@ -113,9 +113,28 @@ class TestDeliveryOutcomes:
 
 
 class TestMalformed:
+    def test_non_object_body_is_400(self, client_with_mailbox) -> None:
+        client, _ = client_with_mailbox
+        resp = client.post(
+            "/api/review-exchange/respond",
+            json=["not", "an", "object"],
+            headers=AGENT_HEADERS,
+        )
+        assert resp.status_code == 400
+        assert "JSON object" in resp.json()["detail"]
+
     def test_missing_key_is_400(self, client_with_mailbox) -> None:
         client, _ = client_with_mailbox
         resp = _post(client, {"payload": {"response_type": "ok", "response_text": "x"}})
+        assert resp.status_code == 400
+        assert "key is required" in resp.json()["detail"]
+
+    def test_blank_key_is_400(self, client_with_mailbox) -> None:
+        client, _ = client_with_mailbox
+        resp = _post(
+            client,
+            {"key": "   ", "payload": {"response_type": "ok", "response_text": "x"}},
+        )
         assert resp.status_code == 400
         assert "key is required" in resp.json()["detail"]
 

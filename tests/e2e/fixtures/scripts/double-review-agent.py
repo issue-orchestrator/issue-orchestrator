@@ -240,7 +240,7 @@ def _submit_verdict(response_file: Path, payload: dict[str, Any]) -> None:
         if rc != 0:
             raise SystemExit(f"exchange-respond failed rc={rc}")
     else:
-        _submit_verdict(response_file, payload)
+        _write_json(response_file, payload)
 
 
 def _run(argv: list[str]) -> None:

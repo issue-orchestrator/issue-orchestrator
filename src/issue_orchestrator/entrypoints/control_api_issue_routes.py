@@ -78,20 +78,13 @@ async def review_exchange_respond(
     reserving 4xx/5xx for malformed requests or a missing orchestrator.
     """
     try:
-        body = await request.json()
+        body = _ReviewExchangeRespondBody.from_wire(await request.json())
     except json.JSONDecodeError:
         return JSONResponse(
             {"status": "error", "detail": "Invalid JSON body"}, status_code=400
         )
-    key = body.get("key")
-    if not isinstance(key, str) or not key:
-        return JSONResponse(
-            {"status": "error", "detail": "key is required"}, status_code=400
-        )
-    try:
-        verdict = ExchangeVerdict.from_wire(body.get("payload"))
-    except ValueError as exc:
-        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=400)
+    except _ReviewExchangeRespondRequestError as exc:
+        return exc.as_response()
     orchestrator = deps.get_orchestrator()
     if orchestrator is None:
         return JSONResponse(
@@ -104,14 +97,50 @@ async def review_exchange_respond(
             {"status": "error", "detail": "Turn mailbox not configured"},
             status_code=503,
         )
-    result = mailbox.deliver(key, dict(verdict.to_wire()))
+    result = mailbox.deliver(body.key, dict(body.verdict.to_wire()))
     logger.info(
         "[REVIEW_EXCHANGE] verdict delivery key=%s status=%s turn_id=%s",
-        key,
+        body.key,
         result.status.value,
         result.turn_id,
     )
     return JSONResponse({"status": result.status.value, "turn_id": result.turn_id})
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewExchangeRespondBody:
+    """Validated request envelope for one review-exchange verdict callback."""
+
+    key: str
+    verdict: ExchangeVerdict
+
+    @classmethod
+    def from_wire(cls, raw: object) -> "_ReviewExchangeRespondBody":
+        if not isinstance(raw, Mapping):
+            raise _ReviewExchangeRespondRequestError(
+                "request body must be a JSON object"
+            )
+        key = raw.get("key")
+        if not isinstance(key, str) or not key.strip():
+            raise _ReviewExchangeRespondRequestError("key is required")
+        try:
+            verdict = ExchangeVerdict.from_wire(raw.get("payload"))
+        except ValueError as exc:
+            raise _ReviewExchangeRespondRequestError(str(exc)) from exc
+        return cls(key=key.strip(), verdict=verdict)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewExchangeRespondRequestError(Exception):
+    """HTTP 400 error for a malformed review-exchange callback body."""
+
+    detail: str
+
+    def as_response(self) -> JSONResponse:
+        return JSONResponse(
+            {"status": "error", "detail": self.detail},
+            status_code=400,
+        )
 
 
 @control_issue_router.post("/api/issues/{issue_number}/resume")
