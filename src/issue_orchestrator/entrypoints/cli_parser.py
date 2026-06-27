@@ -395,7 +395,7 @@ def _register_auth_commands(subparsers, handlers: CLICommandHandlers) -> None:
         "set", help="Store an API key in keyring"
     )
     keys_set_parser.add_argument(
-        "key_name", help="Key name (e.g., ANTHROPIC_API_KEY or just 'anthropic')"
+        "key_name", help="Key name (e.g., OPENAI_API_KEY or just 'openai')"
     )
 
     keys_delete_parser = keys_subparsers.add_parser(

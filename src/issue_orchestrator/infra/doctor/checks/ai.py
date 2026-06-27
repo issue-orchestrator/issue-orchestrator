@@ -16,16 +16,6 @@ CLI_ONLY_AI_SYSTEMS: frozenset[AiAgentType] = frozenset({
     AiAgentType.AIDER,
 })
 
-PROVIDER_KEY_MAP = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "claude": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "oai": "OPENAI_API_KEY",
-    "gemini": "GOOGLE_API_KEY",
-    "google": "GOOGLE_API_KEY",
-}
-
-
 def _infer_ai_system_from_command(command: str | None) -> AiAgentType | None:
     """Infer AI system type from command executable."""
     if not command:
@@ -53,7 +43,7 @@ def _is_cli_only_provider(provider: str | None, command: str | None) -> bool:
             ai_system = AiAgentType(provider.strip().lower())
             return ai_system in CLI_ONLY_AI_SYSTEMS
         except ValueError:
-            # Not a known AI system (e.g., "anthropic", "openai") - may need API key
+            # Not a known CLI system; an optional provider-key plugin may handle it.
             return False
 
     # No explicit provider - try to infer from command
@@ -62,8 +52,11 @@ def _is_cli_only_provider(provider: str | None, command: str | None) -> bool:
 
 
 def _collect_required_keys(config: Config) -> tuple[set[str], set[str]]:
+    from ...ai_keys import get_provider_key_map
+
     required_keys: set[str] = set()
     unknown_providers: set[str] = set()
+    provider_key_map = get_provider_key_map()
 
     default_provider = None
     if config.default_agent:
@@ -80,7 +73,7 @@ def _collect_required_keys(config: Config) -> tuple[set[str], set[str]]:
             continue
 
         normalized = provider.strip().lower()
-        key_name = PROVIDER_KEY_MAP.get(normalized)
+        key_name = provider_key_map.get(normalized)
         if key_name:
             required_keys.add(key_name)
         else:
@@ -90,19 +83,20 @@ def _collect_required_keys(config: Config) -> tuple[set[str], set[str]]:
 
 
 def check_ai_keys(config: Config) -> list[Check]:
-    from ...ai_keys import list_ai_keys, AI_PROVIDERS
+    from ...ai_keys import get_ai_providers, list_ai_keys
 
     checks: list[Check] = []
 
     required_keys, unknown_providers = _collect_required_keys(config)
     ai_keys = list_ai_keys()
+    ai_providers = get_ai_providers()
 
     if required_keys:
         missing = []
         configured = []
         for key_name in sorted(required_keys):
             _, source = ai_keys.get(key_name, (None, "not set"))
-            provider_name = AI_PROVIDERS.get(key_name, {}).get("name", key_name)
+            provider_name = ai_providers.get(key_name, {}).get("name", key_name)
             if source == "not set":
                 missing.append(provider_name)
             else:

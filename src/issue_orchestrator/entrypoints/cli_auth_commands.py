@@ -88,12 +88,13 @@ def cmd_keys(args: argparse.Namespace) -> int:
 
 def _cmd_keys_list(args: argparse.Namespace) -> int:  # noqa: ARG001
     """List stored AI provider API keys."""
-    from ..infra.ai_keys import AI_PROVIDERS, list_ai_keys
+    from ..infra.ai_keys import get_ai_providers, list_ai_keys
 
     keys = list_ai_keys()
+    ai_providers = get_ai_providers()
     console.print("\n[bold]AI Provider Keys:[/bold]")
     for key_name, (masked, source) in keys.items():
-        provider_info = AI_PROVIDERS.get(key_name, {})
+        provider_info = ai_providers.get(key_name, {})
         provider_name = provider_info.get("name", key_name)
         if source == "not set":
             console.print(f"  {provider_name} ({key_name}): [dim]not configured[/dim]")
@@ -107,20 +108,23 @@ def _cmd_keys_list(args: argparse.Namespace) -> int:  # noqa: ARG001
 
 def _cmd_keys_set(args: argparse.Namespace) -> int:
     """Store an AI provider API key in keyring."""
-    from ..infra.ai_keys import AI_PROVIDERS, store_ai_key
+    from ..infra.ai_keys import get_ai_providers, normalize_ai_key_name, store_ai_key
 
-    key_name = args.key_name.upper()
-    # Normalize: 'anthropic' -> 'ANTHROPIC_API_KEY'
-    if not key_name.endswith("_API_KEY"):
-        key_name = f"{key_name}_API_KEY"
+    key_name = normalize_ai_key_name(args.key_name)
+    if not key_name:
+        console.print("[red]Key name cannot be empty[/red]")
+        return 1
+
+    ai_providers = get_ai_providers()
 
     # Show setup help for known providers
-    if key_name in AI_PROVIDERS:
-        info = AI_PROVIDERS[key_name]
+    if key_name in ai_providers:
+        info = ai_providers[key_name]
         console.print(f"\n[bold]{info['name']}[/bold]")
-        if info.get("setup_cmd"):
+        setup_cmd = info.get("setup_cmd")
+        if setup_cmd:
             console.print(
-                f"  Run in another terminal: [cyan]{info['setup_cmd']}[/cyan]"
+                f"  Run in another terminal: [cyan]{setup_cmd}[/cyan]"
             )
             console.print("  Then paste the key here.")
         else:
@@ -153,11 +157,12 @@ def _cmd_keys_set(args: argparse.Namespace) -> int:
 
 def _cmd_keys_delete(args: argparse.Namespace) -> int:
     """Delete an AI provider API key from keyring."""
-    from ..infra.ai_keys import delete_ai_key
+    from ..infra.ai_keys import delete_ai_key, normalize_ai_key_name
 
-    key_name = args.key_name.upper()
-    if not key_name.endswith("_API_KEY"):
-        key_name = f"{key_name}_API_KEY"
+    key_name = normalize_ai_key_name(args.key_name)
+    if not key_name:
+        console.print("[red]Key name cannot be empty[/red]")
+        return 1
 
     if delete_ai_key(key_name):
         console.print(f"[green]✓ Removed {key_name} from keyring[/green]")

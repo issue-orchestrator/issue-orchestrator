@@ -46,6 +46,31 @@ def test_check_ai_keys_warns_when_required_missing():
     )
 
 
+def test_check_ai_keys_uses_provider_key_extensions():
+    config = Config()
+    config.default_agent = DefaultAgentConfig(provider="external-provider")
+    config.agents = {"agent:one": _make_agent()}
+
+    ai_key_status = {"EXTERNAL_PROVIDER_API_KEY": (None, "not set")}
+    ai_providers = {"EXTERNAL_PROVIDER_API_KEY": {"name": "External Provider"}}
+    with (
+        patch(
+            "issue_orchestrator.infra.ai_keys.get_provider_key_map",
+            return_value={"external-provider": "EXTERNAL_PROVIDER_API_KEY"},
+        ),
+        patch("issue_orchestrator.infra.ai_keys.list_ai_keys", return_value=ai_key_status),
+        patch("issue_orchestrator.infra.ai_keys.get_ai_providers", return_value=ai_providers),
+    ):
+        checks = ai_checks.check_ai_keys(config)
+
+    assert any(
+        c.name == "AI Provider Keys"
+        and c.status == "warning"
+        and "External Provider" in c.detail
+        for c in checks
+    )
+
+
 def test_check_ai_keys_reports_unknown_provider():
     config = Config()
     config.agents = {"agent:one": _make_agent(provider="mystery-ai")}
