@@ -32,6 +32,33 @@ Use `validation.quick` for fast coding/review feedback and
 `validation.publish` for the authoritative pre-push/pre-publish gate. The
 publish dirty-tree policy lives at `validation.publish.dirty_check`.
 
+### Use Claude Opus With XHigh Effort
+
+Set this on `default_agent` to apply it to every agent that does not override
+the provider, model, or provider args:
+
+```yaml
+default_agent:
+  provider: "claude-code"
+  model: "opus"
+  provider_args:
+    effort: "xhigh"
+    permission_mode: "bypassPermissions"
+```
+
+Or configure one agent directly:
+
+```yaml
+agents:
+  "agent:backend":
+    prompt: ".issue-orchestrator/prompts/backend.md"
+    provider: "claude-code"
+    model: "opus"
+    provider_args:
+      effort: "xhigh"
+      permission_mode: "bypassPermissions"
+```
+
 ---
 
 ## Environment Variable Substitution

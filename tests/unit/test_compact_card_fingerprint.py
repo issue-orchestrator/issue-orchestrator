@@ -129,6 +129,41 @@ def test_compact_card_attaches_fingerprint_field() -> None:
     assert card["fingerprint"] == compute_compact_card_fingerprint(card)
 
 
+def test_compact_card_propagates_timestamp_flag_for_localization() -> None:
+    """A done card's `time` is an ISO timestamp that must be localized
+    client-side. compact_card must carry `time_is_timestamp` through so the
+    renderers emit the shared [data-dashboard-timestamp] marker rather than
+    rendering raw UTC.
+    """
+    card = compact_card({
+        "issue_number": 392,
+        "title": "Audit tixmeup",
+        "status": "completed",
+        "flow_stage_label": "Done",
+        "time": "2026-06-09T01:52:59.902460+00:00",
+        "time_is_timestamp": True,
+        "show_stale_badge": False,
+    })
+    assert card["phase_age"] == "2026-06-09T01:52:59.902460+00:00"
+    assert card["time_is_timestamp"] is True
+
+
+def test_compact_card_relative_label_is_not_a_timestamp() -> None:
+    """Running cards use a relative label ("5 min") with no timezone — it must
+    not be flagged for timezone localization.
+    """
+    card = compact_card({
+        "issue_number": 393,
+        "title": "Running task",
+        "status": "running",
+        "flow_stage_label": "Coding",
+        "time": "5 min",
+        "show_stale_badge": False,
+    })
+    assert card["phase_age"] == "5 min"
+    assert card["time_is_timestamp"] is False
+
+
 def test_phase_change_does_change_fingerprint() -> None:
     """Sanity check — only volatile fields should be excluded."""
     base = dict(REPRESENTATIVE_CARDS[1])

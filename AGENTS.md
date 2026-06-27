@@ -136,6 +136,7 @@ Skills in `.claude/skills/` are automatically invoked when working on relevant a
 | `review-workflow` | Code review pipeline, triage, rework |
 | `session-replay` | Session artifact capture, replay endpoints, timeline/session correlation, and emulator-backed session viewing |
 | `schema-updates` | Updating UI contracts, SSE payloads, or config schemas |
+| `github-token-rotation` | Rotating expiring GitHub PATs or identifying the repo-scoped auth source issue-orchestrator uses |
 
 ## Directory Context (AGENTS.md)
 

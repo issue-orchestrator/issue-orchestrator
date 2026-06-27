@@ -136,7 +136,7 @@ def run_schema_checks(config: Config) -> list[Check]:
     conditions, and dispatches to the appropriate check handler.
     """
     checks: list[Check] = []
-    repo_root = Path.cwd()
+    repo_root = config.repo_root
 
     for field in get_doctor_check_fields():
         # Evaluate condition (e.g., "e2e.enabled" must be truthy)

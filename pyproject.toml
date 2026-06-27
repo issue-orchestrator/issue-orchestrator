@@ -1,6 +1,6 @@
 [project]
 name = "issue-orchestrator"
-version = "0.9.0"
+version = "0.10.0"
 description = "Orchestrate AI agents working on GitHub issues in parallel"
 readme = "README.md"
 license = "Apache-2.0"
@@ -52,7 +52,7 @@ dev = [
     "ruff>=0.9",  # Fast Python linter
     "import-linter>=2.0",  # Architecture boundary enforcement
     "beautifulsoup4>=4.12",  # HTML parsing for template tests
-    "lxml>=5.0",  # Fast HTML parser for BeautifulSoup
+    "lxml>=6.1.0",  # Fast HTML parser for BeautifulSoup
     "playwright==1.57.0",  # Pinned to avoid 250MB browser re-downloads on version bumps
     "pytest-playwright>=0.7",  # Playwright pytest integration
     "hypothesis>=6.0",  # Property-based testing
@@ -106,7 +106,7 @@ markers = [
     "integration: Integration tests that may exercise external adapters",
     "live: Tests that require network access and external services",
     "live_agent: Tests that run real AI provider CLI sessions under the e2e flake-management lane",
-    "live_codex: Live Codex CLI smoke tests that run serially in local validation",
+    "live_codex: Live Codex CLI smoke tests collected by e2e or dedicated live lanes",
     "xdist_group(name): Group tests to run serially under pytest-xdist --dist=loadgroup",
     "gh_activity_limit: Enforce GH API activity limits per test (test_gh_activity_limit, system_gh_activity_limit)",
     "requires_infra: Tests requiring external infrastructure (GitHub token, running services). Run in CI, excluded from pre-push.",

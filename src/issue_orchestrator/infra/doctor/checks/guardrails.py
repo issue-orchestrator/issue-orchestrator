@@ -26,9 +26,13 @@ def check_guardrails_in_worktree_impl(
 
     # Build the PATH as agents see it (wrapper dir prepended)
     wrapper_dir = Path(__file__).resolve().parents[3] / "scripts"
-    active_python_bin = Path(sys.executable).resolve().parent
+    active_python_bin = Path(sys.executable).parent
     env = os.environ.copy()
-    env["PATH"] = f"{wrapper_dir}:{active_python_bin}:{env.get('PATH', '')}"
+    path_entries = [str(wrapper_dir), str(active_python_bin)]
+    resolved_python_bin = Path(sys.executable).resolve().parent
+    if resolved_python_bin != active_python_bin:
+        path_entries.append(str(resolved_python_bin))
+    env["PATH"] = ":".join(path_entries + [env.get("PATH", "")])
     env.pop("ORCHESTRATOR_GH_AUTH", None)  # Ensure no auth token
 
     # Run git command guards (blocked by wrapper scripts)
@@ -328,7 +332,7 @@ def check_guardrails(config: Config, runner: CommandRunner | None) -> list[Check
             detail="Skipped (no CommandRunner provided)",
         )]
 
-    repo_root = Path.cwd()
+    repo_root = config.repo_root
     worktree_base = str(config.worktree_base) if config.worktree_base else "../"
     return _check_guardrails_in_worktree(
         repo_root,

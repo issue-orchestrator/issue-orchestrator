@@ -170,12 +170,12 @@ def test_agent_prompts_error_when_prompt_not_committed_to_head(
     prompt_path.write_text("Prompt\n")
 
     config = Config()
+    config.repo_root = repo_root
     config.worktree_seed_ref = "HEAD"
     config.agents = {
         "agent:dev": AgentConfig(prompt_path=prompt_path, provider="codex"),
     }
 
-    monkeypatch.chdir(repo_root)
     check = _agent_prompts_check(config)
 
     assert check.status == "error"
@@ -201,12 +201,12 @@ def test_agent_prompts_warn_when_prompt_only_modified_locally(
     prompt_path.write_text("Prompt updated\n")
 
     config = Config()
+    config.repo_root = repo_root
     config.worktree_seed_ref = "HEAD"
     config.agents = {
         "agent:dev": AgentConfig(prompt_path=prompt_path, provider="codex"),
     }
 
-    monkeypatch.chdir(repo_root)
     check = _agent_prompts_check(config)
 
     assert check.status == "warning"
@@ -244,13 +244,13 @@ def test_agent_prompts_use_injected_runner(monkeypatch, tmp_path: Path):
     prompt_path.write_text("Prompt\n")
 
     config = Config()
+    config.repo_root = repo_root
     config.worktree_seed_ref = "HEAD"
     config.agents = {
         "agent:dev": AgentConfig(prompt_path=prompt_path, provider="codex"),
     }
 
     runner = _RecordingRunner()
-    monkeypatch.chdir(repo_root)
     check = _agent_prompts_check(config, runner=runner)
 
     assert check.status == "ok"

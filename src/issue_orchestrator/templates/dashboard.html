@@ -247,7 +247,7 @@
                                         <button class="card-timeline-btn" onclick="openIssueTimeline({{ card.issue_number }}, this);event.stopPropagation();" title="Open timeline for issue #{{ card.issue_number }}" aria-label="Open timeline for issue #{{ card.issue_number }}">&#x1F9ED;</button>
                                     </div>
                                 </div>
-                                <div class="card-line"><span class="card-phase-text">{% if card.phase %}{{ card.phase }}{% else %}{{ card.state_label }}{% endif %}</span><span class="card-phase-age">{% if card.phase_age %} &middot; {{ card.phase_age }}{% endif %}</span></div>
+                                <div class="card-line"><span class="card-phase-text">{% if card.phase %}{{ card.phase }}{% else %}{{ card.state_label }}{% endif %}</span><span class="card-phase-age">{% if card.phase_age %}{% if card.time_is_timestamp %}<span aria-hidden="true"> &middot; </span><span data-dashboard-timestamp="{{ card.phase_age | e }}" data-dashboard-timestamp-fallback="-">{{ card.phase_age }}</span>{% else %} &middot; {{ card.phase_age }}{% endif %}{% endif %}</span></div>
                                 {% if card.queue_wait_reason %}
                                 <div class="card-line card-wait">{{ card.queue_wait_reason }}</div>
                                 {% endif %}

@@ -29,8 +29,8 @@ from tests.fixtures.live_agent_cli import (
 # Only cheap checks may run at collection time: this module is imported by
 # every `pytest tests/e2e` invocation (including test-e2e-one and
 # --collect-only), so the live auth probe is deferred into the test body via
-# is_claude_authenticated(). No GitHub gating: this test drives a local
-# Claude PTY and never touches the GitHub API (test_gh_activity_limit=0).
+# is_claude_authenticated(). No GitHub gating: these tests drive local
+# provider PTYs and never touch the GitHub API (test_gh_activity_limit=0).
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.live,
@@ -42,10 +42,6 @@ pytestmark = [
         test_gh_activity_limit=0,
         system_gh_activity_limit=20,
     ),
-    pytest.mark.skipif(
-        not is_claude_available(),
-        reason="Claude CLI not installed",
-    ),
 ]
 
 
@@ -54,6 +50,33 @@ def _venv_path_prefix() -> str:
     return f"{venv_bin}:{os.environ.get('PATH', '')}"
 
 
+def _wait_for_pty_idle(
+    session: object, *, quiet_seconds: float, max_wait: float,
+) -> None:
+    """Drain the PTY until output stays quiet for ``quiet_seconds``.
+
+    codex queues stdin typed while its TUI is "Working" instead of submitting
+    it, so the next round must only be injected once the agent is back at its
+    idle input prompt.
+    """
+    from issue_orchestrator.execution.persistent_round_runner import (
+        _drain_pty_output,
+    )
+
+    deadline = time.monotonic() + max_wait
+    last_activity = time.monotonic()
+    while time.monotonic() < deadline:
+        if _drain_pty_output(session) > 0:
+            last_activity = time.monotonic()
+        elif time.monotonic() - last_activity >= quiet_seconds:
+            return
+        time.sleep(0.2)
+
+
+@pytest.mark.skipif(
+    not is_claude_available(),
+    reason="Claude CLI not installed",
+)
 def test_persistent_send_round_two_rounds_real_claude() -> None:
     """A persistent real Claude TUI accepts two CR-submitted rounds.
 
@@ -129,6 +152,82 @@ def test_persistent_send_round_two_rounds_real_claude() -> None:
                 f"to real claude. Got: {result}"
             )
             assert session.proc.poll() is None, f"claude exited after round {n}"
+    finally:
+        close_persistent_session(session)
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@pytest.mark.live_codex
+@pytest.mark.skipif(shutil.which("codex") is None, reason="codex CLI not installed")
+def test_persistent_send_round_multi_round_real_codex_interactive() -> None:
+    """The reviewer is INTERACTIVE codex (the production default): one
+    persistent TUI process across multiple rounds.
+
+    Production launches codex with a bootstrap prompt telling it to wait
+    for stdin, then each real review turn is injected with ``send_round``.
+    The injected rounds MUST submit via the two-write prompt+Enter contract
+    — codex treats a ``\r`` batched with the prompt text as a literal
+    newline in its input box (renders, never submits), which is exactly the
+    tixmeup #277/#290 hang class. The command is built via the codex
+    provider so this test tracks the real production invocation.
+    """
+    from issue_orchestrator.execution.agent_runner_providers import get_provider
+
+    repo_root = Path(__file__).resolve().parents[2]
+    work_dir = Path(tempfile.mkdtemp(prefix=".live-codex-int-", dir=repo_root))
+    response_file = work_dir / "review-response.json"
+    bootstrap = (
+        "You are the reviewer in a persistent review exchange. Wait for "
+        "the orchestrator to send each turn via stdin, write exactly one "
+        "line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE for "
+        "each turn, then keep waiting for the next prompt. This setup "
+        "message is NOT a turn: do not write to the response file until "
+        "a review turn arrives via stdin."
+    )
+    task = (
+        "Run exactly this one shell command and nothing else (no "
+        "sleeping, no waiting commands): "
+        'printf \'{"response_type":"ok"}\' > '
+        '"$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"'
+    )
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    env["ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"] = str(response_file)
+    command = get_provider("codex").build_command(
+        bootstrap,
+        execution_mode="interactive",
+        approval_mode="full-auto",
+        reasoning_effort="low",
+    )
+
+    session = open_persistent_session(
+        command=command, working_dir=work_dir, env=env,
+    )
+    try:
+        assert session.proc.poll() is None, (
+            "interactive codex must stay alive after launch — it is a "
+            "persistent TUI, not one-shot exec mode"
+        )
+
+        for n in (1, 2, 3):
+            # max_wait must comfortably exceed codex's worst-case turn time:
+            # if the settle gives up while codex is still chewing on the
+            # bootstrap, codex's late improvised write can land after the
+            # unlink below and be misread as round n's answer.
+            _wait_for_pty_idle(session, quiet_seconds=3.0, max_wait=120.0)
+            response_file.unlink(missing_ok=True)
+            result = send_round(
+                session,
+                prompt=task,
+                response_file=response_file,
+                timeout_seconds=120,
+                poll_interval_seconds=0.3,
+                role_label=f"reviewer@round-{n}",
+            )
+            assert result == {"response_type": "ok"}, (
+                f"round {n} not answered — the prompt+separate-Enter "
+                f"submit must reach interactive codex. Got: {result}"
+            )
+            assert session.proc.poll() is None, f"codex exited after round {n}"
     finally:
         close_persistent_session(session)
         shutil.rmtree(work_dir, ignore_errors=True)

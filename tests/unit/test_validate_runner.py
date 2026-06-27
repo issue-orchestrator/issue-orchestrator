@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.entrypoints.cli_tools.validate_runner import ValidateTimingRecorder
+from issue_orchestrator.infra.validation_timings import ValidateTimingRecorder
 
 
 def _with_repo_on_pythonpath(env: dict[str, str]) -> dict[str, str]:
