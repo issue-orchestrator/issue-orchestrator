@@ -4,9 +4,25 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+_CONFIG_KEY_PATTERN = r"[A-Za-z_][A-Za-z0-9_]*"
+_CONFIG_FIELD_PATTERN = rf"{_CONFIG_KEY_PATTERN}=\S+"
+_CONFIG_RE = re.compile(
+    rf"\[validate-timing\] CONFIG (?P<fields>{_CONFIG_FIELD_PATTERN}(?:\s+{_CONFIG_FIELD_PATTERN})*)\s*$"
+)
+_CONFIG_FIELD_RE = re.compile(rf"(?P<key>{_CONFIG_KEY_PATTERN})=(?P<value>\S+)")
+_START_RE = re.compile(
+    r"\[validate-timing\] START target=(?P<target>\S+) at=(?P<at>\S+)"
+)
+_END_RE = re.compile(
+    r"\[validate-timing\] END target=(?P<target>\S+) "
+    r"status=(?P<status>-?\d+) elapsed=(?P<elapsed>\d+)s at=(?P<at>\S+)"
+)
 
 
 def resolve_git_dir(worktree: Path) -> Path | None:
@@ -122,3 +138,106 @@ def append_validation_timing(worktree: Path, record: dict[str, object]) -> None:
     }
     payload.update(record)
     append_jsonl(get_shared_timings_file(worktree), payload)
+
+
+def record_gate_timings(
+    suite: str,
+    worktree: Path,
+    command: str,
+    stdout: str,
+    stderr: str,
+) -> None:
+    """Record target timings from captured publish-gate output."""
+    if suite != "publish_gate":
+        return
+    recorder = ValidateTimingRecorder(worktree=worktree, command=command)
+    recorder.process_output(stdout)
+    recorder.process_output(stderr)
+
+
+@dataclass
+class ValidateTimingRecorder:
+    """Collect and persist per-target validate timings from marker lines."""
+
+    worktree: Path
+    command: str
+    run_id: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    )
+    branch: str | None = field(init=False)
+    output_path: Path | None = field(init=False)
+    config: dict[str, str] = field(default_factory=dict)
+    starts: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.branch = current_branch_name(self.worktree)
+        self.output_path = get_shared_timings_file(self.worktree)
+
+    def process_output(self, output: str) -> None:
+        """Process captured command output containing validate timing markers."""
+        for line in output.splitlines():
+            self.process_line(line)
+
+    def process_line(self, line: str) -> None:
+        config_match = _CONFIG_RE.search(line)
+        if config_match:
+            self.config = {
+                field.group("key"): field.group("value")
+                for field in _CONFIG_FIELD_RE.finditer(config_match.group("fields"))
+            }
+            return
+
+        start_match = _START_RE.search(line)
+        if start_match:
+            self.starts[start_match.group("target")] = start_match.group("at")
+            return
+
+        end_match = _END_RE.search(line)
+        if not end_match:
+            return
+
+        target = end_match.group("target")
+        record: dict[str, object] = {
+            "kind": "target_timing",
+            "run_id": self.run_id,
+            "command": self.command,
+            "worktree": str(self.worktree),
+            "branch": self.branch,
+            "target": target,
+            "status": int(end_match.group("status")),
+            "elapsed_seconds": int(end_match.group("elapsed")),
+            "started_at": self.starts.pop(target, None),
+            "ended_at": end_match.group("at"),
+        }
+        for key, value in self.config.items():
+            record[key] = value
+        append_jsonl(self.output_path, record)
+
+    def finalize(self, *, exit_code: int, total_elapsed_seconds: float) -> None:
+        record: dict[str, object] = {
+            "kind": "run_summary",
+            "run_id": self.run_id,
+            "command": self.command,
+            "worktree": str(self.worktree),
+            "branch": self.branch,
+            "exit_code": exit_code,
+            "total_elapsed_seconds": round(total_elapsed_seconds, 3),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        for key, value in self.config.items():
+            record[key] = value
+        append_jsonl(self.output_path, record)
+
+    def append_resource_sample(self, sample: dict[str, object]) -> None:
+        """Persist one periodic host resource sample."""
+        record = {
+            "kind": "resource_sample",
+            "run_id": self.run_id,
+            "command": self.command,
+            "worktree": str(self.worktree),
+            "branch": self.branch,
+            **sample,
+        }
+        for key, value in self.config.items():
+            record[key] = value
+        append_jsonl(self.output_path, record)

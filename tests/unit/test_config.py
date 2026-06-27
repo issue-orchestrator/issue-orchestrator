@@ -723,6 +723,41 @@ agents:
         assert agent.prompt_path == prompt_file
         assert config.worktree_base == tmp_path  # Now top-level
 
+    def test_default_agent_claude_opus_effort_reaches_command(self, tmp_path):
+        """Default Claude model/provider args flow through YAML into launch argv."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+default_agent:
+  provider: claude-code
+  model: opus
+  provider_args:
+    effort: xhigh
+
+agents:
+  agent:full:
+    prompt: {prompt_file}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        command = config.agents["agent:full"].get_command(
+            issue_number=1,
+            issue_title="Title",
+            worktree=tmp_path,
+        )
+
+        import shlex
+
+        tokens = shlex.split(command)
+        assert tokens[:5] == ["claude", "--model", "opus", "--effort", "xhigh"]
+
     def test_config_state_file_default(self):
         """Test default state file path."""
         config = Config()

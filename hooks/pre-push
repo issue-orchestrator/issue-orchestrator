@@ -6,18 +6,57 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERIFY_SCRIPT="$REPO_ROOT/scripts/verify-pr.sh"
+POST_VERIFY_HOOK="$REPO_ROOT/repo-specific/hooks/post-verify"
+PYTHON_BIN=""
+
+ensure_python() {
+  if [ -n "$PYTHON_BIN" ]; then
+    return 0
+  fi
+
+  if [ -n "${ISSUE_ORCHESTRATOR_PYTHON:-}" ] && [ -x "${ISSUE_ORCHESTRATOR_PYTHON}" ]; then
+    PYTHON_BIN="${ISSUE_ORCHESTRATOR_PYTHON}"
+  elif [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    return 1
+  fi
+}
+
+run_post_verify_hook() {
+  if [ ! -f "$POST_VERIFY_HOOK" ]; then
+    return 0
+  fi
+
+  if [ ! -x "$POST_VERIFY_HOOK" ]; then
+    echo "pre-push: post-verify hook is not executable: $POST_VERIFY_HOOK" >&2
+    return 1
+  fi
+
+  "$POST_VERIFY_HOOK" "$@"
+}
 
 if [ -x "$VERIFY_SCRIPT" ]; then
-  exec "$VERIFY_SCRIPT"
+  cd "$REPO_ROOT"
+  set +e
+  "$VERIFY_SCRIPT"
+  verify_exit=$?
+  set -e
+  if [ "$verify_exit" -ne 0 ]; then
+    exit "$verify_exit"
+  fi
+  run_post_verify_hook "$@"
+  exit $?
 fi
 
 cd "$REPO_ROOT"
 
-if [ -x ".venv/bin/python" ]; then
-  .venv/bin/python -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
-elif command -v python3 >/dev/null 2>&1; then
-  python3 -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
-else
+if ! ensure_python; then
   echo "python3 not found; cannot run pre-push validation" >&2
   exit 1
 fi
+
+"$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check -v
+run_post_verify_hook "$@"

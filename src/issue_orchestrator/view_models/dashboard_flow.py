@@ -57,6 +57,10 @@ def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
 def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[str, Any]:
     phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
     phase_age = item.get("time") or ""
+    # When the source time is an ISO timestamp the phase-age must be localized
+    # client-side via the shared `data-dashboard-timestamp` mechanism rather
+    # than rendered raw (UTC). Relative labels ("5 min") render as-is.
+    phase_age_is_timestamp = bool(item.get("time_is_timestamp"))
     blocked = item.get("blocked_summary") or ""
     summary_text = item.get("queue_wait_reason") or item.get("summary") or (f"Summary: {blocked}" if blocked else "")
     issue_number = item.get("issue_number")
@@ -84,6 +88,7 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         "state_label": resolved_state_label,
         "phase": phase,
         "phase_age": phase_age,
+        "time_is_timestamp": phase_age_is_timestamp,
         "summary": summary_text,
         "queue_wait_reason": item.get("queue_wait_reason"),
         "blocked_summary": blocked,

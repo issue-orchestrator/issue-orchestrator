@@ -33,6 +33,7 @@ default_agent:
   provider: "claude-code"
   model: "sonnet"
   # provider_args:
+  #   effort: "xhigh"                    # Claude Code: low | medium | high | xhigh | max
   #   permission_mode: "bypassPermissions"
 
 agents:
@@ -47,6 +48,7 @@ agents:
     #   approval_mode: "full-auto"    # Codex
     #   sandbox: "workspace-write"    # Codex
     #   reasoning_effort: "xhigh"     # Codex
+    #   effort: "xhigh"               # Claude Code
     #   permission_mode: "bypassPermissions"  # Claude Code
     # command: "claude --model {model} '{initial_prompt}'"
     # initial_prompt: "Work on issue #{issue_number}: {issue_title}"

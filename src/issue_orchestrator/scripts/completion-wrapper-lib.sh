@@ -13,7 +13,11 @@ completion_wrapper_candidates() {
         completion_candidate_paths+=("$ISSUE_ORCHESTRATOR_CC_REPO_ROOT/.venv/bin/$command_name")
     fi
     if [[ -n "${__PYVENV_LAUNCHER__:-}" ]]; then
-        completion_candidate_paths+=("$(dirname "$__PYVENV_LAUNCHER__")/$command_name")
+        local pyvenv_bin="${__PYVENV_LAUNCHER__%/*}"
+        if [[ "$pyvenv_bin" == "$__PYVENV_LAUNCHER__" ]]; then
+            pyvenv_bin="."
+        fi
+        completion_candidate_paths+=("$pyvenv_bin/$command_name")
     fi
 
     # Normal source tree:
@@ -25,7 +29,10 @@ completion_wrapper_candidates() {
     # the explicit Control Center repo root / active venv candidates above
     # must win.
     local orchestrator_root
-    orchestrator_root="$(dirname "$(dirname "$(dirname "$script_dir")")")"
+    orchestrator_root="${script_dir%/}"
+    orchestrator_root="${orchestrator_root%/*}"
+    orchestrator_root="${orchestrator_root%/*}"
+    orchestrator_root="${orchestrator_root%/*}"
     completion_candidate_paths+=("$orchestrator_root/.venv/bin/$command_name")
 }
 

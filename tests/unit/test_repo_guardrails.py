@@ -16,13 +16,14 @@ from issue_orchestrator.infra.repo_guardrails import (
     LEGACY_MANAGED_PRE_PUSH_MARKER,
     LEGACY_MANAGED_VERIFY_MARKER,
     MANAGED_PRE_PUSH_MARKER,
-    _render_verify_pr_script,
-    _render_repo_pre_push_hook,
-    _render_helper_script,
-    setup_repo_guardrails,
+    POST_VERIFY_HOOK_RELATIVE_PATH,
+    RepoGuardrailsError,
     inspect_repo_guardrails,
     quarantine_managed_hook_file,
-    RepoGuardrailsError,
+    setup_repo_guardrails,
+    _render_helper_script,
+    _render_repo_pre_push_hook,
+    _render_verify_pr_script,
 )
 
 
@@ -365,6 +366,58 @@ def test_managed_pre_push_hook_contains_recursion_guard() -> None:
         ["bash", "-n"], input=rendered, capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_render_repo_pre_push_hook_omits_post_verify_without_hook(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    verify_script = repo_root / "scripts" / "verify-pr.sh"
+    verify_script.parent.mkdir(parents=True)
+    verify_script.write_text("#!/usr/bin/env bash\n")
+
+    rendered = _render_repo_pre_push_hook(verify_script, repo_root)
+
+    assert "run_post_verify_hook" not in rendered
+    assert POST_VERIFY_HOOK_RELATIVE_PATH.as_posix() not in rendered
+    assert "is_managed_wrapper" in rendered
+    assert "managed-marker-detected" in rendered
+    assert "verify-pr-starting" in rendered
+    result = subprocess.run(
+        ["bash", "-n"], input=rendered, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_render_repo_pre_push_hook_includes_post_verify_when_hook_exists(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    verify_script = repo_root / "scripts" / "verify-pr.sh"
+    verify_script.parent.mkdir(parents=True)
+    verify_script.write_text("#!/usr/bin/env bash\n")
+    post_verify_hook = repo_root / POST_VERIFY_HOOK_RELATIVE_PATH
+    post_verify_hook.parent.mkdir(parents=True)
+    post_verify_hook.write_text("#!/usr/bin/env bash\n")
+
+    rendered = _render_repo_pre_push_hook(verify_script, repo_root)
+
+    assert "run_post_verify_hook" in rendered
+    assert 'run_post_verify_hook "$@"' in rendered
+    assert POST_VERIFY_HOOK_RELATIVE_PATH.as_posix() in rendered
+    result = subprocess.run(
+        ["bash", "-n"], input=rendered, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_checked_in_githooks_pre_push_matches_generated_wrapper() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    rendered = _render_repo_pre_push_hook(
+        repo_root / "scripts" / "verify-pr.sh", repo_root
+    )
+
+    assert (repo_root / ".githooks" / "pre-push").read_text() == rendered
 
 
 def test_setup_repo_guardrails_quarantines_corrupt_project_hook(tmp_path: Path) -> None:
