@@ -34,6 +34,12 @@ DoctorFn = Callable[..., DoctorResult]
 logger = logging.getLogger(__name__)
 
 
+def _default_command_runner() -> CommandRunner:
+    from ..execution.command_runner import LocalCommandRunner
+
+    return LocalCommandRunner()
+
+
 @dataclass
 class LaunchResult:
     """Result of a launcher operation."""
@@ -100,6 +106,8 @@ def preflight(
 
     Use for "show readiness" — runs doctor without starting anything.
     """
+    if runner is None:
+        runner = _default_command_runner()
     doctor_result, status = _run_preflight(config, runner, doctor_fn=doctor_fn)
     return LaunchResult(
         doctor=doctor_result,
@@ -207,6 +215,8 @@ def launch_subprocess(
     Returns:
         LaunchResult with doctor results and supervisor info.
     """
+    if runner is None:
+        runner = _default_command_runner()
     doctor_result, status = _run_preflight(config, runner, doctor_fn=doctor_fn)
 
     if status == "doctor_error":

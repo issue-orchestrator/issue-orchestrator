@@ -7,6 +7,70 @@ The system does not shell out to the GitHub CLI for token discovery, but it does
 1) Global auth sources
 2) Repo-scoped auth sources declared in config
 
+## Rotate an Expiring Token
+
+When GitHub sends a personal access token expiration notice, first identify the
+auth source the target repo actually uses. Check the selected config file, such
+as `.issue-orchestrator/config/default.yaml`, and inspect `repo.github`.
+
+If GitHub offers **generate an equivalent**, use that first. Otherwise create a
+new fine-grained token with the permissions listed in the user guide.
+
+For repo-scoped auth, the config is authoritative. Resolution order is:
+
+`repo.github.token` > `repo.github.token_env` > `repo.github.keyring_service` / `keyring_username`
+
+Rotation steps:
+
+1. If `repo.github.token_env` is set and that environment variable is present
+   in the Control Center or orchestrator process, update that environment
+   variable and restart the process. A stale env var wins over Keychain.
+2. If `repo.github.keyring_service` / `keyring_username` is configured, replace
+   that exact OS keychain item. Expand `${USER}` before using it.
+3. If the repo has no repo-scoped auth, rotate the global source it uses
+   instead: exported env var, GitHub CLI auth, or the default keychain entry
+   from `issue-orchestrator auth store`.
+4. Run `issue-orchestrator --config <config-path> doctor` from the target repo.
+   Confirm **Token Sources** names the expected source and **GitHub Auth**
+   confirms access to `repo.name`.
+5. Restart any already-running repository engine or Control Center-launched
+   engine so it reloads the credential.
+
+On macOS, replace a repo-scoped Keychain entry without putting the token in
+shell history:
+
+```bash
+KEYRING_SERVICE="tixmeup-github"
+KEYRING_USERNAME="$USER"
+old_stty="$(stty -g)"
+trap 'stty "$old_stty"; unset token' EXIT
+
+printf "New GitHub PAT: "
+stty -echo
+IFS= read -r token
+stty "$old_stty"
+printf "\n"
+
+security add-generic-password -U \
+  -s "$KEYRING_SERVICE" \
+  -a "$KEYRING_USERNAME" \
+  -w "$token"
+
+trap - EXIT
+unset token old_stty
+```
+
+Then verify, and restart any engine that is already running:
+
+```bash
+issue-orchestrator --config .issue-orchestrator/config/default.yaml doctor
+issue-orchestrator --config .issue-orchestrator/config/default.yaml restart
+```
+
+Do not use `issue-orchestrator auth store` to update a repo-scoped Keychain
+entry. That command writes the global fallback entry (`issue-orchestrator` /
+`github-token`), not a service like `tixmeup-github`.
+
 ## Global Auth Sources
 
 Set a token in your shell. The global fallback order is:

@@ -82,6 +82,11 @@ class SessionInteractionHandler:
         """Attach a line-oriented sender once the PTY session exists."""
         self._sender = sender
 
+    @property
+    def all_rules_fired(self) -> bool:
+        """Whether every configured one-shot rule has fired."""
+        return all(compiled.rule.name in self._fired_rules for compiled in self._rules)
+
     def on_output(self, data: bytes | str) -> None:
         """Observe PTY output and fire matching rules."""
         text = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else data
@@ -122,32 +127,63 @@ def builtin_session_interaction_rules(command: str) -> tuple[SessionInteractionR
     """Return built-in rules that apply to a specific session command.
 
     This intentionally targets the raw interactive Claude launch shape that the
-    subprocess plugin receives from SessionLauncher, including leading shell
+    subprocess plugin receives from SessionLauncher, plus the interactive Codex
+    launch shape used by persistent review exchange. It accepts leading shell
     environment assignments such as ``FOO=bar && claude ...``. It assumes those
     shell separators are whitespace-delimited, which matches the orchestrator's
     SessionLauncher command shape.
     """
-    if not _looks_like_claude_command(command):
-        return ()
-    return (
-        SessionInteractionRule(
-            name="claude-trust-worktree",
-            required_substrings=(
-                "Quick safety check: Is this a project you created or one you trust?",
-                "Yes, I trust this folder",
-                "No, exit",
+    rules: list[SessionInteractionRule] = []
+    if _looks_like_claude_command(command):
+        rules.append(
+            SessionInteractionRule(
+                name="claude-trust-worktree",
+                required_substrings=(
+                    "Quick safety check: Is this a project you created or one you trust?",
+                    "Yes, I trust this folder",
+                    "No, exit",
+                ),
+                response="",
             ),
-            response="",
-        ),
-    )
+        )
+    if _looks_like_interactive_codex_command(command):
+        rules.append(
+            SessionInteractionRule(
+                name="codex-trust-worktree",
+                required_substrings=(
+                    "Do you trust the contents of this directory?",
+                    "Yes, continue",
+                    "No, quit",
+                ),
+                response="",
+            ),
+        )
+    return tuple(rules)
 
 
 def _looks_like_claude_command(command: str) -> bool:
     return _claude_command_tokens(command) is not None
 
 
+def _looks_like_interactive_codex_command(command: str) -> bool:
+    tokens = _codex_command_tokens(command)
+    return tokens is not None and _is_codex_interactive_command_tokens(tokens)
+
+
 def _claude_command_tokens(command: str) -> list[str] | None:
     """Extract the whitespace-delimited Claude command segment from a shell command."""
+    return _matching_command_tokens(command, _is_claude_command_tokens)
+
+
+def _codex_command_tokens(command: str) -> list[str] | None:
+    """Extract the whitespace-delimited Codex command segment from a shell command."""
+    return _matching_command_tokens(command, _is_codex_command_tokens)
+
+
+def _matching_command_tokens(
+    command: str,
+    predicate: Callable[[Sequence[str] | None], bool],
+) -> list[str] | None:
     try:
         tokens = shlex.split(command)
     except ValueError:
@@ -157,14 +193,14 @@ def _claude_command_tokens(command: str) -> list[str] | None:
     for token in tokens:
         if token in _SHELL_COMMAND_SEPARATORS:
             command_tokens = _trim_command_prefix(current)
-            if _is_claude_command_tokens(command_tokens):
+            if predicate(command_tokens):
                 return command_tokens
             current = []
             continue
         current.append(token)
 
     command_tokens = _trim_command_prefix(current)
-    if _is_claude_command_tokens(command_tokens):
+    if predicate(command_tokens):
         return command_tokens
     return None
 
@@ -181,6 +217,90 @@ def _is_claude_command_tokens(tokens: Sequence[str] | None) -> bool:
         return False
     executable = tokens[0].rsplit("/", 1)[-1]
     return executable == "claude"
+
+
+def _is_codex_command_tokens(tokens: Sequence[str] | None) -> bool:
+    if not tokens:
+        return False
+    executable = tokens[0].rsplit("/", 1)[-1]
+    return executable == "codex"
+
+
+_CODEX_SUBCOMMANDS = frozenset(
+    {
+        "exec",
+        "e",
+        "review",
+        "login",
+        "logout",
+        "mcp",
+        "plugin",
+        "mcp-server",
+        "app-server",
+        "remote-control",
+        "app",
+        "completion",
+        "update",
+        "doctor",
+        "sandbox",
+        "debug",
+        "apply",
+        "a",
+        "resume",
+        "archive",
+        "delete",
+        "unarchive",
+        "fork",
+        "cloud",
+        "exec-server",
+        "features",
+        "help",
+    }
+)
+_CODEX_OPTIONS_WITH_VALUES = frozenset(
+    {
+        "-a",
+        "--add-dir",
+        "--ask-for-approval",
+        "-c",
+        "--cd",
+        "-C",
+        "-i",
+        "--image",
+        "-m",
+        "--model",
+        "-p",
+        "--profile",
+        "--remote",
+        "--remote-auth-token-env",
+        "-s",
+        "--sandbox",
+        "--local-provider",
+    }
+)
+
+
+def _is_codex_interactive_command_tokens(tokens: Sequence[str]) -> bool:
+    if not _is_codex_command_tokens(tokens):
+        return False
+    skip_next = False
+    for token in tokens[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--":
+            return True
+        if token in _CODEX_SUBCOMMANDS:
+            return False
+        if token.startswith("--") and "=" in token:
+            continue
+        if token in _CODEX_OPTIONS_WITH_VALUES:
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        return True
+    return True
 
 
 def _looks_like_env_assignment(token: str) -> bool:

@@ -4,7 +4,12 @@
 # New code should use coding-done or reviewer-done directly.
 # This wrapper exists so agents started with older prompts still work.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${SCRIPT_SOURCE%/*}"
+if [[ "$SCRIPT_DIR" == "$SCRIPT_SOURCE" ]]; then
+    SCRIPT_DIR="."
+fi
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 
 # coding-done lives alongside this script in the scripts directory
 CODING_DONE="$SCRIPT_DIR/coding-done"

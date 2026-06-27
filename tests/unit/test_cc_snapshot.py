@@ -72,6 +72,22 @@ class TestCreateSnapshot:
         assert (frozen_brand / "logo.svg").read_text() == "<svg>logo</svg>\n"
         assert (frozen_brand / "tray-icon.png").read_bytes() == b"png"
 
+    def test_completion_wrapper_helper_is_in_src_snapshot(self, repo: Path) -> None:
+        scripts = repo / "src" / "issue_orchestrator" / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "completion-wrapper-lib.sh").write_text("#!/bin/bash\n")
+
+        snapshot_dir = create_snapshot(repo)
+
+        frozen_helper = (
+            snapshot_dir
+            / "src"
+            / "issue_orchestrator"
+            / "scripts"
+            / "completion-wrapper-lib.sh"
+        )
+        assert frozen_helper.read_text() == "#!/bin/bash\n"
+
     def test_snapshot_records_source_commit_sha(self, repo: Path) -> None:
         """The frozen snapshot carries the source identity used by the CC footer."""
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
