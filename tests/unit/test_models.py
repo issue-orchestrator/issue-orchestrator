@@ -12,6 +12,7 @@ from issue_orchestrator.domain.models import (
     DiscoveredRetrospectiveReview,
     OrchestratorState,
     PendingRetrospectiveReview,
+    PendingValidationRetry,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -865,3 +866,37 @@ class TestOrchestratorState:
 
         state.paused = False
         assert state.paused is False
+
+
+class TestPendingValidationRetry:
+    """Guard tests for the validation-retry queue/recovery owner boundary."""
+
+    @staticmethod
+    def _build(source_task: TaskKind) -> PendingValidationRetry:
+        return PendingValidationRetry(
+            issue_number=42,
+            issue_title="Issue 42",
+            agent_label="agent:backend",
+            worktree_path="/tmp/issue-42",
+            branch_name="42-fix",
+            original_prompt=None,
+            validation_error="dirty tree",
+            validation_error_file=None,
+            retry_count=1,
+            source_task=source_task,
+        )
+
+    def test_accepts_coding_source_tasks(self):
+        """Coding-style sources produce a queueable retry."""
+        for task in (TaskKind.CODE, TaskKind.REWORK):
+            retry = self._build(task)
+            assert retry.source_task is task
+
+    @pytest.mark.parametrize(
+        "review_task",
+        [TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW],
+    )
+    def test_rejects_review_only_source_task(self, review_task):
+        """A review-only session can never append a coding validation retry (#6426)."""
+        with pytest.raises(ValueError, match="review-only"):
+            self._build(review_task)
