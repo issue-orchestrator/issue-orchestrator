@@ -534,6 +534,35 @@ class TestRunScopedReviewOnlyRecovery:
         assert artifacts.source_task == TaskKind.CODE
         assert artifacts.state.retry_count == 1
 
+    def test_unrecognized_run_identity_is_not_recovered(self, tmp_path: Path):
+        """A run-scoped retry whose identity is unknown is refused, not coerced to CODE (#6426)."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        self._write_run(
+            worktree,
+            "20260501-010000Z__mystery-42",
+            session_name="mystery-42",
+        )
+
+        # Unknown provenance must never enter the coder retry pipeline, and must
+        # not be silently treated as TaskKind.CODE.
+        assert find_pending_retry_artifacts(worktree) is None
+        assert has_pending_retry(worktree) is False
+        assert read_validation_state(worktree) is None
+
+    def test_legacy_worktree_state_recovers_explicitly_as_code(self, tmp_path: Path):
+        """Legacy worktree-level state (no run dir) recovers with an explicit CODE source."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        write_validation_state(
+            worktree,
+            ValidationState(retry_count=1, max_retries=3, validation_cmd="make test"),
+        )
+
+        artifacts = find_pending_retry_artifacts(worktree)
+        assert artifacts is not None
+        assert artifacts.source_task == TaskKind.CODE
+
     def test_coding_retry_recovered_despite_newer_review_only_run(self, tmp_path: Path):
         """A newer review-only run does not shadow an older genuine coding retry."""
         worktree = tmp_path / "worktree"

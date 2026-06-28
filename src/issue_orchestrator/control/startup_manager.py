@@ -43,7 +43,6 @@ from ..domain.models import (
     PendingValidationRetry,
     SessionHistoryEntry,
     Session,
-    TaskKind,
     ORCHESTRATOR_PR_MARKER,
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
@@ -676,10 +675,10 @@ class StartupManager:
                 )
                 continue
 
-            # Resolve durable retry artifacts in one pass. The scanner skips
-            # review-only run directories, so a review session can never surface
-            # here as a coding retry (#6426); ``source_task`` carries the classified
-            # provenance (CODE/REWORK; CODE only for legacy pre-run-scoped state).
+            # Resolve durable retry artifacts in one pass. The artifact owner has
+            # already resolved provenance: review-only and unrecognized run
+            # directories are refused upstream, so any artifact returned here
+            # carries a concrete coding-side ``source_task`` (#6426).
             artifacts = find_pending_retry_artifacts(worktree_path)
             if artifacts is None or not artifacts.state.can_retry:
                 continue
@@ -702,7 +701,7 @@ class StartupManager:
                 validation_error=validation_state.last_error or "Unknown validation error",
                 validation_error_file=validation_state.last_error_file,
                 retry_count=validation_state.retry_count,
-                source_task=artifacts.source_task or TaskKind.CODE,
+                source_task=artifacts.source_task,
                 validation_cmd=validation_state.validation_cmd,
             )
             state.pending_validation_retries.append(pending_retry)
