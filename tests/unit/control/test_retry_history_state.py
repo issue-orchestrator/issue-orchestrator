@@ -26,6 +26,7 @@ from issue_orchestrator.domain.models import (
     PublishJob,
     PublishJobStatus,
     SessionHistoryEntry,
+    TaskKind,
 )
 from tests.unit.session_run_helpers import make_session_run_assets
 
@@ -328,6 +329,7 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 validation_error="dirty tree",
                 validation_error_file=None,
                 retry_count=1,
+                source_task=TaskKind.CODE,
             ),
             PendingValidationRetry(
                 issue_number=other,
@@ -339,6 +341,7 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 validation_error="dirty tree",
                 validation_error_file=None,
                 retry_count=1,
+                source_task=TaskKind.CODE,
             ),
         ],
         pending_publish_jobs={

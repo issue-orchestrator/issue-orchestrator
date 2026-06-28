@@ -933,6 +933,55 @@ class TestStartupManagerValidationRetryRecovery:
         assert len(sample_state.pending_validation_retries) == 0
 
     @pytest.mark.asyncio
+    async def test_review_only_run_scoped_retry_artifact_is_not_recovered(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """A retry artifact under a review-only run is never recovered as a coding retry.
+
+        Regression for #6426: a validation-state.json left under a
+        ``...__retrospective-review-<issue>`` run (pre-fix bug or crash boundary)
+        must not relaunch as TaskKind.CODE and open a PR on an empty branch.
+        """
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260501-010000Z__retrospective-review-42"
+        )
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "session_name": "retrospective-review-42",
+                    "validation_status": "retry",
+                }
+            )
+        )
+        (run_dir / "validation-state.json").write_text(
+            json.dumps(
+                {
+                    "retry_count": 1,
+                    "max_retries": 3,
+                    "validation_cmd": "make test",
+                    "last_error": "Stale review-only failure",
+                }
+            )
+        )
+        (run_dir / "retry-prompt.md").write_text("stale retry prompt")
+        mock_issue_branches_fn.return_value = {42: "42-fix-login"}
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_validation_retries == []
+
+    @pytest.mark.asyncio
     async def test_no_recovery_when_no_pending_retry(
         self,
         startup_manager,

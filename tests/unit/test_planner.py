@@ -385,6 +385,7 @@ class TestPlanValidationRetries:
                     validation_error="dirty worktree",
                     validation_error_file=None,
                     retry_count=1,
+                    source_task=TaskKind.CODE,
                     validation_cmd="make test",
                 ),
             ],
@@ -424,6 +425,7 @@ class TestPlanValidationRetries:
                     validation_error="dirty worktree",
                     validation_error_file=None,
                     retry_count=1,
+                    source_task=TaskKind.CODE,
                     validation_cmd="make test",
                 ),
             ],
@@ -2744,6 +2746,7 @@ class TestSnapshotFromState:
             validation_error="dirty",
             validation_error_file=None,
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
         state.pending_validation_retries = [validation_retry]

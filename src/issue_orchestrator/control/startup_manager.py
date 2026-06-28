@@ -43,6 +43,7 @@ from ..domain.models import (
     PendingValidationRetry,
     SessionHistoryEntry,
     Session,
+    TaskKind,
     ORCHESTRATOR_PR_MARKER,
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
@@ -56,7 +57,7 @@ from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
 from ..infra import gh_audit
-from ..infra.validation_state import has_pending_retry, read_validation_state, get_retry_prompt_path
+from ..infra.validation_state import find_pending_retry_artifacts
 from ..infra.repo_identity import get_repo_head_sha
 from ..infra.sqlite_maintenance import enforce_pragmas_on_startup, run_backups_if_due
 from .worktree_manager import get_worktree_path
@@ -675,25 +676,22 @@ class StartupManager:
                 )
                 continue
 
-            # Check if this worktree has a pending validation retry
-            if not has_pending_retry(worktree_path):
+            # Resolve durable retry artifacts in one pass. The scanner skips
+            # review-only run directories, so a review session can never surface
+            # here as a coding retry (#6426); ``source_task`` carries the classified
+            # provenance (CODE/REWORK; CODE only for legacy pre-run-scoped state).
+            artifacts = find_pending_retry_artifacts(worktree_path)
+            if artifacts is None or not artifacts.state.can_retry:
                 continue
 
-            # Read the validation state to get retry details
-            validation_state = read_validation_state(worktree_path)
-            if validation_state is None:
-                continue
-
-            # Get the retry prompt path if it exists
-            retry_prompt_path = get_retry_prompt_path(worktree_path)
+            validation_state = artifacts.state
             retry_prompt = None
-            if retry_prompt_path:
+            if artifacts.retry_prompt_path is not None:
                 try:
-                    retry_prompt = retry_prompt_path.read_text()
+                    retry_prompt = artifacts.retry_prompt_path.read_text()
                 except OSError:
                     pass
 
-            # Create a pending validation retry entry
             pending_retry = PendingValidationRetry(
                 issue_number=issue_number,
                 issue_title=f"Issue #{issue_number}",  # We don't have the full title here
@@ -704,6 +702,7 @@ class StartupManager:
                 validation_error=validation_state.last_error or "Unknown validation error",
                 validation_error_file=validation_state.last_error_file,
                 retry_count=validation_state.retry_count,
+                source_task=artifacts.source_task or TaskKind.CODE,
                 validation_cmd=validation_state.validation_cmd,
             )
             state.pending_validation_retries.append(pending_retry)

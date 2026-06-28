@@ -24,6 +24,7 @@ from ..domain.artifact_contracts import (
     ValidationRetry,
 )
 from ..domain.run_manifest import RunManifest
+from ..domain.session_key import TaskKind
 
 logger = logging.getLogger(__name__)
 _NO_CURRENT_RETRY = object()
@@ -132,11 +133,18 @@ class ValidationState:
 
 @dataclass(frozen=True)
 class ValidationRetryArtifacts:
-    """Durable retry state and its associated artifact paths."""
+    """Durable retry state and its associated artifact paths.
+
+    ``source_task`` is the task kind classified from the run directory's session
+    identity (``None`` for legacy state with no run directory). The retry queue
+    carries it so a review-only artifact can never be relaunched as coding work
+    (see issue #6426).
+    """
 
     state: ValidationState
     state_path: Path
     retry_prompt_path: Path | None = None
+    source_task: TaskKind | None = None
 
 
 def _now_iso() -> str:
@@ -255,6 +263,16 @@ def _run_session_name(run_dir: Path) -> str:
     return run_dir.name.split("__", 1)[1]
 
 
+def _run_source_task(run_dir: Path) -> TaskKind | None:
+    """Classify the task that produced this run directory from its identity."""
+    return TaskKind.from_session_name(_run_session_name(run_dir))
+
+
+def _run_is_review_only(run_dir: Path) -> bool:
+    task = _run_source_task(run_dir)
+    return task is not None and task.is_review_only
+
+
 def _run_can_supersede_retry_state(run_dir: Path) -> bool:
     return _run_session_name(run_dir).startswith(("coding-", "issue-", "rework-"))
 
@@ -263,6 +281,16 @@ def _find_run_scoped_retry_artifacts(
     worktree_path: Path,
 ) -> ValidationRetryArtifacts | object | None:
     for run_dir in _run_dirs_newest_first(worktree_path):
+        # A review-only run (PR review / retrospective review) makes no commits and
+        # publishes nothing. It must be fully transparent to coding-retry recovery:
+        # any validation-state.json under such a run — e.g. left by the pre-fix
+        # retrospective-review bug or a crash boundary — must never be recovered as
+        # a coding validation retry (it would relaunch as TaskKind.CODE and open a
+        # PR on an empty branch, issue #6426), and its terminal pass/fail status
+        # must not suppress a genuine coding retry in an older run. Skip it entirely.
+        if _run_is_review_only(run_dir):
+            continue
+
         validation_status = _run_validation_status(run_dir)
         if validation_status in {"passed", "failed"}:
             return _NO_CURRENT_RETRY
@@ -275,6 +303,7 @@ def _find_run_scoped_retry_artifacts(
                 state=state,
                 state_path=state_path,
                 retry_prompt_path=prompt_path if prompt_path.exists() else None,
+                source_task=_run_source_task(run_dir),
             )
 
         if _run_retry_prompt_file(run_dir).exists():

@@ -53,6 +53,7 @@ class TestKillSessionEndpoint:
                 validation_error="boom",
                 validation_error_file=None,
                 retry_count=1,
+                source_task=TaskKind.CODE,
             )
         ]
         mock_orch.state.discovered_reviews = [
