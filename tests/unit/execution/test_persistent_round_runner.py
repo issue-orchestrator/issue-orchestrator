@@ -446,12 +446,21 @@ class TestPersistentSessionLifecycle:
         gate_opened = False
 
         def sleeper(seconds: float) -> None:
+            import time as _time
+
             nonlocal gate_opened
             clock.value += seconds
             if not gate_opened and clock.value >= 0.35:
                 gate_opened = True
                 trust_gate.touch()
                 _wait_until(prompt_ready.exists)
+            # The injected clock advances with no real delay, but the runner is
+            # polling a REAL subprocess for response.json. Pace the poll loop in
+            # real wall-clock (same idea as _wait_until's cross-process wait) so
+            # a CPU-starved subprocess under `-n auto` gets time to write its
+            # response before the deterministic injected deadline (clock 5.0) is
+            # reached. The fake clock still drives the gate trigger and timeout.
+            _time.sleep(0.02)
 
         session = open_persistent_session(
             command=[str(codex_bin), "-u", str(script)],
