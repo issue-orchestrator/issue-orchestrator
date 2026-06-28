@@ -262,7 +262,7 @@ class AwaitingMergeReconciler:
                     entry.issue_number, None,
                 )
                 drift = None
-                if pr_state == "closed":
+                if pr.is_closed_unmerged:
                     drift = self._discover_terminal_pr_issue_drift(
                         state=state,
                         entry=entry,
@@ -439,9 +439,9 @@ class AwaitingMergeReconciler:
         if any(_normalized_state(pr.state) == "open" for pr in prs):
             return None
 
-        closed_prs = [
-            pr for pr in prs if _normalized_state(pr.state) == "closed"
-        ]
+        # Merged PRs (state "merged") are excluded, so this keys on the issue's
+        # latest genuinely closed-without-merge PR, not an earlier merged one.
+        closed_prs = [pr for pr in prs if pr.is_closed_unmerged]
         if closed_prs:
             pr = max(closed_prs, key=lambda item: item.number)
             return _drift_fact(

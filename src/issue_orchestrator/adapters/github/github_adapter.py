@@ -52,6 +52,36 @@ def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
     return None
 
 
+def _payload_indicates_merged(pr: dict[str, Any]) -> bool:
+    """True when a GitHub PR payload represents a merged pull request.
+
+    GitHub's REST detail payload carries a ``merged`` boolean; both the detail
+    and the list payloads carry a nullable ``merged_at`` timestamp. Either
+    signal means the PR was merged.
+    """
+    if pr.get("merged"):
+        return True
+    return bool(pr.get("merged_at"))
+
+
+def _pr_state_from_api(pr: dict[str, Any]) -> str:
+    """Normalize a PR payload's state, distinguishing merged from closed.
+
+    GitHub's REST ``state`` field is only ``"open"`` or ``"closed"`` — a merged
+    PR is reported as ``"closed"`` with ``merged``/``merged_at`` set. The
+    orchestrator's ``PRInfo.state`` contract distinguishes ``"merged"`` so
+    lifecycle reconciliation never mistakes a merged PR for a closed-unmerged
+    one (the source of false ``blocked:pr-closed`` labels). GraphQL-sourced
+    payloads already carry ``state == "merged"`` directly; preserve it.
+    """
+    raw_state = str(pr.get("state", "open")).lower()
+    if raw_state == "merged":
+        return raw_state
+    if _payload_indicates_merged(pr):
+        return "merged"
+    return raw_state
+
+
 class GitHubAdapter:
     """Adapter for GitHub operations via HTTP API.
 
@@ -1218,7 +1248,7 @@ class GitHubAdapter:
             url=pr.get("html_url") or pr.get("url", ""),
             branch=(pr.get("head") or {}).get("ref", pr.get("headRefName", "")),
             body=pr.get("body", "") or "",
-            state=str(pr.get("state", "open")).lower(),
+            state=_pr_state_from_api(pr),
             labels=labels,
             draft=pr.get("draft"),
             mergeable_state=(

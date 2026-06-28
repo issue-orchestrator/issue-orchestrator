@@ -591,6 +591,65 @@ class TestPROperations:
         mock_http_client.get_pr.assert_called_once_with(10)
         mock_http_client.get_pr_status_check_rollup.assert_not_called()
 
+    def test_get_pr_reports_merged_state_from_merged_at(self, adapter, mock_http_client):
+        """GitHub's REST `state` is only open/closed; a merged PR carries
+        `merged_at`. PRInfo.state must distinguish merged from closed so
+        reconciliation never mistakes a merged PR for a closed-unmerged one."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Merged PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "closed",
+            "merged_at": "2026-06-01T20:00:50Z",
+            "labels": [],
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "merged"
+
+    def test_get_pr_reports_merged_state_from_merged_flag(self, adapter, mock_http_client):
+        """The REST detail payload's `merged` boolean also marks a merge."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Merged PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "closed",
+            "merged": True,
+            "merged_at": None,
+            "labels": [],
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "merged"
+
+    def test_get_pr_closed_unmerged_stays_closed(self, adapter, mock_http_client):
+        """A genuinely closed-without-merge PR keeps state == "closed" so the
+        closed-unmerged drift path still flags it."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Closed PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "closed",
+            "merged": False,
+            "merged_at": None,
+            "labels": [],
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "closed"
+
     def test_get_pr_with_status_check_rollup_populates_rollup(
         self, adapter, mock_http_client
     ):
