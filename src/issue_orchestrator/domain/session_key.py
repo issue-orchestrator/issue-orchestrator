@@ -42,6 +42,18 @@ class TaskKind(Enum):
     REWORK = "rework"    # Fixing issues found in review
     TRIAGE = "triage"    # Triaging failed reviews
 
+    @property
+    def is_review_only(self) -> bool:
+        """Whether this task is read-only: it makes no commits and publishes nothing.
+
+        Review-only sessions (auditing a PR or existing merged work) produce no
+        branch commits, so the publish/code-validation-retry machinery — which
+        exists to validate a coder's changes before opening a PR — does not apply
+        to them. Treating a review-only session as ordinary coding work leads to
+        empty-branch ``create_pr`` attempts (see issue #6426).
+        """
+        return self in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}
+
 
 @dataclass(frozen=True)
 class SessionKey:

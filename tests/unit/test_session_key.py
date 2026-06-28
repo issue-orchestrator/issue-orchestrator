@@ -38,6 +38,17 @@ class TestTaskKind:
             TaskKind.RETROSPECTIVE_REVIEW,
         }
 
+    def test_review_only_kinds_make_no_commits(self):
+        """Review tasks are read-only: they make no commits and publish nothing."""
+        assert TaskKind.REVIEW.is_review_only is True
+        assert TaskKind.RETROSPECTIVE_REVIEW.is_review_only is True
+
+    def test_commit_producing_kinds_are_not_review_only(self):
+        """Coding-style tasks produce commits and may publish a PR."""
+        assert TaskKind.CODE.is_review_only is False
+        assert TaskKind.REWORK.is_review_only is False
+        assert TaskKind.TRIAGE.is_review_only is False
+
 
 class TestSessionKeyEquality:
     """Tests for SessionKey equality semantics."""
