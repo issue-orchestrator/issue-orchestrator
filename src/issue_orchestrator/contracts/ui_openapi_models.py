@@ -598,6 +598,7 @@ class JourneyStepPayload(BaseModel):
     day: str
     detail: str | None = None
     event: str
+    in_round_progress: bool | None = None
     narrative: str
     status: str
     time_label: str

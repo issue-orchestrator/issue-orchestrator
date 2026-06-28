@@ -289,18 +289,31 @@ def _preferred_review_terminal_story_event(cluster: list[dict[str, Any]]) -> dic
 
 
 def _collapse_completed_review_segments(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Represent each Story review segment with either its start or terminal row."""
+    """Represent each Story review segment with either its start or terminal row.
+
+    While a review segment is still *open* (the round has not closed with a
+    terminal event), the in-round coder<->reviewer mechanics are still dropped
+    from the row list, but the latest meaningful substate is surfaced as a
+    single transient "in progress" row so the Story timeline keeps advancing
+    instead of freezing on "Code review started" for the duration of an
+    in-round rework (issue #6428). Once the round closes, the completed view
+    stays clean — no mechanic rows survive.
+    """
     collapsed: list[dict[str, Any]] = []
     pending_start_index: int | None = None
+    latest_open_mechanic: dict[str, Any] | None = None
 
     for event in events:
         event_name = _canonical_event_name(event)
         if event_name in _REVIEW_STORY_MECHANIC_EVENTS:
+            if pending_start_index is not None:
+                latest_open_mechanic = event
             continue
 
         if event_name in _REVIEW_START_CLUSTER_EVENTS:
             collapsed.append(event)
             pending_start_index = len(collapsed) - 1
+            latest_open_mechanic = None
             continue
 
         if event_name in _REVIEW_STORY_SEGMENT_TERMINAL_EVENTS:
@@ -308,6 +321,7 @@ def _collapse_completed_review_segments(events: list[dict[str, Any]]) -> list[di
                 start_event = collapsed[pending_start_index]
                 del collapsed[pending_start_index]
                 pending_start_index = None
+                latest_open_mechanic = None
                 collapsed.append(_project_review_terminal_story_event(event, start_event))
             else:
                 collapsed.append(_project_review_terminal_story_event(event))
@@ -315,9 +329,60 @@ def _collapse_completed_review_segments(events: list[dict[str, Any]]) -> list[di
 
         if _event_starts_new_story_work_segment(event):
             pending_start_index = None
+            latest_open_mechanic = None
         collapsed.append(event)
 
+    if pending_start_index is not None and latest_open_mechanic is not None:
+        progress_row = _open_review_round_progress_row(
+            latest_open_mechanic,
+            collapsed[pending_start_index],
+        )
+        if progress_row is not None:
+            collapsed.append(progress_row)
+
     return collapsed
+
+
+def _open_review_round_progress_row(
+    mechanic_event: dict[str, Any],
+    start_event: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build the transient in-round progress Story row for an open review round.
+
+    Reuses ``_review_exchange_event_status`` so the timeline row and the
+    always-on status line (``_active_review_exchange_status``) describe the
+    same substate — one source of truth, no cross-path drift. Returns ``None``
+    when the latest substate is already represented by the "Code review
+    started" row (the reviewer's opening pass of the round).
+    """
+    if not _is_in_round_progress_signal(mechanic_event):
+        return None
+    event_name = _canonical_event_name(mechanic_event)
+    status = _review_exchange_event_status(event_name, mechanic_event)
+    if not status:
+        return None
+    row = dict(mechanic_event)
+    _fill_missing_review_session_context(row, start_event)
+    row["narrative"] = _capitalize_first(status)
+    row["in_round_progress"] = True
+    return row
+
+
+def _is_in_round_progress_signal(event: dict[str, Any]) -> bool:
+    """Whether an open-round mechanic warrants a transient progress row.
+
+    The reviewer's opening pass of a round (``role_prompted`` to the reviewer)
+    is already represented by that round's "Code review started" row, so it is
+    not repeated. Reviewer feedback, the coder rework prompt, and coder
+    feedback are the substates that would otherwise leave the timeline frozen,
+    so they are surfaced.
+    """
+    event_name = _canonical_event_name(event)
+    if event_name == EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK.value:
+        return True
+    if event_name == EventName.REVIEW_EXCHANGE_ROLE_PROMPTED.value:
+        return event.get("role") == "coder"
+    return False
 
 
 def _project_review_terminal_story_event(
@@ -564,6 +629,12 @@ def _lowercase_first(text: str) -> str:
     return text[0].lower() + text[1:]
 
 
+def _capitalize_first(text: str) -> str:
+    if not text:
+        return ""
+    return text[0].upper() + text[1:]
+
+
 # Canonical blocked-event set lives in ``lifecycle_projection``.  The local
 # alias is preserved so call sites stay stable while the canonical set
 # remains the single source of truth (issue #6310 AC-4).
@@ -760,6 +831,8 @@ def _build_journey_steps(
         }
         if detail:
             step_dict["detail"] = str(detail)
+        if event.get("in_round_progress") is True:
+            step_dict["in_round_progress"] = True
         steps.append(step_dict)
 
     return steps

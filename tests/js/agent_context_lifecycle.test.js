@@ -136,6 +136,70 @@ test('plugin lifecycle renderer gives validation events an inline canonical-JUni
     assert.doesNotMatch(html, /open_validation_failure/);
 });
 
+test('plugin lifecycle renderer marks an in-round progress step with an accessible live badge', () => {
+    const ctx = _loadPlugin();
+
+    const html = ctx.renderIssueLifecycleTimeline([
+        {
+            run_number: 1,
+            outcome: { label: 'In progress', tone: 'in_progress' },
+            expanded: true,
+            cycles: [{
+                cycle_number: 1,
+                outcome: { label: 'Review in progress', tone: 'in_progress' },
+                expanded: true,
+                phase_groups: [{
+                    key: 'review',
+                    label: 'Review',
+                    steps: [{
+                        event: 'review_exchange.role_prompted',
+                        status: 'completed',
+                        narrative: 'Coder running (round 1)',
+                        in_round_progress: true,
+                    }],
+                }],
+            }],
+        },
+    ], { baseId: 'shared' });
+
+    assert.match(html, /journey-step-in-progress/);
+    // The badge carries text ("In progress") and role="status" — status is not
+    // signalled by colour alone (accessibility requirement, issue #6428).
+    assert.match(html, /class="journey-progress-badge" role="status"/);
+    assert.match(html, /journey-progress-dot/);
+    assert.match(html, /In progress/);
+    assert.match(html, /Coder running \(round 1\)/);
+});
+
+test('plugin lifecycle renderer omits the live badge for ordinary completed steps', () => {
+    const ctx = _loadPlugin();
+
+    const html = ctx.renderIssueLifecycleTimeline([
+        {
+            run_number: 1,
+            outcome: { label: 'Passed', tone: 'passed' },
+            expanded: true,
+            cycles: [{
+                cycle_number: 1,
+                outcome: { label: 'Reviewed', tone: 'passed' },
+                expanded: true,
+                phase_groups: [{
+                    key: 'review',
+                    label: 'Review',
+                    steps: [{
+                        event: 'review.approved',
+                        status: 'completed',
+                        narrative: 'Reviewer approved',
+                    }],
+                }],
+            }],
+        },
+    ], { baseId: 'shared' });
+
+    assert.doesNotMatch(html, /journey-step-in-progress/);
+    assert.doesNotMatch(html, /journey-progress-badge/);
+});
+
 test('plugin lifecycle renderer uses host timestamp capabilities instead of dashboard globals', () => {
     const ctx = _loadPlugin();
     ctx.registerHierarchicalTimelineHostCapabilities({

@@ -184,7 +184,16 @@
 
     function _renderIssueLifecycleStep(step, ctx, options) {
         const stepId = `${ctx.cycleId}-step-${ctx.stepIndex}`;
-        const statusClass = step && step.status ? 'status-' + escapeAttr(step.status) : '';
+        const inProgress = !!(step && step.in_round_progress);
+        const progressClass = inProgress ? ' journey-step-in-progress' : '';
+        const statusClass = (step && step.status ? 'status-' + escapeAttr(step.status) : '') + progressClass;
+        // Live-progress rows get a textual "In progress" badge (not colour
+        // alone) so the Story timeline visibly advances during an in-round
+        // rework instead of freezing on "Code review started" (issue #6428).
+        const progressBadge = inProgress
+            ? '<span class="journey-progress-badge" role="status">'
+              + '<span class="journey-progress-dot" aria-hidden="true"></span>In progress</span>'
+            : '';
         const detail = step && step.detail ? `<div class="journey-detail">${escapeHtml(step.detail)}</div>` : '';
         const actions = _defaultIssueLifecycleStepActions(step, options);
         const narrative = escapeHtml((step && (step.narrative || step.event)) || '');
@@ -225,6 +234,7 @@
         <div class="journey-main">
             <div class="journey-summary-row">
                 <span class="journey-narrative">${narrative}</span>
+                ${progressBadge}
                 ${actions}
             </div>
             ${detail}

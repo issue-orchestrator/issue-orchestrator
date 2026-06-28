@@ -1886,7 +1886,8 @@
           "status": {"type": "string"},
           "event": {"type": "string"},
           "detail": {"type": ["string", "null"]},
-          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "in_round_progress": {"type": "boolean", "default": false}
         }
       },
       "JourneyPhaseGroupPayload": {

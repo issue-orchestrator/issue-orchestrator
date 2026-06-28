@@ -588,6 +588,7 @@ export interface JourneyStepPayload {
   day: string;
   detail?: string | null;
   event: string;
+  in_round_progress?: boolean;
   narrative: string;
   status: string;
   time_label: string;
