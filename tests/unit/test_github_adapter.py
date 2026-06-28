@@ -859,6 +859,68 @@ class TestPROperations:
         assert len(prs) == 1
         assert prs[0].number == 10
 
+    def test_get_prs_for_issue_all_bypasses_single_pr_cache(
+        self, adapter, cache, mock_http_client
+    ):
+        """``state="all"`` must return the authoritative full list, never a single
+        cached PR.
+
+        Regression for #6430: the awaiting-merge reconciler suppresses
+        ``blocked:pr-closed`` only after confirming no associated PR is open. The
+        by-issue cache holds one PR; if an older closed PR is cached while a newer
+        open PR exists on GitHub, satisfying ``all`` from the cache would hide the
+        open PR and resurrect the false ``blocked:pr-closed`` path. So ``all``
+        bypasses the single-PR cache and fetches the complete set from the API.
+        """
+        # Prime the by-issue cache with an OLDER closed PR.
+        cache.set_pr_by_issue(
+            42,
+            {
+                "number": 10,
+                "title": "#42: Older closed",
+                "url": "https://github.com/owner/repo/pull/10",
+                "branch": "42-feature",
+                "body": "",
+                "state": "closed",
+                "labels": [],
+                "issue_number": 42,
+            },
+            branch="42-feature",
+        )
+        # The authoritative GitHub view also has a NEWER open PR.
+        mock_http_client.get_prs_for_issue.return_value = [
+            {"number": 10}, {"number": 11},
+        ]
+        full_by_number = {
+            10: {
+                "number": 10,
+                "title": "#42: Older closed",
+                "html_url": "https://github.com/owner/repo/pull/10",
+                "head": {"ref": "42-feature"},
+                "body": "",
+                "state": "closed",
+                "labels": [],
+            },
+            11: {
+                "number": 11,
+                "title": "#42: Newer open",
+                "html_url": "https://github.com/owner/repo/pull/11",
+                "head": {"ref": "42-feature-2"},
+                "body": "",
+                "state": "open",
+                "labels": [],
+            },
+        }
+        mock_http_client.get_pr.side_effect = lambda n: full_by_number[n]
+
+        prs = adapter.get_prs_for_issue(42, state="all")
+
+        # Cache was bypassed: the API list was fetched...
+        mock_http_client.get_prs_for_issue.assert_called_once_with(42)
+        # ...and the open PR the reconciler needs to see is in the result.
+        assert {pr.number for pr in prs} == {10, 11}
+        assert any(pr.state == "open" for pr in prs)
+
     def test_get_prs_for_issue_from_api(self, adapter, mock_http_client):
         """Test getting PRs for issue from API."""
         mock_http_client.get_prs_for_issue.return_value = [
