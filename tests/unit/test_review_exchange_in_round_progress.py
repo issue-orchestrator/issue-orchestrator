@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from issue_orchestrator.view_models.journey_projection import build_journey_step
+from issue_orchestrator.view_models.lifecycle_semantics import JourneyStep
 from tests.unit.review_timeline_scenario import ReviewTimelineScenario
 
 
@@ -115,3 +117,34 @@ def test_completed_round_stays_clean_no_progress_row(tmp_path: Path) -> None:
     detail.assert_step_events("review_exchange.round_completed")
     terminal = detail.step("review_exchange.round_completed")
     assert terminal.get("in_round_progress") in (None, False)
+
+
+def test_journey_step_carries_in_round_progress_as_a_typed_field() -> None:
+    # The in-round progress decision is owned upstream by a typed projection
+    # boundary: the transient row's marker must survive as a typed bool on the
+    # ``JourneyStep`` model (not just as a loose dict key), so the UI renders a
+    # live affordance distinct from completed steps. This pins that owner
+    # boundary (issue #6428).
+    live = build_journey_step(
+        {
+            "event": "review_exchange.role_prompted",
+            "status": "completed",
+            "narrative": "Coder running (round 1)",
+            "timestamp": "2026-03-22T13:34:33Z",
+            "in_round_progress": True,
+        },
+        today="2026-03-22",
+    )
+    assert isinstance(live, JourneyStep)
+    assert live.in_round_progress is True
+
+    ordinary = build_journey_step(
+        {
+            "event": "review.approved",
+            "status": "completed",
+            "narrative": "Reviewer approved",
+            "timestamp": "2026-03-22T13:50:04Z",
+        },
+        today="2026-03-22",
+    )
+    assert ordinary.in_round_progress is False

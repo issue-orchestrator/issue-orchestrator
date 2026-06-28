@@ -372,6 +372,7 @@ class E2ETimelineEventPayload(BaseModel):
     parent_key: str
     phase: str
     removed: list[str] | None = None
+    response_type: str | None = None
     review_oriented: bool
     reviewer_agent: str | None = None
     reviewer_response_text: str | None = None

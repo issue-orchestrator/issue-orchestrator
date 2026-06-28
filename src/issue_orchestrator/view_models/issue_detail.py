@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -333,56 +334,59 @@ def _collapse_completed_review_segments(events: list[dict[str, Any]]) -> list[di
         collapsed.append(event)
 
     if pending_start_index is not None and latest_open_mechanic is not None:
-        progress_row = _open_review_round_progress_row(
-            latest_open_mechanic,
-            collapsed[pending_start_index],
-        )
-        if progress_row is not None:
-            collapsed.append(progress_row)
+        progress = _OpenReviewRoundProgress.from_open_round_mechanic(latest_open_mechanic)
+        if progress is not None:
+            row = dict(latest_open_mechanic)
+            _fill_missing_review_session_context(row, collapsed[pending_start_index])
+            row["narrative"] = progress.narrative
+            row["in_round_progress"] = True
+            collapsed.append(row)
 
     return collapsed
 
 
-def _open_review_round_progress_row(
-    mechanic_event: dict[str, Any],
-    start_event: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Build the transient in-round progress Story row for an open review round.
+@dataclass(frozen=True)
+class _OpenReviewRoundProgress:
+    """Bounded typed owner of the open-review-round in-progress decision (#6428).
 
-    Reuses ``_review_exchange_event_status`` so the timeline row and the
-    always-on status line (``_active_review_exchange_status``) describe the
-    same substate — one source of truth, no cross-path drift. Returns ``None``
-    when the latest substate is already represented by the "Code review
-    started" row (the reviewer's opening pass of the round).
+    While a review round is still open the in-round mechanics are dropped from
+    the Story rows, which used to freeze the timeline on "Code review started"
+    for the whole of an in-round rework. This value object owns that transient
+    row's policy: an instance existing means "surface a live progress row" and
+    ``narrative`` is its copy. The decision reuses
+    ``_review_exchange_event_status`` so the row and the always-on status line
+    describe the same substate — no raw-dict seam, no cross-path drift.
     """
-    if not _is_in_round_progress_signal(mechanic_event):
-        return None
-    event_name = _canonical_event_name(mechanic_event)
-    status = _review_exchange_event_status(event_name, mechanic_event)
-    if not status:
-        return None
-    row = dict(mechanic_event)
-    _fill_missing_review_session_context(row, start_event)
-    row["narrative"] = _capitalize_first(status)
-    row["in_round_progress"] = True
-    return row
 
+    narrative: str
 
-def _is_in_round_progress_signal(event: dict[str, Any]) -> bool:
-    """Whether an open-round mechanic warrants a transient progress row.
+    @classmethod
+    def from_open_round_mechanic(
+        cls,
+        mechanic_event: Mapping[str, Any],
+    ) -> _OpenReviewRoundProgress | None:
+        """Decide the transient progress row, or ``None`` when there is none.
 
-    The reviewer's opening pass of a round (``role_prompted`` to the reviewer)
-    is already represented by that round's "Code review started" row, so it is
-    not repeated. Reviewer feedback, the coder rework prompt, and coder
-    feedback are the substates that would otherwise leave the timeline frozen,
-    so they are surfaced.
-    """
-    event_name = _canonical_event_name(event)
-    if event_name == EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK.value:
-        return True
-    if event_name == EventName.REVIEW_EXCHANGE_ROLE_PROMPTED.value:
-        return event.get("role") == "coder"
-    return False
+        ``None`` when the latest substate is already represented by the round's
+        "Code review started" row, or carries no renderable substate.
+        """
+        event_name = _canonical_event_name(mechanic_event)
+        if not cls._is_progress_signal(event_name, mechanic_event):
+            return None
+        status = _review_exchange_event_status(event_name, mechanic_event)
+        if not status:
+            return None
+        return cls(narrative=_capitalize_first(status))
+
+    @staticmethod
+    def _is_progress_signal(event_name: str, event: Mapping[str, Any]) -> bool:
+        # The reviewer's opening pass is already the "Code review started" row,
+        # so only feedback and the coder rework prompt surface a progress row.
+        if event_name == EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK.value:
+            return True
+        if event_name == EventName.REVIEW_EXCHANGE_ROLE_PROMPTED.value:
+            return event.get("role") == "coder"
+        return False
 
 
 def _project_review_terminal_story_event(
@@ -474,7 +478,7 @@ def _is_outer_coding_completion_event(event_name: str, source_event: str) -> boo
     )
 
 
-def _canonical_event_name(event: dict[str, Any]) -> str:
+def _canonical_event_name(event: Mapping[str, Any]) -> str:
     return str(event.get("source_event") or event.get("event") or "")
 
 
@@ -577,7 +581,7 @@ def _has_review_exchange_before(
 
 def _review_exchange_event_status(
     event_name: str,
-    event: dict[str, Any],
+    event: Mapping[str, Any],
 ) -> str | None:
     round_index = event.get("round_index")
     round_suffix = (
@@ -613,7 +617,7 @@ def _review_exchange_event_status(
     return None
 
 
-def _event_narrative(event: dict[str, Any]) -> str:
+def _event_narrative(event: Mapping[str, Any]) -> str:
     narrative = event.get("narrative")
     if isinstance(narrative, str) and narrative:
         return narrative

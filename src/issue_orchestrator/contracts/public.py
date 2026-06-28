@@ -134,6 +134,13 @@ class TimelineEventContract(ContractBase):
     round_index: Optional[int] = None
     attempt_index: Optional[int] = None
     role: Optional[str] = None
+    # Per-role verdict carried by ``review_exchange.role_feedback`` events
+    # (the raw ``response_type`` the agent reported: ok / changes_requested /
+    # disagree / …).  Distinct from the round-level ``reviewer_response_type`` /
+    # ``coder_response_type`` recorded on ``round_completed``; the in-round
+    # Story progress projection reads this field, so it is part of the durable
+    # timeline contract (issue #6428).
+    response_type: Optional[str] = None
     reviewer_response_type: Optional[str] = None
     reviewer_response_text: Optional[str] = None
     review_decision_verdict: Optional[str] = None

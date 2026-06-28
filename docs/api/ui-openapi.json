@@ -2358,6 +2358,7 @@
           "attempt_index": {"type": "integer"},
           "role": {"type": "string"},
           "rounds": {"type": "integer"},
+          "response_type": {"type": "string"},
           "reviewer_response_type": {"type": "string"},
           "reviewer_response_text": {"type": "string"},
           "coder_response_type": {"type": "string"},
