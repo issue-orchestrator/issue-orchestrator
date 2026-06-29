@@ -6,11 +6,55 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
 from ..domain.session_run import SessionRunAssets
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..ports.session_output import SessionOutput
 
 logger = logging.getLogger(__name__)
+
+
+def build_review_exchange_recovery_note(errors: list[str]) -> str | None:
+    """Return recovery guidance for a reviewer-worktree checkout failure.
+
+    Scoped narrowly (#6659): only a reviewer-worktree checkout/fast-forward
+    failure — the class that committed ``.issue-orchestrator`` runtime
+    artifacts break — gets this note. Those failures carry
+    :data:`REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER`; we match it rather than
+    the broad ``review_exchange:`` error prefix, which is also used for
+    max-rounds/no-progress halts, missing exchange outcomes, background-job
+    cancellation, invalid exchange config, and timeout cancellation — none of
+    which are fixed by removing tracked runtime artifacts.
+
+    For this class the failure happened *after* the coder's work was validated
+    and committed locally, so the generic "publish/finalize failed" comment
+    reads as a coding failure when it is really a finalization-stage failure:
+    the committed work is safe, a retry recovers finalization rather than
+    re-coding, and tracked runtime artifacts are the likely culprit.
+    """
+    checkout_failures = [
+        error
+        for error in errors
+        if REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER in error
+    ]
+    if not checkout_failures:
+        return None
+
+    lines = [
+        "### Recovery: review-exchange finalization failed",
+        "",
+        "This failed during review-exchange finalization, **after** the coder's "
+        "work was validated and committed locally — it is not a coding failure. "
+        "The committed branch work is safe.",
+        "",
+        "- Retry recovers finalization; it should not require re-coding from scratch.",
+        "- The likely cause is issue-orchestrator runtime artifacts committed onto "
+        "the branch (for example under `.issue-orchestrator/persistent-pairs/` or "
+        "`.issue-orchestrator/review-exchange-turn-prompt.md`), which break the "
+        "reviewer-worktree fast-forward checkout. Remove them with "
+        "`git rm --cached` and confirm they are gitignored.",
+    ]
+    return "\n".join(lines)
 
 
 def build_cleanup_failure_comment(
@@ -78,6 +122,9 @@ def build_processing_failure_comment(
         comment += f"- Actions completed before failure: {', '.join(actions_taken)}\n"
     if diagnostic_path:
         comment += f"- Diagnostic file: `{diagnostic_path}`\n"
+    recovery_note = build_review_exchange_recovery_note(errors)
+    if recovery_note:
+        comment += f"\n{recovery_note}\n"
     return comment
 
 

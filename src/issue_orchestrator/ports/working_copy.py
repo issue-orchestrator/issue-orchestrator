@@ -68,6 +68,23 @@ class DiffResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class BranchPathsResult:
+    """Branch-tip post-image paths for a diff against base.
+
+    ``paths`` are the repo-relative files that exist in the branch after the
+    diff (added, copied, modified, renamed-to, or type-changed) with deletions
+    excluded. Derived from a path-oriented Git query so it is robust against
+    empty-file additions, binary changes, and renames/copies — no-hunk diffs
+    that a unified-diff text parser cannot see. ``success`` is ``False`` on a
+    git failure so callers can fail closed.
+    """
+
+    success: bool
+    paths: tuple[str, ...] = ()
+    error: str | None = None
+
+
 @dataclass
 class RebaseResult:
     """Result of a git rebase operation."""
@@ -255,6 +272,20 @@ class WorkingCopy(Protocol):
 
         Implementations should use merge-base semantics (``base_ref...HEAD``)
         so callers scan exactly what the branch contributes.
+        """
+        ...
+
+    def branch_post_image_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult:
+        """Return branch-tip post-image paths for changes from *base_ref* to HEAD.
+
+        Uses merge-base semantics (``base_ref...HEAD``) and a path-oriented Git
+        query so callers receive every file present in the branch tip —
+        including empty-file additions, binary changes, and renames/copies —
+        with deletions excluded. Distinct from :meth:`diff_against_base`, which
+        returns unified diff *text* for content-oriented scans and cannot see
+        no-hunk changes.
         """
         ...
 

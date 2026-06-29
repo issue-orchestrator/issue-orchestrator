@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.domain.review_exchange import (
+    REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER,
+)
 from issue_orchestrator.execution.reviewer_worktree import (
     ReviewerWorktreeError,
     create_reviewer_worktree,
@@ -117,3 +120,77 @@ class TestReviewerWorktreeLifecycle:
 
         # Must not raise — orchestrator shutdown paths rely on idempotence.
         remove_reviewer_worktree(reviewer)
+
+
+class TestReviewerWorktreeDiagnostics:
+    """Checkout failures must surface Git command/cwd/returncode/stdout/stderr.
+
+    The #6594 incident raised a bare ``CalledProcessError`` whose message hid
+    *why* the reviewer-worktree checkout failed (dirty runtime files vs missing
+    commit vs lock contention). The enriched error must carry that context.
+    """
+
+    def test_fast_forward_checkout_failure_preserves_git_context(
+        self, tmp_path: Path
+    ) -> None:
+        repo_root, coder, branch = _bootstrap_repo_with_branch(tmp_path)
+        reviewer = create_reviewer_worktree(
+            coder_worktree=coder, coder_branch=branch, timestamp="T",
+        )
+
+        # Coder advances the branch tip by committing a new tracked file.
+        artifact = ".issue-orchestrator/review-response.json"
+        (coder / ".issue-orchestrator").mkdir(parents=True, exist_ok=True)
+        (coder / artifact).write_text('{"committed": true}\n')
+        _git(coder, "add", artifact)
+        _git(coder, "commit", "-q", "-m", "commit runtime artifact")
+        new_tip = _git(repo_root, "rev-parse", branch)
+
+        # The reviewer worktree has an UNTRACKED file at the same path; git
+        # refuses to overwrite it on checkout, exactly like a committed
+        # runtime artifact colliding with a live runtime write.
+        (reviewer.path / ".issue-orchestrator").mkdir(parents=True, exist_ok=True)
+        (reviewer.path / artifact).write_text('{"local": "dirty runtime write"}\n')
+
+        with pytest.raises(ReviewerWorktreeError) as excinfo:
+            fast_forward_reviewer_worktree(reviewer)
+
+        err = excinfo.value
+        # The checkout-failure marker lets completion failure-reporting attach
+        # runtime-artifact recovery guidance to exactly this class (#6659).
+        assert REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER in str(err)
+        # Rich git failure context.
+        assert err.git_failure is not None
+        assert err.git_failure.returncode != 0
+        assert err.git_failure.args[:3] == ("git", "checkout", "--detach")
+        assert err.git_failure.args[-1] == new_tip
+        assert err.git_failure.cwd == str(reviewer.path)
+        # Git explains the path-level reason on stderr.
+        assert "would be overwritten" in err.git_failure.stderr
+        # Review-exchange specifics.
+        assert err.context["reviewer_worktree"] == str(reviewer.path)
+        assert err.context["coder_branch"] == branch
+        assert err.context["target_sha"] == new_tip
+        # The structured diagnostic bundles both for the failure record/log.
+        diagnostic = err.diagnostic()
+        assert "git" in diagnostic
+        assert diagnostic["coder_branch"] == branch
+        assert diagnostic["target_sha"] == new_tip
+
+    def test_missing_branch_tip_raises_rich_error(self, tmp_path: Path) -> None:
+        _, coder, _ = _bootstrap_repo_with_branch(tmp_path)
+
+        with pytest.raises(ReviewerWorktreeError) as excinfo:
+            create_reviewer_worktree(
+                coder_worktree=coder,
+                coder_branch="does/not/exist",
+                timestamp="T",
+            )
+
+        err = excinfo.value
+        assert err.git_failure is not None
+        assert err.git_failure.returncode != 0
+        assert err.git_failure.args[:2] == ("git", "rev-parse")
+        # A missing branch tip is not a checkout collision, so it must NOT be
+        # tagged with the runtime-artifact recovery marker.
+        assert REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER not in str(err)
