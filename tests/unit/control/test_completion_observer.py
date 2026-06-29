@@ -15,7 +15,10 @@ path and handles each decision intentionally:
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
+
+import pytest
 
 from issue_orchestrator.control.completion_observer import CompletionObserver
 from issue_orchestrator.domain.completion_finalization import (
@@ -262,6 +265,52 @@ def test_observe_completion_halts_timed_out_past_deadline(tmp_path: Path) -> Non
     assert cancellation["issue_number"] == 9
     assert cancellation["session_name"] == "issue-9"
     assert cancellation["reason"] == "session-timeout"
+
+
+class _UnknownDecisionOwner:
+    """Owner whose plan carries a decision the observer does not handle.
+
+    Stands in for future ``CompletionFinalizationDecision`` growth so the
+    exhaustiveness guard is exercised without inventing an enum member.
+    """
+
+    def completion_finalization_plan(self, **_kwargs: object) -> object:
+        # A sentinel decision that is none of the known enum members. The
+        # observer's identity/membership checks must all miss and fail fast.
+        return SimpleNamespace(decision=object(), reason="unknown decision")
+
+    def cancel_deferred_review_exchange(self, **_kwargs: object) -> str | None:
+        return None
+
+
+def test_observe_completion_fails_fast_on_unhandled_decision(tmp_path: Path) -> None:
+    """An unhandled finalization decision must raise, not silently publish.
+
+    Guards the owner/consumer contract against drift: if a new
+    ``CompletionFinalizationDecision`` is added and the observer is not updated,
+    the async path must fail fast instead of treating it as a normal
+    observed/publish completion (issue #6009 round 3, mirroring the synchronous
+    controller's exhaustiveness).
+    """
+    session = _session(tmp_path)
+    _write_completion(session)
+    observer = CompletionObserver(
+        session_output=Mock(),
+        # Intentionally returns an unhandled decision to simulate future enum
+        # growth; not protocol-conformant by design.
+        finalization_owner=_UnknownDecisionOwner(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(
+        AssertionError, match="Unhandled completion finalization decision"
+    ):
+        observer.observe_completion(
+            session,
+            SessionObservationResult(
+                observation=SessionObservation.TERMINATED,
+                session_exists=True,
+            ),
+        )
 
 
 def test_observe_completion_surfaces_terminal_cancel_error(tmp_path: Path) -> None:

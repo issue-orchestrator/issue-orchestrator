@@ -258,6 +258,9 @@ class CompletionObserver:
         - ``PROCESS`` / ``RUN_DIRTY_PREFLIGHT`` → ``None``; the caller builds the
           observed completion and the background publish phase owns dirty
           preflight and validation.
+        - any other decision → ``AssertionError`` (fail fast, mirroring the
+          synchronous controller) so future enum growth cannot silently fall
+          through to a normal observed/publish completion.
 
         ``validation_preflight_configured`` is ``False`` here: dirty preflight
         and validation are owned by the publish phase, not observation, and that
@@ -298,7 +301,20 @@ class CompletionObserver:
             return self._terminal_review_exchange_timeout(
                 session, plan, load_result
             )
-        return None
+        if plan.decision in (
+            CompletionFinalizationDecision.PROCESS,
+            CompletionFinalizationDecision.RUN_DIRTY_PREFLIGHT,
+        ):
+            # Both finalize via the normal observed-completion path; the
+            # background publish phase owns dirty preflight and validation.
+            return None
+        # Fail fast on any unhandled decision, mirroring the synchronous
+        # controller's exhaustiveness, so future enum expansion or an owner
+        # behavior change cannot silently become a normal observed/publish
+        # completion in the async observer.
+        raise AssertionError(
+            f"Unhandled completion finalization decision: {plan.decision}"
+        )
 
     def _terminal_review_exchange_timeout(
         self,
