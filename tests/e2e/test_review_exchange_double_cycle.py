@@ -39,6 +39,22 @@ _HEX_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _REVIEWER_PROCESS_STARTED_RE = re.compile(
     rf"agent process started pid=(\d+) label={re.escape(_REVIEWER_LABEL)}"
 )
+_REVIEWER_SHAPES = [
+    pytest.param(
+        "claude-code",
+        {"permission_mode": "bypassPermissions"},
+        1,
+        "claude",
+        id="claude-warm-reuse",
+    ),
+    pytest.param(
+        "codex",
+        {"execution_mode": "interactive", "permission_mode": "bypassPermissions"},
+        2,
+        "codex",
+        id="codex-respawn",
+    ),
+]
 
 
 @pytest.mark.e2e
@@ -46,17 +62,33 @@ _REVIEWER_PROCESS_STARTED_RE = re.compile(
 @pytest.mark.asyncio
 @pytest.mark.timeout(600)
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=650, system_gh_activity_limit=160)
+@pytest.mark.parametrize(
+    (
+        "reviewer_ai_system",
+        "reviewer_provider_args",
+        "expected_reviewer_process_starts",
+        "reviewer_slug",
+    ),
+    _REVIEWER_SHAPES,
+)
 async def test_local_review_exchange_runs_double_review_cycle_with_typed_run_assets(
     repo_name: str,
     e2e_project_root: Path,
     e2e_session_config: Config,
+    reviewer_ai_system: str,
+    reviewer_provider_args: dict[str, Any],
+    expected_reviewer_process_starts: int,
+    reviewer_slug: str,
 ):
     """Round 1 requests changes, coder rework calls coding-done, round 2 approves."""
-    isolated_label = e2e_label("double-review")
+    isolated_label = e2e_label(f"double-review-{reviewer_slug}")
+    issue_title = f"{_ISSUE_TITLE} [{reviewer_slug}]"
     config = _double_review_config(
         e2e_session_config,
         e2e_project_root=e2e_project_root,
         isolated_label=isolated_label,
+        reviewer_ai_system=reviewer_ai_system,
+        reviewer_provider_args=reviewer_provider_args,
     )
     runtime = await start_orchestrator_runtime(
         OrchestratorProcess(config, e2e_project_root),
@@ -72,7 +104,7 @@ async def test_local_review_exchange_runs_double_review_cycle_with_typed_run_ass
     )
     try:
         issue, issue_number = flow.create_issue(
-            _ISSUE_TITLE,
+            issue_title,
             [_CODER_LABEL, isolated_label],
             body=(
                 "Exercise local review exchange with round 1 changes_requested, "
@@ -89,14 +121,18 @@ async def test_local_review_exchange_runs_double_review_cycle_with_typed_run_ass
         )
         pr_number = await flow.pr_created(issue, timeout_s=120)
         assert pr_number > 0
+        code_reviewed_label = config.code_reviewed_label
+        needs_human_label = config.get_label_needs_human()
+        assert code_reviewed_label is not None
+        assert needs_human_label is not None
         await flow.pr_has_any_label(
             issue,
-            labels=[config.code_reviewed_label],
+            labels=[code_reviewed_label],
             timeout_s=120,
         )
         await flow.pr_has_any_label(
             issue,
-            labels=[config.get_label_needs_human()],
+            labels=[needs_human_label],
             timeout_s=180,
         )
         await _assert_post_publish_escalation_stays_single(
@@ -117,7 +153,9 @@ async def test_local_review_exchange_runs_double_review_cycle_with_typed_run_ass
         await _assert_double_review_run_artifacts(
             run_dir,
             issue_number=issue_number,
+            issue_title=issue_title,
             completed_payload=payload,
+            expected_reviewer_process_starts=expected_reviewer_process_starts,
         )
     finally:
         flow.cleanup_created_issues()
@@ -129,6 +167,8 @@ def _double_review_config(
     *,
     e2e_project_root: Path,
     isolated_label: str,
+    reviewer_ai_system: str,
+    reviewer_provider_args: dict[str, Any],
 ) -> Config:
     config = copy.deepcopy(base_config)
     config.control_api_port = find_free_port()
@@ -169,11 +209,8 @@ def _double_review_config(
             model="sonnet",
             command=command,
             meta_agent="claude-code",
-            ai_system="codex",
-            provider_args={
-                "execution_mode": "interactive",
-                "permission_mode": "bypassPermissions",
-            },
+            ai_system=reviewer_ai_system,
+            provider_args=dict(reviewer_provider_args),
         ),
     }
     return config
@@ -348,7 +385,9 @@ async def _assert_double_review_run_artifacts(
     run_dir: Path,
     *,
     issue_number: int,
+    issue_title: str,
     completed_payload: dict[str, Any],
+    expected_reviewer_process_starts: int,
 ) -> None:
     summary_path = run_dir / "review-exchange" / "summary.json"
     await _wait_for_file(summary_path, non_empty=True)
@@ -420,7 +459,7 @@ async def _assert_double_review_run_artifacts(
         turns / "round-1-reviewer.packet.json",
         {
             "issue_number": issue_number,
-            "issue_title": _ISSUE_TITLE,
+            "issue_title": issue_title,
             "round_index": 1,
             "role": "reviewer",
             "require_validation": True,
@@ -432,7 +471,7 @@ async def _assert_double_review_run_artifacts(
         turns / "round-1-coder.packet.json",
         {
             "issue_number": issue_number,
-            "issue_title": _ISSUE_TITLE,
+            "issue_title": issue_title,
             "round_index": 1,
             "role": "coder",
             "require_validation": True,
@@ -452,7 +491,7 @@ async def _assert_double_review_run_artifacts(
         turns / "round-2-reviewer.packet.json",
         {
             "issue_number": issue_number,
-            "issue_title": _ISSUE_TITLE,
+            "issue_title": issue_title,
             "round_index": 2,
             "role": "reviewer",
             "require_validation": True,
@@ -506,7 +545,10 @@ async def _assert_double_review_run_artifacts(
     )
     await _wait_for_file(coder_recording, non_empty=True)
     await _wait_for_file(reviewer_recording, non_empty=True)
-    _assert_codex_shaped_reviewer_respawned(reviewer_recording)
+    _assert_reviewer_process_start_count(
+        reviewer_recording,
+        expected_count=expected_reviewer_process_starts,
+    )
     await _assert_chapters(run_dir / "coder" / "chapters.json", role="coder")
     await _assert_chapters(run_dir / "reviewer" / "chapters.json", role="reviewer")
     assert Path(manifest["persistent_pair_dir"]).is_dir()
@@ -516,17 +558,22 @@ async def _assert_double_review_run_artifacts(
     assert manifest["artifacts"]["review_exchange_summary"]["path"] == str(summary_path)
 
 
-def _assert_codex_shaped_reviewer_respawned(recording_path: Path) -> None:
+def _assert_reviewer_process_start_count(
+    recording_path: Path,
+    *,
+    expected_count: int,
+) -> None:
     text = _terminal_recording_text(recording_path)
     reviewer_pids = _REVIEWER_PROCESS_STARTED_RE.findall(text)
-    assert len(reviewer_pids) == 2, (
-        "Codex-shaped reviewer should start one process for round 1 and "
-        f"a fresh process for round 2; saw {reviewer_pids!r} in {recording_path}"
+    assert len(reviewer_pids) == expected_count, (
+        f"Reviewer should start {expected_count} process(es) across the two "
+        f"rounds; saw {reviewer_pids!r} in {recording_path}"
     )
-    assert len(set(reviewer_pids)) == 2, (
-        "Codex-shaped reviewer process starts should use distinct pids; "
-        f"saw {reviewer_pids!r}"
-    )
+    if expected_count > 1:
+        assert len(set(reviewer_pids)) == expected_count, (
+            "Fresh reviewer process starts should use distinct pids; "
+            f"saw {reviewer_pids!r}"
+        )
 
 
 def _terminal_recording_text(recording_path: Path) -> str:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..domain.models import AgentConfig
+from .agent_runner_providers import get_provider, is_valid_provider
 
 FRESH_CODEX_PROMPT_PROCESS_TRIGGER = (
     "interactive codex process completed a prior turn; "
@@ -29,18 +30,29 @@ def role_prompt_inbox_path(response_file: Path) -> Path:
 
 def role_session_needs_fresh_prompt_process(agent: AgentConfig) -> bool:
     """Whether a completed role turn should force a fresh process next prompt."""
-    provider = agent.resolve_launch_provider() or agent.ai_system
-    if (provider or "").strip().lower() != "codex":
+    provider_name = _agent_provider_name(agent)
+    if provider_name is None or not is_valid_provider(provider_name):
         return False
-    execution_mode = (
-        str(agent.provider_args.get("execution_mode", "interactive")).strip().lower()
-    )
-    return execution_mode in {"interactive", "tui"}
+    return get_provider(provider_name).needs_fresh_prompt_process(**agent.provider_args)
+
+
+def _agent_provider_name(agent: AgentConfig) -> str | None:
+    """Provider identity for exchange-session classification."""
+    provider = agent.provider if agent.provider else agent.ai_system
+    if not provider:
+        return None
+    return provider.strip().lower()
 
 
 @dataclass(frozen=True)
 class RoleAttemptWorkspace:
-    """Owns the on-disk artifact freshness for one role's turn."""
+    """Owns the on-disk artifact freshness for one role's turn.
+
+    A dead process can leave side artifacts such as ``review-report.md`` or
+    ``completion-coder.json`` before writing a valid response. Clearing both
+    the response and role-owned side artifacts before each attempt keeps stale
+    output from being paired with a later respawned process.
+    """
 
     response_file: Path
     side_artifact_paths: tuple[Path, ...]

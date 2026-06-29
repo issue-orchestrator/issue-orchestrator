@@ -29,6 +29,9 @@ from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSumm
 from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.execution import persistent_session_exchange as pse
+from issue_orchestrator.execution.persistent_role_prompt_policy import (
+    role_session_needs_fresh_prompt_process,
+)
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports import TraceEvent
 
@@ -419,6 +422,65 @@ def _patch_persistent_runner(
 # ---------------------------------------------------------------------------
 # Artifact-freshness owner
 # ---------------------------------------------------------------------------
+
+
+class TestRolePromptPolicy:
+    """Provider-aware prompt-process freshness policy."""
+
+    @pytest.mark.parametrize(
+        ("agent_kwargs", "expected"),
+        [
+            pytest.param(
+                {"provider": "claude-code", "ai_system": "claude-code"},
+                False,
+                id="claude",
+            ),
+            pytest.param(
+                {"provider": "codex", "ai_system": "codex"},
+                True,
+                id="codex-default-interactive",
+            ),
+            pytest.param(
+                {
+                    "provider": "codex",
+                    "ai_system": "codex",
+                    "provider_args": {"execution_mode": "exec"},
+                },
+                False,
+                id="codex-exec",
+            ),
+            pytest.param(
+                {
+                    "provider": "codex",
+                    "ai_system": "codex",
+                    "provider_args": {"execution_mode": "tui"},
+                },
+                True,
+                id="codex-tui-alias",
+            ),
+            pytest.param(
+                {
+                    "ai_system": "codex",
+                    "command": "python deterministic-agent.py '{initial_prompt}'",
+                },
+                True,
+                id="codex-ai-system-custom-command",
+            ),
+        ],
+    )
+    def test_role_session_needs_fresh_prompt_process_uses_provider_capability(
+        self,
+        tmp_path: Path,
+        agent_kwargs: dict[str, Any],
+        expected: bool,
+    ) -> None:
+        agent = AgentConfig(
+            prompt_path=tmp_path / "prompt.md",
+            timeout_minutes=1,
+            **agent_kwargs,
+        )
+
+        assert role_session_needs_fresh_prompt_process(agent) is expected
 
 
 class TestRoleAttemptWorkspace:
