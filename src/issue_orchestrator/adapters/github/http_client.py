@@ -28,6 +28,59 @@ from .tokens import (
 logger = logging.getLogger(__name__)
 
 
+# Completed check-run conclusions that mean the check did NOT pass and so
+# block merge. `cancelled`/`stale`/`skipped`/`neutral` are intentionally NOT
+# here: those routinely appear on superseded commits and are non-blocking, so
+# treating them as failures would trigger spurious rework.
+_FAILING_CHECK_CONCLUSIONS: frozenset[str] = frozenset(
+    {"failure", "timed_out", "startup_failure", "action_required"}
+)
+
+# A check-state contribution from one source: (failure, pending, present).
+# `present` distinguishes "no checks at all" (→ rollup None) from "all green".
+_RollupSignal = tuple[bool, bool, bool]
+
+
+def _aggregate_check_runs(payload: object) -> _RollupSignal:
+    """Reduce a REST `/check-runs` response to a `_RollupSignal`."""
+    failure = pending = present = False
+    runs = payload.get("check_runs") if isinstance(payload, dict) else None
+    for run in runs or []:
+        if not isinstance(run, dict):
+            continue
+        present = True
+        if run.get("status") != "completed":
+            pending = True
+        elif str(run.get("conclusion") or "").lower() in _FAILING_CHECK_CONCLUSIONS:
+            failure = True
+    return failure, pending, present
+
+
+def _aggregate_combined_status(payload: object) -> _RollupSignal:
+    """Reduce a REST `/commits/{sha}/status` response to a `_RollupSignal`.
+
+    A commit with zero statuses reports ``state="pending"``, so only fold this
+    in when there are real statuses — otherwise it would mask a clean check-run
+    result as pending.
+    """
+    if not isinstance(payload, dict) or not (payload.get("statuses") or []):
+        return False, False, False
+    state = str(payload.get("state") or "").lower()
+    return state in ("failure", "error"), state == "pending", True
+
+
+def _combine_rollup_signals(*signals: _RollupSignal) -> str | None:
+    """Fold per-source signals into one `StatusState`-like rollup."""
+    failure = any(sig[0] for sig in signals)
+    pending = any(sig[1] for sig in signals)
+    present = any(sig[2] for sig in signals)
+    if failure:
+        return "FAILURE"
+    if pending:
+        return "PENDING"
+    return "SUCCESS" if present else None
+
+
 @dataclass
 class GitHubRateLimitSnapshot:
     core_remaining: int | None
@@ -887,6 +940,55 @@ class GitHubHttpClient:
             return None
         state = rollup.get("state")
         return state if isinstance(state, str) else None
+
+    def get_commit_check_rollup(self, sha: str) -> str | None:
+        """Aggregate REST check-runs + combined commit status into a single
+        `StatusState`-like rollup for a commit SHA.
+
+        This is the REST fallback for `get_pr_status_check_rollup` when the
+        GraphQL `statusCheckRollup` query is inaccessible to the running token.
+        Returns one of `FAILURE` / `PENDING` / `SUCCESS`, or `None` when the
+        commit has no checks or statuses at all.
+
+        Raises:
+            GitHubHttpError: If the check-runs API is inaccessible (e.g. the
+                token lacks `checks:read`). Callers treat this as "check state
+                unreadable" rather than "no checks". The legacy combined-status
+                call is best-effort and its failures are swallowed, because
+                GitHub Actions checks live only in the Checks API.
+        """
+        encoded = quote(sha, safe="")
+        runs_payload = self._request_json(
+            "GET",
+            f"/repos/{self._config.repo}/commits/{encoded}/check-runs",
+            params={"per_page": 100},
+            caller="get_commit_check_rollup_checks",
+        )
+        runs = _aggregate_check_runs(runs_payload)
+        statuses = _aggregate_combined_status(
+            self._best_effort_commit_status(sha, encoded)
+        )
+        return _combine_rollup_signals(runs, statuses)
+
+    def _best_effort_commit_status(
+        self, sha: str, encoded_sha: str
+    ) -> dict[str, Any] | None:
+        """Fetch the legacy combined commit status, swallowing access failures.
+
+        GitHub Actions checks live only in the Checks API, so an inaccessible
+        combined-status call must NOT poison a readable check-run result — it
+        is purely supplementary for repos using the older Status API.
+        """
+        try:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/commits/{encoded_sha}/status",
+                caller="get_commit_check_rollup_status",
+            )
+        except GitHubHttpError as exc:
+            logger.debug("Combined commit status unavailable for %s: %s", sha, exc)
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def list_prs(self, *, state: str = "open", limit: int = 100) -> list[dict[str, Any]]:
         payload = self._request_json(

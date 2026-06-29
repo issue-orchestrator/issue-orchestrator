@@ -9,6 +9,7 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
@@ -50,6 +51,28 @@ def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
         return upper  # type: ignore[return-value]
     logger.warning("Unknown statusCheckRollup state from GitHub: %r", raw)
     return None
+
+
+@dataclass(frozen=True)
+class _RollupReadout:
+    """Result of reading a PR's head-commit check rollup.
+
+    ``readable=False`` means every supported source was inaccessible (e.g.
+    token scope), so ``state=None`` does NOT mean "no checks" — it means
+    "could not tell". Lets the post-publish classifier distinguish a
+    credential blind spot from genuinely-absent checks.
+    """
+
+    state: StatusCheckRollupState | None
+    readable: bool
+
+
+def _head_sha_from_pr(raw_pr: dict[str, Any]) -> str | None:
+    head = raw_pr.get("head")
+    if not isinstance(head, dict):
+        return None
+    sha = head.get("sha")
+    return sha if isinstance(sha, str) and sha else None
 
 
 class GitHubAdapter:
@@ -834,24 +857,68 @@ class GitHubAdapter:
         Pays one extra GraphQL round-trip on top of the REST PR fetch.
         Used by the awaiting-merge reconciler to distinguish "merge
         state is unstable because checks are running" (wait) from
-        "merge state is unstable because a check failed" (rework). A
-        failed rollup fetch leaves rollup=None — the reconciler treats
-        that as PENDING-equivalent, so we'll wait rather than rework
-        on bad signal.
+        "merge state is unstable because a check failed" (rework).
+
+        When the primary GraphQL rollup query is inaccessible (the running
+        token lacks scope, repeatedly seen as "Resource not accessible by
+        personal access token"), this falls back to the REST
+        check-runs/combined-status API on the PR head SHA so completed-failed
+        checks are still detected. Only when *every* source is inaccessible is
+        the rollup left as None with ``status_check_rollup_readable=False`` so
+        the classifier can escalate with an explicit "unreadable" diagnostic
+        instead of mislabeling it as merely pending.
         """
-        pr_info = self.get_pr(pr_number)
-        if pr_info is None:
+        try:
+            raw = self._client.get_pr(pr_number)
+        except GitHubHttpError as e:
+            if _is_not_found_error(e):
+                return None
+            logger.error("Failed to get PR %s: %s", pr_number, e)
+            raise
+        if not isinstance(raw, dict):
             return None
+        pr_info = self._pr_info_from_api(raw)
+        readout = self._read_status_check_rollup(pr_number, raw)
+        pr_info.status_check_rollup = readout.state
+        pr_info.status_check_rollup_readable = readout.readable
+        return pr_info
+
+    def _read_status_check_rollup(
+        self, pr_number: int, raw_pr: dict[str, Any]
+    ) -> _RollupReadout:
+        """Resolve the head-commit check rollup, GraphQL-primary with a REST
+        fallback. See ``get_pr_with_status_check_rollup`` for the policy."""
+        # Primary: GraphQL statusCheckRollup (aggregates checks + statuses in
+        # one round-trip). Note GraphQL-level permission errors surface as
+        # GitHubHttpError too, so this catch covers the token-scope case.
         try:
             rollup = self._client.get_pr_status_check_rollup(pr_number)
+            return _RollupReadout(_coerce_rollup_state(rollup), readable=True)
         except GitHubHttpError as e:
             logger.warning(
-                "Failed to fetch status_check_rollup for PR %s: %s",
+                "GraphQL status_check_rollup unavailable for PR %s: %s; "
+                "trying REST check-run fallback",
                 pr_number, e,
             )
-            rollup = None
-        pr_info.status_check_rollup = _coerce_rollup_state(rollup)
-        return pr_info
+
+        head_sha = _head_sha_from_pr(raw_pr)
+        if head_sha is None:
+            logger.warning(
+                "No head SHA for PR %s; cannot read check state via REST",
+                pr_number,
+            )
+            return _RollupReadout(None, readable=False)
+
+        # Fallback: REST check-runs + combined status on the head SHA.
+        try:
+            rest_state = self._client.get_commit_check_rollup(head_sha)
+            return _RollupReadout(_coerce_rollup_state(rest_state), readable=True)
+        except GitHubHttpError as e:
+            logger.warning(
+                "REST check-run fallback unreadable for PR %s (sha %s): %s",
+                pr_number, head_sha, e,
+            )
+            return _RollupReadout(None, readable=False)
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.

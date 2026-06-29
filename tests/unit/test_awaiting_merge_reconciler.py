@@ -48,6 +48,7 @@ def _pr(
     mergeable_state: str | None = None,
     labels: list[str] | None = None,
     status_check_rollup: str | None = None,
+    status_check_rollup_readable: bool = True,
 ) -> PRInfo:
     return PRInfo(
         number=number,
@@ -59,6 +60,7 @@ def _pr(
         labels=labels or [],
         mergeable_state=mergeable_state,
         status_check_rollup=status_check_rollup,  # type: ignore[arg-type]
+        status_check_rollup_readable=status_check_rollup_readable,
     )
 
 
@@ -919,3 +921,175 @@ def test_wait_for_checks_resolved_into_failure_clears_pending_and_reworks() -> N
     assert 228 not in state.awaiting_merge_checks_pending_since
     assert result.rework_discovered == 1
     assert result.escalation_discovered == 0
+
+
+# ---------------------------------------------------------------------------
+# CHECKS_UNREADABLE: check state could not be read (token scope) — issue #6589
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mergeable_state",
+    ["unstable", "blocked"],
+)
+def test_classify_unreadable_check_state_is_distinct_from_pending(
+    mergeable_state: str,
+) -> None:
+    """GitHub says the PR is not mergeable but we could not read the rollup —
+    that is a credential blind spot, not 'checks pending'."""
+    pr = _pr(
+        "open",
+        mergeable_state=mergeable_state,
+        status_check_rollup=None,
+        status_check_rollup_readable=False,
+    )
+    assert classify_post_approval_state(pr) == "CHECKS_UNREADABLE"
+
+
+def test_classify_readable_none_rollup_still_waits() -> None:
+    """A readable absence of checks remains WAIT_FOR_CHECKS, not unreadable."""
+    pr = _pr(
+        "open",
+        mergeable_state="unstable",
+        status_check_rollup=None,
+        status_check_rollup_readable=True,
+    )
+    assert classify_post_approval_state(pr) == "WAIT_FOR_CHECKS"
+
+
+def _unreadable_repo(labels: list[str] | None = None) -> MagicMock:
+    repository_host = MagicMock()
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=labels if labels is not None else ["code-reviewed"],
+        status_check_rollup=None,
+        status_check_rollup_readable=False,
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    return repository_host
+
+
+def test_unreadable_checks_within_timeout_records_timestamp_and_holds() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+
+    result = AwaitingMergeReconciler(
+        _unreadable_repo(),
+        label_manager=_label_manager(),
+        clock=lambda: 1000.0,
+        post_publish_checks_pending_timeout_seconds=1800.0,
+    ).discover(state)
+
+    assert result.escalation_discovered == 0
+    assert result.rework_discovered == 0
+    assert state.awaiting_merge_checks_pending_since[228] == 1000.0
+
+
+def test_unreadable_checks_past_timeout_escalates_with_credential_diagnostic() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+
+    result = AwaitingMergeReconciler(
+        _unreadable_repo(),
+        label_manager=_label_manager(),
+        clock=lambda: 1000.0 + 31 * 60,
+        post_publish_checks_pending_timeout_seconds=1800.0,
+    ).discover(state)
+
+    assert result.escalation_discovered == 1
+    esc = result.escalations[0]
+    assert esc.kind == "checks_unreadable"
+    # The diagnostic must name the real cause (credential/scope/read failure),
+    # not claim the checks are merely pending.
+    reason = esc.reason.lower()
+    assert "could not be read" in reason
+    assert "checks:read" in reason
+    assert "pending" not in reason.split("could not be read")[0]
+
+
+# ---------------------------------------------------------------------------
+# Recovery: a PR previously (mis)escalated to needs-human is reclassified to
+# rework once failed checks become readable — issue #6589 acceptance criteria.
+# ---------------------------------------------------------------------------
+
+
+def test_needs_human_pr_with_now_readable_failure_recovers_to_rework() -> None:
+    entry = _history_entry()
+    label_manager = _label_manager()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=[label_manager.code_reviewed, label_manager.needs_human],
+        status_check_rollup="FAILURE",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=label_manager,
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    rework = result.reworks[0]
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    # Recovery must clear the stale needs-human escalation.
+    assert rework.clear_needs_human is True
+    assert result.escalation_discovered == 0
+
+
+def test_needs_human_pr_still_unreadable_is_not_re_escalated() -> None:
+    """A human already owns a needs-human PR. If the state stays inconclusive
+    (e.g. still unreadable) we must NOT re-escalate every tick or restart the
+    wait budget — leave the human in control."""
+    entry = _history_entry()
+    label_manager = _label_manager()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_checks_pending_since={228: 1000.0},
+    )
+    repository_host = _unreadable_repo(
+        labels=[label_manager.code_reviewed, label_manager.needs_human]
+    )
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=label_manager,
+        clock=lambda: 1000.0 + 60 * 60,  # well past the timeout
+        post_publish_checks_pending_timeout_seconds=1800.0,
+    ).discover(state)
+
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+    # Stale wait bookkeeping is cleared (human owns it now).
+    assert 228 not in state.awaiting_merge_checks_pending_since
+
+
+def test_normal_post_publish_rework_does_not_set_clear_needs_human() -> None:
+    """The common path (no prior escalation) must not request needs-human
+    removal."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=["code-reviewed"],
+        status_check_rollup="FAILURE",
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    assert result.reworks[0].clear_needs_human is False

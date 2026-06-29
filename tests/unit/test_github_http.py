@@ -976,3 +976,123 @@ def test_get_pr_reviews_returns_empty_list_on_non_list_response() -> None:
     result = client.get_pr_reviews(123)
 
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# get_commit_check_rollup — REST fallback when GraphQL statusCheckRollup is
+# inaccessible (see issue #6589).
+# ---------------------------------------------------------------------------
+
+
+def _commit_rollup_handler(
+    *,
+    check_runs: object,
+    statuses: object = None,
+    check_runs_status: int = 200,
+    status_status: int = 200,
+):
+    """Route /check-runs and /status for one commit SHA to canned payloads."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            return httpx.Response(check_runs_status, json=check_runs)
+        if path.endswith("/status"):
+            payload = statuses if statuses is not None else {"state": "pending", "statuses": []}
+            return httpx.Response(status_status, json=payload)
+        return httpx.Response(404, json={"message": "not found"})
+
+    return handler
+
+
+def test_get_commit_check_rollup_reports_failure_for_failed_check_run() -> None:
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "completed", "conclusion": "success"},
+                {"name": "system-verification", "status": "completed", "conclusion": "failure"},
+            ]
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.get_commit_check_rollup("deadbeef") == "FAILURE"
+
+
+def test_get_commit_check_rollup_reports_pending_for_incomplete_check_run() -> None:
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "completed", "conclusion": "success"},
+                {"name": "system-verification", "status": "in_progress", "conclusion": None},
+            ]
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.get_commit_check_rollup("deadbeef") == "PENDING"
+
+
+def test_get_commit_check_rollup_reports_success_when_all_complete() -> None:
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "completed", "conclusion": "success"},
+                {"name": "lint", "status": "completed", "conclusion": "skipped"},
+            ]
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.get_commit_check_rollup("deadbeef") == "SUCCESS"
+
+
+def test_get_commit_check_rollup_returns_none_when_no_checks_or_statuses() -> None:
+    handler = _commit_rollup_handler(check_runs={"check_runs": []})
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.get_commit_check_rollup("deadbeef") is None
+
+
+def test_get_commit_check_rollup_raises_when_check_runs_inaccessible() -> None:
+    """A 403 on the check-runs API means the token can't read check state —
+    the caller must treat this as unreadable, not as 'no checks'."""
+    handler = _commit_rollup_handler(
+        check_runs={"message": "Resource not accessible by personal access token"},
+        check_runs_status=403,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError):
+        client.get_commit_check_rollup("deadbeef")
+
+
+def test_get_commit_check_rollup_folds_in_legacy_commit_statuses() -> None:
+    """External CI posting a legacy commit status (not a check-run) must still
+    surface as a failure even when there are no check-runs."""
+    handler = _commit_rollup_handler(
+        check_runs={"check_runs": []},
+        statuses={
+            "state": "failure",
+            "statuses": [{"context": "ci/external", "state": "failure"}],
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.get_commit_check_rollup("deadbeef") == "FAILURE"
+
+
+def test_get_commit_check_rollup_swallows_status_api_failure() -> None:
+    """The legacy combined-status call is best-effort: a 403 there must not
+    mask a readable check-run result."""
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "completed", "conclusion": "success"},
+            ]
+        },
+        status_status=403,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.get_commit_check_rollup("deadbeef") == "SUCCESS"

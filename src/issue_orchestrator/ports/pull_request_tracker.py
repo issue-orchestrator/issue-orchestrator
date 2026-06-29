@@ -49,6 +49,16 @@ class PRInfo:
         status_check_rollup: Aggregated state of required + non-required checks
             on the PR head commit. Says check truth. `None` when not fetched
             (only the single-PR `get_pr` path populates this).
+        status_check_rollup_readable: Whether the check state could actually be
+            read from GitHub. Only meaningful on the
+            ``get_pr_with_status_check_rollup`` path: ``True`` (the default)
+            means the rollup reflects GitHub's real state — ``None`` then means
+            "no checks configured / not yet reported". ``False`` means every
+            supported check-state source (GraphQL rollup AND the REST
+            check-run/status fallback) was inaccessible, e.g. the token lacks
+            ``checks:read`` scope, so ``None`` here does NOT mean "no checks".
+            The post-publish classifier uses this to avoid mislabeling an
+            unreadable PR as merely "checks pending".
     """
 
     number: int
@@ -61,6 +71,7 @@ class PRInfo:
     draft: bool | None = None
     mergeable_state: str | None = None
     status_check_rollup: StatusCheckRollupState | None = None
+    status_check_rollup_readable: bool = True
 
 
 @dataclass(frozen=True)
@@ -197,6 +208,13 @@ class PullRequestTracker(Protocol):
         the rollup to disambiguate ``mergeable_state == unstable | blocked``
         between "checks running" and "check actually failed"). Hot
         lifecycle paths should keep using ``get_pr``.
+
+        When the primary GraphQL rollup query is inaccessible (e.g. the token
+        lacks the scope), implementations should fall back to the REST
+        check-runs/combined-status API on the PR head SHA before giving up.
+        If every source is inaccessible, return the PRInfo with
+        ``status_check_rollup=None`` and ``status_check_rollup_readable=False``
+        so callers can tell "unreadable" apart from "no checks".
 
         Returns:
             The PRInfo object with ``status_check_rollup`` populated when

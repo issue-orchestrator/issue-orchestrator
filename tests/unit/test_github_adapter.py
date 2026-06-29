@@ -629,12 +629,69 @@ class TestPROperations:
         assert pr is None
         mock_http_client.get_pr_status_check_rollup.assert_not_called()
 
-    def test_get_pr_with_status_check_rollup_failure_yields_none_rollup(
+    def test_get_pr_with_status_check_rollup_falls_back_to_rest_on_graphql_failure(
         self, adapter, mock_http_client
     ):
-        """A GraphQL failure on the rollup fetch must not lose the REST PRInfo.
-        The reconciler treats `None` as PENDING-equivalent so a transient
-        GraphQL error makes us wait, not erroneously trigger rework."""
+        """When the GraphQL rollup is inaccessible (token scope), the adapter
+        falls back to the REST check-run rollup on the head SHA so a
+        completed-failed check is still detected (issue #6589)."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch", "sha": "deadbeef"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+            "mergeable_state": "UNSTABLE",
+        }
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "Resource not accessible by personal access token", status_code=403
+        )
+        mock_http_client.get_commit_check_rollup.return_value = "FAILURE"
+
+        pr = adapter.get_pr_with_status_check_rollup(10)
+
+        assert pr is not None
+        assert pr.mergeable_state == "unstable"
+        assert pr.status_check_rollup == "FAILURE"
+        assert pr.status_check_rollup_readable is True
+        mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
+
+    def test_get_pr_with_status_check_rollup_unreadable_when_all_sources_fail(
+        self, adapter, mock_http_client
+    ):
+        """When BOTH GraphQL and the REST fallback are inaccessible, the rollup
+        is left None but flagged unreadable so the classifier can escalate with
+        an explicit credential/scope diagnostic instead of 'checks pending'."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch", "sha": "deadbeef"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+            "mergeable_state": "UNSTABLE",
+        }
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "Resource not accessible by personal access token", status_code=403
+        )
+        mock_http_client.get_commit_check_rollup.side_effect = GitHubHttpError(
+            "Resource not accessible by personal access token", status_code=403
+        )
+
+        pr = adapter.get_pr_with_status_check_rollup(10)
+
+        assert pr is not None
+        assert pr.status_check_rollup is None
+        assert pr.status_check_rollup_readable is False
+
+    def test_get_pr_with_status_check_rollup_unreadable_when_no_head_sha(
+        self, adapter, mock_http_client
+    ):
+        """No head SHA to query means the REST fallback can't run; the PR is
+        flagged unreadable rather than silently treated as pending."""
         mock_http_client.get_pr.return_value = {
             "number": 10,
             "title": "Test PR",
@@ -654,6 +711,8 @@ class TestPROperations:
         assert pr is not None
         assert pr.mergeable_state == "unstable"
         assert pr.status_check_rollup is None
+        assert pr.status_check_rollup_readable is False
+        mock_http_client.get_commit_check_rollup.assert_not_called()
 
     def test_get_pr_with_status_check_rollup_unknown_state_coerced_to_none(
         self, adapter, mock_http_client

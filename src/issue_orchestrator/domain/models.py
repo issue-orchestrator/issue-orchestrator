@@ -1377,6 +1377,11 @@ class DiscoveredRework:
     rework_cycle: int = 1
     source: str = "review_label"
     feedback: str | None = None
+    # Set when this rework recovers a PR that was previously (mis)escalated
+    # to `needs-human` — the planner clears the stale `needs-human` label as
+    # part of routing it back to automated rework. False for the normal
+    # rework path, where the PR never carried `needs-human`.
+    clear_needs_human: bool = False
 
 
 @dataclass(frozen=True)
@@ -1396,6 +1401,7 @@ class DiscoveredEscalation:
 PostPublishEscalationKind = Literal[
     "checks_pending_timeout",   # required checks pending > timeout after approval
     "branch_protection_blocked",  # mergeable_state=blocked but rollup=SUCCESS
+    "checks_unreadable",  # check state unreadable (token scope) after fallbacks
 ]
 
 
