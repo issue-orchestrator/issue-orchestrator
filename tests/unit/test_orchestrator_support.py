@@ -300,7 +300,10 @@ class TestQueueFetchPlanner:
 
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
-        github_workflow.scan_pending_pr_work.assert_not_called()
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=False,
+        )
         scheduler.get_available_issues.assert_called_once()
 
     def test_pr_scan_uses_single_workflow_call_when_due(self, mock_event_sink, mock_repository_host):
@@ -328,7 +331,10 @@ class TestQueueFetchPlanner:
             inflight_stable_ids={},
         )
 
-        github_workflow.scan_pending_pr_work.assert_called_once_with(state)
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=True,
+        )
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
 
@@ -390,7 +396,10 @@ class TestQueueFetchPlanner:
 
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
-        github_workflow.scan_pending_pr_work.assert_not_called()
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=False,
+        )
         scheduler.get_available_issues.assert_not_called()
 
     def test_fetch_prunes_refresh_timestamps_for_issues_no_longer_tracked(
