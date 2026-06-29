@@ -1014,9 +1014,13 @@ class GitHubHttpClient:
     def _aggregate_paginated_check_runs(self, encoded_sha: str) -> _RollupSignal:
         """Fold every page of the check-runs API into one `_RollupSignal`.
 
-        Stops early once a failure or pending run is seen (those are conclusive
-        for the rollup, so later pages cannot change the answer). Otherwise
-        walks pages until one returns fewer than a full page of runs.
+        Stops early only once a failure run is seen: failure is the top of the
+        rollup precedence (`_combine_rollup_signals` returns FAILURE before
+        PENDING), so no later page can change a FAILURE. A pending signal is NOT
+        conclusive — a completed failing run on a later page must still override
+        an earlier in-progress one — so pending is remembered but pagination
+        continues. Otherwise walks pages until one returns fewer than a full
+        page of runs.
         """
         failure = pending = present = False
         page = 1
@@ -1031,8 +1035,8 @@ class GitHubHttpClient:
             failure = failure or page_failure
             pending = pending or page_pending
             present = present or page_present
-            if failure or pending:
-                break  # conclusive — no later page can change the rollup
+            if failure:
+                break  # FAILURE is conclusive — no later page can change it
             runs = payload.get("check_runs") if isinstance(payload, dict) else None
             if not isinstance(runs, list) or len(runs) < 100:
                 break  # last (or only) page

@@ -939,15 +939,22 @@ class ReviewSettings(BaseModel):
         json_schema_extra={
             "doc_examples": ["1800", "3600", "5400"],
             "doc_notes": (
-                "When GitHub reports mergeable_state in {unstable, blocked} "
-                "with the status-check rollup PENDING/EXPECTED/unknown, the "
-                "PR is treated as 'CI still running' and the orchestrator "
-                "waits rather than triggering rework. After this timeout "
-                "the issue is escalated to needs-human with a comment "
-                "explaining that required checks have been pending too "
-                "long. Branch-protection blocks (rollup=SUCCESS but "
-                "mergeable_state=blocked) escalate immediately; this "
-                "timeout only governs the 'waiting on CI' state."
+                "Governs two post-approval 'inconclusive checks' states, both "
+                "bounded by this same budget. (1) Waiting on CI: "
+                "mergeable_state in {unstable, blocked} with the status-check "
+                "rollup PENDING/EXPECTED/unknown is treated as 'CI still "
+                "running' and the orchestrator waits rather than triggering "
+                "rework. (2) Unreadable checks: when both the GraphQL "
+                "status-check rollup and the REST check-run/status fallback "
+                "are inaccessible (typically a token missing checks:read / "
+                "statuses / pull_requests scope), the check state cannot be "
+                "read at all, so the orchestrator waits instead of guessing. "
+                "After this timeout the issue is escalated to needs-human; the "
+                "comment distinguishes the two cases — a 'checks pending too "
+                "long' timeout versus a 'check state could not be read' "
+                "credential/scope diagnostic. Branch-protection blocks "
+                "(rollup=SUCCESS but mergeable_state=blocked) escalate "
+                "immediately and are not governed by this timeout."
             ),
             "section": "Code Review Workflow",
             "config_attr": "post_publish_checks_pending_timeout_seconds",

@@ -1190,6 +1190,32 @@ def test_get_commit_check_rollup_paginates_to_failure_on_later_page() -> None:
     assert rollup.complete is True
 
 
+def test_get_commit_check_rollup_failure_on_later_page_beats_earlier_pending() -> None:
+    """A pending run must NOT short-circuit pagination: a completed failure on a
+    later page outranks an earlier in-progress run, so the rollup is FAILURE and
+    the PR routes to rework instead of timing out as checks-pending (#6589 F1)."""
+    page1 = {
+        "check_runs": (
+            [
+                {"name": f"shard-{i}", "status": "completed", "conclusion": "success"}
+                for i in range(99)
+            ]
+            + [{"name": "slow-shard", "status": "in_progress", "conclusion": None}]
+        )
+    }
+    page2 = {
+        "check_runs": [
+            {"name": "system-verification", "status": "completed", "conclusion": "failure"},
+        ]
+    }
+    handler = _paginated_check_runs_handler({1: page1, 2: page2})
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
+
+
 def test_get_commit_check_rollup_paginates_all_pages_success() -> None:
     """All pages green still aggregates to SUCCESS after walking every page."""
     page1 = {
