@@ -134,6 +134,15 @@ class StartupManager:
             log_prefix="startup",
             require_open_issue=True,
         )
+        # Issue numbers whose orchestrator-owned labels were mutated during the
+        # current startup recovery (e.g. pr-pending added / in-progress removed
+        # for a crash-recovered open PR). ActionApplier writes those mutations
+        # through to label_store, so the pre-mutation warm-cache snapshot is now
+        # stale. label_store reconciliation must read GitHub fresh for these
+        # issues instead of trusting that snapshot, or it would rewrite the
+        # mirror back to the pre-recovery labels. Reset at the start of every
+        # run_startup.
+        self._startup_label_mutated_issues: set[int] = set()
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filtering.label if configured."""
@@ -145,6 +154,13 @@ class StartupManager:
     def _apply_label_actions(self, actions: list[AddLabelAction | RemoveLabelAction]) -> None:
         """Apply label actions through the ActionApplier."""
         for action in actions:
+            # Record the touched issue before applying. The mutation writes
+            # through to label_store, so the issue's pre-mutation warm-cache
+            # entry can no longer be trusted as GitHub truth during
+            # label_store reconciliation; we record unconditionally so a
+            # partially-applied action also forces a fresh read rather than a
+            # guess. See _reconcile_label_store.
+            self._startup_label_mutated_issues.add(action.issue_number)
             result = self._action_applier.apply(action)
             if not result.success:
                 logger.warning("[startup] Label action failed: %s", result.error)
@@ -172,6 +188,7 @@ class StartupManager:
         """
         startup_start = time.time()
         state.startup_status = "running"
+        self._startup_label_mutated_issues = set()
         timings: dict[str, float] = {}
 
         # Emit merged configuration for debugging
@@ -484,6 +501,13 @@ class StartupManager:
 
         cached_labels_by_issue: dict[int, Sequence[str]] = {}
         for issue in [*state.cached_queue_issues, *state.cached_scope_issues]:
+            if issue.number in self._startup_label_mutated_issues:
+                # Startup recovery mutated this issue's labels after the warm
+                # cache snapshot was taken, so the snapshot is stale. Omit it
+                # so the reconciler fetches fresh GitHub labels rather than
+                # rewriting the mirror back to the pre-recovery state (e.g.
+                # restoring in-progress / dropping the just-applied pr-pending).
+                continue
             cached_labels_by_issue.setdefault(issue.number, issue.labels)
 
         reconciler = LabelStoreReconciler(
