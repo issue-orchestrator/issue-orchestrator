@@ -7,6 +7,9 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.domain.review_exchange import (
+    REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER,
+)
 from issue_orchestrator.execution.reviewer_worktree import (
     ReviewerWorktreeError,
     create_reviewer_worktree,
@@ -153,6 +156,9 @@ class TestReviewerWorktreeDiagnostics:
             fast_forward_reviewer_worktree(reviewer)
 
         err = excinfo.value
+        # The checkout-failure marker lets completion failure-reporting attach
+        # runtime-artifact recovery guidance to exactly this class (#6659).
+        assert REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER in str(err)
         # Rich git failure context.
         assert err.git_failure is not None
         assert err.git_failure.returncode != 0
@@ -185,3 +191,6 @@ class TestReviewerWorktreeDiagnostics:
         assert err.git_failure is not None
         assert err.git_failure.returncode != 0
         assert err.git_failure.args[:2] == ("git", "rev-parse")
+        # A missing branch tip is not a checkout collision, so it must NOT be
+        # tagged with the runtime-artifact recovery marker.
+        assert REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER not in str(err)

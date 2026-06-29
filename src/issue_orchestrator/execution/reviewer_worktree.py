@@ -19,6 +19,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,7 +114,24 @@ def create_reviewer_worktree(
 
     repo_root = _resolve_repo_root(coder_worktree)
     tip_sha = _resolve_branch_tip(repo_root, coder_branch)
-    _git(repo_root, ["worktree", "add", "--detach", str(sibling), tip_sha])
+    try:
+        _git(repo_root, ["worktree", "add", "--detach", str(sibling), tip_sha])
+    except ReviewerWorktreeError as exc:
+        # Checking out the coder branch tip into the reviewer worktree is the
+        # operation that committed runtime artifacts break (#6659). Mark it so
+        # completion failure-reporting can attach runtime-artifact recovery
+        # guidance to exactly this class.
+        raise ReviewerWorktreeError(
+            f"Failed to create reviewer worktree {sibling} at "
+            f"{coder_branch}@{tip_sha}: {exc} "
+            f"{REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER}",
+            git_failure=exc.git_failure,
+            context={
+                "reviewer_worktree": str(sibling),
+                "coder_branch": coder_branch,
+                "target_sha": tip_sha,
+            },
+        ) from exc
     logger.info(
         "Created reviewer worktree path=%s coder_branch=%s tip=%s",
         sibling,
@@ -141,7 +160,7 @@ def fast_forward_reviewer_worktree(reviewer: ReviewerWorktree) -> str:
         enriched = ReviewerWorktreeError(
             "Failed to fast-forward reviewer worktree "
             f"{reviewer.path} to {reviewer.coder_branch}@{tip_sha}: "
-            f"{exc}",
+            f"{exc} {REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER}",
             git_failure=exc.git_failure,
             context=context,
         )

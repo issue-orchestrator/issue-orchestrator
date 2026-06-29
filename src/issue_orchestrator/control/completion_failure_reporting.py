@@ -6,28 +6,38 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..domain.review_exchange import REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER
 from ..domain.session_run import SessionRunAssets
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..ports.session_output import SessionOutput
-from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 
 logger = logging.getLogger(__name__)
 
 
 def build_review_exchange_recovery_note(errors: list[str]) -> str | None:
-    """Return recovery guidance when a failure came from the review exchange.
+    """Return recovery guidance for a reviewer-worktree checkout failure.
 
-    A review-exchange failure happens *after* the coder's work has been
-    validated and committed locally, so the generic "publish/finalize failed"
-    comment reads as a coding failure when it is really a finalization-stage
-    failure. Give the operator a recovery-specific explanation instead (#6659):
+    Scoped narrowly (#6659): only a reviewer-worktree checkout/fast-forward
+    failure — the class that committed ``.issue-orchestrator`` runtime
+    artifacts break — gets this note. Those failures carry
+    :data:`REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER`; we match it rather than
+    the broad ``review_exchange:`` error prefix, which is also used for
+    max-rounds/no-progress halts, missing exchange outcomes, background-job
+    cancellation, invalid exchange config, and timeout cancellation — none of
+    which are fixed by removing tracked runtime artifacts.
+
+    For this class the failure happened *after* the coder's work was validated
+    and committed locally, so the generic "publish/finalize failed" comment
+    reads as a coding failure when it is really a finalization-stage failure:
     the committed work is safe, a retry recovers finalization rather than
     re-coding, and tracked runtime artifacts are the likely culprit.
     """
-    review_exchange_errors = [
-        error for error in errors if error.startswith(REVIEW_EXCHANGE_ERROR_PREFIX)
+    checkout_failures = [
+        error
+        for error in errors
+        if REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER in error
     ]
-    if not review_exchange_errors:
+    if not checkout_failures:
         return None
 
     lines = [

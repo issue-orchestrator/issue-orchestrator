@@ -32,6 +32,17 @@ if TYPE_CHECKING:
     from .review_exchange_turn import ReviewExchangeTurnPacket
 
 
+# Stable marker embedded in reviewer-worktree checkout/fast-forward failure
+# messages. The reviewer-worktree checkout is the operation that committed
+# ``.issue-orchestrator`` runtime artifacts break (#6659). The completion
+# failure-reporting layer keys its runtime-artifact recovery guidance off this
+# marker so that note is attached ONLY to this failure class — never to the
+# many unrelated halts that share the ``review_exchange:`` error prefix
+# (max-rounds/no-progress, missing exchange outcome, background-job
+# cancellation, invalid exchange config, timeout cancellation).
+REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER = "[reviewer-worktree-checkout-failure]"
+
+
 @dataclass(frozen=True)
 class ReviewExchangeResponse:
     """One response produced by either role during a review-exchange round."""

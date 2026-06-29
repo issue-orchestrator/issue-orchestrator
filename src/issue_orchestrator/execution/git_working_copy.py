@@ -274,13 +274,10 @@ class GitWorkingCopy:
     ) -> BranchPathsResult:
         """Return branch-tip post-image paths via a path-oriented diff.
 
-        ``--name-only --diff-filter=ACMRT`` lists exactly the files present in
-        the branch tip (Added/Copied/Modified/Renamed-to/Type-changed) while
-        excluding Deletions (``D``); for renames/copies ``--name-only`` reports
-        the new (post-image) name. ``-z`` keeps paths intact regardless of
-        spaces or quoting. Unlike a unified-diff text parser, this sees no-hunk
-        changes (empty-file additions, mode-only changes) and binary changes,
-        so committed runtime artifacts cannot slip past path-based guards.
+        ``--name-only --diff-filter=ACMRT -z`` lists branch-tip files (post-image
+        name for renames/copies) excluding deletions, intact through spaces.
+        Unlike a unified-diff parser it sees no-hunk and binary changes, so
+        committed runtime artifacts cannot slip past path-based guards.
         """
         try:
             result = self._run_git(
