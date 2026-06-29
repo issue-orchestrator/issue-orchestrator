@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 AWAITING_MERGE_HISTORY_LIMIT = 50
 AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS = 300.0
+AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS = 300.0
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
 POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
@@ -97,7 +98,7 @@ class AwaitingMergeReconciler:
     label_drift_scan_interval_seconds: float = (
         AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
     )
-    rollup_scan_interval_seconds: float = AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
+    rollup_scan_interval_seconds: float = AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS
     # Wall-clock budget for WAIT_FOR_CHECKS before escalating. Default
     # mirrors Config.post_publish_checks_pending_timeout_seconds; callers
     # in production wire the configured value through.
