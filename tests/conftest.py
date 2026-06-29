@@ -67,15 +67,15 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
     """
-    orchestrator_env_vars = [
-        "ORCHESTRATOR_WORKTREE_BASE_BRANCH",
-    ]
-    for var in orchestrator_env_vars:
-        monkeypatch.delenv(var, raising=False)
-
-    # Strip all ISSUE_ORCHESTRATOR_* vars (SESSION_ID, CONFIG_PATH, etc.)
+    # Strip every orchestrator-injected var so tests start from a clean env.
+    # The orchestrator exports ISSUE_ORCHESTRATOR_* and also a few bare, legacy
+    # ORCHESTRATOR_* forms — e.g. the persistent review-exchange runner sets
+    # ORCHESTRATOR_SESSION_ID, which coding-done/_is_managed_session still accept
+    # for compatibility. Leaving the bare forms in place makes every test look
+    # like a managed orchestrator session and breaks standalone-path tests, so
+    # strip both prefixes (this subsumes ORCHESTRATOR_WORKTREE_BASE_BRANCH).
     for var in list(os.environ):
-        if var.startswith("ISSUE_ORCHESTRATOR_"):
+        if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)
 
     # Set a safe default REPO_ROOT so SubprocessPlugin (and anything else
