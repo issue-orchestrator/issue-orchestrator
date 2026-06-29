@@ -1142,6 +1142,23 @@ class TestLoadFollowUpIssues:
             load_follow_up_issues(str(path))
 
 
+def test_orchestrator_env_isolation_strips_unprefixed_aliases():
+    """The autouse env-isolation fixture must strip unprefixed ORCHESTRATOR_*
+    aliases, not only ISSUE_ORCHESTRATOR_* names.
+
+    Regression for the validation-gate breakage: the orchestrator exports both
+    ISSUE_ORCHESTRATOR_SESSION_ID and the unprefixed ORCHESTRATOR_SESSION_ID.
+    coding-done's ``_is_managed_session()`` reads the unprefixed alias, so a
+    leaked ORCHESTRATOR_SESSION_ID flips it into orchestrator-managed mode. When
+    the unit suite runs inside an orchestrator session (coding-done's own
+    validation gate), the TestAgentGateIntegration cases below then hit the
+    run-dir contract and fail. The fixture in tests/conftest.py must therefore
+    leave no ORCHESTRATOR_* var visible to a test.
+    """
+    leaked = sorted(name for name in os.environ if name.startswith("ORCHESTRATOR_"))
+    assert leaked == [], f"orchestrator env aliases leaked into the test env: {leaked}"
+
+
 class TestAgentGateIntegration:
     """Test agent gate validation integration in coding-done."""
 

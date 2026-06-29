@@ -1476,6 +1476,15 @@ class GitHubAdapter:
         """
         return self._client.get_issue_comments(issue_number)
 
+    def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
+        """Return True if any comment on the issue/PR contains ``marker``.
+
+        Scans all comment pages (not just the first 100), so a marker comment
+        posted beyond the first page is still detected. Used to dedupe
+        orchestrator-authored marker comments before re-posting them.
+        """
+        return self._client.issue_comment_marker_present(issue_number, marker)
+
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.
 

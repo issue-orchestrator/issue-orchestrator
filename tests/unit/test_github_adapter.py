@@ -1609,6 +1609,20 @@ class TestRepositoryOperations:
         assert len(comments) == 2
         assert comments[0]["body"] == "Comment 1"
 
+    def test_issue_comment_marker_present_forwards_to_client(
+        self, adapter, mock_http_client
+    ):
+        """The marker-presence read delegates to the paginating client method
+        (the one that scans all comment pages), not a first-page-only read."""
+        mock_http_client.issue_comment_marker_present.return_value = True
+
+        present = adapter.issue_comment_marker_present(42, "<!-- io:marker -->")
+
+        assert present is True
+        mock_http_client.issue_comment_marker_present.assert_called_once_with(
+            42, "<!-- io:marker -->"
+        )
+
     def test_list_labels(self, adapter, mock_http_client):
         """Test listing repository labels."""
         mock_http_client.list_labels.return_value = [

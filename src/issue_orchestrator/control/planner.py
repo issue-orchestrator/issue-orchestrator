@@ -777,7 +777,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                             "marking PR for rework"
                         ),
                     ))
-                    if rework.feedback:
+                    if rework.feedback and not rework.feedback_comment_already_posted:
                         actions.append(AddCommentAction(
                             number=rework.pr_number,
                             is_pr=True,

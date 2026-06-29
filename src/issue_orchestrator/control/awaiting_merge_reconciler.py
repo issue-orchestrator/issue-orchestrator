@@ -22,6 +22,7 @@ from ..history import latest_history_entries_by_issue
 from ..ports.repository_host import RepositoryHostError
 from .awaiting_merge_drift_policy import classify_pr_set_drift
 from .awaiting_merge_post_publish_policy import (
+    POST_PUBLISH_VALIDATION_COMMENT_MARKER,
     REWORK_ACTIONS,
     PostApprovalAction,
     build_escalation,
@@ -566,7 +567,34 @@ class AwaitingMergeReconciler:
             rework_cycle=next_rework_cycle(pr.labels, self.label_manager),
             source=POST_PUBLISH_VALIDATION_SOURCE,
             feedback=build_rework_feedback(pr, action),
+            feedback_comment_already_posted=self._post_publish_comment_present(
+                pr_number
+            ),
         )
+
+    def _post_publish_comment_present(self, pr_number: int) -> bool:
+        """Return True if the PR already carries the post-publish marker comment.
+
+        Read-only dedupe guard: if a prior tick posted the feedback comment but
+        failed to apply the ``needs_rework`` label (leaving the PR eligible for
+        re-discovery), the planner would otherwise stack a duplicate comment.
+        The marker scan covers every comment page (not just the first 100), so
+        a marker sitting beyond the first page still suppresses the duplicate.
+        Only reached on the rare rework-discovery path, so the extra read is
+        bounded. Read failures propagate (fail loud) rather than risk a
+        duplicate comment or a dropped feedback.
+        """
+        try:
+            return self.repository_host.issue_comment_marker_present(
+                pr_number, POST_PUBLISH_VALIDATION_COMMENT_MARKER
+            )
+        except RepositoryHostError as exc:
+            logger.warning(
+                "Failed to read comments for awaiting-merge PR #%d: %s",
+                pr_number,
+                exc,
+            )
+            raise
 
     def _build_branch_protection_escalation(
         self,
