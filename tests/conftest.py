@@ -52,31 +52,40 @@ def isolate_git_env(monkeypatch):
 def isolate_orchestrator_env(monkeypatch, tmp_path):
     """Strip orchestrator env vars and set safe defaults.
 
-    When the orchestrator launches an agent, it exports BOTH the canonical
-    ISSUE_ORCHESTRATOR_* vars (SESSION_ID, CONFIG_PATH, etc.) AND unprefixed
-    ORCHESTRATOR_* aliases (ORCHESTRATOR_SESSION_ID, ORCHESTRATOR_CONFIG_PATH,
-    ORCHESTRATOR_CONFIG_NAME, ...) for coding-done/reviewer-done. If the agent
-    then runs the unit suite (e.g. coding-done's validation gate), these vars
-    leak into unit tests and cause failures — e.g., CONFIG_PATH overrides
-    test-local configs, and a leaked ORCHESTRATOR_SESSION_ID flips coding-done
-    into orchestrator-"managed" mode, so its run-dir contract then fails the
-    TestAgentGateIntegration tests that mock ``get_session_id`` without
-    injecting a RUN_DIR.
+    When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
+    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done — and
+    their legacy unprefixed ORCHESTRATOR_* fallbacks (ORCHESTRATOR_SESSION_ID,
+    ORCHESTRATOR_CONFIG_NAME/PATH, ORCHESTRATOR_API_PORT, ...). If the agent then
+    runs `make validate-quick` (pytest), these vars leak into unit tests and cause
+    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID forces
+    managed mode over mocked values, and a leaked ORCHESTRATOR_SESSION_ID breaks
+    TestAgentGateIntegration when tests mock ``get_session_id`` without injecting
+    a RUN_DIR. Code reads the legacy unprefixed names as fallbacks
+    (get_session_id, preflight push), so stripping only the ISSUE_-prefixed names
+    is not enough when the orchestrator self-hosts.
 
-    ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) is covered by the
-    same sweep.
+    Similarly, ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) can
+    override test expectations in resolve_base_branch tests; it is covered by the
+    ORCHESTRATOR_ prefix sweep below.
 
     This fixture strips both prefixes so tests always start with a clean env,
     then sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
     resolves repo_root from the environment (e.g. SubprocessPlugin) never
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
+    Both env-var families are stripped. Several runtime readers accept a legacy
+    non-prefixed ``ORCHESTRATOR_*`` form as a fallback to the canonical
+    ``ISSUE_ORCHESTRATOR_*`` one (e.g. config resolution reads
+    ``ORCHESTRATOR_CONFIG_PATH`` / ``ORCHESTRATOR_CONFIG_NAME`` and managed-mode
+    detection reads ``ORCHESTRATOR_SESSION_ID``). Stripping only the prefixed
+    form left the legacy form leaking into the suite when the agent runs
+    ``make validate-quick`` inside an orchestrator session, so both prefixes are
+    cleared here.
     """
-    # Strip every orchestrator-exported env var. Both the canonical
-    # ``ISSUE_ORCHESTRATOR_*`` names and the unprefixed ``ORCHESTRATOR_*``
-    # aliases must go: leaving an alias like ``ORCHESTRATOR_SESSION_ID`` behind
-    # is what breaks coding-done managed-mode detection when the suite runs
-    # inside an orchestrator session.
+    # Strip both the canonical ISSUE_ORCHESTRATOR_* vars and the legacy
+    # ORCHESTRATOR_* fallbacks (SESSION_ID, CONFIG_PATH/NAME, etc.). The two
+    # prefixes are disjoint ("ISSUE_ORCHESTRATOR_" does not start with
+    # "ORCHESTRATOR_"), so each var is handled once.
     for var in list(os.environ):
         if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)

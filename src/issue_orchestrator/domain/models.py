@@ -11,7 +11,7 @@ from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
-from .session_key import SessionKey, TaskKind  # pyright: ignore[reportUnusedImport] (re-exported)
+from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
 
 if TYPE_CHECKING:
@@ -1502,7 +1502,16 @@ class PendingValidationRetry:
     """A session that needs to be re-launched with validation retry prompt.
 
     When validation fails but retries are remaining, the orchestrator queues
-    a retry. The next tick will re-launch the session with error context.
+    a retry. The next tick will re-launch the session as a coding session with
+    error context.
+
+    ``source_task`` is the task kind of the session that produced the retry. It
+    is required so every queue/recovery call site must declare provenance: a
+    validation retry always relaunches as coding work, so a review-only source
+    (PR review / retrospective review) is rejected at construction. Review-only
+    sessions make no commits, and relaunching one as coding work opens a PR on an
+    empty branch (see issue #6426). This is the owner-boundary guard that
+    complements the recovery scanner skipping review-only run directories.
     """
     issue_number: int
     issue_title: str
@@ -1513,7 +1522,16 @@ class PendingValidationRetry:
     validation_error: str
     validation_error_file: str | None
     retry_count: int  # Current retry count (will be incremented on re-launch)
+    source_task: TaskKind
     validation_cmd: str | None = None  # For building retry prompt
+
+    def __post_init__(self) -> None:
+        if self.source_task.is_review_only:
+            raise ValueError(
+                "PendingValidationRetry cannot be created for review-only task "
+                f"{self.source_task.value} (issue #{self.issue_number}): review-only "
+                "sessions make no commits and must never enter the coder retry pipeline."
+            )
 
 
 # Backwards compatibility alias
