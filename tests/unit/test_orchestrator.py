@@ -405,7 +405,11 @@ class TestStartup:
     async def test_startup_survives_transient_issue_fetch_failure(
         self, sample_config, mock_repository_host
     ):
-        """A transient 404 during startup must not crash — come up degraded."""
+        """A transient 404 during the startup *queue fetch* must not crash.
+
+        Only the issue-list fetch is guarded; the remaining startup phases still
+        run and the orchestrator comes up degraded so the main loop recovers.
+        """
         from issue_orchestrator.control.startup_manager import StartupManager
         from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 
@@ -414,21 +418,23 @@ class TestStartup:
             "GitHub GET /repos/test/repo/issues failed: 404", status_code=404
         )
 
+        # Fail only the guarded queue-list fetch, not all of run_startup.
         with patch.object(
-            StartupManager, "run_startup", new=AsyncMock(side_effect=transient)
+            StartupManager, "_sync_queue_from_github", side_effect=transient
         ):
             # Must NOT raise — process stays up.
             await orchestrator.startup()
 
         assert orchestrator.shutdown_requested is False
-        # Degraded-but-ready so the main loop runs and recovers.
+        # Degraded-but-ready so the main loop runs and recovers — startup ran to
+        # completion rather than aborting after the fetch.
         assert orchestrator.state.startup_status == "complete"
 
     @pytest.mark.asyncio
     async def test_startup_fails_fast_on_permanent_auth_failure(
         self, sample_config, mock_repository_host
     ):
-        """A permanent auth failure refuses to come up with a clear message."""
+        """A permanent auth failure on the queue fetch refuses to come up."""
         from issue_orchestrator.control.startup_manager import StartupManager
         from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 
@@ -438,7 +444,7 @@ class TestStartup:
         )
 
         with patch.object(
-            StartupManager, "run_startup", new=AsyncMock(side_effect=permanent)
+            StartupManager, "_sync_queue_from_github", side_effect=permanent
         ):
             # Must NOT raise a raw traceback — it is handled cleanly.
             await orchestrator.startup()
@@ -447,6 +453,40 @@ class TestStartup:
         # An actionable message is surfaced (not a raw GitHubHttpError).
         assert orchestrator.state.startup_message
         assert "auth" in orchestrator.state.startup_message.lower()
+
+    @pytest.mark.asyncio
+    async def test_startup_repository_error_after_queue_sync_is_not_swallowed(
+        self, sample_config, mock_repository_host
+    ):
+        """A repository error from a *post-queue-sync* startup phase must not be
+        reclassified as an issue-fetch failure and silently marked complete.
+
+        The resilience guard wraps only the queue-list fetch. A later recovery
+        phase failing must propagate (its own existing error path) rather than
+        the orchestrator skipping the remaining phases yet reporting startup as
+        complete.
+        """
+        from issue_orchestrator.control.startup_manager import StartupManager
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        later_error = GitHubHttpError("GitHub unavailable", status_code=503)
+
+        # Queue sync (Step 5) succeeds; a later recovery phase (Step 6) fails.
+        with patch.object(StartupManager, "_sync_queue_from_github", return_value=None), \
+             patch.object(
+                 StartupManager,
+                 "_check_in_progress_issues",
+                 new=AsyncMock(side_effect=later_error),
+             ):
+            # The post-sync failure is NOT swallowed by issue-fetch resilience.
+            with pytest.raises(GitHubHttpError) as exc_info:
+                await orchestrator.startup()
+
+        assert exc_info.value.status_code == 503
+        # It was neither marked complete nor promoted to a fetch-shutdown.
+        assert orchestrator.state.startup_status != "complete"
+        assert orchestrator.shutdown_requested is False
 
     @pytest.mark.asyncio
     async def test_run_loop_survives_repository_failure_in_startup_reconcile(

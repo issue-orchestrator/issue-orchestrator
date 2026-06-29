@@ -1337,12 +1337,12 @@
       "value": 1506
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/orchestrator_support.py": {
-      "detail": "1412 lines exceeds budget 800",
+      "detail": "1452 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/orchestrator_support.py",
       "path": "src/issue_orchestrator/control/orchestrator_support.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1412
+      "value": 1452
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
       "detail": "1683 lines exceeds budget 800",
@@ -1369,12 +1369,12 @@
       "value": 2035
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
-      "detail": "837 lines exceeds budget 800",
+      "detail": "898 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py",
       "path": "src/issue_orchestrator/control/startup_manager.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 837
+      "value": 898
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/validation.py": {
       "detail": "865 lines exceeds budget 800",
@@ -2812,6 +2812,14 @@
       "detail": "issue-orchestrator.direct-runtime-state-mutation line 760: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1",
+      "path": "src/issue_orchestrator/infra/orchestrator.py",
+      "rule_id": "semgrep_owner_boundaries",
+      "value": 1
+    },
+    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-815": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 815: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-815",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1

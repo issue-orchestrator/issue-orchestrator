@@ -33,6 +33,7 @@ from issue_orchestrator.adapters.github.http_client import GitHubHttpError
 from issue_orchestrator.control.issue_fetch_resilience import (
     IssueFetchResilience,
     PermanentIssueFetchError,
+    TransientIssueFetchError,
 )
 from issue_orchestrator.control.reconciliation import (
     ReconciliationRequired,
@@ -235,6 +236,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=True,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.fetch_all_issues.assert_called_once()
@@ -266,6 +268,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.fetch_all_issues.assert_not_called()
@@ -300,6 +303,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.scan_needs_code_review_prs.assert_not_called()
@@ -330,6 +334,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.scan_pending_pr_work.assert_called_once_with(state)
@@ -361,6 +366,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.refresh_issues.assert_called_once_with([99, 1])
@@ -390,6 +396,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.scan_needs_code_review_prs.assert_not_called()
@@ -421,6 +428,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert 1 in state.issue_refresh_timestamps
@@ -454,6 +462,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.fetch_delta_issues.assert_called_once_with(
@@ -480,7 +489,10 @@ class TestQueueFetchPlanner:
             status_code=503,
         )
 
-        with pytest.raises(GitHubHttpError) as exc_info:
+        # The issue-list fetch is guarded, so a transient 503 surfaces as a
+        # TransientIssueFetchError (with the raw GitHubHttpError as its cause)
+        # rather than the raw error — but the queue must still be untouched.
+        with pytest.raises(TransientIssueFetchError) as exc_info:
             _fetch_and_update_queue(
                 config=config,
                 events=mock_event_sink,
@@ -490,13 +502,71 @@ class TestQueueFetchPlanner:
                 github_workflow=github_workflow,
                 refresh_requested=False,
                 inflight_stable_ids={},
+                issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             )
 
-        assert exc_info.value.status_code == 503
+        assert isinstance(exc_info.value.__cause__, GitHubHttpError)
+        assert exc_info.value.__cause__.status_code == 503
         assert [issue.number for issue in state.cached_queue_issues] == [1]
         assert state.queue_delta_watermark == "2026-01-01T00:00:00Z"
         assert state.queue_refresh_count == 0
         assert state.queue_refresh_in_progress is False
+
+    def test_post_fetch_pr_scan_error_is_not_classified_as_issue_fetch_failure(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """A RepositoryHostError from a *post-fetch* PR scan must surface as the
+        raw error — not be reclassified as an issue-list fetch failure.
+
+        The resilience guard wraps only the issue-list fetch. If it wrapped the
+        whole queue update, this 404 from ``scan_pending_pr_work`` would be
+        promoted to a PermanentIssueFetchError at tolerance 1 and shut the
+        orchestrator down as if the repository were missing.
+        """
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        # The issue-list fetch itself succeeds...
+        github_workflow.fetch_all_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        # ...but the downstream PR scan hits a repository-host 404.
+        github_workflow.scan_pending_pr_work.side_effect = GitHubHttpError(
+            "GitHub GET /repos/owner/repo/pulls failed: 404", status_code=404
+        )
+        # Tolerance 1 means the *first* issue-fetch 404 would fail fast — so if
+        # the PR-scan 404 were (wrongly) routed through the policy, this would
+        # raise PermanentIssueFetchError instead of the raw error.
+        resilience = IssueFetchResilience("owner/repo", repo_not_found_tolerance=1)
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            _fetch_and_update_queue(
+                config=config,
+                events=mock_event_sink,
+                state=state,
+                repository_host=mock_repository_host,
+                scheduler=scheduler,
+                github_workflow=github_workflow,
+                refresh_requested=True,  # manual → full scan → PR scan runs
+                inflight_stable_ids={},
+                issue_fetch_resilience=resilience,
+            )
+
+        # Raw repository error surfaces, NOT a resilience classification.
+        assert exc_info.value.status_code == 404
+        assert not isinstance(exc_info.value, TransientIssueFetchError)
+        assert not isinstance(exc_info.value, PermanentIssueFetchError)
+        github_workflow.scan_pending_pr_work.assert_called_once_with(state)
+        # The fetch succeeded, so the policy recorded success: a *genuine*
+        # issue-fetch 404 afterwards is still the first in its streak (proving
+        # the PR-scan 404 was never counted by the policy).
+        verdict = resilience.record_failure(
+            GitHubHttpError("issues 404", status_code=404)
+        )
+        assert verdict.consecutive_repo_not_found == 1
 
     def test_delta_sync_removes_out_of_scope_issue_from_cached_queue(
         self, mock_event_sink, mock_repository_host
@@ -526,6 +596,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert all(issue.number != 7 for issue in state.cached_queue_issues)
@@ -739,6 +810,7 @@ class TestQueueFetchPlanner:
             refresh_requested=True,
             inflight_stable_ids={},
             queue_cache_store=queue_cache_store,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert [issue.number for issue in state.cached_queue_issues] == list(range(1, 21))
@@ -775,6 +847,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert "[FETCH-COST]" in caplog.text

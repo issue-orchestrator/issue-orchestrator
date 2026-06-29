@@ -45,6 +45,19 @@ class TestClassification:
         assert "owner/repo" in verdict.summary
         assert "repo.name" in verdict.suggested_fix
 
+    def test_non_consecutive_404s_do_not_promote(self) -> None:
+        # The promotion is meant to fire only on *consecutive* repo-not-found
+        # responses. A 404 -> 503 -> 404 pattern at tolerance 2 must stay
+        # transient: the intervening 503 breaks the streak, so an intermittent
+        # GitHub outage is not falsely converted into a permanent shutdown.
+        resilience = IssueFetchResilience("owner/repo", repo_not_found_tolerance=2)
+        assert resilience.record_failure(http_error(404)).consecutive_repo_not_found == 1
+        # Non-404 transient resets the streak back to 0.
+        assert resilience.record_failure(http_error(503)).consecutive_repo_not_found == 0
+        verdict = resilience.record_failure(http_error(404))
+        assert verdict.kind is FetchFailureKind.TRANSIENT
+        assert verdict.consecutive_repo_not_found == 1
+
     def test_success_resets_repo_not_found_streak(self) -> None:
         resilience = IssueFetchResilience("owner/repo", repo_not_found_tolerance=2)
         resilience.record_failure(http_error(404))  # streak = 1

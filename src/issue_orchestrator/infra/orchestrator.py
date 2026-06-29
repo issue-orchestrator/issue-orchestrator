@@ -298,6 +298,7 @@ class Orchestrator:
             lambda name: self._session_exists(name),
             lambda r: self._restore_running_sessions(r),
             self.launch_session, self.update_queue_cache,
+            self._issue_fetch_resilience,
             queue_cache_store=self.deps.queue_cache_store,
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
@@ -308,35 +309,17 @@ class Orchestrator:
         self._sweep_orphan_atomic_write_tempfiles()
         try:
             await self._startup_manager.run_startup(self.state)
-        except RepositoryHostError as error:
-            self._handle_startup_repository_failure(error)
-        else:
-            self._issue_fetch_resilience.note_success()
-
-    def _handle_startup_repository_failure(self, error: RepositoryHostError) -> None:
-        """React to a repository-host failure raised during startup.
-
-        Transient (a brief blip, a 5xx, eventual-consistency after a rename) →
-        come up in a degraded state; the main loop retries and recovers. The
-        orchestrator is label-recoverable, so a partial startup is cheap.
-
-        Permanent (auth failure, or a repo-not-found that has persisted) →
-        record an actionable failure and refuse to come up, instead of crashing
-        the process with a raw ``GitHubHttpError`` traceback.
-        """
-        verdict = self._issue_fetch_resilience.record_failure(error)
-        if not verdict.is_permanent:
-            logger.warning(
-                "[STARTUP] %s — starting in degraded mode; the main loop will retry. %s",
-                verdict.summary, verdict.suggested_fix,
-            )
-            self.state.startup_status = "complete"
-            self.state.startup_message = (
-                "GitHub issue fetch is temporarily unavailable; retrying in the background…"
-            )
-            return
-        self._record_permanent_fetch_failure(verdict, context="STARTUP")
-        self._shutdown_requested = True
+        except PermanentIssueFetchError as error:
+            # The resilience policy guards only the issue-list fetch inside
+            # startup. A *transient* fetch failure is already handled there
+            # (degrade-and-continue), so startup completes normally. A
+            # confirmed-permanent failure (auth, or a repo-not-found that has
+            # persisted) surfaces here: record an actionable message and refuse
+            # to come up instead of crashing with a raw traceback. Any other
+            # repository-host error from a non-fetch startup phase propagates
+            # unchanged, exactly as it did before issue-fetch resilience existed.
+            self._record_permanent_fetch_failure(error.verdict, context="STARTUP")
+            self._shutdown_requested = True
 
     def _record_permanent_fetch_failure(
         self, verdict: FetchFailureVerdict, *, context: str

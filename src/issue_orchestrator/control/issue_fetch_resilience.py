@@ -61,8 +61,9 @@ class FetchFailureVerdict:
         summary: Short, human-readable description for logs.
         suggested_fix: Actionable next step (repo name + token-scope hint for
             permanent failures).
-        consecutive_repo_not_found: How many consecutive 404s have been seen
-            (resets on any successful fetch).
+        consecutive_repo_not_found: How many consecutive 404s have been seen.
+            Resets on any successful fetch *and* on any non-404 transient
+            failure, so only back-to-back 404s count toward promotion.
     """
 
     kind: FetchFailureKind
@@ -176,6 +177,13 @@ class IssueFetchResilience:
         # Everything else — 5xx, 429/secondary rate limit, transport/network
         # errors, or anything unclassified — is treated as transient. A daemon
         # designed to recover from labels should ride these out rather than die.
+        #
+        # A non-404 failure also breaks the *consecutive* repo-not-found streak:
+        # the promotion to permanent is meant to fire only when 404s persist
+        # back-to-back. Without this reset a pattern like ``404, 503, 404`` would
+        # falsely promote at tolerance 2, converting an intermittent GitHub
+        # outage into a permanent repo-not-found shutdown.
+        self._consecutive_repo_not_found = 0
         return FetchFailureVerdict(
             kind=FetchFailureKind.TRANSIENT,
             summary=(
