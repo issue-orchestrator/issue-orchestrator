@@ -66,6 +66,20 @@ class CommitCheckRollup:
 
 
 @dataclass(frozen=True)
+class _SourceReadout:
+    """One REST rollup source's contribution: its signal plus readability.
+
+    ``readable=False`` means the source could not be read at all (e.g. token
+    scope), so its (empty) ``signal`` must NOT be mistaken for "this source
+    found nothing". The caller folds readability into
+    ``CommitCheckRollup.complete``.
+    """
+
+    signal: _RollupSignal
+    readable: bool
+
+
+@dataclass(frozen=True)
 class _CommitStatusReadout:
     """Outcome of a best-effort legacy combined-status read for one commit."""
 
@@ -986,51 +1000,64 @@ class GitHubHttpClient:
         required run on a later page cannot be missed; pagination short-circuits
         once a conclusive failure/pending signal is seen.
 
-        `CommitCheckRollup.complete` is `False` when the legacy combined-status
-        source was inaccessible AND the readable check-runs were inconclusive,
-        so callers do not report a false `SUCCESS` / "no checks" for a commit
-        whose required legacy statuses could not be read. See the value object.
+        The check-runs and combined-status sources are read INDEPENDENTLY: if
+        the check-runs API is inaccessible, the legacy combined-status source is
+        still consulted (and vice versa), so a conclusive failure/pending from
+        either readable source is honored even when the other cannot be read.
 
-        Raises:
-            GitHubHttpError: If the check-runs API is inaccessible (e.g. the
-                token lacks `checks:read`). Callers treat this as "check state
-                unreadable" rather than "no checks". The legacy combined-status
-                call is best-effort: its failures are reported via
-                `complete=False` rather than raised, because GitHub Actions
-                checks live only in the Checks API.
+        `CommitCheckRollup.complete` is `False` only when a source could not be
+        read AND the readable sources produced a non-conclusive `SUCCESS` /
+        "no checks" — i.e. exactly when the unread source could have changed the
+        answer. Combining is monotonic toward `FAILURE` (each source can only
+        ADD a failure/pending/present signal), so a `FAILURE`/`PENDING` from a
+        readable source cannot be overturned by an unread one and stays
+        conclusive (`complete=True`). This method does not raise on source
+        access failures — completeness is carried by the value object instead.
         """
         encoded = quote(sha, safe="")
-        runs = self._aggregate_paginated_check_runs(encoded)
+        checks = self._read_check_run_signal(encoded)
         status_readout = self._best_effort_commit_status(sha, encoded)
         statuses = _aggregate_combined_status(status_readout.payload)
-        state = _combine_rollup_signals(runs, statuses)
-        # A failure/pending from the readable sources is conclusive regardless
-        # of the unread status source; otherwise an inaccessible status API
-        # leaves us unable to honestly claim SUCCESS / "no checks".
+        state = _combine_rollup_signals(checks.signal, statuses)
         conclusive = state in ("FAILURE", "PENDING")
-        complete = status_readout.readable or conclusive
+        all_sources_readable = checks.readable and status_readout.readable
+        complete = all_sources_readable or conclusive
         return CommitCheckRollup(state=state, complete=complete)
 
-    def _aggregate_paginated_check_runs(self, encoded_sha: str) -> _RollupSignal:
-        """Fold every page of the check-runs API into one `_RollupSignal`.
+    def _read_check_run_signal(self, encoded_sha: str) -> _SourceReadout:
+        """Fold every page of the check-runs API into one readable `_RollupSignal`.
 
         Stops early only once a failure run is seen: failure is the top of the
         rollup precedence (`_combine_rollup_signals` returns FAILURE before
         PENDING), so no later page can change a FAILURE. A pending signal is NOT
         conclusive — a completed failing run on a later page must still override
         an earlier in-progress one — so pending is remembered but pagination
-        continues. Otherwise walks pages until one returns fewer than a full
-        page of runs.
+        continues until a failure is found or the final page is read.
+
+        If the API is inaccessible (e.g. the token lacks `checks:read`), the
+        source is reported `readable=False` with an empty signal rather than
+        raised, so the caller can still honor the combined-status source and
+        only treat a non-conclusive result as incomplete. A partial read that
+        errored mid-pagination before finding a failure is likewise reported
+        unreadable (its in-progress signal is discarded), because an unread page
+        could still hold a failure.
         """
         failure = pending = present = False
         page = 1
         while True:
-            payload = self._request_json(
-                "GET",
-                f"/repos/{self._config.repo}/commits/{encoded_sha}/check-runs",
-                params={"per_page": 100, "page": page},
-                caller="get_commit_check_rollup_checks",
-            )
+            try:
+                payload = self._request_json(
+                    "GET",
+                    f"/repos/{self._config.repo}/commits/{encoded_sha}/check-runs",
+                    params={"per_page": 100, "page": page},
+                    caller="get_commit_check_rollup_checks",
+                )
+            except GitHubHttpError as exc:
+                logger.debug(
+                    "check-runs unreadable for %s (page %d): %s",
+                    encoded_sha, page, exc,
+                )
+                return _SourceReadout((False, False, False), readable=False)
             page_failure, page_pending, page_present = _aggregate_check_runs(payload)
             failure = failure or page_failure
             pending = pending or page_pending
@@ -1047,7 +1074,7 @@ class GitHubHttpClient:
                     _MAX_CHECK_RUN_PAGES, encoded_sha,
                 )
                 break
-        return failure, pending, present
+        return _SourceReadout((failure, pending, present), readable=True)
 
     def _best_effort_commit_status(
         self, sha: str, encoded_sha: str

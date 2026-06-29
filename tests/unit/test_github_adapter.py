@@ -664,6 +664,38 @@ class TestPROperations:
         assert pr.status_check_rollup_readable is True
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
 
+    def test_get_pr_with_status_check_rollup_readable_failure_from_legacy_status(
+        self, adapter, mock_http_client
+    ):
+        """When GraphQL is inaccessible and the REST fallback derives a complete
+        FAILURE (e.g. /check-runs unreadable but a legacy commit status failed),
+        the PR rollup must be a READABLE FAILURE so the post-publish classifier
+        routes to rework instead of waiting out the unreadable-checks timeout
+        (issue #6589 F1)."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch", "sha": "deadbeef"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+            "mergeable_state": "UNSTABLE",
+        }
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "Resource not accessible by personal access token", status_code=403
+        )
+        mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
+            state="FAILURE", complete=True
+        )
+
+        pr = adapter.get_pr_with_status_check_rollup(10)
+
+        assert pr is not None
+        assert pr.status_check_rollup == "FAILURE"
+        assert pr.status_check_rollup_readable is True
+        mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
+
     def test_get_pr_with_status_check_rollup_unreadable_when_rest_incomplete(
         self, adapter, mock_http_client
     ):

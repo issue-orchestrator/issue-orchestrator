@@ -1062,17 +1062,58 @@ def test_get_commit_check_rollup_returns_none_when_no_checks_or_statuses() -> No
     assert rollup.complete is True
 
 
-def test_get_commit_check_rollup_raises_when_check_runs_inaccessible() -> None:
-    """A 403 on the check-runs API means the token can't read check state —
-    the caller must treat this as unreadable, not as 'no checks'."""
+def test_get_commit_check_rollup_incomplete_when_check_runs_inaccessible() -> None:
+    """A 403 on the check-runs API while the combined-status source has nothing
+    conclusive must NOT raise or claim 'no checks': the source is unreadable, so
+    the rollup is reported incomplete (the caller maps this to unreadable)."""
     handler = _commit_rollup_handler(
         check_runs={"message": "Resource not accessible by personal access token"},
         check_runs_status=403,
     )
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    with pytest.raises(GitHubHttpError):
-        client.get_commit_check_rollup("deadbeef")
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state is None
+    assert rollup.complete is False
+
+
+def test_get_commit_check_rollup_legacy_status_failure_survives_check_runs_403() -> None:
+    """The core #6589 path: GraphQL inaccessible, /check-runs inaccessible, but
+    /commits/{sha}/status is readable and reports failure. The readable legacy
+    status failure is conclusive, so the rollup is a complete FAILURE and the PR
+    routes to rework instead of waiting out the unreadable-checks timeout."""
+    handler = _commit_rollup_handler(
+        check_runs={"message": "Resource not accessible by personal access token"},
+        check_runs_status=403,
+        statuses={
+            "state": "failure",
+            "statuses": [{"context": "ci/external", "state": "failure"}],
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
+
+
+def test_get_commit_check_rollup_legacy_status_pending_survives_check_runs_403() -> None:
+    """A readable legacy pending status is also conclusive when check-runs can't
+    be read: the rollup is a complete PENDING (waits as checks-pending) rather
+    than a credential/scope 'unreadable' escalation."""
+    handler = _commit_rollup_handler(
+        check_runs={"message": "Resource not accessible by personal access token"},
+        check_runs_status=403,
+        statuses={
+            "state": "pending",
+            "statuses": [{"context": "ci/external", "state": "pending"}],
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "PENDING"
+    assert rollup.complete is True
 
 
 def test_get_commit_check_rollup_folds_in_legacy_commit_statuses() -> None:
