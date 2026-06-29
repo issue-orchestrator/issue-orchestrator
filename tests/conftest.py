@@ -86,9 +86,14 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     ``make validate-quick`` inside an orchestrator session, so both prefixes are
     cleared here.
     """
-    # Strip both the canonical ISSUE_ORCHESTRATOR_* vars and the legacy
-    # ORCHESTRATOR_* fallbacks (SESSION_ID, CONFIG_PATH/NAME, etc.). The two
-    # prefixes are disjoint ("ISSUE_ORCHESTRATOR_" does not start with
+    # Strip every orchestrator-injected var so tests start from a clean env.
+    # The orchestrator exports ISSUE_ORCHESTRATOR_* and also a few bare, legacy
+    # ORCHESTRATOR_* forms — e.g. the persistent review-exchange runner sets
+    # ORCHESTRATOR_SESSION_ID, which coding-done/_is_managed_session still accept
+    # for compatibility. Leaving the bare forms in place makes every test look
+    # like a managed orchestrator session and breaks standalone-path tests, so
+    # strip both prefixes (this subsumes ORCHESTRATOR_WORKTREE_BASE_BRANCH). The
+    # two prefixes are disjoint ("ISSUE_ORCHESTRATOR_" does not start with
     # "ORCHESTRATOR_"), so each var is handled once.
     for var in list(os.environ):
         if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):

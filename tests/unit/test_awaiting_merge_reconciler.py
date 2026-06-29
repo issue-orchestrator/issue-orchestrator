@@ -11,6 +11,7 @@ from issue_orchestrator.control.awaiting_merge_reconciler import (
     POST_PUBLISH_VALIDATION_SOURCE,
     AwaitingMergeReconciler,
     classify_post_approval_state,
+    classify_pr_set_drift,
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.session_history import SessionHistoryOwner
@@ -96,6 +97,14 @@ def _issue(state: str, *, number: int = 228) -> Issue:
         labels=["agent:backend", "pr-pending"],
         state=state,
     )
+
+
+def test_pr_info_is_closed_unmerged_distinguishes_merged_from_closed() -> None:
+    """is_closed_unmerged is the blocked:pr-closed gate; a merged PR (state
+    "merged", as adapters normalize it) must never satisfy it."""
+    assert _pr("merged").is_closed_unmerged is False
+    assert _pr("closed").is_closed_unmerged is True
+    assert _pr("open").is_closed_unmerged is False
 
 
 def test_recovered_awaiting_merge_entry_reconciles_when_pr_is_merged() -> None:
@@ -216,6 +225,28 @@ def test_closed_pr_with_closed_issue_does_not_discover_label_drift() -> None:
     assert state.issue_refresh_timestamps[228] == 1234.5
 
 
+def test_merged_pr_does_not_discover_blocked_pr_closed_drift() -> None:
+    """#358: a PR that merged (reported by the adapter as state "merged") must
+    never produce a blocked:pr-closed drift, even with a pr-pending label still
+    present — this is the post-merge race the reconciler must tolerate."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr("merged")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.discovered == 1
+    assert result.drift_discovered == 0
+    assert result.drifts == ()
+    assert result.reconciliations[0].status == "merged"
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+
+
 def test_label_only_pr_pending_issue_with_closed_pr_discovers_drift() -> None:
     issue = _issue("open")
     state = OrchestratorState(cached_queue_issues=[issue])
@@ -235,6 +266,124 @@ def test_label_only_pr_pending_issue_with_closed_pr_discovers_drift() -> None:
     assert drift.status_reason == "PR closed; issue remains open"
     assert state.awaiting_merge_drift_scan_timestamps[228] > 0
     repository_host.get_prs_for_issue.assert_called_once_with(228, state="all")
+
+
+def test_open_latest_pr_with_older_merged_pr_does_not_discover_drift() -> None:
+    """#364: an issue whose current PR is open must not be flagged
+    blocked:pr-closed just because an earlier PR for the same issue merged."""
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = [
+        _pr("merged", number=428),
+        _pr("open", number=437),
+    ]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.drift_discovered == 0
+    assert result.drifts == ()
+
+
+def test_only_merged_pr_does_not_discover_drift() -> None:
+    """A merged PR with no other PRs is terminal work that landed — it is
+    never closed-unmerged, so no blocked:pr-closed drift is produced."""
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = [_pr("merged", number=428)]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.drift_discovered == 0
+    assert result.drifts == ()
+
+
+def test_closed_unmerged_latest_pr_flags_despite_older_merged_pr() -> None:
+    """A genuinely closed-without-merge current PR still flags, and the drift
+    keys on that latest closed PR rather than the earlier merged one."""
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = [
+        _pr("merged", number=428),
+        _pr("closed", number=437),
+    ]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.drift_discovered == 1
+    drift = result.drifts[0]
+    assert drift.pr_number == 437
+    assert drift.status_reason == "PR closed; issue remains open"
+
+
+def test_older_closed_pr_with_newer_merged_pr_does_not_discover_drift() -> None:
+    """#6628 F1: a label-only `pr-pending` issue whose latest PR merged must not
+    be flagged blocked:pr-closed just because an earlier attempt's PR closed
+    unmerged. The latest terminal PR (merged) wins over the older closed one."""
+    issue = _issue("open")
+    state = OrchestratorState(cached_queue_issues=[issue])
+    repository_host = MagicMock()
+    repository_host.get_prs_for_issue.return_value = [
+        _pr("closed", number=428),
+        _pr("merged", number=437),
+    ]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.drift_discovered == 0
+    assert result.drifts == ()
+
+
+def test_merged_reconciliation_excludes_issue_from_label_drift_scan() -> None:
+    """#6628 F1: a history entry that reconciles as merged must suppress the
+    label-drift scan for the same issue. Otherwise a stale cached `pr-pending`
+    plus an older closed-unmerged PR would manufacture a contradictory
+    blocked:pr-closed drift alongside the merged reconciliation in one
+    discover() call."""
+    entry = _history_entry()  # issue 228, PR #318
+    issue = _issue("open")  # same issue 228, still labelled pr-pending
+    state = OrchestratorState(
+        session_history=[entry],
+        cached_queue_issues=[issue],
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr("merged")
+    # Had the scan run, this older closed-unmerged PR would have flagged drift.
+    repository_host.get_prs_for_issue.return_value = [
+        _pr("closed", number=300),
+        _pr("merged", number=318),
+    ]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.discovered == 1
+    assert result.reconciliations[0].status == "merged"
+    assert result.drift_discovered == 0
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+    assert result.drifts == ()
+    repository_host.get_prs_for_issue.assert_not_called()
 
 
 def test_label_only_pr_pending_issue_without_pr_discovers_missing_pr_drift() -> None:
@@ -300,8 +449,12 @@ def test_stale_label_only_pr_pending_issue_scan_runs_and_updates_timestamp() -> 
 
 
 def test_label_only_pr_scan_error_skips_issue_and_continues() -> None:
-    issues = [_issue("open", number=228), _issue("open", number=229)]
-    state = OrchestratorState(cached_queue_issues=issues)
+    state = OrchestratorState(
+        cached_queue_issues=[
+            _issue("open", number=228),
+            _issue("open", number=229),
+        ]
+    )
     repository_host = MagicMock()
     repository_host.get_prs_for_issue.side_effect = [
         RepositoryHostError("github unavailable"),
@@ -661,6 +814,46 @@ def test_classify_post_approval_state(
         "open", mergeable_state=mergeable_state, status_check_rollup=rollup
     )
     assert classify_post_approval_state(pr) == expected
+
+
+# ---------------------------------------------------------------------------
+# classify_pr_set_drift — owner of the blocked:pr-closed precedence policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "prs,expected_drifting,expected_pr_number",
+    [
+        # No associated PR at all → "PR missing" drift with no PR reference.
+        ([], True, None),
+        # Single terminal PR: the leaf predicate decides.
+        ([("closed", 318)], True, 318),
+        ([("merged", 318)], False, None),
+        # Any open PR suppresses drift regardless of older terminal PRs.
+        ([("merged", 428), ("open", 437)], False, None),
+        ([("closed", 428), ("open", 437)], False, None),
+        # Latest terminal PR decides: a newer merge beats an older close.
+        ([("closed", 428), ("merged", 437)], False, None),
+        # ...and a newer close beats an older merge, keying on the newer PR.
+        ([("merged", 428), ("closed", 437)], True, 437),
+        # Multiple closed PRs → the latest closed one.
+        ([("closed", 428), ("closed", 437)], True, 437),
+    ],
+)
+def test_classify_pr_set_drift(
+    prs: list[tuple[str, int]],
+    expected_drifting: bool,
+    expected_pr_number: int | None,
+) -> None:
+    decision = classify_pr_set_drift(
+        [_pr(state, number=number) for state, number in prs]
+    )
+    assert decision.drifting is expected_drifting
+    if expected_pr_number is None:
+        assert decision.pr is None
+    else:
+        assert decision.pr is not None
+        assert decision.pr.number == expected_pr_number
 
 
 # ---------------------------------------------------------------------------
