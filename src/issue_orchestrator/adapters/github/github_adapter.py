@@ -9,11 +9,16 @@ Naming: This is an execution-layer adapter that talks to an external platform.
 import logging
 import os
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
-from ...ports.pull_request_tracker import PRInfo, PRRef, StatusCheckRollupState
+from ...ports.pull_request_tracker import (
+    PRInfo,
+    PRRef,
+    StatusCheckRollupCapability,
+    StatusCheckRollupRead,
+    StatusCheckRollupState,
+)
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .errors import GitHubHttpError, GitHubTransportError
@@ -53,18 +58,40 @@ def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
     return None
 
 
-@dataclass(frozen=True)
-class _RollupReadout:
-    """Result of reading a PR's head-commit check rollup.
+# Substrings that mark a rollup read failure as a token *capability* gap
+# rather than a transient blip. GraphQL surfaces an insufficient-scope /
+# FORBIDDEN error as HTTP 200 with an `errors` array, so status-code alone
+# is not enough — we also sniff the message/body for these markers.
+_ROLLUP_PERMISSION_MARKERS: tuple[str, ...] = (
+    "forbidden",
+    "not accessible",
+    "scope",  # "...has not been granted the required scopes..."
+    "permission",
+    "must have",  # "...must have read access..."
+)
 
-    ``readable=False`` means every supported source was inaccessible (e.g.
-    token scope), so ``state=None`` does NOT mean "no checks" — it means
-    "could not tell". Lets the post-publish classifier distinguish a
-    credential blind spot from genuinely-absent checks.
+
+def _classify_rollup_failure(exc: GitHubHttpError) -> StatusCheckRollupCapability:
+    """Tell a missing-permission rollup failure from a transient one.
+
+    A 401 is an authentication failure: the token cannot identify itself at
+    all, which is always an operator problem rather than a retryable blip.
+
+    Every other status (403, 429, 5xx, GraphQL-200-with-errors) is decided by
+    the response body, NOT the status code. A genuine missing-capability
+    failure names the gap — ``forbidden`` / ``not accessible`` / a required
+    ``scope``/``permission`` — so we sniff for those markers. GitHub also
+    returns HTTP 403 for retryable throttling ("API rate limit exceeded",
+    "secondary rate limit"); those bodies name no scope, so they fall through
+    to ``transient_error`` and are retried next tick instead of arming the
+    repo-wide permission backoff and escalating a bogus missing-scope error.
     """
-
-    state: StatusCheckRollupState | None
-    readable: bool
+    if exc.status_code == 401:
+        return "permission_denied"
+    haystack = f"{exc} {getattr(exc, 'response_text', '') or ''}".lower()
+    if any(marker in haystack for marker in _ROLLUP_PERMISSION_MARKERS):
+        return "permission_denied"
+    return "transient_error"
 
 
 def _head_sha_from_pr(raw_pr: dict[str, Any]) -> str | None:
@@ -837,8 +864,8 @@ class GitHubAdapter:
 
         REST-only — does NOT populate ``status_check_rollup``. Callers
         that need check-status visibility must use
-        ``get_pr_with_status_check_rollup`` (the awaiting-merge
-        post-publish classifier is the sole consumer today).
+        ``read_pr_status_check_rollup`` (the awaiting-merge post-publish
+        classifier is the sole consumer today).
         """
         try:
             output = self._client.get_pr(pr_number)
@@ -851,85 +878,112 @@ class GitHubAdapter:
             logger.error("Failed to get PR %s: %s", pr_number, e)
             raise
 
-    def get_pr_with_status_check_rollup(self, pr_number: int) -> PRInfo | None:
-        """Get a PR augmented with the head-commit status-check rollup.
+    def read_pr_status_check_rollup(self, pr_number: int) -> StatusCheckRollupRead:
+        """Read a PR head-commit status-check rollup, classifying failures.
 
-        Pays one extra GraphQL round-trip on top of the REST PR fetch.
-        Used by the awaiting-merge reconciler to distinguish "merge
-        state is unstable because checks are running" (wait) from
-        "merge state is unstable because a check failed" (rework).
-
-        When the primary GraphQL rollup query is inaccessible (the running
-        token lacks scope, repeatedly seen as "Resource not accessible by
-        personal access token"), this falls back to the REST
-        check-runs/combined-status API on the PR head SHA so completed-failed
-        checks are still detected. Only when *every* source is inaccessible is
-        the rollup left as None with ``status_check_rollup_readable=False`` so
-        the classifier can escalate with an explicit "unreadable" diagnostic
-        instead of mislabeling it as merely pending.
+        Pays one GraphQL round-trip on the happy path. When GraphQL is blocked
+        by token capability, falls back to REST check-runs/combined-status on
+        the PR head SHA before reporting the rollup as unreadable.
         """
         try:
-            raw = self._client.get_pr(pr_number)
-        except GitHubHttpError as e:
-            if _is_not_found_error(e):
-                return None
-            logger.error("Failed to get PR %s: %s", pr_number, e)
-            raise
-        if not isinstance(raw, dict):
-            return None
-        pr_info = self._pr_info_from_api(raw)
-        readout = self._read_status_check_rollup(pr_number, raw)
-        pr_info.status_check_rollup = readout.state
-        pr_info.status_check_rollup_readable = readout.readable
-        return pr_info
-
-    def _read_status_check_rollup(
-        self, pr_number: int, raw_pr: dict[str, Any]
-    ) -> _RollupReadout:
-        """Resolve the head-commit check rollup, GraphQL-primary with a REST
-        fallback. See ``get_pr_with_status_check_rollup`` for the policy."""
-        # Primary: GraphQL statusCheckRollup (aggregates checks + statuses in
-        # one round-trip). Note GraphQL-level permission errors surface as
-        # GitHubHttpError too, so this catch covers the token-scope case.
-        try:
             rollup = self._client.get_pr_status_check_rollup(pr_number)
-            return _RollupReadout(_coerce_rollup_state(rollup), readable=True)
-        except GitHubHttpError as e:
+        except GitHubTransportError as e:
+            # A pre-response transport failure (timeout/network) has no status
+            # code to classify and is always retry-safe: treat it as transient
+            # so the reconciler waits a tick rather than aborting the scan.
             logger.warning(
-                "GraphQL status_check_rollup unavailable for PR %s: %s; "
-                "trying REST check-run fallback",
+                "status_check_rollup read failed for PR %s (transient_error): %s",
                 pr_number, e,
             )
+            return StatusCheckRollupRead(state=None, capability="transient_error")
+        except GitHubHttpError as e:
+            capability = _classify_rollup_failure(e)
+            if capability == "permission_denied":
+                fallback = self._read_rollup_via_rest_fallback(pr_number)
+                if fallback.capability != "permission_denied":
+                    return fallback
+            logger.warning(
+                "status_check_rollup read failed for PR %s (%s): %s",
+                pr_number, capability, e,
+            )
+            return StatusCheckRollupRead(state=None, capability=capability)
+        return StatusCheckRollupRead(state=_coerce_rollup_state(rollup), capability="ok")
+
+    def _read_rollup_via_rest_fallback(
+        self,
+        pr_number: int,
+    ) -> StatusCheckRollupRead:
+        """Read check state through REST after a GraphQL capability failure."""
+        try:
+            raw_pr = self._client.get_pr(pr_number)
+        except GitHubTransportError as e:
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback failed for "
+                "PR %s (transient_error): %s",
+                pr_number,
+                e,
+            )
+            return StatusCheckRollupRead(state=None, capability="transient_error")
+        except GitHubHttpError as e:
+            capability = _classify_rollup_failure(e)
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback failed for "
+                "PR %s (%s): %s",
+                pr_number,
+                capability,
+                e,
+            )
+            return StatusCheckRollupRead(state=None, capability=capability)
+        if not isinstance(raw_pr, dict):
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback returned "
+                "unexpected payload for PR %s",
+                pr_number,
+            )
+            return StatusCheckRollupRead(state=None, capability="permission_denied")
 
         head_sha = _head_sha_from_pr(raw_pr)
         if head_sha is None:
             logger.warning(
-                "No head SHA for PR %s; cannot read check state via REST",
+                "No head SHA for PR %s; cannot read check state via REST fallback",
                 pr_number,
             )
-            return _RollupReadout(None, readable=False)
+            return StatusCheckRollupRead(state=None, capability="permission_denied")
 
-        # Fallback: REST check-runs + combined status on the head SHA.
         try:
             rollup = self._client.get_commit_check_rollup(head_sha)
-        except GitHubHttpError as e:
+        except GitHubTransportError as e:
             logger.warning(
-                "REST check-run fallback unreadable for PR %s (sha %s): %s",
-                pr_number, head_sha, e,
+                "REST check-run fallback failed for PR %s (sha %s, "
+                "transient_error): %s",
+                pr_number,
+                head_sha,
+                e,
             )
-            return _RollupReadout(None, readable=False)
+            return StatusCheckRollupRead(state=None, capability="transient_error")
+        except GitHubHttpError as e:
+            capability = _classify_rollup_failure(e)
+            logger.warning(
+                "REST check-run fallback failed for PR %s (sha %s, %s): %s",
+                pr_number,
+                head_sha,
+                capability,
+                e,
+            )
+            return StatusCheckRollupRead(state=None, capability=capability)
+
         if not rollup.complete:
-            # A relevant source (legacy combined status) was inaccessible and
-            # the readable check-runs were inconclusive, so we cannot honestly
-            # report SUCCESS / "no checks". Surface as unreadable so the
-            # post-publish classifier escalates instead of trusting a blind spot.
             logger.warning(
                 "REST check-run fallback incomplete for PR %s (sha %s): "
                 "commit-status source inaccessible and check-runs inconclusive",
-                pr_number, head_sha,
+                pr_number,
+                head_sha,
             )
-            return _RollupReadout(None, readable=False)
-        return _RollupReadout(_coerce_rollup_state(rollup.state), readable=True)
+            return StatusCheckRollupRead(state=None, capability="permission_denied")
+        return StatusCheckRollupRead(
+            state=_coerce_rollup_state(rollup.state),
+            capability="ok",
+        )
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.

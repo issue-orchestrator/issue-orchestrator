@@ -22,6 +22,10 @@ from ..domain.models import (
 from ..history import latest_history_entries_by_issue
 from ..ports.repository_host import RepositoryHostError
 from .queue_cache import record_issue_refreshes
+from .status_rollup_gate import (
+    STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS,
+    StatusRollupGate,
+)
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, SessionHistoryEntry
@@ -52,7 +56,6 @@ PostApprovalAction = Literal[
     "REWORK_BEHIND",        # behind — branch out of date with base
     "REWORK_CHECK_FAILED",  # unstable/blocked + checks FAILURE/ERROR
     "BLOCKED_TERMINAL",     # blocked + checks SUCCESS — branch protection
-    "CHECKS_UNREADABLE",    # unstable/blocked but check state could not be read
     "UNKNOWN",              # has_hooks / draft / "" / unrecognized state
 ]
 
@@ -82,12 +85,6 @@ def classify_post_approval_state(pr: PRInfo) -> PostApprovalAction:
             # unstable + SUCCESS is unusual; GitHub usually resolves it to
             # `clean` on the next poll. Treat as transient.
             return "WAIT_FOR_CHECKS"
-        # rollup is None/PENDING/EXPECTED. GitHub already told us the PR is
-        # NOT mergeable (unstable/blocked), so a missing rollup that we
-        # *could not read* is a credential/scope blind spot, not "no checks":
-        # surface it distinctly so it doesn't masquerade as merely pending.
-        if not pr.status_check_rollup_readable:
-            return "CHECKS_UNREADABLE"
         # rollup in {PENDING, EXPECTED, None} → checks not yet conclusive
         return "WAIT_FOR_CHECKS"
     return "UNKNOWN"
@@ -97,21 +94,6 @@ def classify_post_approval_state(pr: PRInfo) -> PostApprovalAction:
 _REWORK_ACTIONS: frozenset[PostApprovalAction] = frozenset(
     {"REWORK_CONFLICT", "REWORK_BEHIND", "REWORK_CHECK_FAILED"}
 )
-
-# Actions where the check state is not yet conclusive, so we keep the
-# WAIT_FOR_CHECKS timer running rather than clearing it: either GitHub's
-# checks are genuinely still pending, or we could not read the check state.
-# Both wait out the same budget before escalating (with a kind-specific
-# diagnostic), instead of one resetting the other's timer every tick.
-_INCONCLUSIVE_ACTIONS: frozenset[PostApprovalAction] = frozenset(
-    {"WAIT_FOR_CHECKS", "CHECKS_UNREADABLE"}
-)
-
-# Escalation kind emitted once the wait budget is exhausted, by action.
-_INCONCLUSIVE_ESCALATION_KIND: dict[PostApprovalAction, PostPublishEscalationKind] = {
-    "WAIT_FOR_CHECKS": "checks_pending_timeout",
-    "CHECKS_UNREADABLE": "checks_unreadable",
-}
 
 
 @dataclass(frozen=True)
@@ -156,12 +138,19 @@ class AwaitingMergeReconciler:
     label_drift_scan_interval_seconds: float = (
         AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
     )
-    # Wall-clock budget for WAIT_FOR_CHECKS before escalating. Default
-    # mirrors Config.post_publish_checks_pending_timeout_seconds; callers
-    # in production wire the configured value through.
     post_publish_checks_pending_timeout_seconds: float = (
         DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS
     )
+    repo: str | None = None
+    status_rollup_backoff_seconds: float = STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS
+
+    def _rollup_gate(self) -> StatusRollupGate:
+        return StatusRollupGate(
+            self.repository_host,
+            repo=self.repo,
+            clock=self.clock,
+            backoff_seconds=self.status_rollup_backoff_seconds,
+        )
 
     def discover(self, state: OrchestratorState) -> AwaitingMergeReconciliationResult:
         """Discover completed history entries that should become terminal."""
@@ -489,47 +478,49 @@ class AwaitingMergeReconciler:
         issue: Issue,
         pr_number: int,
     ) -> tuple[DiscoveredRework | None, DiscoveredAwaitingMergeEscalation | None]:
-        """Decide what (if anything) to do with an approved-but-not-merged PR.
-
-        Returns ``(rework, escalation)`` — at most one is non-None on any
-        given tick. Reads as a table of contents: clear stale bookkeeping
-        if the PR is no longer in the post-approval state, gate, classify,
-        clear bookkeeping if the classifier moved on, then dispatch.
-        """
+        """Decide what, if anything, to do with an approved open PR."""
         if not self._post_publish_eligible(state, entry, pr):
-            # Eligibility lost (label dropped, needs_rework added, an
-            # active session/pending rework appeared) — clear any stale
-            # WAIT_FOR_CHECKS timestamp so a future re-approval starts
-            # a fresh wait budget instead of inheriting an old one. Without
-            # this, a long gap (commit → label drop → days later → re-
-            # approve) would compute `elapsed >> timeout` and escalate
-            # immediately, defeating the timeout entirely.
+            # Eligibility loss resets the WAIT_FOR_CHECKS budget, so future
+            # re-approval starts fresh.
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
             return None, None
 
         # _post_publish_eligible returns False when label_manager is None.
         assert self.label_manager is not None
-        action = classify_post_approval_state(pr)
-        # A PR can pass the eligibility gate while already carrying
-        # `needs-human` — it was escalated post-publish (e.g. as a stale
-        # checks-pending-timeout) but still has `code-reviewed` and no
-        # `needs-rework`. The human owns such a PR; we only ever *recover* it
-        # by routing a now-demonstrably-reworkable state back to a coder.
+        # A stale post-publish human escalation may become reworkable later.
         already_escalated = self.label_manager.needs_human in pr.labels
+
+        resolution = self._rollup_gate().resolve_decisive(
+            state.status_rollup_capability,
+            pr=pr,
+            issue_number=entry.issue_number,
+            issue_key=issue.key.stable_id(),
+        )
+        if resolution.permission_denied:
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            if already_escalated:
+                return None, None
+            return None, self._build_rollup_permission_escalation(
+                pr=pr,
+                issue_number=entry.issue_number,
+                issue_key=issue.key.stable_id(),
+                pr_number=pr_number,
+                reason=resolution.reason,
+            )
+        pr.status_check_rollup = resolution.rollup_state
+
+        action = classify_post_approval_state(pr)
         logger.debug(
             "Awaiting-merge classify: issue=#%d pr=#%d state=%s rollup=%s "
-            "readable=%s action=%s already_escalated=%s",
+            "action=%s already_escalated=%s",
             entry.issue_number,
             pr_number,
             _normalized_state(pr.mergeable_state),
             pr.status_check_rollup,
-            pr.status_check_rollup_readable,
             action,
             already_escalated,
         )
-        # Keep the wait budget running only while the check state is still
-        # inconclusive AND no human has taken over; otherwise reset it.
-        if action not in _INCONCLUSIVE_ACTIONS or already_escalated:
+        if action != "WAIT_FOR_CHECKS" or already_escalated:
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
 
         if action in _REWORK_ACTIONS:
@@ -538,9 +529,6 @@ class AwaitingMergeReconciler:
                 clear_needs_human=already_escalated,
             ), None
         if already_escalated:
-            # Human-owned and not reworkable — leave it for the human. Do not
-            # re-escalate (would spam the same comment every tick) or restart
-            # the wait budget.
             return None, None
         if action == "BLOCKED_TERMINAL":
             return None, self._build_branch_protection_escalation(
@@ -549,9 +537,9 @@ class AwaitingMergeReconciler:
                 issue_key=issue.key.stable_id(),
                 pr_number=pr_number,
             )
-        if action in _INCONCLUSIVE_ACTIONS:
-            return None, self._maybe_escalate_inconclusive_checks(
-                state=state, pr=pr, action=action,
+        if action == "WAIT_FOR_CHECKS":
+            return None, self._maybe_escalate_pending_checks(
+                state=state, pr=pr,
                 issue_number=entry.issue_number,
                 issue_key=issue.key.stable_id(),
                 pr_number=pr_number,
@@ -566,16 +554,7 @@ class AwaitingMergeReconciler:
         pr: PRInfo,
     ) -> bool:
         """Pre-filter: only consider PRs that are reviewer-approved and not
-        already in flight via another rework path.
-
-        Note `needs_human` is intentionally NOT treated as terminal here. A
-        post-publish escalation (e.g. a stale `checks_pending_timeout`) leaves
-        the PR with `code-reviewed` + `needs-human` and no `needs-rework`. We
-        let those through so the dispatcher can *recover* them if the check
-        state is now demonstrably reworkable. Requiring `code-reviewed`
-        still excludes max-rework-cycle escalations, whose PRs have lost that
-        label, so genuine human-escalations stay parked.
-        """
+        already in flight via another rework path."""
         if self.label_manager is None:
             return False
         if self.label_manager.code_reviewed not in pr.labels:
@@ -622,9 +601,6 @@ class AwaitingMergeReconciler:
         issue_key: str,
         pr_number: int,
     ) -> DiscoveredAwaitingMergeEscalation:
-        # blocked + SUCCESS rollup: branch protection (CODEOWNERS,
-        # approvals, signatures) blocks merge. Code rework can't help —
-        # escalate immediately, no timeout.
         assert self.label_manager is not None
         return _build_escalation(
             pr=pr,
@@ -641,26 +617,36 @@ class AwaitingMergeReconciler:
             ),
         )
 
-    def _maybe_escalate_inconclusive_checks(
+    def _build_rollup_permission_escalation(
+        self,
+        *,
+        pr: PRInfo,
+        issue_number: int,
+        issue_key: str,
+        pr_number: int,
+        reason: str,
+    ) -> DiscoveredAwaitingMergeEscalation:
+        assert self.label_manager is not None
+        return _build_escalation(
+            pr=pr,
+            issue_number=issue_number,
+            issue_key=issue_key,
+            pr_number=pr_number,
+            label_manager=self.label_manager,
+            kind="status_rollup_permission_denied",
+            reason=reason,
+        )
+
+    def _maybe_escalate_pending_checks(
         self,
         *,
         state: OrchestratorState,
         pr: PRInfo,
-        action: PostApprovalAction,
         issue_number: int,
         issue_key: str,
         pr_number: int,
     ) -> DiscoveredAwaitingMergeEscalation | None:
-        """Run the inconclusive-checks timeout state machine for one PR.
-
-        Shared by both `WAIT_FOR_CHECKS` (checks genuinely pending) and
-        `CHECKS_UNREADABLE` (check state could not be read). Returns an
-        escalation only when the budget has been exceeded; otherwise returns
-        None and (when first observed) records the timestamp on state so
-        subsequent ticks can compute elapsed. The escalation kind and reason
-        reflect *why* the state stayed inconclusive, so the human comment is
-        explicit about a credential/scope read failure versus a real timeout.
-        """
+        """Run the WAIT_FOR_CHECKS timeout state machine for one PR."""
         assert self.label_manager is not None
         now = self.clock()
         first_seen = state.awaiting_merge_checks_pending_since.get(issue_number)
@@ -670,52 +656,28 @@ class AwaitingMergeReconciler:
         elapsed = now - first_seen
         if elapsed < self.post_publish_checks_pending_timeout_seconds:
             return None
+        minutes = max(1, int(elapsed // 60))
+        timeout_minutes = int(self.post_publish_checks_pending_timeout_seconds // 60)
         return _build_escalation(
             pr=pr,
             issue_number=issue_number,
             issue_key=issue_key,
             pr_number=pr_number,
             label_manager=self.label_manager,
-            kind=_INCONCLUSIVE_ESCALATION_KIND[action],
-            reason=self._inconclusive_escalation_reason(action, elapsed),
-        )
-
-    def _inconclusive_escalation_reason(
-        self, action: PostApprovalAction, elapsed: float
-    ) -> str:
-        minutes = max(1, int(elapsed // 60))
-        timeout_minutes = int(
-            self.post_publish_checks_pending_timeout_seconds // 60
-        )
-        if action == "CHECKS_UNREADABLE":
-            return (
-                f"GitHub check state for this PR could not be read for "
-                f"~{minutes} minute(s) since reviewer approval (timeout: "
-                f"{timeout_minutes} minutes). Both the GraphQL status-check "
-                f"rollup and the REST check-run/status fallback were "
-                f"inaccessible — most likely the orchestrator's GitHub token "
-                f"is missing the `checks:read` (and/or `statuses` / "
-                f"`pull_requests`) permission. The required checks may well "
-                f"have completed (and possibly failed); the orchestrator "
-                f"simply cannot see them, so it is handing the PR to a human "
-                f"rather than guessing the state."
-            )
-        return (
-            f"Required GitHub checks have been pending for "
-            f"~{minutes} minute(s) since reviewer approval "
-            f"(timeout: {timeout_minutes} minutes). The orchestrator "
-            f"has stopped waiting and is handing the PR back for "
-            f"human attention."
+            kind="checks_pending_timeout",
+            reason=(
+                f"Required GitHub checks have been pending for "
+                f"~{minutes} minute(s) since reviewer approval "
+                f"(timeout: {timeout_minutes} minutes). The orchestrator "
+                f"has stopped waiting and is handing the PR back for "
+                f"human attention."
+            ),
         )
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
-        # The post-publish classifier needs `status_check_rollup` to
-        # distinguish "checks running" from "check failed", so this is
-        # the one call site that pays the extra GraphQL round-trip.
-        # Other lifecycle paths use `get_pr` (REST-only) and never
-        # touch the rollup.
+        # REST-only; decisive open PRs read check rollup lazily through the gate.
         try:
-            return self.repository_host.get_pr_with_status_check_rollup(pr_number)
+            return self.repository_host.get_pr(pr_number)
         except RepositoryHostError as exc:
             logger.warning(
                 "Failed to refresh PR #%d for awaiting-merge issue #%d: %s",

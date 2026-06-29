@@ -21,7 +21,10 @@ from issue_orchestrator.adapters.github.http_client import (
 )
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.pull_request_tracker import (
+    PRInfo,
+    StatusCheckRollupRead,
+)
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.ports.verification import VerificationResult, FailureType
 
@@ -595,50 +598,46 @@ class TestPROperations:
         mock_http_client.get_pr.assert_called_once_with(10)
         mock_http_client.get_pr_status_check_rollup.assert_not_called()
 
-    def test_get_pr_with_status_check_rollup_populates_rollup(
+    def test_read_pr_status_check_rollup_returns_ok_state(
         self, adapter, mock_http_client
     ):
-        """get_pr_with_status_check_rollup augments the REST PR with a
-        GraphQL rollup fetch — the awaiting-merge classifier needs this
-        to disambiguate unstable+PENDING vs unstable+FAILURE."""
-        mock_http_client.get_pr.return_value = {
-            "number": 10,
-            "title": "Test PR",
-            "html_url": "https://github.com/owner/repo/pull/10",
-            "head": {"ref": "feature-branch"},
-            "body": "PR description",
-            "state": "open",
-            "labels": [{"name": "bug"}],
-            "mergeable_state": "UNSTABLE",
-        }
+        """read_pr_status_check_rollup reads ONLY the rollup (no REST PR
+        fetch) and reports it as an `ok` capability — the awaiting-merge
+        classifier needs this to disambiguate unstable+PENDING vs
+        unstable+FAILURE."""
         mock_http_client.get_pr_status_check_rollup.return_value = "PENDING"
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.mergeable_state == "unstable"
-        assert pr.status_check_rollup == "PENDING"
-        mock_http_client.get_pr.assert_called_once_with(10)
+        assert read == StatusCheckRollupRead(state="PENDING", capability="ok")
+        assert read.permission_denied is False
         mock_http_client.get_pr_status_check_rollup.assert_called_once_with(10)
+        # The rollup read must not pay for a REST PR fetch.
+        mock_http_client.get_pr.assert_not_called()
 
-    def test_get_pr_with_status_check_rollup_returns_none_when_pr_not_found(
+    def test_read_pr_status_check_rollup_no_checks_is_ok_none(
         self, adapter, mock_http_client
     ):
-        mock_http_client.get_pr.side_effect = GitHubHttpError(
-            "Not found", status_code=404
+        """No checks configured → `ok` with state=None, distinct from a
+        permission failure."""
+        mock_http_client.get_pr_status_check_rollup.return_value = None
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="ok")
+
+    def test_read_pr_status_check_rollup_rest_fallback_finds_failure(
+        self, adapter, mock_http_client
+    ):
+        """A GraphQL permission wall still falls back to REST check state.
+
+        This preserves post-publish failure detection for tokens that cannot
+        read ``statusCheckRollup`` but can read check-runs/combined status.
+        """
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "Resource not accessible by personal access token",
+            status_code=403,
         )
-
-        pr = adapter.get_pr_with_status_check_rollup(999)
-
-        assert pr is None
-        mock_http_client.get_pr_status_check_rollup.assert_not_called()
-
-    def test_get_pr_with_status_check_rollup_falls_back_to_rest_on_graphql_failure(
-        self, adapter, mock_http_client
-    ):
-        """When the GraphQL rollup is inaccessible (token scope), the adapter
-        falls back to the REST check-run rollup on the head SHA so a
-        completed-failed check is still detected (issue #6589)."""
         mock_http_client.get_pr.return_value = {
             "number": 10,
             "title": "Test PR",
@@ -649,29 +648,25 @@ class TestPROperations:
             "labels": [],
             "mergeable_state": "UNSTABLE",
         }
-        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
-            "Resource not accessible by personal access token", status_code=403
-        )
         mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
-            state="FAILURE", complete=True
+            state="FAILURE",
+            complete=True,
         )
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.mergeable_state == "unstable"
-        assert pr.status_check_rollup == "FAILURE"
-        assert pr.status_check_rollup_readable is True
+        assert read == StatusCheckRollupRead(state="FAILURE", capability="ok")
+        mock_http_client.get_pr.assert_called_once_with(10)
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
 
-    def test_get_pr_with_status_check_rollup_readable_failure_from_legacy_status(
+    def test_read_pr_status_check_rollup_rest_fallback_incomplete_stays_permission_denied(
         self, adapter, mock_http_client
     ):
-        """When GraphQL is inaccessible and the REST fallback derives a complete
-        FAILURE (e.g. /check-runs unreadable but a legacy commit status failed),
-        the PR rollup must be a READABLE FAILURE so the post-publish classifier
-        routes to rework instead of waiting out the unreadable-checks timeout
-        (issue #6589 F1)."""
+        """An incomplete REST fallback remains an operator-visible read gap."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "Resource not accessible by personal access token",
+            status_code=403,
+        )
         mock_http_client.get_pr.return_value = {
             "number": 10,
             "title": "Test PR",
@@ -682,126 +677,143 @@ class TestPROperations:
             "labels": [],
             "mergeable_state": "UNSTABLE",
         }
-        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
-            "Resource not accessible by personal access token", status_code=403
-        )
         mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
-            state="FAILURE", complete=True
+            state="SUCCESS",
+            complete=False,
         )
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.status_check_rollup == "FAILURE"
-        assert pr.status_check_rollup_readable is True
+        assert read == StatusCheckRollupRead(
+            state=None,
+            capability="permission_denied",
+        )
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
 
-    def test_get_pr_with_status_check_rollup_unreadable_when_rest_incomplete(
+    def test_read_pr_status_check_rollup_forbidden_is_permission_denied(
         self, adapter, mock_http_client
     ):
-        """An incomplete REST fallback (a source was inaccessible and check-runs
-        were inconclusive) must be surfaced as unreadable, not as a truthful
-        SUCCESS / 'no checks' — otherwise a hidden failed required status would
-        be misclassified post-publish (issue #6589 F2)."""
-        mock_http_client.get_pr.return_value = {
-            "number": 10,
-            "title": "Test PR",
-            "html_url": "https://github.com/owner/repo/pull/10",
-            "head": {"ref": "feature-branch", "sha": "deadbeef"},
-            "body": "",
-            "state": "open",
-            "labels": [],
-            "mergeable_state": "UNSTABLE",
-        }
+        """A 403 must surface as `permission_denied`, never a silent
+        `None` rollup — the token genuinely cannot read check status."""
         mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
-            "Resource not accessible by personal access token", status_code=403
-        )
-        mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
-            state="SUCCESS", complete=False
+            "forbidden", status_code=403
         )
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.status_check_rollup is None
-        assert pr.status_check_rollup_readable is False
-        mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
+        assert read == StatusCheckRollupRead(state=None, capability="permission_denied")
+        assert read.permission_denied is True
 
-    def test_get_pr_with_status_check_rollup_unreadable_when_all_sources_fail(
+    def test_read_pr_status_check_rollup_graphql_scope_error_is_permission_denied(
         self, adapter, mock_http_client
     ):
-        """When BOTH GraphQL and the REST fallback are inaccessible, the rollup
-        is left None but flagged unreadable so the classifier can escalate with
-        an explicit credential/scope diagnostic instead of 'checks pending'."""
-        mock_http_client.get_pr.return_value = {
-            "number": 10,
-            "title": "Test PR",
-            "html_url": "https://github.com/owner/repo/pull/10",
-            "head": {"ref": "feature-branch", "sha": "deadbeef"},
-            "body": "",
-            "state": "open",
-            "labels": [],
-            "mergeable_state": "UNSTABLE",
-        }
+        """GraphQL surfaces an insufficient-scope error as HTTP 200 with an
+        `errors` array, so message-sniffing (not status code) classifies it."""
         mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
-            "Resource not accessible by personal access token", status_code=403
-        )
-        mock_http_client.get_commit_check_rollup.side_effect = GitHubHttpError(
-            "Resource not accessible by personal access token", status_code=403
+            "GitHub GraphQL error: Resource not accessible by personal access token",
+            status_code=200,
         )
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.status_check_rollup is None
-        assert pr.status_check_rollup_readable is False
+        assert read.capability == "permission_denied"
 
-    def test_get_pr_with_status_check_rollup_unreadable_when_no_head_sha(
+    def test_read_pr_status_check_rollup_unauthorized_401_is_permission_denied(
         self, adapter, mock_http_client
     ):
-        """No head SHA to query means the REST fallback can't run; the PR is
-        flagged unreadable rather than silently treated as pending."""
-        mock_http_client.get_pr.return_value = {
-            "number": 10,
-            "title": "Test PR",
-            "html_url": "https://github.com/owner/repo/pull/10",
-            "head": {"ref": "feature-branch"},
-            "body": "",
-            "state": "open",
-            "labels": [],
-            "mergeable_state": "UNSTABLE",
-        }
+        """A 401 is an authentication failure: the token cannot identify itself
+        at all. That is an operator problem, not a retryable blip, so it stays
+        on the permission_denied path regardless of body."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 401",
+            status_code=401,
+            response_text="Bad credentials",
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="permission_denied")
+        assert read.permission_denied is True
+
+    def test_read_pr_status_check_rollup_rate_limit_403_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """GitHub returns HTTP 403 for retryable throttling, not just missing
+        scope. A primary rate-limit 403 body names no permission, so it must
+        classify as transient_error — never the missing-scope path that arms
+        the repo-wide backoff and escalates a bogus permission error."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 403",
+            status_code=403,
+            response_text="API rate limit exceeded for installation ID 12345.",
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
+    def test_read_pr_status_check_rollup_secondary_rate_limit_403_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """A 403 secondary-rate-limit body is throttling, not a scope gap, so
+        it is PENDING-equivalent retry, not permission_denied."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 403",
+            status_code=403,
+            response_text=(
+                "You have exceeded a secondary rate limit and have been "
+                "temporarily blocked from content creation."
+            ),
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
+    def test_read_pr_status_check_rollup_transient_failure_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """A 5xx GraphQL failure is transient: state=None, capability
+        transient_error. The reconciler treats it as PENDING-equivalent so
+        a transient error makes us wait, not escalate or rework."""
         mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
             "graphql boom", status_code=500
         )
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.mergeable_state == "unstable"
-        assert pr.status_check_rollup is None
-        assert pr.status_check_rollup_readable is False
-        mock_http_client.get_commit_check_rollup.assert_not_called()
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
 
-    def test_get_pr_with_status_check_rollup_unknown_state_coerced_to_none(
+    def test_read_pr_status_check_rollup_transport_failure_is_transient(
         self, adapter, mock_http_client
     ):
-        mock_http_client.get_pr.return_value = {
-            "number": 10,
-            "title": "Test PR",
-            "html_url": "https://github.com/owner/repo/pull/10",
-            "head": {"ref": "feature-branch"},
-            "body": "",
-            "state": "open",
-            "labels": [],
-            "mergeable_state": "CLEAN",
-        }
+        """A pre-response transport failure (timeout/network) raises
+        GitHubTransportError, which has no status code. It must classify as
+        transient_error so the reconciler waits and retries next tick instead
+        of letting the failure abort the awaiting-merge scan."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubTransportError(
+            "GitHub GraphQL transport error",
+            method="POST",
+            url="/graphql",
+            original=TimeoutError("read timed out"),
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
+    def test_read_pr_status_check_rollup_unknown_state_coerced_to_none(
+        self, adapter, mock_http_client
+    ):
         mock_http_client.get_pr_status_check_rollup.return_value = "FUTURE_STATE"
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.status_check_rollup is None
+        assert read == StatusCheckRollupRead(state=None, capability="ok")
 
     def test_get_pr_not_found(self, adapter, mock_http_client):
         """Test get_pr returns None when PR not found."""

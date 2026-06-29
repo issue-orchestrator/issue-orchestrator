@@ -31,6 +31,39 @@ StatusCheckRollupState = Literal[
 ]
 
 
+# Capability outcome of a status-check-rollup read. Distinguishes a token
+# that *cannot* read check status from a repo that *has* no checks, so the
+# reconciler never hides a missing permission behind a "no checks" default.
+StatusCheckRollupCapability = Literal["ok", "permission_denied", "transient_error"]
+
+
+@dataclass(frozen=True)
+class StatusCheckRollupRead:
+    """Typed outcome of reading a PR head-commit status-check rollup.
+
+    The awaiting-merge reconciler must treat three cases differently, so
+    this read never collapses them into a bare ``state | None``:
+
+    - ``ok``: the read succeeded. ``state`` is the rollup state, or
+      ``None`` when the PR/commit genuinely has no checks configured.
+    - ``permission_denied``: the configured GitHub token lacks the
+      capability to read check status (e.g. a fine-grained PAT missing
+      the Checks / commit-status read scope). This is a persistent
+      operator problem, not a transient blip — callers surface it loudly
+      and bound retries instead of silently defaulting to "no checks".
+    - ``transient_error``: an ordinary GitHub failure (5xx, timeout).
+      Safe to retry next tick; callers treat it as "rollup not yet
+      known" (PENDING-equivalent) rather than escalating.
+    """
+
+    state: StatusCheckRollupState | None
+    capability: StatusCheckRollupCapability = "ok"
+
+    @property
+    def permission_denied(self) -> bool:
+        return self.capability == "permission_denied"
+
+
 @dataclass
 class PRInfo:
     """Information about a pull request.
@@ -48,17 +81,9 @@ class PRInfo:
             blocked/...). Says merge readiness.
         status_check_rollup: Aggregated state of required + non-required checks
             on the PR head commit. Says check truth. `None` when not fetched
-            (only the single-PR `get_pr` path populates this).
-        status_check_rollup_readable: Whether the check state could actually be
-            read from GitHub. Only meaningful on the
-            ``get_pr_with_status_check_rollup`` path: ``True`` (the default)
-            means the rollup reflects GitHub's real state — ``None`` then means
-            "no checks configured / not yet reported". ``False`` means every
-            supported check-state source (GraphQL rollup AND the REST
-            check-run/status fallback) was inaccessible, e.g. the token lacks
-            ``checks:read`` scope, so ``None`` here does NOT mean "no checks".
-            The post-publish classifier uses this to avoid mislabeling an
-            unreadable PR as merely "checks pending".
+            (only the single-PR `get_pr` path populates this). Read-capability
+            (token cannot read check status vs. no checks configured) is carried
+            separately by :class:`StatusCheckRollupRead`, not on this field.
     """
 
     number: int
@@ -71,7 +96,6 @@ class PRInfo:
     draft: bool | None = None
     mergeable_state: str | None = None
     status_check_rollup: StatusCheckRollupState | None = None
-    status_check_rollup_readable: bool = True
 
 
 @dataclass(frozen=True)
@@ -185,8 +209,8 @@ class PullRequestTracker(Protocol):
         Note: ``status_check_rollup`` is not populated by this method.
         Callers that need check-status visibility (the awaiting-merge
         post-publish classifier) should use
-        ``get_pr_with_status_check_rollup`` instead — that variant
-        pays an extra GraphQL round-trip per call.
+        ``read_pr_status_check_rollup`` instead — that variant pays an
+        extra GraphQL round-trip per call and classifies failures.
 
         Args:
             pr_number: The PR number to retrieve.
@@ -199,26 +223,35 @@ class PullRequestTracker(Protocol):
         """
         ...
 
-    def get_pr_with_status_check_rollup(self, pr_number: int) -> PRInfo | None:
-        """Get a specific PR augmented with the head-commit check rollup.
+    def read_pr_status_check_rollup(self, pr_number: int) -> "StatusCheckRollupRead":
+        """Read a PR's head-commit status-check rollup, classifying failures.
 
-        Costs one extra GraphQL round-trip on top of ``get_pr``. Use only
-        when ``status_check_rollup`` is actually needed (currently: the
-        awaiting-merge reconciler's post-publish classifier, which uses
-        the rollup to disambiguate ``mergeable_state == unstable | blocked``
-        between "checks running" and "check actually failed"). Hot
-        lifecycle paths should keep using ``get_pr``.
+        Costs one GraphQL round-trip on the happy path. Implementations may
+        fall back to other status sources after a GraphQL capability failure,
+        but callers must invoke this ONLY when the rollup is decisive for a
+        merge-readiness decision — the awaiting-merge reconciler fetches it
+        solely for reviewer-approved PRs whose ``mergeable_state`` is
+        ``unstable`` or ``blocked``. Terminal (closed/merged) and
+        ``clean``/``dirty``/``behind`` PRs must NOT call this; they pay no
+        rollup cost.
+
+        Unlike a plain PR fetch, this never swallows a permission failure
+        into a ``None`` rollup. The returned ``StatusCheckRollupRead``
+        distinguishes a token that cannot read check status
+        (``permission_denied``) from a repo that has no checks
+        (``ok`` with ``state=None``) and from a transient GitHub failure
+        (``transient_error``).
 
         When the primary GraphQL rollup query is inaccessible (e.g. the token
         lacks the scope), implementations should fall back to the REST
-        check-runs/combined-status API on the PR head SHA before giving up.
-        If every source is inaccessible, return the PRInfo with
-        ``status_check_rollup=None`` and ``status_check_rollup_readable=False``
-        so callers can tell "unreadable" apart from "no checks".
+        check-runs/combined-status API on the PR head SHA before giving up, so
+        completed-failed checks are still detected. Only when every source is
+        inaccessible should the read report ``permission_denied`` so callers can
+        tell "unreadable" apart from "no checks" (``ok`` with ``state=None``).
 
         Returns:
-            The PRInfo object with ``status_check_rollup`` populated when
-            available, or None if the PR is not found.
+            A :class:`StatusCheckRollupRead` describing the rollup state
+            and the read capability.
         """
         ...
 

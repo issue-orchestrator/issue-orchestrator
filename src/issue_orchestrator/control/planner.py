@@ -763,33 +763,17 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     and rework.pr_number > 0
                 ):
                     actions.append(RemoveLabelAction(
-                        issue_number=rework.pr_number,
-                        label=self._lm.code_reviewed,
-                        reason=(
-                            "post-publish validation failed after review approval; "
-                            "clearing code-reviewed"
-                        ),
+                        issue_number=rework.pr_number, label=self._lm.code_reviewed,
+                        reason="post-publish validation failed; clearing code-reviewed",
                     ))
                     if rework.clear_needs_human:
-                        # Recovering a PR that was previously (mis)escalated to
-                        # needs-human (e.g. checks were unreadable until now).
-                        # Drop the stale blocking label so the PR isn't left
-                        # both queued-for-rework and flagged for a human.
                         actions.append(RemoveLabelAction(
-                            issue_number=rework.pr_number,
-                            label=self._lm.needs_human,
-                            reason=(
-                                "post-publish state now demonstrably reworkable; "
-                                "clearing stale needs-human escalation"
-                            ),
+                            issue_number=rework.pr_number, label=self._lm.needs_human,
+                            reason="post-publish state now reworkable; clearing needs-human",
                         ))
                     actions.append(AddLabelAction(
-                        issue_number=rework.pr_number,
-                        label=self._lm.needs_rework,
-                        reason=(
-                            "post-publish validation failed after review approval; "
-                            "marking PR for rework"
-                        ),
+                        issue_number=rework.pr_number, label=self._lm.needs_rework,
+                        reason="post-publish validation failed; marking PR for rework",
                     ))
                     if rework.feedback:
                         actions.append(AddCommentAction(

@@ -1765,6 +1765,45 @@ class TestPlanAwaitingMergeEscalations:
         assert "`bot:needs-human`" in action.comment_override
         assert "`blocked-needs-human`" not in action.comment_override
 
+    def test_status_rollup_permission_denied_emits_escalate_with_capability_copy(self):
+        from issue_orchestrator.domain.models import (
+            DiscoveredAwaitingMergeEscalation,
+        )
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredAwaitingMergeEscalation(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/o/r/pull/100",
+            issue_key="M0-042",
+            rework_cycle=1,
+            kind="status_rollup_permission_denied",
+            reason=(
+                "PR #100 is reviewer-approved but its merge-readiness is "
+                "'unstable' ... the configured GitHub token lacks permission "
+                "to read check status (statusCheckRollup) ..."
+            ),
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_escalations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        escalate_actions = [
+            a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN
+        ]
+        assert len(escalate_actions) == 1
+        action = escalate_actions[0]
+        assert action.escalation_reason == "post-publish: status_rollup_permission_denied"
+        assert action.comment_override is not None
+        assert "cannot read check status" in action.comment_override.lower()
+
 
 class TestPlanDiscoveredFailures:
     """Tests for Planner's _plan_discovered_failures method.
