@@ -33,6 +33,7 @@ from issue_orchestrator.infra.runtime_artifacts import (
         ".issue-orchestrator/persistent-pairs/issue-6594/validation-record.json",
         ".issue-orchestrator/review-feedback/cycle-1.md",
         ".issue-orchestrator/review-response.json",
+        ".issue-orchestrator/review-report.md",
         ".issue-orchestrator/review-exchange-turn-prompt.md",
         ".issue-orchestrator/tool-homes/codex/config.toml",
         # A runtime output we have not enumerated explicitly is still caught
@@ -153,6 +154,62 @@ def test_diff_parser_skips_deletions() -> None:
 
 def test_diff_parser_handles_empty_diff() -> None:
     assert branch_post_image_paths_from_diff("") == []
+
+
+def test_diff_parser_extracts_binary_addition() -> None:
+    # Binary files carry no ``+++ b/...`` line; the post-image path is only on
+    # the ``Binary files /dev/null and b/<path> differ`` line. A committed
+    # binary runtime artifact (e.g. a tool-home blob) must still be detected.
+    diff = (
+        "diff --git a/.issue-orchestrator/tool-homes/blob.bin "
+        "b/.issue-orchestrator/tool-homes/blob.bin\n"
+        "new file mode 100644\n"
+        "index 0000000..1111111\n"
+        "Binary files /dev/null and b/.issue-orchestrator/tool-homes/blob.bin differ\n"
+    )
+    assert branch_post_image_paths_from_diff(diff) == [
+        ".issue-orchestrator/tool-homes/blob.bin",
+    ]
+
+
+def test_diff_parser_extracts_binary_modification() -> None:
+    diff = (
+        "diff --git a/.issue-orchestrator/tool-homes/blob.bin "
+        "b/.issue-orchestrator/tool-homes/blob.bin\n"
+        "index 1111111..2222222 100644\n"
+        "Binary files a/.issue-orchestrator/tool-homes/blob.bin "
+        "and b/.issue-orchestrator/tool-homes/blob.bin differ\n"
+    )
+    assert branch_post_image_paths_from_diff(diff) == [
+        ".issue-orchestrator/tool-homes/blob.bin",
+    ]
+
+
+def test_diff_parser_skips_binary_deletion() -> None:
+    # Removing a previously-committed binary artifact is fine: the post-image
+    # is /dev/null, so nothing should be reported.
+    diff = (
+        "diff --git a/.issue-orchestrator/tool-homes/blob.bin "
+        "b/.issue-orchestrator/tool-homes/blob.bin\n"
+        "deleted file mode 100644\n"
+        "index 1111111..0000000\n"
+        "Binary files a/.issue-orchestrator/tool-homes/blob.bin and /dev/null differ\n"
+    )
+    assert branch_post_image_paths_from_diff(diff) == []
+
+
+def test_binary_artifact_is_caught_end_to_end() -> None:
+    # The guard must block a committed binary runtime artifact, mirroring the
+    # text-file path: parse the diff, then classify the post-image paths.
+    diff = (
+        "diff --git a/.issue-orchestrator/tool-homes/blob.bin "
+        "b/.issue-orchestrator/tool-homes/blob.bin\n"
+        "new file mode 100644\n"
+        "Binary files /dev/null and b/.issue-orchestrator/tool-homes/blob.bin differ\n"
+    )
+    assert forbidden_branch_runtime_artifacts(
+        branch_post_image_paths_from_diff(diff)
+    ) == [".issue-orchestrator/tool-homes/blob.bin"]
 
 
 def test_parser_and_filter_compose_on_a_real_world_branch() -> None:

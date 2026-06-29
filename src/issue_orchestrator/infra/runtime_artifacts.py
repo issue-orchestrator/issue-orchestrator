@@ -271,26 +271,56 @@ def forbidden_branch_runtime_artifacts(paths: Iterable[str]) -> list[str]:
     return sorted(found)
 
 
+_BINARY_DIFF_PREFIX = "Binary files "
+_BINARY_DIFF_SUFFIX = " differ"
+
+
+def _append_normalized_post_image(target: str, paths: list[str]) -> None:
+    """Record ``target`` as a post-image path unless it is a deletion."""
+    if not target or target == "/dev/null":
+        return
+    if target.startswith("b/"):
+        target = target[len("b/") :]
+    normalized = _normalize_runtime_pattern(target)
+    if normalized:
+        paths.append(normalized)
+
+
 def branch_post_image_paths_from_diff(diff_text: str) -> list[str]:
-    """Extract post-image file paths (``+++ b/...`` side) from a unified diff.
+    """Extract post-image file paths from a unified diff.
 
     Returns the files that *exist* in the branch after the diff (added or
-    modified), in first-seen order. Deletions (``+++ /dev/null``) are skipped:
-    a branch that *removes* a previously-committed artifact is fine — the guard
-    only blocks artifacts that would still be present in the branch tip.
+    modified), in first-seen order. Deletions are skipped: a branch that
+    *removes* a previously-committed artifact is fine — the guard only blocks
+    artifacts that would still be present in the branch tip.
+
+    Two header shapes carry the post-image path, because the same
+    ``git diff --unified=0`` invocation emits binary changes differently from
+    text changes:
+
+    * Text files have a ``+++ b/<path>`` line (``+++ /dev/null`` for a
+      deletion).
+    * Binary files have **no** ``+++`` line at all; Git instead emits a
+      ``Binary files <pre> and <post> differ`` line, where ``<post>`` is
+      ``b/<path>`` for an addition/modification and ``/dev/null`` for a
+      deletion. Without parsing this, a committed *binary* runtime artifact
+      (e.g. a tool-home blob) would yield no path and silently bypass the
+      guard.
     """
     paths: list[str] = []
     for line in diff_text.splitlines():
-        if not line.startswith("+++ "):
+        if line.startswith("+++ "):
+            target = line[len("+++ ") :].split("\t", 1)[0].strip()
+            _append_normalized_post_image(target, paths)
             continue
-        target = line[len("+++ ") :].split("\t", 1)[0].strip()
-        if not target or target == "/dev/null":
-            continue
-        if target.startswith("b/"):
-            target = target[len("b/") :]
-        normalized = _normalize_runtime_pattern(target)
-        if normalized:
-            paths.append(normalized)
+        if line.startswith(_BINARY_DIFF_PREFIX) and line.endswith(_BINARY_DIFF_SUFFIX):
+            body = line[len(_BINARY_DIFF_PREFIX) : -len(_BINARY_DIFF_SUFFIX)]
+            # The post-image is the side after the final " and " separator
+            # (``b/<path>`` or ``/dev/null``). rpartition keeps this robust
+            # when the *pre*-image path happens to contain " and ".
+            _, sep, post = body.rpartition(" and ")
+            if sep:
+                _append_normalized_post_image(post.strip(), paths)
     return list(dict.fromkeys(paths))
 
 

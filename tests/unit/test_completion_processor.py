@@ -338,6 +338,17 @@ class TestRuntimeArtifactBranchGuard:
         )
 
     @staticmethod
+    def _binary_diff_adding(path: str) -> str:
+        # Binary additions carry no ``+++ b/...`` line — only the
+        # ``Binary files /dev/null and b/<path> differ`` line.
+        return (
+            f"diff --git a/{path} b/{path}\n"
+            "new file mode 100644\n"
+            "index 0000000..1111111\n"
+            f"Binary files /dev/null and b/{path} differ\n"
+        )
+
+    @staticmethod
     def _publish_record() -> CompletionRecord:
         return make_record(
             outcome=CompletionOutcome.COMPLETED,
@@ -355,6 +366,7 @@ class TestRuntimeArtifactBranchGuard:
             ".issue-orchestrator/review-exchange-turn-prompt.md",
             ".issue-orchestrator/review-feedback/cycle-1.md",
             ".issue-orchestrator/review-response.json",
+            ".issue-orchestrator/review-report.md",
         ],
     )
     def test_committed_runtime_artifact_blocks_publish(
@@ -383,6 +395,36 @@ class TestRuntimeArtifactBranchGuard:
         assert "runtime artifacts" in (result.message or "")
         assert artifact_path in (result.message or "")
         # Fails before any publish action runs.
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_committed_binary_runtime_artifact_blocks_publish(
+        self,
+        processor,
+        mock_git_adapter,
+        mock_pr_adapter,
+        worktree_with_completion,
+    ):
+        # A committed *binary* runtime artifact has no ``+++ b/...`` diff line;
+        # the guard must still block publish before push/PR creation (#6659).
+        artifact_path = ".issue-orchestrator/tool-homes/blob.bin"
+        worktree = worktree_with_completion(self._publish_record())
+        mock_git_adapter.diff_against_base = Mock(
+            return_value=DiffResult(
+                success=True, diff_text=self._binary_diff_adding(artifact_path)
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=6594,
+            issue_title="Test Issue",
+        )
+
+        assert not result.success
+        assert "runtime artifacts" in (result.message or "")
+        assert artifact_path in (result.message or "")
         mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.create_pr.assert_not_called()
 

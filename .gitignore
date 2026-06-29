@@ -87,6 +87,7 @@ Thumbs.db
 .issue-orchestrator/persistent-pairs/
 .issue-orchestrator/review-feedback/
 .issue-orchestrator/review-response.json
+.issue-orchestrator/review-report.md
 .issue-orchestrator/review-exchange-turn-prompt.md
 .issue-orchestrator/tool-homes/
 
