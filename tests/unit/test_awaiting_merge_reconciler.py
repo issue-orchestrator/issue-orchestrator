@@ -458,6 +458,7 @@ def test_merge_conflict_after_review_discovers_post_publish_validation_rework() 
         labels=["code-reviewed"],
     )
     repository_host.get_issue.return_value = _issue("open")
+    repository_host.get_issue_comments.return_value = []
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -477,6 +478,70 @@ def test_merge_conflict_after_review_discovers_post_publish_validation_rework() 
     assert rework.rework_cycle == 1
     assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
     assert "Mergeability: dirty" in (rework.feedback or "")
+    # No existing marker comment → planner is free to post one.
+    assert rework.feedback_comment_already_posted is False
+
+
+def test_post_publish_rework_flags_existing_marker_comment_for_dedupe() -> None:
+    """If the PR already carries the post-publish marker comment, the rework
+    is still discovered (labels/queue idempotency is unchanged) but the
+    discovery records that the feedback comment is already posted so the
+    planner skips a duplicate."""
+    from issue_orchestrator.control.awaiting_merge_reconciler import (
+        POST_PUBLISH_VALIDATION_COMMENT_MARKER,
+    )
+
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
+        "open",
+        mergeable_state="dirty",
+        labels=["code-reviewed"],
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.get_issue_comments.return_value = [
+        {"body": "unrelated chatter"},
+        {"body": f"{POST_PUBLISH_VALIDATION_COMMENT_MARKER}\nearlier feedback"},
+    ]
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    rework = result.reworks[0]
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    # Feedback is still carried (the rework agent needs it).
+    assert "Mergeability: dirty" in (rework.feedback or "")
+    # But the marker was already present, so flag it for the planner.
+    assert rework.feedback_comment_already_posted is True
+    repository_host.get_issue_comments.assert_called_once_with(318)
+
+
+def test_post_publish_rework_comment_read_failure_propagates() -> None:
+    """A comment-read failure during dedupe propagates like the other
+    awaiting-merge reads, aborting the tick rather than silently risking a
+    duplicate or dropping the feedback."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr_with_status_check_rollup.return_value = _pr(
+        "open",
+        mergeable_state="dirty",
+        labels=["code-reviewed"],
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.get_issue_comments.side_effect = RepositoryHostError("boom")
+
+    with pytest.raises(RepositoryHostError):
+        AwaitingMergeReconciler(
+            repository_host,
+            label_manager=_label_manager(),
+            clock=lambda: 1234.5,
+        ).discover(state)
 
 
 def test_post_publish_validation_rework_is_suppressed_when_rework_already_pending() -> None:
@@ -597,6 +662,7 @@ def test_unstable_pr_with_check_failure_triggers_check_failed_rework() -> None:
         status_check_rollup="FAILURE",
     )
     repository_host.get_issue.return_value = _issue("open")
+    repository_host.get_issue_comments.return_value = []
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -679,6 +745,7 @@ def test_dirty_pr_feedback_uses_conflict_copy() -> None:
         labels=["code-reviewed"],
     )
     repository_host.get_issue.return_value = _issue("open")
+    repository_host.get_issue_comments.return_value = []
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -701,6 +768,7 @@ def test_behind_pr_feedback_uses_rebase_copy() -> None:
         labels=["code-reviewed"],
     )
     repository_host.get_issue.return_value = _issue("open")
+    repository_host.get_issue_comments.return_value = []
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -909,6 +977,7 @@ def test_wait_for_checks_resolved_into_failure_clears_pending_and_reworks() -> N
         status_check_rollup="FAILURE",
     )
     repository_host.get_issue.return_value = _issue("open")
+    repository_host.get_issue_comments.return_value = []
 
     result = AwaitingMergeReconciler(
         repository_host,

@@ -8,7 +8,7 @@ Naming: "Tracker" implies external system CRUD operations, not internal storage.
 This is an execution-layer interface.
 """
 
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from .issue import Issue
@@ -112,6 +112,26 @@ class IssueTracker(Protocol):
         Returns:
             A list of label names for the issue. Returns empty list if
             issue not found or has no labels.
+
+        Raises:
+            RepositoryError: If there's an error accessing the data source.
+        """
+        ...
+
+    def get_issue_comments(self, issue_number: int) -> list[dict[str, Any]]:
+        """Get the conversation comments on an issue or pull request.
+
+        GitHub serves issue and PR conversation comments from the same
+        endpoint, so this also returns the timeline comments on a PR. Used
+        by lifecycle code that needs to dedupe orchestrator-authored marker
+        comments before re-posting them.
+
+        Args:
+            issue_number: The issue or PR number to read comments for.
+
+        Returns:
+            A list of comment dictionaries (each with at least a ``body``
+            key). Returns an empty list if there are no comments.
 
         Raises:
             RepositoryError: If there's an error accessing the data source.

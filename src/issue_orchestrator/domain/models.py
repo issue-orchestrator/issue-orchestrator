@@ -1377,6 +1377,11 @@ class DiscoveredRework:
     rework_cycle: int = 1
     source: str = "review_label"
     feedback: str | None = None
+    # True when the discovery path already saw the feedback comment marker
+    # on the PR, so the planner must not enqueue a duplicate comment. The
+    # rework itself is still queued (idempotency is owned by labels/pending
+    # state, not the comment).
+    feedback_comment_already_posted: bool = False
 
 
 @dataclass(frozen=True)
