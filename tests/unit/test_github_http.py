@@ -1097,10 +1097,12 @@ def test_get_commit_check_rollup_legacy_status_failure_survives_check_runs_403()
     assert rollup.complete is True
 
 
-def test_get_commit_check_rollup_legacy_status_pending_survives_check_runs_403() -> None:
-    """A readable legacy pending status is also conclusive when check-runs can't
-    be read: the rollup is a complete PENDING (waits as checks-pending) rather
-    than a credential/scope 'unreadable' escalation."""
+def test_get_commit_check_rollup_pending_incomplete_when_check_runs_403() -> None:
+    """A readable legacy PENDING status with check-runs inaccessible is NOT
+    conclusive: the unread check-runs source could hold a failed required run,
+    and FAILURE outranks PENDING. The rollup must report complete=False so the
+    caller escalates as unreadable rather than waiting it out as checks-pending
+    (which could mask a hidden failure as a pending-checks timeout)."""
     handler = _commit_rollup_handler(
         check_runs={"message": "Resource not accessible by personal access token"},
         check_runs_status=403,
@@ -1113,7 +1115,27 @@ def test_get_commit_check_rollup_legacy_status_pending_survives_check_runs_403()
 
     rollup = client.get_commit_check_rollup("deadbeef")
     assert rollup.state == "PENDING"
-    assert rollup.complete is True
+    assert rollup.complete is False
+
+
+def test_get_commit_check_rollup_pending_incomplete_when_status_403() -> None:
+    """The opposite direction: readable pending check-runs with the legacy
+    combined-status source inaccessible is likewise inconclusive — the unread
+    status source could hold a failed required legacy status that outranks
+    pending — so the rollup is incomplete, not a complete PENDING."""
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "in_progress", "conclusion": None},
+            ]
+        },
+        status_status=403,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "PENDING"
+    assert rollup.complete is False
 
 
 def test_get_commit_check_rollup_folds_in_legacy_commit_statuses() -> None:

@@ -974,10 +974,13 @@ class GitHubAdapter:
 
         if not rollup.complete:
             logger.warning(
-                "REST check-run fallback incomplete for PR %s (sha %s): "
-                "commit-status source inaccessible and check-runs inconclusive",
+                "REST check-run fallback incomplete for PR %s (sha %s): a "
+                "rollup source was inaccessible and the readable sources found "
+                "no failure, so an unread failed required check/status could be "
+                "hiding behind a %s aggregate",
                 pr_number,
                 head_sha,
+                rollup.state or "no-checks",
             )
             return StatusCheckRollupRead(state=None, capability="permission_denied")
         return StatusCheckRollupRead(

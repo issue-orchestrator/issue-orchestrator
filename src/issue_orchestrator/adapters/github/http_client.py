@@ -54,11 +54,13 @@ class CommitCheckRollup:
     ``PENDING`` / ``SUCCESS`` / ``None`` when the commit has no checks).
 
     ``complete`` is ``False`` when a relevant source could not be read AND the
-    readable sources were inconclusive (no failure/pending found). In that case
-    the caller must NOT treat ``state`` as a truthful ``SUCCESS`` / "no checks"
-    answer, because an unreadable source (e.g. a legacy required commit status)
-    could still be failing. A failure/pending from the readable sources is
-    conclusive regardless, so ``complete`` stays ``True`` for those.
+    readable sources did not find a ``FAILURE``. In that case the caller must
+    NOT treat ``state`` as truthful, because an unread source could outrank
+    what was read: a ``SUCCESS`` / "no checks" / ``PENDING`` aggregate could
+    really be a ``FAILURE`` hiding in the unread source (``FAILURE`` outranks
+    ``PENDING`` in the rollup precedence). Only a ``FAILURE`` from a readable
+    source is conclusive with an unread source — nothing an unread source can
+    add outranks it — so ``complete`` stays ``True`` for a readable failure.
     """
 
     state: str | None
@@ -1005,21 +1007,31 @@ class GitHubHttpClient:
         still consulted (and vice versa), so a conclusive failure/pending from
         either readable source is honored even when the other cannot be read.
 
-        `CommitCheckRollup.complete` is `False` only when a source could not be
-        read AND the readable sources produced a non-conclusive `SUCCESS` /
-        "no checks" — i.e. exactly when the unread source could have changed the
-        answer. Combining is monotonic toward `FAILURE` (each source can only
-        ADD a failure/pending/present signal), so a `FAILURE`/`PENDING` from a
-        readable source cannot be overturned by an unread one and stays
-        conclusive (`complete=True`). This method does not raise on source
-        access failures — completeness is carried by the value object instead.
+        `CommitCheckRollup.complete` is `False` whenever a source could not be
+        read AND the readable sources did not produce a `FAILURE` — i.e. exactly
+        when the unread source could still change the answer. Only `FAILURE` is
+        conclusive with an unread source: it is the top of the rollup precedence
+        (`FAILURE` > `PENDING` > `SUCCESS`/none), so no signal an unread source
+        could ADD outranks it. A readable `PENDING` is NOT conclusive when a
+        source is unread, because that unread source could hold a failed
+        required check/status that outranks pending; it is reported incomplete
+        so the caller escalates as unreadable rather than waiting it out as
+        checks-pending. This method does not raise on source access failures —
+        completeness is carried by the value object instead.
         """
         encoded = quote(sha, safe="")
         checks = self._read_check_run_signal(encoded)
         status_readout = self._best_effort_commit_status(sha, encoded)
         statuses = _aggregate_combined_status(status_readout.payload)
         state = _combine_rollup_signals(checks.signal, statuses)
-        conclusive = state in ("FAILURE", "PENDING")
+        # Only FAILURE is conclusive with an unread source. FAILURE is the top
+        # of the rollup precedence (FAILURE > PENDING > SUCCESS/none), so no
+        # signal an unread source could ADD outranks it. PENDING is NOT
+        # conclusive: an unread source could hold a failed required
+        # check/status that outranks pending, which would make the true
+        # aggregate FAILURE — so a partial-source PENDING must be reported
+        # incomplete and escalated as unreadable, not waited out as pending CI.
+        conclusive = state == "FAILURE"
         all_sources_readable = checks.readable and status_readout.readable
         complete = all_sources_readable or conclusive
         return CommitCheckRollup(state=state, complete=complete)
