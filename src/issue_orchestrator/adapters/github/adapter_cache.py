@@ -66,7 +66,20 @@ class GitHubAdapterCacheSupport:
         return None
 
     def get_cached_pr_for_issue(self, issue_number: int, state: str) -> PRInfo | None:
-        """Return cached PR info for an issue when it satisfies the requested state."""
+        """Return cached PR info for an issue when one cached PR is a valid answer.
+
+        The by-issue cache holds at most one PR per issue. That single entry can
+        prove a PR in a *specific* state exists, but it cannot prove it is the
+        *complete* set of an issue's PRs. ``get_prs_for_issue(state="all")``
+        callers depend on completeness — the awaiting-merge reconciler suppresses
+        ``blocked:pr-closed`` only after confirming no associated PR is open, and
+        snapshot building picks a primary PR by preferring open > merged > closed.
+        Answering ``all`` from one cached PR could hide a newer open PR behind an
+        older closed one, so this owner refuses the cache for ``all`` and lets the
+        adapter fetch the authoritative list.
+        """
+        if state == "all":
+            return None
         cached = self._cache.get_pr_by_issue(issue_number)
         if not cached:
             return None

@@ -201,6 +201,40 @@
 .journey-step.status-blocked .journey-narrative { color: var(--danger, #e55); }
 .journey-step.status-completed .journey-narrative { color: var(--success, #5a5); }
 .journey-empty { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
+
+/* Live in-round progress row (issue #6428): a transient row surfaced while a
+   review round is still open so the timeline keeps advancing. The underlying
+   event status is "completed" (the prompt was sent), but the round itself is
+   still running — neutralise the green "done" colour and mark it as live. */
+.journey-step.journey-step-in-progress .journey-narrative { color: var(--text); }
+.journey-progress-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    font-size: 10px;
+    line-height: 1.4;
+    padding: 1px 7px;
+    border-radius: 10px;
+    border: 1px solid var(--accent, #4a9eff);
+    color: var(--accent, #4a9eff);
+    background: rgba(74, 158, 255, 0.08);
+    white-space: nowrap;
+}
+.journey-progress-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: journey-progress-pulse 1.4s ease-in-out infinite;
+}
+@keyframes journey-progress-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .journey-progress-dot { animation: none; }
+}
 .journey-filter {
     display: flex;
     align-items: center;

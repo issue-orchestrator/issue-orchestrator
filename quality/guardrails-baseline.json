@@ -136,6 +136,14 @@
       "rule_id": "control_policy_branch_sites",
       "value": 1
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/issue_fetch_resilience.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/issue_fetch_resilience.py",
+      "path": "src/issue_orchestrator/control/issue_fetch_resilience.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/job_store.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -1257,12 +1265,12 @@
       "value": 13
     },
     "control_policy_branch_sites:src/issue_orchestrator/view_models/issue_detail.py": {
-      "detail": "23 branch site(s) mention lifecycle/control terms",
+      "detail": "25 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/view_models/issue_detail.py",
       "path": "src/issue_orchestrator/view_models/issue_detail.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 23
+      "value": 25
     },
     "control_policy_branch_sites:src/issue_orchestrator/view_models/journey_projection.py": {
       "detail": "20 branch site(s) mention lifecycle/control terms",
@@ -1297,12 +1305,12 @@
       "value": 1537
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
-      "detail": "835 lines exceeds budget 800",
+      "detail": "926 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
       "path": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 835
+      "value": 926
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_handler.py": {
       "detail": "1235 lines exceeds budget 800",
@@ -1329,12 +1337,12 @@
       "value": 1506
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/orchestrator_support.py": {
-      "detail": "1398 lines exceeds budget 800",
+      "detail": "1452 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/orchestrator_support.py",
       "path": "src/issue_orchestrator/control/orchestrator_support.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1398
+      "value": 1452
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
       "detail": "1683 lines exceeds budget 800",
@@ -1345,12 +1353,12 @@
       "value": 1683
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
-      "detail": "1907 lines exceeds budget 800",
+      "detail": "1910 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/session_controller.py",
       "path": "src/issue_orchestrator/control/session_controller.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1907
+      "value": 1910
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_launcher.py": {
       "detail": "2035 lines exceeds budget 800",
@@ -1361,12 +1369,12 @@
       "value": 2035
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
-      "detail": "837 lines exceeds budget 800",
+      "detail": "898 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py",
       "path": "src/issue_orchestrator/control/startup_manager.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 837
+      "value": 898
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/validation.py": {
       "detail": "865 lines exceeds budget 800",
@@ -1529,12 +1537,12 @@
       "value": 1274
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/orchestrator.py": {
-      "detail": "1198 lines exceeds budget 800",
+      "detail": "1295 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/orchestrator.py",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1198
+      "value": 1295
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/supervisor.py": {
       "detail": "984 lines exceeds budget 800",
@@ -1553,20 +1561,20 @@
       "value": 1426
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/issue_detail.py": {
-      "detail": "1007 lines exceeds budget 800",
+      "detail": "1084 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/view_models/issue_detail.py",
       "path": "src/issue_orchestrator/view_models/issue_detail.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1007
+      "value": 1084
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/journey_projection.py": {
-      "detail": "1061 lines exceeds budget 800",
+      "detail": "1062 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/view_models/journey_projection.py",
       "path": "src/issue_orchestrator/view_models/journey_projection.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1061
+      "value": 1062
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/lifecycle_projection.py": {
       "detail": "1664 lines exceeds budget 800",
@@ -1577,12 +1585,12 @@
       "value": 1664
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/lifecycle_semantics.py": {
-      "detail": "1366 lines exceeds budget 800",
+      "detail": "1370 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/view_models/lifecycle_semantics.py",
       "path": "src/issue_orchestrator/view_models/lifecycle_semantics.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1366
+      "value": 1370
     },
     "ruff_complexity_noqa:src/issue_orchestrator/control/planner.py:C901:_plan_issues": {
       "detail": "C901 line 1069: `_plan_issues` is too complex (20 > 10)",
@@ -2824,10 +2832,18 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-762": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 762: Route orchestrator runtime state collection mutations through an owner abstraction.",
+    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-815": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 815: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-762",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-815",
+      "path": "src/issue_orchestrator/infra/orchestrator.py",
+      "rule_id": "semgrep_owner_boundaries",
+      "value": 1
+    },
+    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-832": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 832: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-832",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
@@ -5568,26 +5584,10 @@
       "rule_id": "semgrep_typed_seams",
       "value": 1
     },
-    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:50ce6aa859b3": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 417: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:50ce6aa859b3",
-      "path": "src/issue_orchestrator/view_models/issue_detail.py",
-      "rule_id": "semgrep_typed_seams",
-      "value": 1
-    },
     "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:5b5ec7233b32": {
       "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 941: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:5b5ec7233b32",
-      "path": "src/issue_orchestrator/view_models/issue_detail.py",
-      "rule_id": "semgrep_typed_seams",
-      "value": 1
-    },
-    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:6bad2fa8398d": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 518: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:6bad2fa8398d",
       "path": "src/issue_orchestrator/view_models/issue_detail.py",
       "rule_id": "semgrep_typed_seams",
       "value": 1
@@ -5620,14 +5620,6 @@
       "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 239: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:8f78405d61a2",
-      "path": "src/issue_orchestrator/view_models/issue_detail.py",
-      "rule_id": "semgrep_typed_seams",
-      "value": 1
-    },
-    "semgrep_typed_seams:src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:9a82a50cd366": {
-      "detail": "issue-orchestrator.raw-public-seam-dict-parameter line 556: Route public seam payloads through typed contracts or models instead of raw dict/list-of-dict parameter annotations.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:issue-orchestrator.raw-public-seam-dict-parameter:9a82a50cd366",
       "path": "src/issue_orchestrator/view_models/issue_detail.py",
       "rule_id": "semgrep_typed_seams",
       "value": 1

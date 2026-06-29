@@ -69,9 +69,8 @@ from .actions import (
     SessionType,
     SyncLabelsAction,
 )
-from .awaiting_merge_reconciler import (
-    POST_PUBLISH_VALIDATION_SOURCE, build_post_publish_validation_comment,
-)
+from .awaiting_merge_post_publish_policy import build_post_publish_validation_comment
+from .awaiting_merge_reconciler import POST_PUBLISH_VALIDATION_SOURCE
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 
@@ -778,7 +777,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                             "marking PR for rework"
                         ),
                     ))
-                    if rework.feedback:
+                    if rework.feedback and not rework.feedback_comment_already_posted:
                         actions.append(AddCommentAction(
                             number=rework.pr_number,
                             is_pr=True,

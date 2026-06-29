@@ -10,7 +10,11 @@ from fastapi.testclient import TestClient
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
-from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
+from issue_orchestrator.ports.pull_request_tracker import (
+    PRInfo,
+    PRRef,
+    StatusCheckRollupRead,
+)
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -53,29 +57,46 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     """Strip orchestrator env vars and set safe defaults.
 
     When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
-    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done. If the agent then runs
-    `make validate-quick` (pytest), these vars leak into unit tests and cause
-    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID
-    overrides mocked values.
+    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done — and
+    their legacy unprefixed ORCHESTRATOR_* fallbacks (ORCHESTRATOR_SESSION_ID,
+    ORCHESTRATOR_CONFIG_NAME/PATH, ORCHESTRATOR_API_PORT, ...). If the agent then
+    runs `make validate-quick` (pytest), these vars leak into unit tests and cause
+    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID forces
+    managed mode over mocked values, and a leaked ORCHESTRATOR_SESSION_ID breaks
+    TestAgentGateIntegration when tests mock ``get_session_id`` without injecting
+    a RUN_DIR. Code reads the legacy unprefixed names as fallbacks
+    (get_session_id, preflight push), so stripping only the ISSUE_-prefixed names
+    is not enough when the orchestrator self-hosts.
 
     Similarly, ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) can
-    override test expectations in resolve_base_branch tests.
+    override test expectations in resolve_base_branch tests; it is covered by the
+    ORCHESTRATOR_ prefix sweep below.
 
-    This fixture strips them so tests always start with a clean env, then
-    sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
+    This fixture strips both prefixes so tests always start with a clean env,
+    then sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
     resolves repo_root from the environment (e.g. SubprocessPlugin) never
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
+    Both env-var families are stripped. Several runtime readers accept a legacy
+    non-prefixed ``ORCHESTRATOR_*`` form as a fallback to the canonical
+    ``ISSUE_ORCHESTRATOR_*`` one (e.g. config resolution reads
+    ``ORCHESTRATOR_CONFIG_PATH`` / ``ORCHESTRATOR_CONFIG_NAME`` and managed-mode
+    detection reads ``ORCHESTRATOR_SESSION_ID``). Stripping only the prefixed
+    form left the legacy form leaking into the suite when the agent runs
+    ``make validate-quick`` inside an orchestrator session, so both prefixes are
+    cleared here.
     """
-    orchestrator_env_vars = [
-        "ORCHESTRATOR_WORKTREE_BASE_BRANCH",
-    ]
-    for var in orchestrator_env_vars:
-        monkeypatch.delenv(var, raising=False)
-
-    # Strip all ISSUE_ORCHESTRATOR_* vars (SESSION_ID, CONFIG_PATH, etc.)
+    # Strip every orchestrator-injected var so tests start from a clean env.
+    # The orchestrator exports ISSUE_ORCHESTRATOR_* and also a few bare, legacy
+    # ORCHESTRATOR_* forms — e.g. the persistent review-exchange runner sets
+    # ORCHESTRATOR_SESSION_ID, which coding-done/_is_managed_session still accept
+    # for compatibility. Leaving the bare forms in place makes every test look
+    # like a managed orchestrator session and breaks standalone-path tests, so
+    # strip both prefixes (this subsumes ORCHESTRATOR_WORKTREE_BASE_BRANCH). The
+    # two prefixes are disjoint ("ISSUE_ORCHESTRATOR_" does not start with
+    # "ORCHESTRATOR_"), so each var is handled once.
     for var in list(os.environ):
-        if var.startswith("ISSUE_ORCHESTRATOR_"):
+        if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)
 
     # Set a safe default REPO_ROOT so SubprocessPlugin (and anything else
@@ -353,12 +374,15 @@ class MockGitHubAdapter:
                     return pr
         return None
 
-    def get_pr_with_status_check_rollup(self, pr_number: int) -> Optional[PRInfo]:
-        """Get a specific PR augmented with rollup. The mock has no
-        check-status concept, so return whatever ``status_check_rollup``
-        the test fixture set on the PRInfo (defaults to None). Real
-        adapter pays an extra GraphQL round-trip; the mock is free."""
-        return self.get_pr(pr_number)
+    def read_pr_status_check_rollup(self, pr_number: int) -> StatusCheckRollupRead:
+        """Read a PR's status-check rollup. The mock has no check-status
+        concept, so it reports ``ok`` with whatever ``status_check_rollup``
+        the test fixture set on the PRInfo (defaults to None). The real
+        adapter pays a GraphQL round-trip and can report permission/
+        transient failures; the mock is free and always-capable."""
+        pr = self.get_pr(pr_number)
+        state = pr.status_check_rollup if pr is not None else None
+        return StatusCheckRollupRead(state=state, capability="ok")
 
     def create_pr(self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None) -> PRInfo:
         """Create a new PR (mock)."""
