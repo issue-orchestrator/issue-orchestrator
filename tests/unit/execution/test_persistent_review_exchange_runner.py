@@ -183,6 +183,36 @@ def test_response_channel_for_codex_workspace_write_uses_file(tmp_path: Path) ->
     assert prer.response_channel_for_agent(agent) == "file"
 
 
+def test_response_channel_for_codex_explicit_workspace_write_uses_file(
+    tmp_path: Path,
+) -> None:
+    agent = _make_agent(
+        tmp_path,
+        provider="codex",
+        ai_system="codex",
+        provider_args={
+            "approval_mode": "default",
+            "sandbox": "workspace-write",
+        },
+    )
+
+    assert prer.response_channel_for_agent(agent) == "file"
+
+
+def test_response_channel_for_codex_read_only_uses_file(tmp_path: Path) -> None:
+    agent = _make_agent(
+        tmp_path,
+        provider="codex",
+        ai_system="codex",
+        provider_args={
+            "approval_mode": "default",
+            "sandbox": "read-only",
+        },
+    )
+
+    assert prer.response_channel_for_agent(agent) == "file"
+
+
 def test_response_channel_for_codex_yolo_uses_mailbox(tmp_path: Path) -> None:
     agent = _make_agent(
         tmp_path,

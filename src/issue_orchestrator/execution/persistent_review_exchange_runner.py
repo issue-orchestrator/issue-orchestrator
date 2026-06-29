@@ -56,19 +56,28 @@ def persistent_pair_root_for_worktree(coder_worktree: Path) -> Path:
     return coder_worktree / ".issue-orchestrator" / "persistent-pairs"
 
 
-def _codex_workspace_write_callbacks_blocked(agent: AgentConfig) -> bool:
+_CODEX_LOOPBACK_BLOCKING_SANDBOXES = frozenset({"read-only", "workspace-write"})
+
+
+def _codex_loopback_callbacks_blocked(agent: AgentConfig) -> bool:
     provider = (agent.provider or agent.ai_system or "").lower()
     if provider != "codex":
         return False
     approval_mode = str(agent.provider_args.get("approval_mode", "full-auto"))
+    if approval_mode == "yolo":
+        return False
     sandbox_value = agent.provider_args.get("sandbox")
-    sandbox = "workspace-write" if sandbox_value is None else str(sandbox_value)
-    return approval_mode == "full-auto" and sandbox == "workspace-write"
+    sandbox = (
+        "workspace-write"
+        if sandbox_value is None and approval_mode == "full-auto"
+        else str(sandbox_value or "")
+    )
+    return sandbox in _CODEX_LOOPBACK_BLOCKING_SANDBOXES
 
 
 def response_channel_for_agent(agent: AgentConfig) -> ResponseChannel:
     """Select the verdict transport supported by an exchange role's sandbox."""
-    if _codex_workspace_write_callbacks_blocked(agent):
+    if _codex_loopback_callbacks_blocked(agent):
         return "file"
     return "mailbox"
 
