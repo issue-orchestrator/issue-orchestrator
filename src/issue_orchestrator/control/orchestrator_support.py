@@ -36,6 +36,7 @@ from .queue_cache import (
     queue_shrink_confirmation_pending,
     record_issue_refreshes,
 )
+from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .reconciliation import ReconciliationRequired, get_pause_label
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
@@ -657,6 +658,7 @@ def run_planning_cycle(
     last_network_sync: float,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
+    issue_fetch_resilience: IssueFetchResilience,
     observer: object | None = None,
     claim_manager: object | None = None,
     queue_cache_store: "QueueCacheStore | None" = None,
@@ -669,11 +671,27 @@ def run_planning_cycle(
     ) or refresh_requested or queue_shrink_confirmation_due(state, now)
 
     if should_fetch:
-        last_network_sync, refresh_requested = _fetch_and_update_queue(
-            config, events, state, repository_host, scheduler, github_workflow,
-            refresh_requested, inflight_stable_ids,
-            queue_cache_store=queue_cache_store,
-        )
+        try:
+            last_network_sync, refresh_requested = issue_fetch_resilience.guard(
+                lambda: _fetch_and_update_queue(
+                    config, events, state, repository_host, scheduler, github_workflow,
+                    refresh_requested, inflight_stable_ids,
+                    queue_cache_store=queue_cache_store,
+                )
+            )
+        except TransientIssueFetchError as exc:
+            # Recoverable issue-list failure (transient 404/5xx/network): keep
+            # the cached queue and resume the normal refresh cadence instead of
+            # crashing or burning the loop error budget. The orchestrator is
+            # label-recoverable, so skipping a refresh is cheap.
+            logger.warning(
+                "[FETCH] %s — keeping cached queue (%d issue(s)); will retry next cycle. %s",
+                exc.summary, len(state.cached_queue_issues), exc.suggested_fix,
+            )
+            last_network_sync = now
+        # PermanentIssueFetchError is intentionally NOT caught here: it
+        # propagates to the run loop, which logs the actionable message and
+        # shuts down cleanly rather than crashing with a raw traceback.
 
     # Detect stale issues and claims
     stale_issues = _detect_stale_in_progress(observer, state, events, event_context)

@@ -73,7 +73,14 @@ from ..control.completion_handler import (
     get_review_machine as _ch_get_review_machine,
 )
 from ..control.startup_manager import StartupManager
+from ..control.issue_fetch_resilience import (
+    IssueFetchResilience,
+    FetchFailureVerdict,
+    PermanentIssueFetchError,
+)
 from ..ports import TraceEvent, RepositoryHost, SessionRunner
+from ..ports.repository_host import RepositoryHostError
+from .startup_errors import StartupError, write_startup_failure
 from ..control.health_gate import HealthDecision
 from ..control.orchestrator_deps import OrchestratorDeps
 from .e2e_runner import maybe_trigger_e2e, get_e2e_runner_manager
@@ -273,6 +280,16 @@ class Orchestrator:
     def _get_milestone_filter(self) -> str | None: return self.config.filtering.milestone
 
     @cached_property
+    def _issue_fetch_resilience(self) -> IssueFetchResilience:
+        """Single owner of the issue-list fetch resilience policy.
+
+        Shared between startup and the steady-state tick so the consecutive
+        repo-not-found count (which promotes a *persistent* 404 from transient
+        to permanent) spans the whole process lifetime.
+        """
+        return IssueFetchResilience(self.config.repo)
+
+    @cached_property
     def _startup_manager(self) -> StartupManager:
         return StartupManager(
             self.config, self.deps.events, self.deps.runner, self.deps.repository_host,
@@ -289,7 +306,60 @@ class Orchestrator:
     async def startup(self) -> None:
         self.start_publish_executor()
         self._sweep_orphan_atomic_write_tempfiles()
-        await self._startup_manager.run_startup(self.state)
+        try:
+            await self._startup_manager.run_startup(self.state)
+        except RepositoryHostError as error:
+            self._handle_startup_repository_failure(error)
+        else:
+            self._issue_fetch_resilience.note_success()
+
+    def _handle_startup_repository_failure(self, error: RepositoryHostError) -> None:
+        """React to a repository-host failure raised during startup.
+
+        Transient (a brief blip, a 5xx, eventual-consistency after a rename) →
+        come up in a degraded state; the main loop retries and recovers. The
+        orchestrator is label-recoverable, so a partial startup is cheap.
+
+        Permanent (auth failure, or a repo-not-found that has persisted) →
+        record an actionable failure and refuse to come up, instead of crashing
+        the process with a raw ``GitHubHttpError`` traceback.
+        """
+        verdict = self._issue_fetch_resilience.record_failure(error)
+        if not verdict.is_permanent:
+            logger.warning(
+                "[STARTUP] %s — starting in degraded mode; the main loop will retry. %s",
+                verdict.summary, verdict.suggested_fix,
+            )
+            self.state.startup_status = "complete"
+            self.state.startup_message = (
+                "GitHub issue fetch is temporarily unavailable; retrying in the background…"
+            )
+            return
+        self._record_permanent_fetch_failure(verdict, context="STARTUP")
+        self._shutdown_requested = True
+
+    def _record_permanent_fetch_failure(
+        self, verdict: FetchFailureVerdict, *, context: str
+    ) -> None:
+        """Log an actionable message and persist a clear failure record.
+
+        Used for a confirmed-permanent issue-fetch failure at startup or in the
+        run loop so operators get ``repo name + token-scope hint`` rather than a
+        raw traceback.
+        """
+        logger.error("[%s] %s. %s", context, verdict.summary, verdict.suggested_fix)
+        try:
+            write_startup_failure(
+                self.config.repo_root,
+                StartupError(
+                    phase="runtime",
+                    message=verdict.summary,
+                    suggested_fix=verdict.suggested_fix,
+                ),
+            )
+        except OSError:
+            logger.exception("[%s] Failed to persist permanent-failure record", context)
+        self.state.startup_message = f"{verdict.summary}. {verdict.suggested_fix}"
 
     def _sweep_orphan_atomic_write_tempfiles(self) -> None:
         """Remove partial tempfiles left by a prior ``kill -9`` mid-rename.
@@ -928,10 +998,52 @@ class Orchestrator:
         with self._state_lock:
             refresh_to_process = self.state.queue_refresh_requested
             self.state.queue_refresh_requested = False
-        self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self.observer, self.deps.claim_manager, queue_cache_store=self.deps.queue_cache_store, io_claimed_label=self.deps.label_manager.io_claimed)
+        self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self._issue_fetch_resilience, self.observer, self.deps.claim_manager, queue_cache_store=self.deps.queue_cache_store, io_claimed_label=self.deps.label_manager.io_claimed)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier.clear_discovered_facts()
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier.emit_heartbeat_if_needed()
+
+    def _reconcile_orphaned_labels_at_startup(self) -> None:
+        """Best-effort orphan-label cleanup before the tick loop starts.
+
+        A transient GitHub blip here (or a permanent auth/not-found after a
+        degraded startup) must not crash the loop with a raw traceback — the
+        tick reconciles labels later anyway.
+        """
+        try:
+            self.reconcile_orphaned_pr_labels()
+        except RepositoryHostError as error:
+            logger.warning(
+                "[LOOP] Skipping startup orphan-label reconcile — repository host "
+                "unavailable: %s", error,
+            )
+
+    def _handle_loop_error(self, error: Exception) -> None:
+        """Record a tick error and pause after too many consecutive failures."""
+        self._loop_error_count += 1
+        logger.exception("[LOOP] Error in iteration %d: %s", self._loop_iteration, error)
+        self.deps.events.publish(TraceEvent(
+            EventName.APPLY_FAILED,
+            self._event_context.enrich({
+                "step_type": "tick",
+                "iteration": self._loop_iteration,
+                "error": str(error),
+                "error_count": self._loop_error_count,
+            }),
+        ))
+        if self._loop_error_count >= self._loop_error_limit and not self.state.paused:
+            self.state.paused = True
+            logger.warning(
+                "[LOOP] Pausing orchestrator after %d consecutive errors",
+                self._loop_error_count,
+            )
+            self.deps.events.publish(TraceEvent(
+                EventName.ORCHESTRATOR_PAUSED,
+                self._event_context.enrich({
+                    "reason": "loop_error_threshold",
+                    "error_count": self._loop_error_count,
+                }),
+            ))
 
     async def run_loop(self) -> None:
         logger.info("Starting orchestration loop")
@@ -953,7 +1065,7 @@ class Orchestrator:
                     self._event_context.enrich({"reason": "startup"}),
                 ))
 
-        self.reconcile_orphaned_pr_labels()
+        self._reconcile_orphaned_labels_at_startup()
         self._last_network_sync, self._last_ui_update, self._loop_iteration = 0.0, time.time(), 0
 
         while not self._shutdown_requested:
@@ -964,31 +1076,16 @@ class Orchestrator:
                 self._loop_error_count = 0
                 if not should_continue:
                     break
+            except PermanentIssueFetchError as e:
+                # A confirmed-permanent issue fetch failure (auth, or a
+                # repo-not-found that has persisted): fail fast with a clear,
+                # actionable message and shut down cleanly rather than crashing
+                # with a raw traceback or spinning the loop-error budget.
+                self._record_permanent_fetch_failure(e.verdict, context="LOOP")
+                self._shutdown_requested = True
+                break
             except Exception as e:
-                self._loop_error_count += 1
-                logger.exception("[LOOP] Error in iteration %d: %s", self._loop_iteration, e)
-                self.deps.events.publish(TraceEvent(
-                    EventName.APPLY_FAILED,
-                    self._event_context.enrich({
-                        "step_type": "tick",
-                        "iteration": self._loop_iteration,
-                        "error": str(e),
-                        "error_count": self._loop_error_count,
-                    }),
-                ))
-                if self._loop_error_count >= self._loop_error_limit and not self.state.paused:
-                    self.state.paused = True
-                    logger.warning(
-                        "[LOOP] Pausing orchestrator after %d consecutive errors",
-                        self._loop_error_count,
-                    )
-                    self.deps.events.publish(TraceEvent(
-                        EventName.ORCHESTRATOR_PAUSED,
-                        self._event_context.enrich({
-                            "reason": "loop_error_threshold",
-                            "error_count": self._loop_error_count,
-                        }),
-                    ))
+                self._handle_loop_error(e)
             await asyncio.sleep(10)
 
         # Shutdown sequence

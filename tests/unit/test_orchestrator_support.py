@@ -30,6 +30,10 @@ from issue_orchestrator.control.orchestrator_support import (
     _track_stale_ticks,
 )
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+from issue_orchestrator.control.issue_fetch_resilience import (
+    IssueFetchResilience,
+    PermanentIssueFetchError,
+)
 from issue_orchestrator.control.reconciliation import (
     ReconciliationRequired,
     ExpectedState,
@@ -555,6 +559,7 @@ class TestQueueFetchPlanner:
             last_network_sync=last_sync,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert next_sync == last_sync
@@ -603,6 +608,7 @@ class TestQueueFetchPlanner:
             last_network_sync=last_sync,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert next_sync >= last_sync
@@ -612,6 +618,94 @@ class TestQueueFetchPlanner:
         github_workflow.fetch_all_issues.assert_not_called()
         github_workflow.refresh_issues.assert_called_once_with(list(range(2, 12)))
         assert state.queue_pending_shrink_missing_issue_numbers == []
+
+    def test_run_planning_cycle_survives_transient_fetch_failure(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """A transient issue-list failure keeps the cached queue and keeps going."""
+        config = self._make_config()
+        cached = [make_issue(1, labels=["agent:web"]), make_issue(2, labels=["agent:web"])]
+        state = OrchestratorState(
+            cached_queue_issues=list(cached),
+            queue_last_full_scan_at=time.time(),
+        )
+        fact_gatherer = Mock()
+        fact_gatherer.create_snapshot.return_value = Mock()
+        planner = Mock()
+        planner.plan.return_value = Mock(action_count=0, actions=[])
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.side_effect = GitHubHttpError(
+            "GitHub GET /repos/owner/repo/issues failed: 404", status_code=404
+        )
+
+        # Must NOT raise — the orchestrator stays up on a recoverable blip.
+        run_planning_cycle(
+            config=config,
+            events=mock_event_sink,
+            event_context=Mock(enrich=lambda payload: payload),
+            state=state,
+            fact_gatherer=fact_gatherer,
+            planner=planner,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            apply_plan_fn=Mock(),
+            clear_discovered_facts_fn=Mock(),
+            last_network_sync=0.0,
+            refresh_requested=True,
+            inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+        )
+
+        github_workflow.fetch_all_issues.assert_called_once()
+        # Cached queue is preserved, and planning still proceeds with it.
+        assert [issue.number for issue in state.cached_queue_issues] == [1, 2]
+        planner.plan.assert_called_once()
+
+    def test_run_planning_cycle_fails_fast_on_permanent_fetch_failure(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """A persistent repo-not-found propagates a clear, actionable error."""
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+        )
+        fact_gatherer = Mock()
+        planner = Mock()
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.side_effect = GitHubHttpError(
+            "GitHub GET /repos/owner/repo/issues failed: 404", status_code=404
+        )
+
+        with pytest.raises(PermanentIssueFetchError) as exc_info:
+            run_planning_cycle(
+                config=config,
+                events=mock_event_sink,
+                event_context=Mock(enrich=lambda payload: payload),
+                state=state,
+                fact_gatherer=fact_gatherer,
+                planner=planner,
+                repository_host=mock_repository_host,
+                scheduler=scheduler,
+                github_workflow=github_workflow,
+                apply_plan_fn=Mock(),
+                clear_discovered_facts_fn=Mock(),
+                last_network_sync=0.0,
+                refresh_requested=True,
+                inflight_stable_ids={},
+                issue_fetch_resilience=IssueFetchResilience(
+                    "owner/repo", repo_not_found_tolerance=1
+                ),
+            )
+
+        assert "owner/repo" in str(exc_info.value)
+        # Planning is never reached when the fetch fails fast.
+        planner.plan.assert_not_called()
 
     def test_suspicious_full_scan_shrink_retains_queue_and_watermark(
         self, mock_event_sink, mock_repository_host

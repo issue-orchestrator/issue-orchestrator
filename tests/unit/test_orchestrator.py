@@ -402,6 +402,75 @@ class TestStartup:
         )
 
     @pytest.mark.asyncio
+    async def test_startup_survives_transient_issue_fetch_failure(
+        self, sample_config, mock_repository_host
+    ):
+        """A transient 404 during startup must not crash — come up degraded."""
+        from issue_orchestrator.control.startup_manager import StartupManager
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        transient = GitHubHttpError(
+            "GitHub GET /repos/test/repo/issues failed: 404", status_code=404
+        )
+
+        with patch.object(
+            StartupManager, "run_startup", new=AsyncMock(side_effect=transient)
+        ):
+            # Must NOT raise — process stays up.
+            await orchestrator.startup()
+
+        assert orchestrator.shutdown_requested is False
+        # Degraded-but-ready so the main loop runs and recovers.
+        assert orchestrator.state.startup_status == "complete"
+
+    @pytest.mark.asyncio
+    async def test_startup_fails_fast_on_permanent_auth_failure(
+        self, sample_config, mock_repository_host
+    ):
+        """A permanent auth failure refuses to come up with a clear message."""
+        from issue_orchestrator.control.startup_manager import StartupManager
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        permanent = GitHubHttpError(
+            "GitHub GET /repos/test/repo/issues failed: 401", status_code=401
+        )
+
+        with patch.object(
+            StartupManager, "run_startup", new=AsyncMock(side_effect=permanent)
+        ):
+            # Must NOT raise a raw traceback — it is handled cleanly.
+            await orchestrator.startup()
+
+        assert orchestrator.shutdown_requested is True
+        # An actionable message is surfaced (not a raw GitHubHttpError).
+        assert orchestrator.state.startup_message
+        assert "auth" in orchestrator.state.startup_message.lower()
+
+    @pytest.mark.asyncio
+    async def test_run_loop_survives_repository_failure_in_startup_reconcile(
+        self, sample_config, mock_repository_host
+    ):
+        """A repository-host failure in the pre-loop reconcile must not crash."""
+        from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        # Exit after the pre-loop setup so the test stays deterministic (no ticks).
+        orchestrator.shutdown_requested = True
+
+        with patch.object(
+            orchestrator,
+            "reconcile_orphaned_pr_labels",
+            side_effect=GitHubHttpError("GitHub unavailable", status_code=503),
+        ):
+            # Must NOT raise — the loop rides out the reconcile failure.
+            await orchestrator.run_loop()
+
+        # Lifecycle still completed despite the reconcile failure.
+        assert orchestrator.deps.events.get_events_by_name(EventName.ORCHESTRATOR_STARTED)
+
+    @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_startup_clears_orphaned_labels(
         self,
