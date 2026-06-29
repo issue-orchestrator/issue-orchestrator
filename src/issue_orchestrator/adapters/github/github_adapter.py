@@ -72,8 +72,21 @@ _ROLLUP_PERMISSION_MARKERS: tuple[str, ...] = (
 
 
 def _classify_rollup_failure(exc: GitHubHttpError) -> StatusCheckRollupCapability:
-    """Tell a missing-permission rollup failure from a transient one."""
-    if exc.status_code in (401, 403):
+    """Tell a missing-permission rollup failure from a transient one.
+
+    A 401 is an authentication failure: the token cannot identify itself at
+    all, which is always an operator problem rather than a retryable blip.
+
+    Every other status (403, 429, 5xx, GraphQL-200-with-errors) is decided by
+    the response body, NOT the status code. A genuine missing-capability
+    failure names the gap — ``forbidden`` / ``not accessible`` / a required
+    ``scope``/``permission`` — so we sniff for those markers. GitHub also
+    returns HTTP 403 for retryable throttling ("API rate limit exceeded",
+    "secondary rate limit"); those bodies name no scope, so they fall through
+    to ``transient_error`` and are retried next tick instead of arming the
+    repo-wide permission backoff and escalating a bogus missing-scope error.
+    """
+    if exc.status_code == 401:
         return "permission_denied"
     haystack = f"{exc} {getattr(exc, 'response_text', '') or ''}".lower()
     if any(marker in haystack for marker in _ROLLUP_PERMISSION_MARKERS):

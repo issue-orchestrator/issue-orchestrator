@@ -650,6 +650,60 @@ class TestPROperations:
 
         assert read.capability == "permission_denied"
 
+    def test_read_pr_status_check_rollup_unauthorized_401_is_permission_denied(
+        self, adapter, mock_http_client
+    ):
+        """A 401 is an authentication failure: the token cannot identify itself
+        at all. That is an operator problem, not a retryable blip, so it stays
+        on the permission_denied path regardless of body."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 401",
+            status_code=401,
+            response_text="Bad credentials",
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="permission_denied")
+        assert read.permission_denied is True
+
+    def test_read_pr_status_check_rollup_rate_limit_403_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """GitHub returns HTTP 403 for retryable throttling, not just missing
+        scope. A primary rate-limit 403 body names no permission, so it must
+        classify as transient_error — never the missing-scope path that arms
+        the repo-wide backoff and escalates a bogus permission error."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 403",
+            status_code=403,
+            response_text="API rate limit exceeded for installation ID 12345.",
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
+    def test_read_pr_status_check_rollup_secondary_rate_limit_403_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """A 403 secondary-rate-limit body is throttling, not a scope gap, so
+        it is PENDING-equivalent retry, not permission_denied."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 403",
+            status_code=403,
+            response_text=(
+                "You have exceeded a secondary rate limit and have been "
+                "temporarily blocked from content creation."
+            ),
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
     def test_read_pr_status_check_rollup_transient_failure_is_transient(
         self, adapter, mock_http_client
     ):
