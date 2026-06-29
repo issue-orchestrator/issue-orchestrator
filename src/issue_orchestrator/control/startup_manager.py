@@ -25,7 +25,7 @@ import logging
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Iterator, Optional
+from typing import TYPE_CHECKING, Callable, Iterator, Optional, Sequence
 
 from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
@@ -48,6 +48,7 @@ from ..domain.models import (
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
+from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
@@ -85,6 +86,7 @@ class StartupManager:
         restore_sessions_fn: Callable[[list[DiscoveredSession]], None],
         launch_session_fn: Callable[[Issue], Optional[Session]],
         update_queue_cache_fn: Callable[[], None],
+        issue_fetch_resilience: IssueFetchResilience,
         queue_cache_store: "QueueCacheStore | None" = None,
         label_manager: "LabelManager | None" = None,
         label_store: "LabelStore | None" = None,
@@ -101,6 +103,11 @@ class StartupManager:
             restore_sessions_fn: Callback to restore running sessions
             launch_session_fn: Callback to launch a new session
             update_queue_cache_fn: Callback to update the queue cache
+            issue_fetch_resilience: Shared owner of the issue-list fetch
+                resilience policy. Guards only the startup queue-sync fetch so a
+                transient repository blip degrades-and-continues while a
+                persistent repo-not-found/auth failure fails fast; downstream
+                recovery phases keep their own error handling.
             queue_cache_store: Persistent store for queue cache (enables warm restarts)
             label_manager: Label registry for prefix-aware queries.
         """
@@ -114,6 +121,7 @@ class StartupManager:
         self._restore_sessions = restore_sessions_fn
         self._launch_session = launch_session_fn
         self._update_queue_cache = update_queue_cache_fn
+        self._issue_fetch_resilience = issue_fetch_resilience
         self._queue_cache_store = queue_cache_store
         if label_manager is None:
             from .label_manager import LabelManager
@@ -735,9 +743,14 @@ class StartupManager:
         """
         store = self._queue_cache_store
         if store is None:
-            # No persistent store configured — fall back to full scan.
+            # No persistent store configured — fall back to full scan. Guard the
+            # fetch so a transient repository blip degrades-and-continues rather
+            # than aborting the remaining startup recovery phases.
             state.startup_message = "Caching queue..."
-            self._update_queue_cache()
+            try:
+                self._issue_fetch_resilience.guard(self._update_queue_cache)
+            except TransientIssueFetchError as exc:
+                self._note_degraded_queue_fetch(exc, state)
             return
 
         state.startup_message = "Restoring queue cache..."
@@ -745,6 +758,44 @@ class StartupManager:
         cached_watermark = store.load_watermark()
         queue_cache = QueueCache(self.config, state, store)
 
+        try:
+            # Guard *only* the issue-list fetch. A persistent repo-not-found or
+            # auth failure here raises PermanentIssueFetchError, which propagates
+            # out of run_startup so the orchestrator fails fast with an
+            # actionable message. A transient failure degrades-and-continues.
+            self._issue_fetch_resilience.guard(
+                lambda: self._sync_queue_from_github(
+                    state, queue_cache, cached_issues, cached_watermark,
+                )
+            )
+        except TransientIssueFetchError as exc:
+            # Degrade: come up on the last-known-good cached queue (if any) and
+            # let the main loop re-sync. Persist nothing so the good snapshot
+            # stays intact, and let the remaining startup phases still run.
+            if cached_issues:
+                queue_cache.replace_from_refresh(list(cached_issues))
+                state.queue_delta_watermark = cached_watermark
+            self._note_degraded_queue_fetch(exc, state)
+            return
+
+        # Persist updated state to SQLite for next restart (success path only).
+        state.startup_message = "Persisting queue cache..."
+        queue_cache.save_snapshot()
+
+    def _sync_queue_from_github(
+        self,
+        state: OrchestratorState,
+        queue_cache: QueueCache,
+        cached_issues: Sequence[Issue],
+        cached_watermark: str | None,
+    ) -> None:
+        """Perform the startup issue-list fetch and apply it to the queue.
+
+        This is the single repository-host fetch the resilience policy guards at
+        startup; a ``RepositoryHostError`` raised here is classified by the
+        policy (degrade vs. fail-fast). Callers run it under
+        ``issue_fetch_resilience.guard``.
+        """
         if cached_watermark and not cached_issues:
             # Corrupt/partial persisted state: watermark exists but no issues were
             # loaded. A delta sync from the stale watermark would only pull issues
@@ -788,9 +839,21 @@ class StartupManager:
             logger.info("[STARTUP] Cold start: running full queue scan")
             self._update_queue_cache()
 
-        # Persist updated state to SQLite for next restart
-        state.startup_message = "Persisting queue cache..."
-        queue_cache.save_snapshot()
+    def _note_degraded_queue_fetch(
+        self, exc: TransientIssueFetchError, state: OrchestratorState
+    ) -> None:
+        """Log a transient startup queue-fetch failure and keep going.
+
+        The orchestrator is label-recoverable: coming up on the (possibly stale
+        or empty) cached queue and letting the main loop re-sync is far cheaper
+        than refusing to start. Only the queue fetch is skipped — the remaining
+        startup recovery phases still run.
+        """
+        logger.warning(
+            "[STARTUP] %s — coming up on the cached queue (%d issue(s)); the main "
+            "loop will re-sync. %s",
+            exc.summary, len(state.cached_queue_issues), exc.suggested_fix,
+        )
 
     async def _resume_partial_work(
         self,
