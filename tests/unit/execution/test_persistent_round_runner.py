@@ -16,6 +16,7 @@ import logging
 import os
 import sys
 import textwrap
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -442,16 +443,26 @@ class TestPersistentSessionLifecycle:
         )
         codex_bin = tmp_path / "codex"
         codex_bin.symlink_to(sys.executable)
-        clock = _FakeClock()
         gate_opened = False
 
-        def sleeper(seconds: float) -> None:
+        def reveal_late_trust_prompt(seconds: float) -> None:
+            # The runner drives its deadline off the real monotonic clock
+            # (``now`` is deliberately not injected), so the round-trip has a
+            # genuine wall-clock budget and cannot lose a race against the real
+            # subprocess under CPU contention — a fake clock advanced only by
+            # this sleeper would burn the whole timeout in a few poll
+            # iterations regardless of real elapsed time and flake under load.
+            # The injected ``sleep`` only stages the *late* trust prompt: the
+            # first poll happens inside the runner's startup-interaction drain,
+            # at which point we reveal the prompt and block until the stub has
+            # rendered it. The real sleep keeps the poll loop yielding so the
+            # subprocess gets scheduled.
             nonlocal gate_opened
-            clock.value += seconds
-            if not gate_opened and clock.value >= 0.35:
+            if not gate_opened:
                 gate_opened = True
                 trust_gate.touch()
                 _wait_until(prompt_ready.exists)
+            time.sleep(seconds)
 
         session = open_persistent_session(
             command=[str(codex_bin), "-u", str(script)],
@@ -464,8 +475,8 @@ class TestPersistentSessionLifecycle:
                 prompt="real round",
                 response_file=response_file,
                 timeout_seconds=5,
-                now=clock.now,
-                sleep=sleeper,
+                poll_interval_seconds=0.02,
+                sleep=reveal_late_trust_prompt,
             )
         finally:
             close_persistent_session(session)

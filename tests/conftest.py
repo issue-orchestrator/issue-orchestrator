@@ -71,8 +71,19 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     resolves repo_root from the environment (e.g. SubprocessPlugin) never
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
+    Both env-var families are stripped. Several runtime readers accept a legacy
+    non-prefixed ``ORCHESTRATOR_*`` form as a fallback to the canonical
+    ``ISSUE_ORCHESTRATOR_*`` one (e.g. config resolution reads
+    ``ORCHESTRATOR_CONFIG_PATH`` / ``ORCHESTRATOR_CONFIG_NAME`` and managed-mode
+    detection reads ``ORCHESTRATOR_SESSION_ID``). Stripping only the prefixed
+    form left the legacy form leaking into the suite when the agent runs
+    ``make validate-quick`` inside an orchestrator session, so both prefixes are
+    cleared here.
     """
-    # Strip both ISSUE_ORCHESTRATOR_* and the legacy ORCHESTRATOR_* fallbacks.
+    # Strip both the canonical ISSUE_ORCHESTRATOR_* vars and the legacy
+    # ORCHESTRATOR_* fallbacks (SESSION_ID, CONFIG_PATH/NAME, etc.). The two
+    # prefixes are disjoint ("ISSUE_ORCHESTRATOR_" does not start with
+    # "ORCHESTRATOR_"), so each var is handled once.
     for var in list(os.environ):
         if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)

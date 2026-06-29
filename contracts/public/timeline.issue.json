@@ -106,6 +106,18 @@
           "title": "Phase",
           "type": "string"
         },
+        "response_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Type"
+        },
         "review_abstraction_status": {
           "anyOf": [
             {
