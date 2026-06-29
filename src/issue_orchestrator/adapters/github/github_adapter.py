@@ -15,7 +15,6 @@ from ...infra.config import Config
 from ...ports.pull_request_tracker import (
     PRInfo,
     PRRef,
-    StatusCheckRollupCapability,
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
@@ -25,6 +24,7 @@ from .errors import GitHubHttpError, GitHubTransportError
 from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
+    classify_github_http_failure,
 )
 from .tokens import resolve_github_token
 from .repo import get_repo_from_git, GitRepoError
@@ -56,42 +56,6 @@ def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
         return upper  # type: ignore[return-value]
     logger.warning("Unknown statusCheckRollup state from GitHub: %r", raw)
     return None
-
-
-# Substrings that mark a rollup read failure as a token *capability* gap
-# rather than a transient blip. GraphQL surfaces an insufficient-scope /
-# FORBIDDEN error as HTTP 200 with an `errors` array, so status-code alone
-# is not enough — we also sniff the message/body for these markers.
-_ROLLUP_PERMISSION_MARKERS: tuple[str, ...] = (
-    "forbidden",
-    "not accessible",
-    "scope",  # "...has not been granted the required scopes..."
-    "permission",
-    "must have",  # "...must have read access..."
-)
-
-
-def _classify_rollup_failure(exc: GitHubHttpError) -> StatusCheckRollupCapability:
-    """Tell a missing-permission rollup failure from a transient one.
-
-    A 401 is an authentication failure: the token cannot identify itself at
-    all, which is always an operator problem rather than a retryable blip.
-
-    Every other status (403, 429, 5xx, GraphQL-200-with-errors) is decided by
-    the response body, NOT the status code. A genuine missing-capability
-    failure names the gap — ``forbidden`` / ``not accessible`` / a required
-    ``scope``/``permission`` — so we sniff for those markers. GitHub also
-    returns HTTP 403 for retryable throttling ("API rate limit exceeded",
-    "secondary rate limit"); those bodies name no scope, so they fall through
-    to ``transient_error`` and are retried next tick instead of arming the
-    repo-wide permission backoff and escalating a bogus missing-scope error.
-    """
-    if exc.status_code == 401:
-        return "permission_denied"
-    haystack = f"{exc} {getattr(exc, 'response_text', '') or ''}".lower()
-    if any(marker in haystack for marker in _ROLLUP_PERMISSION_MARKERS):
-        return "permission_denied"
-    return "transient_error"
 
 
 def _head_sha_from_pr(raw_pr: dict[str, Any]) -> str | None:
@@ -897,7 +861,7 @@ class GitHubAdapter:
             )
             return StatusCheckRollupRead(state=None, capability="transient_error")
         except GitHubHttpError as e:
-            capability = _classify_rollup_failure(e)
+            capability = classify_github_http_failure(e)
             if capability == "permission_denied":
                 fallback = self._read_rollup_via_rest_fallback(pr_number)
                 if fallback.capability != "permission_denied":
@@ -925,7 +889,7 @@ class GitHubAdapter:
             )
             return StatusCheckRollupRead(state=None, capability="transient_error")
         except GitHubHttpError as e:
-            capability = _classify_rollup_failure(e)
+            capability = classify_github_http_failure(e)
             logger.warning(
                 "REST PR fetch for status_check_rollup fallback failed for "
                 "PR %s (%s): %s",
@@ -950,39 +914,24 @@ class GitHubAdapter:
             )
             return StatusCheckRollupRead(state=None, capability="permission_denied")
 
-        try:
-            rollup = self._client.get_commit_check_rollup(head_sha)
-        except GitHubTransportError as e:
+        # get_commit_check_rollup owns its per-source HTTP/transport failures and
+        # carries the cause in `capability` (it does not raise for those), so an
+        # incomplete read is NOT collapsed to permission_denied: a transient/
+        # rate-limit/cap-truncated source stays transient_error (retry next tick)
+        # while only a real scope gap escalates as permission_denied.
+        rollup = self._client.get_commit_check_rollup(head_sha)
+        if rollup.capability != "ok":
             logger.warning(
-                "REST check-run fallback failed for PR %s (sha %s, "
-                "transient_error): %s",
-                pr_number,
-                head_sha,
-                e,
-            )
-            return StatusCheckRollupRead(state=None, capability="transient_error")
-        except GitHubHttpError as e:
-            capability = _classify_rollup_failure(e)
-            logger.warning(
-                "REST check-run fallback failed for PR %s (sha %s, %s): %s",
-                pr_number,
-                head_sha,
-                capability,
-                e,
-            )
-            return StatusCheckRollupRead(state=None, capability=capability)
-
-        if not rollup.complete:
-            logger.warning(
-                "REST check-run fallback incomplete for PR %s (sha %s): a "
-                "rollup source was inaccessible and the readable sources found "
-                "no failure, so an unread failed required check/status could be "
+                "REST check-run fallback incomplete for PR %s (sha %s, %s): a "
+                "rollup source was unread and the readable sources found no "
+                "failure, so an unread failed required check/status could be "
                 "hiding behind a %s aggregate",
                 pr_number,
                 head_sha,
+                rollup.capability,
                 rollup.state or "no-checks",
             )
-            return StatusCheckRollupRead(state=None, capability="permission_denied")
+            return StatusCheckRollupRead(state=None, capability=rollup.capability)
         return StatusCheckRollupRead(
             state=_coerce_rollup_state(rollup.state),
             capability="ok",

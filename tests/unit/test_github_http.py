@@ -1325,6 +1325,9 @@ def test_get_commit_check_rollup_cap_hit_without_failure_is_incomplete() -> None
 
     rollup = client.get_commit_check_rollup("deadbeef")
     assert rollup.complete is False
+    # A truncated read is NOT a permission failure: it must stay transient so
+    # the gate retries/waits instead of arming the repo-wide permission backoff.
+    assert rollup.capability == "transient_error"
 
 
 def test_get_commit_check_rollup_cap_hit_stays_complete_on_readable_legacy_failure() -> None:
@@ -1350,4 +1353,123 @@ def test_get_commit_check_rollup_cap_hit_stays_complete_on_readable_legacy_failu
 
     rollup = client.get_commit_check_rollup("deadbeef")
     assert rollup.state == "FAILURE"
+    assert rollup.complete is True
+
+
+def test_get_commit_check_rollup_check_runs_5xx_is_transient() -> None:
+    """A 500 on /check-runs (with nothing conclusive elsewhere) is a retryable
+    blip, NOT a missing scope: the rollup capability is transient_error so the
+    gate retries next tick rather than arming the permission backoff and
+    escalating a bogus missing-scope diagnostic (issue #6589 F1/A1)."""
+    handler = _commit_rollup_handler(
+        check_runs={"message": "Server Error"},
+        check_runs_status=500,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.capability == "transient_error"
+    assert rollup.complete is False
+
+
+def test_get_commit_check_rollup_check_runs_rate_limit_is_transient() -> None:
+    """GitHub returns HTTP 403 for secondary rate limits; the body names no
+    scope, so it classifies as transient_error rather than permission_denied."""
+    handler = _commit_rollup_handler(
+        check_runs={
+            "message": (
+                "You have exceeded a secondary rate limit. "
+                "Please wait a few minutes before you try again."
+            )
+        },
+        check_runs_status=403,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.capability == "transient_error"
+
+
+def test_get_commit_check_rollup_status_5xx_is_transient() -> None:
+    """A 500 on the legacy combined-status source (check-runs all green) is a
+    retryable blip: the unread status could still hold a failure, so the rollup
+    is incomplete, but as transient_error (retry), not permission_denied."""
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "completed", "conclusion": "success"},
+            ]
+        },
+        status_status=500,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.capability == "transient_error"
+
+
+def test_get_commit_check_rollup_check_runs_403_scope_is_permission_denied() -> None:
+    """A genuine missing-scope 403 on /check-runs (body names the gap) stays
+    permission_denied so the operator is told to fix the token scope."""
+    handler = _commit_rollup_handler(
+        check_runs={"message": "Resource not accessible by personal access token"},
+        check_runs_status=403,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.capability == "permission_denied"
+
+
+def test_get_commit_check_rollup_cancelled_check_run_is_failure() -> None:
+    """A completed `cancelled` required check is non-passing: GitHub does not
+    treat it as acceptable, so the REST fallback must report FAILURE (route to
+    rework), not a false SUCCESS (issue #6589 F2)."""
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "completed", "conclusion": "success"},
+                {"name": "system-verification", "status": "completed", "conclusion": "cancelled"},
+            ]
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
+
+
+def test_get_commit_check_rollup_stale_check_run_is_failure() -> None:
+    """A completed `stale` required check is likewise non-passing and must not
+    be reported as SUCCESS (issue #6589 F2)."""
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "completed", "conclusion": "stale"},
+            ]
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
+
+
+def test_get_commit_check_rollup_neutral_and_skipped_runs_are_passing() -> None:
+    """`neutral` and `skipped` are acceptable conclusions: an all-neutral/skipped
+    set must stay SUCCESS so it does not trigger spurious rework."""
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "advisory", "status": "completed", "conclusion": "neutral"},
+                {"name": "optional", "status": "completed", "conclusion": "skipped"},
+            ]
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "SUCCESS"
     assert rollup.complete is True

@@ -650,7 +650,7 @@ class TestPROperations:
         }
         mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
             state="FAILURE",
-            complete=True,
+            capability="ok",
         )
 
         read = adapter.read_pr_status_check_rollup(10)
@@ -659,10 +659,11 @@ class TestPROperations:
         mock_http_client.get_pr.assert_called_once_with(10)
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
 
-    def test_read_pr_status_check_rollup_rest_fallback_incomplete_stays_permission_denied(
+    def test_read_pr_status_check_rollup_rest_fallback_permission_gap_stays_permission_denied(
         self, adapter, mock_http_client
     ):
-        """An incomplete REST fallback remains an operator-visible read gap."""
+        """A REST fallback that is unreadable for a SCOPE gap stays an
+        operator-visible permission_denied read gap."""
         mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
             "Resource not accessible by personal access token",
             status_code=403,
@@ -679,7 +680,7 @@ class TestPROperations:
         }
         mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
             state="SUCCESS",
-            complete=False,
+            capability="permission_denied",
         )
 
         read = adapter.read_pr_status_check_rollup(10)
@@ -688,6 +689,42 @@ class TestPROperations:
             state=None,
             capability="permission_denied",
         )
+        mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
+
+    def test_read_pr_status_check_rollup_rest_fallback_transient_stays_transient(
+        self, adapter, mock_http_client
+    ):
+        """A GraphQL permission wall plus a TRANSIENT REST source failure (5xx /
+        rate-limit) must NOT be reported as permission_denied: it stays
+        transient_error so the reconciler retries next tick instead of arming
+        the repo-wide permission backoff and escalating a bogus missing-scope
+        diagnostic (issue #6589 F1/A1)."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "Resource not accessible by personal access token",
+            status_code=403,
+        )
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch", "sha": "deadbeef"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+            "mergeable_state": "UNSTABLE",
+        }
+        mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
+            state="SUCCESS",
+            capability="transient_error",
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(
+            state=None,
+            capability="transient_error",
+        )
+        assert read.permission_denied is False
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
 
     def test_read_pr_status_check_rollup_forbidden_is_permission_denied(
