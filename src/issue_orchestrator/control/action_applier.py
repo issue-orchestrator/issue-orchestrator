@@ -251,9 +251,12 @@ class ActionApplier:
             ActionType.ADD_LABEL: self._apply_add_label,
             ActionType.REMOVE_LABEL: self._apply_remove_label,
             ActionType.SYNC_LABELS: self._apply_sync_labels,
-            ActionType.SHED_RECOVERED_WORKFLOW_LABELS: (
-                self._apply_shed_recovered_workflow_labels
-            ),
+            # SHED_RECOVERED_WORKFLOW_LABELS is intentionally NOT dispatchable:
+            # shedding transient workflow labels is a private sub-step of the
+            # RECOVER_TERMINAL_ISSUE owner command, which enforces the
+            # reconciliation pause gate before invoking it. Leaving it out of
+            # the dispatch table makes it impossible to call the shed as an
+            # independent mutating action that would bypass that gate (#6431 F1).
             ActionType.LAUNCH_SESSION: self._apply_launch_session,
             ActionType.LAUNCH_VALIDATION_RETRY: self._apply_launch_validation_retry,
             ActionType.STOP_SESSION: self._apply_stop_session,
@@ -788,6 +791,12 @@ class ActionApplier:
     def _apply_shed_recovered_workflow_labels(self, action: Action) -> ActionResult:
         """Shed transient workflow labels after an issue's work has landed.
 
+        Private sub-step of the RECOVER_TERMINAL_ISSUE owner command — it is not
+        registered in the dispatch table, so it can only be reached through
+        ``_apply_recover_terminal_issue`` after that command has enforced the
+        reconciliation pause gate. This keeps the gate the single enforcement
+        point and makes an independent, gate-bypassing shed impossible (#6431).
+
         Reads the issue's live labels, asks the LabelManager which are
         recovered-workflow labels (pr-pending, publish-failed,
         publish-fail-count-N, blocking labels), and removes each from both
@@ -1308,6 +1317,17 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         entry reconcilable for the next awaiting-merge discovery pass to retry.
         """
         assert isinstance(action, RecoverTerminalIssueAction)
+
+        # Enforce the reconciliation pause gate at the owner-command boundary,
+        # before ANY label write (raises ReconciliationRequired). The previous
+        # terminal-cleanup path carried this guard on its RemoveLabelAction; the
+        # owner command must keep it so an issue paused for reconciliation
+        # (io:needs-reconcile) cannot have its transient labels shed or its
+        # awaiting-merge history finalized behind the fail-closed drift handling
+        # that ReconciliationRequired enforces (#6431 F1). This is the single
+        # enforcement point: the shed sub-step is reached only after it passes,
+        # and is not independently dispatchable.
+        self._require_expected(action, action.issue_number)
 
         # Verify claim ownership at the owner-command boundary before any
         # GitHub write (raises ClaimLostError). The shed sub-step verifies

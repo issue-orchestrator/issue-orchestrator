@@ -941,6 +941,12 @@ class TestPlanAwaitingMergeReconciliations:
         assert action.status_reason == "PR merged; awaiting merge reconciled"
         assert action.source == "pull_request"
         assert action.issue_key == "M1-228"
+        # Carries the reconciliation pause guard the old terminal-cleanup
+        # RemoveLabelAction used to carry: a paused issue (io:needs-reconcile)
+        # must not be shed or finalized behind fail-closed drift handling. The
+        # applier enforces this at the owner-command boundary (#6431 F1).
+        assert action.expected is not None
+        assert "io:needs-reconcile" in action.expected.forbidden_labels
 
     def test_terminal_pr_merged_reconciliation_recovers_terminal_issue(self):
         """When a PR is observed merged, plan one RecoverTerminalIssueAction

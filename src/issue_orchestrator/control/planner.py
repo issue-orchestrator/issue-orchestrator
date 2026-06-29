@@ -485,6 +485,13 @@ class Planner:
                 status_reason=reconciliation.status_reason,
                 issue_key=issue_key,
                 reason=f"awaiting-merge terminal: {reconciliation.status}",
+                # Carry the reconciliation pause guard the old terminal-cleanup
+                # RemoveLabelAction used to carry: an issue paused for
+                # reconciliation (io:needs-reconcile) must not have its labels
+                # shed or its awaiting-merge history finalized behind the
+                # fail-closed drift handling. The applier enforces this at the
+                # owner-command boundary before any write (#6431 F1).
+                expected=build_expected_for_mutation(),
             ))
 
         for drift in snapshot.discovered_awaiting_merge_drifts:
