@@ -36,16 +36,19 @@ def _record(
     )
 
 
-class _NeverDeferringFinalizationPlanner:
-    """Planner stub for observer construction; always finalizes (no deferral)."""
+class _NeverDeferringFinalizationOwner:
+    """Owner stub for observer construction; always finalizes (no deferral)."""
 
     def completion_finalization_plan(
         self, **_kwargs: object
     ) -> CompletionFinalizationPlan:
         return CompletionFinalizationPlan(
             decision=CompletionFinalizationDecision.PROCESS,
-            reason="stub planner always processes",
+            reason="stub owner always processes",
         )
+
+    def cancel_deferred_review_exchange(self, **_kwargs: object) -> str | None:
+        return None
 
 
 class FakeGitAdapter:
@@ -237,7 +240,7 @@ def test_observer_also_applies_file_size_gate(tmp_path: Path) -> None:
 
     observer = CompletionObserver(
         session_output=None,  # type: ignore[arg-type]
-        finalization_planner=_NeverDeferringFinalizationPlanner(),
+        finalization_owner=_NeverDeferringFinalizationOwner(),
     )
     result = observer._read_completion_record(  # noqa: SLF001
         worktree=tmp_path,

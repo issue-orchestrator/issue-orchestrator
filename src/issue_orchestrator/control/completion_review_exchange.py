@@ -371,6 +371,28 @@ class CompletionReviewExchange:
             and not status.deadline_exceeded
         )
 
+    def cancel_deferred_review_exchange(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+        reason: str,
+    ) -> str | None:
+        """Cancel an in-flight deferred review exchange at a terminal boundary.
+
+        Used when a visible session reaches a terminal timeout while its
+        background review exchange is still running: the timeout is an
+        issue-lifetime boundary, so the hidden job must be torn down too.
+        Returns an error string to surface in diagnostics, or ``None`` on
+        success or when no canceller is configured.
+        """
+        job_id = _review_exchange_job_id(issue_number, session_name)
+        return self._cancel_runtime_after_background_failure(
+            issue_number=issue_number,
+            job_id=job_id,
+            reason=reason,
+        )
+
     def run_review_exchange_if_needed(
         self,
         *,

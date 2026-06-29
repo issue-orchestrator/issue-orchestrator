@@ -88,15 +88,22 @@ class ObservationDecision:
     completion_load_result: CompletionRecordLoadResult | None = None
 
 
-class CompletionFinalizationPlanner(Protocol):
-    """Computes the bounded completion-finalization decision for a record.
+class CompletionFinalizationOwner(Protocol):
+    """Owns the bounded completion-finalization policy for a completed record.
 
-    Implemented by ``CompletionProcessor``. The async observer routes through
-    this single owner instead of re-implementing the finalization matrix, so a
-    terminated *or* timed-out completion whose background review exchange is
-    still inside its own supervisor deadline is observed as a deferral
-    (``SessionStatus.RUNNING``) rather than a finished completion — parity with
-    the synchronous ``SessionController.decide_outcome`` path (issue #6009).
+    Implemented by ``CompletionProcessor``. The async observer routes every
+    finalization decision through this single owner instead of re-implementing
+    the matrix, so it stays in parity with the synchronous
+    ``SessionController.decide_outcome`` path (issue #6009):
+
+    - ``completion_finalization_plan`` returns the next safe finalization step.
+      A terminated *or* timed-out completion whose background review exchange is
+      still inside its own supervisor deadline yields ``DEFER_REVIEW_EXCHANGE``,
+      which the observer maps to ``SessionStatus.RUNNING``.
+    - ``cancel_deferred_review_exchange`` tears the hidden background job down
+      when the plan returns ``TERMINAL_REVIEW_EXCHANGE_TIMEOUT``, so a timed-out
+      exchange that has overshot its deadline is halted instead of being treated
+      as a recovered completion.
     """
 
     def completion_finalization_plan(
@@ -109,6 +116,15 @@ class CompletionFinalizationPlanner(Protocol):
         runtime_state: CompletionRuntimeState,
         validation_preflight_configured: bool,
     ) -> CompletionFinalizationPlan:
+        ...
+
+    def cancel_deferred_review_exchange(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+        reason: str,
+    ) -> str | None:
         ...
 
 
@@ -126,19 +142,20 @@ class CompletionObserver:
     def __init__(
         self,
         session_output: "SessionOutput",
-        finalization_planner: CompletionFinalizationPlanner,
+        finalization_owner: CompletionFinalizationOwner,
     ):
         """Initialize the observer.
 
         Args:
             session_output: For reading session logs (diagnostics)
-            finalization_planner: Computes the bounded completion-finalization
-                decision (same owner the synchronous ``decide_outcome`` path
-                uses), so a deferred completion keeps its session active instead
-                of being finalized (#6009).
+            finalization_owner: Owns the bounded completion-finalization policy
+                (same owner the synchronous ``decide_outcome`` path uses), so a
+                deferred completion keeps its session active and a terminal
+                review-exchange timeout halts the hidden job instead of being
+                recovered as a normal completion (#6009).
         """
         self.session_output = session_output
-        self._finalization_planner = finalization_planner
+        self._finalization_owner = finalization_owner
 
     def observe_completion(
         self,
@@ -186,24 +203,15 @@ class CompletionObserver:
                 completion_load_result=load_result,
             )
 
-        # Deferred review exchange: the coder terminated cleanly but its
-        # background review exchange is still running. Mirror the synchronous
-        # decide_outcome path and report RUNNING so the consumer keeps the
-        # session in active tracking for a later tick instead of finalizing it.
-        if self._is_review_exchange_deferred(session, observation, record):
-            logger.info(
-                issue_log(
-                    issue_number,
-                    "Completion deferred: review exchange running in background "
-                    "(session=%s)",
-                ),
-                session.terminal_id,
-            )
-            return ObservationDecision(
-                status=SessionStatus.RUNNING,
-                reason="Review exchange running in background; awaiting completion",
-                completion_load_result=load_result,
-            )
+        # Route the record through the completion-finalization owner. A
+        # DEFER_REVIEW_EXCHANGE keeps the session RUNNING; a terminal review
+        # exchange timeout halts the hidden job and finalizes as a failure.
+        # Mirrors the synchronous decide_outcome path instead of re-deciding.
+        finalization = self._resolve_finalization(
+            session, observation, record, load_result
+        )
+        if finalization is not None:
+            return finalization
 
         # Found completion record - build observed completion
         recovered = observation.observation == SessionObservation.TIMED_OUT
@@ -227,36 +235,41 @@ class CompletionObserver:
             completion_load_result=load_result,
         )
 
-    def _is_review_exchange_deferred(
+    def _resolve_finalization(
         self,
         session: Session,
         observation: SessionObservationResult,
         record: CompletionRecord,
-    ) -> bool:
-        """Return True when the finalization owner defers this completion.
+        load_result: CompletionRecordLoadResult,
+    ) -> ObservationDecision | None:
+        """Map the completion-finalization plan to an observation decision.
 
-        Routes through the same ``CompletionFinalizationPlan`` owner as the
-        synchronous ``decide_outcome`` path instead of re-deciding here. The
-        observer maps the terminal observation to a ``CompletionRuntimeState``
-        (``TIMED_OUT`` vs ``TERMINATED``) and defers — keeping the session
-        ``RUNNING`` — whenever the owner returns ``DEFER_REVIEW_EXCHANGE``. That
-        covers both a terminated completion with a running exchange and a
-        timed-out visible session whose background exchange is still inside its
-        own supervisor deadline; the owner alone decides when a timed-out
-        exchange has overshot and becomes terminal.
+        Routes every ``CompletionFinalizationDecision`` through the same owner
+        as the synchronous ``decide_outcome`` path instead of re-deciding here,
+        and handles each branch intentionally so no policy cell stays implicit:
+
+        - ``DEFER_REVIEW_EXCHANGE`` → keep the session ``RUNNING`` so the next
+          tick re-observes it (a terminated-and-running exchange, or a timed-out
+          session whose background exchange is still inside its supervisor
+          deadline).
+        - ``TERMINAL_REVIEW_EXCHANGE_TIMEOUT`` → the timed-out exchange has
+          overshot its deadline; halt the hidden job and finalize as a failure
+          (see ``_terminal_review_exchange_timeout``).
+        - ``PROCESS`` / ``RUN_DIRTY_PREFLIGHT`` → ``None``; the caller builds the
+          observed completion and the background publish phase owns dirty
+          preflight and validation.
 
         ``validation_preflight_configured`` is ``False`` here: dirty preflight
-        and validation are owned by the background publish phase, not
-        observation, and that flag never affects the defer decision (it only
-        selects between ``RUN_DIRTY_PREFLIGHT`` and ``PROCESS``, both of which
-        finalize the completion in this phase).
+        and validation are owned by the publish phase, not observation, and that
+        flag never affects the defer/terminal decision (it only selects between
+        ``RUN_DIRTY_PREFLIGHT`` and ``PROCESS``, both of which finalize here).
         """
         runtime_state = (
             CompletionRuntimeState.TIMED_OUT
             if observation.observation is SessionObservation.TIMED_OUT
             else CompletionRuntimeState.TERMINATED
         )
-        plan = self._finalization_planner.completion_finalization_plan(
+        plan = self._finalization_owner.completion_finalization_plan(
             issue_number=session.issue.number,
             session_name=session.terminal_id,
             outcome=record.outcome,
@@ -264,8 +277,71 @@ class CompletionObserver:
             runtime_state=runtime_state,
             validation_preflight_configured=False,
         )
-        return (
-            plan.decision is CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE
+        if plan.decision is CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE:
+            logger.info(
+                issue_log(
+                    session.issue.number,
+                    "Completion deferred: review exchange running in background "
+                    "(session=%s)",
+                ),
+                session.terminal_id,
+            )
+            return ObservationDecision(
+                status=SessionStatus.RUNNING,
+                reason="Review exchange running in background; awaiting completion",
+                completion_load_result=load_result,
+            )
+        if (
+            plan.decision
+            is CompletionFinalizationDecision.TERMINAL_REVIEW_EXCHANGE_TIMEOUT
+        ):
+            return self._terminal_review_exchange_timeout(
+                session, plan, load_result
+            )
+        return None
+
+    def _terminal_review_exchange_timeout(
+        self,
+        session: Session,
+        plan: CompletionFinalizationPlan,
+        load_result: CompletionRecordLoadResult,
+    ) -> ObservationDecision:
+        """Finalize a timed-out session whose review exchange overshot its budget.
+
+        Parity with ``SessionController._terminal_review_exchange_timeout_decision``:
+        a visible timeout is an issue-lifetime boundary, so the hidden
+        background review exchange is cancelled via the finalization owner
+        before the active session is removed. The result is a terminal
+        ``TIMED_OUT`` failure with **no** ``ObservedCompletion`` — the observer
+        must not enqueue a publish job, because the publish worker would only
+        return another ``review_exchange_deferred`` with no PR while the active
+        session is already gone, leaving the issue stuck with no later
+        observation tick to surface the timeout.
+        """
+        issue_number = session.issue.number
+        cancel_error = self._finalization_owner.cancel_deferred_review_exchange(
+            issue_number=issue_number,
+            session_name=session.terminal_id,
+            reason="session-timeout",
+        )
+        reason = plan.reason
+        if cancel_error:
+            reason = f"{reason}; {cancel_error}"
+        logger.warning(
+            issue_log(
+                issue_number,
+                "Review exchange terminal timeout; halting hidden job and "
+                "finalizing session=%s reason=%s",
+            ),
+            session.terminal_id,
+            reason,
+        )
+        return ObservationDecision(
+            status=SessionStatus.TIMED_OUT,
+            observed=None,
+            recovered_from_timeout=True,
+            reason=reason,
+            completion_load_result=load_result,
         )
 
     def _read_completion_record(

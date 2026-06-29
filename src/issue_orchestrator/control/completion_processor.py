@@ -662,6 +662,26 @@ class CompletionProcessor:
         )
         return decide_completion_finalization(command)
 
+    def cancel_deferred_review_exchange(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+        reason: str,
+    ) -> str | None:
+        """Tear down an in-flight deferred review exchange at a terminal boundary.
+
+        Routes through the review-exchange owner so a
+        ``TERMINAL_REVIEW_EXCHANGE_TIMEOUT`` finalization decision cancels the
+        hidden background job before the visible session is finalized. Returns
+        an error string to surface in diagnostics, or ``None`` on success.
+        """
+        return self._review_exchange.cancel_deferred_review_exchange(
+            issue_number=issue_number,
+            session_name=session_name,
+            reason=reason,
+        )
+
     def _emit_review_comment_added(
         self,
         *,

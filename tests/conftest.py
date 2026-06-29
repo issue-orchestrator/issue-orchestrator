@@ -873,7 +873,7 @@ def build_test_orchestrator_deps(
 
     completion_observer = CompletionObserver(
         session_output=session_output,
-        finalization_planner=completion_processor,
+        finalization_owner=completion_processor,
     )
     executor_config = ExecutorConfig(max_workers=1)
     publish_executor = PublishJobExecutor(

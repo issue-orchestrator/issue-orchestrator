@@ -1,12 +1,16 @@
 """Tests for CompletionObserver deferred review-exchange observation.
 
-Async parity for issue #6009: a coder completion whose background review
-exchange is still running must be observed as RUNNING (a deferral) so the
-session stays observable, instead of being finalized like the synchronous
-``decide_outcome`` path. The observer routes that decision through the same
-``CompletionFinalizationPlan`` owner as the synchronous path, so a timed-out
-visible session whose exchange is still inside its supervisor deadline also
-keeps deferring (rather than being hard-coded to finalize).
+Async parity for issue #6009. The observer routes every completion through the
+same ``CompletionFinalizationPlan`` owner as the synchronous ``decide_outcome``
+path and handles each decision intentionally:
+
+- A coder completion whose background review exchange is still running (or a
+  timed-out session whose exchange is still inside its supervisor deadline) is
+  observed as RUNNING (a deferral) so the session stays observable.
+- A timed-out session whose exchange has overshot its deadline is finalized as a
+  terminal timeout: the hidden job is cancelled via the owner and the observer
+  produces NO ObservedCompletion, so no publish job is enqueued against an
+  exchange that would only defer again.
 """
 
 import json
@@ -39,20 +43,30 @@ from issue_orchestrator.observation.observation import (
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
-class _StubFinalizationPlanner:
-    """Faithful stand-in for ``CompletionProcessor.completion_finalization_plan``.
+class _StubFinalizationOwner:
+    """Faithful stand-in for the ``CompletionProcessor`` finalization owner.
 
-    Builds the same ``CompletionFinalizationCommand`` the processor builds and
-    delegates to the real ``decide_completion_finalization`` matrix, with the
-    review-exchange running/within-deadline facts injected instead of probed
-    from a live supervisor. This exercises the real finalization policy through
-    the observer without standing up a processor.
+    ``completion_finalization_plan`` builds the same
+    ``CompletionFinalizationCommand`` the processor builds and delegates to the
+    real ``decide_completion_finalization`` matrix, with the review-exchange
+    running/within-deadline facts injected instead of probed from a live
+    supervisor. ``cancel_deferred_review_exchange`` records its calls and returns
+    a configurable error string so the terminal-timeout halt path can be
+    exercised through the observer without standing up a processor.
     """
 
-    def __init__(self, *, running: bool, within_deadline: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        running: bool,
+        within_deadline: bool = False,
+        cancel_error: str | None = None,
+    ) -> None:
         self._running = running
         self._within_deadline = within_deadline
+        self._cancel_error = cancel_error
         self.commands: list[CompletionFinalizationCommand] = []
+        self.cancellations: list[dict[str, object]] = []
 
     def completion_finalization_plan(
         self,
@@ -79,6 +93,22 @@ class _StubFinalizationPlanner:
         self.commands.append(command)
         return decide_completion_finalization(command)
 
+    def cancel_deferred_review_exchange(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+        reason: str,
+    ) -> str | None:
+        self.cancellations.append(
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "reason": reason,
+            }
+        )
+        return self._cancel_error
+
 
 def _session(tmp_path: Path, *, terminal_id: str = "issue-9") -> Session:
     worktree = tmp_path / "worktree"
@@ -94,7 +124,12 @@ def _session(tmp_path: Path, *, terminal_id: str = "issue-9") -> Session:
     )
 
 
-def _write_completion(session: Session) -> None:
+def _write_completion(
+    session: Session,
+    *,
+    requested_actions: list[RequestedAction] | None = None,
+) -> None:
+    actions = requested_actions or [RequestedAction.CREATE_PR]
     path = session.worktree_path / COMPLETION_RECORD_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -104,7 +139,7 @@ def _write_completion(session: Session) -> None:
                 "timestamp": "2026-04-22T00:00:00Z",
                 "outcome": CompletionOutcome.COMPLETED.value,
                 "summary": "done",
-                "requested_actions": [RequestedAction.CREATE_PR.value],
+                "requested_actions": [action.value for action in actions],
                 "implementation": "Did the thing",
                 "problems": "None",
             }
@@ -115,8 +150,8 @@ def _write_completion(session: Session) -> None:
 def test_observe_completion_defers_when_review_exchange_running(tmp_path: Path) -> None:
     session = _session(tmp_path)
     _write_completion(session)
-    planner = _StubFinalizationPlanner(running=True)
-    observer = CompletionObserver(session_output=Mock(), finalization_planner=planner)
+    owner = _StubFinalizationOwner(running=True)
+    observer = CompletionObserver(session_output=Mock(), finalization_owner=owner)
 
     decision = observer.observe_completion(
         session,
@@ -131,19 +166,21 @@ def test_observe_completion_defers_when_review_exchange_running(tmp_path: Path) 
     assert "review exchange" in decision.reason.lower()
     # The finalization command is built from the observed completion record and
     # the terminal observation state.
-    assert len(planner.commands) == 1
-    command = planner.commands[0]
+    assert len(owner.commands) == 1
+    command = owner.commands[0]
     assert command.issue_number == 9
     assert command.session_name == "issue-9"
     assert RequestedAction.CREATE_PR in command.requested_actions
     assert command.runtime_state is CompletionRuntimeState.TERMINATED
+    # A running deferral is not a terminal boundary; nothing is cancelled.
+    assert owner.cancellations == []
 
 
 def test_observe_completion_finalizes_when_review_exchange_idle(tmp_path: Path) -> None:
     session = _session(tmp_path)
     _write_completion(session)
-    planner = _StubFinalizationPlanner(running=False)
-    observer = CompletionObserver(session_output=Mock(), finalization_planner=planner)
+    owner = _StubFinalizationOwner(running=False)
+    observer = CompletionObserver(session_output=Mock(), finalization_owner=owner)
 
     decision = observer.observe_completion(
         session,
@@ -155,6 +192,7 @@ def test_observe_completion_finalizes_when_review_exchange_idle(tmp_path: Path) 
 
     assert decision.status == SessionStatus.COMPLETED
     assert decision.observed is not None
+    assert owner.cancellations == []
 
 
 def test_observe_completion_defers_timed_out_within_deadline(tmp_path: Path) -> None:
@@ -167,8 +205,8 @@ def test_observe_completion_defers_timed_out_within_deadline(tmp_path: Path) -> 
     """
     session = _session(tmp_path)
     _write_completion(session)
-    planner = _StubFinalizationPlanner(running=True, within_deadline=True)
-    observer = CompletionObserver(session_output=Mock(), finalization_planner=planner)
+    owner = _StubFinalizationOwner(running=True, within_deadline=True)
+    observer = CompletionObserver(session_output=Mock(), finalization_owner=owner)
 
     decision = observer.observe_completion(
         session,
@@ -181,20 +219,28 @@ def test_observe_completion_defers_timed_out_within_deadline(tmp_path: Path) -> 
     assert decision.status == SessionStatus.RUNNING
     assert decision.observed is None
     assert decision.recovered_from_timeout is False
-    assert planner.commands[0].runtime_state is CompletionRuntimeState.TIMED_OUT
+    assert owner.commands[0].runtime_state is CompletionRuntimeState.TIMED_OUT
+    assert owner.cancellations == []
 
 
-def test_observe_completion_finalizes_timed_out_past_deadline(tmp_path: Path) -> None:
-    """A timed-out session is finalized once its exchange overshoots its budget.
+def test_observe_completion_halts_timed_out_past_deadline(tmp_path: Path) -> None:
+    """A timed-out exchange that overshoots its deadline is halted, not recovered.
 
-    When the background exchange is no longer within its supervisor deadline the
-    owner returns the terminal-timeout decision, so the observer recovers the
-    completed work instead of deferring forever.
+    The reviewer's over-deadline async case (issue #6009 round 2): a completed
+    record requesting both PUSH_BRANCH and CREATE_PR whose exchange is running
+    but past its supervisor deadline must NOT become a normal observed/publish
+    completion. Otherwise the publish worker returns another
+    ``review_exchange_deferred`` with no PR while the active session is already
+    gone, leaving the issue stuck. Instead the observer cancels the hidden job
+    and finalizes as a terminal TIMED_OUT failure with no ObservedCompletion.
     """
     session = _session(tmp_path)
-    _write_completion(session)
-    planner = _StubFinalizationPlanner(running=True, within_deadline=False)
-    observer = CompletionObserver(session_output=Mock(), finalization_planner=planner)
+    _write_completion(
+        session,
+        requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+    )
+    owner = _StubFinalizationOwner(running=True, within_deadline=False)
+    observer = CompletionObserver(session_output=Mock(), finalization_owner=owner)
 
     decision = observer.observe_completion(
         session,
@@ -204,6 +250,40 @@ def test_observe_completion_finalizes_timed_out_past_deadline(tmp_path: Path) ->
         ),
     )
 
-    assert decision.status != SessionStatus.RUNNING
-    assert decision.observed is not None
-    assert decision.recovered_from_timeout is True
+    # Not a normal observed/publish completion: no ObservedCompletion is built,
+    # so no publish job is enqueued.
+    assert decision.observed is None
+    assert decision.status == SessionStatus.TIMED_OUT
+    assert owner.commands[0].runtime_state is CompletionRuntimeState.TIMED_OUT
+    # The terminal review-exchange failure is surfaced by cancelling the hidden
+    # job before the active session is removed.
+    assert len(owner.cancellations) == 1
+    cancellation = owner.cancellations[0]
+    assert cancellation["issue_number"] == 9
+    assert cancellation["session_name"] == "issue-9"
+    assert cancellation["reason"] == "session-timeout"
+
+
+def test_observe_completion_surfaces_terminal_cancel_error(tmp_path: Path) -> None:
+    """A failed cancellation is surfaced in the terminal-timeout reason."""
+    session = _session(tmp_path)
+    _write_completion(session)
+    owner = _StubFinalizationOwner(
+        running=True,
+        within_deadline=False,
+        cancel_error="failed to cancel runtime work: boom",
+    )
+    observer = CompletionObserver(session_output=Mock(), finalization_owner=owner)
+
+    decision = observer.observe_completion(
+        session,
+        SessionObservationResult(
+            observation=SessionObservation.TIMED_OUT,
+            session_exists=True,
+        ),
+    )
+
+    assert decision.status == SessionStatus.TIMED_OUT
+    assert decision.observed is None
+    assert "failed to cancel runtime work: boom" in decision.reason
+    assert len(owner.cancellations) == 1

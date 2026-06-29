@@ -510,7 +510,7 @@ def _create_async_completion_components(
 
     completion_observer = CompletionObserver(
         session_output=session_output,
-        finalization_planner=completion_processor,
+        finalization_owner=completion_processor,
     )
 
     executor_config = ExecutorConfig(
