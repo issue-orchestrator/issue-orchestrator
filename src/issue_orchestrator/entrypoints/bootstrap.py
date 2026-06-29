@@ -508,7 +508,10 @@ def _create_async_completion_components(
     from ..control.publish_executor import PublishJobExecutor, ExecutorConfig
     from ..control.job_store import JobStore, get_default_db_path
 
-    completion_observer = CompletionObserver(session_output=session_output)
+    completion_observer = CompletionObserver(
+        session_output=session_output,
+        review_exchange_probe=completion_processor,
+    )
 
     executor_config = ExecutorConfig(
         max_workers=2,  # Max concurrent publish jobs

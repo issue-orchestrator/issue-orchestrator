@@ -32,6 +32,13 @@ def _record(
     )
 
 
+class _NeverRunningReviewExchangeProbe:
+    """Probe stub for observer construction; no review exchange is in flight."""
+
+    def is_review_exchange_running_for_completion(self, query: object) -> bool:
+        return False
+
+
 class FakeGitAdapter:
     def __init__(
         self,
@@ -219,7 +226,10 @@ def test_observer_also_applies_file_size_gate(tmp_path: Path) -> None:
         b"{" + b"a" * _MAX_COMPLETION_FILE_BYTES + b"}"
     )
 
-    observer = CompletionObserver(session_output=None)  # type: ignore[arg-type]
+    observer = CompletionObserver(
+        session_output=None,  # type: ignore[arg-type]
+        review_exchange_probe=_NeverRunningReviewExchangeProbe(),
+    )
     result = observer._read_completion_record(  # noqa: SLF001
         worktree=tmp_path,
         completion_path=".issue-orchestrator/completion.json",

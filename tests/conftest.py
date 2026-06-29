@@ -871,7 +871,10 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.control.completion_observer import CompletionObserver
     from issue_orchestrator.control.publish_executor import PublishJobExecutor, ExecutorConfig
 
-    completion_observer = CompletionObserver(session_output=session_output)
+    completion_observer = CompletionObserver(
+        session_output=session_output,
+        review_exchange_probe=completion_processor,
+    )
     executor_config = ExecutorConfig(max_workers=1)
     publish_executor = PublishJobExecutor(
         completion_processor=completion_processor,

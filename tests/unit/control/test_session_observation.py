@@ -195,6 +195,59 @@ def test_observe_active_sessions_preserves_invalid_completion_failure_kind(
     assert state.failed_this_cycle == {7}
 
 
+def test_observe_active_sessions_keeps_deferred_running_session_active(
+    tmp_path: Path,
+) -> None:
+    """A RUNNING completion decision is a deferral, not a completion.
+
+    Async parity with the synchronous ``process_active_sessions`` guard
+    (``test_keeps_deferred_completion_sessions_active``): a deferred
+    review-exchange completion must remain in active tracking for a later tick
+    instead of being removed, killed, and recorded as completed (issue #6009).
+    """
+    session = _session(
+        tmp_path,
+        issue_number=9,
+        terminal_id="issue-9",
+        lease_id="lease-9",
+    )
+    state = OrchestratorState(active_sessions=[session])
+    observer = MagicMock()
+    observer.observe_session.return_value = SessionObservationResult(
+        observation=SessionObservation.TERMINATED,
+        session_exists=True,
+    )
+    completion_observer = MagicMock()
+    completion_observer.observe_completion.return_value = ObservationDecision(
+        status=SessionStatus.RUNNING,
+        reason="Review exchange running in background; awaiting completion",
+    )
+    kill_session = MagicMock()
+    claim_manager = MagicMock()
+    events = CapturingEventSink()
+    provider_resilience = MagicMock()
+
+    observe_active_sessions(
+        state,
+        observer,
+        completion_observer,
+        kill_session,
+        claim_manager=claim_manager,
+        events=events,
+        provider_resilience=provider_resilience,
+    )
+
+    assert state.active_sessions == [session]
+    assert state.observed_completions == []
+    assert state.discovered_failures == []
+    assert state.failed_this_cycle == set()
+    kill_session.assert_not_called()
+    claim_manager.release_claim.assert_not_called()
+    provider_resilience.record_success.assert_not_called()
+    provider_resilience.record_transient_failure.assert_not_called()
+    assert events.events == []
+
+
 def test_observe_active_sessions_skips_duplicate_snapshot_entries(tmp_path: Path) -> None:
     session = _session(tmp_path, issue_number=7, terminal_id="issue-7")
     duplicate = _session(tmp_path, issue_number=7, terminal_id="issue-7")

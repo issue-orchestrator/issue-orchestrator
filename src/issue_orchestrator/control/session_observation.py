@@ -10,7 +10,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Callable, Optional
 
-from ..domain.models import DiscoveredFailure, Session
+from ..domain.models import DiscoveredFailure, Session, SessionStatus
 from ..events import EventName
 from ..observation.observation import SessionObservation
 from ..ports import EventSink
@@ -35,6 +35,24 @@ def _log_observation(session: Session, decision: "ObservationDecision") -> None:
         session.issue.number,
         decision.status.value,
         decision.observed is not None,
+    )
+
+
+def _defer_active_session(session: Session, decision: "ObservationDecision") -> None:
+    """Keep a session active after a deferred (RUNNING) completion decision.
+
+    Parity with the synchronous ``process_active_sessions`` guard: once the
+    terminal is observed, a RUNNING decision means the completion is deferred
+    (e.g. the review exchange is still running in the background), not final.
+    The session stays in ``state.active_sessions`` so the next tick re-observes
+    it; nothing is removed, killed, released, or recorded as completed (#6009).
+    """
+    logger.info(
+        "[OBSERVE] Session deferred after completion decision: "
+        "session=%s issue=%d reason=%s",
+        session.terminal_id,
+        session.issue.number,
+        decision.reason,
     )
 
 
@@ -178,13 +196,18 @@ def _observe_active_session(
 
     decision = completion_observer.observe_completion(session, obs)
 
-    _log_observation(session, decision)
-    _publish_observation_event(session, decision, events)
-    _remove_active_session(state, session)
-    _kill_session(kill_session_fn, session)
-    _release_claim_if_needed(session, decision, claim_manager, events)
-    _update_provider_resilience(decision, provider_resilience)
-    _record_observed_completion(state, session, decision)
+    if decision.status == SessionStatus.RUNNING:
+        # Deferred completion (e.g. review exchange still running). Preserve the
+        # session for re-observation; do not finalize it.
+        _defer_active_session(session, decision)
+    else:
+        _log_observation(session, decision)
+        _publish_observation_event(session, decision, events)
+        _remove_active_session(state, session)
+        _kill_session(kill_session_fn, session)
+        _release_claim_if_needed(session, decision, claim_manager, events)
+        _update_provider_resilience(decision, provider_resilience)
+        _record_observed_completion(state, session, decision)
 
     obs_elapsed = time.monotonic() - obs_start
     _warn_if_slow(obs_elapsed, session)

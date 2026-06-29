@@ -23,8 +23,9 @@ Architecture:
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
+from ..domain.completion_finalization import ReviewExchangeRunningQuery
 from ..domain.models import (
     CompletionRecord,
     CompletionOutcome,
@@ -82,6 +83,22 @@ class ObservationDecision:
     completion_load_result: CompletionRecordLoadResult | None = None
 
 
+class ReviewExchangeRunningProbe(Protocol):
+    """Reports whether a background review-exchange job is still in flight.
+
+    Implemented by ``CompletionProcessor``. Injected into the observer so a
+    terminated completion whose review exchange is still running is observed as
+    a deferral (``SessionStatus.RUNNING``) rather than a finished completion,
+    mirroring the synchronous ``SessionController.decide_outcome`` deferral
+    (issue #6009).
+    """
+
+    def is_review_exchange_running_for_completion(
+        self, query: ReviewExchangeRunningQuery
+    ) -> bool:
+        ...
+
+
 class CompletionObserver:
     """Observes session completions without executing actions.
 
@@ -96,13 +113,18 @@ class CompletionObserver:
     def __init__(
         self,
         session_output: "SessionOutput",
+        review_exchange_probe: ReviewExchangeRunningProbe,
     ):
         """Initialize the observer.
 
         Args:
             session_output: For reading session logs (diagnostics)
+            review_exchange_probe: Reports whether a background review-exchange
+                job is still running for a completion, so a deferred completion
+                keeps its session active instead of being finalized (#6009).
         """
         self.session_output = session_output
+        self._review_exchange_probe = review_exchange_probe
 
     def observe_completion(
         self,
@@ -150,6 +172,25 @@ class CompletionObserver:
                 completion_load_result=load_result,
             )
 
+        # Deferred review exchange: the coder terminated cleanly but its
+        # background review exchange is still running. Mirror the synchronous
+        # decide_outcome path and report RUNNING so the consumer keeps the
+        # session in active tracking for a later tick instead of finalizing it.
+        if self._is_review_exchange_deferred(session, observation, record):
+            logger.info(
+                issue_log(
+                    issue_number,
+                    "Completion deferred: review exchange running in background "
+                    "(session=%s)",
+                ),
+                session.terminal_id,
+            )
+            return ObservationDecision(
+                status=SessionStatus.RUNNING,
+                reason="Review exchange running in background; awaiting completion",
+                completion_load_result=load_result,
+            )
+
         # Found completion record - build observed completion
         recovered = observation.observation == SessionObservation.TIMED_OUT
         if recovered:
@@ -170,6 +211,34 @@ class CompletionObserver:
             recovered_from_timeout=recovered,
             reason=f"Observed completion record with outcome: {record.outcome.value}",
             completion_load_result=load_result,
+        )
+
+    def _is_review_exchange_deferred(
+        self,
+        session: Session,
+        observation: SessionObservationResult,
+        record: CompletionRecord,
+    ) -> bool:
+        """Return True when a terminated completion's review exchange is running.
+
+        Parity with the synchronous deferral in ``decide_outcome``: a coder
+        completion that requested a PR but whose background review exchange has
+        not finished must keep its session active for a later tick rather than
+        being finalized. Timed-out sessions are excluded; their cancel/terminal
+        policy is owned by the execution phase, matching the synchronous path
+        which terminalizes a timed-out exchange instead of deferring here.
+        """
+        if observation.observation is not SessionObservation.TERMINATED:
+            return False
+        if record.outcome is not CompletionOutcome.COMPLETED:
+            return False
+        query = ReviewExchangeRunningQuery(
+            issue_number=session.issue.number,
+            session_name=session.terminal_id,
+            requested_actions=tuple(record.requested_actions),
+        )
+        return self._review_exchange_probe.is_review_exchange_running_for_completion(
+            query
         )
 
     def _read_completion_record(
