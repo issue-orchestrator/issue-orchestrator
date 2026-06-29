@@ -104,6 +104,11 @@ class TestEnsureE2EWorktree:
         assert "--detach" in cmd
         assert FAKE_SHA in cmd
 
+        reset_calls = [c for c in mock_run.call_args_list
+                       if c[0][0][:3] == ["git", "reset", "--hard"]]
+        assert len(reset_calls) == 1
+        assert reset_calls[0][0][0] == ["git", "reset", "--hard", FAKE_SHA]
+
         # git clean preserves .venv, timeline, sessions, and E2E reports
         clean_calls = [c for c in mock_run.call_args_list
                        if "clean" in c[0][0]]
