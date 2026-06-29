@@ -372,6 +372,7 @@ class E2ETimelineEventPayload(BaseModel):
     parent_key: str
     phase: str
     removed: list[str] | None = None
+    response_type: str | None = None
     review_oriented: bool
     reviewer_agent: str | None = None
     reviewer_response_text: str | None = None
@@ -598,6 +599,7 @@ class JourneyStepPayload(BaseModel):
     day: str
     detail: str | None = None
     event: str
+    in_round_progress: bool | None = None
     narrative: str
     status: str
     time_label: str

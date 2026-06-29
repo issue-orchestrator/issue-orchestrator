@@ -38,6 +38,48 @@ class TestTaskKind:
             TaskKind.RETROSPECTIVE_REVIEW,
         }
 
+    def test_review_only_kinds_make_no_commits(self):
+        """Review tasks are read-only: they make no commits and publish nothing."""
+        assert TaskKind.REVIEW.is_review_only is True
+        assert TaskKind.RETROSPECTIVE_REVIEW.is_review_only is True
+
+    def test_commit_producing_kinds_are_not_review_only(self):
+        """Coding-style tasks produce commits and may publish a PR."""
+        assert TaskKind.CODE.is_review_only is False
+        assert TaskKind.REWORK.is_review_only is False
+        assert TaskKind.TRIAGE.is_review_only is False
+
+    @pytest.mark.parametrize(
+        "session_name, expected",
+        [
+            ("issue-42", TaskKind.CODE),
+            ("coding-2", TaskKind.CODE),  # validation-retry phase label
+            ("rework-42", TaskKind.REWORK),
+            ("triage-42", TaskKind.TRIAGE),
+            ("review-7", TaskKind.REVIEW),
+            ("retrospective-review-42", TaskKind.RETROSPECTIVE_REVIEW),
+        ],
+    )
+    def test_from_session_name_classifies_known_identities(self, session_name, expected):
+        """Session/run identities map back to the task that produced them."""
+        assert TaskKind.from_session_name(session_name) == expected
+
+    def test_from_session_name_retrospective_not_shadowed_by_review(self):
+        """'retrospective-review-' must classify as retrospective review, not review."""
+        task = TaskKind.from_session_name("retrospective-review-42")
+        assert task is TaskKind.RETROSPECTIVE_REVIEW
+        assert task.is_review_only is True
+
+    def test_from_session_name_unknown_returns_none(self):
+        """Unrecognized identities fail safe as None rather than misclassifying."""
+        assert TaskKind.from_session_name("mystery-1") is None
+        assert TaskKind.from_session_name("") is None
+
+    def test_from_session_name_review_identities_are_review_only(self):
+        """Both review identities classify as review-only work."""
+        assert TaskKind.from_session_name("review-7").is_review_only is True
+        assert TaskKind.from_session_name("retrospective-review-7").is_review_only is True
+
 
 class TestSessionKeyEquality:
     """Tests for SessionKey equality semantics."""

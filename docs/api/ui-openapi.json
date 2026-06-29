@@ -1886,7 +1886,8 @@
           "status": {"type": "string"},
           "event": {"type": "string"},
           "detail": {"type": ["string", "null"]},
-          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "in_round_progress": {"type": "boolean", "default": false}
         }
       },
       "JourneyPhaseGroupPayload": {
@@ -2357,6 +2358,7 @@
           "attempt_index": {"type": "integer"},
           "role": {"type": "string"},
           "rounds": {"type": "integer"},
+          "response_type": {"type": "string"},
           "reviewer_response_type": {"type": "string"},
           "reviewer_response_text": {"type": "string"},
           "coder_response_type": {"type": "string"},

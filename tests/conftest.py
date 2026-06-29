@@ -53,19 +53,32 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     """Strip orchestrator env vars and set safe defaults.
 
     When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
-    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done. If the agent then runs
-    `make validate-quick` (pytest), these vars leak into unit tests and cause
-    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID
-    overrides mocked values.
+    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done — and
+    their legacy unprefixed ORCHESTRATOR_* fallbacks (ORCHESTRATOR_SESSION_ID,
+    ORCHESTRATOR_CONFIG_NAME/PATH, ORCHESTRATOR_API_PORT, ...). If the agent then
+    runs `make validate-quick` (pytest), these vars leak into unit tests and cause
+    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID forces
+    managed mode over mocked values. Code reads the legacy unprefixed names as
+    fallbacks (get_session_id, preflight push), so stripping only the
+    ISSUE_-prefixed names is not enough when the orchestrator self-hosts.
 
     Similarly, ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) can
-    override test expectations in resolve_base_branch tests.
+    override test expectations in resolve_base_branch tests; it is covered by the
+    ORCHESTRATOR_ prefix sweep below.
 
     This fixture strips them so tests always start with a clean env, then
     sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
     resolves repo_root from the environment (e.g. SubprocessPlugin) never
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
+    Both env-var families are stripped. Several runtime readers accept a legacy
+    non-prefixed ``ORCHESTRATOR_*`` form as a fallback to the canonical
+    ``ISSUE_ORCHESTRATOR_*`` one (e.g. config resolution reads
+    ``ORCHESTRATOR_CONFIG_PATH`` / ``ORCHESTRATOR_CONFIG_NAME`` and managed-mode
+    detection reads ``ORCHESTRATOR_SESSION_ID``). Stripping only the prefixed
+    form left the legacy form leaking into the suite when the agent runs
+    ``make validate-quick`` inside an orchestrator session, so both prefixes are
+    cleared here.
     """
     # Strip every orchestrator-injected var so tests start from a clean env.
     # The orchestrator exports ISSUE_ORCHESTRATOR_* and also a few bare, legacy
@@ -73,7 +86,9 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     # ORCHESTRATOR_SESSION_ID, which coding-done/_is_managed_session still accept
     # for compatibility. Leaving the bare forms in place makes every test look
     # like a managed orchestrator session and breaks standalone-path tests, so
-    # strip both prefixes (this subsumes ORCHESTRATOR_WORKTREE_BASE_BRANCH).
+    # strip both prefixes (this subsumes ORCHESTRATOR_WORKTREE_BASE_BRANCH). The
+    # two prefixes are disjoint ("ISSUE_ORCHESTRATOR_" does not start with
+    # "ORCHESTRATOR_"), so each var is handled once.
     for var in list(os.environ):
         if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)
