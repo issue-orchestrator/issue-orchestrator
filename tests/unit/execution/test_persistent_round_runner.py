@@ -4,9 +4,12 @@ tolerance.
 Tests use a self-contained stub agent that supports a control-file gate
 (``STUB_RESPONSE_GATE``) and an opt-in partial-write race
 (``STUB_PARTIAL_WRITE_FIRST``). Coordination happens via gate files and
-injected ``now``/``sleep`` callables, never via real wall-clock waits, in
+injected ``now``/``sleep`` callables rather than real wall-clock waits, in
 keeping with ``tests/unit/AGENTS.md``'s ban on timing-based unit
-coordination.
+coordination. The single exception is the real-subprocess carve-out that
+file also allows: the late-trust test drives a real child process and uses
+the bounded ``_real_sleep`` helper below to yield wall-clock time so that
+process can make progress.
 """
 
 from __future__ import annotations
@@ -31,6 +34,11 @@ from issue_orchestrator.execution.persistent_round_runner import (
     send_round,
 )
 from issue_orchestrator.execution.recording_contract import recording_event_count
+
+# Bounded *real* sleep used only where a test drives a real subprocess and must
+# yield wall-clock time for it to make progress (see the late-trust test). Named
+# distinctly so fake-clock sleepers are never confused with real waiting.
+_real_sleep = time.sleep
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +451,7 @@ class TestPersistentSessionLifecycle:
         )
         codex_bin = tmp_path / "codex"
         codex_bin.symlink_to(sys.executable)
+        clock = _FakeClock()
         gate_opened = False
 
         def reveal_late_trust_prompt(seconds: float) -> None:
@@ -458,11 +467,22 @@ class TestPersistentSessionLifecycle:
             # rendered it. The real sleep keeps the poll loop yielding so the
             # subprocess gets scheduled.
             nonlocal gate_opened
+            clock.value += seconds
             if not gate_opened:
-                gate_opened = True
-                trust_gate.touch()
-                _wait_until(prompt_ready.exists)
-            time.sleep(seconds)
+                if clock.value >= 0.35:
+                    gate_opened = True
+                    trust_gate.touch()
+                    _wait_until(prompt_ready.exists)
+                return
+            # Once the trust prompt is handled, the round prompt is delivered to
+            # a *real* subprocess that needs real wall-clock time to read stdin
+            # and write its response file. Advancing only the fake clock would
+            # spin the response-poll loop through the whole timeout budget in
+            # ~0s of real time, starving the subprocess under CPU contention
+            # (the documented late-trust load flake). Yield real CPU here — a
+            # bounded wait on a real external system, which AGENTS.md permits —
+            # so completion is governed by the subprocess, not the fake clock.
+            _real_sleep(seconds)
 
         session = open_persistent_session(
             command=[str(codex_bin), "-u", str(script)],
