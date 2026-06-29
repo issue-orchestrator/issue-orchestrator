@@ -1523,6 +1523,65 @@ class TestPlanDiscoveredReworks:
         assert queue_actions[0].source == "post_publish_validation"
         assert queue_actions[0].feedback == discovered.feedback
 
+    def test_post_publish_validation_rework_skips_duplicate_marker_comment(self):
+        """When the marker comment already exists on the PR, the planner
+        suppresses the duplicate comment but keeps the label flip and queue."""
+        from issue_orchestrator.domain.models import DiscoveredRework
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=2,
+            source="post_publish_validation",
+            feedback="PR #100 is no longer ready to merge.",
+            feedback_comment_already_posted=True,
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        comment_actions = [
+            a for a in plan.actions
+            if a.action_type == ActionType.ADD_COMMENT
+            and a.number == 100
+            and a.is_pr
+        ]
+        remove_reviewed = [
+            a for a in plan.actions
+            if a.action_type == ActionType.REMOVE_LABEL
+            and a.issue_number == 100
+            and a.label == "code-reviewed"
+        ]
+        add_needs_rework = [
+            a for a in plan.actions
+            if a.action_type == ActionType.ADD_LABEL
+            and a.issue_number == 100
+            and a.label == "needs-rework"
+        ]
+        queue_actions = [
+            a for a in plan.actions
+            if a.action_type == ActionType.QUEUE_REWORK
+        ]
+
+        # Comment is deduped away...
+        assert comment_actions == []
+        # ...but the rest of the post-publish flip is unchanged.
+        assert len(remove_reviewed) == 1
+        assert len(add_needs_rework) == 1
+        assert len(queue_actions) == 1
+        assert queue_actions[0].feedback == discovered.feedback
+
 
 class TestPlanDiscoveredEscalations:
     """Tests for Planner's _plan_discovered_escalations method.
@@ -1692,6 +1751,45 @@ class TestPlanAwaitingMergeEscalations:
         assert "branch protection" in action.comment_override.lower()
         assert "`bot:needs-human`" in action.comment_override
         assert "`blocked-needs-human`" not in action.comment_override
+
+    def test_status_rollup_permission_denied_emits_escalate_with_capability_copy(self):
+        from issue_orchestrator.domain.models import (
+            DiscoveredAwaitingMergeEscalation,
+        )
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredAwaitingMergeEscalation(
+            issue_number=42,
+            pr_number=100,
+            pr_url="https://github.com/o/r/pull/100",
+            issue_key="M0-042",
+            rework_cycle=1,
+            kind="status_rollup_permission_denied",
+            reason=(
+                "PR #100 is reviewer-approved but its merge-readiness is "
+                "'unstable' ... the configured GitHub token lacks permission "
+                "to read check status (statusCheckRollup) ..."
+            ),
+        )
+
+        snapshot = make_snapshot(
+            discovered_awaiting_merge_escalations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        escalate_actions = [
+            a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN
+        ]
+        assert len(escalate_actions) == 1
+        action = escalate_actions[0]
+        assert action.escalation_reason == "post-publish: status_rollup_permission_denied"
+        assert action.comment_override is not None
+        assert "cannot read check status" in action.comment_override.lower()
 
 
 class TestPlanDiscoveredFailures:

@@ -17,7 +17,10 @@ from issue_orchestrator.adapters.github.cache import GitHubCache
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError, GitHubTransportError
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.ports.pull_request_tracker import PRInfo
+from issue_orchestrator.ports.pull_request_tracker import (
+    PRInfo,
+    StatusCheckRollupRead,
+)
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.ports.verification import VerificationResult, FailureType
 
@@ -591,89 +594,217 @@ class TestPROperations:
         mock_http_client.get_pr.assert_called_once_with(10)
         mock_http_client.get_pr_status_check_rollup.assert_not_called()
 
-    def test_get_pr_with_status_check_rollup_populates_rollup(
-        self, adapter, mock_http_client
-    ):
-        """get_pr_with_status_check_rollup augments the REST PR with a
-        GraphQL rollup fetch — the awaiting-merge classifier needs this
-        to disambiguate unstable+PENDING vs unstable+FAILURE."""
+    def test_get_pr_reports_merged_state_from_merged_at(self, adapter, mock_http_client):
+        """GitHub's REST `state` is only open/closed; a merged PR carries
+        `merged_at`. PRInfo.state must distinguish merged from closed so
+        reconciliation never mistakes a merged PR for a closed-unmerged one."""
         mock_http_client.get_pr.return_value = {
             "number": 10,
-            "title": "Test PR",
-            "html_url": "https://github.com/owner/repo/pull/10",
-            "head": {"ref": "feature-branch"},
-            "body": "PR description",
-            "state": "open",
-            "labels": [{"name": "bug"}],
-            "mergeable_state": "UNSTABLE",
-        }
-        mock_http_client.get_pr_status_check_rollup.return_value = "PENDING"
-
-        pr = adapter.get_pr_with_status_check_rollup(10)
-
-        assert pr is not None
-        assert pr.mergeable_state == "unstable"
-        assert pr.status_check_rollup == "PENDING"
-        mock_http_client.get_pr.assert_called_once_with(10)
-        mock_http_client.get_pr_status_check_rollup.assert_called_once_with(10)
-
-    def test_get_pr_with_status_check_rollup_returns_none_when_pr_not_found(
-        self, adapter, mock_http_client
-    ):
-        mock_http_client.get_pr.side_effect = GitHubHttpError(
-            "Not found", status_code=404
-        )
-
-        pr = adapter.get_pr_with_status_check_rollup(999)
-
-        assert pr is None
-        mock_http_client.get_pr_status_check_rollup.assert_not_called()
-
-    def test_get_pr_with_status_check_rollup_failure_yields_none_rollup(
-        self, adapter, mock_http_client
-    ):
-        """A GraphQL failure on the rollup fetch must not lose the REST PRInfo.
-        The reconciler treats `None` as PENDING-equivalent so a transient
-        GraphQL error makes us wait, not erroneously trigger rework."""
-        mock_http_client.get_pr.return_value = {
-            "number": 10,
-            "title": "Test PR",
+            "title": "Merged PR",
             "html_url": "https://github.com/owner/repo/pull/10",
             "head": {"ref": "feature-branch"},
             "body": "",
-            "state": "open",
+            "state": "closed",
+            "merged_at": "2026-06-01T20:00:50Z",
             "labels": [],
-            "mergeable_state": "UNSTABLE",
         }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "merged"
+
+    def test_get_pr_reports_merged_state_from_merged_flag(self, adapter, mock_http_client):
+        """The REST detail payload's `merged` boolean also marks a merge."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Merged PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "closed",
+            "merged": True,
+            "merged_at": None,
+            "labels": [],
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "merged"
+
+    def test_get_pr_closed_unmerged_stays_closed(self, adapter, mock_http_client):
+        """A genuinely closed-without-merge PR keeps state == "closed" so the
+        closed-unmerged drift path still flags it."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Closed PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "closed",
+            "merged": False,
+            "merged_at": None,
+            "labels": [],
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "closed"
+
+    def test_read_pr_status_check_rollup_returns_ok_state(
+        self, adapter, mock_http_client
+    ):
+        """read_pr_status_check_rollup reads ONLY the rollup (no REST PR
+        fetch) and reports it as an `ok` capability — the awaiting-merge
+        classifier needs this to disambiguate unstable+PENDING vs
+        unstable+FAILURE."""
+        mock_http_client.get_pr_status_check_rollup.return_value = "PENDING"
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state="PENDING", capability="ok")
+        assert read.permission_denied is False
+        mock_http_client.get_pr_status_check_rollup.assert_called_once_with(10)
+        # The rollup read must not pay for a REST PR fetch.
+        mock_http_client.get_pr.assert_not_called()
+
+    def test_read_pr_status_check_rollup_no_checks_is_ok_none(
+        self, adapter, mock_http_client
+    ):
+        """No checks configured → `ok` with state=None, distinct from a
+        permission failure."""
+        mock_http_client.get_pr_status_check_rollup.return_value = None
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="ok")
+
+    def test_read_pr_status_check_rollup_forbidden_is_permission_denied(
+        self, adapter, mock_http_client
+    ):
+        """A 403 must surface as `permission_denied`, never a silent
+        `None` rollup — the token genuinely cannot read check status."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "forbidden", status_code=403
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="permission_denied")
+        assert read.permission_denied is True
+
+    def test_read_pr_status_check_rollup_graphql_scope_error_is_permission_denied(
+        self, adapter, mock_http_client
+    ):
+        """GraphQL surfaces an insufficient-scope error as HTTP 200 with an
+        `errors` array, so message-sniffing (not status code) classifies it."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL error: Resource not accessible by personal access token",
+            status_code=200,
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read.capability == "permission_denied"
+
+    def test_read_pr_status_check_rollup_unauthorized_401_is_permission_denied(
+        self, adapter, mock_http_client
+    ):
+        """A 401 is an authentication failure: the token cannot identify itself
+        at all. That is an operator problem, not a retryable blip, so it stays
+        on the permission_denied path regardless of body."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 401",
+            status_code=401,
+            response_text="Bad credentials",
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="permission_denied")
+        assert read.permission_denied is True
+
+    def test_read_pr_status_check_rollup_rate_limit_403_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """GitHub returns HTTP 403 for retryable throttling, not just missing
+        scope. A primary rate-limit 403 body names no permission, so it must
+        classify as transient_error — never the missing-scope path that arms
+        the repo-wide backoff and escalates a bogus permission error."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 403",
+            status_code=403,
+            response_text="API rate limit exceeded for installation ID 12345.",
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
+    def test_read_pr_status_check_rollup_secondary_rate_limit_403_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """A 403 secondary-rate-limit body is throttling, not a scope gap, so
+        it is PENDING-equivalent retry, not permission_denied."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "GitHub GraphQL request failed: 403",
+            status_code=403,
+            response_text=(
+                "You have exceeded a secondary rate limit and have been "
+                "temporarily blocked from content creation."
+            ),
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
+    def test_read_pr_status_check_rollup_transient_failure_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """A 5xx GraphQL failure is transient: state=None, capability
+        transient_error. The reconciler treats it as PENDING-equivalent so
+        a transient error makes us wait, not escalate or rework."""
         mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
             "graphql boom", status_code=500
         )
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.mergeable_state == "unstable"
-        assert pr.status_check_rollup is None
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
 
-    def test_get_pr_with_status_check_rollup_unknown_state_coerced_to_none(
+    def test_read_pr_status_check_rollup_transport_failure_is_transient(
         self, adapter, mock_http_client
     ):
-        mock_http_client.get_pr.return_value = {
-            "number": 10,
-            "title": "Test PR",
-            "html_url": "https://github.com/owner/repo/pull/10",
-            "head": {"ref": "feature-branch"},
-            "body": "",
-            "state": "open",
-            "labels": [],
-            "mergeable_state": "CLEAN",
-        }
+        """A pre-response transport failure (timeout/network) raises
+        GitHubTransportError, which has no status code. It must classify as
+        transient_error so the reconciler waits and retries next tick instead
+        of letting the failure abort the awaiting-merge scan."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubTransportError(
+            "GitHub GraphQL transport error",
+            method="POST",
+            url="/graphql",
+            original=TimeoutError("read timed out"),
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
+    def test_read_pr_status_check_rollup_unknown_state_coerced_to_none(
+        self, adapter, mock_http_client
+    ):
         mock_http_client.get_pr_status_check_rollup.return_value = "FUTURE_STATE"
 
-        pr = adapter.get_pr_with_status_check_rollup(10)
+        read = adapter.read_pr_status_check_rollup(10)
 
-        assert pr is not None
-        assert pr.status_check_rollup is None
+        assert read == StatusCheckRollupRead(state=None, capability="ok")
 
     def test_get_pr_not_found(self, adapter, mock_http_client):
         """Test get_pr returns None when PR not found."""
@@ -799,6 +930,68 @@ class TestPROperations:
 
         assert len(prs) == 1
         assert prs[0].number == 10
+
+    def test_get_prs_for_issue_all_bypasses_single_pr_cache(
+        self, adapter, cache, mock_http_client
+    ):
+        """``state="all"`` must return the authoritative full list, never a single
+        cached PR.
+
+        Regression for #6430: the awaiting-merge reconciler suppresses
+        ``blocked:pr-closed`` only after confirming no associated PR is open. The
+        by-issue cache holds one PR; if an older closed PR is cached while a newer
+        open PR exists on GitHub, satisfying ``all`` from the cache would hide the
+        open PR and resurrect the false ``blocked:pr-closed`` path. So ``all``
+        bypasses the single-PR cache and fetches the complete set from the API.
+        """
+        # Prime the by-issue cache with an OLDER closed PR.
+        cache.set_pr_by_issue(
+            42,
+            {
+                "number": 10,
+                "title": "#42: Older closed",
+                "url": "https://github.com/owner/repo/pull/10",
+                "branch": "42-feature",
+                "body": "",
+                "state": "closed",
+                "labels": [],
+                "issue_number": 42,
+            },
+            branch="42-feature",
+        )
+        # The authoritative GitHub view also has a NEWER open PR.
+        mock_http_client.get_prs_for_issue.return_value = [
+            {"number": 10}, {"number": 11},
+        ]
+        full_by_number = {
+            10: {
+                "number": 10,
+                "title": "#42: Older closed",
+                "html_url": "https://github.com/owner/repo/pull/10",
+                "head": {"ref": "42-feature"},
+                "body": "",
+                "state": "closed",
+                "labels": [],
+            },
+            11: {
+                "number": 11,
+                "title": "#42: Newer open",
+                "html_url": "https://github.com/owner/repo/pull/11",
+                "head": {"ref": "42-feature-2"},
+                "body": "",
+                "state": "open",
+                "labels": [],
+            },
+        }
+        mock_http_client.get_pr.side_effect = lambda n: full_by_number[n]
+
+        prs = adapter.get_prs_for_issue(42, state="all")
+
+        # Cache was bypassed: the API list was fetched...
+        mock_http_client.get_prs_for_issue.assert_called_once_with(42)
+        # ...and the open PR the reconciler needs to see is in the result.
+        assert {pr.number for pr in prs} == {10, 11}
+        assert any(pr.state == "open" for pr in prs)
 
     def test_get_prs_for_issue_from_api(self, adapter, mock_http_client):
         """Test getting PRs for issue from API."""
@@ -1415,6 +1608,20 @@ class TestRepositoryOperations:
 
         assert len(comments) == 2
         assert comments[0]["body"] == "Comment 1"
+
+    def test_issue_comment_marker_present_forwards_to_client(
+        self, adapter, mock_http_client
+    ):
+        """The marker-presence read delegates to the paginating client method
+        (the one that scans all comment pages), not a first-page-only read."""
+        mock_http_client.issue_comment_marker_present.return_value = True
+
+        present = adapter.issue_comment_marker_present(42, "<!-- io:marker -->")
+
+        assert present is True
+        mock_http_client.issue_comment_marker_present.assert_called_once_with(
+            42, "<!-- io:marker -->"
+        )
 
     def test_list_labels(self, adapter, mock_http_client):
         """Test listing repository labels."""

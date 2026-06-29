@@ -694,6 +694,25 @@ TERMINAL_AWAITING_MERGE_HISTORY_STATUSES: frozenset[AwaitingMergeTerminalStatus]
 DONE_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = frozenset(
     {"completed", "merged", "closed"}
 )
+
+
+@dataclass
+class StatusRollupCapability:
+    """Repo-wide, cross-tick backoff state for reading PR status rollups.
+
+    Lives on :class:`OrchestratorState` because the awaiting-merge
+    reconciler (and the gate it delegates rollup reads to) are rebuilt
+    every tick — only ``OrchestratorState`` survives across ticks. A
+    single repo-wide timestamp is the right granularity: permission to
+    read ``statusCheckRollup`` is a property of the configured token, not
+    of any one PR, so once a read is denied every read fails identically
+    until an operator fixes the token. ``permission_denied_since`` records
+    when that denial was last observed; the gate suppresses further rollup
+    probes (and the repeated permission warning) until a backoff window
+    elapses, then re-probes once in case the token was fixed.
+    """
+
+    permission_denied_since: float | None = None
 BLOCKED_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = frozenset(
     {"blocked", "needs_human", "failed", "validation_failed", "timed_out"}
 )
@@ -1377,6 +1396,11 @@ class DiscoveredRework:
     rework_cycle: int = 1
     source: str = "review_label"
     feedback: str | None = None
+    # True when the discovery path already saw the feedback comment marker
+    # on the PR, so the planner must not enqueue a duplicate comment. The
+    # rework itself is still queued (idempotency is owned by labels/pending
+    # state, not the comment).
+    feedback_comment_already_posted: bool = False
 
 
 @dataclass(frozen=True)
@@ -1396,6 +1420,7 @@ class DiscoveredEscalation:
 PostPublishEscalationKind = Literal[
     "checks_pending_timeout",   # required checks pending > timeout after approval
     "branch_protection_blocked",  # mergeable_state=blocked but rollup=SUCCESS
+    "status_rollup_permission_denied",  # token cannot read check status to decide
 ]
 
 
@@ -1910,6 +1935,13 @@ class OrchestratorState:
     # checks before escalating the issue to needs_human. Cleared whenever the
     # PR leaves the WAIT_FOR_CHECKS state.
     awaiting_merge_checks_pending_since: dict[int, float] = field(default_factory=dict)
+    # Repo-wide backoff state for status-check-rollup reads. Bounds repeated
+    # `status_check_rollup` permission failures so a token that cannot read
+    # check status does not re-trigger the same GraphQL probe (and the same
+    # warning) on every tick. See StatusRollupGate.
+    status_rollup_capability: StatusRollupCapability = field(
+        default_factory=StatusRollupCapability
+    )
     # Candidate queue removals waiting for a targeted confirmation refresh.
     queue_pending_shrink_missing_issue_numbers: list[int] = field(default_factory=list)
     queue_pending_shrink_confirm_at: float = 0.0
