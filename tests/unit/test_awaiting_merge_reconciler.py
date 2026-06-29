@@ -545,6 +545,24 @@ def test_pr_fetch_failure_propagates_without_issue_fallback() -> None:
     assert state.issue_refresh_timestamps == {}
     assert state.issue_last_refreshed_at == {}
     repository_host.get_issue.assert_not_called()
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+
+
+def test_missing_pr_clears_stale_rollup_bookkeeping() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_rollup_scan_timestamps={318: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = None
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(repository_host).discover(state)
+
+    assert result.skipped == 1
+    assert state.awaiting_merge_rollup_scan_timestamps == {}
+    repository_host.read_pr_status_check_rollup.assert_not_called()
 
 
 def test_invalid_pr_url_is_skipped_without_repository_fetches() -> None:
@@ -738,6 +756,93 @@ def test_post_publish_rework_comment_read_failure_propagates() -> None:
             label_manager=_label_manager(),
             clock=lambda: 1234.5,
         ).discover(state)
+
+
+def test_recent_rollup_poll_suppresses_post_publish_rework_until_interval_expires() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_rollup_scan_timestamps={318: 1000.0},
+    )
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr(
+            "open",
+            mergeable_state="unstable",
+            labels=["code-reviewed"],
+            status_check_rollup="FAILURE",
+        ),
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1100.0,
+        rollup_scan_interval_seconds=300.0,
+    ).discover(state)
+
+    assert result.checked == 1
+    assert result.still_pending == 1
+    assert result.rework_discovered == 0
+    repository_host.get_pr.assert_called_once_with(318)
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+    assert state.awaiting_merge_rollup_scan_timestamps == {318: 1000.0}
+
+
+def test_rollup_poll_after_interval_discovers_post_publish_rework() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_rollup_scan_timestamps={318: 1000.0},
+    )
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr(
+            "open",
+            mergeable_state="unstable",
+            labels=["code-reviewed"],
+            status_check_rollup="FAILURE",
+        ),
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1400.0,
+        rollup_scan_interval_seconds=300.0,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    repository_host.get_pr.assert_called_once_with(318)
+    repository_host.read_pr_status_check_rollup.assert_called_once_with(318)
+    assert state.awaiting_merge_rollup_scan_timestamps == {318: 1400.0}
+
+
+def test_terminal_pr_detection_bypasses_recent_rollup_throttle() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_rollup_scan_timestamps={318: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr("merged")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        clock=lambda: 1100.0,
+        rollup_scan_interval_seconds=300.0,
+    ).discover(state)
+
+    assert result.discovered == 1
+    assert result.reconciliations[0].status == "merged"
+    repository_host.get_pr.assert_called_once_with(318)
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+    assert state.awaiting_merge_rollup_scan_timestamps == {}
 
 
 def test_post_publish_validation_rework_is_suppressed_when_rework_already_pending() -> None:
@@ -1433,8 +1538,8 @@ def test_rollup_permission_backoff_expires_and_re_probes() -> None:
 
 def test_decisive_pr_with_transient_rollup_error_waits_and_retries() -> None:
     """A transient rollup failure is NOT a permission problem: treat it as
-    PENDING-equivalent (wait), do not escalate, and do not back off — the
-    next tick re-probes."""
+    PENDING-equivalent (wait), do not escalate, and retry after the
+    per-PR rollup cadence expires."""
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
@@ -1445,10 +1550,12 @@ def test_decisive_pr_with_transient_rollup_error_waits_and_retries() -> None:
     repository_host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead(
         state=None, capability="transient_error"
     )
+    now = {"t": 1000.0}
     reconciler = AwaitingMergeReconciler(
         repository_host,
         label_manager=_label_manager(),
-        clock=lambda: 1000.0,
+        clock=lambda: now["t"],
+        rollup_scan_interval_seconds=300.0,
     )
 
     result = reconciler.discover(state)
@@ -1458,7 +1565,13 @@ def test_decisive_pr_with_transient_rollup_error_waits_and_retries() -> None:
     # PENDING-equivalent → WAIT_FOR_CHECKS bookkeeping recorded, not escalated.
     assert state.awaiting_merge_checks_pending_since[228] == 1000.0
     assert state.status_rollup_capability.permission_denied_since is None
+    assert state.awaiting_merge_rollup_scan_timestamps == {318: 1000.0}
 
     reconciler.discover(state)
-    # Transient does not trip the backoff — the rollup is re-probed.
+    # Transient does not trip the permission backoff, but the PR cadence
+    # still suppresses the expensive retry.
+    assert repository_host.read_pr_status_check_rollup.call_count == 1
+
+    now["t"] = 1301.0
+    reconciler.discover(state)
     assert repository_host.read_pr_status_check_rollup.call_count == 2

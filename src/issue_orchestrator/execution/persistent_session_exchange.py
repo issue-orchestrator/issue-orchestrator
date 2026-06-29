@@ -117,6 +117,12 @@ from .persistent_round_runner import (
     persistent_round_failure_reason,
     send_round,
 )
+from .persistent_role_prompt_policy import (
+    FRESH_CODEX_PROMPT_PROCESS_TRIGGER,
+    RoleAttemptWorkspace as _RoleAttemptWorkspace,
+    role_prompt_inbox_path as _role_prompt_inbox_path,
+    role_session_needs_fresh_prompt_process,
+)
 from .recording_contract import recording_event_count
 
 logger = logging.getLogger(__name__)
@@ -938,6 +944,7 @@ class _RoleSessionOwner:
     pair: PersistentExchangePair
     spec: _RoleSessionSpec
     slice_path: Path
+    completed_turns_on_current_process: int = 0
 
     def attach_slice_mirror(self) -> None:
         _attach_slice_mirror(self._current_session(), self.slice_path)
@@ -948,8 +955,17 @@ class _RoleSessionOwner:
     def ensure_live(self) -> PersistentSession:
         session = self._current_session()
         if session.is_live:
+            if (
+                self.completed_turns_on_current_process > 0
+                and role_session_needs_fresh_prompt_process(self.spec.agent)
+            ):
+                return self._respawn(trigger=FRESH_CODEX_PROMPT_PROCESS_TRIGGER)
             return session
         return self._respawn(trigger="session is not live before next prompt")
+
+    def note_turn_completed(self) -> None:
+        """Record that the current process has completed a role turn."""
+        self.completed_turns_on_current_process += 1
 
     def respawn(self) -> PersistentSession:
         """Force-replace the role process with a fresh one in the same worktree.
@@ -1009,6 +1025,7 @@ class _RoleSessionOwner:
             close_persistent_session(new_session)
             raise
         self._replace_session(new_session)
+        self.completed_turns_on_current_process = 0
         logger.info(
             "[REVIEW_EXCHANGE] respawned %s session issue=%s session_name=%s "
             "previous_pid=%d new_pid=%d response_file=%s recording_path=%s",
@@ -1041,54 +1058,6 @@ class _RoleSessionOwner:
             self.pair.reviewer_session = session
             return
         raise RuntimeError(f"unsupported review-exchange role: {self.spec.role}")
-
-
-@dataclass(frozen=True)
-class _RoleAttemptWorkspace:
-    """Owns the on-disk artifact freshness for one role's turn.
-
-    A single role turn may run more than one process attempt: the initial
-    send, a coder protocol retry, or an in-place respawn after the process
-    died (see :func:`_send_role_round`). Every attempt must start from a clean
-    artifact workspace, or the exchange can pair/validate a side artifact
-    written by a now-dead process against the response JSON produced by a
-    later one.
-
-    The pair-scoped paths are stable across rounds and attempts, so a process
-    can write its side artifact — a reviewer ``review-report.md`` or a coder
-    ``completion-coder.json`` — and then exit *before* writing the response
-    JSON. A respawned process would then produce only the response JSON, and
-    the exchange would consume the dead process's stale side artifact (e.g.
-    publish a report from attempt A with a decision from attempt B, or let a
-    coder advance without having run ``coding-done`` this attempt).
-
-    Centralizing the reset here — instead of scattering role-specific cleanup
-    across the round loop plus a respawn special case — keeps artifact
-    freshness under one owner. The caller constructs this with the role's
-    pieces up front; :func:`_send_role_round` calls
-    :meth:`prepare_for_attempt` before every attempt and never inspects role
-    names or filenames itself.
-
-    For the coder, clearing the completion artifact is what makes a respawned
-    turn unable to ride a dead attempt's validation: validation is only
-    mirrored into pair scope from a completion produced during the turn (see
-    :meth:`_PairValidationMirror.refresh_from_completion`), and a missing
-    completion fails the protocol guardrail outright.
-    """
-
-    response_file: Path
-    side_artifact_paths: tuple[Path, ...]
-
-    def prepare_for_attempt(self) -> None:
-        """Clear the response, prompt inbox, and role side artifacts.
-
-        Idempotent: every path is unlinked with ``missing_ok`` so a fresh
-        first attempt and a respawn retry take the identical code path.
-        """
-        self.response_file.unlink(missing_ok=True)
-        _clear_role_prompt_inbox(self.response_file)
-        for path in self.side_artifact_paths:
-            path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1308,20 +1277,6 @@ def _turn_prompt_path(
         suffix="prompt.md",
         create_dir=True,
     )
-
-
-def _role_prompt_inbox_path(response_file: Path) -> Path:
-    """Stable role-local prompt inbox next to the response file.
-
-    The role process is launched with its worktree as cwd, while its response
-    file lives under ``<worktree>/.issue-orchestrator``. Writing each turn's
-    full prompt beside that response file keeps the prompt readable inside the
-    role's sandbox and lets the PTY carry only a short wake-up message.
-
-    This inbox is intentionally transient and overwritten per turn; the durable
-    per-turn prompt remains under ``<exchange_dir>/turns/``.
-    """
-    return response_file.with_name("review-exchange-turn-prompt.md")
 
 
 def _write_role_prompt_inbox(response_file: Path, prompt_text: str) -> Path:
@@ -2576,6 +2531,7 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
             "artifact_refs": _event_artifact_refs(completed.artifact_refs()),
         },
     )
+    owner.note_turn_completed()
     return response
 
 

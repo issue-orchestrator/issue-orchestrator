@@ -505,6 +505,7 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
         issue_refresh_timestamps={target: 1.0, other: 2.0},
         issue_last_refreshed_at={target: 1.0, other: 2.0},
         awaiting_merge_drift_scan_timestamps={target: 1.0, other: 2.0},
+        awaiting_merge_rollup_scan_timestamps={100: 1.0, 200: 2.0},
         # priority queue — manual override that should be re-seeded post-reset by
         # _enqueue_reset_retry_issue's prioritize_issue_front; clearing first ensures
         # idempotent re-add and prevents stale duplicate entries.
@@ -566,6 +567,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert target not in state.issue_refresh_timestamps
     assert target not in state.issue_last_refreshed_at
     assert target not in state.awaiting_merge_drift_scan_timestamps
+    assert 100 not in state.awaiting_merge_rollup_scan_timestamps
     assert target not in state.priority_queue
     assert target not in state.queue_pending_shrink_missing_issue_numbers
 
@@ -594,6 +596,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert other in state.issue_refresh_timestamps
     assert other in state.issue_last_refreshed_at
     assert other in state.awaiting_merge_drift_scan_timestamps
+    assert state.awaiting_merge_rollup_scan_timestamps[200] == 2.0
     assert other in state.priority_queue
     assert other in state.queue_pending_shrink_missing_issue_numbers
 

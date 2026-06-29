@@ -35,6 +35,7 @@ from .queue_cache import record_issue_refreshes
 from .status_rollup_gate import (
     STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS,
     StatusRollupGate,
+    rollup_is_decisive,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 AWAITING_MERGE_HISTORY_LIMIT = 50
 AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS = 300.0
+AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS = 300.0
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
 POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
@@ -96,6 +98,7 @@ class AwaitingMergeReconciler:
     label_drift_scan_interval_seconds: float = (
         AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
     )
+    rollup_scan_interval_seconds: float = AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS
     # Wall-clock budget for WAIT_FOR_CHECKS before escalating. Default
     # mirrors Config.post_publish_checks_pending_timeout_seconds; callers
     # in production wire the configured value through.
@@ -247,6 +250,7 @@ class AwaitingMergeReconciler:
                 state.awaiting_merge_checks_pending_since.pop(
                     entry.issue_number, None,
                 )
+                state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
                 drift = None
                 if pr.is_closed_unmerged:
                     drift = self._discover_terminal_pr_issue_drift(
@@ -273,6 +277,7 @@ class AwaitingMergeReconciler:
                 pr_number,
                 entry.pr_url,
             )
+            state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
 
         issue = self._get_issue(entry.issue_number)
         if issue is None:
@@ -293,6 +298,7 @@ class AwaitingMergeReconciler:
             state.awaiting_merge_checks_pending_since.pop(
                 entry.issue_number, None,
             )
+            state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
             return AwaitingMergeEntryDiscovery(
                 "terminal",
                 reconciliation=_reconciliation_fact(
@@ -306,6 +312,15 @@ class AwaitingMergeReconciler:
 
         if pr is None:
             return AwaitingMergeEntryDiscovery("skipped")
+        return self._discover_open_pr_followup(state, entry, pr, issue, pr_number)
+
+    def _discover_open_pr_followup(
+        self, state: OrchestratorState, entry: SessionHistoryEntry,
+        pr: PRInfo, issue: Issue, pr_number: int,
+    ) -> AwaitingMergeEntryDiscovery:
+        if not self._post_publish_eligible(state, entry, pr):
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            return AwaitingMergeEntryDiscovery("still_pending")
         rework, escalation = self._discover_post_publish_followup(
             state=state,
             entry=entry,
@@ -449,22 +464,14 @@ class AwaitingMergeReconciler:
         issue: Issue,
         pr_number: int,
     ) -> tuple[DiscoveredRework | None, DiscoveredAwaitingMergeEscalation | None]:
-        """Decide what (if anything) to do with an approved-but-not-merged PR.
-
-        Returns ``(rework, escalation)`` — at most one is non-None on any
-        given tick. Reads as a table of contents: clear stale bookkeeping
-        if the PR is no longer in the post-approval state, gate, classify,
-        clear bookkeeping if the classifier moved on, then dispatch.
-        """
+        """Decide what to do with an approved-but-not-merged PR."""
         if not self._post_publish_eligible(state, entry, pr):
-            # Eligibility lost (label dropped, needs_rework added, an
-            # active session/pending rework appeared) — clear any stale
-            # WAIT_FOR_CHECKS timestamp so a future re-approval starts
-            # a fresh wait budget instead of inheriting an old one. Without
-            # this, a long gap (commit → label drop → days later → re-
-            # approve) would compute `elapsed >> timeout` and escalate
-            # immediately, defeating the timeout entirely.
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            return None, None
+
+        decisive = rollup_is_decisive(pr.mergeable_state)
+        due = not decisive or self._status_rollup_scan_due(state, pr_number)
+        if not due:
             return None, None
 
         # The gate reads the status rollup only when it is decisive
@@ -710,6 +717,20 @@ class AwaitingMergeReconciler:
                 exc,
             )
             raise
+
+    def _status_rollup_scan_due(
+        self, state: OrchestratorState, pr_number: int
+    ) -> bool:
+        now = self.clock()
+        denied_since = state.status_rollup_capability.permission_denied_since
+        backoff_seconds = self.status_rollup_backoff_seconds
+        if denied_since is not None and now - denied_since < backoff_seconds:
+            return True
+        last = state.awaiting_merge_rollup_scan_timestamps.get(pr_number, 0.0)
+        if last > 0 and now - last < self.rollup_scan_interval_seconds:
+            return False
+        state.awaiting_merge_rollup_scan_timestamps[pr_number] = now
+        return True
 
     def _get_issue(self, issue_number: int) -> Issue | None:
         try:

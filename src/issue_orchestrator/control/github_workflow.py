@@ -164,12 +164,27 @@ class GitHubWorkflow:
                 )
             )
 
-    def scan_pending_pr_work(self, state: "OrchestratorState") -> None:
-        """Scan review and rework queues using one issue-branch fetch per tick."""
-        issue_branches = self.pr_scanner.load_issue_branches()
-        self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
-        self.scan_needs_rework_prs(state, issue_branches=issue_branches)
-        self.scan_retrospective_review_issues(state)
+    def scan_pending_pr_work(
+        self,
+        state: "OrchestratorState",
+        *,
+        include_general_scans: bool = True,
+    ) -> None:
+        """Scan pending PR lifecycle work.
+
+        General review/rework discovery can be cadence-throttled, but
+        post-approval awaiting-merge reconciliation is lifecycle-critical and
+        must run on every refresh.
+        """
+        if include_general_scans:
+            issue_branches = self.pr_scanner.load_issue_branches()
+            self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
+            self.scan_needs_rework_prs(state, issue_branches=issue_branches)
+            self.scan_retrospective_review_issues(state)
+        self.scan_awaiting_merge_followups(state)
+
+    def scan_awaiting_merge_followups(self, state: "OrchestratorState") -> None:
+        """Discover post-approval PR follow-up work for awaiting-merge issues."""
         result = AwaitingMergeReconciler(
             self.repository_host,
             label_manager=self.label_manager,

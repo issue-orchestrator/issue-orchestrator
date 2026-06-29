@@ -1928,6 +1928,7 @@ class OrchestratorState:
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
     queue_refresh_requested: bool = False  # True when a manual refresh has been requested
     awaiting_merge_drift_scan_timestamps: dict[int, float] = field(default_factory=dict)  # issue_number -> last PR-list drift scan
+    awaiting_merge_rollup_scan_timestamps: dict[int, float] = field(default_factory=dict)  # pr_number -> last status-rollup scan
     # Per-issue first time we observed `WAIT_FOR_CHECKS` (mergeable_state in
     # {unstable, blocked} with the status-check rollup not yet conclusive).
     # Used to bound how long the orchestrator is willing to wait for required

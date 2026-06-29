@@ -29,6 +29,10 @@ ISSUE_NUMBER = os.environ.get("ISSUE_ORCHESTRATOR_ISSUE_NUMBER", "unknown")
 
 
 def main() -> None:
+    print(
+        f"agent process started pid={os.getpid()} label={AGENT_LABEL}",
+        flush=True,
+    )
     if RESPONSE_FILE:
         if "reviewer" in AGENT_LABEL:
             _reviewer_loop(Path(RESPONSE_FILE))
