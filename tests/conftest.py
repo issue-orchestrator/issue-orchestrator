@@ -52,30 +52,33 @@ def isolate_git_env(monkeypatch):
 def isolate_orchestrator_env(monkeypatch, tmp_path):
     """Strip orchestrator env vars and set safe defaults.
 
-    When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
-    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done. If the agent then runs
-    `make validate-quick` (pytest), these vars leak into unit tests and cause
-    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID
-    overrides mocked values.
+    When the orchestrator launches an agent, it exports BOTH the canonical
+    ISSUE_ORCHESTRATOR_* vars (SESSION_ID, CONFIG_PATH, etc.) AND unprefixed
+    ORCHESTRATOR_* aliases (ORCHESTRATOR_SESSION_ID, ORCHESTRATOR_CONFIG_PATH,
+    ORCHESTRATOR_CONFIG_NAME, ...) for coding-done/reviewer-done. If the agent
+    then runs the unit suite (e.g. coding-done's validation gate), these vars
+    leak into unit tests and cause failures — e.g., CONFIG_PATH overrides
+    test-local configs, and a leaked ORCHESTRATOR_SESSION_ID flips coding-done
+    into orchestrator-"managed" mode, so its run-dir contract then fails the
+    TestAgentGateIntegration tests that mock ``get_session_id`` without
+    injecting a RUN_DIR.
 
-    Similarly, ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) can
-    override test expectations in resolve_base_branch tests.
+    ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) is covered by the
+    same sweep.
 
-    This fixture strips them so tests always start with a clean env, then
-    sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
+    This fixture strips both prefixes so tests always start with a clean env,
+    then sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
     resolves repo_root from the environment (e.g. SubprocessPlugin) never
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
     """
-    orchestrator_env_vars = [
-        "ORCHESTRATOR_WORKTREE_BASE_BRANCH",
-    ]
-    for var in orchestrator_env_vars:
-        monkeypatch.delenv(var, raising=False)
-
-    # Strip all ISSUE_ORCHESTRATOR_* vars (SESSION_ID, CONFIG_PATH, etc.)
+    # Strip every orchestrator-exported env var. Both the canonical
+    # ``ISSUE_ORCHESTRATOR_*`` names and the unprefixed ``ORCHESTRATOR_*``
+    # aliases must go: leaving an alias like ``ORCHESTRATOR_SESSION_ID`` behind
+    # is what breaks coding-done managed-mode detection when the suite runs
+    # inside an orchestrator session.
     for var in list(os.environ):
-        if var.startswith("ISSUE_ORCHESTRATOR_"):
+        if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)
 
     # Set a safe default REPO_ROOT so SubprocessPlugin (and anything else
