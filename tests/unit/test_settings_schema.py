@@ -22,6 +22,7 @@ from issue_orchestrator.infra.settings_schema import (
     FilteringSettings,
     MilestonesSettings,
     GoalPilotSettings,
+    MergeQueueSettings,
     ReviewSettings,
     ValidationSettings,
     apply_to,
@@ -96,6 +97,13 @@ class TestModelDefaults:
         assert m.agent is None
         assert m.approval_policy == "journeys_only"
 
+    def test_merge_queue_defaults(self):
+        m = MergeQueueSettings()
+        assert m.enabled is False
+        assert m.provider == "github"
+        assert m.enqueue_after == "code-reviewed"
+        assert m.failure_action == "rework"
+
     def test_advanced_defaults(self):
         m = AdvancedSettings()
         assert m.session_interactions_enabled is False
@@ -149,6 +157,14 @@ class TestValidation:
     def test_default_priority_tier_max(self):
         with pytest.raises(ValidationError):
             ConcurrencySettings(default_priority_tier=10)
+
+    def test_merge_queue_failure_action_enum(self):
+        with pytest.raises(ValidationError):
+            MergeQueueSettings(failure_action="explode")
+
+    def test_merge_queue_enqueue_after_enum(self):
+        with pytest.raises(ValidationError):
+            MergeQueueSettings(enqueue_after="whenever")
 
     def test_review_max_rework_max(self):
         with pytest.raises(ValidationError):
@@ -330,8 +346,9 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 9
+        assert len(tabs) == 10
         assert "validation" in tabs
+        assert "merge_queue" in tabs
         for key, model in tabs.items():
             assert model is not None
 

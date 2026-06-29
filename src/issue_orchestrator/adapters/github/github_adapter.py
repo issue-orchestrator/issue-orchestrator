@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
 from ...ports.pull_request_tracker import (
+    MergeQueueEntry,
     PRInfo,
     PRRef,
     StatusCheckRollupCapability,
@@ -56,6 +57,32 @@ def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
         return upper  # type: ignore[return-value]
     logger.warning("Unknown statusCheckRollup state from GitHub: %r", raw)
     return None
+
+
+_VALID_MERGE_QUEUE_STATES: frozenset[str] = frozenset(
+    {"QUEUED", "AWAITING_CHECKS", "MERGEABLE", "PENDING", "LOCKED", "UNMERGEABLE"}
+)
+
+
+def _merge_queue_entry_from_api(raw: object) -> MergeQueueEntry | None:
+    """Build a typed :class:`MergeQueueEntry` from a GraphQL entry payload.
+
+    Returns ``None`` when there is no entry or the provider reports a state we
+    do not model (fail-soft: an unknown state is treated as "not enqueued" so
+    the coordinator re-observes rather than acting on a state it can't classify).
+    """
+    if not isinstance(raw, dict):
+        return None
+    state = raw.get("state")
+    if not isinstance(state, str) or state.upper() not in _VALID_MERGE_QUEUE_STATES:
+        if state is not None:
+            logger.warning("Unknown mergeQueueEntry state from GitHub: %r", state)
+        return None
+    position = raw.get("position")
+    return MergeQueueEntry(
+        state=state.upper(),  # type: ignore[arg-type]
+        position=position if isinstance(position, int) else None,
+    )
 
 
 def _payload_indicates_merged(pr: dict[str, Any]) -> bool:
@@ -931,6 +958,23 @@ class GitHubAdapter:
             )
             return StatusCheckRollupRead(state=None, capability=capability)
         return StatusCheckRollupRead(state=_coerce_rollup_state(rollup), capability="ok")
+
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Add a PR to GitHub's native merge queue (GraphQL mutation)."""
+        try:
+            self._client.enqueue_pull_request(pr_number)
+        except GitHubHttpError as e:
+            logger.error("Failed to enqueue PR %s to merge queue: %s", pr_number, e)
+            raise
+
+    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueEntry | None:
+        """Read a PR's merge queue entry (GraphQL), or None if not enqueued."""
+        try:
+            raw = self._client.get_merge_queue_entry(pr_number)
+        except GitHubHttpError as e:
+            logger.error("Failed to read merge queue entry for PR %s: %s", pr_number, e)
+            raise
+        return _merge_queue_entry_from_api(raw)
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.

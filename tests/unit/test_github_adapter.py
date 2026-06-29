@@ -18,6 +18,7 @@ from issue_orchestrator.adapters.github.http_client import GitHubHttpError, GitH
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import (
+    MergeQueueEntry,
     PRInfo,
     StatusCheckRollupRead,
 )
@@ -1867,3 +1868,34 @@ class TestEdgeCases:
 
         assert len(labels) == 3
         assert labels[0]["name"] == "label1"
+
+
+class TestMergeQueue:
+    """Merge queue methods delegate to the HTTP client and coerce results."""
+
+    def test_enqueue_delegates_to_client(self, adapter, mock_http_client):
+        adapter.enqueue_to_merge_queue(318)
+        mock_http_client.enqueue_pull_request.assert_called_once_with(318)
+
+    def test_read_entry_coerces_typed_entry(self, adapter, mock_http_client):
+        mock_http_client.get_merge_queue_entry.return_value = {
+            "state": "QUEUED",
+            "position": 3,
+        }
+        entry = adapter.read_merge_queue_entry(318)
+        assert entry == MergeQueueEntry(state="QUEUED", position=3)
+
+    def test_read_entry_none_when_not_queued(self, adapter, mock_http_client):
+        mock_http_client.get_merge_queue_entry.return_value = None
+        assert adapter.read_merge_queue_entry(318) is None
+
+    def test_read_entry_unknown_state_is_none(self, adapter, mock_http_client):
+        mock_http_client.get_merge_queue_entry.return_value = {"state": "BOGUS"}
+        assert adapter.read_merge_queue_entry(318) is None
+
+    def test_enqueue_propagates_http_error(self, adapter, mock_http_client):
+        mock_http_client.enqueue_pull_request.side_effect = GitHubHttpError(
+            "boom", status_code=500
+        )
+        with pytest.raises(GitHubHttpError):
+            adapter.enqueue_to_merge_queue(318)

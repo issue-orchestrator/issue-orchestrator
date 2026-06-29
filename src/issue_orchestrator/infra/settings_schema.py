@@ -1062,6 +1062,78 @@ class GoalPilotSettings(BaseModel):
     )
 
 
+class MergeQueueSettings(BaseModel):
+    """Settings for the Merge Queue tab."""
+
+    enabled: bool = Field(
+        False,
+        title="Enable Merge Queue",
+        description="Enqueue approved PRs into GitHub's native merge queue",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "When enabled, approved PRs that have cleared the orchestrator "
+                "gate are enqueued into the provider's merge queue instead of "
+                "being reworked merely for being behind base. Requires a repo "
+                "whose branch protection has the merge queue configured."
+            ),
+            "section": "Merge Queue",
+            "config_attr": "merge_queue.enabled",
+            "yaml_path": "merge_queue.enabled",
+            "summary": {
+                "section": "merge_queue",
+                "format": SUMMARY_ENABLED_FLAG,
+                "label": "Merge Queue",
+            },
+        },
+    )
+    provider: str = Field(
+        "github",
+        title="Merge Queue Provider",
+        description="Which merge queue backend to use",
+        json_schema_extra={
+            "doc_examples": ["github"],
+            "doc_notes": (
+                "Only GitHub's native merge queue is supported today; the value "
+                "is validated against the allowed set when the config loads."
+            ),
+            "section": "Merge Queue",
+            "config_attr": "merge_queue.provider",
+            "yaml_path": "merge_queue.provider",
+        },
+    )
+    enqueue_after: Literal["code-reviewed", "triage-reviewed"] = Field(
+        "code-reviewed",
+        title="Enqueue After Gate",
+        description="Orchestrator gate that must pass before a PR is enqueued",
+        json_schema_extra={
+            "doc_examples": ["code-reviewed", "triage-reviewed"],
+            "doc_notes": (
+                "Names the approval gate the PR must clear before enqueue. "
+                "code-reviewed is the reviewer-approval gate."
+            ),
+            "section": "Merge Queue",
+            "config_attr": "merge_queue.enqueue_after",
+            "yaml_path": "merge_queue.enqueue_after",
+        },
+    )
+    failure_action: Literal["rework", "needs_human"] = Field(
+        "rework",
+        title="Queue Failure Action",
+        description="How to route a PR that fails the merge queue",
+        json_schema_extra={
+            "doc_examples": ["rework", "needs_human"],
+            "doc_notes": (
+                "rework sends the PR back to a coding agent; needs_human "
+                "escalates it for manual attention."
+            ),
+            "section": "Merge Queue",
+            "config_attr": "merge_queue.failure_action",
+            "yaml_path": "merge_queue.failure_action",
+        },
+    )
+
+
 class AdvancedSettings(BaseModel):
     """Settings for the Advanced tab."""
 
@@ -1578,6 +1650,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "filtering", "label": "Filtering", "model": FilteringSettings},
     {"key": "milestones", "label": "Milestones", "model": MilestonesSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
+    {"key": "merge_queue", "label": "Merge Queue", "model": MergeQueueSettings},
     {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},
     {"key": "hooks", "label": "Hooks", "model": HooksSettings},
     {"key": "advanced", "label": "Advanced", "model": AdvancedSettings},

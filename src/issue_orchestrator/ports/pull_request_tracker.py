@@ -64,6 +64,45 @@ class StatusCheckRollupRead:
         return self.capability == "permission_denied"
 
 
+# GitHub `MergeQueueEntry.state` values (uppercase, as returned by GraphQL).
+# A PR that is not in the merge queue has no entry at all (``None``).
+MergeQueueEntryState = Literal[
+    "QUEUED", "AWAITING_CHECKS", "MERGEABLE", "PENDING", "LOCKED", "UNMERGEABLE"
+]
+
+# Entry states that mean the PR is still progressing through the queue and the
+# orchestrator should observe rather than re-enqueue or rework.
+_ACTIVE_MERGE_QUEUE_STATES: tuple[MergeQueueEntryState, ...] = (
+    "QUEUED",
+    "AWAITING_CHECKS",
+    "MERGEABLE",
+    "PENDING",
+    "LOCKED",
+)
+
+
+@dataclass(frozen=True)
+class MergeQueueEntry:
+    """A PR's current state/position in the provider's merge queue.
+
+    Returned by :meth:`PullRequestTracker.read_merge_queue_entry`. ``None``
+    from that method means the PR is not currently enqueued.
+    """
+
+    state: MergeQueueEntryState
+    position: int | None = None
+
+    @property
+    def is_active(self) -> bool:
+        """True while the entry is still progressing through the queue."""
+        return self.state in _ACTIVE_MERGE_QUEUE_STATES
+
+    @property
+    def is_failed(self) -> bool:
+        """True when GitHub has determined the entry cannot be merged."""
+        return self.state == "UNMERGEABLE"
+
+
 @dataclass
 class PRInfo:
     """Information about a pull request.
@@ -254,6 +293,39 @@ class PullRequestTracker(Protocol):
         Returns:
             A :class:`StatusCheckRollupRead` describing the rollup state
             and the read capability.
+        """
+        ...
+
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Add a pull request to the provider's native merge queue.
+
+        Only the merge queue coordinator should call this, and only for PRs
+        that have cleared the orchestrator's approval gate. GitHub remains the
+        merge authority — this just hands the PR to the queue; GitHub validates
+        required checks against the merge group and performs the protected
+        merge. Idempotent from the caller's perspective: enqueueing an
+        already-queued PR is a no-op (or a benign provider error the caller
+        treats as "already queued").
+
+        Raises:
+            RepositoryError: If there's an error reaching the provider.
+        """
+        ...
+
+    def read_merge_queue_entry(self, pr_number: int) -> "MergeQueueEntry | None":
+        """Read a PR's current merge queue entry, or ``None`` if not enqueued.
+
+        Costs one GraphQL round-trip. The coordinator uses this to decide
+        between enqueueing a newly-eligible PR, observing one already in the
+        queue, and routing a failed (``UNMERGEABLE``) entry through the
+        configured failure policy.
+
+        Returns:
+            A :class:`MergeQueueEntry` describing the queue state/position, or
+            ``None`` when the PR is not in the merge queue.
+
+        Raises:
+            RepositoryError: If there's an error reaching the provider.
         """
         ...
 

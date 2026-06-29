@@ -20,6 +20,10 @@ from .config_models import (
     HooksConfig,
     InterruptedSessionRetryConfig,
     IsolationConfig,
+    MERGE_QUEUE_FAILURE_ACTIONS,
+    MERGE_QUEUE_GATES,
+    MERGE_QUEUE_PROVIDERS,
+    MergeQueueConfig,
     MilestoneStrategyConfig,
     ProviderCircuitBreakerConfig,
     ProviderResilienceConfig,
@@ -55,6 +59,7 @@ _TOP_LEVEL_SECTION_KEYS = (
     "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "claims", "hooks",
     "ai_systems", "retry",
     "sqlite_backup",
+    "merge_queue",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -178,6 +183,32 @@ def parse_goal_pilot_config(data: dict) -> GoalPilotConfig:
         approval_policy=data.get("approval_policy", "journeys_only"),
         approval_batch_size=data.get("approval_batch_size", 10),
         approval_batch_window_minutes=data.get("approval_batch_window_minutes", 60),
+    )
+
+
+def _validate_choice(value: str, allowed: tuple[str, ...], field: str) -> str:
+    if value not in allowed:
+        raise ValueError(
+            f"merge_queue.{field} must be one of {list(allowed)}, got {value!r}"
+        )
+    return value
+
+
+def parse_merge_queue_config(data: dict) -> MergeQueueConfig:
+    """Parse and validate the merge_queue section from YAML data."""
+    return MergeQueueConfig(
+        enabled=data.get("enabled", False),
+        provider=_validate_choice(
+            data.get("provider", "github"), MERGE_QUEUE_PROVIDERS, "provider"
+        ),
+        enqueue_after=_validate_choice(
+            data.get("enqueue_after", "code-reviewed"), MERGE_QUEUE_GATES, "enqueue_after"
+        ),
+        failure_action=_validate_choice(
+            data.get("failure_action", "rework"),
+            MERGE_QUEUE_FAILURE_ACTIONS,
+            "failure_action",
+        ),
     )
 
 
@@ -315,6 +346,8 @@ def apply_optional_sections(config: "Config", sections: dict) -> None:
         config.sqlite_backup = parse_sqlite_backup_config(sections["sqlite_backup"])
     if sections["goal_pilot"]:
         config.goal_pilot = parse_goal_pilot_config(sections["goal_pilot"])
+    if sections["merge_queue"]:
+        config.merge_queue = parse_merge_queue_config(sections["merge_queue"])
     if sections["claims"]:
         config.claims = parse_claims_config(sections["claims"])
     if sections["hooks"]:

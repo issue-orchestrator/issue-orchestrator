@@ -161,6 +161,9 @@ class EventName(str, Enum):
     REVIEW_MERGED = "review.merged"
     REVIEW_CLOSED = "review.closed"
     REVIEW_COMMENT_ADDED = "review.comment_added"
+    # Merge queue (optional GitHub Merge Queue integration)
+    MERGE_QUEUE_ENQUEUED = "merge_queue.enqueued"
+    MERGE_QUEUE_FAILED = "merge_queue.failed"
     REVIEW_EXCHANGE_STARTED = "review_exchange.started"
     REVIEW_EXCHANGE_ROUND_STARTED = "review_exchange.round_started"
     REVIEW_EXCHANGE_ROUND_COMPLETED = "review_exchange.round_completed"

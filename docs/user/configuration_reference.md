@@ -101,6 +101,15 @@ _Auto-generated from settings schema._
 | `review.triage_review_agent` | string (optional) | `None` | Agent for batch reviews (optional) | `agent:triage` | Must match a label defined under agents. |
 | `review.triage_review_threshold` | integer | `0` | Trigger triage after N PRs (0 = manual only) | `0`, `5`, `10` | Set to 0 to only trigger triage manually. |
 
+## Merge Queue
+
+| Field | Type | Default | Description | Examples | Notes |
+|-------|------|---------|-------------|----------|-------|
+| `merge_queue.enabled` | boolean | `False` | Enqueue approved PRs into GitHub's native merge queue | `true`, `false` | When enabled, approved PRs that have cleared the orchestrator gate are enqueued into the provider's merge queue instead of being reworked merely for being behind base. Requires a repo whose branch protection has the merge queue configured. |
+| `merge_queue.provider` | string | `github` | Which merge queue backend to use | `github` | Only GitHub's native merge queue is supported today; the value is validated against the allowed set when the config loads. |
+| `merge_queue.enqueue_after` | string | `code-reviewed` | Orchestrator gate that must pass before a PR is enqueued | `code-reviewed`, `triage-reviewed` | Names the approval gate the PR must clear before enqueue. code-reviewed is the reviewer-approval gate. |
+| `merge_queue.failure_action` | string | `rework` | How to route a PR that fails the merge queue | `rework`, `needs_human` | rework sends the PR back to a coding agent; needs_human escalates it for manual attention. |
+
 ## Goal Pilot
 
 | Field | Type | Default | Description | Examples | Notes |
