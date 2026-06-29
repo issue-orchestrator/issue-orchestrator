@@ -41,6 +41,7 @@ class ActionType(Enum):
     ADD_LABEL = "add_label"
     REMOVE_LABEL = "remove_label"
     SYNC_LABELS = "sync_labels"
+    SHED_RECOVERED_WORKFLOW_LABELS = "shed_recovered_workflow_labels"
 
     # Session operations
     LAUNCH_SESSION = "launch_session"
@@ -129,6 +130,23 @@ class SyncLabelsAction(Action):
     remove_labels: tuple[str, ...] = field(default_factory=tuple)
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.SYNC_LABELS, init=False)
+
+
+@dataclass(frozen=True)
+class ShedRecoveredWorkflowLabelsAction(Action):
+    """Shed an issue's transient workflow labels after its work has landed.
+
+    The set of labels to remove (``pr-pending``, ``publish-failed``,
+    ``publish-fail-count-N``, blocking labels) is decided at apply time from the
+    issue's live labels, so the planner does not need to know the issue's
+    current labels (which it usually lacks for already-closed/merged issues).
+    """
+
+    issue_number: int = 0
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
+    action_type: ActionType = field(
+        default=ActionType.SHED_RECOVERED_WORKFLOW_LABELS, init=False
+    )
 
 
 @dataclass(frozen=True)

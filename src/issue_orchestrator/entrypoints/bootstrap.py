@@ -733,6 +733,7 @@ def build_orchestrator(
         repository_host=github,
         worktree_manager=worktree_manager,
         fresh_issue_reader=fresh_issue_reader,
+        label_manager=label_manager,
         reconcile=True,
     ) if github else None
 
@@ -1037,6 +1038,7 @@ def build_orchestrator_for_testing(
             repository_host=github,
             worktree_manager=worktree_manager,
             fresh_issue_reader=fresh_issue_reader,
+            label_manager=label_manager,
             reconcile=False,  # Disable for testing by default
         )
 

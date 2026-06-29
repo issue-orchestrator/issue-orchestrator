@@ -23,6 +23,7 @@ from issue_orchestrator.control.actions import (
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
+    ShedRecoveredWorkflowLabelsAction,
     SupersedePullRequestAction,
     CloseIssueAction,
     SetIssueStateAction,
@@ -1498,6 +1499,132 @@ class TestApplyAll:
         assert summary_events == []
 
 
+class TestShedRecoveredWorkflowLabelsAction:
+    """Tests for SHED_RECOVERED_WORKFLOW_LABELS — the clear-on-merge transition."""
+
+    @pytest.fixture
+    def real_label_manager(self):
+        from issue_orchestrator.infra.config import Config
+        from issue_orchestrator.control.label_manager import LabelManager
+        return LabelManager(Config(repo="o/r"))
+
+    @pytest.fixture
+    def real_label_store(self, tmp_path):
+        from issue_orchestrator.execution.label_store import LabelStore
+        return LabelStore(tmp_path / "label_store.sqlite")
+
+    def _make_applier(
+        self,
+        mock_labels,
+        mock_sessions,
+        mock_events,
+        mock_repository_host,
+        mock_worktree_manager,
+        real_label_manager,
+        real_label_store,
+        github_labels,
+    ):
+        reader = MagicMock()
+        reader.read_issue_labels.return_value = list(github_labels)
+        return ActionApplier(
+            labels=mock_labels,
+            sessions=mock_sessions,
+            events=mock_events,
+            repository_host=mock_repository_host,
+            worktree_manager=mock_worktree_manager,
+            fresh_issue_reader=reader,
+            label_manager=real_label_manager,
+            label_store=real_label_store,
+            reconcile=False,
+        )
+
+    def test_sheds_live_transient_labels_and_keeps_others(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        mock_worktree_manager, real_label_manager, real_label_store,
+    ):
+        github_labels = [
+            "pr-pending", "publish-failed", "publish-fail-count-2",
+            "blocked:pr-closed", "agent:backend", "bug",
+        ]
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            mock_worktree_manager, real_label_manager, real_label_store, github_labels,
+        )
+        action = ShedRecoveredWorkflowLabelsAction(
+            issue_number=228, issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        removed = {call.args[1] for call in mock_labels.remove_label.call_args_list}
+        assert removed == {
+            "pr-pending", "publish-failed", "publish-fail-count-2", "blocked:pr-closed",
+        }
+        # Non-transient labels must never be touched.
+        assert "agent:backend" not in removed
+        assert "bug" not in removed
+
+    def test_cleans_label_store_mirror(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        mock_worktree_manager, real_label_manager, real_label_store,
+    ):
+        # Store carries a row that GitHub no longer has (publish-fail-count-1):
+        # the union of live + stored labels means it is still shed from the
+        # mirror even though the fresh read doesn't surface it.
+        for label in ("pr-pending", "publish-failed", "publish-fail-count-1"):
+            real_label_store.add_label(228, label)
+        github_labels = ["pr-pending", "publish-failed"]
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            mock_worktree_manager, real_label_manager, real_label_store, github_labels,
+        )
+        action = ShedRecoveredWorkflowLabelsAction(issue_number=228, issue_key="M1-228")
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert real_label_store.load_labels(228) == set()
+        removed = {call.args[1] for call in mock_labels.remove_label.call_args_list}
+        assert "publish-fail-count-1" in removed
+
+    def test_noop_when_no_transient_labels(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        mock_worktree_manager, real_label_manager, real_label_store,
+    ):
+        github_labels = ["agent:backend", "bug", "in-progress", "code-reviewed"]
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            mock_worktree_manager, real_label_manager, real_label_store, github_labels,
+        )
+        action = ShedRecoveredWorkflowLabelsAction(issue_number=5)
+
+        result = applier.apply(action)
+
+        assert result.success
+        mock_labels.remove_label.assert_not_called()
+
+    def test_fails_without_label_manager(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        mock_worktree_manager, mock_fresh_issue_reader,
+    ):
+        applier = ActionApplier(
+            labels=mock_labels,
+            sessions=mock_sessions,
+            events=mock_events,
+            repository_host=mock_repository_host,
+            worktree_manager=mock_worktree_manager,
+            fresh_issue_reader=mock_fresh_issue_reader,
+            reconcile=False,
+        )
+        action = ShedRecoveredWorkflowLabelsAction(issue_number=5)
+
+        result = applier.apply(action)
+
+        assert not result.success
+
+
 class TestReconciliation:
     """Tests for reconciliation behavior."""
 
@@ -1739,6 +1866,7 @@ class TestClaimGateAudit:
         ActionType.ADD_LABEL,
         ActionType.REMOVE_LABEL,
         ActionType.SYNC_LABELS,
+        ActionType.SHED_RECOVERED_WORKFLOW_LABELS,
         ActionType.ADD_COMMENT,
         ActionType.SUPERSEDE_PR,
         ActionType.CLOSE_ISSUE,
@@ -1794,6 +1922,9 @@ class TestClaimGateAudit:
             ActionType.ADD_LABEL: "_apply_add_label",
             ActionType.REMOVE_LABEL: "_apply_remove_label",
             ActionType.SYNC_LABELS: "_apply_sync_labels",
+            ActionType.SHED_RECOVERED_WORKFLOW_LABELS: (
+                "_apply_shed_recovered_workflow_labels"
+            ),
             ActionType.ADD_COMMENT: "_apply_add_comment",
             ActionType.SUPERSEDE_PR: "_apply_supersede_pr",
             ActionType.CLOSE_ISSUE: "_apply_close_issue",

@@ -1,12 +1,12 @@
 {
   "metrics": {
     "control_policy_branch_sites:src/issue_orchestrator/control/action_applier.py": {
-      "detail": "17 branch site(s) mention lifecycle/control terms",
+      "detail": "18 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/action_applier.py",
       "path": "src/issue_orchestrator/control/action_applier.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 17
+      "value": 18
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/actions.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
@@ -153,12 +153,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/label_manager.py": {
-      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "detail": "4 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/label_manager.py",
       "path": "src/issue_orchestrator/control/label_manager.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 2
+      "value": 4
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/label_sync.py": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
@@ -1297,12 +1297,12 @@
       "value": 5
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/action_applier.py": {
-      "detail": "1537 lines exceeds budget 800",
+      "detail": "1622 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/action_applier.py",
       "path": "src/issue_orchestrator/control/action_applier.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1537
+      "value": 1622
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
       "detail": "926 lines exceeds budget 800",
@@ -1345,12 +1345,12 @@
       "value": 1452
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
-      "detail": "1683 lines exceeds budget 800",
+      "detail": "1685 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/planner.py",
       "path": "src/issue_orchestrator/control/planner.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1683
+      "value": 1685
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
       "detail": "1910 lines exceeds budget 800",
@@ -1369,12 +1369,12 @@
       "value": 2035
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
-      "detail": "898 lines exceeds budget 800",
+      "detail": "936 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py",
       "path": "src/issue_orchestrator/control/startup_manager.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 898
+      "value": 936
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/validation.py": {
       "detail": "865 lines exceeds budget 800",
@@ -1385,12 +1385,12 @@
       "value": 865
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/bootstrap.py": {
-      "detail": "1235 lines exceeds budget 800",
+      "detail": "1237 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1235
+      "value": 1237
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/cli.py": {
       "detail": "964 lines exceeds budget 800",

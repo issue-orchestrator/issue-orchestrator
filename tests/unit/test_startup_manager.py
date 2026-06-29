@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from issue_orchestrator.control.startup_manager import StartupManager
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
@@ -384,7 +384,16 @@ class TestStartupManagerInProgressIssues:
         with caplog.at_level("INFO"):
             await startup_manager.run_startup(sample_state)
 
-        mock_repository_host.get_issue.assert_called_once_with(4057)
+        # The in-progress recovery probes 4057 (and fails). The later
+        # label_store reconcile backstop, finding 4057 only in the store and
+        # not the warm cache, also probes it — and likewise leaves the mirror
+        # untouched on a None result. Both legitimately consult get_issue, so
+        # assert the probe happened rather than pinning an exact call count.
+        mock_repository_host.get_issue.assert_any_call(4057)
+        assert all(
+            call_args == call(4057)
+            for call_args in mock_repository_host.get_issue.call_args_list
+        )
         mock_analyze.assert_not_called()
         assert "Cached queue omitted 1 locally in-progress issue(s): [4057]" in caplog.text
         assert "Failed to refetch locally in-progress issue missing from cache: issue=4057" in caplog.text
@@ -419,6 +428,30 @@ class TestStartupManagerInProgressIssues:
 
         analyzed_issues = [call.kwargs["issue"].number for call in mock_analyze.call_args_list]
         assert analyzed_issues == [4057]
+
+
+class TestStartupManagerLabelStoreReconcile:
+    """Startup reconciles the local label_store mirror against GitHub."""
+
+    @pytest.mark.asyncio
+    async def test_reconcile_prunes_stale_store_label_using_cache(
+        self, startup_manager, sample_state, mock_label_store, mock_repository_host,
+    ):
+        # Store still records publish-failed for a recovered issue; the warm
+        # cache shows GitHub no longer carries it, so the mirror is pruned with
+        # zero extra GitHub calls.
+        sample_state.cached_queue_issues = [
+            Issue(number=228, title="Done", labels=["agent:backend"]),
+        ]
+        mock_label_store.load_all.return_value = {228: {"publish-failed"}}
+
+        await startup_manager.run_startup(sample_state)
+
+        # The reconciler rewrites the issue's rows atomically via save_labels;
+        # GitHub no longer carries the orchestrator label, so the desired set is
+        # empty.
+        mock_label_store.save_labels.assert_any_call(228, set())
+        mock_repository_host.get_issue.assert_not_called()
 
 
 class TestStartupManagerCodeReviewRecovery:

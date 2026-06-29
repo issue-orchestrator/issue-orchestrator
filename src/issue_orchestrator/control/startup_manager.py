@@ -256,6 +256,11 @@ class StartupManager:
         with self._phase("resume_partial_work", timings):
             await self._resume_partial_work(state, issues_to_resume)
 
+        # Step 12b: Reconcile the local label_store against GitHub so the
+        # mirror cannot silently diverge from the source of truth.
+        with self._phase("reconcile_label_store", timings):
+            self._reconcile_label_store(state)
+
         # Step 13: Audit and cache the queue
         state.startup_message = "Auditing queue..."
         with self._phase("audit_queue", timings):
@@ -465,6 +470,39 @@ class StartupManager:
             logger.info(
                 "[startup] Recovered %d pr-pending issue(s) into dashboard history",
                 recovered,
+            )
+
+    def _reconcile_label_store(self, state: OrchestratorState) -> None:
+        """Reconcile the local label_store mirror against GitHub labels.
+
+        Uses the warm queue/scope cache as the zero-cost label source and lets
+        the reconciler fetch any out-of-scope stored issues within its budget.
+        """
+        if self._label_store is None:
+            return
+        from .label_store_reconciler import LabelStoreReconciler
+
+        cached_labels_by_issue: dict[int, Sequence[str]] = {}
+        for issue in [*state.cached_queue_issues, *state.cached_scope_issues]:
+            cached_labels_by_issue.setdefault(issue.number, issue.labels)
+
+        reconciler = LabelStoreReconciler(
+            label_store=self._label_store,
+            label_manager=self._lm,
+            repository_host=self.repository_host,
+        )
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.STARTUP_REFRESH,
+            scope=gh_audit.AuditScope.STARTUP,
+        ):
+            result = reconciler.reconcile(cached_labels_by_issue)
+        if result.issues_changed:
+            logger.info(
+                "[startup] Reconciled label_store: %d issue(s) changed "
+                "(+%d/-%d labels)",
+                result.issues_changed,
+                result.labels_added,
+                result.labels_removed,
             )
 
     def _analyze_and_handle_issue(

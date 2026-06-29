@@ -67,6 +67,7 @@ from .actions import (
     CleanupSessionAction,
     ReconcileHistoryEntryAction,
     SessionType,
+    ShedRecoveredWorkflowLabelsAction,
     SyncLabelsAction,
 )
 from .awaiting_merge_post_publish_policy import build_post_publish_validation_comment
@@ -458,20 +459,22 @@ class Planner:
                 reason=reconciliation.status_reason,
             ))
             # When the awaiting-merge state reaches a terminal status (PR
-            # merged/closed or parent issue closed), strip pr-pending so it
-            # doesn't outlive its meaning. Without this the only path that
-            # cleared the label was the drift discovery, which requires the
-            # issue to still be open and a 5-min cooldown — many merges and
-            # all issue-closes slipped through, stranding pr-pending rows in
-            # the local label_store forever.
+            # merged/closed or parent issue closed), the issue's work has
+            # landed. Shed every transient workflow label that no longer
+            # applies — pr-pending, publish-failed, publish-fail-count-N, and
+            # any blocking label — in one action so recovered issues don't keep
+            # a phantom "failed / pr-pending" state on GitHub or in the local
+            # label_store. The applier reads the issue's live labels to decide
+            # the exact set (the planner rarely has labels for an already
+            # closed/merged issue). Drift reconciliations are excluded: they
+            # ADD blocked:pr-closed (handled by the SyncLabelsAction below), so
+            # shedding blocking labels there would contradict the drift.
             if reconciliation.issue_number in drift_issue_numbers:
                 continue
-            actions.append(RemoveLabelAction(
+            actions.append(ShedRecoveredWorkflowLabelsAction(
                 issue_number=reconciliation.issue_number,
-                label=self._lm.pr_pending,
                 issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
                 reason=f"awaiting-merge terminal: {reconciliation.status}",
-                expected=build_expected_for_mutation(),
             ))
 
         for drift in snapshot.discovered_awaiting_merge_drifts:

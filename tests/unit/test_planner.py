@@ -25,6 +25,7 @@ from issue_orchestrator.control.actions import (
     LaunchSessionAction,
     ReconcileHistoryEntryAction,
     SessionType,
+    ShedRecoveredWorkflowLabelsAction,
     SyncLabelsAction,
     RemoveLabelAction,
 )
@@ -936,10 +937,12 @@ class TestPlanAwaitingMergeReconciliations:
         assert action.source == "pull_request"
         assert action.issue_key == "M1-228"
 
-    def test_terminal_pr_merged_reconciliation_strips_pr_pending(self):
-        """Source fix for stranded pr-pending rows: when a PR is observed
-        merged, also produce RemoveLabelAction(pr-pending) so the local
-        label_store mirror is cleaned via the existing write-through path.
+    def test_terminal_pr_merged_reconciliation_sheds_recovered_labels(self):
+        """When a PR is observed merged, shed the issue's transient workflow
+        labels (pr-pending, publish-failed, publish-fail-count-N, blocking)
+        via a single ShedRecoveredWorkflowLabelsAction. The applier reads the
+        issue's live labels to pick the exact set and cleans both GitHub and
+        the local label_store mirror.
         """
         config = make_config()
         scheduler = Scheduler(config)
@@ -960,25 +963,21 @@ class TestPlanAwaitingMergeReconciliations:
 
         plan = planner.plan(snapshot)
 
-        remove_actions = [
-            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
-            if isinstance(a, RemoveLabelAction)
+        shed_actions = [
+            a for a in plan.actions_of_type(
+                ActionType.SHED_RECOVERED_WORKFLOW_LABELS
+            )
+            if isinstance(a, ShedRecoveredWorkflowLabelsAction)
             and a.issue_number == 228
-            and a.label == "pr-pending"
         ]
-        assert len(remove_actions) == 1
-        action = remove_actions[0]
+        assert len(shed_actions) == 1
+        action = shed_actions[0]
         assert action.issue_key == "M1-228"
         assert "merged" in action.reason
-        # No expected.required: by the time we observe the merge, pr-pending
-        # may already have been stripped by an earlier drift pass; treat the
-        # remove as best-effort cleanup, not an optimistic-concurrency mutation.
-        assert action.expected is not None
-        assert action.expected.required_labels == frozenset()
 
-    def test_terminal_issue_closed_reconciliation_strips_pr_pending(self):
-        """When the parent issue is closed (regardless of PR state), the
-        same source fix applies: clean the stranded pr-pending row.
+    def test_terminal_issue_closed_reconciliation_sheds_recovered_labels(self):
+        """When the parent issue is closed (regardless of PR state), the same
+        clean-up applies: shed every transient workflow label.
         """
         config = make_config()
         scheduler = Scheduler(config)
@@ -999,19 +998,20 @@ class TestPlanAwaitingMergeReconciliations:
 
         plan = planner.plan(snapshot)
 
-        remove_actions = [
-            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
-            if isinstance(a, RemoveLabelAction)
+        shed_actions = [
+            a for a in plan.actions_of_type(
+                ActionType.SHED_RECOVERED_WORKFLOW_LABELS
+            )
+            if isinstance(a, ShedRecoveredWorkflowLabelsAction)
             and a.issue_number == 228
-            and a.label == "pr-pending"
         ]
-        assert len(remove_actions) == 1
+        assert len(shed_actions) == 1
 
     def test_terminal_reconciliation_dedupes_against_drift(self):
         """When a drift action already removes pr-pending for the same
-        issue (PR closed but issue still open), don't duplicate the work
-        with a separate RemoveLabelAction — the SyncLabelsAction's
-        remove_labels already covers it.
+        issue (PR closed but issue still open), don't shed: the drift is
+        ADDING blocked:pr-closed, so shedding blocking labels would
+        contradict it. The SyncLabelsAction owns pr-pending removal.
         """
         config = make_config()
         scheduler = Scheduler(config)
@@ -1040,15 +1040,16 @@ class TestPlanAwaitingMergeReconciliations:
 
         plan = planner.plan(snapshot)
 
-        remove_actions = [
-            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
-            if isinstance(a, RemoveLabelAction)
+        shed_actions = [
+            a for a in plan.actions_of_type(
+                ActionType.SHED_RECOVERED_WORKFLOW_LABELS
+            )
+            if isinstance(a, ShedRecoveredWorkflowLabelsAction)
             and a.issue_number == 228
-            and a.label == "pr-pending"
         ]
-        assert remove_actions == [], (
-            "Drift's SyncLabelsAction already removes pr-pending; "
-            "RemoveLabelAction would double up."
+        assert shed_actions == [], (
+            "Drift ADDS blocked:pr-closed; shedding blocking labels would "
+            "contradict the drift. Only the SyncLabelsAction should act."
         )
         sync_actions = plan.actions_of_type(ActionType.SYNC_LABELS)
         assert len(sync_actions) == 1

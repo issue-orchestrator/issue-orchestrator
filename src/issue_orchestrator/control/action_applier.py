@@ -42,6 +42,7 @@ from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
+    from .label_manager import LabelManager
     from .review_exchange_lifecycle import IssueRuntimeTermination
     from .review_exchange_lifecycle import ReviewExchangeCancellation
     from ..ports.label_store import LabelStore
@@ -66,6 +67,7 @@ from .actions import (
     AddLabelAction,
     RemoveLabelAction,
     SyncLabelsAction,
+    ShedRecoveredWorkflowLabelsAction,
     LaunchSessionAction,
     LaunchValidationRetryAction,
     StopSessionAction,
@@ -174,6 +176,10 @@ class ActionApplier:
     lease_id_lookup: Optional[LeaseIdLookup] = None
     # Optional label persistence store for write-through tracking
     label_store: Optional["LabelStore"] = None
+    # Label policy owner. Required to apply ShedRecoveredWorkflowLabelsAction,
+    # which decides the labels to remove from the issue's live labels at apply
+    # time. Optional so unrelated tests need not wire it.
+    label_manager: Optional["LabelManager"] = None
     # Issue-scoped persistent coder/reviewer subprocess pair registry.
     # Used with the background supervisor to terminate hidden review-exchange
     # runtime work at issue lifecycle boundaries. ADR 0026 / B2.
@@ -244,6 +250,9 @@ class ActionApplier:
             ActionType.ADD_LABEL: self._apply_add_label,
             ActionType.REMOVE_LABEL: self._apply_remove_label,
             ActionType.SYNC_LABELS: self._apply_sync_labels,
+            ActionType.SHED_RECOVERED_WORKFLOW_LABELS: (
+                self._apply_shed_recovered_workflow_labels
+            ),
             ActionType.LAUNCH_SESSION: self._apply_launch_session,
             ActionType.LAUNCH_VALIDATION_RETRY: self._apply_launch_validation_retry,
             ActionType.STOP_SESSION: self._apply_stop_session,
@@ -772,6 +781,82 @@ class ActionApplier:
             added=list(action.add_labels),
             removed=list(action.remove_labels),
         )
+
+    def _apply_shed_recovered_workflow_labels(self, action: Action) -> ActionResult:
+        """Shed transient workflow labels after an issue's work has landed.
+
+        Reads the issue's live labels, asks the LabelManager which are
+        recovered-workflow labels (pr-pending, publish-failed,
+        publish-fail-count-N, blocking labels), and removes each from both
+        GitHub and the local label_store. GitHub is the source of truth for
+        which labels exist; the label_store is folded in too so a row stranded
+        there by past drift is also cleaned in the same pass.
+        """
+        assert isinstance(action, ShedRecoveredWorkflowLabelsAction)
+        assert self.label_manager is not None, (
+            "label_manager is required to shed recovered workflow labels"
+        )
+
+        # Verify claim ownership before write (raises ClaimLostError)
+        self._verify_claim_before_write(action, action.issue_number)
+
+        current = self._labels_for_recovery_shed(action.issue_number)
+        to_remove = self.label_manager.recovered_workflow_labels(sorted(current))
+
+        removed: list[str] = []
+        errors: list[str] = []
+        for label in to_remove:
+            self._record_label_stat(action.issue_number, "label_remove_attempted")
+            try:
+                self.labels.remove_label(action.issue_number, label)
+                self._persist_label_remove(action.issue_number, label)
+                self._record_label_stat(action.issue_number, "label_remove_applied")
+                self._log_label_mutation(
+                    level=logging.INFO,
+                    issue_number=action.issue_number,
+                    operation="remove",
+                    outcome="applied",
+                    label=label,
+                    reason=action.reason,
+                    detail="recovered workflow cleanup",
+                )
+                removed.append(label)
+            except Exception as e:
+                self._record_label_stat(action.issue_number, "label_mutation_failed")
+                errors.append(f"remove {label}: {e}")
+
+        if removed:
+            self._emit_issue_labels_changed(
+                action.issue_number, [], removed, issue_key=action.issue_key
+            )
+        if errors:
+            return ActionResult.fail(action, "; ".join(errors))
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            removed=removed,
+        )
+
+    def _labels_for_recovery_shed(self, issue_number: int) -> set[str]:
+        """Union of the issue's live GitHub labels and its label_store rows.
+
+        Live GitHub labels are authoritative; the label_store contribution
+        ensures a label the orchestrator believes it applied is still cleaned
+        even if the fresh read is unavailable or has already diverged.
+        """
+        labels: set[str] = set()
+        fresh = self._fetch_current_labels(issue_number)
+        if fresh is not None:
+            labels |= fresh
+        if self.label_store is not None:
+            try:
+                labels |= self.label_store.load_labels(issue_number)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    issue_log(issue_number, "Failed to read label_store for shed: %s"),
+                    e,
+                )
+        return labels
 
     def _apply_launch_session(self, action: Action) -> ActionResult:
         """Launch a terminal session.
