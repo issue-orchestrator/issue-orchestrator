@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import (
@@ -112,6 +113,7 @@ def startup_manager(
         restore_sessions_fn=MagicMock(),
         launch_session_fn=lambda issue: None,
         update_queue_cache_fn=lambda: None,
+        issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         label_store=mock_label_store,
     )
 
@@ -320,6 +322,7 @@ class TestStartupManagerInProgressIssues:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=queue_cache_store,
             label_store=mock_label_store,
         )
@@ -795,6 +798,7 @@ class TestStartupManagerResumePartialWork:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=launch_session,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             label_store=mock_label_store,
         )
 
@@ -933,6 +937,99 @@ class TestStartupManagerValidationRetryRecovery:
         assert len(sample_state.pending_validation_retries) == 0
 
     @pytest.mark.asyncio
+    async def test_review_only_run_scoped_retry_artifact_is_not_recovered(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """A retry artifact under a review-only run is never recovered as a coding retry.
+
+        Regression for #6426: a validation-state.json left under a
+        ``...__retrospective-review-<issue>`` run (pre-fix bug or crash boundary)
+        must not relaunch as TaskKind.CODE and open a PR on an empty branch.
+        """
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260501-010000Z__retrospective-review-42"
+        )
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "session_name": "retrospective-review-42",
+                    "validation_status": "retry",
+                }
+            )
+        )
+        (run_dir / "validation-state.json").write_text(
+            json.dumps(
+                {
+                    "retry_count": 1,
+                    "max_retries": 3,
+                    "validation_cmd": "make test",
+                    "last_error": "Stale review-only failure",
+                }
+            )
+        )
+        (run_dir / "retry-prompt.md").write_text("stale retry prompt")
+        mock_issue_branches_fn.return_value = {42: "42-fix-login"}
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_validation_retries == []
+
+    @pytest.mark.asyncio
+    async def test_unrecognized_run_scoped_retry_artifact_is_not_recovered(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """A retry artifact under an unrecognized run identity is refused, not coerced to CODE.
+
+        Regression for #6426: provenance must be explicit. An unclassified
+        ``...__mystery-<issue>`` run with retry state must not be silently
+        relaunched as a coding (TaskKind.CODE) validation retry.
+        """
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260501-010000Z__mystery-42"
+        )
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps({"session_name": "mystery-42", "validation_status": "retry"})
+        )
+        (run_dir / "validation-state.json").write_text(
+            json.dumps(
+                {
+                    "retry_count": 1,
+                    "max_retries": 3,
+                    "validation_cmd": "make test",
+                    "last_error": "Unknown-provenance failure",
+                }
+            )
+        )
+        (run_dir / "retry-prompt.md").write_text("mystery retry prompt")
+        mock_issue_branches_fn.return_value = {42: "42-fix-login"}
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_validation_retries == []
+
+    @pytest.mark.asyncio
     async def test_no_recovery_when_no_pending_retry(
         self,
         startup_manager,
@@ -1029,6 +1126,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1060,6 +1158,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1084,6 +1183,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1134,6 +1234,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 
@@ -1164,6 +1265,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 
@@ -1200,6 +1302,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=update_queue_fn,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 

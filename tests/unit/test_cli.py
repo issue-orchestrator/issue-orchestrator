@@ -1,6 +1,7 @@
 """Tests for CLI module."""
 
 import argparse
+from collections.abc import Callable
 from dataclasses import fields
 import inspect
 import os
@@ -294,13 +295,15 @@ class TestCmdStatus:
 
 class TestCmdSetupGuardrails:
     def test_setup_guardrails_command_dispatches_to_repo_guardrails(self):
-        def noop(_args):
+        def noop(_args: argparse.Namespace) -> int:
             return 0
 
-        def guardrails(_args):
+        def guardrails(_args: argparse.Namespace) -> int:
             return 42
 
-        handler_kwargs = {field.name: noop for field in fields(CLICommandHandlers)}
+        handler_kwargs: dict[str, Callable[[argparse.Namespace], int]] = {
+            field.name: noop for field in fields(CLICommandHandlers)
+        }
         handler_kwargs["setup_guardrails"] = guardrails
         parser = build_parser(CLICommandHandlers(**handler_kwargs))
 
@@ -1935,7 +1938,7 @@ class TestCmdKeysList:
 
         with patch("issue_orchestrator.infra.ai_keys.list_ai_keys") as mock_list:
             mock_list.return_value = {
-                "ANTHROPIC_API_KEY": ("sk-...", "environment"),
+                "OPENAI_API_KEY": ("sk-...", "environment"),
             }
             args = argparse.Namespace()
             result = _cmd_keys_list(args)
@@ -1951,7 +1954,7 @@ class TestCmdKeysSet:
         from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_set
 
         with patch("issue_orchestrator.infra.ai_keys.store_ai_key") as mock_store:
-            args = argparse.Namespace(key_name="anthropic")
+            args = argparse.Namespace(key_name="openai")
 
             with patch("getpass.getpass") as mock_getpass:
                 mock_getpass.return_value = "test_key"
@@ -1963,13 +1966,27 @@ class TestCmdKeysSet:
         """Verify keys set rejects empty key."""
         from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_set
 
-        args = argparse.Namespace(key_name="anthropic")
+        args = argparse.Namespace(key_name="openai")
 
         with patch("getpass.getpass") as mock_getpass:
             mock_getpass.return_value = ""
             result = _cmd_keys_set(args)
 
         assert result == 1
+
+    def test_cmd_keys_set_empty_key_name(self):
+        """Verify keys set rejects an empty key name before prompting."""
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_set
+
+        args = argparse.Namespace(key_name="   ")
+
+        with patch("getpass.getpass") as mock_getpass:
+            with patch("issue_orchestrator.infra.ai_keys.store_ai_key") as mock_store:
+                result = _cmd_keys_set(args)
+
+        assert result == 1
+        mock_getpass.assert_not_called()
+        mock_store.assert_not_called()
 
 
 class TestCmdKeysDelete:
@@ -1981,7 +1998,7 @@ class TestCmdKeysDelete:
 
         with patch("issue_orchestrator.infra.ai_keys.delete_ai_key") as mock_delete:
             mock_delete.return_value = True
-            args = argparse.Namespace(key_name="anthropic")
+            args = argparse.Namespace(key_name="openai")
             result = _cmd_keys_delete(args)
 
             assert result == 0
@@ -1992,7 +2009,18 @@ class TestCmdKeysDelete:
 
         with patch("issue_orchestrator.infra.ai_keys.delete_ai_key") as mock_delete:
             mock_delete.return_value = False
-            args = argparse.Namespace(key_name="anthropic")
+            args = argparse.Namespace(key_name="openai")
             result = _cmd_keys_delete(args)
 
             assert result == 0
+
+    def test_cmd_keys_delete_empty_key_name(self):
+        """Verify keys delete rejects an empty key name before keyring access."""
+        from issue_orchestrator.entrypoints.cli_auth_commands import _cmd_keys_delete
+
+        with patch("issue_orchestrator.infra.ai_keys.delete_ai_key") as mock_delete:
+            args = argparse.Namespace(key_name="   ")
+            result = _cmd_keys_delete(args)
+
+        assert result == 1
+        mock_delete.assert_not_called()

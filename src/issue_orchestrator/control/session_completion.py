@@ -245,6 +245,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             validation_error=validation_error or "",
             validation_error_file=validation_error_file,
             retry_count=next_retry_count,
+            source_task=session.key.task,
             validation_cmd=config.validation.quick.cmd,
         )
         state.pending_validation_retries = [
@@ -486,6 +487,7 @@ def _completion_decider(
             repo_root=config.repo_root,
             issue_key=issue_key,
             session_run_assets=session.run_assets,
+            task_kind=session.key.task,
         )
 
     return decide

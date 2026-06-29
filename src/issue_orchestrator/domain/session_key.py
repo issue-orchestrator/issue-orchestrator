@@ -42,6 +42,46 @@ class TaskKind(Enum):
     REWORK = "rework"    # Fixing issues found in review
     TRIAGE = "triage"    # Triaging failed reviews
 
+    @property
+    def is_review_only(self) -> bool:
+        """Whether this task is read-only: it makes no commits and publishes nothing.
+
+        Review-only sessions (auditing a PR or existing merged work) produce no
+        branch commits, so the publish/code-validation-retry machinery — which
+        exists to validate a coder's changes before opening a PR — does not apply
+        to them. Treating a review-only session as ordinary coding work leads to
+        empty-branch ``create_pr`` attempts (see issue #6426).
+        """
+        return self in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}
+
+    @classmethod
+    def from_session_name(cls, session_name: str) -> "TaskKind | None":
+        """Classify a session/run identity string to the task that produced it.
+
+        The session name (``issue-42``) and the per-attempt run/phase label
+        (``coding-2``, ``retrospective-review-1``) are the durable on-disk record
+        of *which kind of work* created a run directory. Crash recovery reads this
+        identity to decide whether a persisted validation-retry artifact belongs to
+        coding work (``CODE``/``REWORK``) or to review-only work that must never be
+        relaunched through the coder retry pipeline (see issue #6426).
+
+        Returns ``None`` for an unrecognized name so callers fail safe rather than
+        silently misclassifying. Prefixes are matched longest-first so
+        ``retrospective-review-`` is never shadowed by ``review-``.
+        """
+        prefix_to_task = (
+            ("retrospective-review-", cls.RETROSPECTIVE_REVIEW),
+            ("review-", cls.REVIEW),
+            ("rework-", cls.REWORK),
+            ("triage-", cls.TRIAGE),
+            ("coding-", cls.CODE),  # validation-retry phase label
+            ("issue-", cls.CODE),   # issue/coding session name
+        )
+        for prefix, task in prefix_to_task:
+            if session_name.startswith(prefix):
+                return task
+        return None
+
 
 @dataclass(frozen=True)
 class SessionKey:

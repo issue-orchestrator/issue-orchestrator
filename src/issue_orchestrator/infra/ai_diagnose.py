@@ -88,15 +88,15 @@ def _get_safe_env() -> dict[str, str]:
 
     Strips sensitive values and credentials.
     """
+    from .ai_keys import get_ai_providers
+
     unsafe_keys = {
         "GITHUB_TOKEN",
         "GH_TOKEN",
         "ISSUE_ORCH_GITHUB_TOKEN",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
-    }
+    } | set(get_ai_providers())
 
     return {k: v for k, v in os.environ.items() if k not in unsafe_keys}
 

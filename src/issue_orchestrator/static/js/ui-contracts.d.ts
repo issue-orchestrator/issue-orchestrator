@@ -361,6 +361,7 @@ export interface E2ETimelineEventPayload {
   parent_key: string;
   phase: string;
   removed?: string[];
+  response_type?: string;
   review_oriented: boolean;
   reviewer_agent?: string;
   reviewer_response_text?: string;
@@ -588,6 +589,7 @@ export interface JourneyStepPayload {
   day: string;
   detail?: string | null;
   event: string;
+  in_round_progress?: boolean;
   narrative: string;
   status: string;
   time_label: string;

@@ -918,6 +918,7 @@ class TestLaunchValidationRetrySession:
             validation_error="Validation blocked before running command: dirty worktree",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2029,6 +2030,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
         other_retry = PendingValidationRetry(
@@ -2041,6 +2043,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="failed",
             validation_error_file=None,
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry, other_retry])
@@ -2085,6 +2088,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry])
