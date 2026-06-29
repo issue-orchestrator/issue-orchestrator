@@ -83,6 +83,7 @@ class TimelineEvent:
     coder_response_type: str | None = None
     coder_response_text: str | None = None
     role: str | None = None
+    response_type: str | None = None
     attempt_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +128,7 @@ class TimelineEvent:
             ("coder_response_type", self.coder_response_type),
             ("coder_response_text", self.coder_response_text),
             ("role", self.role),
+            ("response_type", self.response_type),
             ("attempt_index", self.attempt_index),
         ]
         for key, val in _optional:
@@ -271,6 +273,16 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         else None
     )
     role = data.get("role") if isinstance(data.get("role"), str) else None
+    # Per-role verdict carried by ``review_exchange.role_feedback`` events.
+    # Distinct from the round-level ``reviewer_response_type`` /
+    # ``coder_response_type`` recorded on ``round_completed``; needed so the
+    # in-flight substate ("coder needs requested changes") survives to the
+    # view model instead of being dropped (issue #6428).
+    response_type = (
+        data.get("response_type")
+        if isinstance(data.get("response_type"), str)
+        else None
+    )
     attempt_index = (
         data.get("attempt_index")
         if isinstance(data.get("attempt_index"), int)
@@ -338,6 +350,7 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         coder_response_type=coder_response_type,
         coder_response_text=coder_response_text,
         role=role,
+        response_type=response_type,
         attempt_index=attempt_index,
     )
 

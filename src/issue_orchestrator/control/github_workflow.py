@@ -176,6 +176,7 @@ class GitHubWorkflow:
             post_publish_checks_pending_timeout_seconds=(
                 self.config.post_publish_checks_pending_timeout_seconds
             ),
+            repo=self.config.repo,
         ).discover(state)
         state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
         state.discovered_awaiting_merge_drifts.extend(result.drifts)

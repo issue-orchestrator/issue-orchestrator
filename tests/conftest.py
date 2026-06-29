@@ -10,7 +10,11 @@ from fastapi.testclient import TestClient
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
-from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
+from issue_orchestrator.ports.pull_request_tracker import (
+    PRInfo,
+    PRRef,
+    StatusCheckRollupRead,
+)
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -71,8 +75,19 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     resolves repo_root from the environment (e.g. SubprocessPlugin) never
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
+    Both env-var families are stripped. Several runtime readers accept a legacy
+    non-prefixed ``ORCHESTRATOR_*`` form as a fallback to the canonical
+    ``ISSUE_ORCHESTRATOR_*`` one (e.g. config resolution reads
+    ``ORCHESTRATOR_CONFIG_PATH`` / ``ORCHESTRATOR_CONFIG_NAME`` and managed-mode
+    detection reads ``ORCHESTRATOR_SESSION_ID``). Stripping only the prefixed
+    form left the legacy form leaking into the suite when the agent runs
+    ``make validate-quick`` inside an orchestrator session, so both prefixes are
+    cleared here.
     """
-    # Strip both ISSUE_ORCHESTRATOR_* and the legacy ORCHESTRATOR_* fallbacks.
+    # Strip both the canonical ISSUE_ORCHESTRATOR_* vars and the legacy
+    # ORCHESTRATOR_* fallbacks (SESSION_ID, CONFIG_PATH/NAME, etc.). The two
+    # prefixes are disjoint ("ISSUE_ORCHESTRATOR_" does not start with
+    # "ORCHESTRATOR_"), so each var is handled once.
     for var in list(os.environ):
         if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)
@@ -352,12 +367,15 @@ class MockGitHubAdapter:
                     return pr
         return None
 
-    def get_pr_with_status_check_rollup(self, pr_number: int) -> Optional[PRInfo]:
-        """Get a specific PR augmented with rollup. The mock has no
-        check-status concept, so return whatever ``status_check_rollup``
-        the test fixture set on the PRInfo (defaults to None). Real
-        adapter pays an extra GraphQL round-trip; the mock is free."""
-        return self.get_pr(pr_number)
+    def read_pr_status_check_rollup(self, pr_number: int) -> StatusCheckRollupRead:
+        """Read a PR's status-check rollup. The mock has no check-status
+        concept, so it reports ``ok`` with whatever ``status_check_rollup``
+        the test fixture set on the PRInfo (defaults to None). The real
+        adapter pays a GraphQL round-trip and can report permission/
+        transient failures; the mock is free and always-capable."""
+        pr = self.get_pr(pr_number)
+        state = pr.status_check_rollup if pr is not None else None
+        return StatusCheckRollupRead(state=state, capability="ok")
 
     def create_pr(self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None) -> PRInfo:
         """Create a new PR (mock)."""

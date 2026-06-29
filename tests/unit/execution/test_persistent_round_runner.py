@@ -6,7 +6,8 @@ Tests use a self-contained stub agent that supports a control-file gate
 (``STUB_PARTIAL_WRITE_FIRST``). Coordination happens via gate files and
 injected ``now``/``sleep`` callables, never via real wall-clock waits, in
 keeping with ``tests/unit/AGENTS.md``'s ban on timing-based unit
-coordination.
+coordination. The late-trust subprocess test is the exception: it uses a
+bounded real sleep only to yield CPU to a real child process.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import logging
 import os
 import sys
 import textwrap
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -442,29 +444,18 @@ class TestPersistentSessionLifecycle:
         )
         codex_bin = tmp_path / "codex"
         codex_bin.symlink_to(sys.executable)
-        import time as _time
-
         clock = _FakeClock()
         gate_opened = False
 
-        def sleeper(seconds: float) -> None:
-            """Advance the deterministic timeout clock, then pace in real time.
-
-            The injected fake clock keeps the *timeout* deterministic (no
-            wall-clock deadline), but the poll loop must not outrun the real
-            stub subprocess that delivers the response. A small real sleep —
-            the same pacing a non-injected ``send_round`` gets from
-            ``time.sleep`` — gives the gated subprocess real wall-time to write
-            its response each poll. Without it the loop spins through the fake
-            deadline in microseconds and races the subprocess under load.
-            """
+        def reveal_late_trust_prompt(seconds: float) -> None:
+            """Advance deterministic timeout time, then pace the subprocess."""
             nonlocal gate_opened
             clock.value += seconds
             if not gate_opened and clock.value >= 0.35:
                 gate_opened = True
                 trust_gate.touch()
                 _wait_until(prompt_ready.exists)
-            _time.sleep(seconds)
+            time.sleep(seconds)
 
         session = open_persistent_session(
             command=[str(codex_bin), "-u", str(script)],
@@ -478,7 +469,7 @@ class TestPersistentSessionLifecycle:
                 response_file=response_file,
                 timeout_seconds=5,
                 now=clock.now,
-                sleep=sleeper,
+                sleep=reveal_late_trust_prompt,
             )
         finally:
             close_persistent_session(session)

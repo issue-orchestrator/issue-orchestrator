@@ -22,6 +22,10 @@ from ..domain.models import (
 from ..history import latest_history_entries_by_issue
 from ..ports.repository_host import RepositoryHostError
 from .queue_cache import record_issue_refreshes
+from .status_rollup_gate import (
+    STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS,
+    StatusRollupGate,
+)
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, SessionHistoryEntry
@@ -140,6 +144,22 @@ class AwaitingMergeReconciler:
     post_publish_checks_pending_timeout_seconds: float = (
         DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS
     )
+    # Repo slug (owner/name) used only to make the rollup-permission
+    # diagnostic actionable; optional so unit tests need not wire it.
+    repo: str | None = None
+    # Backoff window after a rollup-permission denial before re-probing.
+    status_rollup_backoff_seconds: float = STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS
+
+    def _rollup_gate(self) -> StatusRollupGate:
+        # Rebuilt per call: the gate is stateless except for the backoff
+        # state it reads/writes on OrchestratorState, so this is cheap and
+        # keeps the clock in lockstep with the reconciler's injected clock.
+        return StatusRollupGate(
+            self.repository_host,
+            repo=self.repo,
+            clock=self.clock,
+            backoff_seconds=self.status_rollup_backoff_seconds,
+        )
 
     def discover(self, state: OrchestratorState) -> AwaitingMergeReconciliationResult:
         """Discover completed history entries that should become terminal."""
@@ -485,6 +505,30 @@ class AwaitingMergeReconciler:
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
             return None, None
 
+        # The gate reads the status rollup only when it is decisive
+        # (unstable/blocked), bounding both the GraphQL round-trip and
+        # repeated token-permission failures. A permission denial means the
+        # decision genuinely needs the rollup but the token can't provide
+        # it — escalate loudly rather than hide it behind a PENDING default.
+        resolution = self._rollup_gate().resolve_decisive(
+            state.status_rollup_capability,
+            pr=pr,
+            issue_number=entry.issue_number,
+            issue_key=issue.key.stable_id(),
+        )
+        if resolution.permission_denied:
+            # No longer a timing wait but an operator-action wait — drop any
+            # WAIT_FOR_CHECKS bookkeeping so it can't escalate spuriously.
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            return None, self._build_rollup_permission_escalation(
+                pr=pr,
+                issue_number=entry.issue_number,
+                issue_key=issue.key.stable_id(),
+                pr_number=pr_number,
+                reason=resolution.reason,
+            )
+        pr.status_check_rollup = resolution.rollup_state
+
         action = classify_post_approval_state(pr)
         logger.debug(
             "Awaiting-merge classify: issue=#%d pr=#%d state=%s rollup=%s action=%s",
@@ -590,6 +634,30 @@ class AwaitingMergeReconciler:
             ),
         )
 
+    def _build_rollup_permission_escalation(
+        self,
+        *,
+        pr: PRInfo,
+        issue_number: int,
+        issue_key: str,
+        pr_number: int,
+        reason: str,
+    ) -> DiscoveredAwaitingMergeEscalation:
+        # The PR is approved and its merge-readiness hinges on the
+        # status-check rollup, but the configured token cannot read check
+        # status. No amount of code rework or waiting fixes a missing token
+        # scope — escalate for operator action (the gate built `reason`).
+        assert self.label_manager is not None
+        return _build_escalation(
+            pr=pr,
+            issue_number=issue_number,
+            issue_key=issue_key,
+            pr_number=pr_number,
+            label_manager=self.label_manager,
+            kind="status_rollup_permission_denied",
+            reason=reason,
+        )
+
     def _maybe_escalate_pending_checks(
         self,
         *,
@@ -635,13 +703,16 @@ class AwaitingMergeReconciler:
         )
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
-        # The post-publish classifier needs `status_check_rollup` to
-        # distinguish "checks running" from "check failed", so this is
-        # the one call site that pays the extra GraphQL round-trip.
-        # Other lifecycle paths use `get_pr` (REST-only) and never
-        # touch the rollup.
+        # REST-only: this fetch decides terminal vs open and feeds the
+        # post-publish classifier's `mergeable_state`. The status-check
+        # rollup is deliberately NOT fetched here — closed/merged and
+        # clean/dirty/behind PRs never need it, so polling the rollup for
+        # every candidate is what made old terminal PRs pay a GraphQL
+        # round-trip (and hit token-permission walls) every tick. The
+        # rollup is read lazily, only for decisive open PRs, via the
+        # StatusRollupGate in `_discover_post_publish_followup`.
         try:
-            return self.repository_host.get_pr_with_status_check_rollup(pr_number)
+            return self.repository_host.get_pr(pr_number)
         except RepositoryHostError as exc:
             logger.warning(
                 "Failed to refresh PR #%d for awaiting-merge issue #%d: %s",

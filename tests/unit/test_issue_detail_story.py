@@ -171,6 +171,26 @@ def test_status_explanation_prefers_active_review_exchange_substate() -> None:
     )
 
 
+def test_status_explanation_names_coder_needs_requested_changes_from_response_type() -> None:
+    # The reviewer's ``changes_requested`` verdict rides on the role_feedback
+    # event's ``response_type``. Before issue #6428 that field was dropped by
+    # the timeline projection, leaving this substate branch effectively dead.
+    ctx = _ctx(flow_stage="in_progress", active_runtime_minutes=14, active_task_kind="code")
+    events = [
+        {
+            "event": "review_exchange.role_feedback",
+            "source_event": "review_exchange.role_feedback",
+            "role": "reviewer",
+            "round_index": 1,
+            "response_type": "changes_requested",
+        }
+    ]
+
+    assert _build_status_explanation(ctx, events) == (
+        "Review exchange: coder needs requested changes (round 1) (14 min)"
+    )
+
+
 def test_status_explanation_names_review_exchange_exit_before_response() -> None:
     ctx = _ctx(flow_stage="in_progress", active_runtime_minutes=26, active_task_kind="code")
     events = [
