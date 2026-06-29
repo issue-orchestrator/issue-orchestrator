@@ -66,6 +66,36 @@ def _head_sha_from_pr(raw_pr: dict[str, Any]) -> str | None:
     return sha if isinstance(sha, str) and sha else None
 
 
+def _payload_indicates_merged(pr: dict[str, Any]) -> bool:
+    """True when a GitHub PR payload represents a merged pull request.
+
+    GitHub's REST detail payload carries a ``merged`` boolean; both the detail
+    and the list payloads carry a nullable ``merged_at`` timestamp. Either
+    signal means the PR was merged.
+    """
+    if pr.get("merged"):
+        return True
+    return bool(pr.get("merged_at"))
+
+
+def _pr_state_from_api(pr: dict[str, Any]) -> str:
+    """Normalize a PR payload's state, distinguishing merged from closed.
+
+    GitHub's REST ``state`` field is only ``"open"`` or ``"closed"`` — a merged
+    PR is reported as ``"closed"`` with ``merged``/``merged_at`` set. The
+    orchestrator's ``PRInfo.state`` contract distinguishes ``"merged"`` so
+    lifecycle reconciliation never mistakes a merged PR for a closed-unmerged
+    one (the source of false ``blocked:pr-closed`` labels). GraphQL-sourced
+    payloads already carry ``state == "merged"`` directly; preserve it.
+    """
+    raw_state = str(pr.get("state", "open")).lower()
+    if raw_state == "merged":
+        return raw_state
+    if _payload_indicates_merged(pr):
+        return "merged"
+    return raw_state
+
+
 class GitHubAdapter:
     """Adapter for GitHub operations via HTTP API.
 
@@ -1302,7 +1332,7 @@ class GitHubAdapter:
             url=pr.get("html_url") or pr.get("url", ""),
             branch=(pr.get("head") or {}).get("ref", pr.get("headRefName", "")),
             body=pr.get("body", "") or "",
-            state=str(pr.get("state", "open")).lower(),
+            state=_pr_state_from_api(pr),
             labels=labels,
             draft=pr.get("draft"),
             mergeable_state=(
@@ -1480,6 +1510,15 @@ class GitHubAdapter:
             List of comment dictionaries.
         """
         return self._client.get_issue_comments(issue_number)
+
+    def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
+        """Return True if any comment on the issue/PR contains ``marker``.
+
+        Scans all comment pages (not just the first 100), so a marker comment
+        posted beyond the first page is still detected. Used to dedupe
+        orchestrator-authored marker comments before re-posting them.
+        """
+        return self._client.issue_comment_marker_present(issue_number, marker)
 
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.

@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import (
@@ -112,6 +113,7 @@ def startup_manager(
         restore_sessions_fn=MagicMock(),
         launch_session_fn=lambda issue: None,
         update_queue_cache_fn=lambda: None,
+        issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         label_store=mock_label_store,
     )
 
@@ -320,6 +322,7 @@ class TestStartupManagerInProgressIssues:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=queue_cache_store,
             label_store=mock_label_store,
         )
@@ -795,6 +798,7 @@ class TestStartupManagerResumePartialWork:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=launch_session,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             label_store=mock_label_store,
         )
 
@@ -1122,6 +1126,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1153,6 +1158,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1177,6 +1183,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1227,6 +1234,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 
@@ -1257,6 +1265,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 
@@ -1293,6 +1302,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=update_queue_fn,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 

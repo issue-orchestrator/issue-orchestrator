@@ -598,6 +598,65 @@ class TestPROperations:
         mock_http_client.get_pr.assert_called_once_with(10)
         mock_http_client.get_pr_status_check_rollup.assert_not_called()
 
+    def test_get_pr_reports_merged_state_from_merged_at(self, adapter, mock_http_client):
+        """GitHub's REST `state` is only open/closed; a merged PR carries
+        `merged_at`. PRInfo.state must distinguish merged from closed so
+        reconciliation never mistakes a merged PR for a closed-unmerged one."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Merged PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "closed",
+            "merged_at": "2026-06-01T20:00:50Z",
+            "labels": [],
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "merged"
+
+    def test_get_pr_reports_merged_state_from_merged_flag(self, adapter, mock_http_client):
+        """The REST detail payload's `merged` boolean also marks a merge."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Merged PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "closed",
+            "merged": True,
+            "merged_at": None,
+            "labels": [],
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "merged"
+
+    def test_get_pr_closed_unmerged_stays_closed(self, adapter, mock_http_client):
+        """A genuinely closed-without-merge PR keeps state == "closed" so the
+        closed-unmerged drift path still flags it."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Closed PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch"},
+            "body": "",
+            "state": "closed",
+            "merged": False,
+            "merged_at": None,
+            "labels": [],
+        }
+
+        pr = adapter.get_pr(10)
+
+        assert pr is not None
+        assert pr.state == "closed"
+
     def test_read_pr_status_check_rollup_returns_ok_state(
         self, adapter, mock_http_client
     ):
@@ -976,6 +1035,68 @@ class TestPROperations:
 
         assert len(prs) == 1
         assert prs[0].number == 10
+
+    def test_get_prs_for_issue_all_bypasses_single_pr_cache(
+        self, adapter, cache, mock_http_client
+    ):
+        """``state="all"`` must return the authoritative full list, never a single
+        cached PR.
+
+        Regression for #6430: the awaiting-merge reconciler suppresses
+        ``blocked:pr-closed`` only after confirming no associated PR is open. The
+        by-issue cache holds one PR; if an older closed PR is cached while a newer
+        open PR exists on GitHub, satisfying ``all`` from the cache would hide the
+        open PR and resurrect the false ``blocked:pr-closed`` path. So ``all``
+        bypasses the single-PR cache and fetches the complete set from the API.
+        """
+        # Prime the by-issue cache with an OLDER closed PR.
+        cache.set_pr_by_issue(
+            42,
+            {
+                "number": 10,
+                "title": "#42: Older closed",
+                "url": "https://github.com/owner/repo/pull/10",
+                "branch": "42-feature",
+                "body": "",
+                "state": "closed",
+                "labels": [],
+                "issue_number": 42,
+            },
+            branch="42-feature",
+        )
+        # The authoritative GitHub view also has a NEWER open PR.
+        mock_http_client.get_prs_for_issue.return_value = [
+            {"number": 10}, {"number": 11},
+        ]
+        full_by_number = {
+            10: {
+                "number": 10,
+                "title": "#42: Older closed",
+                "html_url": "https://github.com/owner/repo/pull/10",
+                "head": {"ref": "42-feature"},
+                "body": "",
+                "state": "closed",
+                "labels": [],
+            },
+            11: {
+                "number": 11,
+                "title": "#42: Newer open",
+                "html_url": "https://github.com/owner/repo/pull/11",
+                "head": {"ref": "42-feature-2"},
+                "body": "",
+                "state": "open",
+                "labels": [],
+            },
+        }
+        mock_http_client.get_pr.side_effect = lambda n: full_by_number[n]
+
+        prs = adapter.get_prs_for_issue(42, state="all")
+
+        # Cache was bypassed: the API list was fetched...
+        mock_http_client.get_prs_for_issue.assert_called_once_with(42)
+        # ...and the open PR the reconciler needs to see is in the result.
+        assert {pr.number for pr in prs} == {10, 11}
+        assert any(pr.state == "open" for pr in prs)
 
     def test_get_prs_for_issue_from_api(self, adapter, mock_http_client):
         """Test getting PRs for issue from API."""
@@ -1592,6 +1713,20 @@ class TestRepositoryOperations:
 
         assert len(comments) == 2
         assert comments[0]["body"] == "Comment 1"
+
+    def test_issue_comment_marker_present_forwards_to_client(
+        self, adapter, mock_http_client
+    ):
+        """The marker-presence read delegates to the paginating client method
+        (the one that scans all comment pages), not a first-page-only read."""
+        mock_http_client.issue_comment_marker_present.return_value = True
+
+        present = adapter.issue_comment_marker_present(42, "<!-- io:marker -->")
+
+        assert present is True
+        mock_http_client.issue_comment_marker_present.assert_called_once_with(
+            42, "<!-- io:marker -->"
+        )
 
     def test_list_labels(self, adapter, mock_http_client):
         """Test listing repository labels."""

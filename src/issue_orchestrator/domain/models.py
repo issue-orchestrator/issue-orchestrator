@@ -1400,6 +1400,11 @@ class DiscoveredRework:
     # escalated to human review. The planner clears the stale human label while
     # routing it back to automated rework.
     clear_needs_human: bool = False
+    # True when the discovery path already saw the feedback comment marker
+    # on the PR, so the planner must not enqueue a duplicate comment. The
+    # rework itself is still queued (idempotency is owned by labels/pending
+    # state, not the comment).
+    feedback_comment_already_posted: bool = False
 
 
 @dataclass(frozen=True)

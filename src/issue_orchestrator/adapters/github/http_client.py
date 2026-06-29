@@ -27,6 +27,12 @@ from .tokens import (
 
 logger = logging.getLogger(__name__)
 
+# Operational backstop for the comment-marker pagination loop. At 100 comments
+# per page this covers 2,000 comments; hitting it means GitHub never returned a
+# final (short/empty) page, so the scan fails loud rather than report "absent"
+# from a truncated read.
+_MARKER_SCAN_PAGE_CAP = 20
+
 
 # Completed check-run conclusions that GitHub treats as acceptable for a
 # required status check: only `success`, `skipped`, and `neutral` clear merge.
@@ -913,6 +919,70 @@ class GitHubHttpClient:
             use_cache=use_cache,
         )
         return payload if isinstance(payload, list) else []
+
+    def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
+        """Return True if any comment on the issue/PR contains ``marker``.
+
+        Paginates the issue/PR comments endpoint (unlike
+        ``get_issue_comments``, which returns only the first page) and
+        short-circuits as soon as a comment body containing ``marker`` is
+        found, so a marker posted beyond the first 100 comments is still
+        detected. The scan terminates only when GitHub returns a short or
+        empty page (the true final page); a returned ``False`` therefore means
+        the marker is genuinely absent from every page. An operational page cap
+        guards against an unbounded loop, but hitting it **fails loud**
+        (raises ``GitHubHttpError``) rather than reporting "absent" from a
+        truncated scan -- a truncated read is not evidence the marker is
+        missing, and silently returning ``False`` would let a dedupe caller
+        post a duplicate comment. A malformed (non-list) 2xx body is likewise
+        treated as a fail-loud read error, not as "absent". Not ETag-cached:
+        dedupe reads are correctness-critical and must not return a stale page.
+        Transport/HTTP errors propagate as ``RepositoryHostError`` so callers
+        can fail loud.
+        """
+        page = 1
+        while True:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/issues/{issue_number}/comments",
+                params={"per_page": 100, "page": page},
+                caller="issue_comment_marker_present",
+                use_cache=False,
+            )
+            if not isinstance(payload, list):
+                # A non-list 2xx body is a contract violation (proxy/mock drift
+                # or malformed GitHub response), not evidence of "no marker".
+                # Fail loud so a dedupe caller never posts a duplicate from a
+                # response we could not actually scan.
+                raise GitHubHttpError(
+                    f"Comment listing for #{issue_number} page {page} was not "
+                    f"a list ({type(payload).__name__}); cannot confirm marker "
+                    f"absence",
+                    issue_number=issue_number,
+                )
+            if not payload:
+                # Empty page = the true final page with nothing on it: the
+                # marker is genuinely absent.
+                return False
+            for comment in payload:
+                if not isinstance(comment, dict):
+                    continue
+                body = comment.get("body")
+                if isinstance(body, str) and marker in body:
+                    return True
+            if len(payload) < 100:
+                return False
+            page += 1
+            if page > _MARKER_SCAN_PAGE_CAP:
+                # The cap exists only to bound a pathological loop, not to
+                # define "marker absent". Fail loud so the dedupe caller never
+                # mistakes a truncated scan for a clean one.
+                raise GitHubHttpError(
+                    f"Comment marker scan for #{issue_number} exceeded "
+                    f"{_MARKER_SCAN_PAGE_CAP} pages without reaching the final "
+                    f"page; cannot confirm marker absence",
+                    issue_number=issue_number,
+                )
 
     # -------------------- Git refs / commits --------------------
 

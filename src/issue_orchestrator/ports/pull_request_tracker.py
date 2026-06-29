@@ -97,6 +97,19 @@ class PRInfo:
     mergeable_state: str | None = None
     status_check_rollup: StatusCheckRollupState | None = None
 
+    @property
+    def is_closed_unmerged(self) -> bool:
+        """True when the PR is closed *without* having been merged.
+
+        This is the sole precondition for applying ``blocked:pr-closed``.
+        GitHub's raw REST ``state`` field is only ``"open"``/``"closed"`` — a
+        merged PR is reported as ``"closed"``. Adapters normalize a merged PR's
+        state to ``"merged"`` (from ``merged``/``merged_at``), so a ``"closed"``
+        state here genuinely means closed without a merge — a merged or
+        still-open PR is never mistaken for one.
+        """
+        return (self.state or "").strip().lower() == "closed"
+
 
 @dataclass(frozen=True)
 class PRRef:
