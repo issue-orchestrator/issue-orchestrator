@@ -25,11 +25,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from ..domain.completion_finalization import ReviewExchangeRunningQuery
+from ..domain.completion_finalization import (
+    CompletionFinalizationDecision,
+    CompletionFinalizationPlan,
+    CompletionRuntimeState,
+)
 from ..domain.models import (
     CompletionRecord,
     CompletionOutcome,
     ObservedCompletion,
+    RequestedAction,
     Session,
     SessionIdentity,
     SessionStatus,
@@ -83,19 +88,27 @@ class ObservationDecision:
     completion_load_result: CompletionRecordLoadResult | None = None
 
 
-class ReviewExchangeRunningProbe(Protocol):
-    """Reports whether a background review-exchange job is still in flight.
+class CompletionFinalizationPlanner(Protocol):
+    """Computes the bounded completion-finalization decision for a record.
 
-    Implemented by ``CompletionProcessor``. Injected into the observer so a
-    terminated completion whose review exchange is still running is observed as
-    a deferral (``SessionStatus.RUNNING``) rather than a finished completion,
-    mirroring the synchronous ``SessionController.decide_outcome`` deferral
-    (issue #6009).
+    Implemented by ``CompletionProcessor``. The async observer routes through
+    this single owner instead of re-implementing the finalization matrix, so a
+    terminated *or* timed-out completion whose background review exchange is
+    still inside its own supervisor deadline is observed as a deferral
+    (``SessionStatus.RUNNING``) rather than a finished completion — parity with
+    the synchronous ``SessionController.decide_outcome`` path (issue #6009).
     """
 
-    def is_review_exchange_running_for_completion(
-        self, query: ReviewExchangeRunningQuery
-    ) -> bool:
+    def completion_finalization_plan(
+        self,
+        *,
+        issue_number: int,
+        session_name: str | None,
+        outcome: CompletionOutcome,
+        requested_actions: tuple[RequestedAction, ...],
+        runtime_state: CompletionRuntimeState,
+        validation_preflight_configured: bool,
+    ) -> CompletionFinalizationPlan:
         ...
 
 
@@ -113,18 +126,19 @@ class CompletionObserver:
     def __init__(
         self,
         session_output: "SessionOutput",
-        review_exchange_probe: ReviewExchangeRunningProbe,
+        finalization_planner: CompletionFinalizationPlanner,
     ):
         """Initialize the observer.
 
         Args:
             session_output: For reading session logs (diagnostics)
-            review_exchange_probe: Reports whether a background review-exchange
-                job is still running for a completion, so a deferred completion
-                keeps its session active instead of being finalized (#6009).
+            finalization_planner: Computes the bounded completion-finalization
+                decision (same owner the synchronous ``decide_outcome`` path
+                uses), so a deferred completion keeps its session active instead
+                of being finalized (#6009).
         """
         self.session_output = session_output
-        self._review_exchange_probe = review_exchange_probe
+        self._finalization_planner = finalization_planner
 
     def observe_completion(
         self,
@@ -219,26 +233,39 @@ class CompletionObserver:
         observation: SessionObservationResult,
         record: CompletionRecord,
     ) -> bool:
-        """Return True when a terminated completion's review exchange is running.
+        """Return True when the finalization owner defers this completion.
 
-        Parity with the synchronous deferral in ``decide_outcome``: a coder
-        completion that requested a PR but whose background review exchange has
-        not finished must keep its session active for a later tick rather than
-        being finalized. Timed-out sessions are excluded; their cancel/terminal
-        policy is owned by the execution phase, matching the synchronous path
-        which terminalizes a timed-out exchange instead of deferring here.
+        Routes through the same ``CompletionFinalizationPlan`` owner as the
+        synchronous ``decide_outcome`` path instead of re-deciding here. The
+        observer maps the terminal observation to a ``CompletionRuntimeState``
+        (``TIMED_OUT`` vs ``TERMINATED``) and defers — keeping the session
+        ``RUNNING`` — whenever the owner returns ``DEFER_REVIEW_EXCHANGE``. That
+        covers both a terminated completion with a running exchange and a
+        timed-out visible session whose background exchange is still inside its
+        own supervisor deadline; the owner alone decides when a timed-out
+        exchange has overshot and becomes terminal.
+
+        ``validation_preflight_configured`` is ``False`` here: dirty preflight
+        and validation are owned by the background publish phase, not
+        observation, and that flag never affects the defer decision (it only
+        selects between ``RUN_DIRTY_PREFLIGHT`` and ``PROCESS``, both of which
+        finalize the completion in this phase).
         """
-        if observation.observation is not SessionObservation.TERMINATED:
-            return False
-        if record.outcome is not CompletionOutcome.COMPLETED:
-            return False
-        query = ReviewExchangeRunningQuery(
+        runtime_state = (
+            CompletionRuntimeState.TIMED_OUT
+            if observation.observation is SessionObservation.TIMED_OUT
+            else CompletionRuntimeState.TERMINATED
+        )
+        plan = self._finalization_planner.completion_finalization_plan(
             issue_number=session.issue.number,
             session_name=session.terminal_id,
+            outcome=record.outcome,
             requested_actions=tuple(record.requested_actions),
+            runtime_state=runtime_state,
+            validation_preflight_configured=False,
         )
-        return self._review_exchange_probe.is_review_exchange_running_for_completion(
-            query
+        return (
+            plan.decision is CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE
         )
 
     def _read_completion_record(

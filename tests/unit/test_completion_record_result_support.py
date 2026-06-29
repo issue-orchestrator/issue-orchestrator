@@ -10,6 +10,10 @@ from issue_orchestrator.control.completion_record_validation import (
     _MAX_COMPLETION_FILE_BYTES,
 )
 from issue_orchestrator.control.completion_result_artifacts import build_pr_body
+from issue_orchestrator.domain.completion_finalization import (
+    CompletionFinalizationDecision,
+    CompletionFinalizationPlan,
+)
 from issue_orchestrator.domain.models import CompletionOutcome, CompletionRecord, RequestedAction
 from issue_orchestrator.domain.runtime_identity import RuntimeIdentity
 from issue_orchestrator.infra.config import Config
@@ -32,11 +36,16 @@ def _record(
     )
 
 
-class _NeverRunningReviewExchangeProbe:
-    """Probe stub for observer construction; no review exchange is in flight."""
+class _NeverDeferringFinalizationPlanner:
+    """Planner stub for observer construction; always finalizes (no deferral)."""
 
-    def is_review_exchange_running_for_completion(self, query: object) -> bool:
-        return False
+    def completion_finalization_plan(
+        self, **_kwargs: object
+    ) -> CompletionFinalizationPlan:
+        return CompletionFinalizationPlan(
+            decision=CompletionFinalizationDecision.PROCESS,
+            reason="stub planner always processes",
+        )
 
 
 class FakeGitAdapter:
@@ -228,7 +237,7 @@ def test_observer_also_applies_file_size_gate(tmp_path: Path) -> None:
 
     observer = CompletionObserver(
         session_output=None,  # type: ignore[arg-type]
-        review_exchange_probe=_NeverRunningReviewExchangeProbe(),
+        finalization_planner=_NeverDeferringFinalizationPlanner(),
     )
     result = observer._read_completion_record(  # noqa: SLF001
         worktree=tmp_path,

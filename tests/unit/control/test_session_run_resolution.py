@@ -173,7 +173,7 @@ def test_completion_observer_reads_provider_status_from_recorded_run_dir(
     session_output = Mock(spec=SessionOutput)
     observer = CompletionObserver(
         session_output=session_output,
-        review_exchange_probe=Mock(),
+        finalization_planner=Mock(),
     )
 
     provider_status = observer._read_provider_status(session)  # noqa: SLF001
