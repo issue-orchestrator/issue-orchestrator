@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from issue_orchestrator.entrypoints.cli_tools.exchange_respond import (
+    _deliver,
     build_parser,
     build_verdict,
 )
@@ -86,3 +87,30 @@ class TestBuildVerdict:
             build_verdict(
                 _parse(["ok", "--text", "t", "--decision-json", '"a string"'])
             )
+
+
+class _Response:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> "_Response":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # noqa: ANN001
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_deliver_reports_malformed_success_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _urlopen(_req, timeout):  # noqa: ANN001, ANN202
+        assert timeout == 60
+        return _Response(b"not-json")
+
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+    accepted, message = _deliver("key", "8765", build_verdict(_parse(["ok", "--text", "x"])))
+
+    assert accepted is False
+    assert "malformed response JSON" in message

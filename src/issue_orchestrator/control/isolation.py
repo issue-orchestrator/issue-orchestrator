@@ -91,7 +91,19 @@ def _prepend_path_entries(entries: list[Path], current_path: str) -> str:
 
 
 def build_runtime_tool_path(worktree: Path, current_path: str) -> str:
-    """Return PATH with agent runtime tools prepended in resolution order."""
+    """Return PATH with worktree-local runtime tools prepended.
+
+    This path is for orchestrator-managed commands such as setup,
+    validation, and pre-publish checks. It deliberately does not expose the
+    package ``scripts/`` directory because that directory contains agent-only
+    wrappers for ``git``/``gh``/completion commands; injecting it into
+    non-agent commands changes their Git semantics.
+    """
+    return _prepend_path_entries([get_worktree_venv_bin(worktree)], current_path)
+
+
+def build_agent_tool_path(worktree: Path, current_path: str) -> str:
+    """Return PATH for agent sessions, including package command wrappers."""
     return _prepend_path_entries(
         [get_worktree_venv_bin(worktree), get_runtime_scripts_dir()],
         current_path,
@@ -106,12 +118,11 @@ def build_runtime_tool_env(
     """Build an environment with tool homes isolated to the worktree.
 
     Gradle daemons are scoped by ``GRADLE_USER_HOME``. Python command-line
-    tools are resolved from the worktree's own ``.venv/bin`` first, followed
-    by the orchestrator package wrappers exposed to agents. The worktree path
-    is prepended before the directory exists so sessions launched during setup
-    still pick it up once the venv is created. Without these per-worktree
-    values, concurrent sessions share the user's daemon registry and validation
-    commands can miss repo-local tools.
+    tools are resolved from the worktree's own ``.venv/bin`` first. The
+    worktree path is prepended before the directory exists so sessions launched
+    during setup still pick it up once the venv is created. Without these
+    per-worktree values, concurrent sessions share the user's daemon registry
+    and validation commands can miss repo-local tools.
 
     The isolated value intentionally overrides any caller-provided
     ``GRADLE_USER_HOME`` so orchestrator-managed runs remain reproducible.
@@ -124,7 +135,30 @@ def build_runtime_tool_env(
 
 
 def build_runtime_tool_env_assignments(worktree: Path) -> list[str]:
-    """Build shell assignment texts for runtime tool-home isolation."""
+    """Build shell assignment texts for non-agent runtime isolation."""
+    assignments = [
+        f"{GRADLE_USER_HOME_ENV}={shlex.quote(str(get_gradle_user_home(worktree)))}"
+    ]
+    worktree_venv_bin = get_worktree_venv_bin(worktree)
+    assignments.append(f"{PATH_ENV}={shlex.quote(str(worktree_venv_bin))}:$PATH")
+    return assignments
+
+
+def build_agent_tool_env(
+    worktree: Path,
+    *,
+    base_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build an agent env with runtime isolation plus command wrappers."""
+    env = dict(os.environ if base_env is None else base_env)
+    env[GRADLE_USER_HOME_ENV] = str(get_gradle_user_home(worktree))
+    current_path = env.get(PATH_ENV, os.environ.get(PATH_ENV, ""))
+    env[PATH_ENV] = build_agent_tool_path(worktree, current_path)
+    return env
+
+
+def build_agent_tool_env_assignments(worktree: Path) -> list[str]:
+    """Build shell assignment texts for agent runtime isolation."""
     assignments = [
         f"{GRADLE_USER_HOME_ENV}={shlex.quote(str(get_gradle_user_home(worktree)))}"
     ]

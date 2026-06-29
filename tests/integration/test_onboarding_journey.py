@@ -19,7 +19,6 @@ from issue_orchestrator.infra.doctor.checks import schema as schema_checks
 from issue_orchestrator.infra.doctor.checks import workspace as workspace_checks
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_RUNTIME_SCRIPTS_DIR = _REPO_ROOT / "src" / "issue_orchestrator" / "scripts"
 _GIT_ENV_STRIP = (
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -74,17 +73,6 @@ def _clean_git_env() -> dict[str, str]:
     env = os.environ.copy()
     for var in _GIT_ENV_STRIP:
         env.pop(var, None)
-
-    runtime_scripts_dir = _RUNTIME_SCRIPTS_DIR.resolve()
-    path_entries = []
-    for entry in env.get("PATH", "").split(os.pathsep):
-        if entry and Path(entry).resolve() == runtime_scripts_dir:
-            continue
-        path_entries.append(entry)
-    env["PATH"] = os.pathsep.join(path_entries)
-
-    # Local fixture pushes are setup plumbing, not agent completion attempts.
-    env["ORCHESTRATOR_GH_AUTH"] = "agent-done-authorized"
     return env
 
 

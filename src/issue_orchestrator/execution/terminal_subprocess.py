@@ -20,7 +20,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from ..control.isolation import build_isolation_prefix, build_runtime_tool_path
+from ..control.isolation import build_agent_tool_path, build_isolation_prefix
 from .agent_runner import AgentRunner, AgentSession, AgentSpec
 from .session_interactions import (
     SessionInteractionHandler,
@@ -275,7 +275,7 @@ class SubprocessPlugin:
 
     def _build_process_command(self, command: str, working_dir: Path) -> str:
         """Build the full command with path and isolation prefix."""
-        path_prefix = build_runtime_tool_path(working_dir, os.environ.get("PATH", ""))
+        path_prefix = build_agent_tool_path(working_dir, os.environ.get("PATH", ""))
         isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)
         return f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
 

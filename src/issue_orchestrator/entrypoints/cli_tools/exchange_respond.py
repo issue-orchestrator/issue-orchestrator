@@ -143,7 +143,13 @@ def _deliver(key: str, port: str, verdict: ExchangeVerdict) -> tuple[bool, str]:
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as response:
-            result = json.loads(response.read().decode("utf-8"))
+            body = response.read().decode("utf-8")
+            try:
+                result = json.loads(body)
+            except json.JSONDecodeError as exc:
+                return False, f"orchestrator returned malformed response JSON: {exc}"
+            if not isinstance(result, dict):
+                return False, "orchestrator returned malformed response JSON"
     except urllib.error.HTTPError as exc:
         return False, f"orchestrator rejected the verdict (HTTP {exc.code})"
     except urllib.error.URLError as exc:
