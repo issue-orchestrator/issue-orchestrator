@@ -93,6 +93,48 @@ _REWORK_ACTIONS: frozenset[PostApprovalAction] = frozenset(
 
 
 @dataclass(frozen=True)
+class PrSetDriftClassification:
+    """Whether an issue's associated PR set indicates ``blocked:pr-closed`` drift.
+
+    ``drifting`` is True when the issue should be flagged ``blocked:pr-closed``.
+    ``pr`` is the PR the drift keys on (the latest terminal PR, which is
+    closed-unmerged), or ``None`` for the "no associated PR at all" case where
+    the drift carries an empty PR reference.
+    """
+
+    drifting: bool
+    pr: PRInfo | None = None
+
+
+def classify_pr_set_drift(prs: list[PRInfo]) -> PrSetDriftClassification:
+    """Owner of the ``blocked:pr-closed`` precedence policy for a PR set.
+
+    Single source of truth for "which associated PR decides whether an issue is
+    closed-without-merge". The label-drift path feeds the issue's full PR set
+    here; the history-reconciliation path applies the same leaf predicate
+    (:attr:`PRInfo.is_closed_unmerged`) to its already-latest entry PR. Keeping
+    the open/merged/closed ordering in one place means the two paths cannot
+    drift apart. Pure function — no I/O — so the precedence matrix is unit
+    testable exhaustively, mirroring ``classify_post_approval_state``.
+
+    Policy:
+    - Any open PR → no drift; the issue is still legitimately awaiting a merge.
+    - No PRs at all → drift with no PR reference ("PR missing").
+    - Otherwise the latest terminal PR (highest number) decides: ``merged``
+      suppresses drift, a genuinely closed-unmerged PR produces drift keyed on
+      that PR. An earlier closed PR never overrides a later merged one.
+    """
+    if any(_normalized_state(pr.state) == "open" for pr in prs):
+        return PrSetDriftClassification(drifting=False)
+    if not prs:
+        return PrSetDriftClassification(drifting=True)
+    latest = max(prs, key=lambda item: item.number)
+    if latest.is_closed_unmerged:
+        return PrSetDriftClassification(drifting=True, pr=latest)
+    return PrSetDriftClassification(drifting=False)
+
+
+@dataclass(frozen=True)
 class AwaitingMergeEntryDiscovery:
     """Discovery result for one awaiting-merge history entry."""
 
@@ -155,6 +197,7 @@ class AwaitingMergeReconciler:
         reworks: list[DiscoveredRework] = []
         escalations: list[DiscoveredAwaitingMergeEscalation] = []
         pending_issue_numbers: set[int] = set()
+        terminal_issue_numbers: set[int] = set()
 
         candidates = self._awaiting_merge_entries(state)
         logger.debug(
@@ -167,6 +210,12 @@ class AwaitingMergeReconciler:
             discovery = self._discover_entry(state, entry)
             if discovery.outcome == "terminal":
                 discovered += 1
+                # A terminally-reconciled issue (merged or closed) already has
+                # its labels decided by the reconciliation; exclude it from the
+                # label-drift scan so a stale cached `pr-pending` plus an older
+                # closed-unmerged PR cannot manufacture a contradictory
+                # `blocked:pr-closed` drift for the same issue in one pass.
+                terminal_issue_numbers.add(entry.issue_number)
                 if discovery.reconciliation is not None:
                     reconciliations.append(discovery.reconciliation)
             elif discovery.outcome == "still_pending":
@@ -187,6 +236,7 @@ class AwaitingMergeReconciler:
         label_drifts = self._discover_label_drifts(
             state,
             excluded_issue_numbers=pending_issue_numbers
+            | terminal_issue_numbers
             | {drift.issue_number for drift in drifts},
         )
         drift_discovered += len(label_drifts)
@@ -436,27 +486,23 @@ class AwaitingMergeReconciler:
         except RepositoryHostError:
             return None
 
-        if any(_normalized_state(pr.state) == "open" for pr in prs):
+        # `classify_pr_set_drift` owns the open/merged/closed precedence so the
+        # "latest terminal PR decides" rule lives in exactly one place.
+        decision = classify_pr_set_drift(prs)
+        if not decision.drifting:
             return None
-
-        # Merged PRs (state "merged") are excluded, so this keys on the issue's
-        # latest genuinely closed-without-merge PR, not an earlier merged one.
-        closed_prs = [pr for pr in prs if pr.is_closed_unmerged]
-        if closed_prs:
-            pr = max(closed_prs, key=lambda item: item.number)
-            return _drift_fact(
-                issue_number=issue.number,
-                pr=pr,
-                status_reason="PR closed; issue remains open",
-            )
-        if not prs:
+        if decision.pr is None:
             return DiscoveredAwaitingMergeDrift(
                 issue_number=issue.number,
                 pr_number=0,
                 pr_url="",
                 status_reason="PR missing; issue remains open",
             )
-        return None
+        return _drift_fact(
+            issue_number=issue.number,
+            pr=decision.pr,
+            status_reason="PR closed; issue remains open",
+        )
 
     def _discover_post_publish_followup(
         self,
