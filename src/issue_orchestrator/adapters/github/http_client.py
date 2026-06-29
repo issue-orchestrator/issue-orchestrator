@@ -998,9 +998,15 @@ class GitHubHttpClient:
         The returned `CommitCheckRollup.state` is one of `FAILURE` / `PENDING`
         / `SUCCESS`, or `None` when the commit has no checks or statuses at all.
 
-        The check-runs API is walked across all pages so a failing or pending
-        required run on a later page cannot be missed; pagination short-circuits
-        once a conclusive failure/pending signal is seen.
+        The check-runs API is paginated. Pagination short-circuits only once a
+        FAILURE run is seen (the top of the rollup precedence, which no later
+        page can change); a pending run is remembered but pagination continues,
+        because a completed failing run on a later page must still override an
+        earlier in-progress one. Pagination is bounded by a safety cap of
+        `_MAX_CHECK_RUN_PAGES` full pages: if the cap is reached before a final
+        short page without finding a failure, the unread later pages could still
+        hold a failed required run, so the check-runs source is reported
+        unreadable (incomplete) rather than a conclusive success/pending.
 
         The check-runs and combined-status sources are read INDEPENDENTLY: if
         the check-runs API is inaccessible, the legacy combined-status source is
@@ -1037,7 +1043,7 @@ class GitHubHttpClient:
         return CommitCheckRollup(state=state, complete=complete)
 
     def _read_check_run_signal(self, encoded_sha: str) -> _SourceReadout:
-        """Fold every page of the check-runs API into one readable `_RollupSignal`.
+        """Fold the paginated check-runs API into one `_SourceReadout`.
 
         Stops early only once a failure run is seen: failure is the top of the
         rollup precedence (`_combine_rollup_signals` returns FAILURE before
@@ -1053,6 +1059,13 @@ class GitHubHttpClient:
         errored mid-pagination before finding a failure is likewise reported
         unreadable (its in-progress signal is discarded), because an unread page
         could still hold a failure.
+
+        If pagination reaches the `_MAX_CHECK_RUN_PAGES` safety cap on a full
+        page without finding a failure, the unread later pages could likewise
+        hold a failed required run, so the source is reported `readable=False`
+        too — the partial pending/present signal is preserved only as
+        non-conclusive evidence, so the caller treats the rollup as incomplete
+        unless another readable source already produced a FAILURE.
         """
         failure = pending = present = False
         page = 1
@@ -1082,10 +1095,19 @@ class GitHubHttpClient:
             page += 1
             if page > _MAX_CHECK_RUN_PAGES:
                 logger.warning(
-                    "check-runs pagination hit safety cap (%d pages) for %s",
+                    "check-runs pagination hit safety cap (%d pages) for %s "
+                    "without a failure; treating the check-runs source as "
+                    "unreadable so an unread later-page failure cannot be "
+                    "masked as a conclusive success/pending",
                     _MAX_CHECK_RUN_PAGES, encoded_sha,
                 )
-                break
+                # Cap reached on a full page (a further page exists) with no
+                # failure yet. The unread pages could hold a failed required
+                # run, which outranks the pending/present we have, so the
+                # source is incomplete: report readable=False and keep the
+                # partial signal only as non-conclusive evidence. Only another
+                # readable FAILURE can still make the aggregate conclusive.
+                return _SourceReadout((failure, pending, present), readable=False)
         return _SourceReadout((failure, pending, present), readable=True)
 
     def _best_effort_commit_status(

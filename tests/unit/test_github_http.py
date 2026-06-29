@@ -1298,3 +1298,56 @@ def test_get_commit_check_rollup_paginates_all_pages_success() -> None:
     rollup = client.get_commit_check_rollup("deadbeef")
     assert rollup.state == "SUCCESS"
     assert rollup.complete is True
+
+
+def test_get_commit_check_rollup_cap_hit_without_failure_is_incomplete() -> None:
+    """The check-runs pagination safety cap must not mask a later-page failure:
+    20 full pages of passing runs (cap reached on a full page, so page 21
+    exists) with the failure sitting on the unread page 21. The cap-hit source
+    is reported unreadable, so the rollup is INCOMPLETE rather than a false
+    complete SUCCESS that would route to branch-protection escalation instead of
+    rework / an unreadable-rollup escalation (issue #6589 F1)."""
+    full_success_page = {
+        "check_runs": [
+            {"name": f"shard-{i}", "status": "completed", "conclusion": "success"}
+            for i in range(100)
+        ]
+    }
+    pages: dict[int, object] = {p: full_success_page for p in range(1, 21)}
+    # Page 21 carries a failure the cap stops us from ever reading.
+    pages[21] = {
+        "check_runs": [
+            {"name": "system-verification", "status": "completed", "conclusion": "failure"},
+        ]
+    }
+    handler = _paginated_check_runs_handler(pages)
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.complete is False
+
+
+def test_get_commit_check_rollup_cap_hit_stays_complete_on_readable_legacy_failure() -> None:
+    """A cap-hit check-runs read is only inconclusive on its own: if the
+    readable legacy combined-status source already reports FAILURE, the
+    aggregate is a conclusive FAILURE and stays complete (an unread check-runs
+    page cannot make it less severe), so the PR still routes to rework."""
+    full_success_page = {
+        "check_runs": [
+            {"name": f"shard-{i}", "status": "completed", "conclusion": "success"}
+            for i in range(100)
+        ]
+    }
+    pages: dict[int, object] = {p: full_success_page for p in range(1, 21)}
+    handler = _paginated_check_runs_handler(
+        pages,
+        statuses={
+            "state": "failure",
+            "statuses": [{"context": "ci/external", "state": "failure"}],
+        },
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
