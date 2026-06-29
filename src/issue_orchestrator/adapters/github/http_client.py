@@ -720,6 +720,45 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, list) else []
 
+    def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
+        """Return True if any comment on the issue/PR contains ``marker``.
+
+        Paginates the issue/PR comments endpoint (unlike
+        ``get_issue_comments``, which returns only the first page) and
+        short-circuits as soon as a comment body containing ``marker`` is
+        found, so a marker posted beyond the first 100 comments is still
+        detected. Not ETag-cached: dedupe reads are correctness-critical and
+        must not return a stale page. Transport/HTTP errors propagate as
+        ``RepositoryHostError`` so callers can fail loud.
+        """
+        page = 1
+        while True:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/issues/{issue_number}/comments",
+                params={"per_page": 100, "page": page},
+                caller="issue_comment_marker_present",
+                use_cache=False,
+            )
+            if not isinstance(payload, list) or not payload:
+                return False
+            for comment in payload:
+                if not isinstance(comment, dict):
+                    continue
+                body = comment.get("body")
+                if isinstance(body, str) and marker in body:
+                    return True
+            if len(payload) < 100:
+                return False
+            page += 1
+            if page > 20:  # Safety limit, mirrors list_all_labels pagination
+                logger.warning(
+                    "issue_comment_marker_present hit page cap for #%d; "
+                    "marker scan truncated",
+                    issue_number,
+                )
+                return False
+
     # -------------------- Git refs / commits --------------------
 
     def get_default_branch(self) -> str:

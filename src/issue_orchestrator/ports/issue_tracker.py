@@ -138,6 +138,30 @@ class IssueTracker(Protocol):
         """
         ...
 
+    def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
+        """Report whether ``marker`` appears in any comment on the issue/PR.
+
+        Scans **all** pages of the issue/PR conversation comments (GitHub
+        serves PR timeline comments from the same endpoint), not just the
+        first page, so callers can reliably dedupe an orchestrator-authored
+        marker comment that may sit beyond the first 100 comments. The marker
+        is matched as a substring of each comment body.
+
+        Args:
+            issue_number: The issue or PR number to scan for ``marker``.
+            marker: The substring to look for in comment bodies.
+
+        Returns:
+            ``True`` if any comment body contains ``marker``; ``False``
+            otherwise.
+
+        Raises:
+            RepositoryError: If there's an error accessing the data source.
+                Callers that dedupe on this fact must let the error propagate
+                (fail loud) rather than risk a duplicate or dropped comment.
+        """
+        ...
+
     def search_issues_by_title(
         self,
         query_terms: list[str],

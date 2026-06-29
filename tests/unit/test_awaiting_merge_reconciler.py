@@ -458,7 +458,7 @@ def test_merge_conflict_after_review_discovers_post_publish_validation_rework() 
         labels=["code-reviewed"],
     )
     repository_host.get_issue.return_value = _issue("open")
-    repository_host.get_issue_comments.return_value = []
+    repository_host.issue_comment_marker_present.return_value = False
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -500,10 +500,7 @@ def test_post_publish_rework_flags_existing_marker_comment_for_dedupe() -> None:
         labels=["code-reviewed"],
     )
     repository_host.get_issue.return_value = _issue("open")
-    repository_host.get_issue_comments.return_value = [
-        {"body": "unrelated chatter"},
-        {"body": f"{POST_PUBLISH_VALIDATION_COMMENT_MARKER}\nearlier feedback"},
-    ]
+    repository_host.issue_comment_marker_present.return_value = True
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -518,7 +515,10 @@ def test_post_publish_rework_flags_existing_marker_comment_for_dedupe() -> None:
     assert "Mergeability: dirty" in (rework.feedback or "")
     # But the marker was already present, so flag it for the planner.
     assert rework.feedback_comment_already_posted is True
-    repository_host.get_issue_comments.assert_called_once_with(318)
+    # The dedupe scan must cover every comment page, not just the first.
+    repository_host.issue_comment_marker_present.assert_called_once_with(
+        318, POST_PUBLISH_VALIDATION_COMMENT_MARKER
+    )
 
 
 def test_post_publish_rework_comment_read_failure_propagates() -> None:
@@ -534,7 +534,9 @@ def test_post_publish_rework_comment_read_failure_propagates() -> None:
         labels=["code-reviewed"],
     )
     repository_host.get_issue.return_value = _issue("open")
-    repository_host.get_issue_comments.side_effect = RepositoryHostError("boom")
+    repository_host.issue_comment_marker_present.side_effect = RepositoryHostError(
+        "boom"
+    )
 
     with pytest.raises(RepositoryHostError):
         AwaitingMergeReconciler(
@@ -662,7 +664,7 @@ def test_unstable_pr_with_check_failure_triggers_check_failed_rework() -> None:
         status_check_rollup="FAILURE",
     )
     repository_host.get_issue.return_value = _issue("open")
-    repository_host.get_issue_comments.return_value = []
+    repository_host.issue_comment_marker_present.return_value = False
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -745,7 +747,7 @@ def test_dirty_pr_feedback_uses_conflict_copy() -> None:
         labels=["code-reviewed"],
     )
     repository_host.get_issue.return_value = _issue("open")
-    repository_host.get_issue_comments.return_value = []
+    repository_host.issue_comment_marker_present.return_value = False
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -768,7 +770,7 @@ def test_behind_pr_feedback_uses_rebase_copy() -> None:
         labels=["code-reviewed"],
     )
     repository_host.get_issue.return_value = _issue("open")
-    repository_host.get_issue_comments.return_value = []
+    repository_host.issue_comment_marker_present.return_value = False
 
     result = AwaitingMergeReconciler(
         repository_host,
@@ -977,7 +979,7 @@ def test_wait_for_checks_resolved_into_failure_clears_pending_and_reworks() -> N
         status_check_rollup="FAILURE",
     )
     repository_host.get_issue.return_value = _issue("open")
-    repository_host.get_issue_comments.return_value = []
+    repository_host.issue_comment_marker_present.return_value = False
 
     result = AwaitingMergeReconciler(
         repository_host,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 from urllib.parse import urlparse
 
 from ..domain.models import (
@@ -572,13 +572,23 @@ class AwaitingMergeReconciler:
         Read-only dedupe guard: if a prior tick posted the feedback comment but
         failed to apply the ``needs_rework`` label (leaving the PR eligible for
         re-discovery), the planner would otherwise stack a duplicate comment.
+        The marker scan covers every comment page (not just the first 100), so
+        a marker sitting beyond the first page still suppresses the duplicate.
         Only reached on the rare rework-discovery path, so the extra read is
-        bounded.
+        bounded. Read failures propagate (fail loud) rather than risk a
+        duplicate comment or a dropped feedback.
         """
-        return any(
-            POST_PUBLISH_VALIDATION_COMMENT_MARKER in _comment_body(comment)
-            for comment in self._get_pr_comments(pr_number)
-        )
+        try:
+            return self.repository_host.issue_comment_marker_present(
+                pr_number, POST_PUBLISH_VALIDATION_COMMENT_MARKER
+            )
+        except RepositoryHostError as exc:
+            logger.warning(
+                "Failed to read comments for awaiting-merge PR #%d: %s",
+                pr_number,
+                exc,
+            )
+            raise
 
     def _build_branch_protection_escalation(
         self,
@@ -686,17 +696,6 @@ class AwaitingMergeReconciler:
             logger.warning(
                 "Failed to scan PRs for awaiting-merge label drift on issue #%d: %s",
                 issue_number,
-                exc,
-            )
-            raise
-
-    def _get_pr_comments(self, pr_number: int) -> list[dict[str, Any]]:
-        try:
-            return self.repository_host.get_issue_comments(pr_number)
-        except RepositoryHostError as exc:
-            logger.warning(
-                "Failed to read comments for awaiting-merge PR #%d: %s",
-                pr_number,
                 exc,
             )
             raise
@@ -833,11 +832,6 @@ def _build_rework_feedback(pr: PRInfo, action: PostApprovalAction) -> str:
 
 def build_post_publish_validation_comment(feedback: str) -> str:
     return f"{POST_PUBLISH_VALIDATION_COMMENT_MARKER}\n{feedback}"
-
-
-def _comment_body(comment: dict[str, Any]) -> str:
-    body = comment.get("body")
-    return body if isinstance(body, str) else ""
 
 
 def _build_escalation(

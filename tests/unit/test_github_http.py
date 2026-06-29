@@ -392,6 +392,87 @@ def test_list_issues_since_paginates_and_respects_limit() -> None:
     assert watermark == "2026-01-02T09:58:00Z"
 
 
+_TEST_MARKER = "<!-- io:test-marker -->"
+
+
+def test_issue_comment_marker_present_finds_marker_beyond_first_page() -> None:
+    """Regression: a marker comment sitting past the first 100 comments must
+    still be detected. A first-page-only read would miss it and let the
+    caller post a duplicate."""
+    pages_requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        pages_requested.append(page)
+        if page == 1:
+            # A full page (100) of unrelated comments forces a second fetch.
+            return httpx.Response(
+                200, json=[{"body": f"chatter {i}"} for i in range(100)]
+            )
+        return httpx.Response(
+            200, json=[{"body": f"{_TEST_MARKER}\nearlier feedback"}]
+        )
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.issue_comment_marker_present(318, _TEST_MARKER) is True
+    # Pagination actually advanced past the first page to find the marker.
+    assert pages_requested == [1, 2]
+
+
+def test_issue_comment_marker_present_false_when_absent_across_pages() -> None:
+    """The scan covers every page and only returns False once a short
+    (final) page confirms the marker is nowhere on the issue/PR."""
+    pages_requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        pages_requested.append(page)
+        if page == 1:
+            return httpx.Response(
+                200, json=[{"body": f"chatter {i}"} for i in range(100)]
+            )
+        return httpx.Response(200, json=[{"body": "still nothing"}])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.issue_comment_marker_present(318, _TEST_MARKER) is False
+    assert pages_requested == [1, 2]
+
+
+def test_issue_comment_marker_present_short_circuits_on_first_page() -> None:
+    """When the marker is on the first page the scan stops immediately
+    instead of paging further."""
+    pages_requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pages_requested.append(int(request.url.params.get("page", "1")))
+        return httpx.Response(
+            200,
+            json=[
+                {"body": "unrelated chatter"},
+                {"body": f"{_TEST_MARKER}\nfeedback"},
+            ],
+        )
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    assert client.issue_comment_marker_present(318, _TEST_MARKER) is True
+    assert pages_requested == [1]
+
+
+def test_issue_comment_marker_present_propagates_read_error() -> None:
+    """A failed comment read must raise (fail loud) so dedupe callers do not
+    silently risk a duplicate comment."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError):
+        client.issue_comment_marker_present(318, _TEST_MARKER)
+
+
 def test_list_issues_since_default_bypasses_etag_cache() -> None:
     requests_seen: list[dict[str, str]] = []
     payload = [{"number": 1, "title": "Issue", "updated_at": "2026-01-02T10:00:00Z"}]
