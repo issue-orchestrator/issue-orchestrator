@@ -27,6 +27,12 @@ from .tokens import (
 
 logger = logging.getLogger(__name__)
 
+# Operational backstop for the comment-marker pagination loop. At 100 comments
+# per page this covers 2,000 comments; hitting it means GitHub never returned a
+# final (short/empty) page, so the scan fails loud rather than report "absent"
+# from a truncated read.
+_MARKER_SCAN_PAGE_CAP = 20
+
 
 @dataclass
 class GitHubRateLimitSnapshot:
@@ -727,9 +733,16 @@ class GitHubHttpClient:
         ``get_issue_comments``, which returns only the first page) and
         short-circuits as soon as a comment body containing ``marker`` is
         found, so a marker posted beyond the first 100 comments is still
-        detected. Not ETag-cached: dedupe reads are correctness-critical and
-        must not return a stale page. Transport/HTTP errors propagate as
-        ``RepositoryHostError`` so callers can fail loud.
+        detected. The scan terminates only when GitHub returns a short or
+        empty page (the true final page); a returned ``False`` therefore means
+        the marker is genuinely absent from every page. An operational page cap
+        guards against an unbounded loop, but hitting it **fails loud**
+        (raises ``GitHubHttpError``) rather than reporting "absent" from a
+        truncated scan -- a truncated read is not evidence the marker is
+        missing, and silently returning ``False`` would let a dedupe caller
+        post a duplicate comment. Not ETag-cached: dedupe reads are
+        correctness-critical and must not return a stale page. Transport/HTTP
+        errors propagate as ``RepositoryHostError`` so callers can fail loud.
         """
         page = 1
         while True:
@@ -751,13 +764,16 @@ class GitHubHttpClient:
             if len(payload) < 100:
                 return False
             page += 1
-            if page > 20:  # Safety limit, mirrors list_all_labels pagination
-                logger.warning(
-                    "issue_comment_marker_present hit page cap for #%d; "
-                    "marker scan truncated",
-                    issue_number,
+            if page > _MARKER_SCAN_PAGE_CAP:
+                # The cap exists only to bound a pathological loop, not to
+                # define "marker absent". Fail loud so the dedupe caller never
+                # mistakes a truncated scan for a clean one.
+                raise GitHubHttpError(
+                    f"Comment marker scan for #{issue_number} exceeded "
+                    f"{_MARKER_SCAN_PAGE_CAP} pages without reaching the final "
+                    f"page; cannot confirm marker absence",
+                    issue_number=issue_number,
                 )
-                return False
 
     # -------------------- Git refs / commits --------------------
 

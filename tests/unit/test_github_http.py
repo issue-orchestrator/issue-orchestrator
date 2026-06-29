@@ -473,6 +473,31 @@ def test_issue_comment_marker_present_propagates_read_error() -> None:
         client.issue_comment_marker_present(318, _TEST_MARKER)
 
 
+def test_issue_comment_marker_present_fails_loud_at_page_cap() -> None:
+    """Regression: a scan that never reaches a final (short) page must NOT
+    report "marker absent" once the operational page cap is hit. A truncated
+    scan is not evidence the marker is missing, so the cap raises rather than
+    returning False -- otherwise a marker on page 21+ would let the dedupe
+    caller post a duplicate comment."""
+    pages_requested: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        pages_requested.append(int(request.url.params.get("page", "1")))
+        # Always a full page of unrelated comments: GitHub never signals a
+        # final page, so the loop runs until the cap.
+        return httpx.Response(
+            200, json=[{"body": f"chatter {i}"} for i in range(100)]
+        )
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError):
+        client.issue_comment_marker_present(318, _TEST_MARKER)
+    # The scan walked every page up to the cap before failing loud (it did not
+    # bail out early treating a full page as the end).
+    assert len(pages_requested) >= 20
+
+
 def test_list_issues_since_default_bypasses_etag_cache() -> None:
     requests_seen: list[dict[str, str]] = []
     payload = [{"number": 1, "title": "Issue", "updated_at": "2026-01-02T10:00:00Z"}]
