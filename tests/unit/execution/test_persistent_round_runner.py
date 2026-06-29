@@ -4,9 +4,12 @@ tolerance.
 Tests use a self-contained stub agent that supports a control-file gate
 (``STUB_RESPONSE_GATE``) and an opt-in partial-write race
 (``STUB_PARTIAL_WRITE_FIRST``). Coordination happens via gate files and
-injected ``now``/``sleep`` callables, never via real wall-clock waits, in
+injected ``now``/``sleep`` callables rather than real wall-clock waits, in
 keeping with ``tests/unit/AGENTS.md``'s ban on timing-based unit
-coordination.
+coordination. The single exception is the real-subprocess carve-out that
+file also allows: the late-trust test drives a real child process and uses
+the bounded ``_real_sleep`` helper below to yield wall-clock time so that
+process can make progress.
 """
 
 from __future__ import annotations

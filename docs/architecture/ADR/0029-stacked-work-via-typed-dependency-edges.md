@@ -79,13 +79,14 @@ Stack correctness is decided from **git and PR facts**, not labels:
 - PR base/head are what the stack expects,
 - ancestry is correct (the dependent branch descends from the predecessor),
 - check/validation state is green,
-- review freshness (the reviewed commit is still the head).
+- review freshness — the reviewed commit is still the head (surfaced as the
+  `approval_current` fact in §3, not as a review-launch gate).
 
 Labels (ADR-0013) may still drive lifecycle, recovery, and display, but they
 **must not be the sole correctness source** for a stack decision. When labels
 and git/PR facts disagree, git/PR facts win.
 
-### 3. One dependency gate report answers four questions
+### 3. One dependency gate report answers four lifecycle gates
 
 A single **dependency gate report** — an extension of today's
 `DependencyReport` — answers, per dependent slice:
@@ -93,14 +94,33 @@ A single **dependency gate report** — an extension of today's
 | Gate | Question | Stack edge unblocks when… |
 |------|----------|---------------------------|
 | **work** | may agent work start? | predecessor validated + agent-reviewed + branch usable |
-| **review** | may review start / is review fresh? | dependent's reviewed commit is current |
+| **review** | may review start? | predecessor branch usable as a base, so the dependent's diff is reviewable on its real base (independent of any prior approval) |
 | **publish** | may a PR be created/updated? | predecessor branch exists to base on |
-| **merge** | may this slice merge? | predecessor has merged (ordered) |
+| **merge** | may this slice merge? | predecessor has merged (ordered) **and** this slice's approval is current |
+
+The **review** gate is a *pre-review launch* decision only: it asks whether a
+review may begin, never whether a prior approval still holds. It must **not**
+depend on an existing reviewed commit — otherwise the *first* review of a
+stacked slice could never start, because it has no reviewed commit yet.
+
+Reviewed-commit freshness is therefore a separate **fact**, not a launch gate:
+
+| Fact | Meaning | Consumed by |
+|------|---------|-------------|
+| **approval_current** | the reviewed commit is still the slice's head | approval reuse (skip re-review while fresh) and the **merge** gate (block merge when stale) |
+
+Splitting `approval_current` out of the **review** gate is deliberate:
+pre-review launch eligibility and post-review approval freshness are different
+ownership questions. A stale reviewed commit re-blocks **only** the paths that
+require a *fresh approval* — approval reuse and merge readiness — and never
+blocks a first review from starting.
 
 For a **normal** edge all four gates collapse to the existing rule: open until
-the dependency closes. The scheduler, session launch, publish, recovery, and
-UI **consume this one report** rather than each re-deriving stack policy. This
-is the central anti-drift requirement: stack policy has exactly one owner.
+the dependency closes, and `approval_current` does not apply (the dependency
+carries its own review to its own merge). The scheduler, session launch,
+publish, recovery, and UI **consume this one report** rather than each
+re-deriving stack policy. This is the central anti-drift requirement: stack
+policy has exactly one owner.
 
 ### 4. Cross-milestone behavior stays bounded
 
@@ -174,7 +194,11 @@ before any code lands.
 - Implement the issue series #6594 → #6597 in order.
 - Add tests at the gate-report boundary: normal edge collapses to the
   closed-only rule; stack edge unblocks *work* on validated+reviewed+branch but
-  keeps *merge* ordered; stale-review and wrong-ancestry facts re-block.
+  keeps *merge* ordered; wrong-ancestry facts re-block.
+- Cover the review/approval split explicitly: the **review** gate opens for a
+  *first* review of a stacked slice even when no reviewed commit exists yet;
+  the `approval_current` fact is false for a stale reviewed commit and re-blocks
+  **only** approval reuse and the **merge** gate, never first-review launch.
 - Confirm cross-milestone relaxation is limited to discoverable same-stack
   chains and does not weaken ADR-0009 for normal edges.
 
