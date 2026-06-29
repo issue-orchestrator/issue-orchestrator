@@ -56,6 +56,10 @@ def _defer_active_session(session: Session, decision: "ObservationDecision") -> 
     )
 
 
+def _preserve_active_after_observation(decision: "ObservationDecision") -> bool:
+    return decision.status == SessionStatus.RUNNING
+
+
 def _publish_observation_event(
     session: Session,
     decision: "ObservationDecision",
@@ -196,7 +200,7 @@ def _observe_active_session(
 
     decision = completion_observer.observe_completion(session, obs)
 
-    if decision.status == SessionStatus.RUNNING:
+    if _preserve_active_after_observation(decision):
         # Deferred completion (e.g. review exchange still running). Preserve the
         # session for re-observation; do not finalize it.
         _defer_active_session(session, decision)

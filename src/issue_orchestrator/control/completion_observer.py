@@ -56,6 +56,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_FINALIZE_AS_OBSERVED_FACT = frozenset(
+    {
+        CompletionFinalizationDecision.PROCESS,
+        CompletionFinalizationDecision.RUN_DIRTY_PREFLIGHT,
+    }
+)
+
+
+def _runtime_state_for_observation(
+    observation: SessionObservationResult,
+) -> CompletionRuntimeState:
+    return {
+        SessionObservation.TIMED_OUT: CompletionRuntimeState.TIMED_OUT,
+    }.get(observation.observation, CompletionRuntimeState.TERMINATED)
+
 
 @dataclass
 class ObservationDecision:
@@ -242,69 +257,24 @@ class CompletionObserver:
         record: CompletionRecord,
         load_result: CompletionRecordLoadResult,
     ) -> ObservationDecision | None:
-        """Map the completion-finalization plan to an observation decision.
-
-        Routes every ``CompletionFinalizationDecision`` through the same owner
-        as the synchronous ``decide_outcome`` path instead of re-deciding here,
-        and handles each branch intentionally so no policy cell stays implicit:
-
-        - ``DEFER_REVIEW_EXCHANGE`` → keep the session ``RUNNING`` so the next
-          tick re-observes it (a terminated-and-running exchange, or a timed-out
-          session whose background exchange is still inside its supervisor
-          deadline).
-        - ``TERMINAL_REVIEW_EXCHANGE_TIMEOUT`` → the timed-out exchange has
-          overshot its deadline; halt the hidden job and finalize as a failure
-          (see ``_terminal_review_exchange_timeout``).
-        - ``PROCESS`` / ``RUN_DIRTY_PREFLIGHT`` → ``None``; the caller builds the
-          observed completion and the background publish phase owns dirty
-          preflight and validation.
-        - any other decision → ``AssertionError`` (fail fast, mirroring the
-          synchronous controller) so future enum growth cannot silently fall
-          through to a normal observed/publish completion.
-
-        ``validation_preflight_configured`` is ``False`` here: dirty preflight
-        and validation are owned by the publish phase, not observation, and that
-        flag never affects the defer/terminal decision (it only selects between
-        ``RUN_DIRTY_PREFLIGHT`` and ``PROCESS``, both of which finalize here).
-        """
-        runtime_state = (
-            CompletionRuntimeState.TIMED_OUT
-            if observation.observation is SessionObservation.TIMED_OUT
-            else CompletionRuntimeState.TERMINATED
-        )
+        """Map the completion-finalization plan to an observation decision."""
         plan = self._finalization_owner.completion_finalization_plan(
             issue_number=session.issue.number,
             session_name=session.terminal_id,
             outcome=record.outcome,
             requested_actions=tuple(record.requested_actions),
-            runtime_state=runtime_state,
+            runtime_state=_runtime_state_for_observation(observation),
             validation_preflight_configured=False,
         )
-        if plan.decision is CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE:
-            logger.info(
-                issue_log(
-                    session.issue.number,
-                    "Completion deferred: review exchange running in background "
-                    "(session=%s)",
-                ),
-                session.terminal_id,
-            )
-            return ObservationDecision(
-                status=SessionStatus.RUNNING,
-                reason="Review exchange running in background; awaiting completion",
-                completion_load_result=load_result,
-            )
-        if (
-            plan.decision
-            is CompletionFinalizationDecision.TERMINAL_REVIEW_EXCHANGE_TIMEOUT
-        ):
-            return self._terminal_review_exchange_timeout(
-                session, plan, load_result
-            )
-        if plan.decision in (
-            CompletionFinalizationDecision.PROCESS,
-            CompletionFinalizationDecision.RUN_DIRTY_PREFLIGHT,
-        ):
+        handler = {
+            CompletionFinalizationDecision.DEFER_REVIEW_EXCHANGE:
+                self._defer_review_exchange,
+            CompletionFinalizationDecision.TERMINAL_REVIEW_EXCHANGE_TIMEOUT:
+                self._terminal_review_exchange_timeout,
+        }.get(plan.decision)
+        if handler is not None:
+            return handler(session, plan, load_result)
+        if plan.decision in _FINALIZE_AS_OBSERVED_FACT:
             # Both finalize via the normal observed-completion path; the
             # background publish phase owns dirty preflight and validation.
             return None
@@ -314,6 +284,26 @@ class CompletionObserver:
         # completion in the async observer.
         raise AssertionError(
             f"Unhandled completion finalization decision: {plan.decision}"
+        )
+
+    def _defer_review_exchange(
+        self,
+        session: Session,
+        _plan: CompletionFinalizationPlan,
+        load_result: CompletionRecordLoadResult,
+    ) -> ObservationDecision:
+        logger.info(
+            issue_log(
+                session.issue.number,
+                "Completion deferred: review exchange running in background "
+                "(session=%s)",
+            ),
+            session.terminal_id,
+        )
+        return ObservationDecision(
+            status=SessionStatus.RUNNING,
+            reason="Review exchange running in background; awaiting completion",
+            completion_load_result=load_result,
         )
 
     def _terminal_review_exchange_timeout(
