@@ -39,6 +39,40 @@ DEFAULT_LABEL_STORE_RECONCILE_FETCH_BUDGET = 100
 
 
 @dataclass(frozen=True)
+class FreshLabelSnapshot:
+    """GitHub label observations verified fresh during the current startup.
+
+    ``LabelStoreReconciler`` treats every entry as authoritative GitHub truth
+    and rewrites the mirror to match it, so this type exists to force the caller
+    to state freshness explicitly at the boundary. Two origins must never be
+    conflated into a raw label map:
+
+    - :meth:`from_github_sync` — labels observed from a *successful*
+      GitHub-backed queue sync this run. Safe to trust as source of truth.
+    - :meth:`degraded` — the queue label source could not be confirmed fresh
+      (e.g. a transient fetch failure left startup on a persisted, possibly
+      stale snapshot). Carries no entries, so the reconciler reads each stored
+      issue fresh within budget — or leaves the store untouched when that read
+      fails — instead of rewriting the mirror from cache that may predate a
+      prior run's label mutation.
+    """
+
+    labels_by_issue: Mapping[int, Sequence[str]]
+
+    @classmethod
+    def from_github_sync(
+        cls, labels_by_issue: Mapping[int, Sequence[str]]
+    ) -> "FreshLabelSnapshot":
+        """Snapshot of labels observed from this run's successful GitHub sync."""
+        return cls(labels_by_issue=dict(labels_by_issue))
+
+    @classmethod
+    def degraded(cls) -> "FreshLabelSnapshot":
+        """No verified-fresh labels — force per-issue reads / leave untouched."""
+        return cls(labels_by_issue={})
+
+
+@dataclass(frozen=True)
 class LabelStoreReconciliationResult:
     """Summary of a label_store reconciliation pass."""
 
@@ -67,18 +101,24 @@ class LabelStoreReconciler:
 
     def reconcile(
         self,
-        cached_labels_by_issue: Mapping[int, Sequence[str]],
+        fresh_labels: FreshLabelSnapshot,
     ) -> LabelStoreReconciliationResult:
         """Reconcile every stored issue's orchestrator-owned labels with GitHub.
 
         Args:
-            cached_labels_by_issue: GitHub labels already in hand from the warm
-                queue cache, keyed by issue number. Used as the zero-cost label
-                source; stored issues absent from this map are fetched
-                individually, up to ``fetch_budget``.
+            fresh_labels: GitHub labels verified fresh this startup (see
+                :class:`FreshLabelSnapshot`). Entries are trusted as the
+                zero-cost source of truth; stored issues absent from the
+                snapshot are fetched individually, up to ``fetch_budget``. A
+                degraded snapshot carries no entries, so every stored issue is
+                read fresh (or left untouched when the read fails) rather than
+                reconciled against possibly-stale cache.
         """
         stored = self._label_store.load_all()
-        cache = {number: set(labels) for number, labels in cached_labels_by_issue.items()}
+        cache = {
+            number: set(labels)
+            for number, labels in fresh_labels.labels_by_issue.items()
+        }
 
         issues_checked = 0
         issues_changed = 0

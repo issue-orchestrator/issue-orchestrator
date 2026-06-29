@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
     from .label_manager import LabelManager
+    from .label_store_reconciler import FreshLabelSnapshot
 from ..domain.models import (
     OrchestratorState,
     PendingRetrospectiveReview,
@@ -143,6 +144,13 @@ class StartupManager:
         # mirror back to the pre-recovery labels. Reset at the start of every
         # run_startup.
         self._startup_label_mutated_issues: set[int] = set()
+        # Whether this run's queue cache labels came from a successful
+        # GitHub-backed sync/full scan (True) rather than a degraded fallback
+        # onto the persisted last-known-good snapshot (False). Only fresh labels
+        # may be handed to label_store reconciliation as GitHub truth; a
+        # degraded startup must force per-issue fresh reads instead. Reset at
+        # the start of every run_startup.
+        self._queue_labels_fresh: bool = False
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filtering.label if configured."""
@@ -189,6 +197,7 @@ class StartupManager:
         startup_start = time.time()
         state.startup_status = "running"
         self._startup_label_mutated_issues = set()
+        self._queue_labels_fresh = False
         timings: dict[str, float] = {}
 
         # Emit merged configuration for debugging
@@ -492,23 +501,13 @@ class StartupManager:
     def _reconcile_label_store(self, state: OrchestratorState) -> None:
         """Reconcile the local label_store mirror against GitHub labels.
 
-        Uses the warm queue/scope cache as the zero-cost label source and lets
-        the reconciler fetch any out-of-scope stored issues within its budget.
+        Uses the warm queue/scope cache as the zero-cost label source only when
+        it is verified fresh for this run, and lets the reconciler fetch any
+        out-of-scope or non-fresh stored issues within its budget.
         """
         if self._label_store is None:
             return
         from .label_store_reconciler import LabelStoreReconciler
-
-        cached_labels_by_issue: dict[int, Sequence[str]] = {}
-        for issue in [*state.cached_queue_issues, *state.cached_scope_issues]:
-            if issue.number in self._startup_label_mutated_issues:
-                # Startup recovery mutated this issue's labels after the warm
-                # cache snapshot was taken, so the snapshot is stale. Omit it
-                # so the reconciler fetches fresh GitHub labels rather than
-                # rewriting the mirror back to the pre-recovery state (e.g.
-                # restoring in-progress / dropping the just-applied pr-pending).
-                continue
-            cached_labels_by_issue.setdefault(issue.number, issue.labels)
 
         reconciler = LabelStoreReconciler(
             label_store=self._label_store,
@@ -519,7 +518,7 @@ class StartupManager:
             reason=gh_audit.AuditReason.STARTUP_REFRESH,
             scope=gh_audit.AuditScope.STARTUP,
         ):
-            result = reconciler.reconcile(cached_labels_by_issue)
+            result = reconciler.reconcile(self._fresh_label_snapshot(state))
         if result.issues_changed:
             logger.info(
                 "[startup] Reconciled label_store: %d issue(s) changed "
@@ -528,6 +527,33 @@ class StartupManager:
                 result.labels_added,
                 result.labels_removed,
             )
+
+    def _fresh_label_snapshot(self, state: OrchestratorState) -> "FreshLabelSnapshot":
+        """Build the GitHub-truth label snapshot for label_store reconciliation.
+
+        Centralizes the freshness contract so the reconciler never receives
+        unqualified cache data:
+
+        - If this run's queue sync degraded onto the persisted (possibly stale)
+          snapshot, return a degraded snapshot so the reconciler reads each
+          stored issue fresh within budget — or leaves the store untouched when
+          that read fails — rather than rewriting the mirror from cache that may
+          predate a prior run's label mutation.
+        - Otherwise return the freshly-synced queue/scope labels, still omitting
+          issues this run mutated (their pre-mutation cache entry is stale, so
+          they are re-read fresh too).
+        """
+        from .label_store_reconciler import FreshLabelSnapshot
+
+        if not self._queue_labels_fresh:
+            return FreshLabelSnapshot.degraded()
+
+        labels_by_issue: dict[int, Sequence[str]] = {}
+        for issue in [*state.cached_queue_issues, *state.cached_scope_issues]:
+            if issue.number in self._startup_label_mutated_issues:
+                continue
+            labels_by_issue.setdefault(issue.number, issue.labels)
+        return FreshLabelSnapshot.from_github_sync(labels_by_issue)
 
     def _analyze_and_handle_issue(
         self,
@@ -811,6 +837,7 @@ class StartupManager:
             state.startup_message = "Caching queue..."
             try:
                 self._issue_fetch_resilience.guard(self._update_queue_cache)
+                self._queue_labels_fresh = True
             except TransientIssueFetchError as exc:
                 self._note_degraded_queue_fetch(exc, state)
             return
@@ -840,6 +867,9 @@ class StartupManager:
             self._note_degraded_queue_fetch(exc, state)
             return
 
+        # The queue now reflects a successful GitHub-backed sync, so its labels
+        # are safe to treat as source of truth during label_store reconciliation.
+        self._queue_labels_fresh = True
         # Persist updated state to SQLite for next restart (success path only).
         state.startup_message = "Persisting queue cache..."
         queue_cache.save_snapshot()

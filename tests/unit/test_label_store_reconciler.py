@@ -9,7 +9,10 @@ from typing import Sequence
 import pytest
 
 from issue_orchestrator.control.label_manager import LabelManager
-from issue_orchestrator.control.label_store_reconciler import LabelStoreReconciler
+from issue_orchestrator.control.label_store_reconciler import (
+    FreshLabelSnapshot,
+    LabelStoreReconciler,
+)
 from issue_orchestrator.execution.label_store import LabelStore
 from issue_orchestrator.infra.config import Config
 
@@ -60,7 +63,7 @@ class TestReconcileFromCache:
         repo = _FakeRepositoryHost({})
 
         result = _reconciler(store, label_manager, repo).reconcile(
-            {228: ["agent:backend"]}
+            FreshLabelSnapshot.from_github_sync({228: ["agent:backend"]})
         )
 
         assert store.load_labels(228) == set()
@@ -76,7 +79,9 @@ class TestReconcileFromCache:
         repo = _FakeRepositoryHost({})
 
         result = _reconciler(store, label_manager, repo).reconcile(
-            {228: ["blocked", "pr-pending", "agent:web"]}
+            FreshLabelSnapshot.from_github_sync(
+                {228: ["blocked", "pr-pending", "agent:web"]}
+            )
         )
 
         assert store.load_labels(228) == {"pr-pending", "blocked"}
@@ -88,7 +93,7 @@ class TestReconcileFromCache:
         repo = _FakeRepositoryHost({})
 
         result = _reconciler(store, label_manager, repo).reconcile(
-            {228: ["pr-pending", "agent:web"]}
+            FreshLabelSnapshot.from_github_sync({228: ["pr-pending", "agent:web"]})
         )
 
         assert store.load_labels(228) == {"pr-pending"}
@@ -99,7 +104,9 @@ class TestReconcileFromCache:
         store.add_label(228, "agent:backend")
         repo = _FakeRepositoryHost({})
 
-        result = _reconciler(store, label_manager, repo).reconcile({228: []})
+        result = _reconciler(store, label_manager, repo).reconcile(
+            FreshLabelSnapshot.from_github_sync({228: []})
+        )
 
         assert store.load_labels(228) == {"agent:backend"}
         assert result.issues_changed == 0
@@ -114,7 +121,9 @@ class TestReconcileWithFetch:
         store.add_label(274, "pr-pending")
         repo = _FakeRepositoryHost({274: _FakeIssue(274, ["bug"])})
 
-        result = _reconciler(store, label_manager, repo).reconcile({})
+        result = _reconciler(store, label_manager, repo).reconcile(
+            FreshLabelSnapshot.from_github_sync({})
+        )
 
         assert store.load_labels(274) == set()
         assert repo.fetched == [274]
@@ -130,7 +139,9 @@ class TestReconcileWithFetch:
             3: _FakeIssue(3, []),
         })
 
-        result = _reconciler(store, label_manager, repo, budget=2).reconcile({})
+        result = _reconciler(store, label_manager, repo, budget=2).reconcile(
+            FreshLabelSnapshot.from_github_sync({})
+        )
 
         assert result.issues_fetched == 2
         assert result.issues_skipped_budget == 1
@@ -138,12 +149,29 @@ class TestReconcileWithFetch:
         pruned = sum(1 for n in (1, 2, 3) if store.load_labels(n) == set())
         assert pruned == 2
 
+    def test_degraded_snapshot_forces_fresh_reads(self, store, label_manager):
+        # A degraded snapshot carries no trusted labels, so a stored issue is
+        # read fresh instead of reconciled against cache. (Contrast with the
+        # from_github_sync cache-hit tests, which never fetch.)
+        store.add_label(228, "pr-pending")
+        repo = _FakeRepositoryHost({228: _FakeIssue(228, ["agent:backend"])})
+
+        result = _reconciler(store, label_manager, repo).reconcile(
+            FreshLabelSnapshot.degraded()
+        )
+
+        assert store.load_labels(228) == set()
+        assert repo.fetched == [228]
+        assert result.issues_fetched == 1
+
     def test_missing_issue_leaves_store_untouched(self, store, label_manager):
         # get_issue returns None (transient/unreadable): don't guess.
         store.add_label(99, "publish-failed")
         repo = _FakeRepositoryHost({99: None})
 
-        result = _reconciler(store, label_manager, repo).reconcile({})
+        result = _reconciler(store, label_manager, repo).reconcile(
+            FreshLabelSnapshot.from_github_sync({})
+        )
 
         assert store.load_labels(99) == {"publish-failed"}
         assert result.issues_changed == 0

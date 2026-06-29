@@ -11,6 +11,7 @@ from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilien
 from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
 from issue_orchestrator.execution.label_store import LabelStore
+from issue_orchestrator.ports.repository_host import RepositoryHostError
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import (
     Issue,
@@ -567,6 +568,142 @@ class TestStartupManagerLabelStoreReconcile:
         # ...and reconciliation left the mirror in agreement with GitHub
         # instead of resurrecting in-progress / dropping pr-pending.
         assert store.load_labels(1) == {"pr-pending"}
+
+    def _make_degraded_startup(
+        self,
+        tmp_path,
+        mock_config,
+        mock_events,
+        mock_runner,
+        mock_issue_branches_fn,
+        get_issue,
+    ):
+        """Build a StartupManager whose queue sync degrades to a stale snapshot.
+
+        - label_store already holds the current set ({pr-pending}) from a prior
+          run's recovery.
+        - The persisted queue snapshot is stale (still pre-mutation in-progress).
+        - The delta sync fails transiently, forcing the degraded fallback onto
+          that stale snapshot.
+        - ``get_issue`` controls what a fresh per-issue read returns.
+        """
+        store = LabelStore(tmp_path / "label_store.sqlite")
+        store.add_label(1, "pr-pending")
+
+        queue_cache_store = MagicMock()
+        queue_cache_store.load_issues.return_value = [
+            Issue(number=1, title="Issue 1", labels=["agent:web", "in-progress"]),
+        ]
+        queue_cache_store.load_watermark.return_value = "2025-01-01T00:00:00Z"
+
+        mock_repository_host = MagicMock()
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues_delta.side_effect = RepositoryHostError(
+            "transient GitHub blip"
+        )
+        mock_repository_host.get_issue.side_effect = get_issue
+
+        sm = StartupManager(
+            config=mock_config,
+            events=mock_events,
+            runner=mock_runner,
+            repository_host=mock_repository_host,
+            action_applier=MagicMock(),
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            queue_cache_store=queue_cache_store,
+            label_store=store,
+        )
+        return sm, store, mock_repository_host
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_degraded_startup_does_not_reconcile_from_stale_snapshot(
+        self,
+        mock_analyze,
+        mock_config,
+        mock_events,
+        mock_runner,
+        mock_issue_branches_fn,
+        sample_state,
+        tmp_path,
+    ):
+        """A degraded startup must not treat the persisted snapshot as truth.
+
+        When the GitHub queue refresh fails transiently, startup comes up on the
+        persisted last-known-good snapshot, which can predate a prior run's
+        label mutation. Reconciliation must read GitHub fresh for such issues
+        rather than rewriting the mirror back to the stale persisted labels
+        (#6431 round-2 F1).
+        """
+        mock_analyze.return_value = MagicMock(
+            has_session=False,
+            has_open_pr=False,
+            has_partial_work=False,
+            is_orphaned_label=False,
+        )
+
+        sm, store, repo = self._make_degraded_startup(
+            tmp_path,
+            mock_config,
+            mock_events,
+            mock_runner,
+            mock_issue_branches_fn,
+            # Live GitHub still carries the current pr-pending, not in-progress.
+            get_issue=lambda n: Issue(
+                number=n, title=f"Issue {n}", labels=["agent:web", "pr-pending"]
+            ),
+        )
+
+        await sm.run_startup(sample_state)
+
+        # Reconciliation read GitHub fresh and left the mirror at the current
+        # pr-pending instead of resurrecting the stale persisted in-progress.
+        assert store.load_labels(1) == {"pr-pending"}
+        repo.get_issue.assert_any_call(1)
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_degraded_startup_leaves_store_untouched_when_fresh_read_fails(
+        self,
+        mock_analyze,
+        mock_config,
+        mock_events,
+        mock_runner,
+        mock_issue_branches_fn,
+        sample_state,
+        tmp_path,
+    ):
+        """Degraded startup + failed fresh read must leave the mirror untouched.
+
+        With no verified-fresh cache to trust and the per-issue read returning
+        nothing, the reconciler must not guess from the stale persisted
+        snapshot — it leaves the store as-is for a later startup to retry.
+        """
+        mock_analyze.return_value = MagicMock(
+            has_session=False,
+            has_open_pr=False,
+            has_partial_work=False,
+            is_orphaned_label=False,
+        )
+
+        sm, store, repo = self._make_degraded_startup(
+            tmp_path,
+            mock_config,
+            mock_events,
+            mock_runner,
+            mock_issue_branches_fn,
+            get_issue=lambda n: None,  # fresh read unavailable
+        )
+
+        await sm.run_startup(sample_state)
+
+        assert store.load_labels(1) == {"pr-pending"}
+        repo.get_issue.assert_any_call(1)
 
 
 class TestStartupManagerCodeReviewRecovery:
