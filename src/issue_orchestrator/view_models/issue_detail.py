@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -289,18 +290,31 @@ def _preferred_review_terminal_story_event(cluster: list[dict[str, Any]]) -> dic
 
 
 def _collapse_completed_review_segments(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Represent each Story review segment with either its start or terminal row."""
+    """Represent each Story review segment with either its start or terminal row.
+
+    While a review segment is still *open* (the round has not closed with a
+    terminal event), the in-round coder<->reviewer mechanics are still dropped
+    from the row list, but the latest meaningful substate is surfaced as a
+    single transient "in progress" row so the Story timeline keeps advancing
+    instead of freezing on "Code review started" for the duration of an
+    in-round rework (issue #6428). Once the round closes, the completed view
+    stays clean — no mechanic rows survive.
+    """
     collapsed: list[dict[str, Any]] = []
     pending_start_index: int | None = None
+    latest_open_mechanic: dict[str, Any] | None = None
 
     for event in events:
         event_name = _canonical_event_name(event)
         if event_name in _REVIEW_STORY_MECHANIC_EVENTS:
+            if pending_start_index is not None:
+                latest_open_mechanic = event
             continue
 
         if event_name in _REVIEW_START_CLUSTER_EVENTS:
             collapsed.append(event)
             pending_start_index = len(collapsed) - 1
+            latest_open_mechanic = None
             continue
 
         if event_name in _REVIEW_STORY_SEGMENT_TERMINAL_EVENTS:
@@ -308,6 +322,7 @@ def _collapse_completed_review_segments(events: list[dict[str, Any]]) -> list[di
                 start_event = collapsed[pending_start_index]
                 del collapsed[pending_start_index]
                 pending_start_index = None
+                latest_open_mechanic = None
                 collapsed.append(_project_review_terminal_story_event(event, start_event))
             else:
                 collapsed.append(_project_review_terminal_story_event(event))
@@ -315,9 +330,63 @@ def _collapse_completed_review_segments(events: list[dict[str, Any]]) -> list[di
 
         if _event_starts_new_story_work_segment(event):
             pending_start_index = None
+            latest_open_mechanic = None
         collapsed.append(event)
 
+    if pending_start_index is not None and latest_open_mechanic is not None:
+        progress = _OpenReviewRoundProgress.from_open_round_mechanic(latest_open_mechanic)
+        if progress is not None:
+            row = dict(latest_open_mechanic)
+            _fill_missing_review_session_context(row, collapsed[pending_start_index])
+            row["narrative"] = progress.narrative
+            row["in_round_progress"] = True
+            collapsed.append(row)
+
     return collapsed
+
+
+@dataclass(frozen=True)
+class _OpenReviewRoundProgress:
+    """Bounded typed owner of the open-review-round in-progress decision (#6428).
+
+    While a review round is still open the in-round mechanics are dropped from
+    the Story rows, which used to freeze the timeline on "Code review started"
+    for the whole of an in-round rework. This value object owns that transient
+    row's policy: an instance existing means "surface a live progress row" and
+    ``narrative`` is its copy. The decision reuses
+    ``_review_exchange_event_status`` so the row and the always-on status line
+    describe the same substate — no raw-dict seam, no cross-path drift.
+    """
+
+    narrative: str
+
+    @classmethod
+    def from_open_round_mechanic(
+        cls,
+        mechanic_event: Mapping[str, Any],
+    ) -> _OpenReviewRoundProgress | None:
+        """Decide the transient progress row, or ``None`` when there is none.
+
+        ``None`` when the latest substate is already represented by the round's
+        "Code review started" row, or carries no renderable substate.
+        """
+        event_name = _canonical_event_name(mechanic_event)
+        if not cls._is_progress_signal(event_name, mechanic_event):
+            return None
+        status = _review_exchange_event_status(event_name, mechanic_event)
+        if not status:
+            return None
+        return cls(narrative=_capitalize_first(status))
+
+    @staticmethod
+    def _is_progress_signal(event_name: str, event: Mapping[str, Any]) -> bool:
+        # The reviewer's opening pass is already the "Code review started" row,
+        # so only feedback and the coder rework prompt surface a progress row.
+        if event_name == EventName.REVIEW_EXCHANGE_ROLE_FEEDBACK.value:
+            return True
+        if event_name == EventName.REVIEW_EXCHANGE_ROLE_PROMPTED.value:
+            return event.get("role") == "coder"
+        return False
 
 
 def _project_review_terminal_story_event(
@@ -409,7 +478,7 @@ def _is_outer_coding_completion_event(event_name: str, source_event: str) -> boo
     )
 
 
-def _canonical_event_name(event: dict[str, Any]) -> str:
+def _canonical_event_name(event: Mapping[str, Any]) -> str:
     return str(event.get("source_event") or event.get("event") or "")
 
 
@@ -512,7 +581,7 @@ def _has_review_exchange_before(
 
 def _review_exchange_event_status(
     event_name: str,
-    event: dict[str, Any],
+    event: Mapping[str, Any],
 ) -> str | None:
     round_index = event.get("round_index")
     round_suffix = (
@@ -548,7 +617,7 @@ def _review_exchange_event_status(
     return None
 
 
-def _event_narrative(event: dict[str, Any]) -> str:
+def _event_narrative(event: Mapping[str, Any]) -> str:
     narrative = event.get("narrative")
     if isinstance(narrative, str) and narrative:
         return narrative
@@ -562,6 +631,12 @@ def _lowercase_first(text: str) -> str:
     if not text:
         return ""
     return text[0].lower() + text[1:]
+
+
+def _capitalize_first(text: str) -> str:
+    if not text:
+        return ""
+    return text[0].upper() + text[1:]
 
 
 # Canonical blocked-event set lives in ``lifecycle_projection``.  The local
@@ -760,6 +835,8 @@ def _build_journey_steps(
         }
         if detail:
             step_dict["detail"] = str(detail)
+        if event.get("in_round_progress") is True:
+            step_dict["in_round_progress"] = True
         steps.append(step_dict)
 
     return steps

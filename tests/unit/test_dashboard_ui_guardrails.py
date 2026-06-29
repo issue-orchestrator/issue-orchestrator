@@ -220,6 +220,28 @@ def test_issue_detail_status_is_live_region() -> None:
     assert 'aria-atomic="true"' in status_tag
 
 
+def test_in_round_progress_step_has_text_affordance_not_colour_only() -> None:
+    # Issue #6428: the live in-round progress row must carry a textual badge
+    # with an accessible status role — status must not be signalled by colour
+    # alone. The renderer is the io.agent-context lifecycle plugin.
+    agent_context_js = (DASHBOARD_JS_DIR / "plugins" / "agent_context.js").read_text(
+        encoding="utf-8"
+    )
+    assert "in_round_progress" in agent_context_js
+    assert "journey-progress-badge" in agent_context_js
+    assert 'role="status"' in agent_context_js
+    assert "In progress" in agent_context_js
+
+
+def test_in_round_progress_css_neutralises_done_colour_and_respects_reduced_motion() -> None:
+    css = _read_dashboard_css_bundle()
+    assert ".journey-step-in-progress" in css
+    assert ".journey-progress-badge" in css
+    # The pulsing dot must be disabled when the user prefers reduced motion.
+    assert "@keyframes journey-progress-pulse" in css
+    assert "prefers-reduced-motion: reduce" in css
+
+
 def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     assert re.search(r'onclick="bulkRetryAwaitingMerge\(\)"\s+disabled', html)

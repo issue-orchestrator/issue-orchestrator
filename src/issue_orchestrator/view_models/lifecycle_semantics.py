@@ -713,6 +713,10 @@ class JourneyStep(LifecycleBase):
     event: str
     detail: str | None = None
     actions: tuple[dict[str, Any], ...] = ()
+    # Marks a transient "live progress" row surfaced while a review round is
+    # still open (issue #6428) so the UI can render an in-progress affordance
+    # distinct from completed steps. Default ``False`` for ordinary steps.
+    in_round_progress: bool = False
 
 
 JourneyPhaseKey = Literal["coding", "review", "rework", "orchestrator"]

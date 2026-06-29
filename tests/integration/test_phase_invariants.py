@@ -195,7 +195,7 @@ class TestPhase5AIDiagnoseNoCredentials:
             {
                 "GITHUB_TOKEN": "secret1",
                 "GH_TOKEN": "secret2",
-                "ANTHROPIC_API_KEY": "secret3",
+                "OPENAI_API_KEY": "secret3",
                 "ISSUE_ORCH_GITHUB_TOKEN": "secret4",
                 "PATH": "/usr/bin",
                 "HOME": "/home/user",
@@ -205,7 +205,7 @@ class TestPhase5AIDiagnoseNoCredentials:
 
         assert "GITHUB_TOKEN" not in safe_env
         assert "GH_TOKEN" not in safe_env
-        assert "ANTHROPIC_API_KEY" not in safe_env
+        assert "OPENAI_API_KEY" not in safe_env
         assert "ISSUE_ORCH_GITHUB_TOKEN" not in safe_env
         assert safe_env.get("PATH") == "/usr/bin"
         assert safe_env.get("HOME") == "/home/user"
