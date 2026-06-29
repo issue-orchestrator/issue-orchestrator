@@ -442,16 +442,29 @@ class TestPersistentSessionLifecycle:
         )
         codex_bin = tmp_path / "codex"
         codex_bin.symlink_to(sys.executable)
+        import time as _time
+
         clock = _FakeClock()
         gate_opened = False
 
         def sleeper(seconds: float) -> None:
+            """Advance the deterministic timeout clock, then pace in real time.
+
+            The injected fake clock keeps the *timeout* deterministic (no
+            wall-clock deadline), but the poll loop must not outrun the real
+            stub subprocess that delivers the response. A small real sleep —
+            the same pacing a non-injected ``send_round`` gets from
+            ``time.sleep`` — gives the gated subprocess real wall-time to write
+            its response each poll. Without it the loop spins through the fake
+            deadline in microseconds and races the subprocess under load.
+            """
             nonlocal gate_opened
             clock.value += seconds
             if not gate_opened and clock.value >= 0.35:
                 gate_opened = True
                 trust_gate.touch()
                 _wait_until(prompt_ready.exists)
+            _time.sleep(seconds)
 
         session = open_persistent_session(
             command=[str(codex_bin), "-u", str(script)],
