@@ -1079,6 +1079,106 @@ class MockWorkingCopy:
 class TestSessionControllerValidationCaching:
     """Tests for validation caching via PublishGate."""
 
+    def test_review_only_session_skips_code_validation_gate(self, tmp_path: Path):
+        """A retrospective review with a failing validation command must not retry.
+
+        Regression for #6426: a review-only session makes no commits and
+        publishes nothing, so feeding its (often transient) validation failure
+        into the coder retry loop relaunched the work as ``TaskKind.CODE``, which
+        then tried to open a PR on an empty branch -> publish-failed. The code
+        validation gate must be skipped entirely for review-only task kinds.
+        """
+        from issue_orchestrator.domain.session_key import TaskKind
+
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.REVIEW_APPROVED,
+            summary="Existing implementation looks good",
+            requested_actions=[],
+        )
+
+        # A failing validation command would normally force a retry.
+        command_runner = MockCommandRunner(returncode=1, stderr="network timeout")
+        events = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="./scripts/validate-quick.sh",
+            validation_timeout_seconds=60,
+            max_validation_retries=3,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = decide_with_run_assets(
+            controller,
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=361,
+            issue_title="Review Existing Implementation #361",
+            session_name="retrospective-review-361",
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+        )
+
+        # The review completes on its read-only path: no retry, no gate run.
+        assert decision.status == SessionStatus.COMPLETED
+        assert decision.validation_passed is None
+        assert command_runner.run_calls == []
+        retry_events = [
+            event
+            for event in events.events
+            if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
+        ]
+        assert retry_events == []
+
+    def test_code_session_still_runs_validation_gate(self, tmp_path: Path):
+        """Coding sessions keep running the validation gate (skip is review-only).
+
+        Companion to ``test_review_only_session_skips_code_validation_gate`` to
+        prove the skip is scoped to review-only tasks, not a blanket change.
+        """
+        from issue_orchestrator.domain.session_key import TaskKind
+
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(returncode=1, stderr="real failure")
+        controller = SessionController(
+            completion_processor=processor,
+            events=RecordingEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            max_validation_retries=3,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = decide_with_run_assets(
+            controller,
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+            task_kind=TaskKind.CODE,
+        )
+
+        assert decision.status == SessionStatus.NEEDS_VALIDATION_RETRY
+        assert decision.validation_passed is False
+        assert len(command_runner.run_calls) == 1
+
     def test_dirty_preflight_defers_while_review_exchange_running(
         self, tmp_path: Path
     ):

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from ..domain.models import CompletionRecord
     from ..domain.attempt import AttemptKey
     from ..domain.issue_key import IssueKey
+    from ..domain.session_key import TaskKind
     from ..ports.attempt_store import AttemptStore
     from ..ports.validation_attempt_key_factory import ValidationAttemptKeyFactory
     from .provider_resilience import ProviderResilienceManager
@@ -206,11 +207,16 @@ class SessionController:
         retry_prompt_template: str | None = None,
         repo_root: Path | None = None,
         issue_key: "IssueKey | None" = None,
+        task_kind: "TaskKind | None" = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
         This is the core decision logic. For ANY non-running session, we check
         completion.json to determine the true outcome.
+
+        ``task_kind`` is the originating session's task. Review-only tasks make
+        no commits and publish nothing, so the code validation-retry gate does
+        not apply to them (see ``_run_validation_phase_if_needed``).
         """
         # If still running, nothing to decide
         if observation.observation == SessionObservation.RUNNING:
@@ -329,6 +335,7 @@ class SessionController:
             retry_prompt_template=retry_prompt_template,
             repo_root=repo_root,
             issue_key=issue_key,
+            task_kind=task_kind,
         )
         if validation_decision is not None:
             status = validation_decision.status
@@ -682,12 +689,20 @@ class SessionController:
         retry_prompt_template: str | None,
         repo_root: Path | None,
         issue_key: "IssueKey | None",
+        task_kind: "TaskKind | None" = None,
     ) -> ValidationGateDecision | None:
         if not (
             status == SessionStatus.COMPLETED
             and self._validation_cmd
             and self._command_runner
         ):
+            return None
+        # Review-only sessions (PR review / retrospective review) make no commits
+        # and publish nothing, so the code validation-retry gate does not apply.
+        # Running it relaunches the work as a coder retry that ultimately tries
+        # to open a PR on an empty branch (see issue #6426).
+        if task_kind is not None and task_kind.is_review_only:
+            logger.debug(issue_log(issue_number, "Skipping code validation gate: review-only session"))
             return None
         return self._run_validation_gate(
             worktree_path,

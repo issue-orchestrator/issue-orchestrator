@@ -53,20 +53,24 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     """Strip orchestrator env vars and set safe defaults.
 
     When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
-    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done. If the agent then runs
-    `make validate-quick` (pytest), these vars leak into unit tests and cause
-    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID
-    overrides mocked values.
+    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done — and
+    their legacy unprefixed ORCHESTRATOR_* fallbacks (ORCHESTRATOR_SESSION_ID,
+    ORCHESTRATOR_CONFIG_NAME/PATH, ORCHESTRATOR_API_PORT, ...). If the agent then
+    runs `make validate-quick` (pytest), these vars leak into unit tests and cause
+    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID forces
+    managed mode over mocked values. Code reads the legacy unprefixed names as
+    fallbacks (get_session_id, preflight push), so stripping only the
+    ISSUE_-prefixed names is not enough when the orchestrator self-hosts.
 
     Similarly, ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) can
-    override test expectations in resolve_base_branch tests.
+    override test expectations in resolve_base_branch tests; it is covered by the
+    ORCHESTRATOR_ prefix sweep below.
 
     This fixture strips them so tests always start with a clean env, then
     sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
     resolves repo_root from the environment (e.g. SubprocessPlugin) never
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
-
     Both env-var families are stripped. Several runtime readers accept a legacy
     non-prefixed ``ORCHESTRATOR_*`` form as a fallback to the canonical
     ``ISSUE_ORCHESTRATOR_*`` one (e.g. config resolution reads
