@@ -66,8 +66,8 @@ from .actions import (
     EscalateToHumanAction,
     CleanupSessionAction,
     ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
     SessionType,
-    ShedRecoveredWorkflowLabelsAction,
     SyncLabelsAction,
 )
 from .awaiting_merge_post_publish_policy import build_post_publish_validation_comment
@@ -449,31 +449,41 @@ class Planner:
         }
 
         for reconciliation in snapshot.discovered_awaiting_merge_reconciliations:
-            actions.append(ReconcileHistoryEntryAction(
+            issue_key = reconciliation.issue_key or str(reconciliation.issue_number)
+            # Drift reconciliations ADD blocked:pr-closed (handled by the
+            # SyncLabelsAction below) rather than shedding, so there is no label
+            # cleanup to order ahead of the history transition — finalize the
+            # history entry on its own.
+            if reconciliation.issue_number in drift_issue_numbers:
+                actions.append(ReconcileHistoryEntryAction(
+                    issue_number=reconciliation.issue_number,
+                    pr_number=reconciliation.pr_number,
+                    pr_url=reconciliation.pr_url,
+                    status=reconciliation.status,
+                    source=reconciliation.source,
+                    issue_key=issue_key,
+                    reason=reconciliation.status_reason,
+                ))
+                continue
+            # Terminal recovery: the issue's work has landed (PR merged/closed
+            # or parent issue closed). Shed every transient workflow label that
+            # no longer applies — pr-pending, publish-failed, publish-fail-count-N,
+            # and any blocking label — and only then finalize the awaiting-merge
+            # history, as one owner command (RecoverTerminalIssueAction). The
+            # applier reads the issue's live labels to decide the exact set (the
+            # planner rarely has labels for an already closed/merged issue) and
+            # gates the history transition on the shed succeeding, so a transient
+            # label-removal failure leaves the entry reconcilable for a later
+            # discovery pass instead of terminalizing it and stranding the labels
+            # this P0 removes.
+            actions.append(RecoverTerminalIssueAction(
                 issue_number=reconciliation.issue_number,
                 pr_number=reconciliation.pr_number,
                 pr_url=reconciliation.pr_url,
                 status=reconciliation.status,
                 source=reconciliation.source,
-                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
-                reason=reconciliation.status_reason,
-            ))
-            # When the awaiting-merge state reaches a terminal status (PR
-            # merged/closed or parent issue closed), the issue's work has
-            # landed. Shed every transient workflow label that no longer
-            # applies — pr-pending, publish-failed, publish-fail-count-N, and
-            # any blocking label — in one action so recovered issues don't keep
-            # a phantom "failed / pr-pending" state on GitHub or in the local
-            # label_store. The applier reads the issue's live labels to decide
-            # the exact set (the planner rarely has labels for an already
-            # closed/merged issue). Drift reconciliations are excluded: they
-            # ADD blocked:pr-closed (handled by the SyncLabelsAction below), so
-            # shedding blocking labels there would contradict the drift.
-            if reconciliation.issue_number in drift_issue_numbers:
-                continue
-            actions.append(ShedRecoveredWorkflowLabelsAction(
-                issue_number=reconciliation.issue_number,
-                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
+                status_reason=reconciliation.status_reason,
+                issue_key=issue_key,
                 reason=f"awaiting-merge terminal: {reconciliation.status}",
             ))
 

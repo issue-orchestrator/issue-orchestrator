@@ -81,6 +81,7 @@ from .actions import (
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 
@@ -274,6 +275,8 @@ class ActionApplier:
             ActionType.SET_ISSUE_STATE: self._apply_set_issue_state,
             # History operations
             ActionType.RECONCILE_HISTORY_ENTRY: self._apply_reconcile_history_entry,
+            # Terminal recovery: shed labels, then finalize history (ordered)
+            ActionType.RECOVER_TERMINAL_ISSUE: self._apply_recover_terminal_issue,
         }
 
         handler = handlers.get(action.action_type)
@@ -1288,6 +1291,71 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             pr_number=action.pr_number,
             previous_status=outcome.previous_status,
             status=outcome.status,
+        )
+
+    def _apply_recover_terminal_issue(self, action: Action) -> ActionResult:
+        """Shed recovered-workflow labels, then finalize awaiting-merge history.
+
+        Owns the terminal-recovery ordering invariant in one place: the history
+        entry only transitions to its terminal status after the label cleanup
+        has succeeded. The shed is a best-effort GitHub write; finalizing the
+        history first and shedding second would take the entry out of the
+        reconcilable awaiting-merge statuses, so a later shed failure would
+        never be retried and would strand the pr-pending / publish-failed /
+        publish-fail-count-* labels this recovery removes.
+
+        On shed failure we return failure WITHOUT touching history, leaving the
+        entry reconcilable for the next awaiting-merge discovery pass to retry.
+        """
+        assert isinstance(action, RecoverTerminalIssueAction)
+
+        # Verify claim ownership at the owner-command boundary before any
+        # GitHub write (raises ClaimLostError). The shed sub-step verifies
+        # again; both checks key off the issue's lease, so this is a cheap,
+        # explicit guard that this command writes only to a still-claimed issue.
+        self._verify_claim_before_write(action, action.issue_number)
+
+        shed_result = self._apply_shed_recovered_workflow_labels(
+            ShedRecoveredWorkflowLabelsAction(
+                issue_number=action.issue_number,
+                issue_key=action.issue_key,
+                reason=action.reason,
+            )
+        )
+        if not shed_result.success:
+            # Do not finalize history; keep the entry reconcilable for retry.
+            return ActionResult.fail(
+                action,
+                "recovered-label shed failed; awaiting-merge history left "
+                f"reconcilable for retry: {shed_result.error}",
+                issue_number=action.issue_number,
+                pr_number=action.pr_number,
+            )
+
+        history_result = self._apply_reconcile_history_entry(
+            ReconcileHistoryEntryAction(
+                issue_number=action.issue_number,
+                pr_number=action.pr_number,
+                pr_url=action.pr_url,
+                status=action.status,
+                source=action.source,
+                issue_key=action.issue_key,
+                reason=action.status_reason,
+            )
+        )
+        if not history_result.success:
+            return ActionResult.fail(
+                action,
+                history_result.error or "history reconciliation failed",
+                issue_number=action.issue_number,
+                pr_number=action.pr_number,
+            )
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+            status=action.status,
+            shed_removed=list(shed_result.details.get("removed", [])),
         )
 
     def _apply_queue_review(self, action: Action) -> ActionResult:

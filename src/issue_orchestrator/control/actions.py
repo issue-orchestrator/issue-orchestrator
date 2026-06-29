@@ -77,6 +77,9 @@ class ActionType(Enum):
     # History operations
     RECONCILE_HISTORY_ENTRY = "reconcile_history_entry"
 
+    # Terminal recovery (shed transient labels, then finalize history)
+    RECOVER_TERMINAL_ISSUE = "recover_terminal_issue"
+
 
 @dataclass(frozen=True)
 class Action:
@@ -376,6 +379,39 @@ class ReconcileHistoryEntryAction(Action):
     source: AwaitingMergeReconciliationSource = "pull_request"
     issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.RECONCILE_HISTORY_ENTRY, init=False)
+
+
+@dataclass(frozen=True)
+class RecoverTerminalIssueAction(Action):
+    """Shed an issue's transient workflow labels, then finalize its
+    awaiting-merge history — one owner command for the terminal-recovery
+    ordering invariant.
+
+    Terminal recovery must shed the transient workflow labels (``pr-pending``,
+    ``publish-failed``, ``publish-fail-count-N``, blocking labels) from GitHub +
+    the local ``label_store`` *before* the history entry transitions to its
+    terminal status. The applier sheds first and finalizes history only on
+    success: if the (best-effort, GitHub-write) shed fails, the history entry is
+    left in its reconcilable awaiting-merge status so the next awaiting-merge
+    discovery pass re-finds and retries the cleanup, instead of terminalizing
+    the entry and stranding exactly the labels this P0 removes (#6431).
+
+    The exact label set is decided at apply time from the issue's live labels,
+    so the planner need not know the (usually closed/merged) issue's labels.
+    The inherited ``reason`` is the audit/shed reason; ``status_reason`` is the
+    status reason persisted to history.
+    """
+
+    issue_number: int = 0
+    pr_number: int = 0
+    pr_url: str = ""
+    status: AwaitingMergeTerminalStatus = "closed"
+    source: AwaitingMergeReconciliationSource = "pull_request"
+    status_reason: str = ""
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
+    action_type: ActionType = field(
+        default=ActionType.RECOVER_TERMINAL_ISSUE, init=False
+    )
 
 
 # Action result types
