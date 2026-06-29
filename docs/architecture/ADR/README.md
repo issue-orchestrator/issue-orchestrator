@@ -29,3 +29,4 @@ These ADRs capture the core architecture and safety story:
 - [0019 Structured completion protocol (agent-done)](0019-agent-done-completion-protocol.md)
 - [0023 Deterministic orchestrator required (cannot replace with agentic-first solution)](0023-deterministic-orchestrator-required.md)
 - [0028 Deep module boundaries](0028-deep-module-boundaries.md)
+- [0029 Stacked work via typed dependency edges](0029-stacked-work-via-typed-dependency-edges.md)
