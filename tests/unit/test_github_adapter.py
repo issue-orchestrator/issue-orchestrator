@@ -714,7 +714,12 @@ class TestPROperations:
 
         read = adapter.read_pr_status_check_rollup(10)
 
-        assert read == StatusCheckRollupRead(state="FAILURE", capability="ok")
+        # The GraphQL source was denied even though the REST fallback found the
+        # failure, so the read carries primary_source_denied=True to keep the
+        # gate's GraphQL backoff armed.
+        assert read == StatusCheckRollupRead(
+            state="FAILURE", capability="ok", primary_source_denied=True
+        )
         mock_http_client.get_pr.assert_called_once_with(10)
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
 
@@ -747,6 +752,7 @@ class TestPROperations:
         assert read == StatusCheckRollupRead(
             state=None,
             capability="permission_denied",
+            primary_source_denied=True,
         )
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
 
@@ -779,12 +785,47 @@ class TestPROperations:
 
         read = adapter.read_pr_status_check_rollup(10)
 
+        # A transient REST blip is still a GraphQL denial underneath, so the
+        # read backs off the GraphQL source while staying retry-safe.
         assert read == StatusCheckRollupRead(
             state=None,
             capability="transient_error",
+            primary_source_denied=True,
         )
         assert read.permission_denied is False
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
+
+    def test_read_pr_status_check_rollup_skip_primary_source_reads_rest_only(
+        self, adapter, mock_http_client
+    ):
+        """During a GraphQL backoff window the gate passes
+        ``skip_primary_source=True``: the wasted GraphQL probe is skipped, but
+        the REST fallback is still read so a now-readable failure is classified.
+        The read carries ``primary_source_denied=True`` so the gate keeps the
+        GraphQL backoff armed (issue #6589 F1/A1)."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch", "sha": "deadbeef"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+            "mergeable_state": "UNSTABLE",
+        }
+        mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
+            state="FAILURE",
+            capability="ok",
+        )
+
+        read = adapter.read_pr_status_check_rollup(10, skip_primary_source=True)
+
+        # GraphQL is never probed; the REST fallback classified the failure.
+        mock_http_client.get_pr_status_check_rollup.assert_not_called()
+        mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
+        assert read == StatusCheckRollupRead(
+            state="FAILURE", capability="ok", primary_source_denied=True
+        )
 
     def test_read_pr_status_check_rollup_forbidden_is_permission_denied(
         self, adapter, mock_http_client
@@ -797,7 +838,9 @@ class TestPROperations:
 
         read = adapter.read_pr_status_check_rollup(10)
 
-        assert read == StatusCheckRollupRead(state=None, capability="permission_denied")
+        assert read == StatusCheckRollupRead(
+            state=None, capability="permission_denied", primary_source_denied=True
+        )
         assert read.permission_denied is True
 
     def test_read_pr_status_check_rollup_graphql_scope_error_is_permission_denied(
@@ -828,7 +871,9 @@ class TestPROperations:
 
         read = adapter.read_pr_status_check_rollup(10)
 
-        assert read == StatusCheckRollupRead(state=None, capability="permission_denied")
+        assert read == StatusCheckRollupRead(
+            state=None, capability="permission_denied", primary_source_denied=True
+        )
         assert read.permission_denied is True
 
     def test_read_pr_status_check_rollup_rate_limit_403_is_transient(

@@ -872,13 +872,28 @@ class GitHubAdapter:
             logger.error("Failed to get PR %s: %s", pr_number, e)
             raise
 
-    def read_pr_status_check_rollup(self, pr_number: int) -> StatusCheckRollupRead:
+    def read_pr_status_check_rollup(
+        self, pr_number: int, *, skip_primary_source: bool = False
+    ) -> StatusCheckRollupRead:
         """Read a PR head-commit status-check rollup, classifying failures.
 
         Pays one GraphQL round-trip on the happy path. When GraphQL is blocked
         by token capability, falls back to REST check-runs/combined-status on
         the PR head SHA before reporting the rollup as unreadable.
+
+        When ``skip_primary_source`` is True the GraphQL probe is skipped and
+        only the REST fallback is read — the capability gate uses this during a
+        primary-source permission-backoff window so a fallback-readable failure
+        is still classified while the wasted GraphQL probe (and its repeated
+        permission log) stay suppressed. The fallback read carries
+        ``primary_source_denied=True`` so the gate keeps the GraphQL backoff
+        armed.
         """
+        if skip_primary_source:
+            # GraphQL is in its known permission-backoff window; go straight to
+            # the REST fallback, which may still classify a now-readable failure
+            # for this PR.
+            return self._read_rollup_via_rest_fallback(pr_number)
         try:
             rollup = self._client.get_pr_status_check_rollup(pr_number)
         except GitHubTransportError as e:
@@ -893,6 +908,8 @@ class GitHubAdapter:
         except GitHubHttpError as e:
             capability = classify_github_http_failure(e)
             if capability == "permission_denied":
+                # The primary GraphQL source is denied; the fallback stamps
+                # primary_source_denied=True on whatever it returns.
                 fallback = self._read_rollup_via_rest_fallback(pr_number)
                 if fallback.capability != "permission_denied":
                     return fallback
@@ -900,14 +917,27 @@ class GitHubAdapter:
                 "status_check_rollup read failed for PR %s (%s): %s",
                 pr_number, capability, e,
             )
-            return StatusCheckRollupRead(state=None, capability=capability)
+            return StatusCheckRollupRead(
+                state=None,
+                capability=capability,
+                # A GraphQL permission denial backs off the primary source even
+                # when the fallback was also unreadable; a transient GraphQL
+                # error is not a denial and leaves the backoff untouched.
+                primary_source_denied=capability == "permission_denied",
+            )
         return StatusCheckRollupRead(state=_coerce_rollup_state(rollup), capability="ok")
 
     def _read_rollup_via_rest_fallback(
         self,
         pr_number: int,
     ) -> StatusCheckRollupRead:
-        """Read check state through REST after a GraphQL capability failure."""
+        """Read check state through REST after a GraphQL capability failure.
+
+        Only reached when the primary (GraphQL) source is denied or explicitly
+        skipped, so every read it returns carries ``primary_source_denied=True``
+        — the gate keeps the GraphQL backoff armed regardless of what the
+        fallback sources could read.
+        """
         try:
             raw_pr = self._client.get_pr(pr_number)
         except GitHubTransportError as e:
@@ -917,7 +947,11 @@ class GitHubAdapter:
                 pr_number,
                 e,
             )
-            return StatusCheckRollupRead(state=None, capability="transient_error")
+            return StatusCheckRollupRead(
+                state=None,
+                capability="transient_error",
+                primary_source_denied=True,
+            )
         except GitHubHttpError as e:
             capability = classify_github_http_failure(e)
             logger.warning(
@@ -927,14 +961,20 @@ class GitHubAdapter:
                 capability,
                 e,
             )
-            return StatusCheckRollupRead(state=None, capability=capability)
+            return StatusCheckRollupRead(
+                state=None, capability=capability, primary_source_denied=True
+            )
         if not isinstance(raw_pr, dict):
             logger.warning(
                 "REST PR fetch for status_check_rollup fallback returned "
                 "unexpected payload for PR %s",
                 pr_number,
             )
-            return StatusCheckRollupRead(state=None, capability="permission_denied")
+            return StatusCheckRollupRead(
+                state=None,
+                capability="permission_denied",
+                primary_source_denied=True,
+            )
 
         head_sha = _head_sha_from_pr(raw_pr)
         if head_sha is None:
@@ -942,7 +982,11 @@ class GitHubAdapter:
                 "No head SHA for PR %s; cannot read check state via REST fallback",
                 pr_number,
             )
-            return StatusCheckRollupRead(state=None, capability="permission_denied")
+            return StatusCheckRollupRead(
+                state=None,
+                capability="permission_denied",
+                primary_source_denied=True,
+            )
 
         # get_commit_check_rollup owns its per-source HTTP/transport failures and
         # carries the cause in `capability` (it does not raise for those), so an
@@ -961,10 +1005,15 @@ class GitHubAdapter:
                 rollup.capability,
                 rollup.state or "no-checks",
             )
-            return StatusCheckRollupRead(state=None, capability=rollup.capability)
+            return StatusCheckRollupRead(
+                state=None,
+                capability=rollup.capability,
+                primary_source_denied=True,
+            )
         return StatusCheckRollupRead(
             state=_coerce_rollup_state(rollup.state),
             capability="ok",
+            primary_source_denied=True,
         )
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:

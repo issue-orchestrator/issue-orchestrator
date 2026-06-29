@@ -704,12 +704,15 @@ class StatusRollupCapability:
     reconciler (and the gate it delegates rollup reads to) are rebuilt
     every tick — only ``OrchestratorState`` survives across ticks. A
     single repo-wide timestamp is the right granularity: permission to
-    read ``statusCheckRollup`` is a property of the configured token, not
-    of any one PR, so once a read is denied every read fails identically
-    until an operator fixes the token. ``permission_denied_since`` records
-    when that denial was last observed; the gate suppresses further rollup
-    probes (and the repeated permission warning) until a backoff window
-    elapses, then re-probes once in case the token was fixed.
+    read the primary (GraphQL) ``statusCheckRollup`` is a property of the
+    configured token, not of any one PR, so once it is denied every GraphQL
+    probe fails identically until an operator fixes the token.
+    ``permission_denied_since`` records when that denial was last observed;
+    the gate suppresses further GraphQL probes (and the repeated permission
+    warning) until a backoff window elapses, then re-probes once in case
+    the token was fixed. The backoff is GraphQL-source-scoped only: the gate
+    still reads the REST check-run / commit-status fallback each tick, so a
+    fallback-readable failure is never masked by the backoff.
     """
 
     permission_denied_since: float | None = None

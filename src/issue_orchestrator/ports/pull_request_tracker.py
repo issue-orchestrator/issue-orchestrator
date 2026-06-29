@@ -54,10 +54,31 @@ class StatusCheckRollupRead:
     - ``transient_error``: an ordinary GitHub failure (5xx, timeout).
       Safe to retry next tick; callers treat it as "rollup not yet
       known" (PENDING-equivalent) rather than escalating.
+
+    ``primary_source_denied`` is ``True`` when the primary (GraphQL)
+    rollup source was itself permission-denied on this read, *regardless*
+    of whether a fallback source (REST check-runs / combined status) then
+    produced a usable answer. The capability-owning gate keys its
+    repo-wide GraphQL backoff off this flag — so it can stop re-probing a
+    scope-blocked GraphQL source even when a fallback source saved this
+    particular read, without suppressing that still-classifying fallback.
+    A whole-read ``permission_denied`` can only arise when the primary
+    source was denied (and no fallback could read a result), so the two
+    facts are kept consistent (enforced in ``__post_init__``).
     """
 
     state: StatusCheckRollupState | None
     capability: StatusCheckRollupCapability = "ok"
+    primary_source_denied: bool = False
+
+    def __post_init__(self) -> None:
+        # A whole-read permission denial can only happen when the primary
+        # (GraphQL) source was denied AND no fallback source could read a
+        # result, so the two facts must never disagree.
+        if self.capability == "permission_denied" and not self.primary_source_denied:
+            raise ValueError(
+                "permission_denied rollup read must set primary_source_denied=True"
+            )
 
     @property
     def permission_denied(self) -> bool:
@@ -236,7 +257,9 @@ class PullRequestTracker(Protocol):
         """
         ...
 
-    def read_pr_status_check_rollup(self, pr_number: int) -> "StatusCheckRollupRead":
+    def read_pr_status_check_rollup(
+        self, pr_number: int, *, skip_primary_source: bool = False
+    ) -> "StatusCheckRollupRead":
         """Read a PR's head-commit status-check rollup, classifying failures.
 
         Costs one GraphQL round-trip on the happy path. Implementations may
@@ -247,6 +270,15 @@ class PullRequestTracker(Protocol):
         ``unstable`` or ``blocked``. Terminal (closed/merged) and
         ``clean``/``dirty``/``behind`` PRs must NOT call this; they pay no
         rollup cost.
+
+        When ``skip_primary_source`` is True the primary (GraphQL) probe is
+        skipped entirely and only the fallback sources are read. The
+        capability-owning gate passes this during a primary-source
+        permission-backoff window: the GraphQL scope is known-missing, so
+        re-probing it would only waste a round-trip and re-log the same
+        permission error, yet the REST check-run/commit-status fallback can
+        still classify a now-readable failure. The returned read still carries
+        ``primary_source_denied=True`` in that case.
 
         Unlike a plain PR fetch, this never swallows a permission failure
         into a ``None`` rollup. The returned ``StatusCheckRollupRead``

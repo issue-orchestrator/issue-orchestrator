@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -1377,7 +1377,7 @@ def _permission_denied_repo() -> MagicMock:
     )
     repository_host.get_issue.return_value = _issue("open")
     repository_host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead(
-        state=None, capability="permission_denied"
+        state=None, capability="permission_denied", primary_source_denied=True
     )
     return repository_host
 
@@ -1410,11 +1410,12 @@ def test_decisive_pr_with_rollup_permission_denied_escalates_loudly() -> None:
     assert 228 not in state.awaiting_merge_checks_pending_since
 
 
-def test_rollup_permission_denial_is_bounded_and_not_re_probed_next_tick() -> None:
-    """Once the token is observed to lack rollup-read capability, the next
-    tick must NOT re-issue the same GraphQL probe (nor re-log the same
-    permission error). The per-PR diagnostic still surfaces — it is bounded
-    repo-wide, not silently dropped."""
+def test_rollup_permission_denial_bounds_graphql_but_keeps_fallback() -> None:
+    """Once the GraphQL source is observed to lack rollup-read capability, the
+    next tick must NOT re-issue the wasted GraphQL probe (nor re-log the same
+    permission error). The gate still reads the REST fallback each tick
+    (``skip_primary_source=True``) so a now-readable failure is never masked,
+    and the per-PR diagnostic still surfaces — bounded repo-wide, not dropped."""
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = _permission_denied_repo()
@@ -1428,12 +1429,94 @@ def test_rollup_permission_denial_is_bounded_and_not_re_probed_next_tick() -> No
     first = reconciler.discover(state)
     second = reconciler.discover(state)
 
-    # The denial was observed once; the backoff suppresses the second probe.
-    assert repository_host.read_pr_status_check_rollup.call_count == 1
+    # First tick probes GraphQL; the second is inside the backoff window and
+    # reads ONLY the REST fallback — the GraphQL probe is not re-issued.
+    assert repository_host.read_pr_status_check_rollup.call_args_list == [
+        call(318),
+        call(318, skip_primary_source=True),
+    ]
     # The PR is still genuinely blocked, so the diagnostic still fires —
     # bounded downstream by the needs_human label, not hidden.
     assert first.escalation_discovered == 1
     assert second.escalation_discovered == 1
+    assert state.status_rollup_capability.permission_denied_since == 1000.0
+
+
+def test_needs_human_pr_recovers_to_rework_during_graphql_backoff() -> None:
+    """Repo-wide GraphQL backoff must NOT mask a now-readable failure: a stale
+    needs-human PR whose REST fallback now reports FAILURE recovers to rework
+    even while the GraphQL backoff window is active (issue #6589 F1/A1)."""
+    entry = _history_entry()
+    label_manager = _label_manager()
+    state = OrchestratorState(session_history=[entry])
+    # GraphQL was denied earlier this hour; the backoff window is still active.
+    state.status_rollup_capability.permission_denied_since = 1000.0
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=[label_manager.code_reviewed, label_manager.needs_human],
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    # The gate reads the REST fallback (skip_primary_source=True) during the
+    # backoff window; it now classifies a failure GraphQL could not read.
+    repository_host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead(
+        state="FAILURE", capability="ok", primary_source_denied=True
+    )
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=label_manager,
+        clock=lambda: 1500.0,  # within the 3600s window
+        repo="owner/repo",
+    ).discover(state)
+
+    # The fallback was read despite the active backoff.
+    repository_host.read_pr_status_check_rollup.assert_called_once_with(
+        318, skip_primary_source=True
+    )
+    assert result.escalation_discovered == 0
+    assert result.rework_discovered == 1
+    rework = result.reworks[0]
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    assert rework.clear_needs_human is True
+    # A fallback-only read cannot prove GraphQL recovered — window preserved.
+    assert state.status_rollup_capability.permission_denied_since == 1000.0
+
+
+def test_decisive_pr_reworks_via_rest_fallback_during_graphql_backoff() -> None:
+    """A repo-wide GraphQL backoff (armed by an earlier PR) must not mask a
+    DIFFERENT decisive PR whose REST fallback reports FAILURE — it still
+    reworks rather than waiting forever behind the backoff (#6589 F1/A1)."""
+    entry = _history_entry()
+    label_manager = _label_manager()
+    state = OrchestratorState(session_history=[entry])
+    state.status_rollup_capability.permission_denied_since = 1000.0
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="unstable", labels=[label_manager.code_reviewed]
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead(
+        state="FAILURE", capability="ok", primary_source_denied=True
+    )
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=label_manager,
+        clock=lambda: 1500.0,
+        repo="owner/repo",
+    ).discover(state)
+
+    repository_host.read_pr_status_check_rollup.assert_called_once_with(
+        318, skip_primary_source=True
+    )
+    assert result.rework_discovered == 1
+    assert result.escalation_discovered == 0
+    rework = result.reworks[0]
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    # No stale needs-human on this PR, so nothing to clear.
+    assert rework.clear_needs_human is False
     assert state.status_rollup_capability.permission_denied_since == 1000.0
 
 
