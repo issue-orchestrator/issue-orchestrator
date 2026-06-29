@@ -21,6 +21,7 @@ from ..domain.models import (
 )
 from ..history import latest_history_entries_by_issue
 from ..ports.repository_host import RepositoryHostError
+from .awaiting_merge_drift_policy import classify_pr_set_drift
 from .queue_cache import record_issue_refreshes
 
 if TYPE_CHECKING:
@@ -90,48 +91,6 @@ def classify_post_approval_state(pr: PRInfo) -> PostApprovalAction:
 _REWORK_ACTIONS: frozenset[PostApprovalAction] = frozenset(
     {"REWORK_CONFLICT", "REWORK_BEHIND", "REWORK_CHECK_FAILED"}
 )
-
-
-@dataclass(frozen=True)
-class PrSetDriftClassification:
-    """Whether an issue's associated PR set indicates ``blocked:pr-closed`` drift.
-
-    ``drifting`` is True when the issue should be flagged ``blocked:pr-closed``.
-    ``pr`` is the PR the drift keys on (the latest terminal PR, which is
-    closed-unmerged), or ``None`` for the "no associated PR at all" case where
-    the drift carries an empty PR reference.
-    """
-
-    drifting: bool
-    pr: PRInfo | None = None
-
-
-def classify_pr_set_drift(prs: list[PRInfo]) -> PrSetDriftClassification:
-    """Owner of the ``blocked:pr-closed`` precedence policy for a PR set.
-
-    Single source of truth for "which associated PR decides whether an issue is
-    closed-without-merge". The label-drift path feeds the issue's full PR set
-    here; the history-reconciliation path applies the same leaf predicate
-    (:attr:`PRInfo.is_closed_unmerged`) to its already-latest entry PR. Keeping
-    the open/merged/closed ordering in one place means the two paths cannot
-    drift apart. Pure function — no I/O — so the precedence matrix is unit
-    testable exhaustively, mirroring ``classify_post_approval_state``.
-
-    Policy:
-    - Any open PR → no drift; the issue is still legitimately awaiting a merge.
-    - No PRs at all → drift with no PR reference ("PR missing").
-    - Otherwise the latest terminal PR (highest number) decides: ``merged``
-      suppresses drift, a genuinely closed-unmerged PR produces drift keyed on
-      that PR. An earlier closed PR never overrides a later merged one.
-    """
-    if any(_normalized_state(pr.state) == "open" for pr in prs):
-        return PrSetDriftClassification(drifting=False)
-    if not prs:
-        return PrSetDriftClassification(drifting=True)
-    latest = max(prs, key=lambda item: item.number)
-    if latest.is_closed_unmerged:
-        return PrSetDriftClassification(drifting=True, pr=latest)
-    return PrSetDriftClassification(drifting=False)
 
 
 @dataclass(frozen=True)
