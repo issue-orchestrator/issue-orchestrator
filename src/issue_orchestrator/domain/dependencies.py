@@ -31,6 +31,36 @@ class DependencyState(Enum):
     CROSS_MILESTONE = "cross_milestone"  # Dependency violates milestone scope
 
 
+class DependencyMode(Enum):
+    """Mode of a typed dependency edge (ADR-0029).
+
+    NORMAL is the existing ``Depends-on:`` semantics: the dependent issue waits
+    until the dependency issue is CLOSED.
+
+    STACK is a ``Stack-after:`` predecessor edge: the dependent slice may begin
+    work once its predecessor exposes a usable, validated, agent-reviewed branch,
+    while merge readiness stays strictly ordered behind the predecessor.
+    """
+
+    NORMAL = "normal"
+    STACK = "stack"
+
+
+class EdgeProblem(Enum):
+    """Structural problem with a declared dependency edge.
+
+    These are machine-readable reason codes for edges that are invalid
+    independent of the dependency issue's runtime state. They block every gate
+    in the dependency gate report because the declared graph cannot be trusted.
+    """
+
+    SELF_DEPENDENCY = "self_dependency"  # Issue declares a dependency on itself
+    DUPLICATE_DECLARATION = "duplicate_declaration"  # Same target declared twice
+    MODE_CONFLICT = "mode_conflict"  # Same target declared both normal and stack
+    MALFORMED_REFERENCE = "malformed_reference"  # Directive value is not a ref
+    CYCLE = "cycle"  # Edge participates in a dependency cycle
+
+
 @dataclass(frozen=True)
 class Dependency:
     """A single dependency reference."""
@@ -52,6 +82,12 @@ class Dependency:
 
     # Milestone of the dependency issue (for cross-milestone validation)
     milestone: str | None = None
+
+    # Typed edge mode (normal Depends-on vs stack Stack-after)
+    mode: DependencyMode = DependencyMode.NORMAL
+
+    # Structural problem with the edge declaration (self/duplicate/malformed/...)
+    problem: EdgeProblem | None = None
 
     @property
     def is_satisfied(self) -> bool:
@@ -176,7 +212,9 @@ DEPENDS_ON_PATTERN = re.compile(
 class ParsedDependencyRef:
     """A parsed dependency reference before resolution.
 
-    Either issue_number or external_id will be set, not both.
+    Either issue_number or external_id will be set, not both. A reference whose
+    directive value could not be parsed carries ``problem=MALFORMED_REFERENCE``
+    and neither identity field set.
     """
 
     # Issue number if referenced via #123 or owner/repo#123
@@ -187,6 +225,32 @@ class ParsedDependencyRef:
 
     # Repository for cross-repo dependencies (owner/repo format)
     repository: str | None = None
+
+    # Typed edge mode (Depends-on -> normal, Stack-after -> stack)
+    mode: DependencyMode = DependencyMode.NORMAL
+
+    # Raw directive value, kept for diagnostics
+    source_text: str | None = None
+
+    # 1-based line number of the directive within the issue body, for diagnostics
+    source_line: int | None = None
+
+    # Structural problem detected at parse time (currently malformed references)
+    problem: EdgeProblem | None = None
+
+    @property
+    def target_key(self) -> str:
+        """Stable identity for duplicate detection before resolution.
+
+        External IDs and numeric references that resolve to the same issue are
+        only reconciled after resolution; this key catches textual duplicates.
+        """
+        if self.issue_number is not None:
+            repo = self.repository or ""
+            return f"{repo}#{self.issue_number}"
+        if self.external_id:
+            return f"ext:{self.external_id.upper()}"
+        return f"raw:{(self.source_text or '').strip().lower()}"
 
 
 def parse_dependencies(issue_body: str) -> list[tuple[int, str | None]]:
@@ -242,3 +306,84 @@ def parse_dependency_refs(issue_body: str) -> list[ParsedDependencyRef]:
             )
 
     return refs
+
+
+# Directive line for a typed dependency edge. Captures the keyword (which
+# selects the edge mode) and the whole remaining value so a malformed value can
+# be flagged rather than silently dropped.
+EDGE_DIRECTIVE_PATTERN = re.compile(
+    r"^[ \t]*(?P<keyword>Depends-on|Stack-after):[ \t]*(?P<value>.*?)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# A directive value is well-formed only if the entire value is a single issue
+# reference (owner/repo#123, #123, or M1-010). Anything else is malformed.
+FULL_REF_PATTERN = re.compile(
+    r"^(?:"
+    r"(?P<repo>[\w.-]+/[\w.-]+)?#(?P<issue>\d+)"
+    r"|"
+    r"(?P<external_id>M\d+-\d{3})"
+    r")$",
+    re.IGNORECASE,
+)
+
+_KEYWORD_MODE = {
+    "depends-on": DependencyMode.NORMAL,
+    "stack-after": DependencyMode.STACK,
+}
+
+
+def parse_dependency_edges(issue_body: str) -> list[ParsedDependencyRef]:
+    """Parse typed dependency edges from an issue body.
+
+    Recognizes both ``Depends-on:`` (normal mode) and ``Stack-after:`` (stack
+    mode) directives. Unlike :func:`parse_dependency_refs`, a directive whose
+    value is not a clean issue reference is returned as a malformed edge
+    (``problem=MALFORMED_REFERENCE``) so the gate report can surface it instead
+    of silently dropping it.
+
+    Each returned ref records its edge mode and source location for diagnostics.
+    Structural problems that need the source issue identity or the wider graph
+    (self-dependencies, duplicates, cycles) are annotated later by the
+    dependency evaluator.
+    """
+    edges: list[ParsedDependencyRef] = []
+
+    for match in EDGE_DIRECTIVE_PATTERN.finditer(issue_body):
+        mode = _KEYWORD_MODE[match.group("keyword").lower()]
+        value = match.group("value").strip()
+        line_number = issue_body.count("\n", 0, match.start()) + 1
+
+        ref_match = FULL_REF_PATTERN.match(value) if value else None
+        if ref_match is None:
+            edges.append(
+                ParsedDependencyRef(
+                    mode=mode,
+                    source_text=value,
+                    source_line=line_number,
+                    problem=EdgeProblem.MALFORMED_REFERENCE,
+                )
+            )
+            continue
+
+        if ref_match.group("issue"):
+            edges.append(
+                ParsedDependencyRef(
+                    issue_number=int(ref_match.group("issue")),
+                    repository=ref_match.group("repo"),
+                    mode=mode,
+                    source_text=value,
+                    source_line=line_number,
+                )
+            )
+        else:
+            edges.append(
+                ParsedDependencyRef(
+                    external_id=ref_match.group("external_id").upper(),
+                    mode=mode,
+                    source_text=value,
+                    source_line=line_number,
+                )
+            )
+
+    return edges
