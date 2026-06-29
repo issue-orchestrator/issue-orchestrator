@@ -3555,6 +3555,38 @@ class TestAsyncPublishResults:
         assert orchestrator.state.completed_today == [42]
         assert orchestrator.state.pending_publish_jobs == {}
 
+    def test_poll_job_results_defers_review_exchange_instead_of_finalizing(self, sample_config):
+        """A ``review_exchange_deferred`` result is not terminal (issue #6009 F1).
+
+        The first async completion finalizes the session and the publish worker
+        then starts the review exchange, reporting a deferral with no PR. Before
+        the fix that result was treated as a no-op terminal — the issue was
+        stranded with no active session, no pending job, and no recorded state.
+        Now the deferral is routed to the deferred-publish owner (which restores
+        the session for re-observation) and is NOT recorded as
+        completed/reviewed/failed.
+        """
+        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+
+        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
+            PublishJobResult(
+                job_id="job-1",
+                issue_number=42,
+                session_key="code:42",
+                success=True,
+                review_exchange_deferred=True,
+            )
+        ])
+
+        orchestrator._poll_job_results()  # noqa: SLF001
+
+        assert orchestrator.state.discovered_reviews == []
+        assert orchestrator.state.completed_today == []
+        assert orchestrator.state.discovered_failures == []
+        # Pending job cleared so the next tick re-observes the restored session.
+        assert orchestrator.state.pending_publish_jobs == {}
+
     def test_poll_job_results_tracks_validation_failed_reason(self, sample_config):
         orchestrator = create_test_orchestrator(sample_config)
         orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}

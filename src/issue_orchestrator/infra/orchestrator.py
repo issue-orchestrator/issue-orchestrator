@@ -57,6 +57,7 @@ from ..control.session_routing import (
     get_session_machine as _sl_get_session_machine,
 )
 from ..control.session_observation import observe_active_sessions as _observe_active_sessions
+from ..control.deferred_publish_completions import DeferredPublishCompletions
 from ..control.publish_executor import create_publish_job
 from ..control.cleanup_manager import CleanupManager
 from ..control.review_exchange_lifecycle import (
@@ -94,6 +95,11 @@ class Orchestrator:
     scheduler: Scheduler = field(init=False)
     observer: SessionObserver = field(init=False)
     _shutdown_requested: bool = field(default=False, init=False)
+    # Single owner that restores a finalized session for re-observation when its
+    # async publish job reports ``review_exchange_deferred`` (issue #6009).
+    _deferred_publish_completions: DeferredPublishCompletions = field(
+        default_factory=DeferredPublishCompletions, init=False
+    )
     _inflight_stable_ids: dict[str, float] = field(default_factory=dict, init=False)  # stable_id -> expires_at (monotonic)
     _INFLIGHT_TTL_SECONDS: float = field(default=90.0, init=False, repr=False)
     _last_network_sync: float = field(default=0.0, init=False)
@@ -657,6 +663,7 @@ class Orchestrator:
             claim_manager=self.deps.claim_manager,
             events=self.deps.events,
             provider_resilience=self.deps.provider_resilience,
+            deferred_publish=self._deferred_publish_completions,
         )
         # Check lease renewals for active sessions
         self._check_lease_renewals()
@@ -704,6 +711,10 @@ class Orchestrator:
             if result.job_id in self.state.superseded_job_ids:
                 self.state.superseded_job_ids.discard(result.job_id)
                 self.state.pending_publish_jobs.pop(result.job_id, None)
+                # The issue was declared fresh by a scratch reset; drop any
+                # deferred-publish tracking so the stale session is never
+                # restored for re-observation.
+                self._deferred_publish_completions.discard(result.session_key)
                 if result.success and result.pr_number:
                     self._supersede_late_publish_pr(result)
                 logger.info(
@@ -722,6 +733,22 @@ class Orchestrator:
                 result.success,
                 result.pr_url,
             )
+
+            # A first-time async review-exchange deferral: the publish worker
+            # started the exchange in the background and there is nothing to
+            # finalize yet. The deferred-publish owner restores the originating
+            # session so the next tick re-observes and resumes once the exchange
+            # finishes. This is NOT a terminal result, so skip the terminal
+            # handling below (issue #6009).
+            if self._deferred_publish_completions.resume_if_deferred(result, self.state):
+                self.state.pending_publish_jobs.pop(result.job_id, None)
+                logger.info(
+                    "[ASYNC] Review exchange deferred; restored session for "
+                    "re-observation: job_id=%s issue=%d",
+                    result.job_id,
+                    result.issue_number,
+                )
+                continue
 
             # Remove from pending
             self.state.pending_publish_jobs.pop(result.job_id, None)

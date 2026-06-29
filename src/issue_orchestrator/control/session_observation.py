@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..observation.observer import SessionObserver
     from ..ports.claim_manager import ClaimManager
     from .completion_observer import CompletionObserver, ObservationDecision
+    from .deferred_publish_completions import DeferredPublishCompletions
     from .provider_resilience import ProviderResilienceManager
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,28 @@ def _observed_failure_reason(decision: "ObservationDecision") -> str:
     return decision.status.value
 
 
+def _track_deferred_publish_candidate(
+    session: Session,
+    decision: "ObservationDecision",
+    deferred_publish: Optional["DeferredPublishCompletions"],
+) -> None:
+    """Remember (or forget) a finalized session for async deferral recovery.
+
+    A finalized completion that ``needs_publish`` will get a background publish
+    job, and that job may report ``review_exchange_deferred`` once it starts the
+    review exchange. Hand the session to the deferred-publish owner so the
+    deferral can restore it for re-observation (issue #6009). Sessions finalized
+    without a publish job (blocked/failed/timed-out) instead drop any stale
+    registration so it cannot leak across attempts.
+    """
+    if deferred_publish is None:
+        return
+    if decision.observed is not None and decision.observed.needs_publish:
+        deferred_publish.track(session)
+    else:
+        deferred_publish.discard(session.key.stable_id())
+
+
 def _warn_if_slow(obs_elapsed: float, session: Session) -> None:
     if obs_elapsed <= 1.0:
         return
@@ -192,6 +215,7 @@ def _observe_active_session(
     claim_manager: Optional["ClaimManager"],
     events: Optional[EventSink],
     provider_resilience: Optional["ProviderResilienceManager"],
+    deferred_publish: Optional["DeferredPublishCompletions"],
 ) -> None:
     obs_start = time.monotonic()
     obs = observer.observe_session(session)
@@ -212,6 +236,7 @@ def _observe_active_session(
         _release_claim_if_needed(session, decision, claim_manager, events)
         _update_provider_resilience(decision, provider_resilience)
         _record_observed_completion(state, session, decision)
+        _track_deferred_publish_candidate(session, decision, deferred_publish)
 
     obs_elapsed = time.monotonic() - obs_start
     _warn_if_slow(obs_elapsed, session)
@@ -225,6 +250,7 @@ def observe_active_sessions(
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
     provider_resilience: Optional["ProviderResilienceManager"] = None,
+    deferred_publish: Optional["DeferredPublishCompletions"] = None,
 ) -> None:
     """Observe active sessions and collect completion facts (fast, no I/O-heavy operations).
 
@@ -246,6 +272,9 @@ def observe_active_sessions(
         claim_manager: Optional ClaimManager for releasing claims
         events: Optional EventSink for emitting events
         provider_resilience: Optional provider resilience manager for failure tracking
+        deferred_publish: Optional owner that remembers finalized needs-publish
+            sessions so an async ``review_exchange_deferred`` result can restore
+            them for re-observation (issue #6009)
     """
     for session in list(state.active_sessions):
         # Snapshot iteration is mutation-safe; the live check filters any
@@ -265,4 +294,5 @@ def observe_active_sessions(
             claim_manager=claim_manager,
             events=events,
             provider_resilience=provider_resilience,
+            deferred_publish=deferred_publish,
         )

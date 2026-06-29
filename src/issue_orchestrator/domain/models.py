@@ -1841,6 +1841,11 @@ class PublishJobResult:
     diagnostic_path: str | None = None
     duration_seconds: float | None = None
     review_exchange_completed: bool = False
+    # True when the background publish worker started a review exchange and the
+    # completion is intentionally not terminal: the originating session must be
+    # restored for re-observation rather than being dropped (issue #6009). Mirrors
+    # ``ProcessingResult.review_exchange_deferred`` across the async boundary.
+    review_exchange_deferred: bool = False
     failure_kind: str | None = None
 
     # Validation results (if validation was run)

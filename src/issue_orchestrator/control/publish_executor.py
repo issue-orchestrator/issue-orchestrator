@@ -565,6 +565,7 @@ class PublishJobExecutor:
             diagnostic_path=processing_result.diagnostic_path,
             duration_seconds=job.duration_seconds,
             review_exchange_completed=processing_result.review_exchange_completed,
+            review_exchange_deferred=processing_result.review_exchange_deferred,
             retry_publish=job.retry_publish,
             issue_title=job.issue_title,
             agent_label=job.agent_label,
