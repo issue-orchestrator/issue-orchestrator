@@ -23,7 +23,6 @@ import httpx
 import pytest
 
 from issue_orchestrator.domain.event_taxonomy import REVIEW_TERMINAL_CLUSTER_EVENT_NAMES
-from issue_orchestrator.events.catalog import EventName
 from issue_orchestrator.contracts.ui_openapi_models import (
     CompletedCodingAttemptPayload,
     CompletionRecordEvidencePayload,
@@ -39,6 +38,7 @@ from issue_orchestrator.contracts.ui_openapi_models import (
 from issue_orchestrator.infra.config import AgentConfig
 from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
+from tests.e2e.fixtures.wait_helpers import wait_for_review_exchange_completed
 from tests.e2e.flows import E2EFlow, start_orchestrator_runtime
 
 CODING_AGENT_TIMEOUT_MINUTES = 75
@@ -177,53 +177,6 @@ async def _wait_for_file(
         await asyncio.sleep(1.0)
     suffix = " (non-empty)" if non_empty else ""
     raise AssertionError(f"Missing expected file{suffix}: {path}")
-
-
-async def _wait_for_review_exchange_completed(
-    watcher,
-    *,
-    issue_number: int,
-    timeout_s: float,
-) -> dict[str, object]:
-    deadline = time.monotonic() + timeout_s
-    last_payload: dict[str, object] | None = None
-
-    while time.monotonic() < deadline:
-        for event in reversed(watcher.view.global_events):
-            payload = event.get("payload", {}) or {}
-            if (
-                event.get("type") == EventName.REVIEW_EXCHANGE_FAILED.value
-                and str(payload.get("issue_number")) == str(issue_number)
-            ):
-                raise AssertionError(
-                    f"Review exchange failed for issue {issue_number}: {payload}"
-                )
-            if (
-                event.get("type") == EventName.REVIEW_EXCHANGE_COMPLETED.value
-                and str(payload.get("issue_number")) == str(issue_number)
-            ):
-                if isinstance(payload, dict):
-                    last_payload = payload
-                    if payload.get("status") != "ok":
-                        raise AssertionError(
-                            "Review exchange completed without ok status: "
-                            f"{payload}"
-                        )
-                    run_dir = payload.get("run_dir")
-                    if isinstance(run_dir, str) and run_dir:
-                        return payload
-
-        try:
-            await asyncio.wait_for(watcher._notify.wait(), timeout=2.0)  # noqa: SLF001
-        except asyncio.TimeoutError:
-            pass
-        watcher._notify.clear()  # noqa: SLF001
-
-    raise TimeoutError(
-        f"Timed out waiting for review exchange completion for issue {issue_number}. "
-        f"Last payload: {last_payload}. Recent events: "
-        f"{list(watcher.view.global_events)[-20:]}"
-    )
 
 
 async def _assert_stage_artifacts(
@@ -606,7 +559,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         )
         logger.info("[4057] Live log stream OK. Waiting for review manifest...")
 
-        review_completed = await _wait_for_review_exchange_completed(
+        review_completed = await wait_for_review_exchange_completed(
             runtime.watcher,
             issue_number=issue_number,
             timeout_s=25 * 60,
