@@ -40,6 +40,38 @@ _FAILING_CHECK_CONCLUSIONS: frozenset[str] = frozenset(
 # `present` distinguishes "no checks at all" (→ rollup None) from "all green".
 _RollupSignal = tuple[bool, bool, bool]
 
+# Upper bound on check-run pages walked per commit. GitHub returns 100 runs per
+# page; a head commit with >2000 check runs is implausible, so this is purely a
+# runaway-loop backstop, not an expected limit.
+_MAX_CHECK_RUN_PAGES = 20
+
+
+@dataclass(frozen=True)
+class CommitCheckRollup:
+    """REST-fallback rollup for a commit SHA, with source-completeness tracking.
+
+    ``state`` is the aggregate ``StatusState``-like rollup (``FAILURE`` /
+    ``PENDING`` / ``SUCCESS`` / ``None`` when the commit has no checks).
+
+    ``complete`` is ``False`` when a relevant source could not be read AND the
+    readable sources were inconclusive (no failure/pending found). In that case
+    the caller must NOT treat ``state`` as a truthful ``SUCCESS`` / "no checks"
+    answer, because an unreadable source (e.g. a legacy required commit status)
+    could still be failing. A failure/pending from the readable sources is
+    conclusive regardless, so ``complete`` stays ``True`` for those.
+    """
+
+    state: str | None
+    complete: bool
+
+
+@dataclass(frozen=True)
+class _CommitStatusReadout:
+    """Outcome of a best-effort legacy combined-status read for one commit."""
+
+    payload: dict[str, Any] | None
+    readable: bool
+
 
 def _aggregate_check_runs(payload: object) -> _RollupSignal:
     """Reduce a REST `/check-runs` response to a `_RollupSignal`."""
@@ -941,43 +973,89 @@ class GitHubHttpClient:
         state = rollup.get("state")
         return state if isinstance(state, str) else None
 
-    def get_commit_check_rollup(self, sha: str) -> str | None:
+    def get_commit_check_rollup(self, sha: str) -> CommitCheckRollup:
         """Aggregate REST check-runs + combined commit status into a single
         `StatusState`-like rollup for a commit SHA.
 
         This is the REST fallback for `get_pr_status_check_rollup` when the
         GraphQL `statusCheckRollup` query is inaccessible to the running token.
-        Returns one of `FAILURE` / `PENDING` / `SUCCESS`, or `None` when the
-        commit has no checks or statuses at all.
+        The returned `CommitCheckRollup.state` is one of `FAILURE` / `PENDING`
+        / `SUCCESS`, or `None` when the commit has no checks or statuses at all.
+
+        The check-runs API is walked across all pages so a failing or pending
+        required run on a later page cannot be missed; pagination short-circuits
+        once a conclusive failure/pending signal is seen.
+
+        `CommitCheckRollup.complete` is `False` when the legacy combined-status
+        source was inaccessible AND the readable check-runs were inconclusive,
+        so callers do not report a false `SUCCESS` / "no checks" for a commit
+        whose required legacy statuses could not be read. See the value object.
 
         Raises:
             GitHubHttpError: If the check-runs API is inaccessible (e.g. the
                 token lacks `checks:read`). Callers treat this as "check state
                 unreadable" rather than "no checks". The legacy combined-status
-                call is best-effort and its failures are swallowed, because
-                GitHub Actions checks live only in the Checks API.
+                call is best-effort: its failures are reported via
+                `complete=False` rather than raised, because GitHub Actions
+                checks live only in the Checks API.
         """
         encoded = quote(sha, safe="")
-        runs_payload = self._request_json(
-            "GET",
-            f"/repos/{self._config.repo}/commits/{encoded}/check-runs",
-            params={"per_page": 100},
-            caller="get_commit_check_rollup_checks",
-        )
-        runs = _aggregate_check_runs(runs_payload)
-        statuses = _aggregate_combined_status(
-            self._best_effort_commit_status(sha, encoded)
-        )
-        return _combine_rollup_signals(runs, statuses)
+        runs = self._aggregate_paginated_check_runs(encoded)
+        status_readout = self._best_effort_commit_status(sha, encoded)
+        statuses = _aggregate_combined_status(status_readout.payload)
+        state = _combine_rollup_signals(runs, statuses)
+        # A failure/pending from the readable sources is conclusive regardless
+        # of the unread status source; otherwise an inaccessible status API
+        # leaves us unable to honestly claim SUCCESS / "no checks".
+        conclusive = state in ("FAILURE", "PENDING")
+        complete = status_readout.readable or conclusive
+        return CommitCheckRollup(state=state, complete=complete)
+
+    def _aggregate_paginated_check_runs(self, encoded_sha: str) -> _RollupSignal:
+        """Fold every page of the check-runs API into one `_RollupSignal`.
+
+        Stops early once a failure or pending run is seen (those are conclusive
+        for the rollup, so later pages cannot change the answer). Otherwise
+        walks pages until one returns fewer than a full page of runs.
+        """
+        failure = pending = present = False
+        page = 1
+        while True:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/commits/{encoded_sha}/check-runs",
+                params={"per_page": 100, "page": page},
+                caller="get_commit_check_rollup_checks",
+            )
+            page_failure, page_pending, page_present = _aggregate_check_runs(payload)
+            failure = failure or page_failure
+            pending = pending or page_pending
+            present = present or page_present
+            if failure or pending:
+                break  # conclusive — no later page can change the rollup
+            runs = payload.get("check_runs") if isinstance(payload, dict) else None
+            if not isinstance(runs, list) or len(runs) < 100:
+                break  # last (or only) page
+            page += 1
+            if page > _MAX_CHECK_RUN_PAGES:
+                logger.warning(
+                    "check-runs pagination hit safety cap (%d pages) for %s",
+                    _MAX_CHECK_RUN_PAGES, encoded_sha,
+                )
+                break
+        return failure, pending, present
 
     def _best_effort_commit_status(
         self, sha: str, encoded_sha: str
-    ) -> dict[str, Any] | None:
-        """Fetch the legacy combined commit status, swallowing access failures.
+    ) -> _CommitStatusReadout:
+        """Fetch the legacy combined commit status, reporting access failures.
 
         GitHub Actions checks live only in the Checks API, so an inaccessible
         combined-status call must NOT poison a readable check-run result — it
-        is purely supplementary for repos using the older Status API.
+        is purely supplementary for repos using the older Status API. The
+        readout's `readable=False` flag lets the caller preserve source
+        completeness instead of silently treating an unreadable status source
+        as "no statuses".
         """
         try:
             payload = self._request_json(
@@ -987,8 +1065,9 @@ class GitHubHttpClient:
             )
         except GitHubHttpError as exc:
             logger.debug("Combined commit status unavailable for %s: %s", sha, exc)
-            return None
-        return payload if isinstance(payload, dict) else None
+            return _CommitStatusReadout(payload=None, readable=False)
+        normalized = payload if isinstance(payload, dict) else None
+        return _CommitStatusReadout(payload=normalized, readable=True)
 
     def list_prs(self, *, state: str = "open", limit: int = 100) -> list[dict[str, Any]]:
         payload = self._request_json(

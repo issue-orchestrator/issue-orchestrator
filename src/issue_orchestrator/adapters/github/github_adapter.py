@@ -911,14 +911,25 @@ class GitHubAdapter:
 
         # Fallback: REST check-runs + combined status on the head SHA.
         try:
-            rest_state = self._client.get_commit_check_rollup(head_sha)
-            return _RollupReadout(_coerce_rollup_state(rest_state), readable=True)
+            rollup = self._client.get_commit_check_rollup(head_sha)
         except GitHubHttpError as e:
             logger.warning(
                 "REST check-run fallback unreadable for PR %s (sha %s): %s",
                 pr_number, head_sha, e,
             )
             return _RollupReadout(None, readable=False)
+        if not rollup.complete:
+            # A relevant source (legacy combined status) was inaccessible and
+            # the readable check-runs were inconclusive, so we cannot honestly
+            # report SUCCESS / "no checks". Surface as unreadable so the
+            # post-publish classifier escalates instead of trusting a blind spot.
+            logger.warning(
+                "REST check-run fallback incomplete for PR %s (sha %s): "
+                "commit-status source inaccessible and check-runs inconclusive",
+                pr_number, head_sha,
+            )
+            return _RollupReadout(None, readable=False)
+        return _RollupReadout(_coerce_rollup_state(rollup.state), readable=True)
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.

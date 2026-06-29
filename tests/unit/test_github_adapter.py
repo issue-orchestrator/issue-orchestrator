@@ -14,7 +14,11 @@ import pytest
 from unittest.mock import MagicMock, Mock, patch, call
 from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.adapters.github.cache import GitHubCache
-from issue_orchestrator.adapters.github.http_client import GitHubHttpError, GitHubTransportError
+from issue_orchestrator.adapters.github.http_client import (
+    CommitCheckRollup,
+    GitHubHttpError,
+    GitHubTransportError,
+)
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
@@ -648,7 +652,9 @@ class TestPROperations:
         mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
             "Resource not accessible by personal access token", status_code=403
         )
-        mock_http_client.get_commit_check_rollup.return_value = "FAILURE"
+        mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
+            state="FAILURE", complete=True
+        )
 
         pr = adapter.get_pr_with_status_check_rollup(10)
 
@@ -656,6 +662,37 @@ class TestPROperations:
         assert pr.mergeable_state == "unstable"
         assert pr.status_check_rollup == "FAILURE"
         assert pr.status_check_rollup_readable is True
+        mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
+
+    def test_get_pr_with_status_check_rollup_unreadable_when_rest_incomplete(
+        self, adapter, mock_http_client
+    ):
+        """An incomplete REST fallback (a source was inaccessible and check-runs
+        were inconclusive) must be surfaced as unreadable, not as a truthful
+        SUCCESS / 'no checks' — otherwise a hidden failed required status would
+        be misclassified post-publish (issue #6589 F2)."""
+        mock_http_client.get_pr.return_value = {
+            "number": 10,
+            "title": "Test PR",
+            "html_url": "https://github.com/owner/repo/pull/10",
+            "head": {"ref": "feature-branch", "sha": "deadbeef"},
+            "body": "",
+            "state": "open",
+            "labels": [],
+            "mergeable_state": "UNSTABLE",
+        }
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubHttpError(
+            "Resource not accessible by personal access token", status_code=403
+        )
+        mock_http_client.get_commit_check_rollup.return_value = CommitCheckRollup(
+            state="SUCCESS", complete=False
+        )
+
+        pr = adapter.get_pr_with_status_check_rollup(10)
+
+        assert pr is not None
+        assert pr.status_check_rollup is None
+        assert pr.status_check_rollup_readable is False
         mock_http_client.get_commit_check_rollup.assert_called_once_with("deadbeef")
 
     def test_get_pr_with_status_check_rollup_unreadable_when_all_sources_fail(

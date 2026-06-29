@@ -1016,7 +1016,9 @@ def test_get_commit_check_rollup_reports_failure_for_failed_check_run() -> None:
     )
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    assert client.get_commit_check_rollup("deadbeef") == "FAILURE"
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
 
 
 def test_get_commit_check_rollup_reports_pending_for_incomplete_check_run() -> None:
@@ -1030,7 +1032,9 @@ def test_get_commit_check_rollup_reports_pending_for_incomplete_check_run() -> N
     )
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    assert client.get_commit_check_rollup("deadbeef") == "PENDING"
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "PENDING"
+    assert rollup.complete is True
 
 
 def test_get_commit_check_rollup_reports_success_when_all_complete() -> None:
@@ -1044,14 +1048,18 @@ def test_get_commit_check_rollup_reports_success_when_all_complete() -> None:
     )
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    assert client.get_commit_check_rollup("deadbeef") == "SUCCESS"
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "SUCCESS"
+    assert rollup.complete is True
 
 
 def test_get_commit_check_rollup_returns_none_when_no_checks_or_statuses() -> None:
     handler = _commit_rollup_handler(check_runs={"check_runs": []})
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    assert client.get_commit_check_rollup("deadbeef") is None
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state is None
+    assert rollup.complete is True
 
 
 def test_get_commit_check_rollup_raises_when_check_runs_inaccessible() -> None:
@@ -1079,12 +1087,33 @@ def test_get_commit_check_rollup_folds_in_legacy_commit_statuses() -> None:
     )
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    assert client.get_commit_check_rollup("deadbeef") == "FAILURE"
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
 
 
-def test_get_commit_check_rollup_swallows_status_api_failure() -> None:
-    """The legacy combined-status call is best-effort: a 403 there must not
-    mask a readable check-run result."""
+def test_get_commit_check_rollup_failure_wins_even_when_status_api_fails() -> None:
+    """A failed check-run is conclusive: an inaccessible legacy-status source
+    cannot change a FAILURE, so the rollup stays complete and routes to rework."""
+    handler = _commit_rollup_handler(
+        check_runs={
+            "check_runs": [
+                {"name": "validate", "status": "completed", "conclusion": "failure"},
+            ]
+        },
+        status_status=403,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
+
+
+def test_get_commit_check_rollup_incomplete_when_status_api_fails_and_checks_pass() -> None:
+    """A 403 on the legacy combined-status source while check-runs are all green
+    is INCONCLUSIVE: a required legacy status could be failing unseen, so the
+    rollup must report complete=False rather than a false SUCCESS (issue #6589)."""
     handler = _commit_rollup_handler(
         check_runs={
             "check_runs": [
@@ -1095,4 +1124,88 @@ def test_get_commit_check_rollup_swallows_status_api_failure() -> None:
     )
     client = _client_with_transport(httpx.MockTransport(handler))
 
-    assert client.get_commit_check_rollup("deadbeef") == "SUCCESS"
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "SUCCESS"
+    assert rollup.complete is False
+
+
+def test_get_commit_check_rollup_incomplete_when_status_api_fails_and_no_checks() -> None:
+    """A 403 on the legacy combined-status source with zero check-runs cannot
+    honestly claim "no checks": the status source might hold a required status."""
+    handler = _commit_rollup_handler(
+        check_runs={"check_runs": []},
+        status_status=403,
+    )
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state is None
+    assert rollup.complete is False
+
+
+def _paginated_check_runs_handler(
+    pages: dict[int, object],
+    *,
+    statuses: object = None,
+    status_status: int = 200,
+):
+    """Serve /check-runs from a {page: payload} map, honoring the ?page param.
+
+    Pages absent from the map return an empty page. /status returns ``statuses``
+    (or an empty combined status) with ``status_status``.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/check-runs"):
+            page = int(request.url.params.get("page", "1"))
+            return httpx.Response(200, json=pages.get(page, {"check_runs": []}))
+        if path.endswith("/status"):
+            payload = statuses if statuses is not None else {"state": "pending", "statuses": []}
+            return httpx.Response(status_status, json=payload)
+        return httpx.Response(404, json={"message": "not found"})
+
+    return handler
+
+
+def test_get_commit_check_rollup_paginates_to_failure_on_later_page() -> None:
+    """A failure on a later check-runs page must not be missed: page 1 is a full
+    page of passing runs, page 2 carries the failure (issue #6589 F1)."""
+    page1 = {
+        "check_runs": [
+            {"name": f"shard-{i}", "status": "completed", "conclusion": "success"}
+            for i in range(100)
+        ]
+    }
+    page2 = {
+        "check_runs": [
+            {"name": "system-verification", "status": "completed", "conclusion": "failure"},
+        ]
+    }
+    handler = _paginated_check_runs_handler({1: page1, 2: page2})
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "FAILURE"
+    assert rollup.complete is True
+
+
+def test_get_commit_check_rollup_paginates_all_pages_success() -> None:
+    """All pages green still aggregates to SUCCESS after walking every page."""
+    page1 = {
+        "check_runs": [
+            {"name": f"shard-{i}", "status": "completed", "conclusion": "success"}
+            for i in range(100)
+        ]
+    }
+    page2 = {
+        "check_runs": [
+            {"name": "lint", "status": "completed", "conclusion": "success"},
+        ]
+    }
+    handler = _paginated_check_runs_handler({1: page1, 2: page2})
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    rollup = client.get_commit_check_rollup("deadbeef")
+    assert rollup.state == "SUCCESS"
+    assert rollup.complete is True
