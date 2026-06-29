@@ -74,7 +74,6 @@ def _update_worktree(repo_root: Path, worktree_path: Path) -> None:
     ref = _resolve_e2e_ref(repo_root)
     logger.info("Updating E2E worktree at %s (ref=%s)", worktree_path, ref[:12])
     _run_git(["checkout", "-f", "--detach", ref], cwd=worktree_path)
-    _run_git(["reset", "--hard", ref], cwd=worktree_path)
     _run_git(
         [
             "clean", "-fdx",

@@ -87,7 +87,7 @@ class TestEnsureE2EWorktree:
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_updates_worktree_when_exists(self, mock_run, repo_root: Path):
-        """When the worktree directory exists, checkout + reset + clean."""
+        """When the worktree directory exists, force checkout + clean."""
         mock_run.side_effect = _make_mock_run()
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()  # Simulate existing worktree
@@ -104,11 +104,6 @@ class TestEnsureE2EWorktree:
         assert "-f" in cmd
         assert "--detach" in cmd
         assert FAKE_SHA in cmd
-
-        reset_calls = [c for c in mock_run.call_args_list
-                       if c[0][0][:3] == ["git", "reset", "--hard"]]
-        assert len(reset_calls) == 1
-        assert reset_calls[0][0][0] == ["git", "reset", "--hard", FAKE_SHA]
 
         # git clean preserves .venv, timeline, sessions, and E2E reports
         clean_calls = [c for c in mock_run.call_args_list

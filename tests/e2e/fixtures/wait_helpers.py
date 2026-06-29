@@ -160,7 +160,6 @@ async def wait_for_session_completed(
     Raises TimeoutError if no completion event is received.
     """
     import logging
-    from issue_orchestrator.events.catalog import EventName
 
     logger = logging.getLogger(__name__)
 
