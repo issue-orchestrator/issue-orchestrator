@@ -871,6 +871,15 @@ class GitHubAdapter:
         """
         try:
             rollup = self._client.get_pr_status_check_rollup(pr_number)
+        except GitHubTransportError as e:
+            # A pre-response transport failure (timeout/network) has no status
+            # code to classify and is always retry-safe: treat it as transient
+            # so the reconciler waits a tick rather than aborting the scan.
+            logger.warning(
+                "status_check_rollup read failed for PR %s (transient_error): %s",
+                pr_number, e,
+            )
+            return StatusCheckRollupRead(state=None, capability="transient_error")
         except GitHubHttpError as e:
             capability = _classify_rollup_failure(e)
             logger.warning(

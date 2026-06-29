@@ -665,6 +665,25 @@ class TestPROperations:
         assert read == StatusCheckRollupRead(state=None, capability="transient_error")
         assert read.permission_denied is False
 
+    def test_read_pr_status_check_rollup_transport_failure_is_transient(
+        self, adapter, mock_http_client
+    ):
+        """A pre-response transport failure (timeout/network) raises
+        GitHubTransportError, which has no status code. It must classify as
+        transient_error so the reconciler waits and retries next tick instead
+        of letting the failure abort the awaiting-merge scan."""
+        mock_http_client.get_pr_status_check_rollup.side_effect = GitHubTransportError(
+            "GitHub GraphQL transport error",
+            method="POST",
+            url="/graphql",
+            original=TimeoutError("read timed out"),
+        )
+
+        read = adapter.read_pr_status_check_rollup(10)
+
+        assert read == StatusCheckRollupRead(state=None, capability="transient_error")
+        assert read.permission_denied is False
+
     def test_read_pr_status_check_rollup_unknown_state_coerced_to_none(
         self, adapter, mock_http_client
     ):
