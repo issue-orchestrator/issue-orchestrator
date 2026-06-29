@@ -24,6 +24,7 @@ Two categories of paths that dirty-tree guardrails must ignore:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from fnmatch import fnmatch
 import logging
 from pathlib import Path
@@ -201,3 +202,108 @@ def filter_orchestrator_untracked_planted(paths: list[str]) -> list[str]:
     ``ls-files --others`` invocation, etc.).
     """
     return [path for path in paths if not is_orchestrator_untracked_planted(path)]
+
+
+# --------------------------------------------------------------------------- #
+# Forbidden-on-branch runtime artifacts (#6659)
+#
+# Distinct from the dirty-tree filters above. Those answer "is this dirty
+# *working-tree* path runtime metadata I should ignore?". The guard below
+# answers "is this path, present in a *committed* branch diff against base, a
+# runtime artifact that must never have entered the branch?".
+#
+# The two are deliberately not the same set. The dirty filters broadly ignore
+# *all* of ``.issue-orchestrator/`` and ``.claude/`` so foreign-repo plantings
+# and live session writes don't fail the dirty guard. ``.claude/`` is excluded
+# from the branch guard because this repo (and target repos) legitimately track
+# hooks/settings/skills there. Under ``.issue-orchestrator/`` the repo tracks
+# only a small allowlist of project-owned files; everything else is runtime
+# output (review-exchange prompts, persistent-pair recordings, validation
+# records, tool homes, sessions, …) and must not be committed onto an agent
+# branch — it breaks the reviewer-worktree fast-forward checkout and bloats the
+# review diff.
+# --------------------------------------------------------------------------- #
+
+# Project-owned files under ``.issue-orchestrator/`` that may legitimately be
+# tracked on a branch. Allowlist, not denylist: any new runtime output path is
+# rejected by default, so the guard fails safe as the runtime surface grows.
+TRACKED_PROJECT_FILES_EXACT: frozenset[str] = frozenset(
+    {
+        ".issue-orchestrator/allow-no-verify-dry-run",
+        str(RUNTIME_IGNORE_FILE),
+    }
+)
+
+TRACKED_PROJECT_FILES_PREFIXES: tuple[str, ...] = (".issue-orchestrator/config/",)
+
+# Branch content under these roots is guarded; anything here not allowlisted
+# above is treated as a forbidden runtime artifact.
+RUNTIME_ARTIFACT_BRANCH_ROOTS: tuple[str, ...] = (".issue-orchestrator/",)
+
+_FORBIDDEN_ARTIFACT_PREVIEW = 8
+
+
+def is_forbidden_branch_runtime_artifact(path: str) -> bool:
+    """Return True when a branch path is a runtime artifact that must not be committed.
+
+    Allowlist semantics: a path under a guarded root is forbidden unless it is an
+    explicitly tracked project-owned file.
+    """
+    normalized = _normalize_runtime_pattern(path)
+    if not normalized:
+        return False
+    if not any(normalized.startswith(root) for root in RUNTIME_ARTIFACT_BRANCH_ROOTS):
+        return False
+    if normalized in TRACKED_PROJECT_FILES_EXACT:
+        return False
+    if any(normalized.startswith(prefix) for prefix in TRACKED_PROJECT_FILES_PREFIXES):
+        return False
+    return True
+
+
+def forbidden_branch_runtime_artifacts(paths: Iterable[str]) -> list[str]:
+    """Return the deduped, sorted forbidden runtime artifacts among ``paths``."""
+    found = {
+        _normalize_runtime_pattern(path)
+        for path in paths
+        if is_forbidden_branch_runtime_artifact(path)
+    }
+    return sorted(found)
+
+
+def branch_post_image_paths_from_diff(diff_text: str) -> list[str]:
+    """Extract post-image file paths (``+++ b/...`` side) from a unified diff.
+
+    Returns the files that *exist* in the branch after the diff (added or
+    modified), in first-seen order. Deletions (``+++ /dev/null``) are skipped:
+    a branch that *removes* a previously-committed artifact is fine — the guard
+    only blocks artifacts that would still be present in the branch tip.
+    """
+    paths: list[str] = []
+    for line in diff_text.splitlines():
+        if not line.startswith("+++ "):
+            continue
+        target = line[len("+++ ") :].split("\t", 1)[0].strip()
+        if not target or target == "/dev/null":
+            continue
+        if target.startswith("b/"):
+            target = target[len("b/") :]
+        normalized = _normalize_runtime_pattern(target)
+        if normalized:
+            paths.append(normalized)
+    return list(dict.fromkeys(paths))
+
+
+def build_forbidden_runtime_artifact_reason(paths: list[str]) -> str:
+    """Build the operator-facing reason for a forbidden-artifact gate failure."""
+    preview = ", ".join(paths[:_FORBIDDEN_ARTIFACT_PREVIEW])
+    remaining = len(paths) - _FORBIDDEN_ARTIFACT_PREVIEW
+    suffix = f" (+{remaining} more)" if remaining > 0 else ""
+    return (
+        "Branch contains issue-orchestrator runtime artifacts that must not be "
+        "committed. These are session/review-exchange runtime outputs; leaving "
+        "them on the branch breaks the reviewer-worktree fast-forward checkout "
+        "and bloats the review diff. Remove them with `git rm --cached` and "
+        "confirm they are gitignored before publishing. "
+        f"Forbidden artifacts: {preview}{suffix}."
+    )

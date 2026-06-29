@@ -30,8 +30,66 @@ class ReviewerWorktree:
     coder_branch: str
 
 
+@dataclass(frozen=True)
+class GitCommandFailure:
+    """Captured context from a failed git invocation.
+
+    Carries everything an operator needs to tell apart the failure modes that
+    look identical in a bare ``CalledProcessError`` message: dirty runtime
+    files, a missing commit, a missing worktree, lock contention, etc. (#6659).
+    """
+
+    args: tuple[str, ...]
+    cwd: str
+    returncode: int
+    stdout: str
+    stderr: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "args": list(self.args),
+            "cwd": self.cwd,
+            "returncode": self.returncode,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+        }
+
+    def summary(self) -> str:
+        cmd = " ".join(self.args)
+        stderr = self.stderr.strip() or "<empty>"
+        stdout = self.stdout.strip() or "<empty>"
+        return (
+            f"git command failed (exit {self.returncode}): {cmd} "
+            f"[cwd={self.cwd}] stderr={stderr!r} stdout={stdout!r}"
+        )
+
+
 class ReviewerWorktreeError(RuntimeError):
-    """Raised when reviewer-worktree management fails."""
+    """Raised when reviewer-worktree management fails.
+
+    When the underlying cause is a failed git command, ``git_failure`` carries
+    the full command/cwd/returncode/stdout/stderr context and ``context`` holds
+    review-exchange specifics (reviewer worktree path, coder branch, target SHA)
+    so the surfaced diagnostic can pinpoint the cause precisely.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        git_failure: GitCommandFailure | None = None,
+        context: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.git_failure = git_failure
+        self.context: dict[str, object] = context or {}
+
+    def diagnostic(self) -> dict[str, object]:
+        """Structured diagnostic payload for logs and failure records."""
+        payload: dict[str, object] = {"message": str(self), **self.context}
+        if self.git_failure is not None:
+            payload["git"] = self.git_failure.as_dict()
+        return payload
 
 
 def create_reviewer_worktree(
@@ -72,7 +130,26 @@ def fast_forward_reviewer_worktree(reviewer: ReviewerWorktree) -> str:
     """
     repo_root = _resolve_repo_root(reviewer.path)
     tip_sha = _resolve_branch_tip(repo_root, reviewer.coder_branch)
-    _git(reviewer.path, ["checkout", "--detach", tip_sha])
+    try:
+        _git(reviewer.path, ["checkout", "--detach", tip_sha])
+    except ReviewerWorktreeError as exc:
+        context: dict[str, object] = {
+            "reviewer_worktree": str(reviewer.path),
+            "coder_branch": reviewer.coder_branch,
+            "target_sha": tip_sha,
+        }
+        enriched = ReviewerWorktreeError(
+            "Failed to fast-forward reviewer worktree "
+            f"{reviewer.path} to {reviewer.coder_branch}@{tip_sha}: "
+            f"{exc}",
+            git_failure=exc.git_failure,
+            context=context,
+        )
+        logger.error(
+            "Reviewer worktree fast-forward failed: %s",
+            enriched.diagnostic(),
+        )
+        raise enriched from exc
     logger.debug(
         "Fast-forwarded reviewer worktree path=%s tip=%s",
         reviewer.path,
@@ -98,16 +175,18 @@ def remove_reviewer_worktree(
         args.append("--force")
     try:
         _git(repo_root, args)
-    except subprocess.CalledProcessError as exc:
+    except ReviewerWorktreeError as exc:
         if force:
             logger.warning(
                 "git worktree remove --force failed for %s: %s",
                 reviewer.path,
-                exc,
+                exc.diagnostic(),
             )
             return
         raise ReviewerWorktreeError(
-            f"Failed to remove reviewer worktree {reviewer.path}: {exc}"
+            f"Failed to remove reviewer worktree {reviewer.path}: {exc}",
+            git_failure=exc.git_failure,
+            context={"reviewer_worktree": str(reviewer.path)},
         ) from exc
 
 
@@ -123,13 +202,7 @@ def resolve_current_branch(worktree_path: Path) -> str:
     without importing ``subprocess`` directly (architectural lint
     forbids ``control.* -> subprocess``).
     """
-    result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    result = _git(worktree_path, ["rev-parse", "--abbrev-ref", "HEAD"])
     branch = result.stdout.strip()
     if not branch or branch == "HEAD":
         raise ReviewerWorktreeError(
@@ -140,13 +213,7 @@ def resolve_current_branch(worktree_path: Path) -> str:
 
 
 def _resolve_repo_root(worktree_path: Path) -> Path:
-    result = subprocess.run(
-        ["git", "rev-parse", "--git-common-dir"],
-        cwd=worktree_path,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    result = _git(worktree_path, ["rev-parse", "--git-common-dir"])
     common_dir = Path(result.stdout.strip())
     if not common_dir.is_absolute():
         common_dir = (worktree_path / common_dir).resolve()
@@ -154,15 +221,30 @@ def _resolve_repo_root(worktree_path: Path) -> Path:
 
 
 def _resolve_branch_tip(repo_root: Path, branch: str) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", branch],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    result = _git(repo_root, ["rev-parse", branch])
     return result.stdout.strip()
 
 
-def _git(cwd: Path, args: list[str]) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+def _git(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run a git command, raising a richly-contextualized error on failure.
+
+    Unlike ``check=True`` (which surfaces only the command and exit code),
+    failures here carry cwd, return code, and captured stdout/stderr so the
+    caller's diagnostic can name the precise Git state problem (#6659).
+    """
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        failure = GitCommandFailure(
+            args=("git", *args),
+            cwd=str(cwd),
+            returncode=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+        raise ReviewerWorktreeError(failure.summary(), git_failure=failure)
+    return proc

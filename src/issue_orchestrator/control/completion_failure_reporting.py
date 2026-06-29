@@ -9,8 +9,42 @@ from typing import Any
 from ..domain.session_run import SessionRunAssets
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..ports.session_output import SessionOutput
+from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 
 logger = logging.getLogger(__name__)
+
+
+def build_review_exchange_recovery_note(errors: list[str]) -> str | None:
+    """Return recovery guidance when a failure came from the review exchange.
+
+    A review-exchange failure happens *after* the coder's work has been
+    validated and committed locally, so the generic "publish/finalize failed"
+    comment reads as a coding failure when it is really a finalization-stage
+    failure. Give the operator a recovery-specific explanation instead (#6659):
+    the committed work is safe, a retry recovers finalization rather than
+    re-coding, and tracked runtime artifacts are the likely culprit.
+    """
+    review_exchange_errors = [
+        error for error in errors if error.startswith(REVIEW_EXCHANGE_ERROR_PREFIX)
+    ]
+    if not review_exchange_errors:
+        return None
+
+    lines = [
+        "### Recovery: review-exchange finalization failed",
+        "",
+        "This failed during review-exchange finalization, **after** the coder's "
+        "work was validated and committed locally — it is not a coding failure. "
+        "The committed branch work is safe.",
+        "",
+        "- Retry recovers finalization; it should not require re-coding from scratch.",
+        "- The likely cause is issue-orchestrator runtime artifacts committed onto "
+        "the branch (for example under `.issue-orchestrator/persistent-pairs/` or "
+        "`.issue-orchestrator/review-exchange-turn-prompt.md`), which break the "
+        "reviewer-worktree fast-forward checkout. Remove them with "
+        "`git rm --cached` and confirm they are gitignored.",
+    ]
+    return "\n".join(lines)
 
 
 def build_cleanup_failure_comment(
@@ -78,6 +112,9 @@ def build_processing_failure_comment(
         comment += f"- Actions completed before failure: {', '.join(actions_taken)}\n"
     if diagnostic_path:
         comment += f"- Diagnostic file: `{diagnostic_path}`\n"
+    recovery_note = build_review_exchange_recovery_note(errors)
+    if recovery_note:
+        comment += f"\n{recovery_note}\n"
     return comment
 
 
