@@ -32,7 +32,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .dependencies import Dependency, DependencyMode, DependencyState, EdgeProblem
+from .dependencies import (
+    Dependency,
+    DependencyMode,
+    DependencyState,
+    DependencyTarget,
+    EdgeProblem,
+)
 
 
 class Gate(Enum):
@@ -200,10 +206,12 @@ class DependencyGateReport:
         )
 
 
-def _reaches_self(start: int, graph: Mapping[int, Sequence[int]]) -> bool:
+def _reaches_self(
+    start: DependencyTarget, graph: Mapping[DependencyTarget, Sequence[DependencyTarget]]
+) -> bool:
     """Whether ``start`` can reach itself by following edges (self-loops count)."""
     stack = list(graph.get(start, ()))
-    seen: set[int] = set()
+    seen: set[DependencyTarget] = set()
     while stack:
         node = stack.pop()
         if node == start:
@@ -215,11 +223,16 @@ def _reaches_self(start: int, graph: Mapping[int, Sequence[int]]) -> bool:
     return False
 
 
-def detect_cycles(graph: Mapping[int, Sequence[int]]) -> frozenset[int]:
-    """Return the set of issue numbers that participate in a dependency cycle.
+def detect_cycles(
+    graph: Mapping[DependencyTarget, Sequence[DependencyTarget]],
+) -> frozenset[DependencyTarget]:
+    """Return the dependency targets that participate in a dependency cycle.
 
-    ``graph`` maps an issue number to the issue numbers it depends on. A node is
-    in a cycle iff it can reach itself by following edges. Self-loops count.
+    ``graph`` maps a repository-aware :class:`DependencyTarget` to the targets
+    it depends on. A node is in a cycle iff it can reach itself by following
+    edges. Self-loops count. Keying by target identity (not bare issue number)
+    keeps same-number cross-repo nodes distinct, so a real cycle is not
+    fabricated from two unrelated targets that share a number.
     """
     return frozenset(node for node in graph if _reaches_self(node, graph))
 
@@ -238,12 +251,12 @@ def _block_all_gates(reason: GateBlockReason, ref: str, detail: str | None = Non
 def _stack_edge_blocks(
     dep: Dependency,
     ref: str,
-    facts_by_issue: Mapping[int, PredecessorFacts],
+    facts_by_target: Mapping[DependencyTarget, PredecessorFacts],
     configured_base_branch: str | None,
 ) -> _GateBlockLists:
     """Gate blocks contributed by an open stack predecessor edge."""
     facts = (
-        facts_by_issue.get(dep.issue_number) if dep.issue_number is not None else None
+        facts_by_target.get(dep.target) if dep.target is not None else None
     ) or PredecessorFacts()
 
     # A stack base that conflicts with an issue-specific base-branch rule is a
@@ -285,7 +298,7 @@ def _stack_edge_blocks(
 
 def _edge_gate_blocks(
     dep: Dependency,
-    facts_by_issue: Mapping[int, PredecessorFacts],
+    facts_by_target: Mapping[DependencyTarget, PredecessorFacts],
     configured_base_branch: str | None,
 ) -> _GateBlockLists:
     """Gate blocks contributed by a single evaluated dependency edge."""
@@ -312,13 +325,13 @@ def _edge_gate_blocks(
     if dep.state == DependencyState.SATISFIED:
         # Predecessor merged/closed: fully satisfies the stack ordering.
         return [], [], [], []
-    return _stack_edge_blocks(dep, ref, facts_by_issue, configured_base_branch)
+    return _stack_edge_blocks(dep, ref, facts_by_target, configured_base_branch)
 
 
 def build_gate_report(
     issue_number: int,
     dependencies: Sequence[Dependency],
-    predecessor_facts: Mapping[int, PredecessorFacts] | None = None,
+    predecessor_facts: Mapping[DependencyTarget, PredecessorFacts] | None = None,
     *,
     approval_current: bool = True,
     configured_base_branch: str | None = None,
@@ -330,23 +343,26 @@ def build_gate_report(
         dependencies: Evaluated edges, each carrying mode, state, and any
             structural problem. Normal edges gate on closure; stack edges gate
             on predecessor facts.
-        predecessor_facts: Git/PR facts keyed by predecessor issue number. A
-            stack predecessor with no entry is treated as having no usable
-            branch yet (conservatively blocked).
+        predecessor_facts: Git/PR facts keyed by the predecessor's
+            repository-aware :class:`DependencyTarget`. Keying by target (not a
+            bare issue number) keeps a same-repo and a cross-repo predecessor
+            with the same number from sharing facts. A stack predecessor with
+            no entry is treated as having no usable branch yet (conservatively
+            blocked).
         approval_current: Whether the slice's own reviewed commit is still its
             head. False re-blocks only the merge gate (``APPROVAL_STALE``).
         configured_base_branch: An issue-specific base-branch rule, if any. When
             it conflicts with a stack predecessor's branch the edge is reported
             as a base-branch validation failure rather than silently resolved.
     """
-    facts_by_issue = predecessor_facts or {}
+    facts_by_target = predecessor_facts or {}
     work: list[GateBlock] = []
     review: list[GateBlock] = []
     publish: list[GateBlock] = []
     merge: list[GateBlock] = []
 
     for dep in dependencies:
-        w, r, p, m = _edge_gate_blocks(dep, facts_by_issue, configured_base_branch)
+        w, r, p, m = _edge_gate_blocks(dep, facts_by_target, configured_base_branch)
         work += w
         review += r
         publish += p

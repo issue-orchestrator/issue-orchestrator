@@ -21,6 +21,7 @@ from ..domain.dependencies import (
     DependencyMode,
     DependencyReport,
     DependencyState,
+    DependencyTarget,
     EdgeProblem,
     ParsedDependencyRef,
     parse_dependency_edges,
@@ -122,11 +123,11 @@ class DependencyEvaluator:
         issue_body: str,
         source_milestone: str | None = None,
         *,
-        predecessor_facts: Mapping[int, PredecessorFacts] | None = None,
-        same_stack_members: frozenset[int] = frozenset(),
+        predecessor_facts: Mapping[DependencyTarget, PredecessorFacts] | None = None,
+        same_stack_members: frozenset[DependencyTarget] = frozenset(),
         approval_current: bool = True,
         configured_base_branch: str | None = None,
-        dependency_graph: Mapping[int, Sequence[int]] | None = None,
+        dependency_graph: Mapping[DependencyTarget, Sequence[DependencyTarget]] | None = None,
     ) -> DependencyGateReport:
         """Evaluate typed dependency edges into a dependency gate report.
 
@@ -138,17 +139,23 @@ class DependencyEvaluator:
         The existing :meth:`evaluate` / ``DependencyReport.runnable`` path is
         unchanged; this method is the new owner surface for stack-aware policy.
 
+        Every target-keyed input uses the repository-aware
+        :class:`DependencyTarget` so a same-repo and a cross-repo predecessor
+        with the same issue number stay distinct across the whole gate boundary
+        (facts, membership, and cycle graph).
+
         Args:
-            predecessor_facts: Git/PR facts keyed by predecessor issue number,
-                gathered by the caller. Stack edges with no facts stay blocked.
-            same_stack_members: Predecessor issue numbers the caller has verified
-                form an explicitly discoverable, valid same-stack chain with this
-                issue. Only these may relax ADR-0009 milestone scoping, and only
-                for stack edges (ADR-0029 §4).
+            predecessor_facts: Git/PR facts keyed by the predecessor's
+                :class:`DependencyTarget`, gathered by the caller. Stack edges
+                with no facts stay blocked.
+            same_stack_members: Predecessor :class:`DependencyTarget`s the caller
+                has verified form an explicitly discoverable, valid same-stack
+                chain with this issue. Only these may relax ADR-0009 milestone
+                scoping, and only for stack edges (ADR-0029 §4).
             approval_current: Whether this slice's reviewed commit is still its
                 head. False re-blocks only the merge gate.
             configured_base_branch: An issue-specific base-branch rule, if any.
-            dependency_graph: Optional issue->predecessors graph used to detect
+            dependency_graph: Optional target->predecessors graph used to detect
                 multi-issue cycles. Self-dependencies are detected without it.
         """
         edges = parse_dependency_edges(issue_body)
@@ -171,7 +178,7 @@ class DependencyEvaluator:
         edge: ParsedDependencyRef,
         source_milestone: str | None,
         source_issue_number: int,
-        same_stack_members: frozenset[int],
+        same_stack_members: frozenset[DependencyTarget],
     ) -> Dependency:
         """Resolve and state-check a single typed edge, carrying its mode."""
         if edge.problem is not None:
@@ -229,7 +236,7 @@ class DependencyEvaluator:
         repo: str | None,
         source_milestone: str,
         edge: ParsedDependencyRef,
-        same_stack_members: frozenset[int],
+        same_stack_members: frozenset[DependencyTarget],
     ) -> Dependency:
         """State-check a resolved edge with mode-aware milestone scoping."""
         try:
@@ -279,18 +286,22 @@ class DependencyEvaluator:
         source_milestone: str,
         edge: ParsedDependencyRef,
         issue_number: int,
-        same_stack_members: frozenset[int],
+        same_stack_members: frozenset[DependencyTarget],
     ) -> str | None:
         """Milestone scope check with the bounded same-stack exception.
 
         Normal edges keep ADR-0009 scoping exactly. A stack edge may span
         milestones only when the caller has verified the chain is explicitly
-        discoverable and valid (the predecessor is in ``same_stack_members``).
+        discoverable and valid (the predecessor's repository-aware target is in
+        ``same_stack_members``). Matching on the typed target — not the bare
+        issue number — keeps a cross-repo predecessor from borrowing the
+        same-stack exception granted to a same-number local member.
         """
         base_error = self._check_milestone_scope(dep_milestone, source_milestone)
         if base_error is None:
             return None
-        if edge.mode == DependencyMode.STACK and issue_number in same_stack_members:
+        target = DependencyTarget(issue_number=issue_number, repository=edge.repository)
+        if edge.mode == DependencyMode.STACK and target in same_stack_members:
             return None
         return base_error
 
@@ -298,7 +309,7 @@ class DependencyEvaluator:
         self,
         deps: list[Dependency],
         source_issue_number: int,
-        dependency_graph: Mapping[int, Sequence[int]] | None,
+        dependency_graph: Mapping[DependencyTarget, Sequence[DependencyTarget]] | None,
     ) -> list[Dependency]:
         """Annotate duplicate/mode-conflict and (optionally) cycle problems."""
         deps = self._annotate_duplicates(deps)
@@ -346,11 +357,19 @@ class DependencyEvaluator:
     def _annotate_cycles(
         deps: list[Dependency],
         source_issue_number: int,
-        dependency_graph: Mapping[int, Sequence[int]],
+        dependency_graph: Mapping[DependencyTarget, Sequence[DependencyTarget]],
     ) -> list[Dependency]:
-        """Flag edges whose target shares a cycle with the source issue."""
+        """Flag edges whose target shares a cycle with the source issue.
+
+        Cycle membership is decided on repository-aware targets: the source
+        issue is the local target ``#<source>``, and an edge is only flagged
+        when its own :attr:`Dependency.target` is in the cyclic set. A
+        cross-repo target that happens to share a number with a cyclic local
+        node is therefore not falsely implicated.
+        """
         cyclic = detect_cycles(dependency_graph)
-        if source_issue_number not in cyclic:
+        source_target = DependencyTarget(issue_number=source_issue_number)
+        if source_target not in cyclic:
             return deps
         return [
             replace(
@@ -358,7 +377,7 @@ class DependencyEvaluator:
                 problem=EdgeProblem.CYCLE,
                 error="Edge participates in a dependency cycle",
             )
-            if dep.problem is None and dep.issue_number in cyclic
+            if dep.problem is None and dep.target is not None and dep.target in cyclic
             else dep
             for dep in deps
         ]

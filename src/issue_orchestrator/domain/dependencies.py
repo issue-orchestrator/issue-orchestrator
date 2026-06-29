@@ -62,6 +62,31 @@ class EdgeProblem(Enum):
 
 
 @dataclass(frozen=True)
+class DependencyTarget:
+    """Repository-aware identity of a resolved dependency target (ADR-0029).
+
+    Distinguishes ``#20`` in the current repo from ``other/repo#20`` so the
+    gate-report inputs that key off a target — predecessor facts, same-stack
+    membership, and cycle graphs — cannot collide across targets that merely
+    share an issue number.
+
+    ``repository`` is ``None`` for a same-repo (local) target; a non-``None``
+    ``owner/repo`` value marks a cross-repo target. The pair is the stable key:
+    two targets are equal iff both repository and issue number match. Being a
+    frozen value object it is hashable, so it is used directly as a dict key /
+    set member rather than collapsing back to a bare ``int``.
+    """
+
+    issue_number: int
+    repository: str | None = None
+
+    def __str__(self) -> str:
+        if self.repository:
+            return f"{self.repository}#{self.issue_number}"
+        return f"#{self.issue_number}"
+
+
+@dataclass(frozen=True)
 class Dependency:
     """A single dependency reference."""
 
@@ -92,6 +117,20 @@ class Dependency:
     @property
     def is_satisfied(self) -> bool:
         return self.state == DependencyState.SATISFIED
+
+    @property
+    def target(self) -> DependencyTarget | None:
+        """Repository-aware identity of this dependency after resolution.
+
+        ``None`` until the edge resolves to a concrete issue number (an
+        unresolved external ID or a malformed edge has no target yet). Gate
+        inputs key off this identity so a same-repo and a cross-repo target
+        that happen to share an issue number do not share predecessor facts,
+        same-stack membership, or cycle-graph nodes.
+        """
+        if self.issue_number is None:
+            return None
+        return DependencyTarget(issue_number=self.issue_number, repository=self.repository)
 
     @property
     def blocks_running(self) -> bool:

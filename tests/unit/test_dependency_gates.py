@@ -20,6 +20,7 @@ from issue_orchestrator.domain.dependencies import (
     Dependency,
     DependencyMode,
     DependencyState,
+    DependencyTarget,
     EdgeProblem,
     parse_dependency_edges,
 )
@@ -123,23 +124,66 @@ class TestParseDependencyEdges:
 
 
 # --------------------------------------------------------------------------- #
+# Repository-aware target identity
+# --------------------------------------------------------------------------- #
+
+
+class TestDependencyTarget:
+    def test_same_number_different_repo_are_distinct(self):
+        assert DependencyTarget(20) != DependencyTarget(20, "other/repo")
+        assert DependencyTarget(20, "a/b") != DependencyTarget(20, "c/d")
+
+    def test_same_identity_is_equal_and_hashes_together(self):
+        assert DependencyTarget(20, "a/b") == DependencyTarget(20, "a/b")
+        assert len({DependencyTarget(20, "a/b"), DependencyTarget(20, "a/b")}) == 1
+
+    def test_local_target_str(self):
+        assert str(DependencyTarget(20)) == "#20"
+
+    def test_cross_repo_target_str(self):
+        assert str(DependencyTarget(20, "acme/widgets")) == "acme/widgets#20"
+
+    def test_dependency_exposes_repository_aware_target(self):
+        local = Dependency(issue_number=20, repository=None, mode=DependencyMode.STACK)
+        cross = Dependency(issue_number=20, repository="acme/widgets", mode=DependencyMode.STACK)
+        assert local.target == DependencyTarget(20)
+        assert cross.target == DependencyTarget(20, "acme/widgets")
+        assert local.target != cross.target
+
+    def test_unresolved_dependency_has_no_target(self):
+        # An unresolved external ID or malformed edge carries no concrete number.
+        assert Dependency(issue_number=None, external_id="M1-010").target is None
+
+
+# --------------------------------------------------------------------------- #
 # Cycle detection (pure)
 # --------------------------------------------------------------------------- #
 
 
 class TestDetectCycles:
     def test_simple_cycle(self):
-        assert detect_cycles({1: [2], 2: [3], 3: [1]}) == frozenset({1, 2, 3})
+        t1, t2, t3 = DependencyTarget(1), DependencyTarget(2), DependencyTarget(3)
+        assert detect_cycles({t1: [t2], t2: [t3], t3: [t1]}) == frozenset({t1, t2, t3})
 
     def test_self_loop(self):
-        assert detect_cycles({5: [5]}) == frozenset({5})
+        t5 = DependencyTarget(5)
+        assert detect_cycles({t5: [t5]}) == frozenset({t5})
 
     def test_acyclic(self):
-        assert detect_cycles({1: [2], 2: [3], 3: []}) == frozenset()
+        t1, t2, t3 = DependencyTarget(1), DependencyTarget(2), DependencyTarget(3)
+        assert detect_cycles({t1: [t2], t2: [t3], t3: []}) == frozenset()
 
     def test_node_outside_cycle_excluded(self):
+        t1, t2, t3, t4 = (DependencyTarget(n) for n in (1, 2, 3, 4))
         # 4 -> 3 feeds into the 1-2-3 cycle but is not itself cyclic.
-        assert detect_cycles({1: [2], 2: [3], 3: [1], 4: [3]}) == frozenset({1, 2, 3})
+        assert detect_cycles({t1: [t2], t2: [t3], t3: [t1], t4: [t3]}) == frozenset({t1, t2, t3})
+
+    def test_same_number_cross_repo_targets_are_distinct_nodes(self):
+        # #1 (local) and other/repo#1 are different identities: an edge between
+        # them is acyclic, not a fabricated self-cycle.
+        local = DependencyTarget(1)
+        cross = DependencyTarget(1, "other/repo")
+        assert detect_cycles({local: [cross], cross: []}) == frozenset()
 
 
 # --------------------------------------------------------------------------- #
@@ -167,7 +211,7 @@ class TestBuildGateReport:
 
     def test_stack_unblocks_work_review_publish_keeps_merge_ordered(self):
         dep = Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED)
-        facts = {20: PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
+        facts = {DependencyTarget(20): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
         report = build_gate_report(1, [dep], facts)
         assert report.can_start_work
         assert report.can_review
@@ -186,13 +230,13 @@ class TestBuildGateReport:
 
     def test_stack_merged_opens_merge(self):
         dep = Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED)
-        facts = {20: PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True, merged=True)}
+        facts = {DependencyTarget(20): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True, merged=True)}
         report = build_gate_report(1, [dep], facts)
         assert report.all_open
 
     def test_stale_approval_reblocks_only_merge(self):
         dep = Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED)
-        facts = {20: PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True, merged=True)}
+        facts = {DependencyTarget(20): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True, merged=True)}
         report = build_gate_report(1, [dep], facts, approval_current=False)
         assert report.can_start_work
         assert report.can_review
@@ -208,7 +252,7 @@ class TestBuildGateReport:
 
     def test_base_branch_conflict_blocks_all_gates(self):
         dep = Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED)
-        facts = {20: PredecessorFacts(
+        facts = {DependencyTarget(20): PredecessorFacts(
             branch_usable=True, validation_passed=True, agent_reviewed=True, branch_name="feat-20"
         )}
         report = build_gate_report(1, [dep], facts, configured_base_branch="main")
@@ -236,6 +280,31 @@ class TestBuildGateReport:
         dep = Dependency(issue_number=10, mode=DependencyMode.NORMAL, state=state)
         report = build_gate_report(1, [dep])
         assert report.reason_codes(Gate.WORK) == (expected,)
+
+    def test_facts_keyed_by_repository_aware_target_do_not_collide(self):
+        """Two same-number stack predecessors in different repos stay distinct.
+
+        ``#20`` (local) carries ready facts; ``other/repo#20`` carries none.
+        Because facts are keyed by :class:`DependencyTarget`, the local edge's
+        facts do not satisfy the cross-repo edge, so work stays blocked on the
+        cross-repo predecessor's unusable branch.
+        """
+        local = Dependency(
+            issue_number=20, repository=None,
+            mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED,
+        )
+        cross = Dependency(
+            issue_number=20, repository="other/repo",
+            mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED,
+        )
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True
+            )
+        }
+        report = build_gate_report(1, [local, cross], facts)
+        assert not report.can_start_work
+        assert GateBlockReason.PREDECESSOR_BRANCH_UNUSABLE in report.reason_codes(Gate.WORK)
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +341,7 @@ class TestEvaluateGatesStackEdges:
 
     def test_stack_open_predecessor_with_facts_unblocks_work(self, evaluator, checker):
         checker.add(20, "open")
-        facts = {20: PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
+        facts = {DependencyTarget(20): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
         report = evaluator.evaluate_gates(1, "Stack-after: #20", "M1", predecessor_facts=facts)
         assert report.can_start_work
         assert not report.can_merge
@@ -282,6 +351,49 @@ class TestEvaluateGatesStackEdges:
         report = evaluator.evaluate_gates(1, "Stack-after: #20", "M1")
         assert not report.can_start_work
         assert GateBlockReason.PREDECESSOR_BRANCH_UNUSABLE in report.reason_codes(Gate.WORK)
+
+    def test_same_number_cross_repo_stack_edges_do_not_share_facts(self, evaluator, checker):
+        """Predecessor facts must not leak across the repository boundary.
+
+        The slice stacks on both ``#20`` (local) and ``other/repo#20``. Only
+        the local target carries ready facts. If facts were keyed by bare issue
+        number they would also satisfy the cross-repo edge and wrongly open
+        work; keyed by repository-aware target, the factless cross-repo
+        predecessor keeps work blocked.
+        """
+        checker.add(20, "open")
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True
+            )
+        }
+        report = evaluator.evaluate_gates(
+            1,
+            "Stack-after: #20\nStack-after: other/repo#20",
+            "M1",
+            predecessor_facts=facts,
+        )
+        assert not report.can_start_work
+        assert GateBlockReason.PREDECESSOR_BRANCH_UNUSABLE in report.reason_codes(Gate.WORK)
+
+    def test_cross_repo_stack_edge_uses_its_own_facts(self, evaluator, checker):
+        """Facts keyed by the cross-repo target apply to the cross-repo edge.
+
+        Complement of the leak test: when the ready facts are keyed by the
+        cross-repo target, the cross-repo stack edge unblocks work — proving the
+        identity match works in both directions.
+        """
+        checker.add(20, "open")
+        facts = {
+            DependencyTarget(20, "other/repo"): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True
+            )
+        }
+        report = evaluator.evaluate_gates(
+            1, "Stack-after: other/repo#20", "M1", predecessor_facts=facts
+        )
+        assert report.can_start_work
+        assert not report.can_merge
 
 
 class TestEvaluateGatesStructural:
@@ -305,8 +417,9 @@ class TestEvaluateGatesStructural:
 
     def test_cycle_via_graph(self, evaluator, checker):
         checker.add(40, "open")
+        t100, t40 = DependencyTarget(100), DependencyTarget(40)
         report = evaluator.evaluate_gates(
-            100, "Depends-on: #40", "M1", dependency_graph={100: [40], 40: [100]}
+            100, "Depends-on: #40", "M1", dependency_graph={t100: [t40], t40: [t100]}
         )
         assert report.reason_codes(Gate.WORK) == (GateBlockReason.CYCLE,)
 
@@ -335,7 +448,7 @@ class TestEvaluateGatesCrossMilestone:
     def test_valid_same_stack_exception_allows_cross_milestone(self, evaluator, checker):
         checker.add(30, "open", milestone="M2")
         report = evaluator.evaluate_gates(
-            1, "Stack-after: #30", "M1", same_stack_members=frozenset({30})
+            1, "Stack-after: #30", "M1", same_stack_members=frozenset({DependencyTarget(30)})
         )
         # Exception granted: no longer cross-milestone; now gated on stack facts.
         assert GateBlockReason.CROSS_MILESTONE not in report.reason_codes(Gate.WORK)
@@ -344,9 +457,42 @@ class TestEvaluateGatesCrossMilestone:
     def test_same_stack_exception_does_not_relax_normal_edges(self, evaluator, checker):
         checker.add(30, "open", milestone="M2")
         report = evaluator.evaluate_gates(
-            1, "Depends-on: #30", "M1", same_stack_members=frozenset({30})
+            1, "Depends-on: #30", "M1", same_stack_members=frozenset({DependencyTarget(30)})
         )
         assert report.reason_codes(Gate.WORK) == (GateBlockReason.CROSS_MILESTONE,)
+
+    def test_same_stack_membership_respects_repository_identity(self, evaluator, checker):
+        """A local same-stack member must not relax a cross-repo same-number edge.
+
+        Membership is granted only to ``#30`` in the current repo. A
+        ``Stack-after: other/repo#30`` edge resolves to a *different* target
+        identity, so the bounded cross-milestone exception does not apply and
+        the cross-milestone block stands.
+        """
+        checker.add(30, "open", milestone="M2")
+        report = evaluator.evaluate_gates(
+            1,
+            "Stack-after: other/repo#30",
+            "M1",
+            same_stack_members=frozenset({DependencyTarget(30)}),
+        )
+        assert report.reason_codes(Gate.WORK) == (GateBlockReason.CROSS_MILESTONE,)
+
+    def test_same_stack_membership_matches_cross_repo_target(self, evaluator, checker):
+        """The exception is granted when the membership target's repo matches.
+
+        Same body as above, but membership now names the cross-repo target, so
+        the exception applies and the edge falls through to stack-fact gating.
+        """
+        checker.add(30, "open", milestone="M2")
+        report = evaluator.evaluate_gates(
+            1,
+            "Stack-after: other/repo#30",
+            "M1",
+            same_stack_members=frozenset({DependencyTarget(30, "other/repo")}),
+        )
+        assert GateBlockReason.CROSS_MILESTONE not in report.reason_codes(Gate.WORK)
+        assert GateBlockReason.PREDECESSOR_BRANCH_UNUSABLE in report.reason_codes(Gate.WORK)
 
 
 class TestEvaluateGatesMixed:
@@ -354,7 +500,7 @@ class TestEvaluateGatesMixed:
         """A normal dep (closed) plus a stack predecessor (validated) -> work open."""
         checker.add(10, "closed")
         checker.add(20, "open")
-        facts = {20: PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
+        facts = {DependencyTarget(20): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
         report = evaluator.evaluate_gates(
             1, "Depends-on: #10\nStack-after: #20", "M1", predecessor_facts=facts
         )
@@ -382,14 +528,14 @@ class TestDownstreamConsumer:
 
         # Stack predecessor validated + reviewed + usable branch -> work allowed.
         checker.add(20, "open")
-        facts = {20: PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
+        facts = {DependencyTarget(20): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
         ok_report = evaluator.evaluate_gates(1, "Stack-after: #20", "M1", predecessor_facts=facts)
         allowed, reasons = may_start_work(ok_report)
         assert allowed is True
         assert reasons == []
 
         # Predecessor not yet reviewed -> work blocked with a code the caller can act on.
-        facts_pending = {20: PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=False)}
+        facts_pending = {DependencyTarget(20): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=False)}
         blocked_report = evaluator.evaluate_gates(1, "Stack-after: #20", "M1", predecessor_facts=facts_pending)
         allowed, reasons = may_start_work(blocked_report)
         assert allowed is False
