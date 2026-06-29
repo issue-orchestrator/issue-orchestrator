@@ -29,6 +29,9 @@ from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSumm
 from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.execution import persistent_session_exchange as pse
+from issue_orchestrator.execution.persistent_role_prompt_policy import (
+    role_session_needs_fresh_prompt_process,
+)
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports import TraceEvent
 
@@ -76,8 +79,16 @@ class _FakeSession:
     ) -> None:
         self.role = role
         self.closed = False
-        self.proc = SimpleNamespace(returncode=None, pid=12345, poll=lambda: None)
-        self.master_fd = -1
+        proc = SimpleNamespace(returncode=None, pid=12345)
+        proc.poll = lambda: proc.returncode
+
+        def _wait(timeout: float | None = None) -> int:  # noqa: ARG001
+            proc.returncode = -15
+            return proc.returncode
+
+        proc.wait = _wait
+        self.proc = proc
+        self.master_fd = os.open(os.devnull, os.O_RDONLY)
         # Captured from the agent env at open time so ``_send`` can
         # write protocol-guardrail artifacts (completion, validation
         # record) to the same paths production reads from. The test
@@ -104,6 +115,15 @@ class _FakeSession:
 def _make_agent(prompt_path: Path) -> AgentConfig:
     return AgentConfig(
         prompt_path=prompt_path, ai_system="claude-code", timeout_minutes=1
+    )
+
+
+def _make_codex_agent(prompt_path: Path) -> AgentConfig:
+    return AgentConfig(
+        prompt_path=prompt_path,
+        provider="codex",
+        ai_system="codex",
+        timeout_minutes=1,
     )
 
 
@@ -383,14 +403,84 @@ def _patch_persistent_runner(
             raise raise_after
         return head
 
+    def _close(session, **_):  # noqa: ANN001, ANN202
+        session.closed = True
+        try:
+            os.close(session.master_fd)
+        except OSError:
+            pass
+        if session.log_writer is not None:
+            session.log_writer.close()
+        return session.proc.returncode
+
     monkeypatch.setattr(pse, "open_persistent_session", _open)
     monkeypatch.setattr(pse, "send_round", _send)
+    monkeypatch.setattr(pse, "close_persistent_session", _close)
     return state
 
 
 # ---------------------------------------------------------------------------
 # Artifact-freshness owner
 # ---------------------------------------------------------------------------
+
+
+class TestRolePromptPolicy:
+    """Provider-aware prompt-process freshness policy."""
+
+    @pytest.mark.parametrize(
+        ("agent_kwargs", "expected"),
+        [
+            pytest.param(
+                {"provider": "claude-code", "ai_system": "claude-code"},
+                False,
+                id="claude",
+            ),
+            pytest.param(
+                {"provider": "codex", "ai_system": "codex"},
+                True,
+                id="codex-default-interactive",
+            ),
+            pytest.param(
+                {
+                    "provider": "codex",
+                    "ai_system": "codex",
+                    "provider_args": {"execution_mode": "exec"},
+                },
+                False,
+                id="codex-exec",
+            ),
+            pytest.param(
+                {
+                    "provider": "codex",
+                    "ai_system": "codex",
+                    "provider_args": {"execution_mode": "tui"},
+                },
+                True,
+                id="codex-tui-alias",
+            ),
+            pytest.param(
+                {
+                    "ai_system": "codex",
+                    "command": "python deterministic-agent.py '{initial_prompt}'",
+                },
+                True,
+                id="codex-ai-system-custom-command",
+            ),
+        ],
+    )
+    def test_role_session_needs_fresh_prompt_process_uses_provider_capability(
+        self,
+        tmp_path: Path,
+        agent_kwargs: dict[str, Any],
+        expected: bool,
+    ) -> None:
+        agent = AgentConfig(
+            prompt_path=tmp_path / "prompt.md",
+            timeout_minutes=1,
+            **agent_kwargs,
+        )
+
+        assert role_session_needs_fresh_prompt_process(agent) is expected
 
 
 class TestRoleAttemptWorkspace:
@@ -675,6 +765,96 @@ class TestPersistentSessionExchangeHappyPath:
         assert "Reviewer report:" in coder_prompt
         assert "Fix the typo in the persisted report path." in coder_prompt
         assert "Reviewer feedback:" not in coder_prompt
+
+    def test_codex_reviewer_respawns_before_followup_prompt(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Interactive Codex reviewer turns do not reuse a completed TUI.
+
+        The tixmeup #391 failure showed the next reviewer prompt landing in
+        Codex's autocomplete/search overlay after a prior turn completed. A
+        fresh process for the follow-up prompt avoids paying a 120s
+        prompt_not_accepted timeout before the existing retry path respawns.
+        """
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "See review report.",
+                        "getting_closer": True,
+                        "decision": {
+                            "verdict": "changes_requested",
+                            "risk": "medium",
+                            "blocking_findings": [{"id": "F1"}],
+                            "nits": [],
+                            "abstraction_review": {
+                                "status": "no_issues",
+                                "findings": [],
+                            },
+                            "nit_policy": "surface",
+                        },
+                        "_authored_report_text": (
+                            "# Review\n\n## F1\n\nFix the stale Codex prompt target.\n"
+                        ),
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "All good",
+                        "getting_closer": True,
+                    },
+                ],
+                "coder": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Fixed prompt target",
+                        "getting_closer": None,
+                    },
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_codex_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.status == "ok"
+        assert outcome.rounds == 2
+        assert [role for role, _ in state["rounds_seen"]] == [
+            "reviewer",
+            "coder",
+            "reviewer",
+        ]
+        assert state["opened"].count("reviewer") == 2
+        assert state["opened"].count("coder") == 1
 
     def test_address_nits_policy_routes_approval_through_coder_rework(
         self,

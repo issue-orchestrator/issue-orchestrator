@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Callable
 from ..ports.pull_request_tracker import StatusCheckRollupRead, StatusCheckRollupState
 
 if TYPE_CHECKING:
-    from ..domain.models import StatusRollupCapability
+    from ..domain.models import OrchestratorState, StatusRollupCapability
     from ..ports.pull_request_tracker import PRInfo
     from ..ports.repository_host import RepositoryHost
 
@@ -99,6 +99,22 @@ class StatusRollupGate:
     repo: str | None = None
     clock: Callable[[], float] = time.time
     backoff_seconds: float = STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS
+
+    def scan_due(
+        self,
+        state: "OrchestratorState",
+        pr_number: int,
+        interval_seconds: float,
+    ) -> bool:
+        """Whether a decisive PR's status rollup should be refreshed this tick."""
+        now = self.clock()
+        if self._suppressed(state.status_rollup_capability, now):
+            return True
+        last = state.awaiting_merge_rollup_scan_timestamps.get(pr_number, 0.0)
+        if last > 0 and now - last < interval_seconds:
+            return False
+        state.awaiting_merge_rollup_scan_timestamps[pr_number] = now
+        return True
 
     def resolve_decisive(
         self,

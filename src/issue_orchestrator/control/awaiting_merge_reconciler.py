@@ -35,6 +35,7 @@ from .queue_cache import record_issue_refreshes
 from .status_rollup_gate import (
     STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS,
     StatusRollupGate,
+    rollup_is_decisive,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 AWAITING_MERGE_HISTORY_LIMIT = 50
 AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS = 300.0
+AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS = 300.0
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
 POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
@@ -96,6 +98,10 @@ class AwaitingMergeReconciler:
     label_drift_scan_interval_seconds: float = (
         AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
     )
+    rollup_scan_interval_seconds: float = AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS
+    # Wall-clock budget for WAIT_FOR_CHECKS before escalating. Default
+    # mirrors Config.post_publish_checks_pending_timeout_seconds; callers
+    # in production wire the configured value through.
     post_publish_checks_pending_timeout_seconds: float = (
         DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS
     )
@@ -238,6 +244,7 @@ class AwaitingMergeReconciler:
                 state.awaiting_merge_checks_pending_since.pop(
                     entry.issue_number, None,
                 )
+                state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
                 drift = None
                 if pr.is_closed_unmerged:
                     drift = self._discover_terminal_pr_issue_drift(
@@ -264,6 +271,7 @@ class AwaitingMergeReconciler:
                 pr_number,
                 entry.pr_url,
             )
+            state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
 
         issue = self._get_issue(entry.issue_number)
         if issue is None:
@@ -284,6 +292,7 @@ class AwaitingMergeReconciler:
             state.awaiting_merge_checks_pending_since.pop(
                 entry.issue_number, None,
             )
+            state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
             return AwaitingMergeEntryDiscovery(
                 "terminal",
                 reconciliation=_reconciliation_fact(
@@ -297,6 +306,15 @@ class AwaitingMergeReconciler:
 
         if pr is None:
             return AwaitingMergeEntryDiscovery("skipped")
+        return self._discover_open_pr_followup(state, entry, pr, issue, pr_number)
+
+    def _discover_open_pr_followup(
+        self, state: OrchestratorState, entry: SessionHistoryEntry,
+        pr: PRInfo, issue: Issue, pr_number: int,
+    ) -> AwaitingMergeEntryDiscovery:
+        if not self._post_publish_eligible(state, entry, pr):
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            return AwaitingMergeEntryDiscovery("still_pending")
         rework, escalation = self._discover_post_publish_followup(
             state=state,
             entry=entry,
@@ -440,7 +458,7 @@ class AwaitingMergeReconciler:
         issue: Issue,
         pr_number: int,
     ) -> tuple[DiscoveredRework | None, DiscoveredAwaitingMergeEscalation | None]:
-        """Decide what, if anything, to do with an approved open PR."""
+        """Decide what to do with an approved-but-not-merged PR."""
         if not self._post_publish_eligible(state, entry, pr):
             # Eligibility loss resets the WAIT_FOR_CHECKS budget, so future
             # re-approval starts fresh.
@@ -452,7 +470,20 @@ class AwaitingMergeReconciler:
         # A stale post-publish human escalation may become reworkable later.
         already_escalated = self.label_manager.needs_human in pr.labels
 
-        resolution = self._rollup_gate().resolve_decisive(
+        gate = self._rollup_gate()
+        decisive = rollup_is_decisive(pr.mergeable_state)
+        due = not decisive or gate.scan_due(
+            state, pr_number, self.rollup_scan_interval_seconds
+        )
+        if not due:
+            return None, None
+
+        # The gate reads the status rollup only when it is decisive
+        # (unstable/blocked), bounding both the GraphQL round-trip and
+        # repeated token-permission failures. A permission denial means the
+        # decision genuinely needs the rollup but the token can't provide
+        # it — escalate loudly rather than hide it behind a PENDING default.
+        resolution = gate.resolve_decisive(
             state.status_rollup_capability,
             pr=pr,
             issue_number=entry.issue_number,

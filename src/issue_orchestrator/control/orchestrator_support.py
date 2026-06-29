@@ -808,8 +808,7 @@ def _fetch_and_update_queue(
         _record_issue_refreshes(state, refreshed_numbers, refreshed_at)
         _reconcile_closed_issue_history(state, all_issues)
 
-        if sync_plan.run_pr_scan:
-            github_workflow.scan_pending_pr_work(state)
+        github_workflow.scan_pending_pr_work(state, include_general_scans=sync_plan.run_pr_scan)
 
         if sync_plan.run_dependency_scan:
             _, dep_blocked = scheduler.get_available_issues(all_issues)
