@@ -740,9 +740,11 @@ class GitHubHttpClient:
         (raises ``GitHubHttpError``) rather than reporting "absent" from a
         truncated scan -- a truncated read is not evidence the marker is
         missing, and silently returning ``False`` would let a dedupe caller
-        post a duplicate comment. Not ETag-cached: dedupe reads are
-        correctness-critical and must not return a stale page. Transport/HTTP
-        errors propagate as ``RepositoryHostError`` so callers can fail loud.
+        post a duplicate comment. A malformed (non-list) 2xx body is likewise
+        treated as a fail-loud read error, not as "absent". Not ETag-cached:
+        dedupe reads are correctness-critical and must not return a stale page.
+        Transport/HTTP errors propagate as ``RepositoryHostError`` so callers
+        can fail loud.
         """
         page = 1
         while True:
@@ -753,7 +755,20 @@ class GitHubHttpClient:
                 caller="issue_comment_marker_present",
                 use_cache=False,
             )
-            if not isinstance(payload, list) or not payload:
+            if not isinstance(payload, list):
+                # A non-list 2xx body is a contract violation (proxy/mock drift
+                # or malformed GitHub response), not evidence of "no marker".
+                # Fail loud so a dedupe caller never posts a duplicate from a
+                # response we could not actually scan.
+                raise GitHubHttpError(
+                    f"Comment listing for #{issue_number} page {page} was not "
+                    f"a list ({type(payload).__name__}); cannot confirm marker "
+                    f"absence",
+                    issue_number=issue_number,
+                )
+            if not payload:
+                # Empty page = the true final page with nothing on it: the
+                # marker is genuinely absent.
                 return False
             for comment in payload:
                 if not isinstance(comment, dict):

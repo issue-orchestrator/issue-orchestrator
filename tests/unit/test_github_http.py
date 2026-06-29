@@ -498,6 +498,21 @@ def test_issue_comment_marker_present_fails_loud_at_page_cap() -> None:
     assert len(pages_requested) >= 20
 
 
+def test_issue_comment_marker_present_fails_loud_on_non_list_payload() -> None:
+    """Regression: a malformed (non-list) 2xx body is a contract violation, not
+    evidence the marker is absent. It must raise rather than return False so a
+    dedupe caller never posts a duplicate from a response it could not scan."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        # GitHub's comments endpoint returns a JSON array; an object here means
+        # an error envelope, proxy/mock drift, or schema change.
+        return httpx.Response(200, json={"message": "Not Found"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    with pytest.raises(GitHubHttpError):
+        client.issue_comment_marker_present(318, _TEST_MARKER)
+
+
 def test_list_issues_since_default_bypasses_etag_cache() -> None:
     requests_seen: list[dict[str, str]] = []
     payload = [{"number": 1, "title": "Issue", "updated_at": "2026-01-02T10:00:00Z"}]
