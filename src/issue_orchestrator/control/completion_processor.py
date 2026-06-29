@@ -55,7 +55,6 @@ from ..ports.review_artifact_reader import (
 from .background_job_supervisor import BackgroundJobSupervisor
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.runtime_artifacts import (
-    branch_post_image_paths_from_diff,
     build_forbidden_runtime_artifact_reason,
     forbidden_branch_runtime_artifacts,
 )
@@ -1327,25 +1326,25 @@ class CompletionProcessor:
             return None
 
         base_ref = f"origin/{self._base_branch()}"
-        diff_result = self.git_adapter.diff_against_base(worktree, base_ref)
-        if not diff_result.success:
+        paths_result = self.git_adapter.branch_post_image_paths_against_base(
+            worktree, base_ref
+        )
+        if not paths_result.success:
             return self._handle_gate_failure(
                 worktree,
                 record,
                 session_name,
                 issue_number,
                 (
-                    "Could not scan branch diff for runtime artifacts "
+                    "Could not scan branch paths for runtime artifacts "
                     f"against {base_ref}: "
-                    f"{diff_result.error or 'unknown git error'}"
+                    f"{paths_result.error or 'unknown git error'}"
                 ),
                 gate_record=None,
                 run_assets=run_assets,
             )
 
-        forbidden = forbidden_branch_runtime_artifacts(
-            branch_post_image_paths_from_diff(diff_result.diff_text)
-        )
+        forbidden = forbidden_branch_runtime_artifacts(paths_result.paths)
         if not forbidden:
             return None
         return self._handle_gate_failure(

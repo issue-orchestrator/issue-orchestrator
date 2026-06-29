@@ -18,6 +18,7 @@ from ..execution.command_runner import LocalCommandRunner
 from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
 from ..ports.git import Git, GitError, GitResult
 from ..ports.working_copy import (
+    BranchPathsResult,
     CommitInfo,
     BranchStatus,
     DiffResult,
@@ -267,6 +268,45 @@ class GitWorkingCopy:
                 error,
             )
             return DiffResult(success=False, error=error)
+
+    def branch_post_image_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult:
+        """Return branch-tip post-image paths via a path-oriented diff.
+
+        ``--name-only --diff-filter=ACMRT`` lists exactly the files present in
+        the branch tip (Added/Copied/Modified/Renamed-to/Type-changed) while
+        excluding Deletions (``D``); for renames/copies ``--name-only`` reports
+        the new (post-image) name. ``-z`` keeps paths intact regardless of
+        spaces or quoting. Unlike a unified-diff text parser, this sees no-hunk
+        changes (empty-file additions, mode-only changes) and binary changes,
+        so committed runtime artifacts cannot slip past path-based guards.
+        """
+        try:
+            result = self._run_git(
+                worktree,
+                [
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "--no-ext-diff",
+                    "--diff-filter=ACMRT",
+                    f"{base_ref}...HEAD",
+                ],
+            )
+            return BranchPathsResult(
+                success=True,
+                paths=tuple(self._list_paths_from_nul_output(result.stdout)),
+            )
+        except GitError as exc:
+            error = _git_error_output(exc)
+            logger.warning(
+                "Failed to read branch paths against %s in %s: %s",
+                base_ref,
+                worktree,
+                error,
+            )
+            return BranchPathsResult(success=False, error=error)
 
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         """Get commits that are ahead of main branch."""

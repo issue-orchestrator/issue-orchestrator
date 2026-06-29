@@ -57,7 +57,11 @@ from issue_orchestrator.ports.review_artifact_reader import (
     ReviewArtifactContent,
     ReviewArtifactReadCommand,
 )
-from issue_orchestrator.ports.working_copy import DiffResult, PushResult
+from issue_orchestrator.ports.working_copy import (
+    BranchPathsResult,
+    DiffResult,
+    PushResult,
+)
 from issue_orchestrator.domain.events import EventBus, SessionEvent
 from issue_orchestrator.infra.issue_diagnostics import DiagnosticReference
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -223,6 +227,9 @@ def mock_git_adapter():
     adapter.diff_against_base = Mock(
         return_value=DiffResult(success=True, diff_text="")
     )
+    adapter.branch_post_image_paths_against_base = Mock(
+        return_value=BranchPathsResult(success=True, paths=())
+    )
     return adapter
 
 
@@ -323,30 +330,16 @@ class TestCompletionProcessorLabelActions:
 
 
 class TestRuntimeArtifactBranchGuard:
-    """Pre-publish guard rejects committed IO runtime artifacts (#6659)."""
+    """Pre-publish guard rejects committed IO runtime artifacts (#6659).
 
-    @staticmethod
-    def _diff_adding(path: str) -> str:
-        return (
-            f"diff --git a/{path} b/{path}\n"
-            "new file mode 100644\n"
-            "index 0000000..1111111\n"
-            "--- /dev/null\n"
-            f"+++ b/{path}\n"
-            "@@ -0,0 +1 @@\n"
-            "+runtime\n"
-        )
-
-    @staticmethod
-    def _binary_diff_adding(path: str) -> str:
-        # Binary additions carry no ``+++ b/...`` line — only the
-        # ``Binary files /dev/null and b/<path> differ`` line.
-        return (
-            f"diff --git a/{path} b/{path}\n"
-            "new file mode 100644\n"
-            "index 0000000..1111111\n"
-            f"Binary files /dev/null and b/{path} differ\n"
-        )
+    The guard consumes branch-tip post-image paths from
+    ``branch_post_image_paths_against_base`` (a path-oriented Git query) rather
+    than parsing diff text, so it sees every change shape git can emit —
+    text/binary/empty-file additions and rename/copy destinations — uniformly.
+    The diff-shape coverage lives with the adapter in
+    ``test_git_working_copy.py``; here we verify the policy on the resulting
+    path list.
+    """
 
     @staticmethod
     def _publish_record() -> CompletionRecord:
@@ -367,6 +360,10 @@ class TestRuntimeArtifactBranchGuard:
             ".issue-orchestrator/review-feedback/cycle-1.md",
             ".issue-orchestrator/review-response.json",
             ".issue-orchestrator/review-report.md",
+            # A binary blob and an empty-file addition both surface as plain
+            # branch-tip paths here — no diff text is parsed — so they are
+            # blocked just like any other runtime output.
+            ".issue-orchestrator/tool-homes/blob.bin",
         ],
     )
     def test_committed_runtime_artifact_blocks_publish(
@@ -378,9 +375,9 @@ class TestRuntimeArtifactBranchGuard:
         artifact_path,
     ):
         worktree = worktree_with_completion(self._publish_record())
-        mock_git_adapter.diff_against_base = Mock(
-            return_value=DiffResult(
-                success=True, diff_text=self._diff_adding(artifact_path)
+        mock_git_adapter.branch_post_image_paths_against_base = Mock(
+            return_value=BranchPathsResult(
+                success=True, paths=("src/app.py", artifact_path)
             )
         )
 
@@ -398,44 +395,14 @@ class TestRuntimeArtifactBranchGuard:
         mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.create_pr.assert_not_called()
 
-    def test_committed_binary_runtime_artifact_blocks_publish(
-        self,
-        processor,
-        mock_git_adapter,
-        mock_pr_adapter,
-        worktree_with_completion,
-    ):
-        # A committed *binary* runtime artifact has no ``+++ b/...`` diff line;
-        # the guard must still block publish before push/PR creation (#6659).
-        artifact_path = ".issue-orchestrator/tool-homes/blob.bin"
-        worktree = worktree_with_completion(self._publish_record())
-        mock_git_adapter.diff_against_base = Mock(
-            return_value=DiffResult(
-                success=True, diff_text=self._binary_diff_adding(artifact_path)
-            )
-        )
-
-        result = processor.process(
-            worktree,
-            run_assets=make_session_run_assets(worktree),
-            issue_number=6594,
-            issue_title="Test Issue",
-        )
-
-        assert not result.success
-        assert "runtime artifacts" in (result.message or "")
-        assert artifact_path in (result.message or "")
-        mock_git_adapter.push.assert_not_called()
-        mock_pr_adapter.create_pr.assert_not_called()
-
     def test_tracked_config_yaml_does_not_block(
         self, processor, mock_git_adapter, worktree_with_completion
     ):
         worktree = worktree_with_completion(self._publish_record())
-        mock_git_adapter.diff_against_base = Mock(
-            return_value=DiffResult(
+        mock_git_adapter.branch_post_image_paths_against_base = Mock(
+            return_value=BranchPathsResult(
                 success=True,
-                diff_text=self._diff_adding(".issue-orchestrator/config/main.yaml"),
+                paths=(".issue-orchestrator/config/main.yaml", "src/app.py"),
             )
         )
 
@@ -448,12 +415,17 @@ class TestRuntimeArtifactBranchGuard:
 
         assert result.success
 
-    def test_diff_scan_failure_fails_closed(
+    def test_path_scan_failure_fails_closed(
         self, processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion
     ):
+        # The earlier test-skip scan reads diff text and must pass, so the
+        # runtime-artifact path scan is the one that fails here.
         worktree = worktree_with_completion(self._publish_record())
         mock_git_adapter.diff_against_base = Mock(
-            return_value=DiffResult(success=False, error="fatal: bad revision")
+            return_value=DiffResult(success=True, diff_text="")
+        )
+        mock_git_adapter.branch_post_image_paths_against_base = Mock(
+            return_value=BranchPathsResult(success=False, error="fatal: bad revision")
         )
 
         result = processor.process(
