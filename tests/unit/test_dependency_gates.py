@@ -23,6 +23,7 @@ from issue_orchestrator.domain.dependencies import (
     DependencyTarget,
     EdgeProblem,
     parse_dependency_edges,
+    parse_dependency_refs,
 )
 from issue_orchestrator.domain.dependency_gates import (
     Gate,
@@ -121,6 +122,94 @@ class TestParseDependencyEdges:
 
     def test_no_directives_returns_empty(self):
         assert parse_dependency_edges("just a body") == []
+
+    def test_normal_edge_tolerates_inline_comment(self):
+        """A documented inline ``# comment`` after a normal ref is tolerated.
+
+        The legacy ``Depends-on:`` parser already ignores trailing text; the
+        typed path must not regress that into ``MALFORMED_REFERENCE``.
+        """
+        edges = parse_dependency_edges("Depends-on: #123  # GitHub issue #123")
+        assert len(edges) == 1
+        assert edges[0].mode is DependencyMode.NORMAL
+        assert edges[0].issue_number == 123
+        assert edges[0].problem is None
+
+    def test_stack_edge_tolerates_inline_comment(self):
+        """Trailing text after a valid stack ref is tolerated too (one grammar)."""
+        edges = parse_dependency_edges("Stack-after: #20  # base branch")
+        assert len(edges) == 1
+        assert edges[0].mode is DependencyMode.STACK
+        assert edges[0].issue_number == 20
+        assert edges[0].problem is None
+
+    def test_malformed_normal_line_is_ignored_like_legacy(self):
+        """An unparseable normal line is silently ignored, as the legacy path does.
+
+        ``Depends-on: not a number`` and ``Depends-on: 123`` (no ``#``) are
+        documented "silently ignored" mistakes (FAQ Q23). The typed normal path
+        must preserve that — not surface them as malformed, gate-blocking edges.
+        """
+        assert parse_dependency_edges("Depends-on: not a number") == []
+        assert parse_dependency_edges("Depends-on: 123") == []
+        assert parse_dependency_edges("Depends-on: [M2-010]") == []
+
+
+class TestNormalEdgeMatchesLegacyPath:
+    """The typed normal edges must agree with the legacy reference parser.
+
+    This is the anti-drift guarantee for F1/A1: ``parse_dependency_refs`` (the
+    legacy owner used by ``evaluate``) and the normal-mode edges from
+    ``parse_dependency_edges`` (used by ``evaluate_gates``) must resolve the same
+    ``Depends-on:`` lines to the same identities — including the documented
+    inline-comment examples and the documented silently-ignored mistakes.
+    """
+
+    @staticmethod
+    def _normal_identities(body: str) -> list[tuple[int | None, str | None, str | None]]:
+        edges = parse_dependency_edges(body)
+        return [
+            (e.issue_number, e.external_id, e.repository)
+            for e in edges
+            if e.mode is DependencyMode.NORMAL and e.problem is None
+        ]
+
+    @staticmethod
+    def _legacy_identities(body: str) -> list[tuple[int | None, str | None, str | None]]:
+        return [
+            (r.issue_number, r.external_id, r.repository)
+            for r in parse_dependency_refs(body)
+        ]
+
+    def test_documented_inline_comment_examples_agree(self):
+        """The exact ``docs/user/faq.md`` Q22 examples parse identically."""
+        body = (
+            "Depends-on: #123                    # GitHub issue #123 (same milestone or M0)\n"
+            "Depends-on: org/other-repo#456      # Cross-repo dependency\n"
+            "Depends-on: M2-010                  # Issue with [M2-010] in its title\n"
+        )
+        assert self._normal_identities(body) == [
+            (123, None, None),
+            (456, None, "org/other-repo"),
+            (None, "M2-010", None),
+        ]
+        assert self._normal_identities(body) == self._legacy_identities(body)
+
+    def test_documented_ignored_mistakes_agree(self):
+        """The ``docs/user/faq.md`` Q23 "silently ignored" lines yield nothing on both paths."""
+        body = (
+            "Depends-on: [M2-010]\n"
+            "Depends-on: 123\n"
+            "Depends-on: not a number\n"
+        )
+        assert self._normal_identities(body) == []
+        assert self._legacy_identities(body) == []
+
+    def test_leading_zero_issue_number_agrees(self):
+        """``Depends-on: #010`` resolves to #10 on both paths (FAQ Q23)."""
+        body = "Depends-on: #010"
+        assert self._normal_identities(body) == [(10, None, None)]
+        assert self._normal_identities(body) == self._legacy_identities(body)
 
 
 # --------------------------------------------------------------------------- #
@@ -322,6 +411,28 @@ class TestEvaluateGatesNormalEdges:
         checker.add(10, "closed")
         ok = evaluator.evaluate_gates(1, "Depends-on: #10", "M1")
         assert ok.all_open
+
+    def test_inline_comment_normal_dependency_does_not_falsely_block(self, evaluator, checker):
+        """A documented ``Depends-on: #N  # comment`` line gates normally, not as malformed.
+
+        Regression for F1: the typed gate path used to require the whole value to
+        be a bare reference, so a documented inline-comment line became
+        ``MALFORMED_REFERENCE`` and blocked every gate even when the dependency
+        was satisfied.
+        """
+        checker.add(10, "closed")
+        report = evaluator.evaluate_gates(1, "Depends-on: #10  # GitHub issue #10", "M1")
+        assert report.all_open
+        assert GateBlockReason.MALFORMED_REFERENCE not in report.reason_codes(Gate.WORK)
+
+    def test_unparseable_normal_line_is_ignored_not_malformed(self, evaluator):
+        """An unparseable normal line produces no edge, so it blocks nothing.
+
+        Preserves the legacy "silently ignored" contract on the gate path; only
+        the new ``Stack-after:`` syntax surfaces malformed values as blocking.
+        """
+        report = evaluator.evaluate_gates(1, "Depends-on: not a number", "M1")
+        assert report.all_open
 
     def test_missing_predecessor_blocks_with_reason(self, evaluator):
         report = evaluator.evaluate_gates(1, "Depends-on: #999", "M1")

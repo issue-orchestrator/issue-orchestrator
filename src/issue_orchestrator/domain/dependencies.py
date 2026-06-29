@@ -231,20 +231,66 @@ class DependencyReport:
         return "Blocked - " + "; ".join(parts)
 
 
-# Pattern to extract External-ID or issue number from Depends-on lines
-# Supports:
-#   - Depends-on: #123
-#   - Depends-on: M1-010
-#   - Depends-on: owner/repo#123
-DEPENDS_ON_PATTERN = re.compile(
-    r"Depends-on:\s*"
+# Single dependency-reference grammar, shared by the legacy ``Depends-on:``
+# parser and the typed edge parser. A reference is one of ``owner/repo#123``,
+# ``#123``, or ``M1-010``. This is the one grammar owner (ADR-0029 A1): both
+# paths build on it so a normal ``Depends-on:`` line cannot mean one thing to the
+# legacy evaluator and another to the typed gate report.
+_REFERENCE_GRAMMAR = (
     r"(?:"
     r"(?P<repo>[\w.-]+/[\w.-]+)?#(?P<issue>\d+)"  # owner/repo#123 or #123
     r"|"
     r"(?P<external_id>M\d+-\d{3})"  # M1-010 style external ID (3 digits)
-    r")",
+    r")"
+)
+
+# Pattern to extract External-ID or issue number from Depends-on lines.
+# Supports:
+#   - Depends-on: #123
+#   - Depends-on: M1-010
+#   - Depends-on: owner/repo#123
+# It finds the reference immediately after ``Depends-on:`` and tolerates any
+# trailing text (e.g. a documented inline ``# comment``). Behavior is unchanged;
+# it now reuses the shared reference grammar above.
+DEPENDS_ON_PATTERN = re.compile(
+    r"Depends-on:\s*" + _REFERENCE_GRAMMAR,
     re.IGNORECASE | re.MULTILINE,
 )
+
+# A directive value resolves to a reference when it *begins* with one, tolerating
+# trailing text exactly like the legacy parser. Anchoring at the start (not the
+# whole value) is what keeps a documented ``Depends-on: #123  # note`` line a
+# normal reference instead of a malformed one.
+_LEADING_REFERENCE_PATTERN = re.compile(r"^" + _REFERENCE_GRAMMAR, re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class _ReferenceParse:
+    """Identity fields parsed from one shared-grammar reference match.
+
+    The single place that interprets the grammar's capture groups, so the legacy
+    and typed parsers cannot drift on what ``#123`` / ``owner/repo#123`` /
+    ``M1-010`` resolve to.
+    """
+
+    issue_number: int | None
+    external_id: str | None
+    repository: str | None
+
+
+def _interpret_reference(match: re.Match[str]) -> _ReferenceParse:
+    """Turn a shared-grammar match into resolved identity fields."""
+    if match.group("issue"):
+        return _ReferenceParse(
+            issue_number=int(match.group("issue")),
+            external_id=None,
+            repository=match.group("repo"),
+        )
+    return _ReferenceParse(
+        issue_number=None,
+        external_id=match.group("external_id").upper(),
+        repository=None,
+    )
 
 
 @dataclass(frozen=True)
@@ -304,15 +350,14 @@ def parse_dependencies(issue_body: str) -> list[tuple[int, str | None]]:
     dependencies = []
 
     for match in DEPENDS_ON_PATTERN.finditer(issue_body):
-        if match.group("issue"):
-            issue_num = int(match.group("issue"))
-            repo = match.group("repo")
-            dependencies.append((issue_num, repo))
-        elif match.group("external_id"):
+        ref = _interpret_reference(match)
+        if ref.issue_number is not None:
+            dependencies.append((ref.issue_number, ref.repository))
+        else:
             # External ID references need resolution - use parse_dependency_refs()
             logger.debug(
                 "External ID dependency %s found - use parse_dependency_refs() for full support",
-                match.group("external_id"),
+                ref.external_id,
             )
 
     return dependencies
@@ -330,40 +375,25 @@ def parse_dependency_refs(issue_body: str) -> list[ParsedDependencyRef]:
     refs: list[ParsedDependencyRef] = []
 
     for match in DEPENDS_ON_PATTERN.finditer(issue_body):
-        if match.group("issue"):
-            refs.append(
-                ParsedDependencyRef(
-                    issue_number=int(match.group("issue")),
-                    repository=match.group("repo"),
-                )
+        ref = _interpret_reference(match)
+        refs.append(
+            ParsedDependencyRef(
+                issue_number=ref.issue_number,
+                external_id=ref.external_id,
+                repository=ref.repository,
             )
-        elif match.group("external_id"):
-            refs.append(
-                ParsedDependencyRef(
-                    external_id=match.group("external_id").upper(),
-                )
-            )
+        )
 
     return refs
 
 
 # Directive line for a typed dependency edge. Captures the keyword (which
-# selects the edge mode) and the whole remaining value so a malformed value can
-# be flagged rather than silently dropped.
+# selects the edge mode) and the whole remaining value. The reference itself is
+# then parsed with the shared ``_LEADING_REFERENCE_PATTERN`` so the typed path
+# applies exactly the same reference grammar as the legacy ``Depends-on:`` path.
 EDGE_DIRECTIVE_PATTERN = re.compile(
     r"^[ \t]*(?P<keyword>Depends-on|Stack-after):[ \t]*(?P<value>.*?)[ \t]*$",
     re.IGNORECASE | re.MULTILINE,
-)
-
-# A directive value is well-formed only if the entire value is a single issue
-# reference (owner/repo#123, #123, or M1-010). Anything else is malformed.
-FULL_REF_PATTERN = re.compile(
-    r"^(?:"
-    r"(?P<repo>[\w.-]+/[\w.-]+)?#(?P<issue>\d+)"
-    r"|"
-    r"(?P<external_id>M\d+-\d{3})"
-    r")$",
-    re.IGNORECASE,
 )
 
 _KEYWORD_MODE = {
@@ -376,10 +406,20 @@ def parse_dependency_edges(issue_body: str) -> list[ParsedDependencyRef]:
     """Parse typed dependency edges from an issue body.
 
     Recognizes both ``Depends-on:`` (normal mode) and ``Stack-after:`` (stack
-    mode) directives. Unlike :func:`parse_dependency_refs`, a directive whose
-    value is not a clean issue reference is returned as a malformed edge
-    (``problem=MALFORMED_REFERENCE``) so the gate report can surface it instead
-    of silently dropping it.
+    mode) directives. The reference is parsed with the same shared grammar the
+    legacy :func:`parse_dependency_refs` uses, so a normal ``Depends-on:`` line
+    means exactly the same thing on both paths — including the documented
+    inline-comment form ``Depends-on: #123  # note`` (trailing text tolerated).
+
+    A directive whose value has no leading reference is handled by mode so the
+    normal-edge contract is preserved:
+
+    - **Normal** (``Depends-on:``) keeps the legacy contract: an unparseable line
+      is silently ignored (it produces no edge), matching
+      :func:`parse_dependency_refs` and the documented "common mistakes" cases.
+    - **Stack** (``Stack-after:``) is new syntax with no legacy contract, so an
+      unparseable value is surfaced as ``MALFORMED_REFERENCE`` rather than
+      silently dropped, and therefore blocks every gate.
 
     Each returned ref records its edge mode and source location for diagnostics.
     Structural problems that need the source issue identity or the wider graph
@@ -393,8 +433,13 @@ def parse_dependency_edges(issue_body: str) -> list[ParsedDependencyRef]:
         value = match.group("value").strip()
         line_number = issue_body.count("\n", 0, match.start()) + 1
 
-        ref_match = FULL_REF_PATTERN.match(value) if value else None
+        ref_match = _LEADING_REFERENCE_PATTERN.match(value) if value else None
         if ref_match is None:
+            # No leading reference. Normal edges keep the legacy "silently
+            # ignored" behavior; only the new stack syntax reports it as a
+            # malformed, gate-blocking edge.
+            if mode is DependencyMode.NORMAL:
+                continue
             edges.append(
                 ParsedDependencyRef(
                     mode=mode,
@@ -405,24 +450,16 @@ def parse_dependency_edges(issue_body: str) -> list[ParsedDependencyRef]:
             )
             continue
 
-        if ref_match.group("issue"):
-            edges.append(
-                ParsedDependencyRef(
-                    issue_number=int(ref_match.group("issue")),
-                    repository=ref_match.group("repo"),
-                    mode=mode,
-                    source_text=value,
-                    source_line=line_number,
-                )
+        ref = _interpret_reference(ref_match)
+        edges.append(
+            ParsedDependencyRef(
+                issue_number=ref.issue_number,
+                external_id=ref.external_id,
+                repository=ref.repository,
+                mode=mode,
+                source_text=value,
+                source_line=line_number,
             )
-        else:
-            edges.append(
-                ParsedDependencyRef(
-                    external_id=ref_match.group("external_id").upper(),
-                    mode=mode,
-                    source_text=value,
-                    source_line=line_number,
-                )
-            )
+        )
 
     return edges
