@@ -23,6 +23,7 @@ from ..ports.repository_host import RepositoryHostError
 from .awaiting_merge_drift_policy import classify_pr_set_drift
 from .awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_COMMENT_MARKER,
+    POST_PUBLISH_VALIDATION_SOURCE,
     REWORK_ACTIONS,
     PostApprovalAction,
     build_escalation,
@@ -35,23 +36,29 @@ from .queue_cache import record_issue_refreshes
 from .status_rollup_gate import (
     STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS,
     StatusRollupGate,
+    rollup_is_decisive,
 )
 
 if TYPE_CHECKING:
-    from ..domain.models import OrchestratorState, SessionHistoryEntry
+    from ..domain.models import (
+        DiscoveredMergeQueueEnqueue,
+        OrchestratorState,
+        SessionHistoryEntry,
+    )
     from ..ports.issue import Issue
     from ..ports.pull_request_tracker import PRInfo
     from ..ports.repository_host import RepositoryHost
     from .label_manager import LabelManager
+    from .merge_queue_coordinator import MergeQueueCoordinator
 
 
 logger = logging.getLogger(__name__)
 
 AWAITING_MERGE_HISTORY_LIMIT = 50
 AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS = 300.0
+AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS = 300.0
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
-POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
 
 
 @dataclass(frozen=True)
@@ -63,6 +70,7 @@ class AwaitingMergeEntryDiscovery:
     drift: DiscoveredAwaitingMergeDrift | None = None
     rework: DiscoveredRework | None = None
     escalation: DiscoveredAwaitingMergeEscalation | None = None
+    enqueue: "DiscoveredMergeQueueEnqueue | None" = None
 
 
 @dataclass(frozen=True)
@@ -74,12 +82,14 @@ class AwaitingMergeReconciliationResult:
     drift_discovered: int = 0
     rework_discovered: int = 0
     escalation_discovered: int = 0
+    enqueue_discovered: int = 0
     still_pending: int = 0
     skipped: int = 0
     reconciliations: tuple[DiscoveredAwaitingMergeReconciliation, ...] = ()
     drifts: tuple[DiscoveredAwaitingMergeDrift, ...] = ()
     reworks: tuple[DiscoveredRework, ...] = ()
     escalations: tuple[DiscoveredAwaitingMergeEscalation, ...] = ()
+    enqueues: tuple["DiscoveredMergeQueueEnqueue", ...] = ()
 
 
 DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS = 1800.0
@@ -96,22 +106,21 @@ class AwaitingMergeReconciler:
     label_drift_scan_interval_seconds: float = (
         AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS
     )
+    rollup_scan_interval_seconds: float = AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS
     # Wall-clock budget for WAIT_FOR_CHECKS before escalating. Default
     # mirrors Config.post_publish_checks_pending_timeout_seconds; callers
     # in production wire the configured value through.
     post_publish_checks_pending_timeout_seconds: float = (
         DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS
     )
-    # Repo slug (owner/name) used only to make the rollup-permission
-    # diagnostic actionable; optional so unit tests need not wire it.
     repo: str | None = None
-    # Backoff window after a rollup-permission denial before re-probing.
     status_rollup_backoff_seconds: float = STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS
+    # Optional merge queue owner. When set and enabled, it takes over the
+    # post-approval merge-readiness decision (enqueue/observe/conflict-rework/
+    # failure-routing) instead of the default rework/escalation dispatch.
+    merge_queue: "MergeQueueCoordinator | None" = None
 
     def _rollup_gate(self) -> StatusRollupGate:
-        # Rebuilt per call: the gate is stateless except for the backoff
-        # state it reads/writes on OrchestratorState, so this is cheap and
-        # keeps the clock in lockstep with the reconciler's injected clock.
         return StatusRollupGate(
             self.repository_host,
             repo=self.repo,
@@ -126,12 +135,14 @@ class AwaitingMergeReconciler:
         drift_discovered = 0
         rework_discovered = 0
         escalation_discovered = 0
+        enqueue_discovered = 0
         still_pending = 0
         skipped = 0
         reconciliations: list[DiscoveredAwaitingMergeReconciliation] = []
         drifts: list[DiscoveredAwaitingMergeDrift] = []
         reworks: list[DiscoveredRework] = []
         escalations: list[DiscoveredAwaitingMergeEscalation] = []
+        enqueues: list["DiscoveredMergeQueueEnqueue"] = []
         pending_issue_numbers: set[int] = set()
         terminal_issue_numbers: set[int] = set()
 
@@ -168,6 +179,9 @@ class AwaitingMergeReconciler:
             if discovery.escalation is not None:
                 escalation_discovered += 1
                 escalations.append(discovery.escalation)
+            if discovery.enqueue is not None:
+                enqueue_discovered += 1
+                enqueues.append(discovery.enqueue)
 
         label_drifts = self._discover_label_drifts(
             state,
@@ -190,12 +204,14 @@ class AwaitingMergeReconciler:
             drift_discovered=drift_discovered,
             rework_discovered=rework_discovered,
             escalation_discovered=escalation_discovered,
+            enqueue_discovered=enqueue_discovered,
             still_pending=still_pending,
             skipped=skipped,
             reconciliations=tuple(reconciliations),
             drifts=tuple(drifts),
             reworks=tuple(reworks),
             escalations=tuple(escalations),
+            enqueues=tuple(enqueues),
         )
 
     def _awaiting_merge_entries(
@@ -247,6 +263,7 @@ class AwaitingMergeReconciler:
                 state.awaiting_merge_checks_pending_since.pop(
                     entry.issue_number, None,
                 )
+                state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
                 drift = None
                 if pr.is_closed_unmerged:
                     drift = self._discover_terminal_pr_issue_drift(
@@ -273,6 +290,7 @@ class AwaitingMergeReconciler:
                 pr_number,
                 entry.pr_url,
             )
+            state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
 
         issue = self._get_issue(entry.issue_number)
         if issue is None:
@@ -293,6 +311,7 @@ class AwaitingMergeReconciler:
             state.awaiting_merge_checks_pending_since.pop(
                 entry.issue_number, None,
             )
+            state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
             return AwaitingMergeEntryDiscovery(
                 "terminal",
                 reconciliation=_reconciliation_fact(
@@ -306,7 +325,16 @@ class AwaitingMergeReconciler:
 
         if pr is None:
             return AwaitingMergeEntryDiscovery("skipped")
-        rework, escalation = self._discover_post_publish_followup(
+        return self._discover_open_pr_followup(state, entry, pr, issue, pr_number)
+
+    def _discover_open_pr_followup(
+        self, state: OrchestratorState, entry: SessionHistoryEntry,
+        pr: PRInfo, issue: Issue, pr_number: int,
+    ) -> AwaitingMergeEntryDiscovery:
+        if not self._post_publish_eligible(state, entry, pr):
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            return AwaitingMergeEntryDiscovery("still_pending")
+        rework, escalation, enqueue = self._discover_post_publish_followup(
             state=state,
             entry=entry,
             pr=pr,
@@ -317,6 +345,7 @@ class AwaitingMergeReconciler:
             "still_pending",
             rework=rework,
             escalation=escalation,
+            enqueue=enqueue,
         )
 
     def _discover_terminal_pr_issue_drift(
@@ -448,81 +477,188 @@ class AwaitingMergeReconciler:
         pr: PRInfo,
         issue: Issue,
         pr_number: int,
-    ) -> tuple[DiscoveredRework | None, DiscoveredAwaitingMergeEscalation | None]:
-        """Decide what (if anything) to do with an approved-but-not-merged PR.
+    ) -> tuple[
+        DiscoveredRework | None,
+        DiscoveredAwaitingMergeEscalation | None,
+        "DiscoveredMergeQueueEnqueue | None",
+    ]:
+        """Decide what to do with an approved-but-not-merged PR.
 
-        Returns ``(rework, escalation)`` — at most one is non-None on any
-        given tick. Reads as a table of contents: clear stale bookkeeping
-        if the PR is no longer in the post-approval state, gate, classify,
-        clear bookkeeping if the classifier moved on, then dispatch.
+        When merge queue mode is enabled the merge queue coordinator owns the
+        decision (enqueue / observe / conflict-rework / failure-route) instead
+        of the default rework/escalation dispatch below.
         """
         if not self._post_publish_eligible(state, entry, pr):
-            # Eligibility lost (label dropped, needs_rework added, an
-            # active session/pending rework appeared) — clear any stale
-            # WAIT_FOR_CHECKS timestamp so a future re-approval starts
-            # a fresh wait budget instead of inheriting an old one. Without
-            # this, a long gap (commit → label drop → days later → re-
-            # approve) would compute `elapsed >> timeout` and escalate
-            # immediately, defeating the timeout entirely.
+            # Eligibility loss resets the WAIT_FOR_CHECKS budget, so future
+            # re-approval starts fresh.
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
-            return None, None
+            return None, None, None
+
+        if self.merge_queue is not None and self.merge_queue.enabled:
+            return self._discover_merge_queue_followup(
+                state=state, entry=entry, pr=pr, issue=issue, pr_number=pr_number,
+            )
+        return self._discover_default_post_publish_followup(
+            state=state, entry=entry, pr=pr, issue=issue, pr_number=pr_number,
+        )
+
+    def _discover_default_post_publish_followup(
+        self,
+        *,
+        state: OrchestratorState,
+        entry: SessionHistoryEntry,
+        pr: PRInfo,
+        issue: Issue,
+        pr_number: int,
+    ) -> tuple[
+        DiscoveredRework | None,
+        DiscoveredAwaitingMergeEscalation | None,
+        "DiscoveredMergeQueueEnqueue | None",
+    ]:
+        """Default (non-merge-queue) rework/escalation dispatch for an
+        approved-but-not-merged PR.
+        """
+        # _post_publish_eligible returns False when label_manager is None.
+        assert self.label_manager is not None
+        # A stale post-publish human escalation may become reworkable later.
+        already_escalated = self.label_manager.needs_human in pr.labels
+
+        gate = self._rollup_gate()
+        decisive = rollup_is_decisive(pr.mergeable_state)
+        due = not decisive or gate.scan_due(
+            state, pr_number, self.rollup_scan_interval_seconds
+        )
+        if not due:
+            return None, None, None
 
         # The gate reads the status rollup only when it is decisive
         # (unstable/blocked), bounding both the GraphQL round-trip and
         # repeated token-permission failures. A permission denial means the
         # decision genuinely needs the rollup but the token can't provide
         # it — escalate loudly rather than hide it behind a PENDING default.
-        resolution = self._rollup_gate().resolve_decisive(
+        resolution = gate.resolve_decisive(
             state.status_rollup_capability,
             pr=pr,
             issue_number=entry.issue_number,
             issue_key=issue.key.stable_id(),
         )
         if resolution.permission_denied:
-            # No longer a timing wait but an operator-action wait — drop any
-            # WAIT_FOR_CHECKS bookkeeping so it can't escalate spuriously.
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            if already_escalated:
+                return None, None, None
             return None, self._build_rollup_permission_escalation(
                 pr=pr,
                 issue_number=entry.issue_number,
                 issue_key=issue.key.stable_id(),
                 pr_number=pr_number,
                 reason=resolution.reason,
-            )
+            ), None
         pr.status_check_rollup = resolution.rollup_state
 
         action = classify_post_approval_state(pr)
         logger.debug(
-            "Awaiting-merge classify: issue=#%d pr=#%d state=%s rollup=%s action=%s",
+            "Awaiting-merge classify: issue=#%d pr=#%d state=%s rollup=%s "
+            "action=%s already_escalated=%s",
             entry.issue_number,
             pr_number,
             normalized_state(pr.mergeable_state),
             pr.status_check_rollup,
             action,
+            already_escalated,
         )
-        if action != "WAIT_FOR_CHECKS":
+        if action != "WAIT_FOR_CHECKS" or already_escalated:
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
 
         if action in REWORK_ACTIONS:
             return self._build_rework_discovery(
                 pr=pr, action=action, entry=entry, issue=issue, pr_number=pr_number,
-            ), None
+                clear_needs_human=already_escalated,
+            ), None, None
+        if already_escalated:
+            return None, None, None
         if action == "BLOCKED_TERMINAL":
             return None, self._build_branch_protection_escalation(
                 pr=pr,
                 issue_number=entry.issue_number,
                 issue_key=issue.key.stable_id(),
                 pr_number=pr_number,
-            )
+            ), None
         if action == "WAIT_FOR_CHECKS":
             return None, self._maybe_escalate_pending_checks(
                 state=state, pr=pr,
                 issue_number=entry.issue_number,
                 issue_key=issue.key.stable_id(),
                 pr_number=pr_number,
-            )
+            ), None
         # READY / UNKNOWN — nothing to do.
-        return None, None
+        return None, None, None
+
+    def _discover_merge_queue_followup(
+        self,
+        *,
+        state: OrchestratorState,
+        entry: SessionHistoryEntry,
+        pr: PRInfo,
+        issue: Issue,
+        pr_number: int,
+    ) -> tuple[
+        DiscoveredRework | None,
+        DiscoveredAwaitingMergeEscalation | None,
+        "DiscoveredMergeQueueEnqueue | None",
+    ]:
+        """Run the merge queue coordinator for one eligible approved PR.
+
+        Reads the queue entry first so an already-queued PR is observed without
+        paying for (or escalating on) a status-rollup read. Only a not-yet-queued
+        PR resolves the rollup, since the base eligibility classification needs
+        it for ``unstable``/``blocked`` states.
+        """
+        assert self.merge_queue is not None
+        read = self.merge_queue.read_entry(pr_number)
+        if read.is_indeterminate:
+            # The queue state could not be determined (transient read failure or
+            # an unmodeled provider state). Treat it as non-actionable: do NOT
+            # resolve the rollup or classify, so an unreadable queue can never
+            # enqueue, rework, or escalate a PR off stale status. Re-observe next
+            # tick.
+            return None, None, None
+        queue_entry = read.entry
+        if queue_entry is None:
+            decisive = rollup_is_decisive(pr.mergeable_state)
+            due = not decisive or self._rollup_gate().scan_due(
+                state, pr_number, self.rollup_scan_interval_seconds
+            )
+            if not due:
+                return None, None, None
+            resolution = self._rollup_gate().resolve_decisive(
+                state.status_rollup_capability,
+                pr=pr,
+                issue_number=entry.issue_number,
+                issue_key=issue.key.stable_id(),
+            )
+            if resolution.permission_denied:
+                state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+                return None, self._build_rollup_permission_escalation(
+                    pr=pr,
+                    issue_number=entry.issue_number,
+                    issue_key=issue.key.stable_id(),
+                    pr_number=pr_number,
+                    reason=resolution.reason,
+                ), None
+            pr.status_check_rollup = resolution.rollup_state
+
+        # Merge-queue mode does not run the WAIT_FOR_CHECKS timeout machine —
+        # GitHub re-runs required checks on the merge group — so clear any
+        # pending-checks bookkeeping a prior non-queue tick may have left.
+        state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+        followup = self.merge_queue.classify(
+            pr=pr,
+            issue=issue,
+            issue_number=entry.issue_number,
+            pr_number=pr_number,
+            entry=queue_entry,
+        )
+        return followup.rework, followup.escalation, followup.enqueue
 
     def _post_publish_eligible(
         self,
@@ -536,8 +672,7 @@ class AwaitingMergeReconciler:
             return False
         if self.label_manager.code_reviewed not in pr.labels:
             return False
-        terminal_labels = (self.label_manager.needs_human, self.label_manager.needs_rework)
-        if any(label in pr.labels for label in terminal_labels):
+        if self.label_manager.needs_rework in pr.labels:
             return False
         if any(s.issue.number == entry.issue_number for s in state.active_sessions):
             return False
@@ -556,6 +691,7 @@ class AwaitingMergeReconciler:
         entry: SessionHistoryEntry,
         issue: Issue,
         pr_number: int,
+        clear_needs_human: bool = False,
     ) -> DiscoveredRework:
         assert self.label_manager is not None
         assert issue.agent_type is not None
@@ -567,6 +703,7 @@ class AwaitingMergeReconciler:
             rework_cycle=next_rework_cycle(pr.labels, self.label_manager),
             source=POST_PUBLISH_VALIDATION_SOURCE,
             feedback=build_rework_feedback(pr, action),
+            clear_needs_human=clear_needs_human,
             feedback_comment_already_posted=self._post_publish_comment_present(
                 pr_number
             ),
@@ -604,9 +741,6 @@ class AwaitingMergeReconciler:
         issue_key: str,
         pr_number: int,
     ) -> DiscoveredAwaitingMergeEscalation:
-        # blocked + SUCCESS rollup: branch protection (CODEOWNERS,
-        # approvals, signatures) blocks merge. Code rework can't help —
-        # escalate immediately, no timeout.
         assert self.label_manager is not None
         return build_escalation(
             pr=pr,
@@ -632,10 +766,6 @@ class AwaitingMergeReconciler:
         pr_number: int,
         reason: str,
     ) -> DiscoveredAwaitingMergeEscalation:
-        # The PR is approved and its merge-readiness hinges on the
-        # status-check rollup, but the configured token cannot read check
-        # status. No amount of code rework or waiting fixes a missing token
-        # scope — escalate for operator action (the gate built `reason`).
         assert self.label_manager is not None
         return build_escalation(
             pr=pr,
@@ -656,12 +786,7 @@ class AwaitingMergeReconciler:
         issue_key: str,
         pr_number: int,
     ) -> DiscoveredAwaitingMergeEscalation | None:
-        """Run the WAIT_FOR_CHECKS timeout state machine for one PR.
-
-        Returns an escalation only when the budget has been exceeded;
-        otherwise returns None and (when first observed) records the
-        timestamp on state so subsequent ticks can compute elapsed.
-        """
+        """Run the WAIT_FOR_CHECKS timeout state machine for one PR."""
         assert self.label_manager is not None
         now = self.clock()
         first_seen = state.awaiting_merge_checks_pending_since.get(issue_number)
@@ -692,14 +817,7 @@ class AwaitingMergeReconciler:
         )
 
     def _get_pr(self, issue_number: int, pr_number: int) -> PRInfo | None:
-        # REST-only: this fetch decides terminal vs open and feeds the
-        # post-publish classifier's `mergeable_state`. The status-check
-        # rollup is deliberately NOT fetched here — closed/merged and
-        # clean/dirty/behind PRs never need it, so polling the rollup for
-        # every candidate is what made old terminal PRs pay a GraphQL
-        # round-trip (and hit token-permission walls) every tick. The
-        # rollup is read lazily, only for decisive open PRs, via the
-        # StatusRollupGate in `_discover_post_publish_followup`.
+        # REST-only; decisive open PRs read check rollup lazily through the gate.
         try:
             return self.repository_host.get_pr(pr_number)
         except RepositoryHostError as exc:

@@ -199,7 +199,9 @@ _UNAUTHENTICATED_PREFIXES: tuple[str, ...] = ("/static/",)
 # defense in depth — it narrows the default blast radius and is
 # the right shape for a future isolated-agent model — not a
 # privilege boundary against same-user agents today.
-_AGENT_CALLBACK_ROUTES: frozenset[str] = frozenset({"/api/preflight-push"})
+_AGENT_CALLBACK_ROUTES: frozenset[str] = frozenset(
+    {"/api/preflight-push", "/api/review-exchange/respond"}
+)
 
 
 def _is_agent_callback_route(path: str) -> bool:

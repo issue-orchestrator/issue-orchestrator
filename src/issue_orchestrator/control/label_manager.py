@@ -59,6 +59,15 @@ class LabelManager:
             config.provider_resilience.circuit_breaker.label
         )
 
+        # Triage-reviewed is managed WITHOUT the orchestrator prefix throughout
+        # the triage subsystem (triage_manifest_builder, completion_action_planner,
+        # cleanup_manager, fact_gatherer all use the raw configured value), so we
+        # keep the raw form here for callers that must match the label actually
+        # written to PRs. See the `triage_reviewed` property.
+        self._triage_reviewed_base: str = (
+            config.triage_reviewed_label or "triage-reviewed"
+        )
+
         # Registry keyed by internal key
         self._entries: dict[str, LabelEntry] = {}
         self._build_registry(config)
@@ -238,6 +247,18 @@ class LabelManager:
         return self._resolved["code_reviewed"]
 
     @property
+    def triage_reviewed(self) -> str:
+        """The triage-reviewed label as it is actually applied to PRs.
+
+        Unlike most labels, this one is NOT prefixed: the triage subsystem
+        writes and reads ``config.triage_reviewed_label`` (default
+        ``triage-reviewed``) in raw form. Callers that gate on the label
+        present on a PR — e.g. the merge-queue triage gate — must match that
+        raw value, so this property deliberately skips prefix resolution.
+        """
+        return self._triage_reviewed_base
+
+    @property
     def review_keep_approach(self) -> str:
         return self._resolved["review_keep_approach"]
 
@@ -309,6 +330,43 @@ class LabelManager:
         return [l for l in labels if not self.is_blocking(l)]
 
     # ------------------------------------------------------------------
+    # Recovery / completion cleanup
+    # ------------------------------------------------------------------
+
+    def is_recovered_workflow_label(self, label: str) -> bool:
+        """Return True if *label* is a transient workflow label that should be
+        shed once an issue's work has landed (PR merged or issue closed).
+
+        Covers ``pr-pending``, every ``publish-fail-count-N`` counter, and every
+        blocking label (``blocked``, ``blocked-*``, ``blocked:*``, plus the
+        legacy ``needs-human``/``failed``/``publish-failed`` names). These all
+        describe an in-flight or failed workflow state that no longer applies
+        after recovery.
+        """
+        return (
+            label == self.pr_pending
+            or self.is_blocking(label)
+            or self.is_publish_fail_count(label)
+        )
+
+    def recovered_workflow_labels(self, labels: Sequence[str]) -> list[str]:
+        """Return the subset of *labels* to shed when an issue recovers/completes.
+
+        Order-preserving and de-duplicated. This is the single policy owner for
+        the clear-on-merge transition: callers feed it the issue's current
+        labels and remove whatever it returns.
+        """
+        result: list[str] = []
+        seen: set[str] = set()
+        for label in labels:
+            if label in seen:
+                continue
+            if self.is_recovered_workflow_label(label):
+                result.append(label)
+                seen.add(label)
+        return result
+
+    # ------------------------------------------------------------------
     # Specific-state queries
     # ------------------------------------------------------------------
 
@@ -352,6 +410,10 @@ class LabelManager:
     def publish_fail_count_label(self, n: int) -> str:
         """Return the resolved publish-fail-count-N label."""
         return self._resolve_base(f"publish-fail-count-{n}")
+
+    def is_publish_fail_count(self, label: str) -> bool:
+        """Return True if *label* is any publish-fail-count-N counter (prefix-aware)."""
+        return _PUBLISH_FAIL_COUNT_RE.match(self._strip_prefix(label)) is not None
 
     def extract_publish_fail_count(self, labels: Sequence[str]) -> int:
         """Parse and return the highest publish-fail-count number, or 0."""

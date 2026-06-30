@@ -55,6 +55,7 @@ from .actions import (
     EscalateToHumanAction,
     AddCommentAction,
     ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
 )
 from .action_applier import ActionApplier
 from .session_history import SessionHistoryOwner
@@ -135,6 +136,7 @@ __all__ = [
     "EscalateToHumanAction",
     "AddCommentAction",
     "ReconcileHistoryEntryAction",
+    "RecoverTerminalIssueAction",
     "ActionApplier",
     "SessionHistoryOwner",
     # Validation

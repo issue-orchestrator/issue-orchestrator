@@ -23,7 +23,7 @@ from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 from issue_orchestrator.control.actions import (
     ActionType,
     LaunchSessionAction,
-    ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
     SessionType,
     SyncLabelsAction,
     RemoveLabelAction,
@@ -42,6 +42,7 @@ from issue_orchestrator.domain.models import (
     CompletionOutcome,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
     RequestedAction,
     ObservedCompletion,
@@ -624,6 +625,65 @@ class TestPlannerDependencyGating:
         )
         assert scheduler.dependency_evaluator is evaluator
 
+    def test_planner_blocks_stack_successor_with_missing_predecessor_state(self):
+        """A stack successor stays blocked when no predecessor facts exist."""
+        config = make_config(max_concurrent_sessions=1)
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({20: "open"}),
+            events=Mock(),
+        )  # no facts provider -> conservatively blocked
+        scheduler = Scheduler(config, dependency_evaluator=evaluator)
+        planner = Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
+
+        snapshot = make_snapshot(
+            issues=[
+                make_issue(2, title="Successor", body="Stack-after: #20", milestone="M1"),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        assert plan.actions_of_type(ActionType.LAUNCH_SESSION) == []
+        assert len(plan.skipped) == 1
+        assert plan.skipped[0].number == 2
+        assert "dependency:" in plan.skipped[0].reason
+
+    def test_planner_launches_stack_successor_when_predecessor_ready(self):
+        """A validated + reviewed + usable predecessor branch lets the successor launch."""
+        from issue_orchestrator.domain.dependencies import DependencyTarget
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        class _Provider:
+            def gather_facts(self, targets):
+                return {
+                    t: PredecessorFacts(
+                        branch_usable=True, validation_passed=True,
+                        agent_reviewed=True, branch_name="20-base",
+                    )
+                    for t in targets
+                }
+
+        config = make_config(max_concurrent_sessions=1)
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({20: "open"}),
+            events=Mock(),
+            predecessor_facts_provider=_Provider(),
+        )
+        scheduler = Scheduler(config, dependency_evaluator=evaluator)
+        planner = Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
+
+        snapshot = make_snapshot(
+            issues=[
+                make_issue(2, title="Successor", body="Stack-after: #20", milestone="M1"),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        launches = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert [a.number for a in launches] == [2]
+        assert all("dependency:" not in s.reason for s in plan.skipped)
+
     def test_planner_rejects_dependency_evaluator_without_scheduler_wiring(self):
         config = make_config()
         evaluator = DependencyEvaluator(
@@ -904,7 +964,10 @@ class TestPlanDiscoveredReviews:
 class TestPlanAwaitingMergeReconciliations:
     """Tests for planning awaiting-merge history reconciliation facts."""
 
-    def test_plans_history_reconciliation_action(self):
+    def test_plans_terminal_recovery_action(self):
+        """A terminal (non-drift) reconciliation plans a single owner command
+        that sheds labels then finalizes history — not a standalone history
+        reconciliation that could be terminalized before cleanup."""
         config = make_config()
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
@@ -924,22 +987,33 @@ class TestPlanAwaitingMergeReconciliations:
 
         plan = planner.plan(snapshot)
 
-        actions = plan.actions_of_type(ActionType.RECONCILE_HISTORY_ENTRY)
+        # No standalone history reconciliation for the terminal path — the
+        # owner command finalizes history internally, after the shed succeeds.
+        assert plan.actions_of_type(ActionType.RECONCILE_HISTORY_ENTRY) == []
+        actions = plan.actions_of_type(ActionType.RECOVER_TERMINAL_ISSUE)
         assert len(actions) == 1
         action = actions[0]
-        assert isinstance(action, ReconcileHistoryEntryAction)
+        assert isinstance(action, RecoverTerminalIssueAction)
         assert action.issue_number == 228
         assert action.pr_number == 318
         assert action.pr_url == "https://github.com/test/repo/pull/318"
         assert action.status == "merged"
-        assert action.reason == "PR merged; awaiting merge reconciled"
+        assert action.status_reason == "PR merged; awaiting merge reconciled"
         assert action.source == "pull_request"
         assert action.issue_key == "M1-228"
+        # Carries the reconciliation pause guard the old terminal-cleanup
+        # RemoveLabelAction used to carry: a paused issue (io:needs-reconcile)
+        # must not be shed or finalized behind fail-closed drift handling. The
+        # applier enforces this at the owner-command boundary (#6431 F1).
+        assert action.expected is not None
+        assert "io:needs-reconcile" in action.expected.forbidden_labels
 
-    def test_terminal_pr_merged_reconciliation_strips_pr_pending(self):
-        """Source fix for stranded pr-pending rows: when a PR is observed
-        merged, also produce RemoveLabelAction(pr-pending) so the local
-        label_store mirror is cleaned via the existing write-through path.
+    def test_terminal_pr_merged_reconciliation_recovers_terminal_issue(self):
+        """When a PR is observed merged, plan one RecoverTerminalIssueAction
+        that sheds the issue's transient workflow labels (pr-pending,
+        publish-failed, publish-fail-count-N, blocking) and then finalizes
+        history. The applier reads the issue's live labels to pick the exact
+        set and cleans both GitHub and the local label_store mirror.
         """
         config = make_config()
         scheduler = Scheduler(config)
@@ -960,25 +1034,21 @@ class TestPlanAwaitingMergeReconciliations:
 
         plan = planner.plan(snapshot)
 
-        remove_actions = [
-            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
-            if isinstance(a, RemoveLabelAction)
+        recover_actions = [
+            a for a in plan.actions_of_type(ActionType.RECOVER_TERMINAL_ISSUE)
+            if isinstance(a, RecoverTerminalIssueAction)
             and a.issue_number == 228
-            and a.label == "pr-pending"
         ]
-        assert len(remove_actions) == 1
-        action = remove_actions[0]
+        assert len(recover_actions) == 1
+        action = recover_actions[0]
         assert action.issue_key == "M1-228"
+        assert action.status == "merged"
         assert "merged" in action.reason
-        # No expected.required: by the time we observe the merge, pr-pending
-        # may already have been stripped by an earlier drift pass; treat the
-        # remove as best-effort cleanup, not an optimistic-concurrency mutation.
-        assert action.expected is not None
-        assert action.expected.required_labels == frozenset()
 
-    def test_terminal_issue_closed_reconciliation_strips_pr_pending(self):
-        """When the parent issue is closed (regardless of PR state), the
-        same source fix applies: clean the stranded pr-pending row.
+    def test_terminal_issue_closed_reconciliation_recovers_terminal_issue(self):
+        """When the parent issue is closed (regardless of PR state), the same
+        owner command applies: shed every transient workflow label, then
+        finalize history.
         """
         config = make_config()
         scheduler = Scheduler(config)
@@ -999,19 +1069,20 @@ class TestPlanAwaitingMergeReconciliations:
 
         plan = planner.plan(snapshot)
 
-        remove_actions = [
-            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
-            if isinstance(a, RemoveLabelAction)
+        recover_actions = [
+            a for a in plan.actions_of_type(ActionType.RECOVER_TERMINAL_ISSUE)
+            if isinstance(a, RecoverTerminalIssueAction)
             and a.issue_number == 228
-            and a.label == "pr-pending"
         ]
-        assert len(remove_actions) == 1
+        assert len(recover_actions) == 1
 
     def test_terminal_reconciliation_dedupes_against_drift(self):
         """When a drift action already removes pr-pending for the same
-        issue (PR closed but issue still open), don't duplicate the work
-        with a separate RemoveLabelAction — the SyncLabelsAction's
-        remove_labels already covers it.
+        issue (PR closed but issue still open), don't shed: the drift is
+        ADDING blocked:pr-closed, so shedding blocking labels would
+        contradict it. The drift path finalizes history on its own (standalone
+        ReconcileHistoryEntryAction) and the SyncLabelsAction owns pr-pending
+        removal — no RecoverTerminalIssueAction is planned.
         """
         config = make_config()
         scheduler = Scheduler(config)
@@ -1040,16 +1111,22 @@ class TestPlanAwaitingMergeReconciliations:
 
         plan = planner.plan(snapshot)
 
-        remove_actions = [
-            a for a in plan.actions_of_type(ActionType.REMOVE_LABEL)
-            if isinstance(a, RemoveLabelAction)
+        recover_actions = [
+            a for a in plan.actions_of_type(ActionType.RECOVER_TERMINAL_ISSUE)
+            if isinstance(a, RecoverTerminalIssueAction)
             and a.issue_number == 228
-            and a.label == "pr-pending"
         ]
-        assert remove_actions == [], (
-            "Drift's SyncLabelsAction already removes pr-pending; "
-            "RemoveLabelAction would double up."
+        assert recover_actions == [], (
+            "Drift ADDS blocked:pr-closed; shedding blocking labels would "
+            "contradict the drift. Only history finalize + SyncLabelsAction "
+            "should act."
         )
+        # Drift still finalizes its history entry on its own.
+        history_actions = [
+            a for a in plan.actions_of_type(ActionType.RECONCILE_HISTORY_ENTRY)
+            if a.issue_number == 228
+        ]
+        assert len(history_actions) == 1
         sync_actions = plan.actions_of_type(ActionType.SYNC_LABELS)
         assert len(sync_actions) == 1
         assert "pr-pending" in sync_actions[0].remove_labels
@@ -1522,6 +1599,78 @@ class TestPlanDiscoveredReworks:
         assert len(queue_actions) == 1
         assert queue_actions[0].source == "post_publish_validation"
         assert queue_actions[0].feedback == discovered.feedback
+
+    def test_post_publish_recovery_clears_stale_needs_human(self):
+        """When recovery routes a previously-escalated PR back to rework
+        (clear_needs_human=True), the planner removes the stale needs-human
+        label so the PR isn't left both queued-for-rework and human-flagged."""
+        from issue_orchestrator.domain.models import DiscoveredRework
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=2,
+            source="post_publish_validation",
+            feedback="PR #100 failed checks; routing back to rework.",
+            clear_needs_human=True,
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_needs_human = [
+            a for a in plan.actions
+            if a.action_type == ActionType.REMOVE_LABEL
+            and a.issue_number == 100
+            and a.label == "needs-human"
+        ]
+        assert len(remove_needs_human) == 1
+
+    def test_post_publish_rework_without_recovery_keeps_needs_human_untouched(self):
+        """The normal post-publish path (clear_needs_human=False) must not emit
+        a needs-human removal."""
+        from issue_orchestrator.domain.models import DiscoveredRework
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=2,
+            source="post_publish_validation",
+            feedback="PR #100 failed checks; routing back to rework.",
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_needs_human = [
+            a for a in plan.actions
+            if a.action_type == ActionType.REMOVE_LABEL
+            and a.issue_number == 100
+            and a.label == "needs-human"
+        ]
+        assert remove_needs_human == []
 
     def test_post_publish_validation_rework_skips_duplicate_marker_comment(self):
         """When the marker comment already exists on the PR, the planner
@@ -3220,3 +3369,40 @@ class TestPlanStaleInProgressCleanup:
         # No cleanup actions
         remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
         assert len(remove_actions) == 0
+
+
+class TestMergeQueueEnqueuePlanning:
+    """Discovered merge-queue facts become EnqueueToMergeQueueActions."""
+
+    def test_enqueue_fact_becomes_enqueue_action(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            discovered_merge_queue_enqueues=[
+                DiscoveredMergeQueueEnqueue(
+                    issue_number=228,
+                    pr_number=318,
+                    pr_url="https://github.com/owner/repo/pull/318",
+                    issue_key="M1-228",
+                )
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        actions = plan.actions_of_type(ActionType.ENQUEUE_TO_MERGE_QUEUE)
+        assert len(actions) == 1
+        assert actions[0].pr_number == 318
+        assert actions[0].issue_number == 228
+        assert actions[0].issue_key == "M1-228"
+
+    def test_no_enqueue_actions_without_facts(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        plan = planner.plan(make_snapshot())
+
+        assert plan.actions_of_type(ActionType.ENQUEUE_TO_MERGE_QUEUE) == []

@@ -39,6 +39,7 @@ class _StubConfig:
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
     code_review_label: str | None = None
     code_reviewed_label: str | None = None
+    triage_reviewed_label: str | None = None
     retrospective_review_trigger_label: str = "retrospective-review"
     retrospective_reviewed_label: str = "retrospective-reviewed"
     retrospective_changes_requested_label: str = "retrospective-changes-requested"
@@ -82,6 +83,13 @@ class TestNamedProperties:
         assert lm.retrospective_review == "retrospective-review"
         assert lm.retrospective_reviewed == "retrospective-reviewed"
         assert lm.retrospective_changes_requested == "retrospective-changes-requested"
+
+    def test_triage_reviewed_default(self, lm: LabelManager) -> None:
+        assert lm.triage_reviewed == "triage-reviewed"
+
+    def test_triage_reviewed_custom(self) -> None:
+        cfg = _StubConfig(triage_reviewed_label="batch-triaged")
+        assert LabelManager(cfg).triage_reviewed == "batch-triaged"  # type: ignore[arg-type]
 
     def test_blocked(self, lm: LabelManager) -> None:
         assert lm.blocked == "blocked"
@@ -167,6 +175,11 @@ class TestNamedPropertiesPrefixed:
     def test_run_audit_labels(self, plm: LabelManager) -> None:
         assert plm.run_audit_requested == "bot:needs-run-audit"
         assert plm.run_audit_completed == "bot:run-audit-complete"
+
+    def test_triage_reviewed_is_not_prefixed(self, plm: LabelManager) -> None:
+        # The triage subsystem applies this label raw; it must NOT be prefixed,
+        # or merge-queue/cleanup gates would never match the real PR label.
+        assert plm.triage_reviewed == "triage-reviewed"
 
 
 # ===================================================================
@@ -374,6 +387,70 @@ class TestPublishFailCount:
 
     def test_is_ours_publish_fail_count_prefixed(self, plm: LabelManager) -> None:
         assert plm.is_ours("bot:publish-fail-count-5") is True
+
+    def test_is_publish_fail_count_true(self, lm: LabelManager) -> None:
+        assert lm.is_publish_fail_count("publish-fail-count-7") is True
+
+    def test_is_publish_fail_count_prefixed(self, plm: LabelManager) -> None:
+        assert plm.is_publish_fail_count("bot:publish-fail-count-1") is True
+
+    def test_is_publish_fail_count_false(self, lm: LabelManager) -> None:
+        assert lm.is_publish_fail_count("publish-failed") is False
+        assert lm.is_publish_fail_count("pr-pending") is False
+
+
+# ===================================================================
+# recovered_workflow_labels() — clear-on-merge policy
+# ===================================================================
+
+class TestRecoveredWorkflowLabels:
+    def test_sheds_transient_and_blocking_labels(self, lm: LabelManager) -> None:
+        labels = [
+            "pr-pending",
+            "publish-failed",
+            "publish-fail-count-2",
+            "blocked",
+            "blocked:pr-closed",
+            "needs-human",
+        ]
+        assert lm.recovered_workflow_labels(labels) == labels
+
+    def test_leaves_non_transient_labels(self, lm: LabelManager) -> None:
+        labels = ["agent:backend", "bug", "in-progress", "code-reviewed", "rework-cycle-1"]
+        assert lm.recovered_workflow_labels(labels) == []
+
+    def test_mixed_returns_only_transient(self, lm: LabelManager) -> None:
+        labels = ["bug", "pr-pending", "agent:web", "publish-fail-count-3", "blocked-failed"]
+        assert lm.recovered_workflow_labels(labels) == [
+            "pr-pending",
+            "publish-fail-count-3",
+            "blocked-failed",
+        ]
+
+    def test_order_preserving_and_deduped(self, lm: LabelManager) -> None:
+        labels = ["pr-pending", "pr-pending", "blocked"]
+        assert lm.recovered_workflow_labels(labels) == ["pr-pending", "blocked"]
+
+    def test_prefixed(self, plm: LabelManager) -> None:
+        labels = [
+            "bot:pr-pending",
+            "bot:publish-fail-count-1",
+            "bot:blocked:pr-closed",
+            "bug",
+        ]
+        assert plm.recovered_workflow_labels(labels) == [
+            "bot:pr-pending",
+            "bot:publish-fail-count-1",
+            "bot:blocked:pr-closed",
+        ]
+
+    def test_is_recovered_workflow_label(self, lm: LabelManager) -> None:
+        assert lm.is_recovered_workflow_label("pr-pending") is True
+        assert lm.is_recovered_workflow_label("publish-failed") is True
+        assert lm.is_recovered_workflow_label("publish-fail-count-9") is True
+        assert lm.is_recovered_workflow_label("blocked:claim-lost") is True
+        assert lm.is_recovered_workflow_label("in-progress") is False
+        assert lm.is_recovered_workflow_label("agent:backend") is False
 
 
 # ===================================================================

@@ -71,6 +71,10 @@ from ..execution.command_runner import LocalCommandRunner
 from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..execution.review_artifact_reader import ManifestReviewArtifactReader
 from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+from ..control.completion_dispatcher import (
+    BackgroundCompletionDispatcher,
+    SynchronousCompletionDispatcher,
+)
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, RetrospectiveReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
@@ -99,6 +103,7 @@ if TYPE_CHECKING:
     from ..execution.persistent_exchange_pair_registry_inmemory import (
         InMemoryPersistentExchangePairRegistry,
     )
+    from ..ports.turn_mailbox import TurnMailbox
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -315,12 +320,22 @@ def _create_planner(
             events=events,
         )
 
+    predecessor_facts_provider = None
+    if github:
+        from ..control.label_manager import LabelManager
+        from ..execution.stack_predecessor_facts import GitStackPredecessorFactsProvider
+
+        predecessor_facts_provider = GitStackPredecessorFactsProvider(
+            github, label_manager or LabelManager(config), repo=config.repo,
+        )
+
     dependency_evaluator = DependencyEvaluator(
         issue_checker=github,
         events=events,
         issue_resolver=issue_resolver,
         repo=config.repo,
         foundation_milestone=config.foundation_milestone,
+        predecessor_facts_provider=predecessor_facts_provider,
     ) if github else None
 
     scheduler = Scheduler(config=config, dependency_evaluator=dependency_evaluator)
@@ -407,6 +422,7 @@ def _create_completion_components(
     background_job_supervisor: "BackgroundJobSupervisor | None" = None,
     pair_registry: "InMemoryPersistentExchangePairRegistry | None" = None,
     attempt_store: "AttemptStore | None" = None,
+    turn_mailbox: "TurnMailbox | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -446,7 +462,12 @@ def _create_completion_components(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output, pair_registry),
+        # The review exchange delivers verdicts through the orchestrator-owned
+        # mailbox: agents run `exchange-respond`, the Control API delivers into
+        # the open turn slot, and send_round polls the mailbox (#6549).
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, pair_registry, turn_mailbox=turn_mailbox,
+        ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -470,7 +491,6 @@ def _create_completion_components(
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
         max_validation_retries=config.retry.max_validation_retries,
-        provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
         review_exchange_canceller=_cancel_review_exchange,
     ) if completion_processor else None
@@ -733,6 +753,7 @@ def build_orchestrator(
         repository_host=github,
         worktree_manager=worktree_manager,
         fresh_issue_reader=fresh_issue_reader,
+        label_manager=label_manager,
         reconcile=True,
     ) if github else None
 
@@ -778,6 +799,13 @@ def build_orchestrator(
     # reach it through ``deps.pair_registry``.
     pair_registry = _build_pair_registry_with_worktree_hook()
 
+    # Process-scoped rendezvous between the exchange worker thread and the
+    # agent-facing ``exchange-respond`` Control API handler. One instance,
+    # shared by the runner (which opens/awaits slots) and InfraServices
+    # (which the Control API reads to deliver verdicts).
+    from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
+    turn_mailbox = InMemoryTurnMailbox()
+
     # Wire the registry into action_applier so ``_apply_escalate``
     # and ``_apply_reconcile_history_entry`` can release the pair at
     # their lifecycle boundaries (escalation, await-merge terminal).
@@ -795,6 +823,7 @@ def build_orchestrator(
         background_job_supervisor=background_job_supervisor,
         pair_registry=pair_registry,
         attempt_store=attempt_store,
+        turn_mailbox=turn_mailbox,
     )
 
     # Create async completion components (observer + executor)
@@ -868,6 +897,7 @@ def build_orchestrator(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         pair_registry=pair_registry,
+        turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
         instance_id=instance_id,
         state_health_check=timeline_store.check_health,
@@ -896,6 +926,9 @@ def build_orchestrator(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
+        # Run completion decisions (publish gate + push + PR) off the tick thread
+        # on a dedicated runner so a slow publish never blocks the heartbeat.
+        completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
         claim_manager=claim_manager,
         claim_gate=claim_gate,
@@ -1037,6 +1070,7 @@ def build_orchestrator_for_testing(
             repository_host=github,
             worktree_manager=worktree_manager,
             fresh_issue_reader=fresh_issue_reader,
+            label_manager=label_manager,
             reconcile=False,  # Disable for testing by default
         )
 
@@ -1086,6 +1120,8 @@ def build_orchestrator_for_testing(
         cancel_issue_review_exchange,
     )
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
+    from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
+    turn_mailbox = InMemoryTurnMailbox()
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor
@@ -1106,7 +1142,9 @@ def build_orchestrator_for_testing(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output, pair_registry_for_testing),
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, pair_registry_for_testing, turn_mailbox=turn_mailbox,
+        ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -1129,7 +1167,6 @@ def build_orchestrator_for_testing(
         validation_timeout_seconds=config.validation.quick.timeout_seconds,
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
-        provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
         review_exchange_canceller=_cancel_review_exchange_for_testing,
     )
@@ -1196,6 +1233,7 @@ def build_orchestrator_for_testing(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         pair_registry=pair_registry_for_testing,
+        turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
     )
 
@@ -1222,6 +1260,9 @@ def build_orchestrator_for_testing(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,
+        # Tests default to synchronous (one-tick) completion; the background
+        # dispatcher is exercised explicitly where async behavior is under test.
+        completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
         claim_manager=claim_manager,
         claim_gate=claim_gate,

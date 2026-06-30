@@ -47,6 +47,7 @@ from ..domain.models import (
     get_completion_path,
 )
 from ..domain.session_run import SessionRunAssets
+from ..domain.dependency_gates import Gate
 from .worktree_context import WorktreeContext
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_manifest import TriageManifest
@@ -85,7 +86,7 @@ from .session_worktree_diagnostics import (
     write_worktree_diagnostic,
 )
 from .transition_log import log_transition
-from .isolation import build_runtime_tool_env, build_runtime_tool_env_assignments
+from .isolation import build_agent_tool_env_assignments, build_runtime_tool_env
 from .provider_command_wrapper import ProviderCommandWrapper
 
 logger = logging.getLogger(__name__)
@@ -372,7 +373,7 @@ class SessionLauncher:
         """
         orch_bin = Path(sys.executable).parent
         orch_src = Path(__file__).resolve().parents[2]
-        runtime_tool_assignments = " ".join(build_runtime_tool_env_assignments(worktree_path))
+        runtime_tool_assignments = " ".join(build_agent_tool_env_assignments(worktree_path))
         config_exports = ""
         if self.config.config_path is not None:
             config_name = self.config.config_path.name
@@ -443,25 +444,34 @@ class SessionLauncher:
         if not fresh_issue or not fresh_issue.body:
             return None
 
-        report = self._dependency_evaluator.evaluate(
+        # Re-gather predecessor facts at launch time so a predecessor branch or
+        # review-state change between scheduling and launch cannot start stale
+        # stack work (ADR-0029 just-before-launch recheck).
+        report = self._dependency_evaluator.evaluate_work_gate(
             issue_number=issue.number,
             issue_body=fresh_issue.body,
             source_milestone=fresh_issue.milestone,
         )
-        if not report.runnable:
+        if not report.can_start_work:
+            summary = report.work_summary()
             log_transition(
                 "issue", issue.number, "AVAILABLE", "SKIP",
-                f"dependencies changed: {report.summary()}"
+                f"dependencies changed: {summary}"
             )
             self.events.publish(make_trace_event(
                 EventName.ISSUE_DEPENDENCY_BLOCKED,
                 {
                     "issue_number": issue.number,
                     "issue_title": issue.title,
-                    "reason": report.summary(),
+                    "reason": summary,
+                    "gate": Gate.WORK.value,
+                    "blocked_reasons": [
+                        record.as_dict()
+                        for record in report.gate_block_records(Gate.WORK)
+                    ],
                 },
             ))
-            return LaunchResult(None, False, f"Dependencies not satisfied: {report.summary()}")
+            return LaunchResult(None, False, f"Dependencies not satisfied: {summary}")
 
         return None
 

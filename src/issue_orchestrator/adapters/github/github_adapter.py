@@ -13,9 +13,10 @@ from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
 from ...ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     PRRef,
-    StatusCheckRollupCapability,
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
@@ -25,6 +26,7 @@ from .errors import GitHubHttpError, GitHubTransportError
 from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
+    classify_github_http_failure,
 )
 from .tokens import resolve_github_token
 from .repo import get_repo_from_git, GitRepoError
@@ -58,6 +60,47 @@ def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
     return None
 
 
+_VALID_MERGE_QUEUE_STATES: frozenset[str] = frozenset(
+    {"QUEUED", "AWAITING_CHECKS", "MERGEABLE", "PENDING", "LOCKED", "UNMERGEABLE"}
+)
+
+
+def _merge_queue_entry_from_api(raw: object) -> MergeQueueRead:
+    """Build a typed :class:`MergeQueueRead` from a GraphQL entry payload.
+
+    Distinguishes three outcomes so the coordinator never mistakes "we can't
+    classify this PR's queue state" for "this PR is not enqueued":
+
+    - no entry payload (GraphQL ``mergeQueueEntry`` is ``null``) -> ``ABSENT``.
+    - a modeled state -> ``PRESENT`` carrying the :class:`MergeQueueEntry`.
+    - an entry exists but its state is missing/unmodeled -> ``INDETERMINATE``.
+      The PR *is* in the queue (an entry object is present); we simply cannot
+      classify it, so acting as if it were absent could wrongly re-enqueue or
+      rework a queued PR.
+    """
+    if not isinstance(raw, dict):
+        return MergeQueueRead.absent()
+    state = raw.get("state")
+    if not isinstance(state, str) or state.upper() not in _VALID_MERGE_QUEUE_STATES:
+        logger.warning("Unmodeled mergeQueueEntry state from GitHub: %r", state)
+        return MergeQueueRead.indeterminate()
+    position = raw.get("position")
+    return MergeQueueRead.present(
+        MergeQueueEntry(
+            state=state.upper(),  # type: ignore[arg-type]
+            position=position if isinstance(position, int) else None,
+        )
+    )
+
+
+def _head_sha_from_pr(raw_pr: dict[str, Any]) -> str | None:
+    head = raw_pr.get("head")
+    if not isinstance(head, dict):
+        return None
+    sha = head.get("sha")
+    return sha if isinstance(sha, str) and sha else None
+
+
 def _payload_indicates_merged(pr: dict[str, Any]) -> bool:
     """True when a GitHub PR payload represents a merged pull request.
 
@@ -86,42 +129,6 @@ def _pr_state_from_api(pr: dict[str, Any]) -> str:
     if _payload_indicates_merged(pr):
         return "merged"
     return raw_state
-
-
-# Substrings that mark a rollup read failure as a token *capability* gap
-# rather than a transient blip. GraphQL surfaces an insufficient-scope /
-# FORBIDDEN error as HTTP 200 with an `errors` array, so status-code alone
-# is not enough — we also sniff the message/body for these markers.
-_ROLLUP_PERMISSION_MARKERS: tuple[str, ...] = (
-    "forbidden",
-    "not accessible",
-    "scope",  # "...has not been granted the required scopes..."
-    "permission",
-    "must have",  # "...must have read access..."
-)
-
-
-def _classify_rollup_failure(exc: GitHubHttpError) -> StatusCheckRollupCapability:
-    """Tell a missing-permission rollup failure from a transient one.
-
-    A 401 is an authentication failure: the token cannot identify itself at
-    all, which is always an operator problem rather than a retryable blip.
-
-    Every other status (403, 429, 5xx, GraphQL-200-with-errors) is decided by
-    the response body, NOT the status code. A genuine missing-capability
-    failure names the gap — ``forbidden`` / ``not accessible`` / a required
-    ``scope``/``permission`` — so we sniff for those markers. GitHub also
-    returns HTTP 403 for retryable throttling ("API rate limit exceeded",
-    "secondary rate limit"); those bodies name no scope, so they fall through
-    to ``transient_error`` and are retried next tick instead of arming the
-    repo-wide permission backoff and escalating a bogus missing-scope error.
-    """
-    if exc.status_code == 401:
-        return "permission_denied"
-    haystack = f"{exc} {getattr(exc, 'response_text', '') or ''}".lower()
-    if any(marker in haystack for marker in _ROLLUP_PERMISSION_MARKERS):
-        return "permission_denied"
-    return "transient_error"
 
 
 class GitHubAdapter:
@@ -844,7 +851,12 @@ class GitHubAdapter:
                 pr_infos.append(pr_info)
         for pr_info in pr_infos:
             self._adapter_cache.cache_pr_info(pr_info)
-        return pr_infos
+        # Apply the documented state filter. The underlying search returns PRs
+        # in any state, so honor `state` here to match the cache-hit path and
+        # the port contract (callers like the stack work-gate ask for "open").
+        if state == "all":
+            return pr_infos
+        return [pr for pr in pr_infos if pr.state.lower() == state.lower()]
 
     def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
         """Return lightweight PR refs for an issue from a single search.
@@ -900,18 +912,28 @@ class GitHubAdapter:
             logger.error("Failed to get PR %s: %s", pr_number, e)
             raise
 
-    def read_pr_status_check_rollup(self, pr_number: int) -> StatusCheckRollupRead:
+    def read_pr_status_check_rollup(
+        self, pr_number: int, *, skip_primary_source: bool = False
+    ) -> StatusCheckRollupRead:
         """Read a PR head-commit status-check rollup, classifying failures.
 
-        Pays one GraphQL round-trip. Used by the awaiting-merge reconciler
-        to distinguish "merge state is unstable because checks are running"
-        (wait) from "merge state is unstable because a check failed"
-        (rework). Unlike the old fetch path this does NOT collapse a
-        permission failure into a ``None`` rollup: the returned capability
-        tells a token that cannot read check status from a repo with no
-        checks, so the reconciler can surface a missing scope loudly and
-        bound the retries instead of silently waiting forever.
+        Pays one GraphQL round-trip on the happy path. When GraphQL is blocked
+        by token capability, falls back to REST check-runs/combined-status on
+        the PR head SHA before reporting the rollup as unreadable.
+
+        When ``skip_primary_source`` is True the GraphQL probe is skipped and
+        only the REST fallback is read — the capability gate uses this during a
+        primary-source permission-backoff window so a fallback-readable failure
+        is still classified while the wasted GraphQL probe (and its repeated
+        permission log) stay suppressed. The fallback read carries
+        ``primary_source_denied=True`` so the gate keeps the GraphQL backoff
+        armed.
         """
+        if skip_primary_source:
+            # GraphQL is in its known permission-backoff window; go straight to
+            # the REST fallback, which may still classify a now-readable failure
+            # for this PR.
+            return self._read_rollup_via_rest_fallback(pr_number)
         try:
             rollup = self._client.get_pr_status_check_rollup(pr_number)
         except GitHubTransportError as e:
@@ -924,13 +946,137 @@ class GitHubAdapter:
             )
             return StatusCheckRollupRead(state=None, capability="transient_error")
         except GitHubHttpError as e:
-            capability = _classify_rollup_failure(e)
+            capability = classify_github_http_failure(e)
+            if capability == "permission_denied":
+                # The primary GraphQL source is denied; the fallback stamps
+                # primary_source_denied=True on whatever it returns.
+                fallback = self._read_rollup_via_rest_fallback(pr_number)
+                if fallback.capability != "permission_denied":
+                    return fallback
             logger.warning(
                 "status_check_rollup read failed for PR %s (%s): %s",
                 pr_number, capability, e,
             )
-            return StatusCheckRollupRead(state=None, capability=capability)
+            return StatusCheckRollupRead(
+                state=None,
+                capability=capability,
+                # A GraphQL permission denial backs off the primary source even
+                # when the fallback was also unreadable; a transient GraphQL
+                # error is not a denial and leaves the backoff untouched.
+                primary_source_denied=capability == "permission_denied",
+            )
         return StatusCheckRollupRead(state=_coerce_rollup_state(rollup), capability="ok")
+
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Add a PR to GitHub's native merge queue (GraphQL mutation)."""
+        try:
+            self._client.enqueue_pull_request(pr_number)
+        except GitHubHttpError as e:
+            logger.error("Failed to enqueue PR %s to merge queue: %s", pr_number, e)
+            raise
+
+    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
+        """Read a PR's merge queue entry (GraphQL) as a typed three-valued read.
+
+        Re-raises ``GitHubHttpError`` (a ``RepositoryHostError``) on a transient
+        read failure; the coordinator maps that to ``INDETERMINATE`` so an
+        unreadable queue cannot drive an enqueue/rework decision.
+        """
+        try:
+            raw = self._client.get_merge_queue_entry(pr_number)
+        except GitHubHttpError as e:
+            logger.error("Failed to read merge queue entry for PR %s: %s", pr_number, e)
+            raise
+        return _merge_queue_entry_from_api(raw)
+
+    def _read_rollup_via_rest_fallback(
+        self,
+        pr_number: int,
+    ) -> StatusCheckRollupRead:
+        """Read check state through REST after a GraphQL capability failure.
+
+        Only reached when the primary (GraphQL) source is denied or explicitly
+        skipped, so every read it returns carries ``primary_source_denied=True``
+        — the gate keeps the GraphQL backoff armed regardless of what the
+        fallback sources could read.
+        """
+        try:
+            raw_pr = self._client.get_pr(pr_number)
+        except GitHubTransportError as e:
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback failed for "
+                "PR %s (transient_error): %s",
+                pr_number,
+                e,
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability="transient_error",
+                primary_source_denied=True,
+            )
+        except GitHubHttpError as e:
+            capability = classify_github_http_failure(e)
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback failed for "
+                "PR %s (%s): %s",
+                pr_number,
+                capability,
+                e,
+            )
+            return StatusCheckRollupRead(
+                state=None, capability=capability, primary_source_denied=True
+            )
+        if not isinstance(raw_pr, dict):
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback returned "
+                "unexpected payload for PR %s",
+                pr_number,
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability="permission_denied",
+                primary_source_denied=True,
+            )
+
+        head_sha = _head_sha_from_pr(raw_pr)
+        if head_sha is None:
+            logger.warning(
+                "No head SHA for PR %s; cannot read check state via REST fallback",
+                pr_number,
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability="permission_denied",
+                primary_source_denied=True,
+            )
+
+        # get_commit_check_rollup owns its per-source HTTP/transport failures and
+        # carries the cause in `capability` (it does not raise for those), so an
+        # incomplete read is NOT collapsed to permission_denied: a transient/
+        # rate-limit/cap-truncated source stays transient_error (retry next tick)
+        # while only a real scope gap escalates as permission_denied.
+        rollup = self._client.get_commit_check_rollup(head_sha)
+        if rollup.capability != "ok":
+            logger.warning(
+                "REST check-run fallback incomplete for PR %s (sha %s, %s): a "
+                "rollup source was unread and the readable sources found no "
+                "failure, so an unread failed required check/status could be "
+                "hiding behind a %s aggregate",
+                pr_number,
+                head_sha,
+                rollup.capability,
+                rollup.state or "no-checks",
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability=rollup.capability,
+                primary_source_denied=True,
+            )
+        return StatusCheckRollupRead(
+            state=_coerce_rollup_state(rollup.state),
+            capability="ok",
+            primary_source_denied=True,
+        )
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.

@@ -26,6 +26,7 @@ from .config_models import (
     HooksConfig,
     InterruptedSessionRetryConfig as InterruptedSessionRetryConfig,
     IsolationConfig,
+    MergeQueueConfig,
     MilestoneStrategyConfig as MilestoneStrategyConfig,
     ProviderCircuitBreakerConfig as ProviderCircuitBreakerConfig,
     ProviderResilienceConfig,
@@ -328,6 +329,8 @@ class Config:
 
     # Goal Pilot AI configuration
     goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
+    # Optional GitHub Merge Queue integration (disabled by default)
+    merge_queue: MergeQueueConfig = field(default_factory=MergeQueueConfig)
     # SQLite backup configuration
     sqlite_backup: SqliteBackupConfig = field(default_factory=SqliteBackupConfig)
     # Timeline retention configuration
@@ -736,6 +739,12 @@ class Config:
                         "dangerous_allow_failure": self.hooks.ai_gate.dangerous_allow_failure,
                     },
             },
+            "merge_queue": {
+                "enabled": self.merge_queue.enabled,
+                "provider": self.merge_queue.provider,
+                "enqueue_after": self.merge_queue.enqueue_after,
+                "failure_action": self.merge_queue.failure_action,
+            },
             "agents": {
                 label: {
                     "prompt_path": str(cfg.prompt_path),
@@ -1025,6 +1034,18 @@ class Config:
             goal_pilot_dict["approval_batch_window_minutes"] = self.goal_pilot.approval_batch_window_minutes
         if goal_pilot_dict:
             result["goal_pilot"] = goal_pilot_dict
+
+        merge_queue_dict: dict = {}
+        if self.merge_queue.enabled:
+            merge_queue_dict["enabled"] = True
+        if self.merge_queue.provider != "github":
+            merge_queue_dict["provider"] = self.merge_queue.provider
+        if self.merge_queue.enqueue_after != "code-reviewed":
+            merge_queue_dict["enqueue_after"] = self.merge_queue.enqueue_after
+        if self.merge_queue.failure_action != "rework":
+            merge_queue_dict["failure_action"] = self.merge_queue.failure_action
+        if merge_queue_dict:
+            result["merge_queue"] = merge_queue_dict
 
         # Worktrees section
         worktrees_dict: dict = {}

@@ -284,6 +284,36 @@ class TestGitHubCachePRs:
         assert result is None
         assert cache.stats.invalidations == 1
 
+    def test_invalidate_pr_clears_by_issue_and_branch_indexes(self, cache):
+        """A PR-number invalidation must clear the PR from *every* index.
+
+        Regression for #6595/#6670 F1: label writes address a PR by its own
+        number, but the same PR is also cached under its linked issue and head
+        branch. If invalidate_pr only cleared the by-number index, the stack
+        predecessor work-gate (which reads ``get_prs_for_issue(predecessor)``)
+        could keep serving stale ``code-reviewed`` labels for a PR that has
+        since moved back to ``needs-rework``.
+        """
+        pr_data = {
+            "number": 101,
+            "title": "#20: predecessor",
+            "branch": "20-base",
+            "state": "open",
+            "labels": ["code-reviewed"],
+            "issue_number": 20,
+        }
+        # Cached under issue #20 and branch "20-base"...
+        cache.set_pr_by_issue(20, pr_data, branch="20-base")
+        # ...and under its own PR number.
+        cache.set_pr(101, pr_data)
+
+        # A label write addresses the PR by its OWN number (#101), not issue #20.
+        cache.invalidate_pr(101)
+
+        assert cache.get_pr(101) is None
+        assert cache.get_pr_by_issue(20) is None
+        assert cache.get_pr_by_branch("20-base") is None
+
     def test_get_pr_stale_entry(self, cache):
         """Test getting stale PR evicts entry."""
         pr_data = {"number": 10, "title": "Test PR"}

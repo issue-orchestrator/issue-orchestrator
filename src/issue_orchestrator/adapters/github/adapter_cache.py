@@ -26,11 +26,21 @@ class GitHubAdapterCacheSupport:
         return self._cache.get_issue_labels(issue_number)
 
     def update_label_cache(self, issue_number: int, labels: list[str]) -> None:
-        """Update cached labels for an issue and matching cached PR."""
+        """Refresh the cached *issue* labels for an issue.
+
+        This deliberately does NOT touch cached PR labels. Issue labels and PR
+        labels are distinct facts with separate owners: cached PR labels come
+        only from PR reads (``cache_pr_info``) and are invalidated on a
+        PR-number label write (``invalidate_pr``). Mirroring issue labels onto a
+        cached PR here would corrupt PR-scoped review state — an issue-label
+        refresh commonly yields ``[]``, which would erase a still-current
+        ``code-reviewed`` from the cached PR and make the stack predecessor
+        work-gate read ``agent_reviewed=False`` for a PR that is still reviewed
+        (#6595/#6670 F1). Issue-label and PR-label freshness stay separate.
+        """
         if not self._label_cache_enabled:
             return
         self._cache.set_issue_labels(issue_number, list(labels))
-        self._update_pr_cache_labels(issue_number, labels)
 
     def invalidate_label_cache(self, issue_number: int) -> None:
         """Invalidate cached labels for an issue."""
@@ -105,15 +115,6 @@ class GitHubAdapterCacheSupport:
             self._cache.set_pr_by_issue(issue_number, pr_data, branch=pr_info.branch)
         elif pr_info.branch:
             self._cache.set_pr_by_branch(pr_info.branch, pr_data)
-
-    def _update_pr_cache_labels(self, issue_number: int, labels: list[str]) -> None:
-        """Update labels on a cached PR."""
-        cached = self._cache.get_pr_by_issue(issue_number)
-        if not cached:
-            return
-        cached["labels"] = list(labels)
-        branch = cached.get("branch")
-        self._cache.set_pr_by_issue(issue_number, cached, branch=branch)
 
     @staticmethod
     def _state_matches(pr_info: PRInfo, state: str) -> bool:

@@ -596,6 +596,8 @@ class Orchestrator:
                 self.deps.worktree_manager,
                 self._kill_session,
                 self.config,
+                completion_dispatcher=self.deps.completion_dispatcher,
+                provider_resilience=self.deps.provider_resilience,
             )
             # Check lease renewals for active sessions
             self._check_lease_renewals()

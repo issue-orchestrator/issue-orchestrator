@@ -52,6 +52,11 @@ class EventName(str, Enum):
     # =========================================================================
     TICK_STARTED = "tick.started"
     TICK_COMPLETED = "tick.completed"
+    # A tick whose wall-clock exceeded the heartbeat budget. Machine-consumable
+    # counterpart to the "[LOOP] Tick took ..." log warning: carries the
+    # sub-phase breakdown (active-session vs planning seconds) so the UI/timeline
+    # can attribute a stall instead of inferring "stalled" from heartbeat age.
+    TICK_SLOW = "tick.slow"
 
     # =========================================================================
     # Facts gathering
@@ -161,6 +166,9 @@ class EventName(str, Enum):
     REVIEW_MERGED = "review.merged"
     REVIEW_CLOSED = "review.closed"
     REVIEW_COMMENT_ADDED = "review.comment_added"
+    # Merge queue (optional GitHub Merge Queue integration)
+    MERGE_QUEUE_ENQUEUED = "merge_queue.enqueued"
+    MERGE_QUEUE_FAILED = "merge_queue.failed"
     REVIEW_EXCHANGE_STARTED = "review_exchange.started"
     REVIEW_EXCHANGE_ROUND_STARTED = "review_exchange.round_started"
     REVIEW_EXCHANGE_ROUND_COMPLETED = "review_exchange.round_completed"
