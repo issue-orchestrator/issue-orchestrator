@@ -20,11 +20,13 @@ from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.session_completion import (
+    _apply_completed_decisions,
     _record_provider_resilience_effects,
     _terminate_finished_session,
     handle_session_completion,
     process_active_sessions,
 )
+from issue_orchestrator.control.completion_dispatcher import CompletedDecision
 from issue_orchestrator.control.session_decision import (
     ProviderTransientFailureDecision,
     SessionDecision,
@@ -2499,6 +2501,40 @@ class TestRestoreRunningSessions:
 
 class TestProcessActiveSessions:
     """Tests for process_active_sessions function (line 1034)."""
+
+    def test_completed_decision_batch_applies_siblings_before_raising(self):
+        """One failed completed decision must not discard the rest of the drain batch."""
+        first = CompletedDecision(
+            session=MagicMock(terminal_id="issue-1"),
+            decision=None,
+            error=RuntimeError("decide failed"),
+        )
+        second = CompletedDecision(
+            session=MagicMock(terminal_id="issue-2"),
+            decision=SessionDecision(
+                status=SessionStatus.RUNNING,
+                provider_success="codex",
+            ),
+            error=None,
+        )
+        provider_resilience = MagicMock()
+        applied: list[str] = []
+
+        def apply(completed: CompletedDecision) -> None:
+            applied.append(completed.session.terminal_id)
+            if completed.error is not None:
+                raise completed.error
+            assert completed.decision is not None
+            _record_provider_resilience_effects(
+                completed.decision,
+                provider_resilience,
+            )
+
+        with pytest.raises(RuntimeError, match="decide failed"):
+            _apply_completed_decisions([first, second], apply)
+
+        assert applied == ["issue-1", "issue-2"]
+        provider_resilience.record_success.assert_called_once_with("codex")
 
     def test_provider_resilience_effects_are_recorded_on_apply_thread(self):
         """Provider-circuit mutations happen when the drained decision is applied."""

@@ -419,8 +419,7 @@ def process_active_sessions(
     # BEFORE dispatching new work: applying a completed decision removes its
     # session from active_sessions, so the dispatch loop below won't re-dispatch
     # a session whose decision already landed.
-    for completed in dispatcher.drain():
-        apply(completed)
+    _apply_completed_decisions(dispatcher.drain(), apply)
 
     seen_terminals: set[str] = set()
     for session in list(state.active_sessions):
@@ -460,8 +459,7 @@ def process_active_sessions(
 
     # Apply decisions a synchronous dispatcher just produced this tick (the
     # background dispatcher returns nothing here — its work is still running).
-    for completed in dispatcher.drain():
-        apply(completed)
+    _apply_completed_decisions(dispatcher.drain(), apply)
 
 
 def _completion_decider(
@@ -495,6 +493,24 @@ def _completion_decider(
         )
 
     return decide
+
+
+def _apply_completed_decisions(
+    completed_decisions: list[CompletedDecision],
+    apply: Callable[[CompletedDecision], None],
+) -> None:
+    """Apply every drained decision, then raise any apply failure."""
+    errors: list[BaseException] = []
+    for completed in completed_decisions:
+        try:
+            apply(completed)
+        except BaseException as exc:
+            errors.append(exc)
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise errors[0]
+    raise BaseExceptionGroup("completion decision apply failures", errors)
 
 
 def _apply_completed_decision(
