@@ -12,6 +12,7 @@ from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import (
     MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     PRRef,
     StatusCheckRollupRead,
@@ -393,9 +394,18 @@ class MockGitHubAdapter:
         self.enqueue_merge_queue_calls.append(pr_number)
         self.merge_queue_entries[pr_number] = MergeQueueEntry(state="QUEUED")
 
-    def read_merge_queue_entry(self, pr_number: int):
-        """Return the PR's merge queue entry, or None if not enqueued (mock)."""
-        return self.merge_queue_entries.get(pr_number)
+    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
+        """Return the PR's typed merge queue read (mock).
+
+        PRESENT when an entry was recorded, ABSENT otherwise. Tests that need the
+        INDETERMINATE (unreadable/unmodeled) outcome inject it directly.
+        """
+        entry = self.merge_queue_entries.get(pr_number)
+        return (
+            MergeQueueRead.present(entry)
+            if entry is not None
+            else MergeQueueRead.absent()
+        )
 
     def create_pr(self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None) -> PRInfo:
         """Create a new PR (mock)."""

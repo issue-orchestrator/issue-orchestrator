@@ -28,6 +28,7 @@ from ..domain.models import (
 )
 from ..events import EventName
 from ..ports import make_trace_event
+from ..ports.pull_request_tracker import MergeQueueRead
 from ..ports.repository_host import RepositoryHostError
 from .awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_COMMENT_MARKER,
@@ -136,15 +137,25 @@ class MergeQueueCoordinator:
         assert self.config.enqueue_after == "code-reviewed"
         return self.label_manager.code_reviewed
 
-    def read_entry(self, pr_number: int) -> "MergeQueueEntry | None":
-        """Read the PR's merge queue entry; None on a transient read failure."""
+    def read_entry(self, pr_number: int) -> "MergeQueueRead":
+        """Read the PR's merge queue entry as a typed three-valued result.
+
+        A transient read failure (``RepositoryHostError``) becomes
+        ``INDETERMINATE`` — never ``ABSENT`` — so an unreadable queue cannot be
+        mistaken for "not enqueued" and drive an enqueue/rework/escalation
+        decision off stale PR status. An unmodeled provider state is already
+        ``INDETERMINATE`` from the adapter.
+        """
         try:
             return self.repository_host.read_merge_queue_entry(pr_number)
         except RepositoryHostError as exc:
             logger.warning(
-                "Failed to read merge queue entry for PR #%d: %s", pr_number, exc
+                "Merge queue entry unreadable for PR #%d (treating as "
+                "indeterminate, no action): %s",
+                pr_number,
+                exc,
             )
-            return None
+            return MergeQueueRead.indeterminate()
 
     def classify(
         self,

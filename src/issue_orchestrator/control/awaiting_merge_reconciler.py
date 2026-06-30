@@ -586,7 +586,15 @@ class AwaitingMergeReconciler:
         it for ``unstable``/``blocked`` states.
         """
         assert self.merge_queue is not None
-        queue_entry = self.merge_queue.read_entry(pr_number)
+        read = self.merge_queue.read_entry(pr_number)
+        if read.is_indeterminate:
+            # The queue state could not be determined (transient read failure or
+            # an unmodeled provider state). Treat it as non-actionable: do NOT
+            # resolve the rollup or classify, so an unreadable queue can never
+            # enqueue, rework, or escalate a PR off stale status. Re-observe next
+            # tick.
+            return None, None, None
+        queue_entry = read.entry
         if queue_entry is None:
             decisive = rollup_is_decisive(pr.mergeable_state)
             due = not decisive or self._status_rollup_scan_due(state, pr_number)

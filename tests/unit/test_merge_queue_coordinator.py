@@ -16,7 +16,11 @@ from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import MergeQueueConfig
 from issue_orchestrator.ports import InMemoryEventSink
-from issue_orchestrator.ports.pull_request_tracker import MergeQueueEntry, PRInfo
+from issue_orchestrator.ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
+    PRInfo,
+)
 from issue_orchestrator.ports.repository_host import RepositoryHostError
 
 
@@ -120,7 +124,6 @@ def test_decide_for_queued_pr_ignores_mergeable_state(state, expected) -> None:
 
 def test_clean_pr_produces_enqueue_fact() -> None:
     repo = MagicMock()
-    repo.read_merge_queue_entry.return_value = None
     coordinator, _ = _coordinator(repo)
 
     followup = coordinator.classify(
@@ -160,7 +163,6 @@ def test_pr_without_gate_label_is_not_enqueued() -> None:
 def test_triage_gate_does_not_enqueue_on_code_reviewed_alone() -> None:
     """A repo waiting for triage must NOT enqueue a merely code-reviewed PR."""
     repo = MagicMock()
-    repo.read_merge_queue_entry.return_value = None
     coordinator, _ = _coordinator(repo, enqueue_after="triage-reviewed")
 
     followup = coordinator.classify(
@@ -177,7 +179,6 @@ def test_triage_gate_does_not_enqueue_on_code_reviewed_alone() -> None:
 
 def test_triage_gate_enqueues_once_triage_reviewed_present() -> None:
     repo = MagicMock()
-    repo.read_merge_queue_entry.return_value = None
     coordinator, _ = _coordinator(repo, enqueue_after="triage-reviewed")
 
     followup = coordinator.classify(
@@ -195,7 +196,6 @@ def test_triage_gate_enqueues_once_triage_reviewed_present() -> None:
 def test_code_reviewed_gate_does_not_require_triage_reviewed() -> None:
     """The code-reviewed gate must enqueue without waiting for triage."""
     repo = MagicMock()
-    repo.read_merge_queue_entry.return_value = None
     coordinator, _ = _coordinator(repo, enqueue_after="code-reviewed")
 
     followup = coordinator.classify(
@@ -213,7 +213,6 @@ def test_triage_gate_honors_custom_triage_reviewed_label() -> None:
     config = Config()
     config.triage_reviewed_label = "batch-triaged"
     repo = MagicMock()
-    repo.read_merge_queue_entry.return_value = None
     coordinator, _ = _coordinator(
         repo, enqueue_after="triage-reviewed", config=config
     )
@@ -245,7 +244,6 @@ def test_triage_gate_matches_raw_label_even_with_label_prefix() -> None:
     config = Config()
     config.label_prefix = "bot"
     repo = MagicMock()
-    repo.read_merge_queue_entry.return_value = None
     coordinator, _ = _coordinator(
         repo, enqueue_after="triage-reviewed", config=config
     )
@@ -343,12 +341,31 @@ def test_queue_failure_routes_to_needs_human_when_configured() -> None:
     assert len(events.get_events(EventName.MERGE_QUEUE_FAILED.value)) == 1
 
 
-def test_read_entry_swallows_transient_error() -> None:
+def test_read_entry_transient_error_is_indeterminate_not_absent() -> None:
+    # A read failure must NOT look like "not enqueued" (ABSENT) — that would let
+    # the reconciler enqueue/rework off stale PR status. It must be INDETERMINATE.
     repo = MagicMock()
     repo.read_merge_queue_entry.side_effect = RepositoryHostError("boom")
     coordinator, _ = _coordinator(repo)
 
-    assert coordinator.read_entry(318) is None
+    read = coordinator.read_entry(318)
+
+    assert read.is_indeterminate
+    assert read == MergeQueueRead.indeterminate()
+    assert read.entry is None
+
+
+def test_read_entry_passes_through_typed_read() -> None:
+    repo = MagicMock()
+    repo.read_merge_queue_entry.return_value = MergeQueueRead.present(
+        MergeQueueEntry("QUEUED", position=2)
+    )
+    coordinator, _ = _coordinator(repo)
+
+    read = coordinator.read_entry(318)
+
+    assert read.is_present
+    assert read.entry == MergeQueueEntry("QUEUED", position=2)
 
 
 def test_disabled_coordinator_reports_disabled() -> None:

@@ -85,8 +85,8 @@ _ACTIVE_MERGE_QUEUE_STATES: tuple[MergeQueueEntryState, ...] = (
 class MergeQueueEntry:
     """A PR's current state/position in the provider's merge queue.
 
-    Returned by :meth:`PullRequestTracker.read_merge_queue_entry`. ``None``
-    from that method means the PR is not currently enqueued.
+    Carried by a ``PRESENT`` :class:`MergeQueueRead` from
+    :meth:`PullRequestTracker.read_merge_queue_entry`.
     """
 
     state: MergeQueueEntryState
@@ -101,6 +101,54 @@ class MergeQueueEntry:
     def is_failed(self) -> bool:
         """True when GitHub has determined the entry cannot be merged."""
         return self.state == "UNMERGEABLE"
+
+
+# Outcome kind of reading a PR's merge queue entry. Mirrors the three-valued
+# discipline of ``StatusCheckRollupRead``: callers must NOT collapse "could not
+# determine the queue state" into "not enqueued", because that turns a transient
+# read failure (or an unmodeled provider state) into an actionable "enqueue this
+# PR" / "rework this PR" decision based on stale PR status.
+MergeQueueReadStatus = Literal["PRESENT", "ABSENT", "INDETERMINATE"]
+
+
+@dataclass(frozen=True)
+class MergeQueueRead:
+    """Typed outcome of reading a PR's merge queue entry.
+
+    The merge queue coordinator must treat three cases differently, so this read
+    never collapses them into a bare ``MergeQueueEntry | None``:
+
+    - ``PRESENT``: the PR is in the queue; ``entry`` holds its state/position.
+    - ``ABSENT``: the provider confirms the PR is **not** in the queue. Only this
+      outcome may drive a fresh enqueue/rework/escalation decision.
+    - ``INDETERMINATE``: the queue state could not be determined — the read
+      failed (transient/auth) or the provider reported a state we do not model.
+      Callers must treat this as non-actionable (wait/observe next tick); it is
+      never "not enqueued".
+    """
+
+    status: MergeQueueReadStatus
+    entry: MergeQueueEntry | None = None
+
+    @staticmethod
+    def present(entry: MergeQueueEntry) -> "MergeQueueRead":
+        return MergeQueueRead("PRESENT", entry)
+
+    @staticmethod
+    def absent() -> "MergeQueueRead":
+        return MergeQueueRead("ABSENT")
+
+    @staticmethod
+    def indeterminate() -> "MergeQueueRead":
+        return MergeQueueRead("INDETERMINATE")
+
+    @property
+    def is_indeterminate(self) -> bool:
+        return self.status == "INDETERMINATE"
+
+    @property
+    def is_present(self) -> bool:
+        return self.status == "PRESENT"
 
 
 @dataclass
@@ -312,8 +360,8 @@ class PullRequestTracker(Protocol):
         """
         ...
 
-    def read_merge_queue_entry(self, pr_number: int) -> "MergeQueueEntry | None":
-        """Read a PR's current merge queue entry, or ``None`` if not enqueued.
+    def read_merge_queue_entry(self, pr_number: int) -> "MergeQueueRead":
+        """Read a PR's current merge queue entry as a typed three-valued result.
 
         Costs one GraphQL round-trip. The coordinator uses this to decide
         between enqueueing a newly-eligible PR, observing one already in the
@@ -321,11 +369,16 @@ class PullRequestTracker(Protocol):
         configured failure policy.
 
         Returns:
-            A :class:`MergeQueueEntry` describing the queue state/position, or
-            ``None`` when the PR is not in the merge queue.
+            A :class:`MergeQueueRead`. ``PRESENT`` carries the
+            :class:`MergeQueueEntry`; ``ABSENT`` means the provider confirms the
+            PR is not enqueued; ``INDETERMINATE`` means the provider reported a
+            state we do not model (the queue state could not be determined and
+            must not be treated as "not enqueued").
 
         Raises:
-            RepositoryError: If there's an error reaching the provider.
+            RepositoryError: If there's an error reaching the provider. Callers
+                that must not act on an unknown queue state (the coordinator)
+                map this to ``INDETERMINATE`` rather than to ``ABSENT``.
         """
         ...
 

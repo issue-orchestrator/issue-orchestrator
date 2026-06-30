@@ -19,6 +19,7 @@ from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import (
     MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     StatusCheckRollupRead,
 )
@@ -1882,16 +1883,28 @@ class TestMergeQueue:
             "state": "QUEUED",
             "position": 3,
         }
-        entry = adapter.read_merge_queue_entry(318)
-        assert entry == MergeQueueEntry(state="QUEUED", position=3)
+        read = adapter.read_merge_queue_entry(318)
+        assert read == MergeQueueRead.present(
+            MergeQueueEntry(state="QUEUED", position=3)
+        )
 
-    def test_read_entry_none_when_not_queued(self, adapter, mock_http_client):
+    def test_read_entry_absent_when_not_queued(self, adapter, mock_http_client):
         mock_http_client.get_merge_queue_entry.return_value = None
-        assert adapter.read_merge_queue_entry(318) is None
+        read = adapter.read_merge_queue_entry(318)
+        assert read == MergeQueueRead.absent()
+        # An absent read must NOT look like a present entry.
+        assert read.entry is None
 
-    def test_read_entry_unknown_state_is_none(self, adapter, mock_http_client):
+    def test_read_entry_unmodeled_state_is_indeterminate(
+        self, adapter, mock_http_client
+    ):
+        # An entry object exists but its state is one we do not model: the PR IS
+        # in the queue, so this must be INDETERMINATE (non-actionable), never
+        # ABSENT — otherwise a queued PR could be wrongly re-enqueued/reworked.
         mock_http_client.get_merge_queue_entry.return_value = {"state": "BOGUS"}
-        assert adapter.read_merge_queue_entry(318) is None
+        read = adapter.read_merge_queue_entry(318)
+        assert read == MergeQueueRead.indeterminate()
+        assert read.is_indeterminate
 
     def test_enqueue_propagates_http_error(self, adapter, mock_http_client):
         mock_http_client.enqueue_pull_request.side_effect = GitHubHttpError(

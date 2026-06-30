@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from ...infra.config import Config
 from ...ports.pull_request_tracker import (
     MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     PRRef,
     StatusCheckRollupCapability,
@@ -64,24 +65,31 @@ _VALID_MERGE_QUEUE_STATES: frozenset[str] = frozenset(
 )
 
 
-def _merge_queue_entry_from_api(raw: object) -> MergeQueueEntry | None:
-    """Build a typed :class:`MergeQueueEntry` from a GraphQL entry payload.
+def _merge_queue_entry_from_api(raw: object) -> MergeQueueRead:
+    """Build a typed :class:`MergeQueueRead` from a GraphQL entry payload.
 
-    Returns ``None`` when there is no entry or the provider reports a state we
-    do not model (fail-soft: an unknown state is treated as "not enqueued" so
-    the coordinator re-observes rather than acting on a state it can't classify).
+    Distinguishes three outcomes so the coordinator never mistakes "we can't
+    classify this PR's queue state" for "this PR is not enqueued":
+
+    - no entry payload (GraphQL ``mergeQueueEntry`` is ``null``) -> ``ABSENT``.
+    - a modeled state -> ``PRESENT`` carrying the :class:`MergeQueueEntry`.
+    - an entry exists but its state is missing/unmodeled -> ``INDETERMINATE``.
+      The PR *is* in the queue (an entry object is present); we simply cannot
+      classify it, so acting as if it were absent could wrongly re-enqueue or
+      rework a queued PR.
     """
     if not isinstance(raw, dict):
-        return None
+        return MergeQueueRead.absent()
     state = raw.get("state")
     if not isinstance(state, str) or state.upper() not in _VALID_MERGE_QUEUE_STATES:
-        if state is not None:
-            logger.warning("Unknown mergeQueueEntry state from GitHub: %r", state)
-        return None
+        logger.warning("Unmodeled mergeQueueEntry state from GitHub: %r", state)
+        return MergeQueueRead.indeterminate()
     position = raw.get("position")
-    return MergeQueueEntry(
-        state=state.upper(),  # type: ignore[arg-type]
-        position=position if isinstance(position, int) else None,
+    return MergeQueueRead.present(
+        MergeQueueEntry(
+            state=state.upper(),  # type: ignore[arg-type]
+            position=position if isinstance(position, int) else None,
+        )
     )
 
 
@@ -967,8 +975,13 @@ class GitHubAdapter:
             logger.error("Failed to enqueue PR %s to merge queue: %s", pr_number, e)
             raise
 
-    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueEntry | None:
-        """Read a PR's merge queue entry (GraphQL), or None if not enqueued."""
+    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
+        """Read a PR's merge queue entry (GraphQL) as a typed three-valued read.
+
+        Re-raises ``GitHubHttpError`` (a ``RepositoryHostError``) on a transient
+        read failure; the coordinator maps that to ``INDETERMINATE`` so an
+        unreadable queue cannot drive an enqueue/rework decision.
+        """
         try:
             raw = self._client.get_merge_queue_entry(pr_number)
         except GitHubHttpError as e:
