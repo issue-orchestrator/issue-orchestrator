@@ -102,8 +102,6 @@ class Orchestrator:
     scheduler: Scheduler = field(init=False)
     observer: SessionObserver = field(init=False)
     _shutdown_requested: bool = field(default=False, init=False)
-    # Single owner that restores a finalized session for re-observation when its
-    # async publish job reports ``review_exchange_deferred`` (issue #6009).
     _deferred_publish_completions: DeferredPublishCompletions = field(
         default_factory=DeferredPublishCompletions, init=False
     )
@@ -789,24 +787,13 @@ class Orchestrator:
                 result.pr_url,
             )
 
-            # A first-time async review-exchange deferral: the publish worker
-            # started the exchange in the background and there is nothing to
-            # finalize yet. The deferred-publish owner restores the originating
-            # session so the next tick re-observes and resumes once the exchange
-            # finishes. This is NOT a terminal result, so skip the terminal
-            # handling below (issue #6009).
-            if self._deferred_publish_completions.resume_if_deferred(result, self.state):
-                self.state.pending_publish_jobs.pop(result.job_id, None)
-                logger.info(
-                    "[ASYNC] Review exchange deferred; restored session for "
-                    "re-observation: job_id=%s issue=%d",
-                    result.job_id,
-                    result.issue_number,
-                )
-                continue
-
-            # Remove from pending
+            handled = self._deferred_publish_completions.resume_if_deferred(
+                result,
+                self.state,
+            )
             self.state.pending_publish_jobs.pop(result.job_id, None)
+            if handled:
+                continue
 
             if result.retry_publish and result.success:
                 self.deps.publish_recovery.reconcile_retry_publish_success(
@@ -820,27 +807,20 @@ class Orchestrator:
                 )
 
             # Handle job result - queue review if successful and exchange not completed
-            if (
-                result.success
-                and result.pr_url
-                and result.pr_number
-                and not result.review_exchange_completed
-                and not result.retry_publish
-            ):
-                from ..domain.models import DiscoveredReview
-                # Queue for code review
-                # We need to look up the branch_name from the job or session
-                # For now, we'll construct it from the issue number
-                branch_name = f"issue-{result.issue_number}"  # Default pattern
-                self.state.discovered_reviews.append(DiscoveredReview(
-                    result.issue_number,
-                    result.pr_number,
-                    result.pr_url,
-                    branch_name,
-                    agent_label=None,  # TODO: track agent label in job
-                ))
-                self.state.completed_today.append(result.issue_number)
-            elif result.success and result.pr_url and result.pr_number and not result.retry_publish:
+            if result.success and result.pr_url and result.pr_number and not result.retry_publish:
+                if not result.review_exchange_completed:
+                    from ..domain.models import DiscoveredReview
+                    # Queue for code review
+                    # We need to look up the branch_name from the job or session
+                    # For now, we'll construct it from the issue number
+                    branch_name = f"issue-{result.issue_number}"  # Default pattern
+                    self.state.discovered_reviews.append(DiscoveredReview(
+                        result.issue_number,
+                        result.pr_number,
+                        result.pr_url,
+                        branch_name,
+                        agent_label=None,  # TODO: track agent label in job
+                    ))
                 self.state.completed_today.append(result.issue_number)
             elif not result.success and not result.retry_publish:
                 # Track failure

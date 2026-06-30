@@ -98,6 +98,7 @@ from .completion_types import (
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .pre_publish_gate import PrePublishGate, PrePublishGateResult
+from .push_failure_classification import is_non_fast_forward_push_failure
 from .review_exchange_contracts import ReviewExchangeCanceller
 from .review_cache_boundary import review_cache_boundary_started_at
 from .review_exchange_pr_comment import (
@@ -667,16 +668,10 @@ class CompletionProcessor:
         return decide_completion_finalization(command)
 
     def cancel_deferred_review_exchange(
-        self,
-        *,
-        issue_number: int,
-        session_name: str | None,
-        reason: str,
+        self, *, issue_number: int, session_name: str | None, reason: str
     ) -> str | None:
         return self._review_exchange.cancel_deferred_review_exchange(
-            issue_number=issue_number,
-            session_name=session_name,
-            reason=reason,
+            issue_number=issue_number, session_name=session_name, reason=reason
         )
 
     def _emit_review_comment_added(
@@ -2117,7 +2112,7 @@ class CompletionProcessor:
 
         # Handle push failure with potential rebase retry
         retry_result: PushResult | None = None
-        if self._push_rebase_retry and self._is_non_fast_forward(result.message):
+        if self._push_rebase_retry and is_non_fast_forward_push_failure(result.message):
             retry_result = self._attempt_rebase_and_retry_push(
                 worktree, issue_number, action, actions_taken, errors, error_details, skip_hooks
             )
@@ -2443,18 +2438,6 @@ class CompletionProcessor:
             issue_number=issue_number,
             cleanup_record=self.cleanup_record,
             post_issue_comment=self._add_issue_comment,
-        )
-
-    def _is_non_fast_forward(self, message: str) -> bool:
-        lower = message.lower()
-        return any(
-            marker in lower
-            for marker in (
-                "non-fast-forward",
-                "fetch first",
-                "rejected",
-                "stale info",
-            )
         )
 
     def cleanup_record(self, worktree: Path, completion_path: str | None = None) -> bool:
