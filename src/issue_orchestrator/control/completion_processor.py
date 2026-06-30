@@ -22,6 +22,7 @@ import shutil
 import stat as stat_module
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2179,6 +2180,45 @@ class CompletionProcessor:
         })
         return None
 
+    def _resolve_publish_base(
+        self,
+        issue_number: int,
+        worktree: Path,
+        errors: list[str],
+    ) -> tuple[bool, Callable[[], str]]:
+        """Resolve the PR base for a (possibly stacked) successor (#6596).
+
+        Returns ``(halt, base_resolver)``. ``halt`` is True when the stack
+        publish gate blocked publish (the diagnostic is already emitted), so the
+        caller aborts PR creation. Otherwise ``base_resolver`` is the callable to
+        pass as the PR base: the predecessor branch for a stack successor whose
+        gate is open, or the processor's normal base for a non-stack issue (or
+        when no gate is wired).
+        """
+        if self._stack_publish_gate is None:
+            return False, self._base_branch
+        decision = self._stack_publish_gate.decide(issue_number, worktree)
+        if decision.is_stack and not decision.allowed:
+            reason = decision.reason or "stack publish gate blocked"
+            errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
+            logger.error("Stack publish blocked for #%d: %s", issue_number, reason)
+            self._emit_publish_failed(
+                issue_number=issue_number,
+                stage=ERROR_PREFIX_CREATE_PR,
+                error=reason,
+                retryable=False,
+            )
+            return True, self._base_branch
+        if decision.base_branch:
+            stacked_base = decision.base_branch
+            logger.info(
+                "Stack successor #%d PR will base on predecessor branch %s",
+                issue_number,
+                stacked_base,
+            )
+            return False, (lambda: stacked_base)
+        return False, self._base_branch
+
     def _execute_create_pr_action(
         self,
         *,
@@ -2202,31 +2242,12 @@ class CompletionProcessor:
 
         # Stack publish gate (ADR-0029 / #6596): for a Stack-after: successor,
         # base the PR on the predecessor branch and fail fast when the publish
-        # gate is blocked (incompatible base-branch rule, or a successor that no
-        # longer contains the current predecessor head). Non-stack issues return
-        # an inert decision, leaving the default base selection below unchanged.
-        base_branch_resolver = self._base_branch
-        if self._stack_publish_gate is not None:
-            decision = self._stack_publish_gate.decide(issue_number, worktree)
-            if decision.is_stack and not decision.allowed:
-                reason = decision.reason or "stack publish gate blocked"
-                errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
-                logger.error("Stack publish blocked for #%d: %s", issue_number, reason)
-                self._emit_publish_failed(
-                    issue_number=issue_number,
-                    stage=ERROR_PREFIX_CREATE_PR,
-                    error=reason,
-                    retryable=False,
-                )
-                return self._ActionResult(halt=True)
-            if decision.base_branch:
-                stacked_base = decision.base_branch
-                base_branch_resolver = lambda: stacked_base  # noqa: E731
-                logger.info(
-                    "Stack successor #%d PR will base on predecessor branch %s",
-                    issue_number,
-                    stacked_base,
-                )
+        # gate is blocked. Non-stack issues keep the default base selection.
+        halt, base_branch_resolver = self._resolve_publish_base(
+            issue_number, worktree, errors
+        )
+        if halt:
+            return self._ActionResult(halt=True)
 
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
