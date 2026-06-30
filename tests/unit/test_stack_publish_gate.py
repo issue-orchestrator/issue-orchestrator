@@ -114,6 +114,31 @@ def test_incompatible_base_branch_blocks_with_reason():
     assert "base_branch_conflict" in (decision.reason or "")
 
 
+def test_ambiguous_stack_base_blocks_publish():
+    # F4: two ready unmerged predecessors with distinct usable branches give no
+    # single base; the gate must block publish rather than allow a fallback to
+    # the processor's default base.
+    facts = {
+        DependencyTarget(20): PredecessorFacts(
+            branch_usable=True, validation_passed=True, agent_reviewed=True,
+            branch_name="20-base", head_sha="aaa",
+        ),
+        DependencyTarget(21): PredecessorFacts(
+            branch_usable=True, validation_passed=True, agent_reviewed=True,
+            branch_name="21-base", head_sha="bbb",
+        ),
+    }
+    gate = StackPublishGate(
+        evaluator=_evaluator(_Checker(state="open"), facts),
+        issue_reader=_IssueReader(_Issue("Stack-after: #20\nStack-after: #21")),
+    )
+    decision = gate.decide(2, Path("/wt"))
+    assert decision.is_stack is True
+    assert decision.allowed is False
+    assert decision.base_branch is None
+    assert "ambiguous_stack_base" in (decision.reason or "")
+
+
 def test_stale_successor_blocks_publish():
     gate = StackPublishGate(
         evaluator=_evaluator(

@@ -70,6 +70,11 @@ class GateBlockReason(Enum):
     MALFORMED_REFERENCE = "malformed_reference"
     CYCLE = "cycle"
     BASE_BRANCH_CONFLICT = "base_branch_conflict"  # stack base conflicts with rule
+    # More than one unmerged stack predecessor exposes a usable base branch, so
+    # there is no single branch a linear successor can be based on. The base is
+    # ambiguous and the gate must fail closed rather than fall back to the
+    # default branch (ADR-0029: stack base has exactly one owner).
+    AMBIGUOUS_STACK_BASE = "ambiguous_stack_base"
 
     # Stack-edge predecessor facts
     PREDECESSOR_BRANCH_UNUSABLE = "predecessor_branch_unusable"
@@ -472,19 +477,38 @@ def _edge_gate_blocks(
     return _stack_edge_blocks(dep, ref, facts_by_target, configured_base_branch)
 
 
-def _resolve_stack_base_branch(
+@dataclass(frozen=True)
+class _StackBaseResolution:
+    """Resolved stack base plus the edges that make it ambiguous, if any.
+
+    ``base`` is the single branch a linear successor must be based on, or
+    ``None`` when there is no live predecessor base (all merged → default
+    branch) *or* when the base is ambiguous. ``ambiguous_edges`` is non-empty
+    only in the ambiguous case (more than one usable unmerged predecessor branch)
+    so the report can fail that case closed instead of falling back to default.
+    """
+
+    base: str | None
+    ambiguous_edges: tuple[Dependency, ...] = ()
+    branches: tuple[str, ...] = ()
+
+
+def _resolve_stack_base(
     dependencies: Sequence[Dependency],
     facts_by_target: Mapping[DependencyTarget, PredecessorFacts],
-) -> str | None:
-    """The branch a stack successor's PR must be based on, or ``None``.
+) -> _StackBaseResolution:
+    """Resolve the stack successor's base branch (ADR-0029, #6596).
 
     A linear stack has exactly one unmerged stack predecessor; its usable branch
     is the successor's base. A satisfied (merged/closed) stack predecessor
     contributes no base — the successor bases on the normal default branch. When
-    no unmerged stack predecessor exposes a usable branch, or two would disagree
-    (an unusual non-linear stack), this returns ``None`` so the caller falls back
-    to its configured/default base rather than guessing.
+    no unmerged stack predecessor exposes a usable branch yet, the base is
+    ``None`` (the per-edge ``PREDECESSOR_BRANCH_UNUSABLE`` block already keeps the
+    gate closed). When *two or more* unmerged predecessors expose conflicting
+    usable branches there is no single base, so this reports the conflicting
+    edges and the owner fails the gate closed rather than guessing a default.
     """
+    live: list[Dependency] = []
     branches: list[str] = []
     for dep in dependencies:
         if (
@@ -496,11 +520,16 @@ def _resolve_stack_base_branch(
             continue
         facts = facts_by_target.get(dep.target)
         if facts and facts.branch_usable and facts.branch_name:
+            live.append(dep)
             branches.append(facts.branch_name)
-    distinct = set(branches)
+    distinct = sorted(set(branches))
     if len(distinct) == 1:
-        return branches[0]
-    return None
+        return _StackBaseResolution(base=distinct[0])
+    if len(distinct) > 1:
+        return _StackBaseResolution(
+            base=None, ambiguous_edges=tuple(live), branches=tuple(distinct)
+        )
+    return _StackBaseResolution(base=None)
 
 
 def build_gate_report(
@@ -543,6 +572,25 @@ def build_gate_report(
         publish += p
         merge += m
 
+    # Resolve the single stack base. When two or more unmerged predecessors
+    # expose conflicting usable branches there is no safe base, so fail the
+    # base-deciding gates closed instead of falling back to the default branch.
+    base_resolution = _resolve_stack_base(dependencies, facts_by_target)
+    if base_resolution.ambiguous_edges:
+        detail = (
+            "ambiguous stack base: unmerged predecessors expose conflicting "
+            f"usable branches {list(base_resolution.branches)}"
+        )
+        for dep in base_resolution.ambiguous_edges:
+            block = GateBlock(
+                GateBlockReason.AMBIGUOUS_STACK_BASE, dep.display_ref, detail
+            )
+            # Block every gate that selects or builds on the base: WORK seeds the
+            # successor worktree, PUBLISH picks the PR base, MERGE orders on it.
+            work.append(block)
+            publish.append(block)
+            merge.append(block)
+
     # The slice's own reviewed-commit freshness only re-blocks merge.
     if not approval_current:
         merge.append(
@@ -561,5 +609,5 @@ def build_gate_report(
         merge=GateDecision(Gate.MERGE, is_open=not merge, blocks=tuple(merge)),
         approval_current=approval_current,
         dependencies=tuple(dependencies),
-        stack_base_branch=_resolve_stack_base_branch(dependencies, facts_by_target),
+        stack_base_branch=base_resolution.base,
     )

@@ -493,7 +493,10 @@ class TestStackBaseBranchSelection:
         report = build_gate_report(1, [self._stack_dep()])  # no facts
         assert report.stack_base_branch is None
 
-    def test_conflicting_branches_fall_back_to_none(self):
+    def test_conflicting_branches_fail_closed(self):
+        # F4: two unmerged predecessors with distinct usable branches have no
+        # single base. The owner must fail closed (no default-branch fallback)
+        # rather than leave publish open with stack_base_branch=None.
         deps = [
             Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
             Dependency(issue_number=21, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
@@ -504,6 +507,29 @@ class TestStackBaseBranchSelection:
         }
         report = build_gate_report(1, deps, facts)
         assert report.stack_base_branch is None
+        assert not report.can_publish
+        assert not report.can_start_work
+        assert not report.can_merge
+        assert GateBlockReason.AMBIGUOUS_STACK_BASE in report.reason_codes(Gate.PUBLISH)
+        assert GateBlockReason.AMBIGUOUS_STACK_BASE in report.reason_codes(Gate.WORK)
+        # The conflicting branches appear in the human detail for diagnostics.
+        details = [b.detail for b in report.publish.blocks if b.detail]
+        assert any("20-base" in d and "21-base" in d for d in details)
+
+    def test_one_live_predecessor_with_others_merged_is_not_ambiguous(self):
+        # A single unmerged predecessor plus already-merged ones is linear: the
+        # one live usable branch is the base, no ambiguity block.
+        deps = [
+            Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.SATISFIED),
+            Dependency(issue_number=21, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
+        ]
+        facts = {
+            DependencyTarget(21): PredecessorFacts(branch_usable=True, branch_name="21-base"),
+        }
+        report = build_gate_report(1, deps, facts)
+        assert report.stack_base_branch == "21-base"
+        assert GateBlockReason.AMBIGUOUS_STACK_BASE not in report.reason_codes(Gate.PUBLISH)
+        assert report.can_publish
 
 
 # --------------------------------------------------------------------------- #
