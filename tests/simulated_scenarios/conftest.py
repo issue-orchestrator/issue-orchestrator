@@ -15,6 +15,7 @@ from issue_orchestrator.domain.models import Issue, AgentConfig
 from issue_orchestrator.domain.review_exchange_run import ReviewExchangeRunAssets
 from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 from issue_orchestrator.ports.working_copy import (
+    BranchPathsResult,
     BranchStatus,
     CommitInfo,
     DiffResult,
@@ -625,6 +626,11 @@ class StubWorkingCopy:
 
     def diff_against_base(self, worktree: Path, base_ref: str) -> DiffResult:
         return DiffResult(success=True, diff_text="")
+
+    def branch_post_image_paths_against_base(
+        self, worktree: Path, base_ref: str
+    ) -> BranchPathsResult:
+        return BranchPathsResult(success=True, paths=())
 
     def get_issue_number_from_branch(self, worktree: Path) -> int | None:
         parts = self.branch.split("-")

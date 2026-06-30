@@ -18,7 +18,11 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.runtime_identity import RuntimeIdentity
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
-from issue_orchestrator.ports.working_copy import DiffResult, PushResult
+from issue_orchestrator.ports.working_copy import (
+    BranchPathsResult,
+    DiffResult,
+    PushResult,
+)
 
 
 def _make_git_adapter() -> Mock:
@@ -39,6 +43,9 @@ def _make_git_adapter() -> Mock:
     adapter.has_tracked_changes = Mock(return_value=False)
     adapter.list_dirty_files = Mock(return_value=[])
     adapter.diff_against_base = Mock(return_value=DiffResult(success=True, diff_text=""))
+    adapter.branch_post_image_paths_against_base = Mock(
+        return_value=BranchPathsResult(success=True, paths=())
+    )
     return adapter
 
 

@@ -1304,14 +1304,6 @@
       "rule_id": "oversized_control_hotspots",
       "value": 1537
     },
-    "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
-      "detail": "926 lines exceeds budget 800",
-      "kind": "file_line_budget",
-      "metric_id": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
-      "path": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
-      "rule_id": "oversized_control_hotspots",
-      "value": 926
-    },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_handler.py": {
       "detail": "1235 lines exceeds budget 800",
       "kind": "file_line_budget",
@@ -1321,12 +1313,12 @@
       "value": 1235
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_processor.py": {
-      "detail": "2414 lines exceeds budget 800",
+      "detail": "2466 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/completion_processor.py",
       "path": "src/issue_orchestrator/control/completion_processor.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2414
+      "value": 2466
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_review_exchange.py": {
       "detail": "1506 lines exceeds budget 800",
@@ -1465,12 +1457,12 @@
       "value": 1317
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/git_working_copy.py": {
-      "detail": "810 lines exceeds budget 800",
+      "detail": "847 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/execution/git_working_copy.py",
       "path": "src/issue_orchestrator/execution/git_working_copy.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 810
+      "value": 847
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/goal_pilot_store.py": {
       "detail": "910 lines exceeds budget 800",

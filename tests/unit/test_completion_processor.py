@@ -57,7 +57,11 @@ from issue_orchestrator.ports.review_artifact_reader import (
     ReviewArtifactContent,
     ReviewArtifactReadCommand,
 )
-from issue_orchestrator.ports.working_copy import DiffResult, PushResult
+from issue_orchestrator.ports.working_copy import (
+    BranchPathsResult,
+    DiffResult,
+    PushResult,
+)
 from issue_orchestrator.domain.events import EventBus, SessionEvent
 from issue_orchestrator.infra.issue_diagnostics import DiagnosticReference
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -223,6 +227,9 @@ def mock_git_adapter():
     adapter.diff_against_base = Mock(
         return_value=DiffResult(success=True, diff_text="")
     )
+    adapter.branch_post_image_paths_against_base = Mock(
+        return_value=BranchPathsResult(success=True, paths=())
+    )
     return adapter
 
 
@@ -320,6 +327,117 @@ class TestCompletionProcessorLabelActions:
         assert result.success
         mock_label_adapter.add_label.assert_not_called()
         mock_label_adapter.remove_label.assert_not_called()
+
+
+class TestRuntimeArtifactBranchGuard:
+    """Pre-publish guard rejects committed IO runtime artifacts (#6659).
+
+    The guard consumes branch-tip post-image paths from
+    ``branch_post_image_paths_against_base`` (a path-oriented Git query) rather
+    than parsing diff text, so it sees every change shape git can emit —
+    text/binary/empty-file additions and rename/copy destinations — uniformly.
+    The diff-shape coverage lives with the adapter in
+    ``test_git_working_copy.py``; here we verify the policy on the resulting
+    path list.
+    """
+
+    @staticmethod
+    def _publish_record() -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+            implementation="Added the feature",
+        )
+
+    @pytest.mark.parametrize(
+        "artifact_path",
+        [
+            ".issue-orchestrator/persistent-pairs/issue-6594/coder/terminal-recording.jsonl",
+            ".issue-orchestrator/review-exchange-turn-prompt.md",
+            ".issue-orchestrator/review-feedback/cycle-1.md",
+            ".issue-orchestrator/review-response.json",
+            ".issue-orchestrator/review-report.md",
+            # A binary blob and an empty-file addition both surface as plain
+            # branch-tip paths here — no diff text is parsed — so they are
+            # blocked just like any other runtime output.
+            ".issue-orchestrator/tool-homes/blob.bin",
+        ],
+    )
+    def test_committed_runtime_artifact_blocks_publish(
+        self,
+        processor,
+        mock_git_adapter,
+        mock_pr_adapter,
+        worktree_with_completion,
+        artifact_path,
+    ):
+        worktree = worktree_with_completion(self._publish_record())
+        mock_git_adapter.branch_post_image_paths_against_base = Mock(
+            return_value=BranchPathsResult(
+                success=True, paths=("src/app.py", artifact_path)
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=6594,
+            issue_title="Test Issue",
+        )
+
+        assert not result.success
+        assert "runtime artifacts" in (result.message or "")
+        assert artifact_path in (result.message or "")
+        # Fails before any publish action runs.
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_tracked_config_yaml_does_not_block(
+        self, processor, mock_git_adapter, worktree_with_completion
+    ):
+        worktree = worktree_with_completion(self._publish_record())
+        mock_git_adapter.branch_post_image_paths_against_base = Mock(
+            return_value=BranchPathsResult(
+                success=True,
+                paths=(".issue-orchestrator/config/main.yaml", "src/app.py"),
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+        assert result.success
+
+    def test_path_scan_failure_fails_closed(
+        self, processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion
+    ):
+        # The earlier test-skip scan reads diff text and must pass, so the
+        # runtime-artifact path scan is the one that fails here.
+        worktree = worktree_with_completion(self._publish_record())
+        mock_git_adapter.diff_against_base = Mock(
+            return_value=DiffResult(success=True, diff_text="")
+        )
+        mock_git_adapter.branch_post_image_paths_against_base = Mock(
+            return_value=BranchPathsResult(success=False, error="fatal: bad revision")
+        )
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+        assert not result.success
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
 
 
 class TestReviewExchangeModeResolution:
