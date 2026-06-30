@@ -4029,3 +4029,151 @@ class TestExtraProviderArgsFromLabels:
     def test_empty_labels_returns_none(self):
         result = SessionLauncher._extra_provider_args_from_labels([])  # noqa: SLF001 - unit test targets internal label parser
         assert result is None
+
+
+class TestStackRelaunchGate:
+    """Validation retry and rework honor the stack work gate (#6596 F1).
+
+    A blocked or ambiguous stack predecessor must fail the relaunch closed before
+    any worktree is created/reset, and must never seed the worktree from the
+    default base via a ``None`` stack base.
+    """
+
+    @staticmethod
+    def _ambiguous_report(issue_number):
+        from issue_orchestrator.domain.dependencies import (
+            Dependency,
+            DependencyMode,
+            DependencyState,
+            DependencyTarget,
+        )
+        from issue_orchestrator.domain.dependency_gates import (
+            PredecessorFacts,
+            build_gate_report,
+        )
+
+        deps = [
+            Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
+            Dependency(issue_number=21, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
+        ]
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-base",
+            ),
+            DependencyTarget(21): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="21-base",
+            ),
+        }
+        return build_gate_report(issue_number, deps, facts)
+
+    class _CannedWorkEvaluator:
+        def __init__(self, report_fn):
+            self._report_fn = report_fn
+
+        def evaluate_work_gate(
+            self, issue_number, issue_body, source_milestone,
+            *, configured_base_branch=None, emit_event=True,
+        ):
+            return self._report_fn(issue_number)
+
+    def _launcher(self, fixtures, *, report_fn, body):
+        (sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+         mock_working_copy, mock_command_runner) = fixtures
+
+        def refresh_issue(_number):
+            return Issue(
+                number=123,
+                title="Test issue",
+                labels=["agent:web"],
+                repo="test/repo",
+                body=body,
+                milestone="M7",
+            )
+
+        return SessionLauncher(
+            config=sample_config,
+            events=mock_events,
+            repository_host=mock_repo_host,
+            action_applier=MagicMock(),
+            session_manager=MagicMock(),
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            command_runner=mock_command_runner,
+            session_output=FileSystemSessionOutput(),
+            manifest_downloader=NullManifestDownloader(),
+            session_exists_fn=lambda name: False,
+            create_session_fn=lambda name, cmd, wd, title: True,
+            get_issue_machine=lambda issue: IssueStateMachine(issue),
+            get_session_machine=lambda name, n, timeout: SessionStateMachine(
+                name, n, timeout_minutes=timeout
+            ),
+            get_review_machine=lambda pr, issue: ReviewStateMachine(pr, issue),
+            refresh_issue_fn=refresh_issue,
+            dependency_evaluator=self._CannedWorkEvaluator(report_fn),
+        )
+
+    @pytest.fixture
+    def _fixtures(
+        self, sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+        mock_working_copy, mock_command_runner,
+    ):
+        return (sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+                mock_working_copy, mock_command_runner)
+
+    def test_validation_retry_blocks_on_ambiguous_stack_base(
+        self, _fixtures, mock_worktree_manager, mock_events
+    ):
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report,
+            body="Stack-after: #20\nStack-after: #21",
+        )
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Test issue",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-feature",
+            original_prompt="Work on issue #123",
+            validation_error="boom",
+            validation_error_file="/tmp/err.txt",
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert "Stack dependencies not satisfied" in (result.reason or "")
+        # Fail closed BEFORE any worktree create/reset (no default-base fallback).
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+    def test_rework_blocks_on_ambiguous_stack_base(
+        self, _fixtures, mock_worktree_manager, mock_repo_host, mock_events
+    ):
+        mock_repo_host.prs[123] = [
+            PRInfo(
+                number=456, title="Fix issue #123",
+                url="https://github.com/test/repo/pull/456",
+                branch="123-feature", body="", state="open", labels=[],
+            )
+        ]
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report,
+            body="Stack-after: #20\nStack-after: #21",
+        )
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is False
+        assert "Stack dependencies not satisfied" in (result.reason or "")
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)

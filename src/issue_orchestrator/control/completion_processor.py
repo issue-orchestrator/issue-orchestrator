@@ -114,7 +114,8 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
-    from .stack_publish_gate import StackPublishDecision, StackPublishGate
+    from .stack_base import StackBaseDecision
+    from .stack_publish_gate import StackBaseGate
 
 
 class _MissingReviewArtifactReader:
@@ -539,7 +540,7 @@ class CompletionProcessor:
         # Stack-after: successor's PR is based on its predecessor branch and a
         # blocked publish gate (e.g. an incompatible base-branch rule or a stale
         # successor) fails fast with a diagnostic. Absent -> non-stack behavior.
-        self._stack_publish_gate: "StackPublishGate | None" = None
+        self._stack_publish_gate: "StackBaseGate | None" = None
 
     def _emit(
         self,
@@ -572,7 +573,7 @@ class CompletionProcessor:
         self._trace_events = events
         self._event_context = event_context
 
-    def attach_stack_publish_gate(self, gate: "StackPublishGate") -> None:
+    def attach_stack_publish_gate(self, gate: "StackBaseGate") -> None:
         """Wire the stack publish-gate owner (ADR-0029 / #6596)."""
         self._stack_publish_gate = gate
 
@@ -2144,6 +2145,45 @@ class CompletionProcessor:
         )
         return self._ActionResult(halt=True)
 
+    def _resolve_push_rebase_base(
+        self,
+        issue_number: int,
+        action: RequestedAction,
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+    ) -> tuple[bool, str]:
+        """Resolve the base a non-fast-forward push retry rebases onto (#6596).
+
+        Returns ``(halt, base)``. For a stack successor the *work* gate (which
+        omits the successor-vs-predecessor ancestry check, because the rebase is
+        precisely what fixes ancestry) selects the predecessor base via the same
+        stack owner the publish path uses. A blocked, ambiguous, or unreadable
+        stack gate halts the retry fail-closed — the diagnostic is emitted — so
+        the successor branch is never rebased onto and pushed on the default base
+        before the publish gate can enforce stack correctness. Non-stack issues
+        (and deployments with no gate) keep the normal base.
+        """
+        if self._stack_publish_gate is None:
+            return False, self._base_branch()
+        decision = self._stack_publish_gate.decide_work(issue_number)
+        if not decision.allowed:
+            reason = decision.reason or "stack work gate blocked"
+            errors.append(f"{ERROR_PREFIX_PUSH}: {reason}")
+            error_details.append(
+                {"action": action.value, "error": reason, "stage": "stack_gate"}
+            )
+            logger.error("Stack push retry blocked for #%d: %s", issue_number, reason)
+            self._emit_publish_failed(
+                issue_number=issue_number,
+                stage=ERROR_PREFIX_PUSH,
+                error=reason,
+                retryable=decision.retryable,
+            )
+            return True, ""
+        if decision.base_branch:
+            return False, decision.base_branch
+        return False, self._base_branch()
+
     def _attempt_rebase_and_retry_push(
         self,
         worktree: Path,
@@ -2162,12 +2202,21 @@ class CompletionProcessor:
             )
             return None
 
+        # Pick the rebase base through the stack base owner: a stack successor
+        # rebases onto its predecessor branch (never the default base), and a
+        # blocked/ambiguous/unreadable stack gate fails the retry closed.
+        halt, rebase_base = self._resolve_push_rebase_base(
+            issue_number, action, errors, error_details
+        )
+        if halt:
+            return None
+
         rebase_result = self.git_adapter.rebase_on_branch(
             worktree,
-            f"origin/{self._base_branch()}",
+            f"origin/{rebase_base}",
         )
         if rebase_result.success:
-            actions_taken.append("Rebased onto origin/main")
+            actions_taken.append(f"Rebased onto origin/{rebase_base}")
             return self.git_adapter.push(worktree, skip_hooks=skip_hooks)
 
         errors.append(f"{ERROR_PREFIX_PUSH}: Rebase failed: {rebase_result.message}")
@@ -2185,7 +2234,7 @@ class CompletionProcessor:
         issue_number: int,
         worktree: Path,
         errors: list[str],
-    ) -> tuple[bool, Callable[[], str], "StackPublishDecision | None"]:
+    ) -> tuple[bool, Callable[[], str], "StackBaseDecision | None"]:
         """Resolve the PR base for a (possibly stacked) successor (#6596).
 
         Returns ``(halt, base_resolver, decision)``. ``halt`` is True when the
@@ -2203,7 +2252,7 @@ class CompletionProcessor:
         """
         if self._stack_publish_gate is None:
             return False, self._base_branch, None
-        decision = self._stack_publish_gate.decide(issue_number, worktree)
+        decision = self._stack_publish_gate.decide_publish(issue_number, worktree)
         if not decision.allowed:
             reason = decision.reason or "stack publish gate blocked"
             errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
@@ -2362,7 +2411,7 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         expected_base: str,
-        stack_decision: "StackPublishDecision | None",
+        stack_decision: "StackBaseDecision | None",
     ) -> "_ActionResult | None":
         if self._pr_collision_strategy not in {"reuse_open", "new_branch"}:
             return None

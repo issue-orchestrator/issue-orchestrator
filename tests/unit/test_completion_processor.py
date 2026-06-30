@@ -330,15 +330,25 @@ class TestCompletionProcessorLabelActions:
 
 
 class _FakeStackGate:
-    """Duck-typed StackPublishGate returning a canned decision (#6596)."""
+    """Duck-typed StackBaseGate returning canned decisions (#6596).
 
-    def __init__(self, decision):
+    ``decide_publish`` (PR creation) returns ``decision``; ``decide_work`` (push
+    retry rebase base) returns ``work_decision`` (defaulting to ``decision``).
+    """
+
+    def __init__(self, decision, work_decision=None):
         self._decision = decision
+        self._work_decision = work_decision if work_decision is not None else decision
         self.calls: list[int] = []
+        self.work_calls: list[int] = []
 
-    def decide(self, issue_number, worktree):
+    def decide_publish(self, issue_number, worktree):
         self.calls.append(issue_number)
         return self._decision
+
+    def decide_work(self, issue_number):
+        self.work_calls.append(issue_number)
+        return self._work_decision
 
 
 class TestStackPublishGateWiring:
@@ -2626,6 +2636,74 @@ class TestCompletionProcessorGitActions:
             worktree, "origin/main"
         )
         assert mock_git_adapter.push.call_count == 2
+
+    def test_push_retry_rebases_stack_successor_on_predecessor(
+        self, processor, mock_git_adapter, worktree_with_completion
+    ):
+        """F2: a stack successor's non-ff push retry rebases on the predecessor
+        branch via the stack work gate, not the default base."""
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(_FakeStackGate(
+            StackPublishDecision.not_stack(),
+            work_decision=StackPublishDecision(
+                is_stack=True, allowed=True, base_branch="20-base"
+            ),
+        ))
+        mock_git_adapter.push.side_effect = [
+            PushResult(success=False, branch="issue-123", remote="origin", message="non-fast-forward"),
+            PushResult(success=True, branch="issue-123", remote="origin", message="Pushed"),
+        ]
+        worktree = worktree_with_completion(make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        ))
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
+
+        assert result.success
+        mock_git_adapter.rebase_on_branch.assert_called_once_with(worktree, "origin/20-base")
+        assert mock_git_adapter.push.call_count == 2
+
+    def test_push_retry_fails_closed_when_stack_gate_blocked(
+        self, processor, mock_git_adapter, worktree_with_completion
+    ):
+        """F2: a blocked/ambiguous stack gate halts the non-ff push retry — no
+        default-base rebase and no second push onto the wrong shape."""
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(_FakeStackGate(
+            StackPublishDecision.not_stack(),
+            work_decision=StackPublishDecision.blocked(
+                "Stack work gate blocked: work: blocked (ambiguous_stack_base)",
+                retryable=False,
+            ),
+        ))
+        mock_git_adapter.push.side_effect = [
+            PushResult(success=False, branch="issue-123", remote="origin", message="non-fast-forward"),
+            PushResult(success=True, branch="issue-123", remote="origin", message="Pushed"),
+        ]
+        worktree = worktree_with_completion(make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        ))
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
+
+        assert not result.success
+        mock_git_adapter.rebase_on_branch.assert_not_called()
+        assert mock_git_adapter.push.call_count == 1
+        assert any("ambiguous_stack_base" in e for e in result.errors)
 
 
 class TestCompletionProcessorValidation:

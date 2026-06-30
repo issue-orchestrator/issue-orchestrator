@@ -84,7 +84,7 @@ def test_non_stack_issue_is_inert():
         evaluator=_evaluator(_Checker(), {}),
         issue_reader=_IssueReader(_Issue("Depends-on: #5")),
     )
-    decision = gate.decide(2, Path("/wt"))
+    decision = gate.decide_publish(2, Path("/wt"))
     assert decision.is_stack is False
     assert decision.allowed is True
     assert decision.base_branch is None
@@ -95,7 +95,7 @@ def test_stack_successor_bases_on_predecessor_branch():
         evaluator=_evaluator(_Checker(state="open"), _ready_facts()),
         issue_reader=_IssueReader(_Issue("Stack-after: #20")),
     )
-    decision = gate.decide(2, Path("/wt"))
+    decision = gate.decide_publish(2, Path("/wt"))
     assert decision.is_stack is True
     assert decision.allowed is True
     assert decision.base_branch == "20-base"
@@ -107,7 +107,7 @@ def test_incompatible_base_branch_blocks_with_reason():
         issue_reader=_IssueReader(_Issue("Stack-after: #20")),
         configured_base_branch="release/9",  # conflicts with 20-base
     )
-    decision = gate.decide(2, Path("/wt"))
+    decision = gate.decide_publish(2, Path("/wt"))
     assert decision.is_stack is True
     assert decision.allowed is False
     assert decision.base_branch is None
@@ -132,7 +132,7 @@ def test_ambiguous_stack_base_blocks_publish():
         evaluator=_evaluator(_Checker(state="open"), facts),
         issue_reader=_IssueReader(_Issue("Stack-after: #20\nStack-after: #21")),
     )
-    decision = gate.decide(2, Path("/wt"))
+    decision = gate.decide_publish(2, Path("/wt"))
     assert decision.is_stack is True
     assert decision.allowed is False
     assert decision.base_branch is None
@@ -146,7 +146,7 @@ def test_stale_successor_blocks_publish():
         ),
         issue_reader=_IssueReader(_Issue("Stack-after: #20")),
     )
-    decision = gate.decide(2, Path("/wt"))
+    decision = gate.decide_publish(2, Path("/wt"))
     assert decision.allowed is False
     assert "predecessor_branch_advanced" in (decision.reason or "")
 
@@ -158,7 +158,7 @@ def test_issue_read_failure_blocks_publish_retryably():
         evaluator=_evaluator(_Checker(state="open"), _ready_facts()),
         issue_reader=reader,
     )
-    decision = gate.decide(2, Path("/wt"))
+    decision = gate.decide_publish(2, Path("/wt"))
     # Fail-closed: the gate cannot prove this is not a stack successor, so a read
     # error must block publish (retryably) rather than let a wrong-base PR open.
     assert decision.allowed is False
@@ -171,7 +171,7 @@ def test_missing_issue_blocks_publish_retryably():
         evaluator=_evaluator(_Checker(), {}),
         issue_reader=_IssueReader(None),
     )
-    decision = gate.decide(2, Path("/wt"))
+    decision = gate.decide_publish(2, Path("/wt"))
     # A managed publish whose issue cannot be found also fails closed.
     assert decision.allowed is False
     assert decision.retryable is True

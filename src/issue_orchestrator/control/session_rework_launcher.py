@@ -28,6 +28,7 @@ from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_launch_types import LaunchResult
+from .stack_base import StackBaseDecision
 from .session_review_support import copy_review_feedback_to_rework, format_reviewer_feedback
 from .session_worktree_diagnostics import (
     build_worktree_error_comment,
@@ -112,8 +113,8 @@ class ProviderCircuitChecker(Protocol):
     def __call__(self, provider: str | None, issue_number: int) -> LaunchResult | None: ...
 
 
-class StackBaseResolverFn(Protocol):
-    def __call__(self, issue_number: int) -> str | None: ...
+class StackDecisionResolverFn(Protocol):
+    def __call__(self, issue_number: int) -> StackBaseDecision: ...
 
 
 @dataclass(frozen=True)
@@ -138,7 +139,52 @@ class ReworkLaunchDependencies:
     wrap_provider_command: ProviderCommandWrapper
     build_session_env: SessionEnvBuilder
     check_provider_circuit: ProviderCircuitChecker
-    resolve_stack_base: StackBaseResolverFn
+    resolve_stack_decision: StackDecisionResolverFn
+
+
+def _rework_preflight(
+    deps: ReworkLaunchDependencies,
+    *,
+    active_sessions: list[Session],
+    session_name: str,
+    issue_number: int,
+    pr_number: int,
+) -> tuple[LaunchResult | None, str | None]:
+    """Run rework launch preflight: session conflicts then the stack work gate.
+
+    Returns ``(failure, stack_base_branch)``. ``failure`` is a non-``None``
+    :class:`LaunchResult` when an existing session conflicts, or when the stack
+    work gate is closed — predecessor not ready or ambiguous base — so rework
+    fails closed (the dependency-blocked signal is emitted) instead of resetting
+    the reused successor worktree onto the default base (#6596). Otherwise
+    ``stack_base_branch`` is the predecessor branch (or ``None`` for a non-stack
+    issue / merged predecessor → default base).
+    """
+    conflict = check_rework_conflicts(
+        session_name,
+        active_sessions,
+        issue_number,
+        session_exists=deps.session_exists,
+    )
+    if conflict is not None:
+        return conflict, None
+
+    decision = deps.resolve_stack_decision(issue_number)
+    if decision.allowed:
+        return None, decision.base_branch
+    reason = decision.reason or "stack work gate blocked"
+    log_transition("rework", issue_number, "LAUNCHING", "SKIP", f"stack gate: {reason}")
+    deps.events.publish(make_trace_event(
+        EventName.ISSUE_DEPENDENCY_BLOCKED,
+        {
+            "issue_number": issue_number,
+            "issue_title": f"Rework #{pr_number}",
+            "reason": reason,
+            "gate": "work",
+            "retryable": decision.retryable,
+        },
+    ))
+    return LaunchResult(None, False, f"Stack dependencies not satisfied: {reason}"), None
 
 
 def launch_rework_session(
@@ -163,13 +209,18 @@ def launch_rework_session(
     pr_number, branch_name = resolve_rework_pr(deps.repository_host, rework, issue_number)
 
     session_name = f"rework-{issue_number}"
-    if result := check_rework_conflicts(
-        session_name,
-        active_sessions,
-        issue_number,
-        session_exists=deps.session_exists,
-    ):
-        return result
+    # Preflight: session conflicts, then the stack work gate. A blocked/ambiguous
+    # stack predecessor fails the rework closed before the reused successor
+    # worktree is reset onto the default base (#6596).
+    preflight_failure, stack_base_branch = _rework_preflight(
+        deps,
+        active_sessions=active_sessions,
+        session_name=session_name,
+        issue_number=issue_number,
+        pr_number=pr_number,
+    )
+    if preflight_failure is not None:
+        return preflight_failure
 
     log_transition("rework", issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
     logger.info(
@@ -210,7 +261,7 @@ def launch_rework_session(
         pre_push_hook=deps.config.pre_push_hook,
         reuse_options=deps.worktree_reuse_options(allow_remote_branch_delete=False),
         phase_name=phase_name,
-        stack_base_branch=deps.resolve_stack_base(issue_number),
+        stack_base_branch=stack_base_branch,
     )
 
     if ctx.error:

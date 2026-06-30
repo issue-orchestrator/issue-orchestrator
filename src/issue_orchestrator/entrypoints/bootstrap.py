@@ -515,12 +515,12 @@ def _wire_stack_publish_gate(
     """
     if completion_processor is None or dependency_evaluator is None or github is None:
         return
-    from ..control.stack_publish_gate import StackPublishGate
+    from ..control.stack_publish_gate import StackBaseGate
     from ..execution.stack_branch_ancestry import GitStackBranchAncestry
 
     dependency_evaluator.attach_branch_ancestry(GitStackBranchAncestry(command_runner))
     completion_processor.attach_stack_publish_gate(
-        StackPublishGate(
+        StackBaseGate(
             evaluator=dependency_evaluator,
             issue_reader=github,
             configured_base_branch=config.worktree_base_branch_override,
