@@ -62,6 +62,7 @@ from issue_orchestrator.domain.models import (
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeEscalation,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
     DiscoveredReview,
     DiscoveredRework,
@@ -1097,6 +1098,14 @@ class TestClearDiscoveredFacts:
                 reason="Branch protection blocks merge.",
             )
         ]
+        sample_orchestrator_state.discovered_merge_queue_enqueues = [
+            DiscoveredMergeQueueEnqueue(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                issue_key="M0-001",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="agent:dev", rework_cycle=1)
         ]
@@ -1114,6 +1123,7 @@ class TestClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_escalations) == 0
+        assert len(sample_orchestrator_state.discovered_merge_queue_enqueues) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1558,6 +1568,14 @@ class TestOrchestratorSupportClearDiscoveredFacts:
                 reason="Branch protection blocks merge.",
             )
         ]
+        sample_orchestrator_state.discovered_merge_queue_enqueues = [
+            DiscoveredMergeQueueEnqueue(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                issue_key="M0-001",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="a", rework_cycle=1)
         ]
@@ -1577,6 +1595,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_escalations) == 0
+        assert len(sample_orchestrator_state.discovered_merge_queue_enqueues) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
