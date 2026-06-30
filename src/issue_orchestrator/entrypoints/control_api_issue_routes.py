@@ -19,6 +19,7 @@ from ..control.queue_cache import QueueCache
 from ..control.reconciliation import ReconciliationRequired, build_expected_for_mutation
 from ..control.worktree_manager import get_worktree_path
 from ..domain.models import get_completion_path
+from ..domain.review_exchange_verdict import ExchangeVerdict
 from ..domain.session_run import SessionRunAssets
 from ..infra.env import ENV_PREFIX
 from .control_api_issue_support import ControlApiIssueDependency, StateLockFn
@@ -60,6 +61,86 @@ async def preflight_push(request: Request) -> JSONResponse:
         "error": result.error,
         "fix_hint": result.fix_hint,
     })
+
+
+@control_issue_router.post("/api/review-exchange/respond")
+async def review_exchange_respond(
+    request: Request,
+    deps: ControlApiIssueDependency,
+) -> JSONResponse:
+    """Deliver a review-exchange turn verdict into the orchestrator-owned slot.
+
+    Called by the ``exchange-respond`` agent CLI. The orchestrator binds the
+    delivery to the turn it currently has open for ``key`` (the per-role
+    routing identifier) — the agent supplies only its verdict, never the
+    turn identity. Returns the delivery status so the CLI can report it; the
+    HTTP status is 200 for any well-formed delivery (accepted or rejected),
+    reserving 4xx/5xx for malformed requests or a missing orchestrator.
+    """
+    try:
+        body = _ReviewExchangeRespondBody.from_wire(await request.json())
+    except json.JSONDecodeError:
+        return JSONResponse(
+            {"status": "error", "detail": "Invalid JSON body"}, status_code=400
+        )
+    except _ReviewExchangeRespondRequestError as exc:
+        return exc.as_response()
+    orchestrator = deps.get_orchestrator()
+    if orchestrator is None:
+        return JSONResponse(
+            {"status": "error", "detail": "Orchestrator not initialized"},
+            status_code=503,
+        )
+    mailbox = orchestrator.deps.services.turn_mailbox
+    if mailbox is None:
+        return JSONResponse(
+            {"status": "error", "detail": "Turn mailbox not configured"},
+            status_code=503,
+        )
+    result = mailbox.deliver(body.key, dict(body.verdict.to_wire()))
+    logger.info(
+        "[REVIEW_EXCHANGE] verdict delivery key=%s status=%s turn_id=%s",
+        body.key,
+        result.status.value,
+        result.turn_id,
+    )
+    return JSONResponse({"status": result.status.value, "turn_id": result.turn_id})
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewExchangeRespondBody:
+    """Validated request envelope for one review-exchange verdict callback."""
+
+    key: str
+    verdict: ExchangeVerdict
+
+    @classmethod
+    def from_wire(cls, raw: object) -> "_ReviewExchangeRespondBody":
+        if not isinstance(raw, Mapping):
+            raise _ReviewExchangeRespondRequestError(
+                "request body must be a JSON object"
+            )
+        key = raw.get("key")
+        if not isinstance(key, str) or not key.strip():
+            raise _ReviewExchangeRespondRequestError("key is required")
+        try:
+            verdict = ExchangeVerdict.from_wire(raw.get("payload"))
+        except ValueError as exc:
+            raise _ReviewExchangeRespondRequestError(str(exc)) from exc
+        return cls(key=key.strip(), verdict=verdict)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReviewExchangeRespondRequestError(Exception):
+    """HTTP 400 error for a malformed review-exchange callback body."""
+
+    detail: str
+
+    def as_response(self) -> JSONResponse:
+        return JSONResponse(
+            {"status": "error", "detail": self.detail},
+            status_code=400,
+        )
 
 
 @control_issue_router.post("/api/issues/{issue_number}/resume")

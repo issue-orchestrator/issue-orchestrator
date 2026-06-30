@@ -1,6 +1,8 @@
 """Unit tests for GitWorkingCopy adapter."""
 
 import json
+import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +11,7 @@ import pytest
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from issue_orchestrator.ports.git import GitError, GitResult
 from issue_orchestrator.ports.working_copy import (
+    BranchPathsResult,
     BranchStatus,
     CommitInfo,
     PreflightResult,
@@ -1464,3 +1467,109 @@ class TestPushClearsStaleRemoteTrackingRef:
                     "-d",
                     "refs/remotes/origin/feature-branch",
                 ]
+
+
+def _run_git_cmd(cwd: Path, *args: str) -> str:
+    """Run a real git command in a test repo, returning stdout."""
+    result = subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    )
+    return result.stdout.strip()
+
+
+class TestBranchPostImagePathsAgainstBase:
+    """Path-oriented branch-tip query (#6659).
+
+    The runtime-artifact guard relies on this to see *every* branch-tip change
+    shape — including no-hunk additions (empty files), binary blobs, and
+    rename/copy destinations — and to exclude deletions. A unified-diff text
+    parser misses the no-hunk and binary shapes, which is the bypass this
+    method closes.
+    """
+
+    @staticmethod
+    def _init_repo(root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        _run_git_cmd(root, "init", "-q")
+        _run_git_cmd(root, "config", "user.email", "test@example.com")
+        _run_git_cmd(root, "config", "user.name", "Test User")
+        _run_git_cmd(root, "config", "commit.gpgsign", "false")
+
+    def test_captures_empty_binary_and_rename_excludes_deletion(self, tmp_path):
+        # Real git so we exercise the actual diff output shapes, not a stub.
+        root = tmp_path / "repo"
+        self._init_repo(root)
+
+        # Base commit: a file we will later rename, plus one we will delete.
+        (root / "to_rename.txt").write_text("hello\n")
+        (root / "to_delete.txt").write_text("bye\n")
+        _run_git_cmd(root, "add", "-A")
+        _run_git_cmd(root, "commit", "-q", "-m", "base")
+        base = _run_git_cmd(root, "rev-parse", "HEAD")
+
+        # Feature branch carrying the runtime-artifact shapes a text parser
+        # cannot see.
+        _run_git_cmd(root, "checkout", "-q", "-b", "feature")
+        io_dir = root / ".issue-orchestrator"
+        (io_dir / "tool-homes").mkdir(parents=True)
+        (io_dir / "review-response.json").write_text("")  # empty: no diff hunk
+        (io_dir / "tool-homes" / "blob.bin").write_bytes(bytes(range(256)))  # binary
+        os.replace(root / "to_rename.txt", io_dir / "renamed.txt")  # rename into IO dir
+        (root / "to_delete.txt").unlink()  # deletion: must be excluded
+        _run_git_cmd(root, "add", "-A")
+        _run_git_cmd(root, "commit", "-q", "-m", "feature")
+
+        result = GitWorkingCopy().branch_post_image_paths_against_base(root, base)
+
+        assert result.success
+        paths = set(result.paths)
+        # No-hunk empty addition and binary addition are both captured.
+        assert ".issue-orchestrator/review-response.json" in paths
+        assert ".issue-orchestrator/tool-homes/blob.bin" in paths
+        # Rename destination (post-image) is captured; its pre-image is not.
+        assert ".issue-orchestrator/renamed.txt" in paths
+        assert "to_rename.txt" not in paths
+        # A pure deletion leaves nothing in the branch tip, so it is excluded.
+        assert "to_delete.txt" not in paths
+
+    def test_uses_path_oriented_command_and_parses_nul_output(
+        self, git_wc, worktree_path
+    ):
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=".issue-orchestrator/review-response.json\0src/app.py\0",
+                stderr="",
+            )
+
+            result = git_wc.branch_post_image_paths_against_base(
+                worktree_path, "origin/main"
+            )
+
+            assert result == BranchPathsResult(
+                success=True,
+                paths=(".issue-orchestrator/review-response.json", "src/app.py"),
+            )
+            mock_run.assert_called_once_with(
+                worktree_path,
+                [
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "--no-ext-diff",
+                    "--diff-filter=ACMRT",
+                    "origin/main...HEAD",
+                ],
+            )
+
+    def test_git_error_fails_closed(self, git_wc, worktree_path):
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(stderr="fatal: bad revision")
+
+            result = git_wc.branch_post_image_paths_against_base(
+                worktree_path, "origin/main"
+            )
+
+            assert result.success is False
+            assert result.paths == ()
+            assert result.error

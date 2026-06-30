@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from issue_orchestrator.events.catalog import EventName
+
 if TYPE_CHECKING:
     from issue_orchestrator.testing.asyncdsl import OrchestratorWatcher
 
@@ -158,7 +160,6 @@ async def wait_for_session_completed(
     Raises TimeoutError if no completion event is received.
     """
     import logging
-    from issue_orchestrator.events.catalog import EventName
 
     logger = logging.getLogger(__name__)
 
@@ -213,4 +214,54 @@ async def wait_for_session_completed(
         f"Labels: {labels}\n"
         f"All event types seen: {set(all_event_types)}\n"
         f"Session events: {session_events}"
+    )
+
+
+async def wait_for_review_exchange_completed(
+    watcher: "OrchestratorWatcher",
+    *,
+    issue_number: int,
+    timeout_s: float,
+) -> dict[str, Any]:
+    """Wait for the latest successful review-exchange completion event."""
+    deadline = time.monotonic() + timeout_s
+    last_payload: dict[str, Any] | None = None
+
+    while time.monotonic() < deadline:
+        for event in reversed(watcher.view.global_events):
+            payload = event.get("payload") or {}
+            if not isinstance(payload, dict):
+                continue
+            if (
+                event.get("type") == EventName.REVIEW_EXCHANGE_FAILED.value
+                and str(payload.get("issue_number")) == str(issue_number)
+            ):
+                raise AssertionError(
+                    f"Review exchange failed for issue {issue_number}: {payload}"
+                )
+            if (
+                event.get("type") == EventName.REVIEW_EXCHANGE_COMPLETED.value
+                and str(payload.get("issue_number")) == str(issue_number)
+            ):
+                last_payload = payload
+                if payload.get("status") != "ok":
+                    raise AssertionError(
+                        "Review exchange completed without ok status: "
+                        f"{payload}"
+                    )
+                run_dir = payload.get("run_dir")
+                if isinstance(run_dir, str) and run_dir:
+                    return payload
+
+        try:
+            # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
+            await asyncio.wait_for(watcher._notify.wait(), timeout=2.0)  # noqa: SLF001
+        except asyncio.TimeoutError:
+            pass
+        watcher._notify.clear()  # noqa: SLF001
+
+    raise TimeoutError(
+        f"Timed out waiting for review exchange completion for issue {issue_number}. "
+        f"Last payload: {last_payload}. Recent events: "
+        f"{list(watcher.view.global_events)[-20:]}"
     )

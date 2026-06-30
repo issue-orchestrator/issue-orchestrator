@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,6 +30,9 @@ from issue_orchestrator.domain.review_exchange_summary import ReviewExchangeSumm
 from issue_orchestrator.domain.runtime_config import RuntimeConfigReference
 from issue_orchestrator.events import EventContext, EventName
 from issue_orchestrator.execution import persistent_session_exchange as pse
+from issue_orchestrator.execution.persistent_role_prompt_policy import (
+    role_session_needs_fresh_prompt_process,
+)
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports import TraceEvent
 
@@ -76,8 +80,16 @@ class _FakeSession:
     ) -> None:
         self.role = role
         self.closed = False
-        self.proc = SimpleNamespace(returncode=None, pid=12345, poll=lambda: None)
-        self.master_fd = -1
+        proc = SimpleNamespace(returncode=None, pid=12345)
+        proc.poll = lambda: proc.returncode
+
+        def _wait(timeout: float | None = None) -> int:  # noqa: ARG001
+            proc.returncode = -15
+            return proc.returncode
+
+        proc.wait = _wait
+        self.proc = proc
+        self.master_fd = os.open(os.devnull, os.O_RDONLY)
         # Captured from the agent env at open time so ``_send`` can
         # write protocol-guardrail artifacts (completion, validation
         # record) to the same paths production reads from. The test
@@ -104,6 +116,15 @@ class _FakeSession:
 def _make_agent(prompt_path: Path) -> AgentConfig:
     return AgentConfig(
         prompt_path=prompt_path, ai_system="claude-code", timeout_minutes=1
+    )
+
+
+def _make_codex_agent(prompt_path: Path) -> AgentConfig:
+    return AgentConfig(
+        prompt_path=prompt_path,
+        provider="codex",
+        ai_system="codex",
+        timeout_minutes=1,
     )
 
 
@@ -232,6 +253,7 @@ def _patch_persistent_runner(
         "rounds_seen": [],
         "prompts_seen": [],
         "prompt_inboxes_seen": [],
+        "send_kwargs_seen": [],
         "run_dir": None,
         "registry": registry,
     }
@@ -303,10 +325,11 @@ def _patch_persistent_runner(
             log_writer=writer,
         )
 
-    def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+    def _send(session, *, prompt, response_file, timeout_seconds, **kwargs):  # noqa: ARG001
         role = session.role
         state["rounds_seen"].append((role, prompt[:40]))
         state["prompts_seen"].append((role, prompt))
+        state["send_kwargs_seen"].append((role, dict(kwargs)))
         prompt_inbox = Path(response_file).with_name("review-exchange-turn-prompt.md")
         if prompt_inbox.exists():
             state["prompt_inboxes_seen"].append(
@@ -383,14 +406,84 @@ def _patch_persistent_runner(
             raise raise_after
         return head
 
+    def _close(session, **_):  # noqa: ANN001, ANN202
+        session.closed = True
+        try:
+            os.close(session.master_fd)
+        except OSError:
+            pass
+        if session.log_writer is not None:
+            session.log_writer.close()
+        return session.proc.returncode
+
     monkeypatch.setattr(pse, "open_persistent_session", _open)
     monkeypatch.setattr(pse, "send_round", _send)
+    monkeypatch.setattr(pse, "close_persistent_session", _close)
     return state
 
 
 # ---------------------------------------------------------------------------
 # Artifact-freshness owner
 # ---------------------------------------------------------------------------
+
+
+class TestRolePromptPolicy:
+    """Provider-aware prompt-process freshness policy."""
+
+    @pytest.mark.parametrize(
+        ("agent_kwargs", "expected"),
+        [
+            pytest.param(
+                {"provider": "claude-code", "ai_system": "claude-code"},
+                False,
+                id="claude",
+            ),
+            pytest.param(
+                {"provider": "codex", "ai_system": "codex"},
+                True,
+                id="codex-default-interactive",
+            ),
+            pytest.param(
+                {
+                    "provider": "codex",
+                    "ai_system": "codex",
+                    "provider_args": {"execution_mode": "exec"},
+                },
+                False,
+                id="codex-exec",
+            ),
+            pytest.param(
+                {
+                    "provider": "codex",
+                    "ai_system": "codex",
+                    "provider_args": {"execution_mode": "tui"},
+                },
+                True,
+                id="codex-tui-alias",
+            ),
+            pytest.param(
+                {
+                    "ai_system": "codex",
+                    "command": "python deterministic-agent.py '{initial_prompt}'",
+                },
+                True,
+                id="codex-ai-system-custom-command",
+            ),
+        ],
+    )
+    def test_role_session_needs_fresh_prompt_process_uses_provider_capability(
+        self,
+        tmp_path: Path,
+        agent_kwargs: dict[str, Any],
+        expected: bool,
+    ) -> None:
+        agent = AgentConfig(
+            prompt_path=tmp_path / "prompt.md",
+            timeout_minutes=1,
+            **agent_kwargs,
+        )
+
+        assert role_session_needs_fresh_prompt_process(agent) is expected
 
 
 class TestRoleAttemptWorkspace:
@@ -573,6 +666,72 @@ class TestPersistentSessionExchangeHappyPath:
             reviewer_wt / ".issue-orchestrator" / "review-exchange-turn-prompt.md"
         ).exists()
 
+    def test_file_response_channel_does_not_open_or_poll_mailbox(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Looks good",
+                        "getting_closer": True,
+                    }
+                ],
+                "coder": [],
+            },
+        )
+        mailbox = MagicMock(name="turn_mailbox")
+
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            turn_mailbox=mailbox,
+            response_channels=pse.ReviewExchangeResponseChannels.file_only(),
+        )
+
+        assert outcome.status == "ok"
+        mailbox.open.assert_not_called()
+        mailbox.try_take.assert_not_called()
+        mailbox.close.assert_not_called()
+        role, kwargs = state["send_kwargs_seen"][0]
+        assert role == "reviewer"
+        assert kwargs["response_reader"] is None
+        reviewer_prompt, reviewer_notice = next(
+            (prompt, notice)
+            for role, prompt, notice in state["prompt_inboxes_seen"]
+            if role == "reviewer"
+        )
+        assert "file channel" in reviewer_prompt
+        assert "Do not run `exchange-respond`" in reviewer_prompt
+        assert "writing JSON" in reviewer_notice
+
     def test_two_round_exchange_changes_then_ok(
         self,
         tmp_path: Path,
@@ -675,6 +834,96 @@ class TestPersistentSessionExchangeHappyPath:
         assert "Reviewer report:" in coder_prompt
         assert "Fix the typo in the persisted report path." in coder_prompt
         assert "Reviewer feedback:" not in coder_prompt
+
+    def test_codex_reviewer_respawns_before_followup_prompt(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Interactive Codex reviewer turns do not reuse a completed TUI.
+
+        The tixmeup #391 failure showed the next reviewer prompt landing in
+        Codex's autocomplete/search overlay after a prior turn completed. A
+        fresh process for the follow-up prompt avoids paying a 120s
+        prompt_not_accepted timeout before the existing retry path respawns.
+        """
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "changes_requested",
+                        "response_text": "See review report.",
+                        "getting_closer": True,
+                        "decision": {
+                            "verdict": "changes_requested",
+                            "risk": "medium",
+                            "blocking_findings": [{"id": "F1"}],
+                            "nits": [],
+                            "abstraction_review": {
+                                "status": "no_issues",
+                                "findings": [],
+                            },
+                            "nit_policy": "surface",
+                        },
+                        "_authored_report_text": (
+                            "# Review\n\n## F1\n\nFix the stale Codex prompt target.\n"
+                        ),
+                    },
+                    {
+                        "response_type": "ok",
+                        "response_text": "All good",
+                        "getting_closer": True,
+                    },
+                ],
+                "coder": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Fixed prompt target",
+                        "getting_closer": None,
+                    },
+                ],
+            },
+        )
+
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_codex_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+        )
+
+        assert outcome.status == "ok"
+        assert outcome.rounds == 2
+        assert [role for role, _ in state["rounds_seen"]] == [
+            "reviewer",
+            "coder",
+            "reviewer",
+        ]
+        assert state["opened"].count("reviewer") == 2
+        assert state["opened"].count("coder") == 1
 
     def test_address_nits_policy_routes_approval_through_coder_rework(
         self,
@@ -3843,6 +4092,39 @@ class TestRoleEnvironmentScrubbing:
         assert env["GIT_TERMINAL_PROMPT"] == "0"
         # And GH_TOKEN was still scrubbed (sanity).
         assert "GH_TOKEN" not in env
+
+    def test_role_env_exposes_exchange_respond_wrapper(self, tmp_path: Path) -> None:
+        """Mailbox mode depends on the agent finding ``exchange-respond``."""
+        from issue_orchestrator.control.isolation import get_runtime_scripts_dir
+
+        run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="reviewer",
+            response_file=run_dir / "reviewer" / "review-response.json",
+            review_report_file=worktree / ".issue-orchestrator" / "review-report.md",
+            completion_path=run_dir / "reviewer" / "completion-reviewer.json",
+            validation_output_dir=run_dir,
+            worktree=worktree,
+            runtime_config=_runtime_config(tmp_path),
+            agent_label="agent:reviewer",
+            web_port=8080,
+            issue_number=4057,
+            session_name="exchange-1",
+        )
+
+        path_entries = env["PATH"].split(os.pathsep)
+        scripts_dir = get_runtime_scripts_dir()
+        assert path_entries[:2] == [
+            str(worktree / ".venv" / "bin"),
+            str(scripts_dir),
+        ]
+        exchange_respond = scripts_dir / "exchange-respond"
+        assert exchange_respond.exists()
+        assert os.access(exchange_respond, os.X_OK)
 
     def test_callback_token_propagates_when_set_in_orchestrator_env(
         self,

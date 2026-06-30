@@ -9,14 +9,15 @@ Read the task-specific prompt file for what to review.
 When done, produce the paired review artifacts:
 
 1. Write a human-readable markdown review to `$ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE`.
-2. Write **exactly one line of JSON** to `$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE`.
+2. Submit your verdict by running the `exchange-respond` command, passing the
+   structured decision object via `--decision-json`.
 
 The markdown report is the review content source for humans and the coder's
-next rework prompt. The JSON is the no-nonsense orchestration contract. Use
-stable IDs (`F1`, `F2`, `N1`, ...) for findings and nits, and include every
-JSON ID in the markdown report. JSON finding/nit/abstraction entries may be
-ID-only objects or ID strings; put rationale and suggested changes in the
-markdown report.
+next rework prompt. The `--decision-json` object is the no-nonsense
+orchestration contract. Use stable IDs (`F1`, `F2`, `N1`, ...) for findings
+and nits, and include every decision ID in the markdown report. Decision
+finding/nit/abstraction entries may be ID-only objects or ID strings; put
+rationale and suggested changes in the markdown report.
 
 The `decision.abstraction_review` object is required. Use it to state whether
 the change uses the right owner/port/command abstraction. If a bounded
@@ -25,18 +26,18 @@ and include one or more findings (`A1`, `A2`, ...). Use `deferred` only when
 the required follow-up issue already exists, and include `follow_up_issue_url`.
 
 **Approve:**
-```json
-{"response_type":"ok","getting_closer":true,"response_text":"Looks good — all issues addressed.","decision":{"verdict":"approved","risk":"low","blocking_findings":[],"nits":[],"tests_reviewed":[],"abstraction_review":{"status":"no_issues","findings":[]},"nit_policy":"surface"}}
+```
+exchange-respond ok --getting-closer --text "Looks good — all issues addressed." --decision-json '{"verdict":"approved","risk":"low","blocking_findings":[],"nits":[],"tests_reviewed":[],"abstraction_review":{"status":"no_issues","findings":[]},"nit_policy":"surface"}'
 ```
 
 **Request changes:**
-```json
-{"response_type":"changes_requested","getting_closer":true,"response_text":"See review report for F1 and A1.","decision":{"verdict":"changes_requested","risk":"medium","blocking_findings":[{"id":"F1"}],"nits":[],"tests_reviewed":[],"abstraction_review":{"status":"changes_requested","findings":[{"id":"A1"}]},"nit_policy":"surface"}}
+```
+exchange-respond changes_requested --getting-closer --text "See review report for F1 and A1." --decision-json '{"verdict":"changes_requested","risk":"medium","blocking_findings":[{"id":"F1"}],"nits":[],"tests_reviewed":[],"abstraction_review":{"status":"changes_requested","findings":[{"id":"A1"}]},"nit_policy":"surface"}'
 ```
 
 **Disagree with the approach:**
-```json
-{"response_type":"disagree","getting_closer":false,"response_text":"This approach won't work because..."}
+```
+exchange-respond disagree --not-getting-closer --text "This approach won't work because..."
 ```
 
 ## CRITICAL rules
@@ -50,5 +51,5 @@ the required follow-up issue already exists, and include `follow_up_issue_url`.
 - `deferred` abstraction reviews must include `follow_up_issue_url`.
 - Review for the strongest bounded design, not merely for a working diff. Missing bounded owner/port/command abstraction work is a `Design Smell` or `Correctness Risk`, not a nit.
 - Nits are non-blocking. Classify them honestly; the orchestrator decides whether the coder must address them before PR creation.
-- Write the markdown report and JSON response, then wait for the next prompt.
+- Write the markdown report, run `exchange-respond`, then wait for the next prompt.
 - The `getting_closer` field indicates whether the coder is making progress toward a solution.
