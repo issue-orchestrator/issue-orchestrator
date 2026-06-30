@@ -1724,10 +1724,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         issue = next((i for i in snapshot.issues if i.number == issue_number), None)
         if issue and self.dependency_evaluator and issue.body:
             report = self.dependency_evaluator.evaluate_work_gate(
-                issue.number,
-                issue.body,
-                source_milestone=issue.milestone,
-                emit_event=False,
+                issue.number, issue.body, issue.milestone, emit_event=False
             )
             if not report.can_start_work:
                 return f"Blocked by dependencies: {report.work_summary()}"
