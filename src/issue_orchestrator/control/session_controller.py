@@ -36,7 +36,6 @@ if TYPE_CHECKING:
     from ..domain.session_key import TaskKind
     from ..ports.attempt_store import AttemptStore
     from ..ports.validation_attempt_key_factory import ValidationAttemptKeyFactory
-    from .provider_resilience import ProviderResilienceManager
 
 from ..events import EventName
 from ..domain.artifact_contracts import (
@@ -69,7 +68,11 @@ from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 from .completion_record_validation import CompletionRecordLoadResult
 from .invalid_completion_record import report_invalid_completion_record
 from .review_exchange_contracts import ReviewExchangeCanceller
-from .session_decision import SessionDecision
+from .session_decision import (
+    SessionDecision,
+    provider_failure_from_status,
+    provider_success_from_status,
+)
 from .session_run_resolution import resolve_run_assets
 from .validation import PublishGate
 
@@ -152,7 +155,6 @@ class SessionController:
         attempt_store: "AttemptStore | None" = None,
         validation_attempt_key_factory: "ValidationAttemptKeyFactory | None" = None,
         max_validation_retries: int = 0,
-        provider_resilience: Optional["ProviderResilienceManager"] = None,
         provider_blocked_label: Optional[str] = None,
         review_exchange_canceller: ReviewExchangeCanceller | None = None,
     ):
@@ -188,7 +190,6 @@ class SessionController:
         )
         self._attempt_store = attempt_store
         self._validation_attempt_key_factory = validation_attempt_key_factory
-        self._provider_resilience = provider_resilience
         self._provider_blocked_label = provider_blocked_label
         self._review_exchange_canceller = review_exchange_canceller
 
@@ -238,8 +239,7 @@ class SessionController:
         )
         run_dir = run_assets.run_dir
         provider_status = self._read_provider_status(run_dir)
-        if provider_status and provider_status.succeeded and self._provider_resilience:
-            self._provider_resilience.record_success(provider_status.provider)
+        provider_success = provider_success_from_status(provider_status)
 
         # Log and look up completion record
         self._log_completion_lookup(
@@ -251,7 +251,7 @@ class SessionController:
         record = load_result.record
 
         if record is None:
-            return self._handle_absent_completion_record(
+            decision = self._handle_absent_completion_record(
                 observation=observation,
                 worktree_path=worktree_path,
                 issue_number=issue_number,
@@ -259,7 +259,9 @@ class SessionController:
                 run_dir=run_dir,
                 completion_path=completion_path,
                 load_result=load_result,
+                provider_status=provider_status,
             )
+            return replace(decision, provider_success=provider_success)
 
         # Recover completed work from timed-out sessions when possible.
         recovered = observation.observation == SessionObservation.TIMED_OUT
@@ -282,7 +284,7 @@ class SessionController:
             )
         )
         if finalization_decision is not None:
-            return finalization_decision
+            return replace(finalization_decision, provider_success=provider_success)
 
         # Process completion record
         pr_number = self._extract_pr_number_from_session_name(session_name)
@@ -302,7 +304,7 @@ class SessionController:
             recovered=recovered,
         )
         if deferred_decision is not None:
-            return deferred_decision
+            return replace(deferred_decision, provider_success=provider_success)
         self._emit_processing_completed_event(
             worktree_path, issue_number, session_name, run_dir, result
         )
@@ -369,6 +371,7 @@ class SessionController:
             validation_error_file=validation_error_file,
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
+            provider_success=provider_success,
         )
 
     def _handle_absent_completion_record(
@@ -381,6 +384,7 @@ class SessionController:
         run_dir: Path,
         completion_path: str | None,
         load_result: CompletionRecordLoadResult,
+        provider_status: ProviderStatus | None,
     ) -> SessionDecision:
         """Route absent completion state without collapsing invalid into missing."""
         if load_result.invalid:
@@ -400,6 +404,7 @@ class SessionController:
             session_name,
             run_dir,
             completion_path,
+            provider_status,
         )
 
     def _handle_completion_finalization_preconditions(
@@ -786,6 +791,7 @@ class SessionController:
         session_name: str,
         run_dir: Path,
         completion_path: str | None,
+        provider_status: ProviderStatus | None,
     ) -> SessionDecision:
         """Handle case where no completion record exists."""
         debug_context = self._collect_completion_debug_context(
@@ -803,7 +809,6 @@ class SessionController:
             debug_context=debug_context,
         )
         session_log = self._get_session_log_tail(run_dir, session_name)
-        provider_status = self._read_provider_status(run_dir)
 
         payload = {
             "issue_number": issue_number,
@@ -820,18 +825,13 @@ class SessionController:
             and provider_status.error_type == ProviderErrorType.TRANSIENT
             and not provider_status.succeeded
         ):
-            if self._provider_resilience:
-                self._provider_resilience.record_transient_failure(
-                    provider_status.provider,
-                    error_summary=provider_status.last_error_summary,
-                    attempts=provider_status.attempts,
-                )
             return SessionDecision(
                 status=SessionStatus.BLOCKED,
                 reason="Provider unavailable",
                 blocked_label=self._provider_blocked_label,
                 blocked_reason=provider_status.last_error_summary
                 or "Provider unavailable",
+                provider_transient_failure=provider_failure_from_status(provider_status),
             )
 
         if observation.observation == SessionObservation.TIMED_OUT:

@@ -1385,12 +1385,12 @@
       "value": 865
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/bootstrap.py": {
-      "detail": "1260 lines exceeds budget 800",
+      "detail": "1266 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1260
+      "value": 1266
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/cli.py": {
       "detail": "964 lines exceeds budget 800",
@@ -1912,18 +1912,10 @@
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-364": {
-      "detail": "line 364: # noqa: ANN201",
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-369": {
+      "detail": "line 369: # noqa: ANN201",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-364",
-      "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
-      "rule_id": "ruff_noqa_suppressions",
-      "value": 1
-    },
-    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-365": {
-      "detail": "line 365: # noqa: ANN201",
-      "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-365",
+      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-369",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
@@ -2832,18 +2824,10 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-815": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 815: Route orchestrator runtime state collection mutations through an owner abstraction.",
+    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-817": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 817: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-815",
-      "path": "src/issue_orchestrator/infra/orchestrator.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-832": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 832: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-832",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-817",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1

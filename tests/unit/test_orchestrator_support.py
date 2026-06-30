@@ -1950,6 +1950,65 @@ class TestRunTick:
         assert EventName.TICK_STARTED in event_names
         assert EventName.TICK_COMPLETED in event_names
 
+    def test_emits_tick_slow_with_phase_breakdown_when_tick_overruns(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context, monkeypatch
+    ):
+        """A tick that overruns the heartbeat budget emits a machine TICK_SLOW
+        event carrying the sub-phase breakdown (so the UI can attribute the
+        stall instead of only inferring it from heartbeat age)."""
+        import types
+
+        clock = {"mono": 1000.0}
+        fake_time = types.SimpleNamespace(
+            monotonic=lambda: clock["mono"],
+            time=lambda: 1_700_000_000.0,
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.control.orchestrator_support.time", fake_time
+        )
+
+        def slow_active() -> None:
+            clock["mono"] += 153.9  # the synchronous publish that froze the tick
+
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids={},
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=slow_active,
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        slow_events = [e for e in mock_event_sink.events if e.name == EventName.TICK_SLOW]
+        assert len(slow_events) == 1
+        payload = slow_events[0].data
+        assert payload["duration_seconds"] == 153.9
+        assert payload["active_seconds"] == 153.9
+        assert payload["dominant_phase"] == "active_sessions"
+
+    def test_no_tick_slow_event_for_fast_tick(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        """A normal (fast) tick must not emit TICK_SLOW."""
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids={},
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        assert not [e for e in mock_event_sink.events if e.name == EventName.TICK_SLOW]
+
     def test_skips_planning_when_health_check_fails(
         self, sample_orchestrator_state, mock_event_sink, sample_event_context
     ):

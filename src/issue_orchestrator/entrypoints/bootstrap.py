@@ -71,6 +71,10 @@ from ..execution.command_runner import LocalCommandRunner
 from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..execution.review_artifact_reader import ManifestReviewArtifactReader
 from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+from ..control.completion_dispatcher import (
+    BackgroundCompletionDispatcher,
+    SynchronousCompletionDispatcher,
+)
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, RetrospectiveReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
@@ -477,7 +481,6 @@ def _create_completion_components(
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
         max_validation_retries=config.retry.max_validation_retries,
-        provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
         review_exchange_canceller=_cancel_review_exchange,
     ) if completion_processor else None
@@ -912,6 +915,9 @@ def build_orchestrator(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
+        # Run completion decisions (publish gate + push + PR) off the tick thread
+        # on a dedicated runner so a slow publish never blocks the heartbeat.
+        completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
         claim_manager=claim_manager,
         claim_gate=claim_gate,
@@ -1149,7 +1155,6 @@ def build_orchestrator_for_testing(
         validation_timeout_seconds=config.validation.quick.timeout_seconds,
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
-        provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
         review_exchange_canceller=_cancel_review_exchange_for_testing,
     )
@@ -1243,6 +1248,9 @@ def build_orchestrator_for_testing(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,
+        # Tests default to synchronous (one-tick) completion; the background
+        # dispatcher is exercised explicitly where async behavior is under test.
+        completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
         claim_manager=claim_manager,
         claim_gate=claim_gate,
