@@ -17,11 +17,14 @@ def test_codespaces_config_loads_with_stable_web_ports() -> None:
     assert config.terminal_adapter == "subprocess"
     assert config.validation.quick.cmd == "make validate-quick"
     assert config.validation.quick.timeout_seconds == 600
-    assert config.validation.publish.cmd == "make validate-pr-raw"
+    assert (
+        config.validation.publish.cmd
+        == "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
+    )
     assert config.validation.publish.timeout_seconds == 1800
 
 
-def test_main_config_uses_raw_validate_pr_as_publish_gate() -> None:
+def test_main_config_uses_internal_validate_pr_as_publish_gate() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     config_path = repo_root / ".issue-orchestrator" / "config" / "main.yaml"
 
@@ -29,7 +32,10 @@ def test_main_config_uses_raw_validate_pr_as_publish_gate() -> None:
 
     assert config.validation.quick.cmd == "make validate-quick"
     assert config.validation.quick.timeout_seconds == 600
-    assert config.validation.publish.cmd == "make validate-pr-raw"
+    assert (
+        config.validation.publish.cmd
+        == "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
+    )
     assert config.validation.publish.timeout_seconds == 1800
 
 
