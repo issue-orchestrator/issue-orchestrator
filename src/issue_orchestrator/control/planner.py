@@ -63,14 +63,17 @@ from .actions import (
     QueueReworkAction,
     QueueTriageAction,
     CreateTriageIssueAction,
+    EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
     ReconcileHistoryEntryAction,
     SessionType,
     SyncLabelsAction,
 )
-from .awaiting_merge_post_publish_policy import build_post_publish_validation_comment
-from .awaiting_merge_reconciler import POST_PUBLISH_VALIDATION_SOURCE
+from .awaiting_merge_post_publish_policy import (
+    build_post_publish_validation_comment,
+    POST_PUBLISH_VALIDATION_SOURCE,
+)
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 
@@ -212,6 +215,12 @@ class Planner:
         # handed to a human because no further automated retries help.
         post_publish_escalation_actions = self._plan_awaiting_merge_escalations(snapshot)
         actions.extend(post_publish_escalation_actions)
+
+        # 1d3. Enqueue approved PRs into the merge queue (when enabled). The
+        # merge queue coordinator already decided eligibility during discovery;
+        # the planner just turns each fact into the protected enqueue action.
+        merge_queue_actions = self._plan_merge_queue_enqueues(snapshot)
+        actions.extend(merge_queue_actions)
 
         # 1e. Queue triage reviews for session failures
         failure_triage_actions = self._plan_discovered_failures(snapshot)
@@ -893,6 +902,30 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 escalation.pr_number, escalation.kind,
             )
 
+        return actions
+
+    def _plan_merge_queue_enqueues(
+        self, snapshot: OrchestratorSnapshot
+    ) -> list[Action]:
+        """Plan enqueue actions for PRs the merge queue coordinator approved.
+
+        The coordinator owns eligibility (gate passed, not already queued,
+        mergeable-or-behind); the planner only maps each discovered fact to an
+        ``EnqueueToMergeQueueAction`` for the applier to execute.
+        """
+        actions: list[Action] = []
+        for enqueue in snapshot.discovered_merge_queue_enqueues:
+            actions.append(EnqueueToMergeQueueAction(
+                issue_number=enqueue.issue_number,
+                pr_number=enqueue.pr_number,
+                pr_url=enqueue.pr_url,
+                issue_key=enqueue.issue_key or str(enqueue.issue_number),
+                reason=f"PR #{enqueue.pr_number} eligible for merge queue",
+            ))
+            logger.info(
+                "Planner: enqueuing PR #%d to merge queue",
+                enqueue.pr_number,
+            )
         return actions
 
     def _plan_discovered_failures(self, snapshot: OrchestratorSnapshot) -> list[Action]:

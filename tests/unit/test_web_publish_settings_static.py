@@ -258,6 +258,7 @@ class TestSettingsEndpoints:
                 "filtering",
                 "milestones",
                 "review",
+                "merge_queue",
                 "validation",
                 "hooks",
                 "advanced",

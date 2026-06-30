@@ -12,6 +12,7 @@ from ..domain.models import (
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredEscalation,
     DiscoveredFailure,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredReview,
     DiscoveredRetrospectiveReview,
     DiscoveredRework,
@@ -64,6 +65,9 @@ class OrchestratorSnapshot:
     discovered_awaiting_merge_escalations: tuple[
         DiscoveredAwaitingMergeEscalation, ...
     ] = field(default_factory=tuple)
+    discovered_merge_queue_enqueues: tuple[
+        DiscoveredMergeQueueEnqueue, ...
+    ] = field(default_factory=tuple)
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
     triage_facts: Optional[TriageFacts] = None
     cleanup_facts: Optional[CleanupFacts] = None
@@ -106,6 +110,9 @@ class OrchestratorSnapshot:
         discovered_escalations: Sequence[DiscoveredEscalation] = (),
         discovered_awaiting_merge_escalations: Sequence[
             DiscoveredAwaitingMergeEscalation
+        ] = (),
+        discovered_merge_queue_enqueues: Sequence[
+            DiscoveredMergeQueueEnqueue
         ] = (),
         discovered_failures: Sequence[DiscoveredFailure] = (),
         triage_facts: Optional[TriageFacts] = None,
@@ -158,6 +165,9 @@ class OrchestratorSnapshot:
             discovered_escalations=tuple(discovered_escalations),
             discovered_awaiting_merge_escalations=tuple(
                 discovered_awaiting_merge_escalations
+            ),
+            discovered_merge_queue_enqueues=tuple(
+                discovered_merge_queue_enqueues
             ),
             discovered_failures=tuple(discovered_failures),
             triage_facts=triage_facts,

@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 
 POST_PUBLISH_VALIDATION_COMMENT_MARKER = "<!-- io:post-publish-validation -->"
 
+# Discovered-rework source tag for post-publish (and merge-queue-failure)
+# reworks. Shared by the awaiting-merge reconciler and the merge queue
+# coordinator so the rework launcher treats both the same way.
+POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
+
 # Result of classifying GitHub merge readiness after reviewer approval.
 # `mergeable_state` says merge readiness; `status_check_rollup` says check
 # truth. Combining them disambiguates "checks still running" (transient; wait)

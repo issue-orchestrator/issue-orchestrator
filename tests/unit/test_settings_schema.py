@@ -6,12 +6,14 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from issue_orchestrator.infra.config import Config, E2EConfig, FilteringConfig
+from issue_orchestrator.infra.config_models import MERGE_QUEUE_PROVIDERS
 from issue_orchestrator.infra.settings_schema import (
     CONFIG_VALUE_TYPE_PATH,
     DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
     DOCTOR_CHECK_PATH_EXISTS,
     DOCTOR_CHECK_REFERENCES_AGENT,
     FORM_CONTROL_DICT_ENUM,
+    FORM_CONTROL_ENUM,
     FORM_CONTROL_KINDS,
     TAB_DEFINITIONS,
     UnsupportedSettingsFieldError,
@@ -22,6 +24,7 @@ from issue_orchestrator.infra.settings_schema import (
     FilteringSettings,
     MilestonesSettings,
     GoalPilotSettings,
+    MergeQueueSettings,
     ReviewSettings,
     ValidationSettings,
     apply_to,
@@ -96,6 +99,13 @@ class TestModelDefaults:
         assert m.agent is None
         assert m.approval_policy == "journeys_only"
 
+    def test_merge_queue_defaults(self):
+        m = MergeQueueSettings()
+        assert m.enabled is False
+        assert m.provider == "github"
+        assert m.enqueue_after == "code-reviewed"
+        assert m.failure_action == "rework"
+
     def test_advanced_defaults(self):
         m = AdvancedSettings()
         assert m.session_interactions_enabled is False
@@ -149,6 +159,23 @@ class TestValidation:
     def test_default_priority_tier_max(self):
         with pytest.raises(ValidationError):
             ConcurrencySettings(default_priority_tier=10)
+
+    def test_merge_queue_failure_action_enum(self):
+        with pytest.raises(ValidationError):
+            MergeQueueSettings(failure_action="explode")
+
+    def test_merge_queue_enqueue_after_enum(self):
+        with pytest.raises(ValidationError):
+            MergeQueueSettings(enqueue_after="whenever")
+
+    def test_merge_queue_provider_rejects_unsupported(self):
+        # Mirrors YAML-load validation: the settings POST path must not accept a
+        # provider outside MERGE_QUEUE_PROVIDERS (e.g. "gitlab").
+        with pytest.raises(ValidationError):
+            MergeQueueSettings(provider="gitlab")
+
+    def test_merge_queue_provider_accepts_supported(self):
+        assert MergeQueueSettings(provider="github").provider == "github"
 
     def test_review_max_rework_max(self):
         with pytest.raises(ValidationError):
@@ -330,8 +357,9 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 9
+        assert len(tabs) == 10
         assert "validation" in tabs
+        assert "merge_queue" in tabs
         for key, model in tabs.items():
             assert model is not None
 
@@ -362,6 +390,16 @@ class TestFormControlClassification:
                     f"{tab_key}.{field_name} classified to unknown kind "
                     f"{control['kind']!r}"
                 )
+
+    def test_merge_queue_provider_is_enum_with_allowed_providers(self):
+        # The provider must render as a select whose options match the single
+        # source of truth (MERGE_QUEUE_PROVIDERS), so the form cannot offer or
+        # save an unsupported provider. Guards against the enum drifting from
+        # the allowed set.
+        schemas = get_settings_json_schema()
+        control = schemas["merge_queue"]["properties"]["provider"]["x_control"]
+        assert control["kind"] == FORM_CONTROL_ENUM
+        assert control["options"] == list(MERGE_QUEUE_PROVIDERS)
 
     def test_nits_by_agent_is_dict_enum_with_policy_options(self):
         schemas = get_settings_json_schema()

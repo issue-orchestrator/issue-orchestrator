@@ -43,6 +43,44 @@ class TestConfig:
             f"{config_path} failed validation; schema likely missing fields"
         )
 
+    def test_merge_queue_defaults_off(self):
+        """Merge queue is optional and disabled by default."""
+        config = Config()
+        assert config.merge_queue.enabled is False
+        assert config.merge_queue.provider == "github"
+        assert config.merge_queue.enqueue_after == "code-reviewed"
+        assert config.merge_queue.failure_action == "rework"
+
+    def test_merge_queue_parses_from_yaml(self, tmp_path):
+        """A merge_queue section is parsed onto Config."""
+        path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "repo:\n  name: owner/repo\n"
+            "merge_queue:\n"
+            "  enabled: true\n"
+            "  failure_action: needs_human\n",
+            encoding="utf-8",
+        )
+        config = Config.load(path)
+        assert config.merge_queue.enabled is True
+        assert config.merge_queue.failure_action == "needs_human"
+        # Round-trips through the event/serialization views.
+        assert config.to_event_dict()["merge_queue"]["failure_action"] == "needs_human"
+        assert config.to_dict()["merge_queue"]["enabled"] is True
+
+    def test_merge_queue_rejects_unknown_failure_action(self, tmp_path):
+        """A typo in an enum field fails loud at load time."""
+        path = tmp_path / ".issue-orchestrator" / "config" / "default.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "repo:\n  name: owner/repo\n"
+            "merge_queue:\n  failure_action: explode\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="merge_queue.failure_action"):
+            Config.load(path)
+
     def test_config_creation(self):
         """Test basic Config creation with defaults."""
         config = Config()

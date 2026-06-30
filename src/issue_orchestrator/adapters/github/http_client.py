@@ -1334,6 +1334,78 @@ class GitHubHttpClient:
             caller="close_pr",
         )
 
+    # -------------------- Merge queue (GraphQL) --------------------
+
+    def _pr_node_id(self, pr_number: int, *, caller: str) -> str:
+        """Resolve a PR's GraphQL node ID, required by the queue mutations."""
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) { id }
+            }
+        }
+        """
+        result = self._graphql(
+            query,
+            {"owner": owner, "repo": repo, "number": pr_number},
+            caller=caller,
+        )
+        pr_data = result.get("data", {}).get("repository", {}).get("pullRequest")
+        if not pr_data or not pr_data.get("id"):
+            raise GitHubHttpError(
+                f"PR #{pr_number} not found",
+                method="POST",
+                url="/graphql",
+                status_code=200,
+                response_text=str(result),
+            )
+        return pr_data["id"]
+
+    def get_merge_queue_entry(self, pr_number: int) -> dict[str, Any] | None:
+        """Return ``{"state", "position"}`` for a PR's merge queue entry.
+
+        Returns ``None`` when the PR is not currently in the merge queue.
+        """
+        owner, repo = self._config.repo.split("/", 1)
+        query = """
+        query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+                pullRequest(number: $number) {
+                    mergeQueueEntry { state position }
+                }
+            }
+        }
+        """
+        result = self._graphql(
+            query,
+            {"owner": owner, "repo": repo, "number": pr_number},
+            caller="get_merge_queue_entry",
+        )
+        pr_data = result.get("data", {}).get("repository", {}).get("pullRequest")
+        if not pr_data:
+            return None
+        entry = pr_data.get("mergeQueueEntry")
+        if not entry:
+            return None
+        return entry
+
+    def enqueue_pull_request(self, pr_number: int) -> None:
+        """Add a PR to the repository's merge queue via GraphQL."""
+        node_id = self._pr_node_id(pr_number, caller="enqueue_pull_request_get_id")
+        mutation = """
+        mutation($pullRequestId: ID!) {
+            enqueuePullRequest(input: {pullRequestId: $pullRequestId}) {
+                mergeQueueEntry { state position }
+            }
+        }
+        """
+        self._graphql(
+            mutation,
+            {"pullRequestId": node_id},
+            caller="enqueue_pull_request",
+        )
+
     def list_branches(self) -> list[str]:
         payload = self._request_json(
             "GET",

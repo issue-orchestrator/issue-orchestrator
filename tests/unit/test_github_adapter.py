@@ -22,6 +22,8 @@ from issue_orchestrator.adapters.github.http_client import (
 from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     StatusCheckRollupRead,
 )
@@ -2017,3 +2019,46 @@ class TestEdgeCases:
 
         assert len(labels) == 3
         assert labels[0]["name"] == "label1"
+
+
+class TestMergeQueue:
+    """Merge queue methods delegate to the HTTP client and coerce results."""
+
+    def test_enqueue_delegates_to_client(self, adapter, mock_http_client):
+        adapter.enqueue_to_merge_queue(318)
+        mock_http_client.enqueue_pull_request.assert_called_once_with(318)
+
+    def test_read_entry_coerces_typed_entry(self, adapter, mock_http_client):
+        mock_http_client.get_merge_queue_entry.return_value = {
+            "state": "QUEUED",
+            "position": 3,
+        }
+        read = adapter.read_merge_queue_entry(318)
+        assert read == MergeQueueRead.present(
+            MergeQueueEntry(state="QUEUED", position=3)
+        )
+
+    def test_read_entry_absent_when_not_queued(self, adapter, mock_http_client):
+        mock_http_client.get_merge_queue_entry.return_value = None
+        read = adapter.read_merge_queue_entry(318)
+        assert read == MergeQueueRead.absent()
+        # An absent read must NOT look like a present entry.
+        assert read.entry is None
+
+    def test_read_entry_unmodeled_state_is_indeterminate(
+        self, adapter, mock_http_client
+    ):
+        # An entry object exists but its state is one we do not model: the PR IS
+        # in the queue, so this must be INDETERMINATE (non-actionable), never
+        # ABSENT — otherwise a queued PR could be wrongly re-enqueued/reworked.
+        mock_http_client.get_merge_queue_entry.return_value = {"state": "BOGUS"}
+        read = adapter.read_merge_queue_entry(318)
+        assert read == MergeQueueRead.indeterminate()
+        assert read.is_indeterminate
+
+    def test_enqueue_propagates_http_error(self, adapter, mock_http_client):
+        mock_http_client.enqueue_pull_request.side_effect = GitHubHttpError(
+            "boom", status_code=500
+        )
+        with pytest.raises(GitHubHttpError):
+            adapter.enqueue_to_merge_queue(318)

@@ -398,3 +398,26 @@ class GoalPilotConfig:
     approval_policy: str = "journeys_only"  # journeys_only | gatekeeper | batch
     approval_batch_size: int = 10
     approval_batch_window_minutes: int = 60
+
+
+# Allowed values for the merge_queue section, validated at parse time so a typo
+# fails loud at config load rather than silently picking a wrong policy branch.
+MERGE_QUEUE_PROVIDERS = ("github",)
+MERGE_QUEUE_GATES = ("code-reviewed", "triage-reviewed")
+MERGE_QUEUE_FAILURE_ACTIONS = ("rework", "needs_human")
+
+
+@dataclass
+class MergeQueueConfig:
+    """Optional per-repository GitHub Merge Queue integration.
+
+    When ``enabled``, approved PRs that have cleared the orchestrator gate are
+    enqueued into the provider's native merge queue instead of being merged or
+    reworked for being behind base. GitHub remains the merge authority; the
+    orchestrator owns eligibility, enqueue decisions, and failure routing.
+    """
+
+    enabled: bool = False
+    provider: str = "github"  # see MERGE_QUEUE_PROVIDERS
+    enqueue_after: str = "code-reviewed"  # orchestrator gate; see MERGE_QUEUE_GATES
+    failure_action: str = "rework"  # rework | needs_human; see MERGE_QUEUE_FAILURE_ACTIONS

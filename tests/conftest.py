@@ -11,6 +11,8 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
 from issue_orchestrator.ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     PRRef,
     StatusCheckRollupRead,
@@ -234,6 +236,8 @@ class MockGitHubAdapter:
         self.comments: list[dict] = []
         self.pr_reviews: dict[int, list[dict]] = {}  # pr_number -> reviews
         self.close_pr_calls: list[int] = []
+        # pr_number -> current merge queue entry (None/absent = not enqueued)
+        self.merge_queue_entries: dict[int, "MergeQueueEntry"] = {}
 
         # Call tracking for assertions
         self.add_label_calls: list[tuple] = []
@@ -241,6 +245,7 @@ class MockGitHubAdapter:
         self.list_issues_calls: list[dict] = []
         self.get_prs_calls: list[dict] = []
         self.search_pr_refs_calls: list[int] = []
+        self.enqueue_merge_queue_calls: list[int] = []
 
     # IssueRepository methods
     def list_issues(
@@ -389,6 +394,24 @@ class MockGitHubAdapter:
         pr = self.get_pr(pr_number)
         state = pr.status_check_rollup if pr is not None else None
         return StatusCheckRollupRead(state=state, capability="ok")
+
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Record an enqueue and mark the PR as QUEUED (mock)."""
+        self.enqueue_merge_queue_calls.append(pr_number)
+        self.merge_queue_entries[pr_number] = MergeQueueEntry(state="QUEUED")
+
+    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
+        """Return the PR's typed merge queue read (mock).
+
+        PRESENT when an entry was recorded, ABSENT otherwise. Tests that need the
+        INDETERMINATE (unreadable/unmodeled) outcome inject it directly.
+        """
+        entry = self.merge_queue_entries.get(pr_number)
+        return (
+            MergeQueueRead.present(entry)
+            if entry is not None
+            else MergeQueueRead.absent()
+        )
 
     def create_pr(self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None) -> PRInfo:
         """Create a new PR (mock)."""

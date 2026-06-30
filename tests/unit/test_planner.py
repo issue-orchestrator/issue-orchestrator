@@ -42,6 +42,7 @@ from issue_orchestrator.domain.models import (
     CompletionOutcome,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
     RequestedAction,
     ObservedCompletion,
@@ -3292,3 +3293,40 @@ class TestPlanStaleInProgressCleanup:
         # No cleanup actions
         remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
         assert len(remove_actions) == 0
+
+
+class TestMergeQueueEnqueuePlanning:
+    """Discovered merge-queue facts become EnqueueToMergeQueueActions."""
+
+    def test_enqueue_fact_becomes_enqueue_action(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            discovered_merge_queue_enqueues=[
+                DiscoveredMergeQueueEnqueue(
+                    issue_number=228,
+                    pr_number=318,
+                    pr_url="https://github.com/owner/repo/pull/318",
+                    issue_key="M1-228",
+                )
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        actions = plan.actions_of_type(ActionType.ENQUEUE_TO_MERGE_QUEUE)
+        assert len(actions) == 1
+        assert actions[0].pr_number == 318
+        assert actions[0].issue_number == 228
+        assert actions[0].issue_key == "M1-228"
+
+    def test_no_enqueue_actions_without_facts(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        plan = planner.plan(make_snapshot())
+
+        assert plan.actions_of_type(ActionType.ENQUEUE_TO_MERGE_QUEUE) == []

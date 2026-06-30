@@ -39,6 +39,7 @@ class _StubConfig:
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
     code_review_label: str | None = None
     code_reviewed_label: str | None = None
+    triage_reviewed_label: str | None = None
     retrospective_review_trigger_label: str = "retrospective-review"
     retrospective_reviewed_label: str = "retrospective-reviewed"
     retrospective_changes_requested_label: str = "retrospective-changes-requested"
@@ -82,6 +83,13 @@ class TestNamedProperties:
         assert lm.retrospective_review == "retrospective-review"
         assert lm.retrospective_reviewed == "retrospective-reviewed"
         assert lm.retrospective_changes_requested == "retrospective-changes-requested"
+
+    def test_triage_reviewed_default(self, lm: LabelManager) -> None:
+        assert lm.triage_reviewed == "triage-reviewed"
+
+    def test_triage_reviewed_custom(self) -> None:
+        cfg = _StubConfig(triage_reviewed_label="batch-triaged")
+        assert LabelManager(cfg).triage_reviewed == "batch-triaged"  # type: ignore[arg-type]
 
     def test_blocked(self, lm: LabelManager) -> None:
         assert lm.blocked == "blocked"
@@ -167,6 +175,11 @@ class TestNamedPropertiesPrefixed:
     def test_run_audit_labels(self, plm: LabelManager) -> None:
         assert plm.run_audit_requested == "bot:needs-run-audit"
         assert plm.run_audit_completed == "bot:run-audit-complete"
+
+    def test_triage_reviewed_is_not_prefixed(self, plm: LabelManager) -> None:
+        # The triage subsystem applies this label raw; it must NOT be prefixed,
+        # or merge-queue/cleanup gates would never match the real PR label.
+        assert plm.triage_reviewed == "triage-reviewed"
 
 
 # ===================================================================

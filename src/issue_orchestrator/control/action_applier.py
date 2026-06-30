@@ -70,6 +70,7 @@ from .actions import (
     LaunchValidationRetryAction,
     StopSessionAction,
     QueueReviewAction,
+    EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     AddCommentAction,
     SupersedePullRequestAction,
@@ -253,6 +254,7 @@ class ActionApplier:
             ActionType.QUEUE_REWORK: self._apply_queue_operation,
             ActionType.QUEUE_TRIAGE: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
+            ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
             # Issue creation
             ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
             # Cleanup operations
@@ -476,6 +478,50 @@ class ActionApplier:
                 f"PR #{action.pr_number} {step} failed: {e}",
                 pr_number=action.pr_number,
             )
+
+    def _apply_enqueue_to_merge_queue(self, action: Action) -> ActionResult:
+        """Enqueue a reviewer-approved PR into the provider's merge queue."""
+        assert isinstance(action, EnqueueToMergeQueueAction)
+        assert self.repository_host is not None, (
+            "repository_host required for enqueue_to_merge_queue"
+        )
+
+        # Enqueue is a GitHub write on a (possibly still-claimed) issue.
+        self._verify_claim_before_write(action, action.issue_number)
+
+        try:
+            self.repository_host.enqueue_to_merge_queue(action.pr_number)
+        except Exception as e:
+            logger.error(
+                issue_log(action.issue_number, "Failed to enqueue PR #%d to merge queue: %s"),
+                action.pr_number,
+                e,
+                exc_info=True,
+            )
+            return ActionResult.fail(
+                action,
+                f"PR #{action.pr_number} merge-queue enqueue failed: {e}",
+                pr_number=action.pr_number,
+            )
+
+        logger.info(
+            issue_log(action.issue_number, "Enqueued PR #%d to merge queue"),
+            action.pr_number,
+        )
+        self.events.publish(make_trace_event(
+            EventName.MERGE_QUEUE_ENQUEUED,
+            {
+                "issue_number": action.issue_number,
+                "issue_key": action.issue_key or str(action.issue_number),
+                "pr_number": action.pr_number,
+                "pr_url": action.pr_url,
+            },
+        ))
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+        )
 
     def _apply_close_issue(self, action: Action) -> ActionResult:
         """Close an issue through the repository host."""

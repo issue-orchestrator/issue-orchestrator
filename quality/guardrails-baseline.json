@@ -113,12 +113,12 @@
       "value": 5
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/github_workflow.py": {
-      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "detail": "7 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/github_workflow.py",
       "path": "src/issue_orchestrator/control/github_workflow.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 6
+      "value": 7
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/goal_pilot.py": {
       "detail": "2 branch site(s) mention lifecycle/control terms",
@@ -1297,12 +1297,20 @@
       "value": 5
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/action_applier.py": {
-      "detail": "1537 lines exceeds budget 800",
+      "detail": "1583 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/action_applier.py",
       "path": "src/issue_orchestrator/control/action_applier.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1537
+      "value": 1583
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
+      "detail": "920 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
+      "path": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 920
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_handler.py": {
       "detail": "1235 lines exceeds budget 800",
@@ -1337,12 +1345,12 @@
       "value": 1452
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
-      "detail": "1683 lines exceeds budget 800",
+      "detail": "1712 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/planner.py",
       "path": "src/issue_orchestrator/control/planner.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1683
+      "value": 1712
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
       "detail": "1910 lines exceeds budget 800",
@@ -1497,20 +1505,20 @@
       "value": 1641
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
-      "detail": "1473 lines exceeds budget 800",
+      "detail": "1488 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1473
+      "value": 1488
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
-      "detail": "862 lines exceeds budget 800",
+      "detail": "900 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config_sections.py",
       "path": "src/issue_orchestrator/infra/config_sections.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 862
+      "value": 900
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/e2e_db.py": {
       "detail": "1624 lines exceeds budget 800",
@@ -1761,12 +1769,12 @@
       "value": 13
     },
     "ruff_complexity_noqa:src/issue_orchestrator/infra/config.py:C901:to_dict": {
-      "detail": "C901 line 752: `to_dict` is too complex (139 > 10)",
+      "detail": "C901 line 762: `to_dict` is too complex (144 > 10)",
       "kind": "ruff_finding",
       "metric_id": "src/issue_orchestrator/infra/config.py:C901:to_dict",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "ruff_complexity_noqa",
-      "value": 139
+      "value": 144
     },
     "ruff_complexity_noqa:src/issue_orchestrator/timeline.py:C901:_detail_from_data": {
       "detail": "C901 line 615: `_detail_from_data` is too complex (29 > 10)",
