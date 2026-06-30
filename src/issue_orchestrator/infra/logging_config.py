@@ -159,6 +159,23 @@ def _create_file_handler(
             return None, log_file, False
 
 
+# Third-party loggers that emit one INFO line per network call. httpx logs
+# every GitHub request (and the fetch layer refreshes "hot" issues from several
+# hot-lists per cycle, so a single issue can be logged multiple times a tick).
+# At INFO this buries the orchestrator's own signal — a real incident produced a
+# 318 MB log that was ~95% httpx lines, drowning the "[LOOP] Tick took 153.9s"
+# warning that explained a stall. These libraries are not part of our log/event
+# contract, so we pin them to WARNING. The Control Center set this for its own
+# process only; doing it here makes every entrypoint (engine included) inherit it.
+_NOISY_THIRD_PARTY_LOGGERS = ("httpx", "httpcore")
+
+
+def _quiet_noisy_third_party_loggers() -> None:
+    """Pin chatty third-party loggers to WARNING so the orchestrator log stays readable."""
+    for name in _NOISY_THIRD_PARTY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def setup_logging(
     repo_root: Path | str,
     level: str = "INFO",
@@ -208,6 +225,8 @@ def setup_logging(
             lambda record: "events" in record.name or record.levelno >= logging.WARNING
         )
         root_logger.addHandler(stderr_handler)
+
+    _quiet_noisy_third_party_loggers()
 
     _logging_configured = True
     _current_log_file = log_file if file_handler else None

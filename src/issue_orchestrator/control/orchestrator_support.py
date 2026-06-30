@@ -38,6 +38,7 @@ from .queue_cache import (
 )
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .reconciliation import ReconciliationRequired, get_pause_label
+from .tick_telemetry import report_slow_tick
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
     ClosedIssueHistoryMutation,
@@ -808,8 +809,7 @@ def _fetch_and_update_queue(
         _record_issue_refreshes(state, refreshed_numbers, refreshed_at)
         _reconcile_closed_issue_history(state, all_issues)
 
-        if sync_plan.run_pr_scan:
-            github_workflow.scan_pending_pr_work(state)
+        github_workflow.scan_pending_pr_work(state, include_general_scans=sync_plan.run_pr_scan)
 
         if sync_plan.run_dependency_scan:
             _, dep_blocked = scheduler.get_available_issues(all_issues)
@@ -1445,8 +1445,7 @@ def run_tick(
         }),
     ))
     tick_elapsed = time.monotonic() - tick_start
-    if tick_elapsed > 10:
-        logger.warning("[LOOP] Tick took %.1fs", tick_elapsed)
+    report_slow_tick(events, event_context, state, tick_elapsed, active_elapsed)
     state.current_tick_phase = ""
     state.last_tick_completed_at = time.time()
     return loop_iteration, True

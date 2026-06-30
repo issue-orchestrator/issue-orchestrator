@@ -38,6 +38,9 @@ class CodexProvider(CLIProvider):
     def runs_interactively(self, **kwargs: object) -> bool:
         return self._execution_mode(kwargs) == "interactive"
 
+    def needs_fresh_prompt_process(self, **kwargs: object) -> bool:
+        return self.runs_interactively(**kwargs)
+
     def build_command(
         self,
         prompt: str,

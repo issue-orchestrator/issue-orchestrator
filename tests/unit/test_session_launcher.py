@@ -20,9 +20,16 @@ from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.session_completion import (
+    _apply_completed_decisions,
+    _record_provider_resilience_effects,
     _terminate_finished_session,
     handle_session_completion,
     process_active_sessions,
+)
+from issue_orchestrator.control.completion_dispatcher import CompletedDecision
+from issue_orchestrator.control.session_decision import (
+    ProviderTransientFailureDecision,
+    SessionDecision,
 )
 from issue_orchestrator.control.session_launch_types import LaunchResult
 from issue_orchestrator.control.session_launcher import (
@@ -2495,6 +2502,70 @@ class TestRestoreRunningSessions:
 class TestProcessActiveSessions:
     """Tests for process_active_sessions function (line 1034)."""
 
+    def test_completed_decision_batch_applies_siblings_before_raising(self):
+        """One failed completed decision must not discard the rest of the drain batch."""
+        first = CompletedDecision(
+            session=MagicMock(terminal_id="issue-1"),
+            decision=None,
+            error=RuntimeError("decide failed"),
+        )
+        second = CompletedDecision(
+            session=MagicMock(terminal_id="issue-2"),
+            decision=SessionDecision(
+                status=SessionStatus.RUNNING,
+                provider_success="codex",
+            ),
+            error=None,
+        )
+        provider_resilience = MagicMock()
+        applied: list[str] = []
+
+        def apply(completed: CompletedDecision) -> None:
+            applied.append(completed.session.terminal_id)
+            if completed.error is not None:
+                raise completed.error
+            assert completed.decision is not None
+            _record_provider_resilience_effects(
+                completed.decision,
+                provider_resilience,
+            )
+
+        with pytest.raises(RuntimeError, match="decide failed"):
+            _apply_completed_decisions([first, second], apply)
+
+        assert applied == ["issue-1", "issue-2"]
+        provider_resilience.record_success.assert_called_once_with("codex")
+
+    def test_provider_resilience_effects_are_recorded_on_apply_thread(self):
+        """Provider-circuit mutations happen when the drained decision is applied."""
+        provider_resilience = MagicMock()
+
+        _record_provider_resilience_effects(
+            SessionDecision(
+                status=SessionStatus.RUNNING,
+                provider_success="codex",
+            ),
+            provider_resilience,
+        )
+        _record_provider_resilience_effects(
+            SessionDecision(
+                status=SessionStatus.BLOCKED,
+                provider_transient_failure=ProviderTransientFailureDecision(
+                    provider="claude-code",
+                    error_summary="provider overloaded",
+                    attempts=3,
+                ),
+            ),
+            provider_resilience,
+        )
+
+        provider_resilience.record_success.assert_called_once_with("codex")
+        provider_resilience.record_transient_failure.assert_called_once_with(
+            "claude-code",
+            error_summary="provider overloaded",
+            attempts=3,
+        )
+
     def test_skips_running_sessions(self, sample_agent_config, tmp_path):
         """Verify running sessions are skipped."""
         from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
@@ -2583,6 +2654,57 @@ class TestProcessActiveSessions:
         assert state.active_sessions == [session]
         mock_completion_handler.process_completion.assert_not_called()
         mock_action_applier.apply_actions.assert_not_called()
+
+    def test_attributes_tick_phase_to_issue_being_handled(self, sample_agent_config, tmp_path):
+        """While a session's (synchronous) completion runs, the tick phase names
+        the issue, so a stall during publish shows up on the dashboard as
+        'active_sessions:#392' rather than a generic 'active_sessions'."""
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.observation.observation import SessionObservationResult
+
+        issue = Issue(number=392, title="Test", labels=["agent:backend"])
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-392",
+            worktree_path=tmp_path / "worktree",
+            branch_name="392-feature",
+            run_assets=make_session_run_assets(tmp_path / "worktree", session_name="issue-392"),
+        )
+
+        state = OrchestratorState()
+        state.active_sessions = [session]
+
+        mock_observer = MagicMock()
+        mock_observer.observe_session.return_value = SessionObservationResult.terminated()
+
+        captured_phase = {}
+
+        def capture_phase(*args, **kwargs):
+            # The heavy publish work happens inside decide_outcome; capture what
+            # the dashboard would read if it sampled mid-stall.
+            captured_phase["value"] = state.current_tick_phase
+            return SessionDecision(
+                status=SessionStatus.RUNNING,
+                reason="deferred",
+            )
+
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.side_effect = capture_phase
+
+        process_active_sessions(
+            state=state,
+            observer=mock_observer,
+            session_controller=mock_controller,
+            completion_handler=MagicMock(),
+            action_applier=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=MagicMock(),
+            config=MagicMock(),
+        )
+
+        assert captured_phase["value"] == "active_sessions:#392"
 
     def test_completion_event_fires_once_across_many_ticks_of_deferred_session(
         self, sample_agent_config, tmp_path
@@ -2756,6 +2878,98 @@ class TestProcessActiveSessions:
         mock_controller.decide_outcome.assert_called_once()
         mock_completion_handler.process_completion.assert_called_once()
         kill_session_fn.assert_called_once_with("issue-123")
+
+    def test_background_dispatcher_keeps_heartbeat_free_until_drained(
+        self, sample_agent_config, tmp_path
+    ):
+        """With a background dispatcher, a slow completion decision runs off the
+        tick thread: the dispatch tick returns immediately with the session
+        still active and no completion applied; a later tick (after the decision
+        finishes) drains it and applies handle_session_completion exactly once.
+        Regression for the 153.9s synchronous-publish freeze."""
+        import threading
+
+        from issue_orchestrator.control.completion_dispatcher import (
+            BackgroundCompletionDispatcher,
+        )
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.execution.thread_background_job_runner import (
+            ThreadBackgroundJobRunner,
+        )
+        from issue_orchestrator.observation.observation import SessionObservationResult
+
+        issue = Issue(number=392, title="Test", labels=["agent:web"])
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-392",
+            worktree_path=tmp_path / "worktree",
+            branch_name="392-feature",
+            run_assets=make_session_run_assets(tmp_path / "worktree", session_name="issue-392"),
+        )
+        state = OrchestratorState(active_sessions=[session])
+
+        mock_observer = MagicMock()
+        mock_observer.observe_session.return_value = SessionObservationResult.timed_out()
+
+        gate = threading.Event()
+
+        def slow_decide(*args, **kwargs):
+            gate.wait(5)  # stand in for the ~100s publish gate + push + PR
+            return SessionDecision(status=SessionStatus.TIMED_OUT, reason="done")
+
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.find_run_dir.return_value = None
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.side_effect = slow_decide
+        mock_controller.session_output = session_output
+
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.return_value = MagicMock(
+            actions=[],
+            history_entry=SessionHistoryEntry(
+                issue_number=392, title="Test", agent_type="agent:web",
+                status="timed_out", runtime_minutes=90,
+            ),
+            should_defer_cleanup=False, pending_cleanup=None,
+            should_queue_review=False, pr_url=None, pr_number=None,
+        )
+        kill_session_fn = MagicMock()
+        runner = ThreadBackgroundJobRunner()
+        dispatcher = BackgroundCompletionDispatcher(runner)
+
+        def run_tick():
+            process_active_sessions(
+                state=state,
+                observer=mock_observer,
+                session_controller=mock_controller,
+                completion_handler=mock_completion_handler,
+                action_applier=MagicMock(),
+                worktree_manager=None,
+                kill_session_fn=kill_session_fn,
+                config=MagicMock(),
+                completion_dispatcher=dispatcher,
+            )
+
+        # Tick 1: dispatch only — decision runs in the background, tick returns.
+        run_tick()
+        assert session in state.active_sessions  # not yet completed
+        mock_completion_handler.process_completion.assert_not_called()
+        assert dispatcher.in_flight("issue-392") is True
+
+        # Tick 2 (decision still running): in-flight, so no re-dispatch, no apply.
+        run_tick()
+        mock_controller.decide_outcome.assert_called_once()
+        assert state.active_sessions == [session]
+
+        # Decision finishes; the next tick drains and applies completion once.
+        gate.set()
+        assert runner.wait_until_idle(5) is True
+        run_tick()
+        assert state.active_sessions == []
+        mock_completion_handler.process_completion.assert_called_once()
+        kill_session_fn.assert_called_once_with("issue-392")
 
 
 # =============================================================================

@@ -153,6 +153,8 @@ class RetryHistoryState:
         self._clear_discovered_facts(issue_number, superseded_pr_numbers)
         self._clear_progress_flags(issue_number)
         self._clear_queue_and_ui_hints(issue_number)
+        for pr_number in superseded_pr_numbers:
+            self._state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
 
         return PendingStateClearResult(
             review_count_before=review_count_before,

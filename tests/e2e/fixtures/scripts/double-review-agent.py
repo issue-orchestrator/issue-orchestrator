@@ -29,6 +29,10 @@ ISSUE_NUMBER = os.environ.get("ISSUE_ORCHESTRATOR_ISSUE_NUMBER", "unknown")
 
 
 def main() -> None:
+    print(
+        f"agent process started pid={os.getpid()} label={AGENT_LABEL}",
+        flush=True,
+    )
     if RESPONSE_FILE:
         if "reviewer" in AGENT_LABEL:
             _reviewer_loop(Path(RESPONSE_FILE))
@@ -57,7 +61,7 @@ def _coder_review_loop(response_file: Path) -> None:
             f"E2E double review rework round {round_index}",
         )
         _coding_done(f"E2E double review rework round {round_index}")
-        _write_json(
+        _submit_verdict(
             response_file,
             {
                 "response_type": "ok",
@@ -131,7 +135,7 @@ def _reviewer_loop(response_file: Path) -> None:
                     "nit_policy": "surface",
                 },
             }
-        _write_json(response_file, payload)
+        _submit_verdict(response_file, payload)
 
 
 def _prompt_stream():
@@ -225,6 +229,22 @@ def _counter_path() -> Path:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _submit_verdict(response_file: Path, payload: dict[str, Any]) -> None:
+    """Submit the verdict via exchange-respond under the mailbox, else file."""
+    if os.environ.get("ISSUE_ORCHESTRATOR_API_PORT") or os.environ.get(
+        "ORCHESTRATOR_API_PORT"
+    ):
+        from issue_orchestrator.entrypoints.cli_tools.exchange_respond import (
+            main as exchange_respond_main,
+        )
+
+        rc = exchange_respond_main(["--json", json.dumps(payload)])
+        if rc != 0:
+            raise SystemExit(f"exchange-respond failed rc={rc}")
+    else:
+        _write_json(response_file, payload)
 
 
 def _run(argv: list[str]) -> None:

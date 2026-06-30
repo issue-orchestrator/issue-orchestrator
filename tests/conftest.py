@@ -374,12 +374,18 @@ class MockGitHubAdapter:
                     return pr
         return None
 
-    def read_pr_status_check_rollup(self, pr_number: int) -> StatusCheckRollupRead:
+    def read_pr_status_check_rollup(
+        self, pr_number: int, *, skip_primary_source: bool = False
+    ) -> StatusCheckRollupRead:
         """Read a PR's status-check rollup. The mock has no check-status
         concept, so it reports ``ok`` with whatever ``status_check_rollup``
         the test fixture set on the PRInfo (defaults to None). The real
         adapter pays a GraphQL round-trip and can report permission/
-        transient failures; the mock is free and always-capable."""
+        transient failures; the mock is free and always-capable.
+
+        ``skip_primary_source`` is accepted for protocol parity (the gate
+        passes it during a GraphQL backoff window); the mock has a single
+        always-readable source, so it behaves identically either way."""
         pr = self.get_pr(pr_number)
         state = pr.status_check_rollup if pr is not None else None
         return StatusCheckRollupRead(state=state, capability="ok")
@@ -783,6 +789,7 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.control.pr_scanner import PRScanner
     from issue_orchestrator.control.health_gate import HealthGate
     from issue_orchestrator.control.session_restorer import SessionRestorer
+    from issue_orchestrator.control.completion_dispatcher import SynchronousCompletionDispatcher
     from issue_orchestrator.control.label_sync import LabelSync
     from issue_orchestrator.control.orchestrator_deps import OrchestratorDeps
     from issue_orchestrator.events import EventHub
@@ -977,6 +984,7 @@ def build_test_orchestrator_deps(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=_session_controller,
+        completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
         session_output=session_output,
         claim_manager=claim_manager,

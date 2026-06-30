@@ -88,21 +88,39 @@ _append_spawn_log(
 )
 
 
+def _next_reviewer_outcome_index(local_round_index: int) -> int:
+    counter_file = os.environ.get("SYNTHETIC_TUI_REVIEWER_OUTCOME_COUNTER_FILE")
+    if not counter_file:
+        return local_round_index - 1
+    counter_path = Path(counter_file)
+    counter_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        current = int(counter_path.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError):
+        current = 0
+    counter_path.write_text(str(current + 1), encoding="utf-8")
+    return current
+
+
 def _reviewer_payload(round_index: int) -> dict[str, object]:
+    outcome_index = _next_reviewer_outcome_index(round_index)
+    display_round = outcome_index + 1
     outcome = (
-        reviewer_script[round_index - 1]
-        if round_index <= len(reviewer_script)
+        reviewer_script[outcome_index]
+        if outcome_index < len(reviewer_script)
         else reviewer_script[-1]
     )
     if outcome == "changes_requested":
         return {
             "response_type": "changes_requested",
-            "response_text": f"Synthetic reviewer requested changes round {round_index}",
+            "response_text": (
+                f"Synthetic reviewer requested changes round {display_round}"
+            ),
             "getting_closer": True,
         }
     return {
         "response_type": "ok",
-        "response_text": f"Synthetic reviewer approved round {round_index}",
+        "response_text": f"Synthetic reviewer approved round {display_round}",
         "getting_closer": True,
     }
 

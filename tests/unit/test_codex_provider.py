@@ -123,3 +123,5 @@ class TestCodexBaseCommand:
         assert provider.interactive is True
         assert provider.runs_interactively() is True
         assert provider.runs_interactively(execution_mode="exec") is False
+        assert provider.needs_fresh_prompt_process() is True
+        assert provider.needs_fresh_prompt_process(execution_mode="exec") is False

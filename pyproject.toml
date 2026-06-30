@@ -62,6 +62,7 @@ dev = [
 issue-orchestrator = "issue_orchestrator.entrypoints.cli:main"
 coding-done = "issue_orchestrator.entrypoints.cli_tools.coding_done:safe_main"
 reviewer-done = "issue_orchestrator.entrypoints.cli_tools.reviewer_done:safe_main"
+exchange-respond = "issue_orchestrator.entrypoints.cli_tools.exchange_respond:safe_main"
 verify-agent-sandbox = "issue_orchestrator.execution.sandbox_verify:main"
 prepush-check = "issue_orchestrator.entrypoints.cli_tools.prepush_check:main"
 issue-orchestrator-mcp = "issue_orchestrator.entrypoints.mcp_server:main"

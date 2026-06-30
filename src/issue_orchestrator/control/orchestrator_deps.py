@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from .session_restorer import SessionRestorer
     from .state_machine_manager import StateMachineManager
     from .completion_processor import CompletionProcessor
+    from .completion_dispatcher import CompletionDispatcher
     from .completion_observer import CompletionObserver
     from .publish_executor import PublishJobExecutor
     from .publish_recovery import PublishRecoveryService
@@ -95,6 +96,9 @@ class OrchestratorDeps:
     state_machine_manager: "StateMachineManager"
     completion_processor: "CompletionProcessor"
     session_controller: "SessionController"
+    # Runs a terminated session's completion decision (publish gate + push + PR);
+    # the background impl keeps that work off the tick thread.
+    completion_dispatcher: "CompletionDispatcher"
     health_gate: "HealthGate"
 
     # IO adapters
