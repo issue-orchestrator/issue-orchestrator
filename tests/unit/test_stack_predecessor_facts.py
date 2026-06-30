@@ -12,9 +12,12 @@ tests assert the provider reads it from ``PRInfo.labels``. Blocking and
 """
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
+from issue_orchestrator.adapters.github import GitHubAdapter
+from issue_orchestrator.adapters.github.cache import GitHubCache
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.domain.dependencies import DependencyTarget
 from issue_orchestrator.execution.stack_predecessor_facts import (
@@ -269,4 +272,115 @@ class TestPRCandidateValidation:
 
         assert facts.branch_usable is False
         assert facts.validation_passed is False
+        assert facts.agent_reviewed is False
+
+
+class TestStalePRLabelCacheInvalidation:
+    """#6595/#6670 F1: a PR-scoped label write addressed by PR *number* must not
+    leave the stack work-gate reading stale PR labels from the GitHub adapter's
+    PR-by-issue cache.
+
+    These run against a real ``GitHubAdapter`` + ``GitHubCache`` (not the
+    ``FakeRepoHost``) because the defect lives in the adapter cache's cross-index
+    invalidation: ``get_prs_for_issue(predecessor_issue)`` is served from an
+    entry keyed by the *issue*, while review/rework label writes address the
+    *PR* number. Without cross-index invalidation a write to PR ``#101`` leaves
+    the predecessor-issue ``#20`` entry serving a stale ``code-reviewed``.
+    """
+
+    @pytest.fixture
+    def gh_config(self):
+        config = Config(
+            repo="owner/repo",
+            repo_root=Path("/tmp/repo"),
+            worktree_base=Path("/tmp"),
+            agents={"claude": AgentConfig(prompt_path=Path("/tmp/prompt.txt"))},
+        )
+        config.github_token = "test-token"
+        config.github_cache_ttl_seconds = 60
+        return config
+
+    def _build(self, gh_config, *, pr_labels):
+        """Wire a real adapter+cache whose PR #101 (branch ``20-base``, open) has
+        ``pr_labels``, plus a provider reading through it.
+
+        ``pr_labels`` is a mutable list so a test can flip the live GitHub state
+        (e.g. to ``needs-rework``) between priming the cache and re-reading.
+        """
+        http = MagicMock()
+        http.get_prs_for_issue.return_value = [{"number": 101}]
+        http.get_issue_labels.return_value = []  # issue #20 carries no labels
+
+        def _get_pr(number):
+            assert number == 101
+            return {
+                "number": 101,
+                "title": "#20: predecessor",
+                "html_url": "https://example/pr/101",
+                "head": {"ref": "20-base"},
+                "body": "",
+                "state": "open",
+                "labels": [{"name": name} for name in pr_labels],
+            }
+
+        http.get_pr.side_effect = _get_pr
+        adapter = GitHubAdapter(
+            repo="owner/repo",
+            config=gh_config,
+            cache=GitHubCache(default_ttl=300.0),
+            http_client=http,
+            verify_writes=False,
+        )
+        provider = GitStackPredecessorFactsProvider(
+            repository_host=adapter,
+            label_manager=LabelManager(gh_config),
+            repo="owner/repo",
+        )
+        return adapter, provider
+
+    def test_cached_reviewed_pr_unblocks_review_fact(self, gh_config):
+        # Anchor: with PR #101 cached as code-reviewed, the gate trusts it.
+        live_labels = ["code-reviewed"]
+        adapter, provider = self._build(gh_config, pr_labels=live_labels)
+        # Prime the PR-by-issue cache the production way (no issue-label read).
+        adapter.get_prs_for_issue(20)
+
+        facts = provider.gather_facts([DependencyTarget(20)])[DependencyTarget(20)]
+
+        assert facts.branch_usable is True
+        assert facts.agent_reviewed is True
+
+    def test_pr_number_label_write_invalidates_stale_by_issue_review_label(
+        self, gh_config
+    ):
+        # Prime the by-issue cache with a code-reviewed PR #101...
+        live_labels = ["code-reviewed"]
+        adapter, provider = self._build(gh_config, pr_labels=live_labels)
+        adapter.get_prs_for_issue(20)  # caches _prs_by_issue[20] = {code-reviewed}
+
+        # ...the PR then moves back to rework on GitHub, written by PR NUMBER.
+        live_labels[:] = ["needs-rework"]
+        adapter.add_label(101, "needs-rework")
+
+        # The gate must re-read fresh labels, not the stale cached code-reviewed.
+        facts = provider.gather_facts([DependencyTarget(20)])[DependencyTarget(20)]
+
+        assert facts.branch_usable is True  # not fail-safe all-False: it re-read
+        assert facts.branch_name == "20-base"
+        assert facts.agent_reviewed is False
+
+    def test_pr_number_label_removal_invalidates_stale_by_issue_review_label(
+        self, gh_config
+    ):
+        # Same hazard via label REMOVAL: code-reviewed stripped from the PR.
+        live_labels = ["code-reviewed"]
+        adapter, provider = self._build(gh_config, pr_labels=live_labels)
+        adapter.get_prs_for_issue(20)
+
+        live_labels[:] = []  # code-reviewed removed on GitHub
+        adapter.remove_label(101, "code-reviewed")
+
+        facts = provider.gather_facts([DependencyTarget(20)])[DependencyTarget(20)]
+
+        assert facts.branch_usable is True
         assert facts.agent_reviewed is False

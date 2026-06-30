@@ -28,7 +28,12 @@ Scope (bounded for #6595):
   PR-scoped (the completion / review-exchange paths add ``code-reviewed`` to the
   PR, not the issue), so this reads PR labels, not issue labels. There is no git
   fact for "an agent reviewed this"; ADR-0029 §3 treats review *freshness* as
-  the separate ``approval_current`` fact.
+  the separate ``approval_current`` fact. The PR labels read here must be
+  current as of the last PR-scoped label write: the review/rework flow mutates
+  labels by PR *number*, so the ``RepositoryHost`` cache owner is responsible
+  for invalidating every cached PR index (by number, by issue, by branch) on a
+  PR-number label write — otherwise this gate could read a stale ``code-reviewed``
+  for a PR that has since moved back to ``needs-rework`` (#6595/#6670 F1).
 - ``merged`` is left False here; a merged/closed predecessor already satisfies
   the stack edge upstream, so facts are only gathered for *unsatisfied* ones.
 
