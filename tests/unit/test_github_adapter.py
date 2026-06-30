@@ -543,24 +543,31 @@ class TestLabelOperations:
             adapter.has_label(42, "bug")
         assert exc_info.value.status_code == 500
 
-    def test_update_label_cache(self, adapter, cache):
-        """Test update_label_cache updates both issue and PR caches."""
-        # Pre-populate PR cache
+    def test_update_label_cache_refreshes_issue_labels_only(self, adapter, cache):
+        """Issue-label refresh updates issue labels and leaves PR labels intact.
+
+        Regression for #6595/#6670 F1: PR-scoped review labels (code-reviewed /
+        needs-rework) are a distinct fact owned by PR reads. An issue-label
+        refresh — which commonly yields [] — must NOT be mirrored onto the
+        cached PR, or it would erase a still-current review label and make the
+        stack predecessor work-gate read the PR as unreviewed.
+        """
+        # Pre-populate PR cache with a PR-scoped review label.
         pr_data = {
             "number": 10,
             "branch": "42-test",
-            "labels": ["old"],
+            "labels": ["code-reviewed"],
             "issue_number": 42,
         }
         cache.set_pr_by_issue(42, pr_data, branch="42-test")
 
-        adapter.update_label_cache(42, ["new"])
+        adapter.update_label_cache(42, [])  # issue itself carries no labels
 
-        # Issue labels should be updated
-        assert cache.get_issue_labels(42) == ["new"]
-        # PR labels should also be updated
+        # Issue labels are refreshed...
+        assert cache.get_issue_labels(42) == []
+        # ...but the cached PR's review label is preserved, not overwritten.
         cached_pr = cache.get_pr_by_issue(42)
-        assert cached_pr["labels"] == ["new"]
+        assert cached_pr["labels"] == ["code-reviewed"]
 
     def test_invalidate_label_cache(self, adapter, cache):
         """Test invalidate_label_cache removes cached labels."""
@@ -1173,6 +1180,46 @@ class TestPROperations:
 
         assert len(prs) == 1
         assert prs[0].number == 10
+
+    def test_get_prs_for_issue_open_filters_out_closed(
+        self, adapter, mock_http_client
+    ):
+        """The documented ``state`` filter is honored on the API path.
+
+        The broad association search returns PRs in any state; a ``state="open"``
+        query must exclude a closed PR. Regression for the stack work-gate base
+        selection (#6595 F2), which relied on this filter to avoid launching a
+        successor from a closed predecessor PR.
+        """
+        mock_http_client.get_prs_for_issue.return_value = [
+            {"number": 10}, {"number": 11},
+        ]
+        full_by_number = {
+            10: {
+                "number": 10,
+                "title": "#42: Old closed",
+                "html_url": "https://github.com/owner/repo/pull/10",
+                "head": {"ref": "42-old"},
+                "body": "",
+                "state": "closed",
+                "labels": [],
+            },
+            11: {
+                "number": 11,
+                "title": "#42: New open",
+                "html_url": "https://github.com/owner/repo/pull/11",
+                "head": {"ref": "42-new"},
+                "body": "",
+                "state": "open",
+                "labels": [],
+            },
+        }
+        mock_http_client.get_pr.side_effect = lambda n: full_by_number[n]
+
+        prs = adapter.get_prs_for_issue(42, state="open")
+
+        assert [pr.number for pr in prs] == [11]
+        assert prs[0].state == "open"
 
     def test_search_pr_refs_for_issue_is_search_only_no_hydration(
         self, adapter, mock_http_client

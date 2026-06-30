@@ -130,6 +130,23 @@ def _wait_for_path(path: Path, *, timeout_seconds: float = 5.0) -> None:
     raise AssertionError(f"{path} did not appear within {timeout_seconds}s")
 
 
+def _wait_for_jsonl_records(
+    path: Path, *, timeout_seconds: float = 5.0
+) -> list[dict[str, object]]:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            records = [
+                json.loads(line)
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if records:
+                return records
+        time.sleep(0.01)
+    raise AssertionError(f"{path} did not contain records within {timeout_seconds}s")
+
+
 def _bootstrap_git_worktree(tmp_path: Path) -> tuple[Path, str]:
     """Build a tiny real git repo with a feature branch checked out."""
     repo = tmp_path / "coder-wt"
@@ -692,6 +709,7 @@ def test_synthetic_tui_writes_bootstrap_response_when_guard_missing(
     os.close(slave_fd)
     try:
         _wait_for_path(response_file)
+        spawn_records = _wait_for_jsonl_records(spawn_log)
         payload = json.loads(response_file.read_text(encoding="utf-8"))
         assert payload == {
             "response_type": "ok",
@@ -707,11 +725,6 @@ def test_synthetic_tui_writes_bootstrap_response_when_guard_missing(
             proc.wait(timeout=5)
         os.close(master_fd)
 
-    spawn_records = [
-        json.loads(line)
-        for line in spawn_log.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
     assert len(spawn_records) == 1
     assert spawn_records[0]["initial_prompt_present"] is True
     assert spawn_records[0]["bootstrap_not_turn_instruction"] is False

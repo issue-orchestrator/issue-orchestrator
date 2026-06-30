@@ -93,6 +93,11 @@ from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.adapters.github import GitHubAdapter
+from issue_orchestrator.adapters.github.cache import GitHubCache
+from issue_orchestrator.execution.stack_predecessor_facts import (
+    GitStackPredecessorFactsProvider,
+)
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.contracts.public import SessionStartedPayload
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -879,29 +884,213 @@ class TestLaunchIssueSession:
         assert "ISSUE_ORCHESTRATOR_WORKTREE=" in cmd
 
     def test_checks_dependencies_before_launch(self, launcher_bundle):
-        """Verify CAS dependency check (lines 235-254)."""
-        # Create issue with body so dependency check is triggered
+        """Just-before-launch recheck consumes the work gate and blocks stale work."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        # Create issue with a real normal dependency so the work gate is consulted
         issue_with_body = Issue(
             number=123,
             title="Test issue",
             labels=["agent:web"],
             repo="test/repo",
-            body="Blocked by #100",  # Body required for dependency check
+            body="Depends-on: #100",
+            milestone="M1",
         )
 
-        # Set up dependency evaluator mock
-        mock_evaluator = MagicMock()
-        mock_report = MagicMock()
-        mock_report.runnable = False
-        mock_report.summary.return_value = "Blocked by #100"
-        mock_evaluator.evaluate.return_value = mock_report
+        class _Checker:
+            def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "open" if issue_number == 100 else None  # dependency still open
 
-        # noqa: SLF001 - Test infrastructure: injecting mock dependency evaluator
-        launcher_bundle.launcher._dependency_evaluator = mock_evaluator  # noqa: SLF001
+            def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "M1"
+
+        evaluator = DependencyEvaluator(issue_checker=_Checker(), events=NullEventSink())
+
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
         launcher_bundle.launcher._refresh_issue = lambda n: issue_with_body  # noqa: SLF001
 
         result = launcher_bundle.launcher.launch_issue_session(issue_with_body, active_sessions=[])
 
+        assert result.success is False
+        assert "Dependencies not satisfied" in result.reason
+        assert "#100" in result.reason
+
+    def test_recheck_blocks_stale_stack_work_changed_after_planning(
+        self, launcher_bundle, mock_events
+    ):
+        """Predecessor review state changing between planning and launch blocks start.
+
+        The just-before-launch recheck re-gathers predecessor facts, so a stack
+        successor that was work-ready at planning time must not start once the
+        predecessor's branch/review state regresses (ADR-0029 race guard).
+        """
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        issue = Issue(
+            number=300,
+            title="Stacked successor",
+            labels=["agent:web"],
+            repo="test/repo",
+            body="Stack-after: #200",
+            milestone="M1",
+        )
+
+        class _Checker:
+            def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "open" if issue_number == 200 else None  # predecessor still open
+
+            def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "M1"
+
+        class _MutableProvider:
+            """Returns whatever facts are current at gather time."""
+
+            def __init__(self):
+                self.facts = PredecessorFacts(
+                    branch_usable=True, validation_passed=True,
+                    agent_reviewed=True, branch_name="200-base",
+                )
+
+            def gather_facts(self, targets):
+                return {t: self.facts for t in targets}
+
+        provider = _MutableProvider()
+        evaluator = DependencyEvaluator(
+            issue_checker=_Checker(), events=mock_events,
+            predecessor_facts_provider=provider,
+        )
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
+        launcher_bundle.launcher._refresh_issue = lambda n: issue  # noqa: SLF001
+
+        # At planning time the predecessor was validated + reviewed -> work-ready.
+        planning = evaluator.evaluate_work_gate(300, "Stack-after: #200", "M1", emit_event=False)
+        assert planning.can_start_work is True
+
+        # Predecessor review is withdrawn (e.g. a new push) before launch.
+        provider.facts = PredecessorFacts(
+            branch_usable=True, validation_passed=True, agent_reviewed=False,
+        )
+        mock_events.clear()
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is False
+        assert "Dependencies not satisfied" in result.reason
+        blocked = mock_events.get_events_by_name("issue.dependency_blocked")
+        assert len(blocked) == 1
+        data = blocked[0].data
+        assert data["gate"] == "work"
+        assert any(
+            r["mode"] == "stack"
+            and r["predecessor"] == "#200"
+            and r["reason"] == "predecessor_review_pending"
+            for r in data["blocked_reasons"]
+        )
+
+    @pytest.mark.parametrize("rework_via", ["add", "remove"])
+    def test_recheck_through_real_pr_cache_passes_until_pr_label_changes(
+        self, launcher_bundle, mock_events, rework_via
+    ):
+        """Planning and the just-before-launch recheck both pass with no PR-label
+        change, and the recheck blocks only after an actual PR-number label write.
+
+        Round-2 F1 regression wired end-to-end through the real ``GitHubAdapter``
+        cache and ``GitStackPredecessorFactsProvider``: the recheck re-runs
+        ``evaluate_work_gate`` (session_launcher ``_verify_dependencies_fresh``),
+        which gathers PR-scoped review labels and then issue labels. Before the
+        cache-owner fix, the first evaluation's empty issue-label refresh
+        corrupted the cached PR's ``code-reviewed``, so this second (recheck)
+        evaluation falsely blocked a still-reviewed predecessor. With unchanged
+        live PR labels the recheck must pass; after a real PR-number add of
+        ``needs-rework`` or removal of ``code-reviewed`` it must block.
+        """
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        config = Config(
+            repo="test/repo",
+            repo_root=Path("/tmp/repo"),
+            worktree_base=Path("/tmp"),
+            agents={"agent:web": AgentConfig(prompt_path=Path("/tmp/prompt.txt"))},
+        )
+        config.github_token = "test-token"
+        config.github_cache_ttl_seconds = 60
+
+        live_labels = ["code-reviewed"]  # PR #201 is reviewed; issue #200 has none
+        http = MagicMock()
+        http.get_prs_for_issue.return_value = [{"number": 201}]
+        http.get_issue_labels.return_value = []
+
+        def _get_pr(number):
+            assert number == 201
+            return {
+                "number": 201,
+                "title": "#200: predecessor",
+                "html_url": "https://example/pr/201",
+                "head": {"ref": "200-base"},
+                "body": "",
+                "state": "open",
+                "labels": [{"name": name} for name in live_labels],
+            }
+
+        http.get_pr.side_effect = _get_pr
+        adapter = GitHubAdapter(
+            repo="test/repo",
+            config=config,
+            cache=GitHubCache(default_ttl=300.0),
+            http_client=http,
+            verify_writes=False,
+        )
+        provider = GitStackPredecessorFactsProvider(
+            repository_host=adapter,
+            label_manager=LabelManager(config),
+            repo="test/repo",
+        )
+
+        class _Checker:
+            def get_issue_state(self, issue_number, repo=None):
+                return "open" if issue_number == 200 else None  # predecessor open
+
+            def get_issue_milestone(self, issue_number, repo=None):
+                return "M1"
+
+        evaluator = DependencyEvaluator(
+            issue_checker=_Checker(), events=mock_events,
+            predecessor_facts_provider=provider,
+        )
+
+        issue = Issue(
+            number=300,
+            title="Stacked successor",
+            labels=["agent:web"],
+            repo="test/repo",
+            body="Stack-after: #200",
+            milestone="M1",
+        )
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
+        launcher_bundle.launcher._refresh_issue = lambda n: issue  # noqa: SLF001
+
+        # Planning: the work gate opens (predecessor open + reviewed PR).
+        planning = evaluator.evaluate_work_gate(
+            300, "Stack-after: #200", "M1", emit_event=False
+        )
+        assert planning.can_start_work is True
+
+        # Just-before-launch recheck with NO PR-label change must still pass —
+        # the issue-label refresh during gather must not corrupt the cached PR.
+        assert launcher_bundle.launcher._verify_dependencies_fresh(issue) is None  # noqa: SLF001
+
+        # The predecessor PR actually moves out of a clean review, by PR NUMBER.
+        if rework_via == "add":
+            live_labels.append("needs-rework")
+            adapter.add_label(201, "needs-rework")
+        else:
+            live_labels.remove("code-reviewed")
+            adapter.remove_label(201, "code-reviewed")
+
+        # Now the recheck must block the stale stack work.
+        result = launcher_bundle.launcher._verify_dependencies_fresh(issue)  # noqa: SLF001
+        assert result is not None
         assert result.success is False
         assert "Dependencies not satisfied" in result.reason
 

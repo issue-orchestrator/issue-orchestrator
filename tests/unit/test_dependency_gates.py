@@ -651,3 +651,232 @@ class TestDownstreamConsumer:
         allowed, reasons = may_start_work(blocked_report)
         assert allowed is False
         assert "predecessor_review_pending" in reasons
+
+
+# --------------------------------------------------------------------------- #
+# evaluate_work_gate: the owner surface scheduler / launch / planner consume
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingEventSink:
+    """Event sink that records published events for assertions."""
+
+    def __init__(self):
+        self.events = []
+
+    def publish(self, event):
+        self.events.append(event)
+
+
+class _FakeFactsProvider:
+    """Stack-predecessor facts provider returning canned facts per target."""
+
+    def __init__(self, facts: dict[DependencyTarget, PredecessorFacts]):
+        self._facts = facts
+        self.calls: list[list[DependencyTarget]] = []
+
+    def gather_facts(self, targets):
+        self.calls.append(list(targets))
+        return {t: self._facts[t] for t in targets if t in self._facts}
+
+
+class TestEvaluateWorkGate:
+    def test_normal_edge_matches_legacy_runnable(self, checker):
+        """A normal open dependency blocks work exactly like the legacy report."""
+        checker.add(100, "open")
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        report = evaluator.evaluate_work_gate(1, "Depends-on: #100", "M1")
+
+        assert report.can_start_work is False
+        assert report.work_summary() == "Blocked - waiting on: #100"
+
+    def test_normal_edge_closed_opens_work(self, checker):
+        checker.add(100, "closed")
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        report = evaluator.evaluate_work_gate(1, "Depends-on: #100", "M1")
+
+        assert report.can_start_work is True
+        assert report.work_summary() == "All 1 dependencies satisfied"
+
+    def test_stack_edge_blocked_without_provider(self, checker):
+        """A stack predecessor stays blocked when no facts can be gathered."""
+        checker.add(20, "open")
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        report = evaluator.evaluate_work_gate(2, "Stack-after: #20", "M1")
+
+        assert report.can_start_work is False
+        codes = [c.value for c in report.reason_codes(Gate.WORK)]
+        assert "predecessor_branch_unusable" in codes
+
+    def test_stack_edge_unblocks_on_ready_predecessor(self, checker):
+        """Validated + reviewed + usable predecessor branch opens the work gate."""
+        checker.add(20, "open")
+        provider = _FakeFactsProvider(
+            {DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-base",
+            )}
+        )
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=provider,
+        )
+
+        report = evaluator.evaluate_work_gate(2, "Stack-after: #20", "M1")
+
+        assert report.can_start_work is True
+        # Provider was asked only for the unsatisfied stack predecessor.
+        assert provider.calls == [[DependencyTarget(20)]]
+
+    def test_stack_edge_blocked_on_missing_validation(self, checker):
+        checker.add(20, "open")
+        provider = _FakeFactsProvider(
+            {DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=False, agent_reviewed=True,
+            )}
+        )
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=provider,
+        )
+
+        report = evaluator.evaluate_work_gate(2, "Stack-after: #20", "M1")
+
+        assert report.can_start_work is False
+        codes = [c.value for c in report.reason_codes(Gate.WORK)]
+        assert "predecessor_validation_pending" in codes
+
+    def test_provider_not_called_for_normal_edges(self, checker):
+        """Normal Depends-on: edges never consult the stack facts provider."""
+        checker.add(100, "open")
+        provider = _FakeFactsProvider({})
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=provider,
+        )
+
+        evaluator.evaluate_work_gate(1, "Depends-on: #100", "M1")
+
+        assert provider.calls == []
+
+    def test_provider_not_called_for_satisfied_stack_edge(self, checker):
+        """A merged/closed stack predecessor opens work without gathering facts."""
+        checker.add(20, "closed")
+        provider = _FakeFactsProvider({})
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=provider,
+        )
+
+        report = evaluator.evaluate_work_gate(2, "Stack-after: #20", "M1")
+
+        assert report.can_start_work is True
+        assert provider.calls == []
+
+    def test_emits_event_with_machine_readable_blocked_reasons(self, checker):
+        """The work-gate event identifies issue, mode, gate, predecessor, reason."""
+        checker.add(20, "open")
+        provider = _FakeFactsProvider(
+            {DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=False,
+            )}
+        )
+        events = _RecordingEventSink()
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=events,
+            predecessor_facts_provider=provider,
+        )
+
+        evaluator.evaluate_work_gate(2, "Stack-after: #20", "M1")
+
+        assert len(events.events) == 1
+        data = events.events[0].data
+        assert events.events[0].name == "dependencies.evaluated"
+        assert data["issue_number"] == 2
+        assert data["runnable"] is False
+        assert data["gate"] == "work"
+        assert data["blocked_reasons"] == [
+            {
+                "gate": "work",
+                "predecessor": "#20",
+                "reason": "predecessor_review_pending",
+                "mode": "stack",
+                "detail": None,
+            }
+        ]
+
+    def test_event_keeps_legacy_dependency_count_fields(self, checker):
+        """A normal dependency evaluated through the work-gate path still exposes
+        the legacy ``dependencies.evaluated`` count fields (additive contract)."""
+        checker.add(10, "closed")
+        checker.add(20, "open")
+        events = _RecordingEventSink()
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+
+        evaluator.evaluate_work_gate(
+            1, "Depends-on: #10\nDepends-on: #20", "M1"
+        )
+
+        assert len(events.events) == 1
+        data = events.events[0].data
+        # Legacy DependencyReport count fields are preserved.
+        assert data["satisfied_count"] == 1
+        assert data["unsatisfied_count"] == 1
+        assert data["missing_count"] == 0
+        assert data["unknown_count"] == 0
+        assert data["cross_milestone_count"] == 0
+        # New work-gate fields remain present alongside the legacy ones.
+        assert data["gate"] == "work"
+        assert data["runnable"] is False
+
+    def test_no_event_when_issue_has_no_dependencies(self, checker):
+        events = _RecordingEventSink()
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+
+        report = evaluator.evaluate_work_gate(1, "Body with no dependency directives", "M1")
+
+        assert report.can_start_work is True
+        assert events.events == []
+
+    def test_diagnostic_can_suppress_event(self, checker):
+        checker.add(100, "open")
+        events = _RecordingEventSink()
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+
+        evaluator.evaluate_work_gate(1, "Depends-on: #100", "M1", emit_event=False)
+
+        assert events.events == []
+
+
+class TestWorkSummaryRendering:
+    """work_summary() preserves legacy phrasing so diagnostics read the same."""
+
+    def test_missing_and_cross_milestone_phrasing(self, checker):
+        checker.add(100, "open")  # unsatisfied -> "waiting on"
+        # #200 missing (no state), #300 different milestone -> cross-milestone
+        checker.add(300, "open", milestone="M9")
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        report = evaluator.evaluate_work_gate(
+            1, "Depends-on: #100\nDepends-on: #200\nDepends-on: #300", "M1"
+        )
+        summary = report.work_summary()
+        assert summary.startswith("Blocked - ")
+        assert "waiting on: #100" in summary
+        assert "missing: #200" in summary
+        assert "cross-milestone: #300" in summary
+
+    def test_records_expose_mode_and_predecessor(self, checker):
+        checker.add(100, "open")
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        report = evaluator.evaluate_work_gate(1, "Depends-on: #100", "M1")
+        records = report.gate_block_records(Gate.WORK)
+        assert len(records) == 1
+        assert records[0].mode == "normal"
+        assert records[0].predecessor == "#100"
+        assert records[0].gate == "work"
+        assert records[0].reason == "dependency_open"

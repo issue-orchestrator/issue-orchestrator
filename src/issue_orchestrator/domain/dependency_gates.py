@@ -119,6 +119,32 @@ class GateBlock:
 
 
 @dataclass(frozen=True)
+class GateBlockRecord:
+    """Flat, machine-readable record of one blocked-gate reason.
+
+    A serialization-friendly projection of a :class:`GateBlock` enriched with the
+    gate it blocks and the edge mode of its dependency, for events, logs, and
+    skipped-reason payloads. ``mode`` is ``None`` only for blocks not tied to a
+    resolved edge (e.g. the slice's own ``APPROVAL_STALE``).
+    """
+
+    gate: str
+    predecessor: str
+    reason: str
+    mode: str | None = None
+    detail: str | None = None
+
+    def as_dict(self) -> dict[str, str | None]:
+        return {
+            "gate": self.gate,
+            "predecessor": self.predecessor,
+            "reason": self.reason,
+            "mode": self.mode,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
 class GateDecision:
     """The decision for one gate: open or blocked, with reasons if blocked."""
 
@@ -200,10 +226,93 @@ class DependencyGateReport:
             d.gate for d in (self.work, self.review, self.publish, self.merge) if d.blocked
         )
 
+    def gate_block_records(self, gate: Gate) -> tuple[GateBlockRecord, ...]:
+        """Machine-readable blocked-reason records for one gate.
+
+        Each record carries the gate name, the offending predecessor reference,
+        the edge mode (normal/stack), the machine-readable reason code, and any
+        human detail — everything an event or skipped-reason payload needs to
+        identify *which* dependency in *which* mode blocked *which* gate and
+        *why*, without a consumer re-deriving it from raw dependency internals.
+        """
+        mode_by_ref = {dep.display_ref: dep.mode.value for dep in self.dependencies}
+        return tuple(
+            GateBlockRecord(
+                gate=gate.value,
+                predecessor=block.dependency_ref,
+                reason=block.reason.value,
+                mode=mode_by_ref.get(block.dependency_ref),
+                detail=block.detail,
+            )
+            for block in self.gate(gate).blocks
+        )
+
+    def work_summary(self) -> str:
+        """Human-readable WORK-gate status in the legacy dependency phrasing.
+
+        For a slice whose work gate is open this matches
+        :meth:`DependencyReport.summary` ("No dependencies" / "All N
+        dependencies satisfied"). When blocked it groups the WORK-gate reasons
+        into the same ``Blocked - waiting on: ...`` phrasing the legacy report
+        used for normal edges (so existing diagnostics and the dashboard keep
+        reading the same way), then appends any stack-predecessor or structural
+        reasons by their machine code.
+        """
+        if self.work.is_open:
+            if not self.dependencies:
+                return "No dependencies"
+            return f"All {len(self.dependencies)} dependencies satisfied"
+
+        refs_by_reason: dict[GateBlockReason, list[str]] = {}
+        for block in self.work.blocks:
+            refs = refs_by_reason.setdefault(block.reason, [])
+            if block.dependency_ref not in refs:
+                refs.append(block.dependency_ref)
+
+        parts: list[str] = []
+        for reason in _LEGACY_WORK_PHRASE_ORDER:
+            refs = refs_by_reason.pop(reason, None)
+            if refs:
+                parts.append(f"{_LEGACY_WORK_PHRASE[reason]}: {', '.join(refs)}")
+        for reason, refs in refs_by_reason.items():
+            parts.append(f"{reason.value}: {', '.join(refs)}")
+        return "Blocked - " + "; ".join(parts)
+
+    def dependency_state_counts(self) -> dict[DependencyState, int]:
+        """Counts of this report's dependencies grouped by ``DependencyState``.
+
+        Mirrors the partition the legacy :class:`DependencyReport` exposed
+        (satisfied / unsatisfied / missing / unknown / cross-milestone) so the
+        ``dependencies.evaluated`` event can keep emitting those count fields
+        additively when the scheduler evaluates through the work gate, rather
+        than dropping a catalogued, machine-consumable payload contract.
+        """
+        counts = {state: 0 for state in DependencyState}
+        for dep in self.dependencies:
+            counts[dep.state] += 1
+        return counts
+
     def summary(self) -> str:
         return "; ".join(
             d.summary() for d in (self.work, self.review, self.publish, self.merge)
         )
+
+
+# Legacy phrasing for the WORK-gate summary so a normal-edge block reads exactly
+# as it did under ``DependencyReport.summary`` (consumed by the scheduler detail,
+# the planner cross-milestone label rule, and the dashboard).
+_LEGACY_WORK_PHRASE: dict[GateBlockReason, str] = {
+    GateBlockReason.DEPENDENCY_OPEN: "waiting on",
+    GateBlockReason.DEPENDENCY_MISSING: "missing",
+    GateBlockReason.DEPENDENCY_UNKNOWN: "unknown",
+    GateBlockReason.CROSS_MILESTONE: "cross-milestone",
+}
+_LEGACY_WORK_PHRASE_ORDER: tuple[GateBlockReason, ...] = (
+    GateBlockReason.DEPENDENCY_OPEN,
+    GateBlockReason.DEPENDENCY_MISSING,
+    GateBlockReason.DEPENDENCY_UNKNOWN,
+    GateBlockReason.CROSS_MILESTONE,
+)
 
 
 def _reaches_self(

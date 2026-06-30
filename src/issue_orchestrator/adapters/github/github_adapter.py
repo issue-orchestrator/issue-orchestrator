@@ -851,7 +851,12 @@ class GitHubAdapter:
                 pr_infos.append(pr_info)
         for pr_info in pr_infos:
             self._adapter_cache.cache_pr_info(pr_info)
-        return pr_infos
+        # Apply the documented state filter. The underlying search returns PRs
+        # in any state, so honor `state` here to match the cache-hit path and
+        # the port contract (callers like the stack work-gate ask for "open").
+        if state == "all":
+            return pr_infos
+        return [pr for pr in pr_infos if pr.state.lower() == state.lower()]
 
     def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
         """Return lightweight PR refs for an issue from a single search.
