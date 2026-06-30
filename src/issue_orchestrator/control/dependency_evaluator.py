@@ -107,6 +107,16 @@ class DependencyEvaluator:
         self._predecessor_facts_provider = predecessor_facts_provider
         self._branch_ancestry = branch_ancestry
 
+    def attach_branch_ancestry(self, branch_ancestry: StackBranchAncestry) -> None:
+        """Wire the stack branch-ancestry checker after construction.
+
+        The composition root builds the ancestry checker (which needs a
+        command runner created later than this evaluator) and attaches it here,
+        so the same single owner the work gate uses also resolves publish-time
+        staleness. Until attached, ancestry defaults to "contained".
+        """
+        self._branch_ancestry = branch_ancestry
+
     def evaluate(
         self,
         issue_number: int,

@@ -329,6 +329,98 @@ class TestCompletionProcessorLabelActions:
         mock_label_adapter.remove_label.assert_not_called()
 
 
+class _FakeStackGate:
+    """Duck-typed StackPublishGate returning a canned decision (#6596)."""
+
+    def __init__(self, decision):
+        self._decision = decision
+        self.calls: list[int] = []
+
+    def decide(self, issue_number, worktree):
+        self.calls.append(issue_number)
+        return self._decision
+
+
+class TestStackPublishGateWiring:
+    """The processor consumes the stack publish gate to base the PR on the
+    predecessor branch (#6596) and to fail fast when the gate is blocked."""
+
+    @staticmethod
+    def _publish_record() -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            implementation="Added the feature",
+        )
+
+    def test_stack_successor_pr_bases_on_predecessor_branch(
+        self, processor, mock_pr_adapter, worktree_with_completion
+    ):
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(
+            _FakeStackGate(StackPublishDecision(
+                is_stack=True, allowed=True, base_branch="20-base",
+            ))
+        )
+        worktree = worktree_with_completion(self._publish_record())
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+        assert result.success
+        assert mock_pr_adapter.create_pr.call_args.kwargs["base"] == "20-base"
+
+    def test_blocked_stack_publish_gate_halts_pr_creation(
+        self, processor, mock_pr_adapter, worktree_with_completion
+    ):
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(
+            _FakeStackGate(StackPublishDecision(
+                is_stack=True, allowed=False,
+                reason="Stack publish gate blocked: publish: blocked (base_branch_conflict)",
+            ))
+        )
+        worktree = worktree_with_completion(self._publish_record())
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+        assert not result.success
+        mock_pr_adapter.create_pr.assert_not_called()
+        assert any("base_branch_conflict" in e for e in result.errors)
+
+    def test_non_stack_decision_keeps_default_base(
+        self, processor, mock_pr_adapter, worktree_with_completion
+    ):
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(
+            _FakeStackGate(StackPublishDecision.not_stack())
+        )
+        worktree = worktree_with_completion(self._publish_record())
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+        assert result.success
+        # No stack base -> the processor's default base (main) is used.
+        assert mock_pr_adapter.create_pr.call_args.kwargs["base"] == "main"
+
+
 class TestRuntimeArtifactBranchGuard:
     """Pre-publish guard rejects committed IO runtime artifacts (#6659).
 

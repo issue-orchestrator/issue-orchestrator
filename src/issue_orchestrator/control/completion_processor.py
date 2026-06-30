@@ -113,6 +113,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
+    from .stack_publish_gate import StackPublishGate
 
 
 class _MissingReviewArtifactReader:
@@ -533,6 +534,11 @@ class CompletionProcessor:
         )
         self._review_artifact_reader = review_artifact_reader or _MissingReviewArtifactReader()
         self._runtime_identity = runtime_identity
+        # Optional stack publish-gate owner (ADR-0029 / #6596). When attached, a
+        # Stack-after: successor's PR is based on its predecessor branch and a
+        # blocked publish gate (e.g. an incompatible base-branch rule or a stale
+        # successor) fails fast with a diagnostic. Absent -> non-stack behavior.
+        self._stack_publish_gate: "StackPublishGate | None" = None
 
     def _emit(
         self,
@@ -564,6 +570,10 @@ class CompletionProcessor:
         """Attach TraceEvent emitter for review exchange events."""
         self._trace_events = events
         self._event_context = event_context
+
+    def attach_stack_publish_gate(self, gate: "StackPublishGate") -> None:
+        """Wire the stack publish-gate owner (ADR-0029 / #6596)."""
+        self._stack_publish_gate = gate
 
     def _get_label(self, key: str) -> str:
         """Get label name from config, or use default."""
@@ -2190,6 +2200,34 @@ class CompletionProcessor:
             logger.error("Cannot create PR for #%d: no branch", issue_number)
             return self._ActionResult(skip_remaining=True)
 
+        # Stack publish gate (ADR-0029 / #6596): for a Stack-after: successor,
+        # base the PR on the predecessor branch and fail fast when the publish
+        # gate is blocked (incompatible base-branch rule, or a successor that no
+        # longer contains the current predecessor head). Non-stack issues return
+        # an inert decision, leaving the default base selection below unchanged.
+        base_branch_resolver = self._base_branch
+        if self._stack_publish_gate is not None:
+            decision = self._stack_publish_gate.decide(issue_number, worktree)
+            if decision.is_stack and not decision.allowed:
+                reason = decision.reason or "stack publish gate blocked"
+                errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
+                logger.error("Stack publish blocked for #%d: %s", issue_number, reason)
+                self._emit_publish_failed(
+                    issue_number=issue_number,
+                    stage=ERROR_PREFIX_CREATE_PR,
+                    error=reason,
+                    retryable=False,
+                )
+                return self._ActionResult(halt=True)
+            if decision.base_branch:
+                stacked_base = decision.base_branch
+                base_branch_resolver = lambda: stacked_base  # noqa: E731
+                logger.info(
+                    "Stack successor #%d PR will base on predecessor branch %s",
+                    issue_number,
+                    stacked_base,
+                )
+
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
         pr_body = build_pr_body(
@@ -2239,7 +2277,7 @@ class CompletionProcessor:
         pr = create_pr_with_collision_handling(
             pr_adapter=self.pr_adapter,
             git_adapter=self.git_adapter,
-            base_branch=self._base_branch,
+            base_branch=base_branch_resolver,
             pr_collision_strategy=self._pr_collision_strategy,
             worktree=worktree,
             pr_title=pr_title,
