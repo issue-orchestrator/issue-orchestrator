@@ -320,12 +320,24 @@ def _create_planner(
             events=events,
         )
 
+    predecessor_facts_provider = None
+    if github:
+        from ..control.label_manager import LabelManager
+        from ..execution.stack_predecessor_facts import GitStackPredecessorFactsProvider
+
+        predecessor_facts_provider = GitStackPredecessorFactsProvider(
+            repository_host=github,
+            label_manager=label_manager or LabelManager(config),
+            repo=config.repo,
+        )
+
     dependency_evaluator = DependencyEvaluator(
         issue_checker=github,
         events=events,
         issue_resolver=issue_resolver,
         repo=config.repo,
         foundation_milestone=config.foundation_milestone,
+        predecessor_facts_provider=predecessor_facts_provider,
     ) if github else None
 
     scheduler = Scheduler(config=config, dependency_evaluator=dependency_evaluator)

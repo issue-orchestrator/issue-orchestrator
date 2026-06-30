@@ -879,31 +879,109 @@ class TestLaunchIssueSession:
         assert "ISSUE_ORCHESTRATOR_WORKTREE=" in cmd
 
     def test_checks_dependencies_before_launch(self, launcher_bundle):
-        """Verify CAS dependency check (lines 235-254)."""
-        # Create issue with body so dependency check is triggered
+        """Just-before-launch recheck consumes the work gate and blocks stale work."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        # Create issue with a real normal dependency so the work gate is consulted
         issue_with_body = Issue(
             number=123,
             title="Test issue",
             labels=["agent:web"],
             repo="test/repo",
-            body="Blocked by #100",  # Body required for dependency check
+            body="Depends-on: #100",
+            milestone="M1",
         )
 
-        # Set up dependency evaluator mock
-        mock_evaluator = MagicMock()
-        mock_report = MagicMock()
-        mock_report.runnable = False
-        mock_report.summary.return_value = "Blocked by #100"
-        mock_evaluator.evaluate.return_value = mock_report
+        class _Checker:
+            def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "open" if issue_number == 100 else None  # dependency still open
 
-        # noqa: SLF001 - Test infrastructure: injecting mock dependency evaluator
-        launcher_bundle.launcher._dependency_evaluator = mock_evaluator  # noqa: SLF001
+            def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "M1"
+
+        evaluator = DependencyEvaluator(issue_checker=_Checker(), events=NullEventSink())
+
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
         launcher_bundle.launcher._refresh_issue = lambda n: issue_with_body  # noqa: SLF001
 
         result = launcher_bundle.launcher.launch_issue_session(issue_with_body, active_sessions=[])
 
         assert result.success is False
         assert "Dependencies not satisfied" in result.reason
+        assert "#100" in result.reason
+
+    def test_recheck_blocks_stale_stack_work_changed_after_planning(
+        self, launcher_bundle, mock_events
+    ):
+        """Predecessor review state changing between planning and launch blocks start.
+
+        The just-before-launch recheck re-gathers predecessor facts, so a stack
+        successor that was work-ready at planning time must not start once the
+        predecessor's branch/review state regresses (ADR-0029 race guard).
+        """
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        issue = Issue(
+            number=300,
+            title="Stacked successor",
+            labels=["agent:web"],
+            repo="test/repo",
+            body="Stack-after: #200",
+            milestone="M1",
+        )
+
+        class _Checker:
+            def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "open" if issue_number == 200 else None  # predecessor still open
+
+            def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "M1"
+
+        class _MutableProvider:
+            """Returns whatever facts are current at gather time."""
+
+            def __init__(self):
+                self.facts = PredecessorFacts(
+                    branch_usable=True, validation_passed=True,
+                    agent_reviewed=True, branch_name="200-base",
+                )
+
+            def gather_facts(self, targets):
+                return {t: self.facts for t in targets}
+
+        provider = _MutableProvider()
+        evaluator = DependencyEvaluator(
+            issue_checker=_Checker(), events=mock_events,
+            predecessor_facts_provider=provider,
+        )
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
+        launcher_bundle.launcher._refresh_issue = lambda n: issue  # noqa: SLF001
+
+        # At planning time the predecessor was validated + reviewed -> work-ready.
+        planning = evaluator.evaluate_work_gate(300, "Stack-after: #200", "M1", emit_event=False)
+        assert planning.can_start_work is True
+
+        # Predecessor review is withdrawn (e.g. a new push) before launch.
+        provider.facts = PredecessorFacts(
+            branch_usable=True, validation_passed=True, agent_reviewed=False,
+        )
+        mock_events.clear()
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is False
+        assert "Dependencies not satisfied" in result.reason
+        blocked = mock_events.get_events_by_name("issue.dependency_blocked")
+        assert len(blocked) == 1
+        data = blocked[0].data
+        assert data["gate"] == "work"
+        assert any(
+            r["mode"] == "stack"
+            and r["predecessor"] == "#200"
+            and r["reason"] == "predecessor_review_pending"
+            for r in data["blocked_reasons"]
+        )
 
 
 class TestLaunchValidationRetrySession:

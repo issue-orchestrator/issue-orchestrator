@@ -29,6 +29,7 @@ from ..domain.dependencies import (
 )
 from ..domain.dependency_gates import (
     DependencyGateReport,
+    Gate,
     PredecessorFacts,
     build_gate_report,
     detect_cycles,
@@ -37,6 +38,7 @@ from ..domain.issue_key import GitHubIssueKey
 from ..events import EventName
 from ..ports import EventSink,  make_trace_event, IssueResolver
 from ..ports.repository_host import RepositoryHostError
+from ..ports.stack_predecessor_facts import StackPredecessorFactsProvider
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,7 @@ class DependencyEvaluator:
         issue_resolver: IssueResolver | None = None,
         repo: str | None = None,
         foundation_milestone: str = "M0",
+        predecessor_facts_provider: StackPredecessorFactsProvider | None = None,
     ):
         """Initialize the evaluator.
 
@@ -83,12 +86,17 @@ class DependencyEvaluator:
             issue_resolver: Optional resolver for external ID references
             repo: Repository in owner/repo format (required if issue_resolver is set)
             foundation_milestone: Milestone that any issue can depend on (default: M0)
+            predecessor_facts_provider: Gathers git/PR facts for stack
+                predecessors (ADR-0029). Required for stack edges to ever
+                unblock work; when absent, stack edges stay conservatively
+                blocked. Normal ``Depends-on:`` edges never consult it.
         """
         self.issue_checker = issue_checker
         self.events = events
         self.issue_resolver = issue_resolver
         self.repo = repo
         self.foundation_milestone = foundation_milestone
+        self._predecessor_facts_provider = predecessor_facts_provider
 
     def evaluate(
         self,
@@ -158,12 +166,9 @@ class DependencyEvaluator:
             dependency_graph: Optional target->predecessors graph used to detect
                 multi-issue cycles. Self-dependencies are detected without it.
         """
-        edges = parse_dependency_edges(issue_body)
-        deps = [
-            self._evaluate_edge(edge, source_milestone, issue_number, same_stack_members)
-            for edge in edges
-        ]
-        deps = self._annotate_structural_problems(deps, issue_number, dependency_graph)
+        deps = self._resolve_edges(
+            issue_number, issue_body, source_milestone, same_stack_members, dependency_graph
+        )
 
         return build_gate_report(
             issue_number,
@@ -171,6 +176,112 @@ class DependencyEvaluator:
             predecessor_facts,
             approval_current=approval_current,
             configured_base_branch=configured_base_branch,
+        )
+
+    def evaluate_work_gate(
+        self,
+        issue_number: int,
+        issue_body: str,
+        source_milestone: str | None = None,
+        *,
+        configured_base_branch: str | None = None,
+        emit_event: bool = True,
+    ) -> DependencyGateReport:
+        """Build the dependency gate report, gathering stack-predecessor facts.
+
+        This is the single owner the scheduler, session launch, and planner
+        consume to decide whether an issue's *work* may start (ADR-0029 §3). It
+        resolves the issue's typed edges, gathers git/PR facts for any
+        unsatisfied stack predecessor via the injected
+        :class:`StackPredecessorFactsProvider`, and returns the unified gate
+        report. Callers read ``report.can_start_work`` (and the machine-readable
+        ``gate_block_records(Gate.WORK)``) rather than re-deriving stack policy.
+
+        For an issue with only normal ``Depends-on:`` edges this is byte-for-byte
+        equivalent to the legacy :meth:`evaluate` / ``DependencyReport.runnable``
+        decision: the WORK gate is open iff every dependency is closed. Stack
+        edges additionally require the predecessor to expose a usable, validated,
+        agent-reviewed branch; with no facts (or no provider) they stay blocked.
+
+        Args:
+            configured_base_branch: An issue-specific base-branch rule, if any. A
+                stack base that conflicts with it surfaces as a validation
+                failure rather than being silently resolved.
+            emit_event: Whether to publish the ``dependencies.evaluated`` trace
+                event. Diagnostics that only need the decision can suppress it.
+        """
+        deps = self._resolve_edges(
+            issue_number, issue_body, source_milestone, frozenset(), None
+        )
+        facts = self._gather_predecessor_facts(deps)
+        report = build_gate_report(
+            issue_number,
+            deps,
+            facts,
+            configured_base_branch=configured_base_branch,
+        )
+        if emit_event and deps:
+            self._emit_work_gate_event(report)
+        return report
+
+    def _resolve_edges(
+        self,
+        issue_number: int,
+        issue_body: str,
+        source_milestone: str | None,
+        same_stack_members: frozenset[DependencyTarget],
+        dependency_graph: Mapping[DependencyTarget, Sequence[DependencyTarget]] | None,
+    ) -> list[Dependency]:
+        """Parse, resolve, state-check, and annotate the issue's typed edges."""
+        edges = parse_dependency_edges(issue_body)
+        deps = [
+            self._evaluate_edge(edge, source_milestone, issue_number, same_stack_members)
+            for edge in edges
+        ]
+        return self._annotate_structural_problems(deps, issue_number, dependency_graph)
+
+    def _gather_predecessor_facts(
+        self, deps: Sequence[Dependency]
+    ) -> Mapping[DependencyTarget, PredecessorFacts]:
+        """Gather facts for the unsatisfied stack predecessors among ``deps``.
+
+        Only stack edges that are not already SATISFIED (closed/merged) and carry
+        no structural problem need facts; a satisfied stack edge fully opens the
+        gate without any I/O. Normal edges never consult the provider. With no
+        provider configured this returns an empty mapping, leaving stack edges
+        conservatively blocked.
+        """
+        if self._predecessor_facts_provider is None:
+            return {}
+        targets = [
+            dep.target
+            for dep in deps
+            if dep.mode == DependencyMode.STACK
+            and dep.problem is None
+            and dep.state == DependencyState.UNSATISFIED
+            and dep.target is not None
+        ]
+        if not targets:
+            return {}
+        return self._predecessor_facts_provider.gather_facts(targets)
+
+    def _emit_work_gate_event(self, report: DependencyGateReport) -> None:
+        """Emit the work-gate evaluation as a ``dependencies.evaluated`` event."""
+        self.events.publish(
+            make_trace_event(
+                EventName.DEPENDENCIES_EVALUATED,
+                {
+                    "issue_number": report.issue_number,
+                    "runnable": report.can_start_work,
+                    "gate": Gate.WORK.value,
+                    "blocked_gates": [g.value for g in report.blocked_gates()],
+                    "blocked_reasons": [
+                        record.as_dict()
+                        for record in report.gate_block_records(Gate.WORK)
+                    ],
+                    "summary": report.work_summary(),
+                },
+            )
         )
 
     def _evaluate_edge(

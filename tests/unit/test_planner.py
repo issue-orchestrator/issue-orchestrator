@@ -625,6 +625,65 @@ class TestPlannerDependencyGating:
         )
         assert scheduler.dependency_evaluator is evaluator
 
+    def test_planner_blocks_stack_successor_with_missing_predecessor_state(self):
+        """A stack successor stays blocked when no predecessor facts exist."""
+        config = make_config(max_concurrent_sessions=1)
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({20: "open"}),
+            events=Mock(),
+        )  # no facts provider -> conservatively blocked
+        scheduler = Scheduler(config, dependency_evaluator=evaluator)
+        planner = Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
+
+        snapshot = make_snapshot(
+            issues=[
+                make_issue(2, title="Successor", body="Stack-after: #20", milestone="M1"),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        assert plan.actions_of_type(ActionType.LAUNCH_SESSION) == []
+        assert len(plan.skipped) == 1
+        assert plan.skipped[0].number == 2
+        assert "dependency:" in plan.skipped[0].reason
+
+    def test_planner_launches_stack_successor_when_predecessor_ready(self):
+        """A validated + reviewed + usable predecessor branch lets the successor launch."""
+        from issue_orchestrator.domain.dependencies import DependencyTarget
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        class _Provider:
+            def gather_facts(self, targets):
+                return {
+                    t: PredecessorFacts(
+                        branch_usable=True, validation_passed=True,
+                        agent_reviewed=True, branch_name="20-base",
+                    )
+                    for t in targets
+                }
+
+        config = make_config(max_concurrent_sessions=1)
+        evaluator = DependencyEvaluator(
+            issue_checker=StaticIssueChecker({20: "open"}),
+            events=Mock(),
+            predecessor_facts_provider=_Provider(),
+        )
+        scheduler = Scheduler(config, dependency_evaluator=evaluator)
+        planner = Planner(config=config, scheduler=scheduler, dependency_evaluator=evaluator)
+
+        snapshot = make_snapshot(
+            issues=[
+                make_issue(2, title="Successor", body="Stack-after: #20", milestone="M1"),
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        launches = plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        assert [a.number for a in launches] == [2]
+        assert all("dependency:" not in s.reason for s in plan.skipped)
+
     def test_planner_rejects_dependency_evaluator_without_scheduler_wiring(self):
         config = make_config()
         evaluator = DependencyEvaluator(
