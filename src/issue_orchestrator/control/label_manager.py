@@ -330,6 +330,43 @@ class LabelManager:
         return [l for l in labels if not self.is_blocking(l)]
 
     # ------------------------------------------------------------------
+    # Recovery / completion cleanup
+    # ------------------------------------------------------------------
+
+    def is_recovered_workflow_label(self, label: str) -> bool:
+        """Return True if *label* is a transient workflow label that should be
+        shed once an issue's work has landed (PR merged or issue closed).
+
+        Covers ``pr-pending``, every ``publish-fail-count-N`` counter, and every
+        blocking label (``blocked``, ``blocked-*``, ``blocked:*``, plus the
+        legacy ``needs-human``/``failed``/``publish-failed`` names). These all
+        describe an in-flight or failed workflow state that no longer applies
+        after recovery.
+        """
+        return (
+            label == self.pr_pending
+            or self.is_blocking(label)
+            or self.is_publish_fail_count(label)
+        )
+
+    def recovered_workflow_labels(self, labels: Sequence[str]) -> list[str]:
+        """Return the subset of *labels* to shed when an issue recovers/completes.
+
+        Order-preserving and de-duplicated. This is the single policy owner for
+        the clear-on-merge transition: callers feed it the issue's current
+        labels and remove whatever it returns.
+        """
+        result: list[str] = []
+        seen: set[str] = set()
+        for label in labels:
+            if label in seen:
+                continue
+            if self.is_recovered_workflow_label(label):
+                result.append(label)
+                seen.add(label)
+        return result
+
+    # ------------------------------------------------------------------
     # Specific-state queries
     # ------------------------------------------------------------------
 
@@ -373,6 +410,10 @@ class LabelManager:
     def publish_fail_count_label(self, n: int) -> str:
         """Return the resolved publish-fail-count-N label."""
         return self._resolve_base(f"publish-fail-count-{n}")
+
+    def is_publish_fail_count(self, label: str) -> bool:
+        """Return True if *label* is any publish-fail-count-N counter (prefix-aware)."""
+        return _PUBLISH_FAIL_COUNT_RE.match(self._strip_prefix(label)) is not None
 
     def extract_publish_fail_count(self, labels: Sequence[str]) -> int:
         """Parse and return the highest publish-fail-count number, or 0."""

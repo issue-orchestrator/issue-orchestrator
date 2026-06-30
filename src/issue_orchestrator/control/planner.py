@@ -67,6 +67,7 @@ from .actions import (
     EscalateToHumanAction,
     CleanupSessionAction,
     ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
     SessionType,
     SyncLabelsAction,
 )
@@ -457,29 +458,48 @@ class Planner:
         }
 
         for reconciliation in snapshot.discovered_awaiting_merge_reconciliations:
-            actions.append(ReconcileHistoryEntryAction(
+            issue_key = reconciliation.issue_key or str(reconciliation.issue_number)
+            # Drift reconciliations ADD blocked:pr-closed (handled by the
+            # SyncLabelsAction below) rather than shedding, so there is no label
+            # cleanup to order ahead of the history transition — finalize the
+            # history entry on its own.
+            if reconciliation.issue_number in drift_issue_numbers:
+                actions.append(ReconcileHistoryEntryAction(
+                    issue_number=reconciliation.issue_number,
+                    pr_number=reconciliation.pr_number,
+                    pr_url=reconciliation.pr_url,
+                    status=reconciliation.status,
+                    source=reconciliation.source,
+                    issue_key=issue_key,
+                    reason=reconciliation.status_reason,
+                ))
+                continue
+            # Terminal recovery: the issue's work has landed (PR merged/closed
+            # or parent issue closed). Shed every transient workflow label that
+            # no longer applies — pr-pending, publish-failed, publish-fail-count-N,
+            # and any blocking label — and only then finalize the awaiting-merge
+            # history, as one owner command (RecoverTerminalIssueAction). The
+            # applier reads the issue's live labels to decide the exact set (the
+            # planner rarely has labels for an already closed/merged issue) and
+            # gates the history transition on the shed succeeding, so a transient
+            # label-removal failure leaves the entry reconcilable for a later
+            # discovery pass instead of terminalizing it and stranding the labels
+            # this P0 removes.
+            actions.append(RecoverTerminalIssueAction(
                 issue_number=reconciliation.issue_number,
                 pr_number=reconciliation.pr_number,
                 pr_url=reconciliation.pr_url,
                 status=reconciliation.status,
                 source=reconciliation.source,
-                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
-                reason=reconciliation.status_reason,
-            ))
-            # When the awaiting-merge state reaches a terminal status (PR
-            # merged/closed or parent issue closed), strip pr-pending so it
-            # doesn't outlive its meaning. Without this the only path that
-            # cleared the label was the drift discovery, which requires the
-            # issue to still be open and a 5-min cooldown — many merges and
-            # all issue-closes slipped through, stranding pr-pending rows in
-            # the local label_store forever.
-            if reconciliation.issue_number in drift_issue_numbers:
-                continue
-            actions.append(RemoveLabelAction(
-                issue_number=reconciliation.issue_number,
-                label=self._lm.pr_pending,
-                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
+                status_reason=reconciliation.status_reason,
+                issue_key=issue_key,
                 reason=f"awaiting-merge terminal: {reconciliation.status}",
+                # Carry the reconciliation pause guard the old terminal-cleanup
+                # RemoveLabelAction used to carry: an issue paused for
+                # reconciliation (io:needs-reconcile) must not have its labels
+                # shed or its awaiting-merge history finalized behind the
+                # fail-closed drift handling. The applier enforces this at the
+                # owner-command boundary before any write (#6431 F1).
                 expected=build_expected_for_mutation(),
             ))
 
