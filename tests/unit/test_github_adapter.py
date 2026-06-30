@@ -1174,6 +1174,46 @@ class TestPROperations:
         assert len(prs) == 1
         assert prs[0].number == 10
 
+    def test_get_prs_for_issue_open_filters_out_closed(
+        self, adapter, mock_http_client
+    ):
+        """The documented ``state`` filter is honored on the API path.
+
+        The broad association search returns PRs in any state; a ``state="open"``
+        query must exclude a closed PR. Regression for the stack work-gate base
+        selection (#6595 F2), which relied on this filter to avoid launching a
+        successor from a closed predecessor PR.
+        """
+        mock_http_client.get_prs_for_issue.return_value = [
+            {"number": 10}, {"number": 11},
+        ]
+        full_by_number = {
+            10: {
+                "number": 10,
+                "title": "#42: Old closed",
+                "html_url": "https://github.com/owner/repo/pull/10",
+                "head": {"ref": "42-old"},
+                "body": "",
+                "state": "closed",
+                "labels": [],
+            },
+            11: {
+                "number": 11,
+                "title": "#42: New open",
+                "html_url": "https://github.com/owner/repo/pull/11",
+                "head": {"ref": "42-new"},
+                "body": "",
+                "state": "open",
+                "labels": [],
+            },
+        }
+        mock_http_client.get_pr.side_effect = lambda n: full_by_number[n]
+
+        prs = adapter.get_prs_for_issue(42, state="open")
+
+        assert [pr.number for pr in prs] == [11]
+        assert prs[0].state == "open"
+
     def test_search_pr_refs_for_issue_is_search_only_no_hydration(
         self, adapter, mock_http_client
     ):

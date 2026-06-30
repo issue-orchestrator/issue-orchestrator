@@ -278,6 +278,20 @@ class DependencyGateReport:
             parts.append(f"{reason.value}: {', '.join(refs)}")
         return "Blocked - " + "; ".join(parts)
 
+    def dependency_state_counts(self) -> dict[DependencyState, int]:
+        """Counts of this report's dependencies grouped by ``DependencyState``.
+
+        Mirrors the partition the legacy :class:`DependencyReport` exposed
+        (satisfied / unsatisfied / missing / unknown / cross-milestone) so the
+        ``dependencies.evaluated`` event can keep emitting those count fields
+        additively when the scheduler evaluates through the work gate, rather
+        than dropping a catalogued, machine-consumable payload contract.
+        """
+        counts = {state: 0 for state in DependencyState}
+        for dep in self.dependencies:
+            counts[dep.state] += 1
+        return counts
+
     def summary(self) -> str:
         return "; ".join(
             d.summary() for d in (self.work, self.review, self.publish, self.merge)

@@ -266,13 +266,26 @@ class DependencyEvaluator:
         return self._predecessor_facts_provider.gather_facts(targets)
 
     def _emit_work_gate_event(self, report: DependencyGateReport) -> None:
-        """Emit the work-gate evaluation as a ``dependencies.evaluated`` event."""
+        """Emit the work-gate evaluation as a ``dependencies.evaluated`` event.
+
+        Keeps the legacy :meth:`evaluate` count fields (``satisfied_count`` …
+        ``cross_milestone_count``) so this catalogued event stays a stable,
+        additive contract: the scheduler now emits through the work gate, and
+        existing ``dependencies.evaluated`` consumers must keep reading the same
+        payload shape. The work-gate-specific fields are added on top.
+        """
+        counts = report.dependency_state_counts()
         self.events.publish(
             make_trace_event(
                 EventName.DEPENDENCIES_EVALUATED,
                 {
                     "issue_number": report.issue_number,
                     "runnable": report.can_start_work,
+                    "satisfied_count": counts[DependencyState.SATISFIED],
+                    "unsatisfied_count": counts[DependencyState.UNSATISFIED],
+                    "missing_count": counts[DependencyState.MISSING],
+                    "unknown_count": counts[DependencyState.UNKNOWN],
+                    "cross_milestone_count": counts[DependencyState.CROSS_MILESTONE],
                     "gate": Gate.WORK.value,
                     "blocked_gates": [g.value for g in report.blocked_gates()],
                     "blocked_reasons": [

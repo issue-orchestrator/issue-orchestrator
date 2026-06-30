@@ -808,6 +808,30 @@ class TestEvaluateWorkGate:
             }
         ]
 
+    def test_event_keeps_legacy_dependency_count_fields(self, checker):
+        """A normal dependency evaluated through the work-gate path still exposes
+        the legacy ``dependencies.evaluated`` count fields (additive contract)."""
+        checker.add(10, "closed")
+        checker.add(20, "open")
+        events = _RecordingEventSink()
+        evaluator = DependencyEvaluator(issue_checker=checker, events=events)
+
+        evaluator.evaluate_work_gate(
+            1, "Depends-on: #10\nDepends-on: #20", "M1"
+        )
+
+        assert len(events.events) == 1
+        data = events.events[0].data
+        # Legacy DependencyReport count fields are preserved.
+        assert data["satisfied_count"] == 1
+        assert data["unsatisfied_count"] == 1
+        assert data["missing_count"] == 0
+        assert data["unknown_count"] == 0
+        assert data["cross_milestone_count"] == 0
+        # New work-gate fields remain present alongside the legacy ones.
+        assert data["gate"] == "work"
+        assert data["runnable"] is False
+
     def test_no_event_when_issue_has_no_dependencies(self, checker):
         events = _RecordingEventSink()
         evaluator = DependencyEvaluator(issue_checker=checker, events=events)
