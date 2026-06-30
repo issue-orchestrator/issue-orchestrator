@@ -114,7 +114,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
-    from .stack_publish_gate import StackPublishGate
+    from .stack_publish_gate import StackPublishDecision, StackPublishGate
 
 
 class _MissingReviewArtifactReader:
@@ -2185,20 +2185,26 @@ class CompletionProcessor:
         issue_number: int,
         worktree: Path,
         errors: list[str],
-    ) -> tuple[bool, Callable[[], str]]:
+    ) -> tuple[bool, Callable[[], str], "StackPublishDecision | None"]:
         """Resolve the PR base for a (possibly stacked) successor (#6596).
 
-        Returns ``(halt, base_resolver)``. ``halt`` is True when the stack
-        publish gate blocked publish (the diagnostic is already emitted), so the
-        caller aborts PR creation. Otherwise ``base_resolver`` is the callable to
-        pass as the PR base: the predecessor branch for a stack successor whose
-        gate is open, or the processor's normal base for a non-stack issue (or
-        when no gate is wired).
+        Returns ``(halt, base_resolver, decision)``. ``halt`` is True when the
+        stack publish gate blocked publish (the diagnostic is already emitted),
+        so the caller aborts PR creation. Otherwise ``base_resolver`` is the
+        callable to pass as the PR base: the predecessor branch for a stack
+        successor whose gate is open, or the processor's normal base for a
+        non-stack issue (or when no gate is wired). ``decision`` is the raw gate
+        verdict (``None`` when no gate is wired) so the reuse path can confirm an
+        existing PR targets the same base the gate requires.
+
+        The halt keys off ``not decision.allowed`` (not ``is_stack``): a
+        fail-closed read error blocks publish even though the gate could not
+        confirm the slice is a stack successor.
         """
         if self._stack_publish_gate is None:
-            return False, self._base_branch
+            return False, self._base_branch, None
         decision = self._stack_publish_gate.decide(issue_number, worktree)
-        if decision.is_stack and not decision.allowed:
+        if not decision.allowed:
             reason = decision.reason or "stack publish gate blocked"
             errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
             logger.error("Stack publish blocked for #%d: %s", issue_number, reason)
@@ -2206,9 +2212,9 @@ class CompletionProcessor:
                 issue_number=issue_number,
                 stage=ERROR_PREFIX_CREATE_PR,
                 error=reason,
-                retryable=False,
+                retryable=decision.retryable,
             )
-            return True, self._base_branch
+            return True, self._base_branch, decision
         if decision.base_branch:
             stacked_base = decision.base_branch
             logger.info(
@@ -2216,8 +2222,8 @@ class CompletionProcessor:
                 issue_number,
                 stacked_base,
             )
-            return False, (lambda: stacked_base)
-        return False, self._base_branch
+            return False, (lambda: stacked_base), decision
+        return False, self._base_branch, decision
 
     def _execute_create_pr_action(
         self,
@@ -2243,11 +2249,14 @@ class CompletionProcessor:
         # Stack publish gate (ADR-0029 / #6596): for a Stack-after: successor,
         # base the PR on the predecessor branch and fail fast when the publish
         # gate is blocked. Non-stack issues keep the default base selection.
-        halt, base_branch_resolver = self._resolve_publish_base(
+        halt, base_branch_resolver, stack_decision = self._resolve_publish_base(
             issue_number, worktree, errors
         )
         if halt:
             return self._ActionResult(halt=True)
+        # Resolve the base once: it is both the base a fresh PR is created on and
+        # the base an existing PR must already target before it can be reused.
+        expected_base = base_branch_resolver()
 
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
@@ -2276,6 +2285,9 @@ class CompletionProcessor:
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
             actions_taken=actions_taken,
+            errors=errors,
+            expected_base=expected_base,
+            stack_decision=stack_decision,
         )
         if reused is not None:
             return reused
@@ -2298,7 +2310,7 @@ class CompletionProcessor:
         pr = create_pr_with_collision_handling(
             pr_adapter=self.pr_adapter,
             git_adapter=self.git_adapter,
-            base_branch=base_branch_resolver,
+            base_branch=lambda: expected_base,
             pr_collision_strategy=self._pr_collision_strategy,
             worktree=worktree,
             pr_title=pr_title,
@@ -2348,6 +2360,9 @@ class CompletionProcessor:
         exchange_mode: str | None,
         exchange_result: Any | None,
         actions_taken: list[str],
+        errors: list[str],
+        expected_base: str,
+        stack_decision: "StackPublishDecision | None",
     ) -> "_ActionResult | None":
         if self._pr_collision_strategy not in {"reuse_open", "new_branch"}:
             return None
@@ -2358,6 +2373,22 @@ class CompletionProcessor:
         )
         if not existing_pr:
             return None
+        # Stack invariant (ADR-0029 / #6596): an existing PR may only be reused
+        # if it already targets the base the stack publish gate requires. A
+        # successor PR opened against ``main`` (or still on a now-merged
+        # predecessor) must be retargeted through the owned repository operation
+        # before it inherits review-completion labels and awaiting-merge
+        # reconciliation; if the retarget cannot be performed, fail fast.
+        if stack_decision is not None and stack_decision.is_stack:
+            retarget = self._retarget_reused_pr_base(
+                issue_number=issue_number,
+                existing_pr=existing_pr,
+                expected_base=expected_base,
+                actions_taken=actions_taken,
+                errors=errors,
+            )
+            if retarget is not None:
+                return retarget
         actions_taken.append(f"Reused PR #{existing_pr.number}")
         logger.info(
             "Reused existing PR #%d for issue #%d: %s",
@@ -2381,6 +2412,55 @@ class CompletionProcessor:
             skip_remaining=True,
             review_exchange_completed=review_exchange_completed,
         )
+
+    def _retarget_reused_pr_base(
+        self,
+        *,
+        issue_number: int,
+        existing_pr: PRInfo,
+        expected_base: str,
+        actions_taken: list[str],
+        errors: list[str],
+    ) -> "_ActionResult | None":
+        """Ensure a reused stack-successor PR targets the gate's required base.
+
+        Returns ``None`` when the PR already targets ``expected_base`` (reuse may
+        proceed) or after a successful retarget. Returns a halting
+        :class:`_ActionResult` when the PR targets the wrong base and the owned
+        retarget operation fails — fail fast rather than reuse a PR pointed at
+        the wrong branch.
+        """
+        if existing_pr.base_branch == expected_base:
+            return None
+        current = existing_pr.base_branch or "unknown"
+        try:
+            self.pr_adapter.set_pr_base(existing_pr.number, expected_base)
+        except Exception as exc:
+            reason = (
+                f"existing PR #{existing_pr.number} targets base {current!r} but "
+                f"stack publish gate requires {expected_base!r}; retarget failed: {exc}"
+            )
+            errors.append(f"{ERROR_PREFIX_CREATE_PR}: {reason}")
+            logger.error("Stack PR reuse blocked for #%d: %s", issue_number, reason)
+            self._emit_publish_failed(
+                issue_number=issue_number,
+                stage=ERROR_PREFIX_CREATE_PR,
+                error=reason,
+                retryable=False,
+                branch=existing_pr.branch,
+            )
+            return self._ActionResult(halt=True)
+        actions_taken.append(
+            f"Retargeted PR #{existing_pr.number} base {current} -> {expected_base}"
+        )
+        logger.info(
+            "Retargeted reused PR #%d for issue #%d: base %s -> %s",
+            existing_pr.number,
+            issue_number,
+            current,
+            expected_base,
+        )
+        return None
 
     def _finalize_review_exchange_pr(
         self,

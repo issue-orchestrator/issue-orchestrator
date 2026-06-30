@@ -717,6 +717,69 @@ class TestLaunchIssueSession:
             for a in actions
         )
 
+    def test_ready_stack_successor_seeds_worktree_from_predecessor(
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        sample_issue,
+    ):
+        """A ready Stack-after issue creates its worktree from the predecessor (#6596).
+
+        The just-before-launch work gate resolves the predecessor branch as the
+        stack base; the launcher must thread that into the worktree manager so a
+        freshly created successor descends from the predecessor head.
+        """
+
+        class _Report:
+            can_start_work = True
+            stack_base_branch = "20-base"
+
+        class _Evaluator:
+            def evaluate_work_gate(self, *, issue_number, issue_body, source_milestone):
+                return _Report()
+
+        def refresh_issue(_number):
+            return Issue(
+                number=123,
+                title="Test issue",
+                labels=["agent:web"],
+                repo="test/repo",
+                body="Stack-after: #20",
+                milestone="M7",
+            )
+
+        launcher = SessionLauncher(
+            config=sample_config,
+            events=mock_events,
+            repository_host=mock_repo_host,
+            action_applier=MagicMock(),
+            session_manager=MagicMock(),
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            command_runner=mock_command_runner,
+            session_output=FileSystemSessionOutput(),
+            manifest_downloader=NullManifestDownloader(),
+            session_exists_fn=lambda name: False,
+            create_session_fn=lambda name, cmd, wd, title: True,
+            get_issue_machine=lambda issue: IssueStateMachine(issue),
+            get_session_machine=lambda name, n, timeout: SessionStateMachine(
+                name, n, timeout_minutes=timeout
+            ),
+            get_review_machine=lambda pr, issue: ReviewStateMachine(pr, issue),
+            refresh_issue_fn=refresh_issue,
+            dependency_evaluator=_Evaluator(),
+        )
+
+        result = launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert len(mock_worktree_manager.create_calls) == 1
+        assert mock_worktree_manager.create_calls[0]["base_branch"] == "20-base"
+
     def test_fails_when_in_progress_label_add_fails(
         self, launcher_bundle, sample_issue, mock_worktree_manager
     ):
@@ -1077,8 +1140,11 @@ class TestLaunchIssueSession:
         assert planning.can_start_work is True
 
         # Just-before-launch recheck with NO PR-label change must still pass —
-        # the issue-label refresh during gather must not corrupt the cached PR.
-        assert launcher_bundle.launcher._verify_dependencies_fresh(issue) is None  # noqa: SLF001
+        # the issue-label refresh during gather must not corrupt the cached PR —
+        # and it resolves the predecessor branch as the successor's stack base.
+        freshness = launcher_bundle.launcher._verify_dependencies_fresh(issue)  # noqa: SLF001
+        assert freshness.failure is None
+        assert freshness.stack_base_branch == "200-base"
 
         # The predecessor PR actually moves out of a clean review, by PR NUMBER.
         if rework_via == "add":
@@ -1090,9 +1156,9 @@ class TestLaunchIssueSession:
 
         # Now the recheck must block the stale stack work.
         result = launcher_bundle.launcher._verify_dependencies_fresh(issue)  # noqa: SLF001
-        assert result is not None
-        assert result.success is False
-        assert "Dependencies not satisfied" in result.reason
+        assert result.failure is not None
+        assert result.failure.success is False
+        assert "Dependencies not satisfied" in result.failure.reason
 
 
 class TestLaunchValidationRetrySession:

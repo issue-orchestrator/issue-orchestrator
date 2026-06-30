@@ -421,6 +421,93 @@ class TestStackPublishGateWiring:
         assert mock_pr_adapter.create_pr.call_args.kwargs["base"] == "main"
 
 
+class TestStackPublishGatePRReuse:
+    """A reused stack-successor PR must target the gate's required base (#6596).
+
+    F2: existing-PR reuse previously matched only on issue + head branch, so a
+    successor PR opened against the wrong base could be reused and pick up
+    review-completion labels while still targeting the wrong branch.
+    """
+
+    @staticmethod
+    def _publish_record() -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            implementation="Added the feature",
+        )
+
+    @staticmethod
+    def _stack_gate():
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        return _FakeStackGate(
+            StackPublishDecision(is_stack=True, allowed=True, base_branch="20-base")
+        )
+
+    @staticmethod
+    def _existing_pr(base_branch: str | None):
+        return PRInfo(
+            number=99,
+            title="#123 Existing PR",
+            url="https://github.com/owner/repo/pull/99",
+            branch="123-feature",
+            body="Body",
+            state="open",
+            labels=[],
+            base_branch=base_branch,
+        )
+
+    def _run(self, processor, mock_git_adapter, worktree_with_completion):
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        worktree = worktree_with_completion(self._publish_record())
+        return processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+    def test_reuse_with_correct_stack_base_does_not_retarget(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+        mock_pr_adapter.get_prs_for_issue.return_value = [self._existing_pr("20-base")]
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion)
+
+        assert result.success
+        assert result.pr_url == "https://github.com/owner/repo/pull/99"
+        mock_pr_adapter.set_pr_base.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_reuse_with_wrong_base_retargets_through_owned_op(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+        mock_pr_adapter.get_prs_for_issue.return_value = [self._existing_pr("main")]
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion)
+
+        assert result.success
+        assert result.pr_url == "https://github.com/owner/repo/pull/99"
+        mock_pr_adapter.set_pr_base.assert_called_once_with(99, "20-base")
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_reuse_blocks_when_retarget_fails(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+        mock_pr_adapter.get_prs_for_issue.return_value = [self._existing_pr("main")]
+        mock_pr_adapter.set_pr_base.side_effect = RuntimeError("403 forbidden")
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion)
+
+        assert not result.success
+        mock_pr_adapter.create_pr.assert_not_called()
+        assert any("retarget failed" in e for e in result.errors)
+
+
 class TestRuntimeArtifactBranchGuard:
     """Pre-publish guard rejects committed IO runtime artifacts (#6659).
 

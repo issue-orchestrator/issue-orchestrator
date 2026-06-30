@@ -16,6 +16,7 @@ the orchestrator focused on coordination and main loop logic.
 import logging
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Callable, Mapping, Sequence
@@ -92,6 +93,21 @@ from .provider_command_wrapper import ProviderCommandWrapper
 logger = logging.getLogger(__name__)
 _TRUNCATION_MARKER_BUDGET = 30
 _MIN_USEFUL_TRUNCATED_HEAD = 100
+
+
+@dataclass(frozen=True)
+class _DependencyFreshness:
+    """Outcome of the just-before-launch dependency recheck (ADR-0029 / #6596).
+
+    ``failure`` is a non-``None`` :class:`LaunchResult` when the work gate is no
+    longer open (the launch must abort). ``stack_base_branch`` carries the same
+    gate report's selected stack base so the launcher can seed the successor's
+    worktree from the predecessor branch without re-evaluating (and re-gathering
+    predecessor facts), avoiding a second round of GitHub reads.
+    """
+
+    failure: "LaunchResult | None" = None
+    stack_base_branch: str | None = None
 
 
 def detect_existing_work(
@@ -432,17 +448,20 @@ class SessionLauncher:
 
         return None
 
-    def _verify_dependencies_fresh(self, issue: "IssueProtocol") -> LaunchResult | None:
+    def _verify_dependencies_fresh(self, issue: "IssueProtocol") -> _DependencyFreshness:
         """CAS check: verify dependencies haven't changed since scheduling.
 
-        Returns LaunchResult on failure, None if dependencies still satisfied.
+        Returns a :class:`_DependencyFreshness`: ``failure`` set when the work
+        gate is no longer open (abort the launch), otherwise the selected stack
+        base branch from the same gate report so the caller can seed a stack
+        successor's worktree from the predecessor branch.
         """
         if not self._dependency_evaluator or not self._refresh_issue:
-            return None
+            return _DependencyFreshness()
 
         fresh_issue = self._refresh_issue(issue.number)
         if not fresh_issue or not fresh_issue.body:
-            return None
+            return _DependencyFreshness()
 
         # Re-gather predecessor facts at launch time so a predecessor branch or
         # review-state change between scheduling and launch cannot start stale
@@ -471,9 +490,36 @@ class SessionLauncher:
                     ],
                 },
             ))
-            return LaunchResult(None, False, f"Dependencies not satisfied: {summary}")
+            return _DependencyFreshness(
+                failure=LaunchResult(None, False, f"Dependencies not satisfied: {summary}")
+            )
 
-        return None
+        return _DependencyFreshness(stack_base_branch=report.stack_base_branch)
+
+    def _resolve_stack_base(
+        self,
+        issue_number: int,
+        issue_body: str | None,
+        source_milestone: str | None,
+    ) -> str | None:
+        """Stack base branch for an issue, or ``None`` for a non-stack issue.
+
+        The single launch-side reader of stack base selection (ADR-0029 / #6596)
+        for paths that do not already hold a work-gate report (validation retry,
+        rework). Cheaply short-circuits on a body with no ``Stack-after:`` edge so
+        an ordinary issue performs no extra predecessor-fact I/O.
+        """
+        if not self._dependency_evaluator or not issue_body:
+            return None
+        if "stack-after" not in issue_body.lower():
+            return None
+        report = self._dependency_evaluator.evaluate_work_gate(
+            issue_number=issue_number,
+            issue_body=issue_body,
+            source_milestone=source_milestone,
+            emit_event=False,
+        )
+        return report.stack_base_branch
 
     def _acquire_issue_claim(self, issue: "IssueProtocol") -> ClaimAcquisitionResult:
         """Acquire distributed claim for an issue if claim manager is configured.
@@ -663,8 +709,9 @@ class SessionLauncher:
         )
 
         # Phase 2: Verify dependencies haven't changed (CAS check)
-        if result := self._verify_dependencies_fresh(issue):
-            return result
+        freshness = self._verify_dependencies_fresh(issue)
+        if freshness.failure:
+            return freshness.failure
 
         # Provider circuit breaker check
         if result := self._check_provider_circuit(agent_config.provider, issue.number):
@@ -706,6 +753,7 @@ class SessionLauncher:
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(force_fresh=from_scratch_pending),
             phase_name=phase_name,
+            stack_base_branch=freshness.stack_base_branch,
         )
 
         if ctx.error:
@@ -1073,6 +1121,9 @@ class SessionLauncher:
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
             phase_name=phase_name,
+            stack_base_branch=self._resolve_stack_base(
+                issue.number, issue.body, issue.milestone
+            ),
         )
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
@@ -1908,8 +1959,28 @@ class SessionLauncher:
             wrap_provider_command=self._wrap_provider_command,
             build_session_env=self._build_session_env,
             check_provider_circuit=self._check_provider_circuit,
+            resolve_stack_base=self._resolve_stack_base_for_issue_number,
         )
         return launch_rework_flow(rework, active_sessions, deps)
+
+    def _resolve_stack_base_for_issue_number(self, issue_number: int) -> str | None:
+        """Resolve a rework issue's stack base from its freshest body (#6596).
+
+        Rework reuses the existing successor branch, so its worktree must be
+        reset onto the predecessor branch just like the initial launch — else
+        the reuse preflight would rebase the successor onto the default branch
+        and the publish ancestry gate would block it. Refreshes the issue to get
+        the body the stack resolver needs; returns ``None`` for a non-stack issue
+        (or when refresh is unavailable), preserving prior behavior.
+        """
+        if not self._refresh_issue:
+            return None
+        fresh_issue = self._refresh_issue(issue_number)
+        if not fresh_issue:
+            return None
+        return self._resolve_stack_base(
+            issue_number, fresh_issue.body, fresh_issue.milestone
+        )
 
     def _run_setup_commands(self, worktree_path: Path) -> None:
         """Run setup commands in worktree."""

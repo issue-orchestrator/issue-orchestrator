@@ -14,10 +14,14 @@ selection or staleness, it asks this gate, which asks the evaluator, which
 builds the one gate report.
 
 Non-stack issues are short-circuited to an allow-with-no-base verdict so the
-processor's existing base selection and PR behavior are untouched, and any issue
-read failure fails *open* (a transient lookup error must not block an ordinary
-publish — the merge gate and a later publish-time recheck still guard stack
-correctness).
+processor's existing base selection and PR behavior are untouched. An issue read
+failure (or a managed publish whose issue cannot be found) fails *closed* with a
+retryable blocked verdict: because the gate cannot prove the slice is *not* a
+stack successor without the body, allowing publish would let a real successor's
+PR open on the wrong base before any later gate sees it (ADR-0029 "facts over
+labels", and the repo's fail-fast stance). The block is marked retryable so a
+transient lookup error simply re-runs the publish next tick rather than
+permanently blocking it.
 """
 
 from __future__ import annotations
@@ -57,16 +61,32 @@ class StackPublishDecision:
     ``base_branch`` is the predecessor branch the PR must target (``None`` means
     "use the processor's normal base", e.g. once the predecessor has merged); and
     ``reason`` carries the blocked-gate diagnostic when ``allowed`` is False.
+
+    ``retryable`` marks a block that should be retried on a later tick rather
+    than treated as a permanent failure — used when the gate cannot read the
+    issue and so blocks fail-closed without being sure the slice is even a stack
+    successor. ``is_stack`` may be False on such a block (the gate could not
+    confirm stack-ness); callers must key the publish halt off ``allowed``, not
+    ``is_stack``.
     """
 
     is_stack: bool
     allowed: bool
     base_branch: str | None = None
     reason: str | None = None
+    retryable: bool = False
 
     @classmethod
     def not_stack(cls) -> "StackPublishDecision":
         return cls(is_stack=False, allowed=True)
+
+    @classmethod
+    def blocked(
+        cls, reason: str, *, retryable: bool, is_stack: bool = True
+    ) -> "StackPublishDecision":
+        return cls(
+            is_stack=is_stack, allowed=False, reason=reason, retryable=retryable
+        )
 
 
 class StackPublishGate:
@@ -86,16 +106,30 @@ class StackPublishGate:
     def decide(self, issue_number: int, worktree: Path) -> StackPublishDecision:
         try:
             issue = self._issue_reader.get_issue(issue_number)
-        except Exception as exc:  # fail-open: a read error must not block publish
+        except Exception as exc:  # fail-closed: cannot prove this is not a stack
             logger.warning(
-                "Stack publish gate could not read issue #%d (allowing normal "
-                "publish): %s",
+                "Stack publish gate could not read issue #%d (blocking publish, "
+                "retryable): %s",
                 issue_number,
                 exc,
             )
-            return StackPublishDecision.not_stack()
+            return StackPublishDecision.blocked(
+                f"Stack publish gate could not read issue #{issue_number}: {exc}",
+                retryable=True,
+                is_stack=False,
+            )
         if issue is None:
-            return StackPublishDecision.not_stack()
+            logger.warning(
+                "Stack publish gate found no issue #%d for a managed publish "
+                "(blocking publish, retryable)",
+                issue_number,
+            )
+            return StackPublishDecision.blocked(
+                f"Stack publish gate found no issue #{issue_number} to confirm "
+                "stack base before publish",
+                retryable=True,
+                is_stack=False,
+            )
         body = issue.body or ""
         # Cheap short-circuit: only Stack-after: slices consult the gate, so an
         # ordinary issue keeps its exact prior base selection and publish path.

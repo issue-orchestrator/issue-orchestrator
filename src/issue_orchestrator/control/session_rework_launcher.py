@@ -112,6 +112,10 @@ class ProviderCircuitChecker(Protocol):
     def __call__(self, provider: str | None, issue_number: int) -> LaunchResult | None: ...
 
 
+class StackBaseResolverFn(Protocol):
+    def __call__(self, issue_number: int) -> str | None: ...
+
+
 @dataclass(frozen=True)
 class ReworkLaunchDependencies:
     """Dependencies needed by the rework launch coordinator."""
@@ -134,6 +138,7 @@ class ReworkLaunchDependencies:
     wrap_provider_command: ProviderCommandWrapper
     build_session_env: SessionEnvBuilder
     check_provider_circuit: ProviderCircuitChecker
+    resolve_stack_base: StackBaseResolverFn
 
 
 def launch_rework_session(
@@ -205,6 +210,7 @@ def launch_rework_session(
         pre_push_hook=deps.config.pre_push_hook,
         reuse_options=deps.worktree_reuse_options(allow_remote_branch_delete=False),
         phase_name=phase_name,
+        stack_base_branch=deps.resolve_stack_base(issue_number),
     )
 
     if ctx.error:

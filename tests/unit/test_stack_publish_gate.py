@@ -126,7 +126,7 @@ def test_stale_successor_blocks_publish():
     assert "predecessor_branch_advanced" in (decision.reason or "")
 
 
-def test_issue_read_failure_fails_open():
+def test_issue_read_failure_blocks_publish_retryably():
     reader = _IssueReader(_Issue("Stack-after: #20"))
     reader.raise_exc = RuntimeError("transient")
     gate = StackPublishGate(
@@ -134,16 +134,20 @@ def test_issue_read_failure_fails_open():
         issue_reader=reader,
     )
     decision = gate.decide(2, Path("/wt"))
-    # Fail-open: a read error must not block an ordinary publish.
-    assert decision.is_stack is False
-    assert decision.allowed is True
+    # Fail-closed: the gate cannot prove this is not a stack successor, so a read
+    # error must block publish (retryably) rather than let a wrong-base PR open.
+    assert decision.allowed is False
+    assert decision.retryable is True
+    assert "could not read issue #2" in (decision.reason or "")
 
 
-def test_missing_issue_is_inert():
+def test_missing_issue_blocks_publish_retryably():
     gate = StackPublishGate(
         evaluator=_evaluator(_Checker(), {}),
         issue_reader=_IssueReader(None),
     )
     decision = gate.decide(2, Path("/wt"))
-    assert decision.is_stack is False
-    assert decision.allowed is True
+    # A managed publish whose issue cannot be found also fails closed.
+    assert decision.allowed is False
+    assert decision.retryable is True
+    assert "no issue #2" in (decision.reason or "")
