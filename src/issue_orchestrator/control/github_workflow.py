@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from .cleanup_manager import CleanupManager
     from .state_machine_manager import StateMachineManager
     from .label_manager import LabelManager
+    from .dependency_evaluator import DependencyEvaluator
 
 from ..infra.config import Config
 from ..events import EventName, EventContext
@@ -51,6 +52,7 @@ class GitHubWorkflow:
     label_sync: Optional["LabelSync"]
     event_context: EventContext
     label_manager: "LabelManager | None" = None
+    dependency_evaluator: "DependencyEvaluator | None" = None
 
     def fetch_all_issues(
         self,
@@ -210,6 +212,7 @@ class GitHubWorkflow:
             ),
             repo=self.config.repo,
             merge_queue=self._merge_queue_coordinator(),
+            dependency_evaluator=self.dependency_evaluator,
         ).discover(state)
         state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
         state.discovered_awaiting_merge_drifts.extend(result.drifts)

@@ -13,6 +13,8 @@ These cover:
   without inspecting raw dependency internals.
 """
 
+from pathlib import Path
+
 import pytest
 
 from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
@@ -394,6 +396,114 @@ class TestBuildGateReport:
         report = build_gate_report(1, [local, cross], facts)
         assert not report.can_start_work
         assert GateBlockReason.PREDECESSOR_BRANCH_UNUSABLE in report.reason_codes(Gate.WORK)
+
+
+class TestStackAncestryStaleness:
+    """#6596: a successor that no longer contains the predecessor head is stale.
+
+    Ancestry is a publish/merge-readiness concern. A predecessor that advances
+    (force-push, reset for rework, rebase) while the successor still points at an
+    older head must re-block publish and merge — but not retroactively block the
+    work that already started or a first review launch.
+    """
+
+    def _stack_dep(self):
+        return Dependency(
+            issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED
+        )
+
+    def test_stale_successor_reblocks_publish_and_merge_only(self):
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-base", head_sha="deadbeef",
+                contained_in_successor=False,
+            )
+        }
+        report = build_gate_report(1, [self._stack_dep()], facts)
+        assert report.can_start_work
+        assert report.can_review
+        assert not report.can_publish
+        assert not report.can_merge
+        assert GateBlockReason.PREDECESSOR_BRANCH_ADVANCED in report.reason_codes(Gate.PUBLISH)
+        assert GateBlockReason.PREDECESSOR_BRANCH_ADVANCED in report.reason_codes(Gate.MERGE)
+
+    def test_contained_successor_does_not_block_publish(self):
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-base", contained_in_successor=True,
+            )
+        }
+        report = build_gate_report(1, [self._stack_dep()], facts)
+        assert report.can_publish
+        # merge still ordered behind the predecessor's own merge
+        assert report.reason_codes(Gate.MERGE) == (GateBlockReason.PREDECESSOR_NOT_MERGED,)
+
+    def test_unusable_branch_takes_precedence_over_ancestry(self):
+        # No usable branch at all: report the unusable-branch reason, not a
+        # spurious "advanced" on a branch that does not exist.
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=False, contained_in_successor=False
+            )
+        }
+        report = build_gate_report(1, [self._stack_dep()], facts)
+        assert GateBlockReason.PREDECESSOR_BRANCH_UNUSABLE in report.reason_codes(Gate.PUBLISH)
+        assert GateBlockReason.PREDECESSOR_BRANCH_ADVANCED not in report.reason_codes(Gate.PUBLISH)
+
+    def test_head_sha_appears_in_block_detail(self):
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, branch_name="20-base", head_sha="abc123",
+                contained_in_successor=False,
+            )
+        }
+        report = build_gate_report(1, [self._stack_dep()], facts)
+        details = [b.detail for b in report.publish.blocks if b.detail]
+        assert any("abc123" in d for d in details)
+
+
+class TestStackBaseBranchSelection:
+    """#6596: the report is the single owner of stack PR base selection."""
+
+    def _stack_dep(self, state=DependencyState.UNSATISFIED):
+        return Dependency(issue_number=20, mode=DependencyMode.STACK, state=state)
+
+    def test_unmerged_predecessor_with_usable_branch_is_the_base(self):
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, branch_name="20-base"
+            )
+        }
+        report = build_gate_report(1, [self._stack_dep()], facts)
+        assert report.stack_base_branch == "20-base"
+
+    def test_no_stack_edge_has_no_base(self):
+        dep = Dependency(issue_number=10, mode=DependencyMode.NORMAL, state=DependencyState.UNSATISFIED)
+        report = build_gate_report(1, [dep])
+        assert report.stack_base_branch is None
+
+    def test_merged_predecessor_bases_on_default_branch(self):
+        # A satisfied (merged/closed) stack predecessor needs no stacked base.
+        report = build_gate_report(1, [self._stack_dep(state=DependencyState.SATISFIED)])
+        assert report.stack_base_branch is None
+
+    def test_unusable_predecessor_branch_yields_no_base(self):
+        report = build_gate_report(1, [self._stack_dep()])  # no facts
+        assert report.stack_base_branch is None
+
+    def test_conflicting_branches_fall_back_to_none(self):
+        deps = [
+            Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
+            Dependency(issue_number=21, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
+        ]
+        facts = {
+            DependencyTarget(20): PredecessorFacts(branch_usable=True, branch_name="20-base"),
+            DependencyTarget(21): PredecessorFacts(branch_usable=True, branch_name="21-base"),
+        }
+        report = build_gate_report(1, deps, facts)
+        assert report.stack_base_branch is None
 
 
 # --------------------------------------------------------------------------- #
@@ -880,3 +990,268 @@ class TestWorkSummaryRendering:
         assert records[0].predecessor == "#100"
         assert records[0].gate == "work"
         assert records[0].reason == "dependency_open"
+
+
+class _FakeAncestry:
+    """Stack branch-ancestry double: contained unless a branch is marked stale."""
+
+    def __init__(self, stale_branches: set[str] | None = None):
+        self._stale = stale_branches or set()
+        self.calls: list[tuple[str, str]] = []
+
+    def successor_contains_predecessor(self, worktree, predecessor_branch) -> bool:
+        self.calls.append((str(worktree), predecessor_branch))
+        return predecessor_branch not in self._stale
+
+
+class TestEvaluatePublishGate:
+    """#6596: the publish gate owner sets the PR base and re-blocks stale stacks."""
+
+    def _ready_provider(self, branch="20-base"):
+        return _FakeFactsProvider(
+            {DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name=branch, head_sha="cafe1234",
+            )}
+        )
+
+    def test_non_stack_issue_publish_open_and_no_stack_base(self, checker):
+        checker.add(100, "closed")
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        report = evaluator.evaluate_publish_gate(1, "Depends-on: #100", "M1")
+
+        assert report.can_publish is True
+        assert report.stack_base_branch is None
+
+    def test_stack_publish_open_selects_predecessor_branch_as_base(self, checker):
+        checker.add(20, "open")
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=self._ready_provider(),
+        )
+
+        report = evaluator.evaluate_publish_gate(
+            2, "Stack-after: #20", "M1", worktree=Path("/wt/2")
+        )
+
+        assert report.can_publish is True
+        assert report.stack_base_branch == "20-base"
+
+    def test_predecessor_advanced_reblocks_publish(self, checker):
+        checker.add(20, "open")
+        ancestry = _FakeAncestry(stale_branches={"20-base"})
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=self._ready_provider(),
+            branch_ancestry=ancestry,
+        )
+
+        report = evaluator.evaluate_publish_gate(
+            2, "Stack-after: #20", "M1", worktree=Path("/wt/2")
+        )
+
+        assert report.can_publish is False
+        assert GateBlockReason.PREDECESSOR_BRANCH_ADVANCED in report.reason_codes(Gate.PUBLISH)
+        assert ancestry.calls == [("/wt/2", "20-base")]
+
+    def test_contained_successor_keeps_publish_open(self, checker):
+        checker.add(20, "open")
+        ancestry = _FakeAncestry()  # all contained
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=self._ready_provider(),
+            branch_ancestry=ancestry,
+        )
+
+        report = evaluator.evaluate_publish_gate(
+            2, "Stack-after: #20", "M1", worktree=Path("/wt/2")
+        )
+
+        assert report.can_publish is True
+        assert report.stack_base_branch == "20-base"
+
+    def test_incompatible_base_branch_metadata_blocks_publish(self, checker):
+        checker.add(20, "open")
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=self._ready_provider(branch="20-base"),
+        )
+
+        # Issue declares base-branch release/9 but the stack predecessor lives on
+        # 20-base -> ADR-0022 conflict, fail fast with a publish diagnostic.
+        report = evaluator.evaluate_publish_gate(
+            2, "Stack-after: #20", "M1",
+            worktree=Path("/wt/2"), configured_base_branch="release/9",
+        )
+
+        assert report.can_publish is False
+        assert GateBlockReason.BASE_BRANCH_CONFLICT in report.reason_codes(Gate.PUBLISH)
+
+    def test_ancestry_not_consulted_without_worktree(self, checker):
+        checker.add(20, "open")
+        ancestry = _FakeAncestry(stale_branches={"20-base"})
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=self._ready_provider(),
+            branch_ancestry=ancestry,
+        )
+
+        report = evaluator.evaluate_publish_gate(2, "Stack-after: #20", "M1")
+
+        # No worktree -> ancestry defaults to contained, publish stays open.
+        assert report.can_publish is True
+        assert ancestry.calls == []
+
+
+class TestEvaluateMergeGate:
+    """#6596: merge stays strictly ordered behind the predecessor's own merge."""
+
+    def test_stack_successor_blocked_until_predecessor_merges(self, checker):
+        checker.add(20, "open")  # predecessor still open
+        provider = _FakeFactsProvider(
+            {DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-base",
+            )}
+        )
+        evaluator = DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=provider,
+        )
+
+        report = evaluator.evaluate_merge_gate(2, "Stack-after: #20", "M1")
+
+        assert report.can_merge is False
+        assert report.reason_codes(Gate.MERGE) == (GateBlockReason.PREDECESSOR_NOT_MERGED,)
+
+    def test_merge_opens_once_predecessor_closed(self, checker):
+        checker.add(20, "closed")  # predecessor merged/closed
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        report = evaluator.evaluate_merge_gate(2, "Stack-after: #20", "M1")
+
+        assert report.can_merge is True
+
+    def test_stale_approval_reblocks_merge(self, checker):
+        checker.add(20, "closed")
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        report = evaluator.evaluate_merge_gate(
+            2, "Stack-after: #20", "M1", approval_current=False
+        )
+
+        assert report.can_merge is False
+        assert report.reason_codes(Gate.MERGE) == (GateBlockReason.APPROVAL_STALE,)
+
+    def test_non_stack_merge_matches_closed_only_rule(self, checker):
+        checker.add(100, "open")
+        evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
+
+        blocked = evaluator.evaluate_merge_gate(1, "Depends-on: #100", "M1")
+        assert blocked.can_merge is False
+
+        checker.add(100, "closed")
+        ok = evaluator.evaluate_merge_gate(1, "Depends-on: #100", "M1")
+        assert ok.can_merge is True
+
+
+class TestThreeIssueStackScenario:
+    """#6596 integration: a 3-issue stack C -> B -> A across work, publish base
+    selection, stale detection, and the ordered merge gate, all decided by the
+    single gate-report owner.
+
+    A (#10) is the root; B (#20) stacks after A; C (#30) stacks after B. The
+    fixtures simulate the facts each predecessor exposes at successive lifecycle
+    stages.
+    """
+
+    def _evaluator(self, checker, facts, ancestry=None):
+        return DependencyEvaluator(
+            issue_checker=checker, events=NullEventSink(),
+            predecessor_facts_provider=_FakeFactsProvider(facts),
+            branch_ancestry=ancestry,
+        )
+
+    def test_b_work_unblocks_on_a_branch_then_c_waits_on_b(self, checker):
+        # A is open but has a usable validated+reviewed branch; B is open with
+        # only a usable branch (not yet reviewed) so C cannot start.
+        checker.add(10, "open")
+        checker.add(20, "open")
+        facts = {
+            DependencyTarget(10): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="10-a",
+            ),
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=False,
+                branch_name="20-b",
+            ),
+        }
+        evaluator = self._evaluator(checker, facts)
+
+        b = evaluator.evaluate_work_gate(20, "Stack-after: #10", "M1")
+        c = evaluator.evaluate_work_gate(30, "Stack-after: #20", "M1")
+
+        assert b.can_start_work is True       # A is ready -> B may start
+        assert c.can_start_work is False      # B not reviewed yet -> C waits
+        assert GateBlockReason.PREDECESSOR_REVIEW_PENDING in c.reason_codes(Gate.WORK)
+
+    def test_b_publishes_on_a_branch_and_merge_waits_for_a(self, checker):
+        checker.add(10, "open")  # A not merged yet
+        facts = {
+            DependencyTarget(10): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="10-a",
+            )
+        }
+        evaluator = self._evaluator(checker, facts, ancestry=_FakeAncestry())
+
+        publish = evaluator.evaluate_publish_gate(
+            20, "Stack-after: #10", "M1", worktree=Path("/wt/20")
+        )
+        merge = evaluator.evaluate_merge_gate(20, "Stack-after: #10", "M1")
+
+        assert publish.can_publish is True
+        assert publish.stack_base_branch == "10-a"   # B's PR bases on A's branch
+        assert merge.can_merge is False              # ordered behind A
+        assert merge.reason_codes(Gate.MERGE) == (GateBlockReason.PREDECESSOR_NOT_MERGED,)
+
+    def test_a_force_push_makes_b_stale_for_publish(self, checker):
+        checker.add(10, "open")
+        facts = {
+            DependencyTarget(10): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="10-a", head_sha="newhead",
+            )
+        }
+        # A force-pushed: B no longer contains 10-a's head.
+        evaluator = self._evaluator(
+            checker, facts, ancestry=_FakeAncestry(stale_branches={"10-a"})
+        )
+
+        publish = evaluator.evaluate_publish_gate(
+            20, "Stack-after: #10", "M1", worktree=Path("/wt/20")
+        )
+
+        assert publish.can_publish is False
+        assert GateBlockReason.PREDECESSOR_BRANCH_ADVANCED in publish.reason_codes(Gate.PUBLISH)
+
+    def test_a_merged_opens_b_merge_and_c_still_waits_on_b(self, checker):
+        # A merged (closed); B's stack edge is now satisfied -> B may merge.
+        checker.add(10, "closed")
+        checker.add(20, "open")  # B not merged yet
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-b",
+            )
+        }
+        evaluator = self._evaluator(checker, facts)
+
+        b_merge = evaluator.evaluate_merge_gate(20, "Stack-after: #10", "M1")
+        c_merge = evaluator.evaluate_merge_gate(30, "Stack-after: #20", "M1")
+
+        assert b_merge.can_merge is True               # A merged -> B unblocked
+        assert c_merge.can_merge is False              # B still open -> C waits
+        assert c_merge.reason_codes(Gate.MERGE) == (GateBlockReason.PREDECESSOR_NOT_MERGED,)

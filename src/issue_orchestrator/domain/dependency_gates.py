@@ -76,6 +76,11 @@ class GateBlockReason(Enum):
     PREDECESSOR_VALIDATION_PENDING = "predecessor_validation_pending"
     PREDECESSOR_REVIEW_PENDING = "predecessor_review_pending"
     PREDECESSOR_NOT_MERGED = "predecessor_not_merged"
+    # The successor no longer contains the predecessor branch head it was built
+    # on (predecessor advanced / was force-pushed / reset / rebased). The
+    # successor is stale and must not be publishable or merge-ready until it
+    # contains the current predecessor head again.
+    PREDECESSOR_BRANCH_ADVANCED = "predecessor_branch_advanced"
 
     # Slice's own reviewed-commit freshness
     APPROVAL_STALE = "approval_stale"
@@ -107,6 +112,15 @@ class PredecessorFacts:
     agent_reviewed: bool = False  # predecessor branch head has passed agent review
     merged: bool = False  # predecessor PR/branch has merged
     branch_name: str | None = None  # predecessor branch, for base reconciliation
+    head_sha: str | None = None  # predecessor branch head commit, for staleness
+    # Whether the dependent slice's successor branch currently contains this
+    # predecessor's branch head (git ancestry). ``True`` is the conservative
+    # default for gates that do not evaluate ancestry (the WORK gate runs before
+    # a successor branch exists, so ancestry cannot apply there). The publish and
+    # merge gates set this from a real ancestry check: when ``branch_usable`` but
+    # ``not contained_in_successor`` the successor is stale and must not publish
+    # or merge until it is rebuilt onto the current predecessor head.
+    contained_in_successor: bool = True
 
 
 @dataclass(frozen=True)
@@ -189,6 +203,12 @@ class DependencyGateReport:
     merge: GateDecision
     approval_current: bool = True
     dependencies: tuple[Dependency, ...] = field(default_factory=tuple)
+    # The single owner of stack base selection (ADR-0029 / #6596): the branch a
+    # stack successor's PR must be based on. It is the usable branch of the lone
+    # unmerged stack predecessor, or ``None`` for a non-stack slice or one whose
+    # stack predecessor has already merged (which should base on the normal
+    # default branch). Publish wiring reads this instead of re-deriving the base.
+    stack_base_branch: str | None = None
 
     def gate(self, gate: Gate) -> GateDecision:
         return {
@@ -393,6 +413,21 @@ def _stack_edge_blocks(
         work.append(branch_block)
         review.append(branch_block)
         publish.append(branch_block)
+    elif not facts.contained_in_successor:
+        # The base branch exists but the successor no longer descends from the
+        # current predecessor head (predecessor advanced / force-pushed / reset).
+        # Ancestry is a publish/merge-readiness concern only: WORK already started
+        # from some earlier head, and a first REVIEW is still launchable. Block
+        # only publish and merge so the stale successor is rebuilt before it can
+        # become a PR base point or merge.
+        stale_block = GateBlock(
+            GateBlockReason.PREDECESSOR_BRANCH_ADVANCED,
+            ref,
+            "successor branch does not contain the current predecessor head"
+            + (f" {facts.head_sha}" if facts.head_sha else ""),
+        )
+        publish.append(stale_block)
+        merge.append(stale_block)
     # work additionally needs validation + agent review of the predecessor head.
     if not facts.validation_passed:
         work.append(GateBlock(GateBlockReason.PREDECESSOR_VALIDATION_PENDING, ref))
@@ -435,6 +470,37 @@ def _edge_gate_blocks(
         # Predecessor merged/closed: fully satisfies the stack ordering.
         return [], [], [], []
     return _stack_edge_blocks(dep, ref, facts_by_target, configured_base_branch)
+
+
+def _resolve_stack_base_branch(
+    dependencies: Sequence[Dependency],
+    facts_by_target: Mapping[DependencyTarget, PredecessorFacts],
+) -> str | None:
+    """The branch a stack successor's PR must be based on, or ``None``.
+
+    A linear stack has exactly one unmerged stack predecessor; its usable branch
+    is the successor's base. A satisfied (merged/closed) stack predecessor
+    contributes no base — the successor bases on the normal default branch. When
+    no unmerged stack predecessor exposes a usable branch, or two would disagree
+    (an unusual non-linear stack), this returns ``None`` so the caller falls back
+    to its configured/default base rather than guessing.
+    """
+    branches: list[str] = []
+    for dep in dependencies:
+        if (
+            dep.mode != DependencyMode.STACK
+            or dep.problem is not None
+            or dep.state != DependencyState.UNSATISFIED
+            or dep.target is None
+        ):
+            continue
+        facts = facts_by_target.get(dep.target)
+        if facts and facts.branch_usable and facts.branch_name:
+            branches.append(facts.branch_name)
+    distinct = set(branches)
+    if len(distinct) == 1:
+        return branches[0]
+    return None
 
 
 def build_gate_report(
@@ -495,4 +561,5 @@ def build_gate_report(
         merge=GateDecision(Gate.MERGE, is_open=not merge, blocks=tuple(merge)),
         approval_current=approval_current,
         dependencies=tuple(dependencies),
+        stack_base_branch=_resolve_stack_base_branch(dependencies, facts_by_target),
     )

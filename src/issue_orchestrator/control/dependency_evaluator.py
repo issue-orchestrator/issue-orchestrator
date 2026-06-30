@@ -14,6 +14,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ..domain.dependencies import (
@@ -38,6 +39,7 @@ from ..domain.issue_key import GitHubIssueKey
 from ..events import EventName
 from ..ports import EventSink,  make_trace_event, IssueResolver
 from ..ports.repository_host import RepositoryHostError
+from ..ports.stack_branch_ancestry import StackBranchAncestry
 from ..ports.stack_predecessor_facts import StackPredecessorFactsProvider
 
 logger = logging.getLogger(__name__)
@@ -77,6 +79,7 @@ class DependencyEvaluator:
         repo: str | None = None,
         foundation_milestone: str = "M0",
         predecessor_facts_provider: StackPredecessorFactsProvider | None = None,
+        branch_ancestry: StackBranchAncestry | None = None,
     ):
         """Initialize the evaluator.
 
@@ -90,6 +93,11 @@ class DependencyEvaluator:
                 predecessors (ADR-0029). Required for stack edges to ever
                 unblock work; when absent, stack edges stay conservatively
                 blocked. Normal ``Depends-on:`` edges never consult it.
+            branch_ancestry: Decides whether a successor working copy still
+                contains its stack predecessor's branch head (#6596). Consulted
+                only by :meth:`evaluate_publish_gate` (which has a worktree).
+                When absent, ancestry defaults to "contained" so existing
+                publish behavior is preserved.
         """
         self.issue_checker = issue_checker
         self.events = events
@@ -97,6 +105,7 @@ class DependencyEvaluator:
         self.repo = repo
         self.foundation_milestone = foundation_milestone
         self._predecessor_facts_provider = predecessor_facts_provider
+        self._branch_ancestry = branch_ancestry
 
     def evaluate(
         self,
@@ -223,6 +232,106 @@ class DependencyEvaluator:
         if emit_event and deps:
             self._emit_work_gate_event(report)
         return report
+
+    def evaluate_publish_gate(
+        self,
+        issue_number: int,
+        issue_body: str,
+        source_milestone: str | None = None,
+        *,
+        worktree: Path | None = None,
+        configured_base_branch: str | None = None,
+    ) -> DependencyGateReport:
+        """Build the gate report for a *publish* decision (ADR-0029 §3, #6596).
+
+        The same single owner the work gate uses: it resolves the issue's typed
+        edges, gathers stack-predecessor git/PR facts, and additionally — when a
+        ``worktree`` and a :class:`StackBranchAncestry` are available — checks
+        whether the successor still contains each predecessor's branch head.
+        Callers read ``report.can_publish`` (and ``report.stack_base_branch`` for
+        the PR base) instead of re-deriving stack publish policy.
+
+        A stack successor's publish gate is open when the predecessor exposes a
+        usable branch, no issue-specific base-branch rule conflicts with it, and
+        the successor still descends from the predecessor head. A predecessor
+        that advanced without the successor containing it re-blocks publish with
+        ``PREDECESSOR_BRANCH_ADVANCED``.
+
+        For a non-stack issue this collapses to "publish open unless a normal
+        ``Depends-on:`` is still open", exactly as before.
+        """
+        deps = self._resolve_edges(
+            issue_number, issue_body, source_milestone, frozenset(), None
+        )
+        facts = self._gather_predecessor_facts(deps)
+        facts = self._refine_ancestry(facts, worktree)
+        return build_gate_report(
+            issue_number,
+            deps,
+            facts,
+            configured_base_branch=configured_base_branch,
+        )
+
+    def evaluate_merge_gate(
+        self,
+        issue_number: int,
+        issue_body: str,
+        source_milestone: str | None = None,
+        *,
+        approval_current: bool = True,
+        configured_base_branch: str | None = None,
+    ) -> DependencyGateReport:
+        """Build the gate report for an ordered *merge* decision (#6596).
+
+        Merge readiness stays strictly ordered: a stack successor's merge gate is
+        blocked (``PREDECESSOR_NOT_MERGED``) until its predecessor has merged or
+        closed, regardless of how ready the successor's own PR looks. The slice's
+        own stale approval re-blocks merge as well (``APPROVAL_STALE``). Ancestry
+        is *not* checked here — the merge path runs without a local successor
+        worktree, and once a predecessor merges, GitHub's own mergeable state
+        surfaces a behind/needs-rebase successor; publish-time ancestry already
+        guards the stale-base case.
+
+        For a non-stack issue this collapses to the legacy closed-only rule.
+        """
+        deps = self._resolve_edges(
+            issue_number, issue_body, source_milestone, frozenset(), None
+        )
+        facts = self._gather_predecessor_facts(deps)
+        return build_gate_report(
+            issue_number,
+            deps,
+            facts,
+            approval_current=approval_current,
+            configured_base_branch=configured_base_branch,
+        )
+
+    def _refine_ancestry(
+        self,
+        facts: Mapping[DependencyTarget, PredecessorFacts],
+        worktree: Path | None,
+    ) -> Mapping[DependencyTarget, PredecessorFacts]:
+        """Fold a successor-vs-predecessor ancestry check into gathered facts.
+
+        For each stack predecessor with a usable branch, ask the injected
+        :class:`StackBranchAncestry` whether the successor working copy still
+        contains that branch's head; record the answer as
+        ``contained_in_successor``. Without an ancestry checker or a worktree the
+        facts are returned unchanged (ancestry defaults to contained), so a
+        deployment that has not wired ancestry keeps prior publish behavior.
+        """
+        if self._branch_ancestry is None or worktree is None or not facts:
+            return facts
+        refined: dict[DependencyTarget, PredecessorFacts] = {}
+        for target, fact in facts.items():
+            if fact.branch_usable and fact.branch_name:
+                contained = self._branch_ancestry.successor_contains_predecessor(
+                    worktree, fact.branch_name
+                )
+                refined[target] = replace(fact, contained_in_successor=contained)
+            else:
+                refined[target] = fact
+        return refined
 
     def _resolve_edges(
         self,

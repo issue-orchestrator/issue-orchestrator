@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
     from ..ports.pull_request_tracker import PRInfo
     from ..ports.repository_host import RepositoryHost
+    from .dependency_evaluator import DependencyEvaluator
     from .label_manager import LabelManager
     from .merge_queue_coordinator import MergeQueueCoordinator
 
@@ -119,6 +120,12 @@ class AwaitingMergeReconciler:
     # post-approval merge-readiness decision (enqueue/observe/conflict-rework/
     # failure-routing) instead of the default rework/escalation dispatch.
     merge_queue: "MergeQueueCoordinator | None" = None
+    # Optional stack-policy owner (ADR-0029 / #6596). When set, a stacked
+    # successor whose merge gate is blocked (predecessors not merged in order)
+    # is held out of the post-approval merge-readiness dispatch entirely, so it
+    # is never enqueued or treated as silently mergeable ahead of its
+    # predecessors. Non-stack issues are never affected.
+    dependency_evaluator: "DependencyEvaluator | None" = None
 
     def _rollup_gate(self) -> StatusRollupGate:
         return StatusRollupGate(
@@ -494,6 +501,15 @@ class AwaitingMergeReconciler:
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
             return None, None, None
 
+        if self._stack_merge_held(issue):
+            # A stacked successor stays out of the merge-readiness dispatch until
+            # its predecessors merge in order (ADR-0029 / #6596). Holding here —
+            # before the merge-queue and default paths — means it is never
+            # enqueued, reworked, or escalated ahead of its predecessors, and so
+            # never left silently mergeable. It keeps observing until unblocked.
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            return None, None, None
+
         if self.merge_queue is not None and self.merge_queue.enabled:
             return self._discover_merge_queue_followup(
                 state=state, entry=entry, pr=pr, issue=issue, pr_number=pr_number,
@@ -839,6 +855,33 @@ class AwaitingMergeReconciler:
                 exc,
             )
             raise
+
+    def _stack_merge_held(self, issue: Issue) -> bool:
+        """Whether a stacked successor must be held from merge readiness.
+
+        Consults the single dependency-gate owner's *merge* gate (ADR-0029): a
+        stack successor is not merge-ready until its predecessors have merged or
+        closed in order. Non-stack issues are never held — the cheap body
+        short-circuit means a slice with no ``Stack-after:`` edge keeps its exact
+        prior merge-readiness behavior, and even among stack issues the gate
+        only blocks while a predecessor remains unmerged.
+        """
+        if self.dependency_evaluator is None:
+            return False
+        body = issue.body or ""
+        if "stack-after" not in body.lower():
+            return False
+        report = self.dependency_evaluator.evaluate_merge_gate(
+            issue.number, body, issue.milestone,
+        )
+        if report.can_merge:
+            return False
+        logger.info(
+            "Holding stacked successor issue #%d from merge readiness: %s",
+            issue.number,
+            report.merge.summary(),
+        )
+        return True
 
     def _get_prs_for_issue(self, issue_number: int) -> list[PRInfo]:
         try:
