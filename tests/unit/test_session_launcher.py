@@ -4078,11 +4078,11 @@ class TestStackRelaunchGate:
         ):
             return self._report_fn(issue_number)
 
-    def _launcher(self, fixtures, *, report_fn, body):
+    def _launcher(self, fixtures, *, report_fn, body, refresh=None):
         (sample_config, mock_events, mock_repo_host, mock_worktree_manager,
          mock_working_copy, mock_command_runner) = fixtures
 
-        def refresh_issue(_number):
+        def default_refresh(_number):
             return Issue(
                 number=123,
                 title="Test issue",
@@ -4091,6 +4091,8 @@ class TestStackRelaunchGate:
                 body=body,
                 milestone="M7",
             )
+
+        refresh_issue = refresh if refresh is not None else default_refresh
 
         return SessionLauncher(
             config=sample_config,
@@ -4175,5 +4177,115 @@ class TestStackRelaunchGate:
 
         assert result.success is False
         assert "Stack dependencies not satisfied" in (result.reason or "")
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+    @staticmethod
+    def _single_ready_report(issue_number):
+        from issue_orchestrator.domain.dependencies import (
+            Dependency,
+            DependencyMode,
+            DependencyState,
+            DependencyTarget,
+        )
+        from issue_orchestrator.domain.dependency_gates import (
+            PredecessorFacts,
+            build_gate_report,
+        )
+
+        deps = [Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED)]
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-base",
+            ),
+        }
+        return build_gate_report(issue_number, deps, facts)
+
+    def test_initial_launch_fails_closed_when_body_unreadable(
+        self, _fixtures, mock_worktree_manager, mock_events, sample_issue
+    ):
+        # refresh returns None AND the issue carries no body -> the launcher
+        # cannot prove non-stack, so it must fail closed, not seed from default.
+        assert sample_issue.body is None
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report, body=None,
+            refresh=lambda _n: None,
+        )
+
+        result = launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is False
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+    def test_initial_launch_uses_issue_body_fallback_when_refresh_none(
+        self, _fixtures, mock_worktree_manager, sample_issue
+    ):
+        # refresh fails but the already-known issue body proves a ready stack
+        # successor -> seed from the predecessor branch (not the default base).
+        sample_issue.body = "Stack-after: #20"
+        sample_issue.milestone = "M7"
+        launcher = self._launcher(
+            _fixtures, report_fn=self._single_ready_report, body="Stack-after: #20",
+            refresh=lambda _n: None,
+        )
+
+        result = launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert len(mock_worktree_manager.create_calls) == 1
+        assert mock_worktree_manager.create_calls[0]["base_branch"] == "20-base"
+
+    def test_validation_retry_fails_closed_when_issue_unreadable(
+        self, _fixtures, mock_worktree_manager, mock_events
+    ):
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report, body=None,
+            refresh=lambda _n: None,
+        )
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Test issue",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-feature",
+            original_prompt="Work on issue #123",
+            validation_error="boom",
+            validation_error_file="/tmp/err.txt",
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+    def test_rework_fails_closed_when_issue_unreadable(
+        self, _fixtures, mock_worktree_manager, mock_repo_host, mock_events
+    ):
+        mock_repo_host.prs[123] = [
+            PRInfo(
+                number=456, title="Fix issue #123",
+                url="https://github.com/test/repo/pull/456",
+                branch="123-feature", body="", state="open", labels=[],
+            )
+        ]
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report, body=None,
+            refresh=lambda _n: None,
+        )
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is False
         assert mock_worktree_manager.create_calls == []
         assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)

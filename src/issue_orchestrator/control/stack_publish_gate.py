@@ -167,4 +167,3 @@ class StackBaseGate:
 
 # Backwards-compatible alias for the renamed owner.
 StackPublishGate = StackBaseGate
-

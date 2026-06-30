@@ -518,6 +518,73 @@ class TestStackPublishGatePRReuse:
         assert any("retarget failed" in e for e in result.errors)
 
 
+class TestStackCreatedPRBaseEnforcement:
+    """Every stack PR from the create/collision path must target the gate's base.
+
+    F2: ``create_pr`` is idempotent by head branch, so it can return an existing
+    PR on the wrong base even when the issue-scoped reuse preflight misses it. The
+    processor must retarget (or fail closed) on the returned PR before labels.
+    """
+
+    @staticmethod
+    def _publish_record() -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            implementation="Added the feature",
+        )
+
+    @staticmethod
+    def _stack_gate():
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        return _FakeStackGate(
+            StackPublishDecision(is_stack=True, allowed=True, base_branch="20-base")
+        )
+
+    def _run(self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion):
+        # Issue-scoped reuse preflight finds nothing, but create_pr is idempotent
+        # and returns an existing PR targeting the wrong (default) base.
+        mock_pr_adapter.get_prs_for_issue.return_value = []
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        mock_pr_adapter.create_pr.return_value = PRInfo(
+            number=42, title="#123: Test", url="https://github.com/owner/repo/pull/42",
+            branch="123-feature", body="", state="open", labels=[], base_branch="main",
+        )
+        worktree = worktree_with_completion(self._publish_record())
+        return processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
+
+    def test_idempotent_create_wrong_base_is_retargeted(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+
+        result = self._run(processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion)
+
+        assert result.success
+        mock_pr_adapter.set_pr_base.assert_called_once_with(42, "20-base")
+
+    def test_idempotent_create_wrong_base_halts_on_retarget_failure(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+        mock_pr_adapter.set_pr_base.side_effect = RuntimeError("403 forbidden")
+
+        result = self._run(processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion)
+
+        assert not result.success
+        assert any("retarget failed" in e for e in result.errors)
+        # Review-completion labels must not be applied to the wrong-base PR.
+        assert not any(
+            c.args and c.args[0] == 42 for c in mock_pr_adapter.add_comment.call_args_list
+        )
+
+
 class TestRuntimeArtifactBranchGuard:
     """Pre-publish guard rejects committed IO runtime artifacts (#6659).
 

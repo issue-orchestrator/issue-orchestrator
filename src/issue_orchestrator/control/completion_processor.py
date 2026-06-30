@@ -2372,6 +2372,21 @@ class CompletionProcessor:
         )
 
         if pr:
+            # ``create_pr`` is idempotent by head branch, so it can return an
+            # existing PR targeting the wrong base even when the issue-scoped
+            # reuse preflight missed it. Enforce the stack base invariant on the
+            # returned PR too — retarget through the owned op or fail closed —
+            # before it inherits labels/review finalization (#6596 F2).
+            base_failure = self._enforce_created_pr_base(
+                pr=pr,
+                stack_decision=stack_decision,
+                expected_base=expected_base,
+                issue_number=issue_number,
+                actions_taken=actions_taken,
+                errors=errors,
+            )
+            if base_failure is not None:
+                return base_failure
             self._apply_pr_labels(pr, record, actions_taken)
             review_exchange_completed = False
             if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
@@ -2460,6 +2475,34 @@ class CompletionProcessor:
             pr_url=existing_pr.url,
             skip_remaining=True,
             review_exchange_completed=review_exchange_completed,
+        )
+
+    def _enforce_created_pr_base(
+        self,
+        *,
+        pr: PRInfo,
+        stack_decision: "StackBaseDecision | None",
+        expected_base: str,
+        issue_number: int,
+        actions_taken: list[str],
+        errors: list[str],
+    ) -> "_ActionResult | None":
+        """Enforce the stack base on a PR returned from the create/collision path.
+
+        Returns ``None`` for a non-stack issue or when the PR already targets the
+        gate's base (or was retargeted), and a halting :class:`_ActionResult` when
+        a stack PR targets the wrong base and the owned retarget fails — closing
+        the gap where an idempotent ``create_pr`` returns an existing wrong-base
+        PR the issue-scoped reuse preflight missed (#6596 F2).
+        """
+        if stack_decision is None or not stack_decision.is_stack:
+            return None
+        return self._retarget_reused_pr_base(
+            issue_number=issue_number,
+            existing_pr=pr,
+            expected_base=expected_base,
+            actions_taken=actions_taken,
+            errors=errors,
         )
 
     def _retarget_reused_pr_base(

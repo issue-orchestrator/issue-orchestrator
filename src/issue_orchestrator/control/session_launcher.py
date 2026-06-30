@@ -457,20 +457,44 @@ class SessionLauncher:
         base branch from the same gate report so the caller can seed a stack
         successor's worktree from the predecessor branch.
         """
-        if not self._dependency_evaluator or not self._refresh_issue:
+        if not self._dependency_evaluator:
             return _DependencyFreshness()
 
-        fresh_issue = self._refresh_issue(issue.number)
-        if not fresh_issue or not fresh_issue.body:
-            return _DependencyFreshness()
+        # Prefer the freshest body for the just-before-launch recheck, but fall
+        # back to the already-known issue body when refresh is unavailable/empty
+        # so a transient read miss does not collapse a stack successor into an
+        # ordinary issue. If no body can be obtained at all, the launch cannot
+        # prove the slice is non-stack and must fail closed (retryable) rather
+        # than seed the worktree from the default base (#6596 F1).
+        fresh_issue = self._refresh_issue(issue.number) if self._refresh_issue else None
+        body = (fresh_issue.body if fresh_issue else None) or issue.body
+        milestone = fresh_issue.milestone if fresh_issue else issue.milestone
+        if body is None:
+            reason = f"could not read issue #{issue.number} body to confirm stack base"
+            log_transition(
+                "issue", issue.number, "AVAILABLE", "SKIP", reason
+            )
+            self.events.publish(make_trace_event(
+                EventName.ISSUE_DEPENDENCY_BLOCKED,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "reason": reason,
+                    "gate": Gate.WORK.value,
+                    "retryable": True,
+                },
+            ))
+            return _DependencyFreshness(
+                failure=LaunchResult(None, False, f"Dependencies not satisfied: {reason}")
+            )
 
         # Re-gather predecessor facts at launch time so a predecessor branch or
         # review-state change between scheduling and launch cannot start stale
         # stack work (ADR-0029 just-before-launch recheck).
         report = self._dependency_evaluator.evaluate_work_gate(
             issue_number=issue.number,
-            issue_body=fresh_issue.body,
-            source_milestone=fresh_issue.milestone,
+            issue_body=body,
+            source_milestone=milestone,
         )
         if not report.can_start_work:
             summary = report.work_summary()
@@ -503,19 +527,31 @@ class SessionLauncher:
         issue_body: str | None,
         source_milestone: str | None,
     ) -> StackBaseDecision:
-        """Typed stack base decision for a relaunch (ADR-0029 / #6596).
+        """Typed stack base decision for a launch (ADR-0029 / #6596).
 
-        The single launch-side reader of stack base selection for paths that do
-        not already hold a work-gate report (validation retry, rework). Returns a
+        The single launch-side reader of stack base selection. Returns a
         :class:`StackBaseDecision` so callers can distinguish a non-stack issue
         (proceed on the default base) from an allowed stack successor (seed/reset
         from the predecessor branch) from a blocked stack successor (predecessor
         not ready, ambiguous base, etc. — fail closed and do NOT reset onto the
-        default base). Cheaply short-circuits on a body with no ``Stack-after:``
-        edge so an ordinary issue performs no extra predecessor-fact I/O.
+        default base).
+
+        Absence semantics mirror the publish/work gate: when stack gating is
+        wired but ``issue_body`` is unavailable, the launch cannot *prove* the
+        slice is non-stack, so it returns a retryable blocked decision rather than
+        collapsing an unreadable issue into "ordinary issue" and seeding from the
+        default base. When the evaluator is not wired at all, stack gating is off
+        and the launch proceeds normally. A present body with no ``Stack-after:``
+        edge short-circuits to non-stack with no extra predecessor-fact I/O.
         """
-        if not self._dependency_evaluator or not issue_body:
+        if not self._dependency_evaluator:
             return StackBaseDecision.not_stack()
+        if issue_body is None:
+            return StackBaseDecision.blocked(
+                f"could not read issue #{issue_number} body to confirm stack base",
+                retryable=True,
+                is_stack=False,
+            )
         if "stack-after" not in issue_body.lower():
             return StackBaseDecision.not_stack()
         report = self._dependency_evaluator.evaluate_work_gate(
@@ -2024,19 +2060,15 @@ class SessionLauncher:
         Rework reuses the existing successor branch, so its worktree must be
         reset onto the predecessor branch just like the initial launch — else the
         reuse preflight would rebase the successor onto the default branch and the
-        publish ancestry gate would block it. A blocked/ambiguous stack gate must
-        instead fail the rework closed (#6596). Refreshes the issue to get the
-        body the resolver needs; returns a non-stack decision for an ordinary
-        issue (or when refresh is unavailable), preserving prior behavior.
+        publish ancestry gate would block it. Resolves the issue body via refresh
+        and delegates to :meth:`_stack_base_decision`, which fails the rework
+        closed (retryable) when stack gating is wired but the body cannot be read
+        — never collapsing an unreadable issue into "ordinary issue" (#6596 F1).
         """
-        if not self._refresh_issue:
-            return StackBaseDecision.not_stack()
-        fresh_issue = self._refresh_issue(issue_number)
-        if not fresh_issue:
-            return StackBaseDecision.not_stack()
-        return self._stack_base_decision(
-            issue_number, fresh_issue.body, fresh_issue.milestone
-        )
+        fresh_issue = self._refresh_issue(issue_number) if self._refresh_issue else None
+        body = fresh_issue.body if fresh_issue else None
+        milestone = fresh_issue.milestone if fresh_issue else None
+        return self._stack_base_decision(issue_number, body, milestone)
 
     def _run_setup_commands(self, worktree_path: Path) -> None:
         """Run setup commands in worktree."""
