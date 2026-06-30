@@ -93,6 +93,11 @@ from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.adapters.github import GitHubAdapter
+from issue_orchestrator.adapters.github.cache import GitHubCache
+from issue_orchestrator.execution.stack_predecessor_facts import (
+    GitStackPredecessorFactsProvider,
+)
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.contracts.public import SessionStartedPayload
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -982,6 +987,112 @@ class TestLaunchIssueSession:
             and r["reason"] == "predecessor_review_pending"
             for r in data["blocked_reasons"]
         )
+
+    @pytest.mark.parametrize("rework_via", ["add", "remove"])
+    def test_recheck_through_real_pr_cache_passes_until_pr_label_changes(
+        self, launcher_bundle, mock_events, rework_via
+    ):
+        """Planning and the just-before-launch recheck both pass with no PR-label
+        change, and the recheck blocks only after an actual PR-number label write.
+
+        Round-2 F1 regression wired end-to-end through the real ``GitHubAdapter``
+        cache and ``GitStackPredecessorFactsProvider``: the recheck re-runs
+        ``evaluate_work_gate`` (session_launcher ``_verify_dependencies_fresh``),
+        which gathers PR-scoped review labels and then issue labels. Before the
+        cache-owner fix, the first evaluation's empty issue-label refresh
+        corrupted the cached PR's ``code-reviewed``, so this second (recheck)
+        evaluation falsely blocked a still-reviewed predecessor. With unchanged
+        live PR labels the recheck must pass; after a real PR-number add of
+        ``needs-rework`` or removal of ``code-reviewed`` it must block.
+        """
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        config = Config(
+            repo="test/repo",
+            repo_root=Path("/tmp/repo"),
+            worktree_base=Path("/tmp"),
+            agents={"agent:web": AgentConfig(prompt_path=Path("/tmp/prompt.txt"))},
+        )
+        config.github_token = "test-token"
+        config.github_cache_ttl_seconds = 60
+
+        live_labels = ["code-reviewed"]  # PR #201 is reviewed; issue #200 has none
+        http = MagicMock()
+        http.get_prs_for_issue.return_value = [{"number": 201}]
+        http.get_issue_labels.return_value = []
+
+        def _get_pr(number):
+            assert number == 201
+            return {
+                "number": 201,
+                "title": "#200: predecessor",
+                "html_url": "https://example/pr/201",
+                "head": {"ref": "200-base"},
+                "body": "",
+                "state": "open",
+                "labels": [{"name": name} for name in live_labels],
+            }
+
+        http.get_pr.side_effect = _get_pr
+        adapter = GitHubAdapter(
+            repo="test/repo",
+            config=config,
+            cache=GitHubCache(default_ttl=300.0),
+            http_client=http,
+            verify_writes=False,
+        )
+        provider = GitStackPredecessorFactsProvider(
+            repository_host=adapter,
+            label_manager=LabelManager(config),
+            repo="test/repo",
+        )
+
+        class _Checker:
+            def get_issue_state(self, issue_number, repo=None):
+                return "open" if issue_number == 200 else None  # predecessor open
+
+            def get_issue_milestone(self, issue_number, repo=None):
+                return "M1"
+
+        evaluator = DependencyEvaluator(
+            issue_checker=_Checker(), events=mock_events,
+            predecessor_facts_provider=provider,
+        )
+
+        issue = Issue(
+            number=300,
+            title="Stacked successor",
+            labels=["agent:web"],
+            repo="test/repo",
+            body="Stack-after: #200",
+            milestone="M1",
+        )
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
+        launcher_bundle.launcher._refresh_issue = lambda n: issue  # noqa: SLF001
+
+        # Planning: the work gate opens (predecessor open + reviewed PR).
+        planning = evaluator.evaluate_work_gate(
+            300, "Stack-after: #200", "M1", emit_event=False
+        )
+        assert planning.can_start_work is True
+
+        # Just-before-launch recheck with NO PR-label change must still pass —
+        # the issue-label refresh during gather must not corrupt the cached PR.
+        assert launcher_bundle.launcher._verify_dependencies_fresh(issue) is None  # noqa: SLF001
+
+        # The predecessor PR actually moves out of a clean review, by PR NUMBER.
+        if rework_via == "add":
+            live_labels.append("needs-rework")
+            adapter.add_label(201, "needs-rework")
+        else:
+            live_labels.remove("code-reviewed")
+            adapter.remove_label(201, "code-reviewed")
+
+        # Now the recheck must block the stale stack work.
+        result = launcher_bundle.launcher._verify_dependencies_fresh(issue)  # noqa: SLF001
+        assert result is not None
+        assert result.success is False
+        assert "Dependencies not satisfied" in result.reason
 
 
 class TestLaunchValidationRetrySession:

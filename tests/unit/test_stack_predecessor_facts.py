@@ -384,3 +384,24 @@ class TestStalePRLabelCacheInvalidation:
 
         assert facts.branch_usable is True
         assert facts.agent_reviewed is False
+
+    def test_reviewed_pr_stays_reviewed_across_consecutive_gathers(self, gh_config):
+        """A reviewed predecessor must stay agent_reviewed across two reads.
+
+        Regression for round-2 F1: the provider reads PR-scoped review labels and
+        then issue-scoped labels. The issue-label refresh (empty here) must not
+        corrupt the cached PR's review label, or the FIRST gather (scheduler
+        evaluation) would pass while the SECOND gather (just-before-launch
+        recheck) reads a clobbered cache and falsely blocks a still-reviewed
+        predecessor. With unchanged live PR labels both gathers must agree.
+        """
+        live_labels = ["code-reviewed"]  # PR stays reviewed; issue has no labels
+        _adapter, provider = self._build(gh_config, pr_labels=live_labels)
+
+        first = provider.gather_facts([DependencyTarget(20)])[DependencyTarget(20)]
+        second = provider.gather_facts([DependencyTarget(20)])[DependencyTarget(20)]
+
+        assert first.agent_reviewed is True
+        assert second.agent_reviewed is True
+        assert second.branch_usable is True
+        assert second.branch_name == "20-base"
