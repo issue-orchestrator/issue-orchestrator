@@ -2816,10 +2816,10 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-816": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 816: Route orchestrator runtime state collection mutations through an owner abstraction.",
+    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-817": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 817: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-816",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-817",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1

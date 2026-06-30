@@ -20,9 +20,14 @@ from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.session_completion import (
+    _record_provider_resilience_effects,
     _terminate_finished_session,
     handle_session_completion,
     process_active_sessions,
+)
+from issue_orchestrator.control.session_decision import (
+    ProviderTransientFailureDecision,
+    SessionDecision,
 )
 from issue_orchestrator.control.session_launch_types import LaunchResult
 from issue_orchestrator.control.session_launcher import (
@@ -2494,6 +2499,36 @@ class TestRestoreRunningSessions:
 
 class TestProcessActiveSessions:
     """Tests for process_active_sessions function (line 1034)."""
+
+    def test_provider_resilience_effects_are_recorded_on_apply_thread(self):
+        """Provider-circuit mutations happen when the drained decision is applied."""
+        provider_resilience = MagicMock()
+
+        _record_provider_resilience_effects(
+            SessionDecision(
+                status=SessionStatus.RUNNING,
+                provider_success="codex",
+            ),
+            provider_resilience,
+        )
+        _record_provider_resilience_effects(
+            SessionDecision(
+                status=SessionStatus.BLOCKED,
+                provider_transient_failure=ProviderTransientFailureDecision(
+                    provider="claude-code",
+                    error_summary="provider overloaded",
+                    attempts=3,
+                ),
+            ),
+            provider_resilience,
+        )
+
+        provider_resilience.record_success.assert_called_once_with("codex")
+        provider_resilience.record_transient_failure.assert_called_once_with(
+            "claude-code",
+            error_summary="provider overloaded",
+            attempts=3,
+        )
 
     def test_skips_running_sessions(self, sample_agent_config, tmp_path):
         """Verify running sessions are skipped."""

@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from ..ports.claim_manager import ClaimManager
     from .action_applier import ActionApplier
     from .completion_handler import CompletionHandler
+    from .provider_resilience import ProviderResilienceManager
     from .session_controller import SessionController, SessionDecision
 
 logger = logging.getLogger(__name__)
@@ -374,6 +375,7 @@ def process_active_sessions(
     kill_session_fn: Callable[[str], None],
     config: Config,
     completion_dispatcher: "CompletionDispatcher | None" = None,
+    provider_resilience: "ProviderResilienceManager | None" = None,
 ) -> None:
     """Process active sessions - moved from Orchestrator per method table.
 
@@ -393,6 +395,7 @@ def process_active_sessions(
         worktree_manager: For worktree cleanup
         kill_session_fn: Function to kill terminal session
         config: Configuration
+        provider_resilience: Applies provider-circuit effects returned by decisions
     """
     from ..observation.observation import SessionObservation
 
@@ -409,6 +412,7 @@ def process_active_sessions(
             kill_session_fn=kill_session_fn,
             config=config,
             session_output=session_controller.session_output,
+            provider_resilience=provider_resilience,
         )
 
     # Apply decisions that finished on a prior tick (background dispatcher)
@@ -504,6 +508,7 @@ def _apply_completed_decision(
     kill_session_fn: Callable[[str], None],
     config: Config,
     session_output: SessionOutput,
+    provider_resilience: "ProviderResilienceManager | None" = None,
 ) -> None:
     """Apply a finished completion decision on the tick thread."""
     if completed.error is not None:
@@ -512,6 +517,7 @@ def _apply_completed_decision(
         raise completed.error
     decision = completed.decision
     assert decision is not None  # error is None => decision is set
+    _record_provider_resilience_effects(decision, provider_resilience)
     session = completed.session
     if decision.status == SessionStatus.RUNNING:
         logger.info(
@@ -562,4 +568,22 @@ def _apply_completed_decision(
             elapsed,
             session.terminal_id,
             session.issue.number,
+        )
+
+
+def _record_provider_resilience_effects(
+    decision: "SessionDecision",
+    provider_resilience: "ProviderResilienceManager | None",
+) -> None:
+    """Apply provider-circuit effects on the tick thread."""
+    if provider_resilience is None:
+        return
+    if decision.provider_success:
+        provider_resilience.record_success(decision.provider_success)
+    if decision.provider_transient_failure:
+        failure = decision.provider_transient_failure
+        provider_resilience.record_transient_failure(
+            failure.provider,
+            error_summary=failure.error_summary,
+            attempts=failure.attempts,
         )

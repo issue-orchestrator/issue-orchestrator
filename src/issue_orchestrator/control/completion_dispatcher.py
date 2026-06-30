@@ -9,9 +9,10 @@ dashboard card went "stalled", and no other session was serviced for the
 duration.
 
 ``decide_outcome`` is effectively functional — it reads its inputs, drives the
-per-worktree git/GitHub I/O, and returns a ``SessionDecision`` without touching
-shared orchestrator state (state mutation is the tick thread's job, via
-``handle_session_completion``). That makes it safe to run off the tick thread.
+per-worktree git/GitHub I/O, and returns a ``SessionDecision`` describing any
+shared state effects (session completion, provider-circuit updates) without
+applying them. The tick thread applies those effects when the dispatcher drains
+the decision. That makes it safe to run off the tick thread.
 This module owns that choice behind one seam so the tick loop stays identical
 in shape:
 
