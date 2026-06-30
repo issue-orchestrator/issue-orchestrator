@@ -326,9 +326,7 @@ def _create_planner(
         from ..execution.stack_predecessor_facts import GitStackPredecessorFactsProvider
 
         predecessor_facts_provider = GitStackPredecessorFactsProvider(
-            repository_host=github,
-            label_manager=label_manager or LabelManager(config),
-            repo=config.repo,
+            github, label_manager or LabelManager(config), repo=config.repo,
         )
 
     dependency_evaluator = DependencyEvaluator(
