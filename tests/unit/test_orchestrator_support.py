@@ -62,6 +62,7 @@ from issue_orchestrator.domain.models import (
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeEscalation,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
     DiscoveredReview,
     DiscoveredRework,
@@ -308,7 +309,10 @@ class TestQueueFetchPlanner:
 
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
-        github_workflow.scan_pending_pr_work.assert_not_called()
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=False,
+        )
         scheduler.get_available_issues.assert_called_once()
 
     def test_pr_scan_uses_single_workflow_call_when_due(self, mock_event_sink, mock_repository_host):
@@ -337,7 +341,10 @@ class TestQueueFetchPlanner:
             issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
-        github_workflow.scan_pending_pr_work.assert_called_once_with(state)
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=True,
+        )
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
 
@@ -401,7 +408,10 @@ class TestQueueFetchPlanner:
 
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
-        github_workflow.scan_pending_pr_work.assert_not_called()
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=False,
+        )
         scheduler.get_available_issues.assert_not_called()
 
     def test_fetch_prunes_refresh_timestamps_for_issues_no_longer_tracked(
@@ -559,7 +569,10 @@ class TestQueueFetchPlanner:
         assert exc_info.value.status_code == 404
         assert not isinstance(exc_info.value, TransientIssueFetchError)
         assert not isinstance(exc_info.value, PermanentIssueFetchError)
-        github_workflow.scan_pending_pr_work.assert_called_once_with(state)
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=True,
+        )
         # The fetch succeeded, so the policy recorded success: a *genuine*
         # issue-fetch 404 afterwards is still the first in its streak (proving
         # the PR-scan 404 was never counted by the policy).
@@ -1085,6 +1098,14 @@ class TestClearDiscoveredFacts:
                 reason="Branch protection blocks merge.",
             )
         ]
+        sample_orchestrator_state.discovered_merge_queue_enqueues = [
+            DiscoveredMergeQueueEnqueue(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                issue_key="M0-001",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="agent:dev", rework_cycle=1)
         ]
@@ -1102,6 +1123,7 @@ class TestClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_escalations) == 0
+        assert len(sample_orchestrator_state.discovered_merge_queue_enqueues) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1546,6 +1568,14 @@ class TestOrchestratorSupportClearDiscoveredFacts:
                 reason="Branch protection blocks merge.",
             )
         ]
+        sample_orchestrator_state.discovered_merge_queue_enqueues = [
+            DiscoveredMergeQueueEnqueue(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                issue_key="M0-001",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="a", rework_cycle=1)
         ]
@@ -1565,6 +1595,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_escalations) == 0
+        assert len(sample_orchestrator_state.discovered_merge_queue_enqueues) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1918,6 +1949,65 @@ class TestRunTick:
         event_names = [e.name for e in mock_event_sink.events]
         assert EventName.TICK_STARTED in event_names
         assert EventName.TICK_COMPLETED in event_names
+
+    def test_emits_tick_slow_with_phase_breakdown_when_tick_overruns(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context, monkeypatch
+    ):
+        """A tick that overruns the heartbeat budget emits a machine TICK_SLOW
+        event carrying the sub-phase breakdown (so the UI can attribute the
+        stall instead of only inferring it from heartbeat age)."""
+        import types
+
+        clock = {"mono": 1000.0}
+        fake_time = types.SimpleNamespace(
+            monotonic=lambda: clock["mono"],
+            time=lambda: 1_700_000_000.0,
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.control.orchestrator_support.time", fake_time
+        )
+
+        def slow_active() -> None:
+            clock["mono"] += 153.9  # the synchronous publish that froze the tick
+
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids={},
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=slow_active,
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        slow_events = [e for e in mock_event_sink.events if e.name == EventName.TICK_SLOW]
+        assert len(slow_events) == 1
+        payload = slow_events[0].data
+        assert payload["duration_seconds"] == 153.9
+        assert payload["active_seconds"] == 153.9
+        assert payload["dominant_phase"] == "active_sessions"
+
+    def test_no_tick_slow_event_for_fast_tick(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        """A normal (fast) tick must not emit TICK_SLOW."""
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids={},
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        assert not [e for e in mock_event_sink.events if e.name == EventName.TICK_SLOW]
 
     def test_skips_planning_when_health_check_fails(
         self, sample_orchestrator_state, mock_event_sink, sample_event_context

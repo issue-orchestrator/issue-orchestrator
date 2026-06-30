@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -24,6 +24,8 @@ from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     StatusCheckRollupCapability,
     StatusCheckRollupRead,
@@ -545,6 +547,24 @@ def test_pr_fetch_failure_propagates_without_issue_fallback() -> None:
     assert state.issue_refresh_timestamps == {}
     assert state.issue_last_refreshed_at == {}
     repository_host.get_issue.assert_not_called()
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+
+
+def test_missing_pr_clears_stale_rollup_bookkeeping() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_rollup_scan_timestamps={318: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = None
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(repository_host).discover(state)
+
+    assert result.skipped == 1
+    assert state.awaiting_merge_rollup_scan_timestamps == {}
+    repository_host.read_pr_status_check_rollup.assert_not_called()
 
 
 def test_invalid_pr_url_is_skipped_without_repository_fetches() -> None:
@@ -738,6 +758,93 @@ def test_post_publish_rework_comment_read_failure_propagates() -> None:
             label_manager=_label_manager(),
             clock=lambda: 1234.5,
         ).discover(state)
+
+
+def test_recent_rollup_poll_suppresses_post_publish_rework_until_interval_expires() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_rollup_scan_timestamps={318: 1000.0},
+    )
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr(
+            "open",
+            mergeable_state="unstable",
+            labels=["code-reviewed"],
+            status_check_rollup="FAILURE",
+        ),
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1100.0,
+        rollup_scan_interval_seconds=300.0,
+    ).discover(state)
+
+    assert result.checked == 1
+    assert result.still_pending == 1
+    assert result.rework_discovered == 0
+    repository_host.get_pr.assert_called_once_with(318)
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+    assert state.awaiting_merge_rollup_scan_timestamps == {318: 1000.0}
+
+
+def test_rollup_poll_after_interval_discovers_post_publish_rework() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_rollup_scan_timestamps={318: 1000.0},
+    )
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr(
+            "open",
+            mergeable_state="unstable",
+            labels=["code-reviewed"],
+            status_check_rollup="FAILURE",
+        ),
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1400.0,
+        rollup_scan_interval_seconds=300.0,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    repository_host.get_pr.assert_called_once_with(318)
+    repository_host.read_pr_status_check_rollup.assert_called_once_with(318)
+    assert state.awaiting_merge_rollup_scan_timestamps == {318: 1400.0}
+
+
+def test_terminal_pr_detection_bypasses_recent_rollup_throttle() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(
+        session_history=[entry],
+        awaiting_merge_rollup_scan_timestamps={318: 1000.0},
+    )
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr("merged")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        clock=lambda: 1100.0,
+        rollup_scan_interval_seconds=300.0,
+    ).discover(state)
+
+    assert result.discovered == 1
+    assert result.reconciliations[0].status == "merged"
+    repository_host.get_pr.assert_called_once_with(318)
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+    assert state.awaiting_merge_rollup_scan_timestamps == {}
 
 
 def test_post_publish_validation_rework_is_suppressed_when_rework_already_pending() -> None:
@@ -984,6 +1091,35 @@ def test_post_publish_escalation_is_suppressed_when_pr_already_needs_human() -> 
     assert result.rework_discovered == 0
     assert result.escalation_discovered == 0
     assert 228 not in state.awaiting_merge_checks_pending_since
+
+
+def test_needs_human_pr_with_now_readable_failure_recovers_to_rework() -> None:
+    entry = _history_entry()
+    label_manager = _label_manager()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr(
+            "open",
+            mergeable_state="unstable",
+            labels=[label_manager.code_reviewed, label_manager.needs_human],
+            status_check_rollup="FAILURE",
+        ),
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=label_manager,
+        clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    assert result.escalation_discovered == 0
+    rework = result.reworks[0]
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    assert rework.clear_needs_human is True
 
 
 def test_dirty_pr_feedback_uses_conflict_copy() -> None:
@@ -1348,7 +1484,7 @@ def _permission_denied_repo() -> MagicMock:
     )
     repository_host.get_issue.return_value = _issue("open")
     repository_host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead(
-        state=None, capability="permission_denied"
+        state=None, capability="permission_denied", primary_source_denied=True
     )
     return repository_host
 
@@ -1381,11 +1517,12 @@ def test_decisive_pr_with_rollup_permission_denied_escalates_loudly() -> None:
     assert 228 not in state.awaiting_merge_checks_pending_since
 
 
-def test_rollup_permission_denial_is_bounded_and_not_re_probed_next_tick() -> None:
-    """Once the token is observed to lack rollup-read capability, the next
-    tick must NOT re-issue the same GraphQL probe (nor re-log the same
-    permission error). The per-PR diagnostic still surfaces — it is bounded
-    repo-wide, not silently dropped."""
+def test_rollup_permission_denial_bounds_graphql_but_keeps_fallback() -> None:
+    """Once the GraphQL source is observed to lack rollup-read capability, the
+    next tick must NOT re-issue the wasted GraphQL probe (nor re-log the same
+    permission error). The gate still reads the REST fallback each tick
+    (``skip_primary_source=True``) so a now-readable failure is never masked,
+    and the per-PR diagnostic still surfaces — bounded repo-wide, not dropped."""
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = _permission_denied_repo()
@@ -1399,12 +1536,94 @@ def test_rollup_permission_denial_is_bounded_and_not_re_probed_next_tick() -> No
     first = reconciler.discover(state)
     second = reconciler.discover(state)
 
-    # The denial was observed once; the backoff suppresses the second probe.
-    assert repository_host.read_pr_status_check_rollup.call_count == 1
+    # First tick probes GraphQL; the second is inside the backoff window and
+    # reads ONLY the REST fallback — the GraphQL probe is not re-issued.
+    assert repository_host.read_pr_status_check_rollup.call_args_list == [
+        call(318),
+        call(318, skip_primary_source=True),
+    ]
     # The PR is still genuinely blocked, so the diagnostic still fires —
     # bounded downstream by the needs_human label, not hidden.
     assert first.escalation_discovered == 1
     assert second.escalation_discovered == 1
+    assert state.status_rollup_capability.permission_denied_since == 1000.0
+
+
+def test_needs_human_pr_recovers_to_rework_during_graphql_backoff() -> None:
+    """Repo-wide GraphQL backoff must NOT mask a now-readable failure: a stale
+    needs-human PR whose REST fallback now reports FAILURE recovers to rework
+    even while the GraphQL backoff window is active (issue #6589 F1/A1)."""
+    entry = _history_entry()
+    label_manager = _label_manager()
+    state = OrchestratorState(session_history=[entry])
+    # GraphQL was denied earlier this hour; the backoff window is still active.
+    state.status_rollup_capability.permission_denied_since = 1000.0
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open",
+        mergeable_state="unstable",
+        labels=[label_manager.code_reviewed, label_manager.needs_human],
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    # The gate reads the REST fallback (skip_primary_source=True) during the
+    # backoff window; it now classifies a failure GraphQL could not read.
+    repository_host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead(
+        state="FAILURE", capability="ok", primary_source_denied=True
+    )
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=label_manager,
+        clock=lambda: 1500.0,  # within the 3600s window
+        repo="owner/repo",
+    ).discover(state)
+
+    # The fallback was read despite the active backoff.
+    repository_host.read_pr_status_check_rollup.assert_called_once_with(
+        318, skip_primary_source=True
+    )
+    assert result.escalation_discovered == 0
+    assert result.rework_discovered == 1
+    rework = result.reworks[0]
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    assert rework.clear_needs_human is True
+    # A fallback-only read cannot prove GraphQL recovered — window preserved.
+    assert state.status_rollup_capability.permission_denied_since == 1000.0
+
+
+def test_decisive_pr_reworks_via_rest_fallback_during_graphql_backoff() -> None:
+    """A repo-wide GraphQL backoff (armed by an earlier PR) must not mask a
+    DIFFERENT decisive PR whose REST fallback reports FAILURE — it still
+    reworks rather than waiting forever behind the backoff (#6589 F1/A1)."""
+    entry = _history_entry()
+    label_manager = _label_manager()
+    state = OrchestratorState(session_history=[entry])
+    state.status_rollup_capability.permission_denied_since = 1000.0
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="unstable", labels=[label_manager.code_reviewed]
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead(
+        state="FAILURE", capability="ok", primary_source_denied=True
+    )
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=label_manager,
+        clock=lambda: 1500.0,
+        repo="owner/repo",
+    ).discover(state)
+
+    repository_host.read_pr_status_check_rollup.assert_called_once_with(
+        318, skip_primary_source=True
+    )
+    assert result.rework_discovered == 1
+    assert result.escalation_discovered == 0
+    rework = result.reworks[0]
+    assert rework.source == POST_PUBLISH_VALIDATION_SOURCE
+    # No stale needs-human on this PR, so nothing to clear.
+    assert rework.clear_needs_human is False
     assert state.status_rollup_capability.permission_denied_since == 1000.0
 
 
@@ -1433,8 +1652,8 @@ def test_rollup_permission_backoff_expires_and_re_probes() -> None:
 
 def test_decisive_pr_with_transient_rollup_error_waits_and_retries() -> None:
     """A transient rollup failure is NOT a permission problem: treat it as
-    PENDING-equivalent (wait), do not escalate, and do not back off — the
-    next tick re-probes."""
+    PENDING-equivalent (wait), do not escalate, and retry after the
+    per-PR rollup cadence expires."""
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])
     repository_host = MagicMock()
@@ -1445,10 +1664,12 @@ def test_decisive_pr_with_transient_rollup_error_waits_and_retries() -> None:
     repository_host.read_pr_status_check_rollup.return_value = StatusCheckRollupRead(
         state=None, capability="transient_error"
     )
+    now = {"t": 1000.0}
     reconciler = AwaitingMergeReconciler(
         repository_host,
         label_manager=_label_manager(),
-        clock=lambda: 1000.0,
+        clock=lambda: now["t"],
+        rollup_scan_interval_seconds=300.0,
     )
 
     result = reconciler.discover(state)
@@ -1458,7 +1679,210 @@ def test_decisive_pr_with_transient_rollup_error_waits_and_retries() -> None:
     # PENDING-equivalent → WAIT_FOR_CHECKS bookkeeping recorded, not escalated.
     assert state.awaiting_merge_checks_pending_since[228] == 1000.0
     assert state.status_rollup_capability.permission_denied_since is None
+    assert state.awaiting_merge_rollup_scan_timestamps == {318: 1000.0}
 
     reconciler.discover(state)
-    # Transient does not trip the backoff — the rollup is re-probed.
+    # Transient does not trip the permission backoff, but the PR cadence
+    # still suppresses the expensive retry.
+    assert repository_host.read_pr_status_check_rollup.call_count == 1
+
+    now["t"] = 1301.0
+    reconciler.discover(state)
     assert repository_host.read_pr_status_check_rollup.call_count == 2
+
+
+# --------------------------------------------------------------------------- #
+# Merge queue mode (merge_queue.enabled)
+# --------------------------------------------------------------------------- #
+
+
+def _merge_queue(repository_host: MagicMock, *, failure_action: str = "rework"):
+    from issue_orchestrator.control.merge_queue_coordinator import MergeQueueCoordinator
+    from issue_orchestrator.events import EventContext
+    from issue_orchestrator.infra.config_models import MergeQueueConfig
+
+    return MergeQueueCoordinator(
+        config=MergeQueueConfig(enabled=True, failure_action=failure_action),
+        repository_host=repository_host,
+        events=InMemoryEventSink(),
+        event_context=EventContext(),
+        label_manager=_label_manager(),
+    )
+
+
+def _reconciler_with_merge_queue(
+    repository_host: MagicMock, *, failure_action: str = "rework"
+) -> AwaitingMergeReconciler:
+    return AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        merge_queue=_merge_queue(repository_host, failure_action=failure_action),
+    )
+
+
+def test_merge_queue_behind_base_pr_is_enqueued_not_reworked() -> None:
+    """The headline behavior: with merge queue enabled, an approved PR that is
+    only *behind base* is enqueued, NOT sent to rework."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="behind", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.absent()
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.enqueue_discovered == 1
+    assert result.rework_discovered == 0
+    assert result.enqueues[0].pr_number == 318
+    assert result.enqueues[0].issue_number == 228
+
+
+def test_merge_queue_disabled_still_reworks_behind_base_pr() -> None:
+    """Without merge queue, the existing behind-base rework behavior is intact."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr("open", mergeable_state="behind", labels=["code-reviewed"]),
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host, label_manager=_label_manager(), clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    assert result.enqueue_discovered == 0
+
+
+def test_merge_queue_conflict_still_routes_to_rework() -> None:
+    """Merge conflicts cannot be fixed by the queue, so they still go to rework."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="dirty", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.absent()
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.rework_discovered == 1
+    assert result.enqueue_discovered == 0
+
+
+def test_merge_queue_already_queued_pr_waits() -> None:
+    """A PR already in the queue is observed, not re-enqueued or reworked."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="blocked", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.present(
+        MergeQueueEntry("QUEUED", position=1)
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.enqueue_discovered == 0
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+    # An already-queued PR must not pay for a status-rollup read.
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+
+
+def test_merge_queue_indeterminate_read_takes_no_action() -> None:
+    """A queue-read failure / unmodeled state must NOT enqueue, rework, or
+    escalate, and must not even pay for a status-rollup read. It is observed
+    again next tick instead of acting on the PR's (possibly stale) status."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    # A behind-base PR that, if the read were mistaken for ABSENT, would enqueue.
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="behind", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = (
+        MergeQueueRead.indeterminate()
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.enqueue_discovered == 0
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+
+
+def test_merge_queue_unreadable_entry_does_not_enqueue() -> None:
+    """End-to-end through the coordinator's own read path: a RepositoryHostError
+    from the provider resolves to INDETERMINATE, so no fact is produced."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="behind", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.side_effect = RepositoryHostError("boom")
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.enqueue_discovered == 0
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+
+
+def test_merge_queue_failure_routes_to_rework() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="blocked", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.present(
+        MergeQueueEntry("UNMERGEABLE")
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = _reconciler_with_merge_queue(
+        repository_host, failure_action="rework"
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    assert result.enqueue_discovered == 0
+
+
+def test_merge_queue_failure_routes_to_needs_human() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="blocked", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.present(
+        MergeQueueEntry("UNMERGEABLE")
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = _reconciler_with_merge_queue(
+        repository_host, failure_action="needs_human"
+    ).discover(state)
+
+    assert result.escalation_discovered == 1
+    assert result.escalations[0].kind == "merge_queue_failed"
+    assert result.rework_discovered == 0

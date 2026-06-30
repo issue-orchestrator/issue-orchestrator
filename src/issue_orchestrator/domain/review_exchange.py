@@ -32,6 +32,17 @@ if TYPE_CHECKING:
     from .review_exchange_turn import ReviewExchangeTurnPacket
 
 
+# Stable marker embedded in reviewer-worktree checkout/fast-forward failure
+# messages. The reviewer-worktree checkout is the operation that committed
+# ``.issue-orchestrator`` runtime artifacts break (#6659). The completion
+# failure-reporting layer keys its runtime-artifact recovery guidance off this
+# marker so that note is attached ONLY to this failure class — never to the
+# many unrelated halts that share the ``review_exchange:`` error prefix
+# (max-rounds/no-progress, missing exchange outcome, background-job
+# cancellation, invalid exchange config, timeout cancellation).
+REVIEWER_WORKTREE_CHECKOUT_FAILURE_MARKER = "[reviewer-worktree-checkout-failure]"
+
+
 @dataclass(frozen=True)
 class ReviewExchangeResponse:
     """One response produced by either role during a review-exchange round."""
@@ -155,10 +166,11 @@ def build_reviewer_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "E) whether the bounded owner/port/command abstraction is strong enough, "
         "not merely whether the diff works\n"
         f"{prior}\n"
-        "Write exactly one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"
-        '  {"response_type":"ok","getting_closer":true,"response_text":"Looks good."}\n'
-        '  {"response_type":"changes_requested","getting_closer":true,"response_text":"Fix X."}\n'
-        '  {"response_type":"disagree","getting_closer":false,"response_text":"Wrong approach."}\n'
+        "Submit your verdict by running the `exchange-respond` command "
+        "(do not write a response file):\n"
+        "  exchange-respond ok --getting-closer --text \"Looks good.\"\n"
+        "  exchange-respond changes_requested --getting-closer --text \"Fix X.\"\n"
+        "  exchange-respond disagree --not-getting-closer --text \"Wrong approach.\"\n"
     )
 
 
@@ -190,7 +202,7 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         "2. Commit all changes (clean working tree required).\n"
         "3. Run `prepush-check --dirty-only -v` and fix any dirty-worktree failure.\n"
         "4. Run `coding-done completed --implementation '...' --problems '...'`\n"
-        "5. Write one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE\n"
+        "5. Submit your verdict by running `exchange-respond`\n"
         "Runtime-managed metadata under `.issue-orchestrator/` and `.claude/` "
         "is ignored by the orchestrator dirty guard. Tracked project files, "
         "generated sources, lock files, schemas, and other repo changes must "
@@ -199,10 +211,9 @@ def build_coder_prompt(packet: "ReviewExchangeTurnPacket") -> str:
         f"Session output dir: {packet.run_dir}\n"
         f"\nReviewer report:\n{packet.reviewer_feedback}\n"
         "\n"
-        "After coding-done succeeds, write your JSON response to "
-        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"
-        '  {"response_type":"ok","response_text":"Applied fixes..."}\n'
-        '  {"response_type":"disagree","response_text":"This is wrong because..."}\n'
+        "After coding-done succeeds, submit your verdict with `exchange-respond`:\n"
+        "  exchange-respond ok --text \"Applied fixes...\"\n"
+        "  exchange-respond disagree --text \"This is wrong because...\"\n"
     )
 
 

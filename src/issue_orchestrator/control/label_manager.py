@@ -59,6 +59,15 @@ class LabelManager:
             config.provider_resilience.circuit_breaker.label
         )
 
+        # Triage-reviewed is managed WITHOUT the orchestrator prefix throughout
+        # the triage subsystem (triage_manifest_builder, completion_action_planner,
+        # cleanup_manager, fact_gatherer all use the raw configured value), so we
+        # keep the raw form here for callers that must match the label actually
+        # written to PRs. See the `triage_reviewed` property.
+        self._triage_reviewed_base: str = (
+            config.triage_reviewed_label or "triage-reviewed"
+        )
+
         # Registry keyed by internal key
         self._entries: dict[str, LabelEntry] = {}
         self._build_registry(config)
@@ -236,6 +245,18 @@ class LabelManager:
     @property
     def code_reviewed(self) -> str:
         return self._resolved["code_reviewed"]
+
+    @property
+    def triage_reviewed(self) -> str:
+        """The triage-reviewed label as it is actually applied to PRs.
+
+        Unlike most labels, this one is NOT prefixed: the triage subsystem
+        writes and reads ``config.triage_reviewed_label`` (default
+        ``triage-reviewed``) in raw form. Callers that gate on the label
+        present on a PR — e.g. the merge-queue triage gate — must match that
+        raw value, so this property deliberately skips prefix resolution.
+        """
+        return self._triage_reviewed_base
 
     @property
     def review_keep_approach(self) -> str:

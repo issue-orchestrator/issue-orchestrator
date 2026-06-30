@@ -42,6 +42,7 @@ from issue_orchestrator.domain.models import (
     CompletionOutcome,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
     RequestedAction,
     ObservedCompletion,
@@ -1539,6 +1540,78 @@ class TestPlanDiscoveredReworks:
         assert len(queue_actions) == 1
         assert queue_actions[0].source == "post_publish_validation"
         assert queue_actions[0].feedback == discovered.feedback
+
+    def test_post_publish_recovery_clears_stale_needs_human(self):
+        """When recovery routes a previously-escalated PR back to rework
+        (clear_needs_human=True), the planner removes the stale needs-human
+        label so the PR isn't left both queued-for-rework and human-flagged."""
+        from issue_orchestrator.domain.models import DiscoveredRework
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=2,
+            source="post_publish_validation",
+            feedback="PR #100 failed checks; routing back to rework.",
+            clear_needs_human=True,
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_needs_human = [
+            a for a in plan.actions
+            if a.action_type == ActionType.REMOVE_LABEL
+            and a.issue_number == 100
+            and a.label == "needs-human"
+        ]
+        assert len(remove_needs_human) == 1
+
+    def test_post_publish_rework_without_recovery_keeps_needs_human_untouched(self):
+        """The normal post-publish path (clear_needs_human=False) must not emit
+        a needs-human removal."""
+        from issue_orchestrator.domain.models import DiscoveredRework
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=2,
+            source="post_publish_validation",
+            feedback="PR #100 failed checks; routing back to rework.",
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        remove_needs_human = [
+            a for a in plan.actions
+            if a.action_type == ActionType.REMOVE_LABEL
+            and a.issue_number == 100
+            and a.label == "needs-human"
+        ]
+        assert remove_needs_human == []
 
     def test_post_publish_validation_rework_skips_duplicate_marker_comment(self):
         """When the marker comment already exists on the PR, the planner
@@ -3237,3 +3310,40 @@ class TestPlanStaleInProgressCleanup:
         # No cleanup actions
         remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
         assert len(remove_actions) == 0
+
+
+class TestMergeQueueEnqueuePlanning:
+    """Discovered merge-queue facts become EnqueueToMergeQueueActions."""
+
+    def test_enqueue_fact_becomes_enqueue_action(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        snapshot = make_snapshot(
+            discovered_merge_queue_enqueues=[
+                DiscoveredMergeQueueEnqueue(
+                    issue_number=228,
+                    pr_number=318,
+                    pr_url="https://github.com/owner/repo/pull/318",
+                    issue_key="M1-228",
+                )
+            ],
+        )
+
+        plan = planner.plan(snapshot)
+
+        actions = plan.actions_of_type(ActionType.ENQUEUE_TO_MERGE_QUEUE)
+        assert len(actions) == 1
+        assert actions[0].pr_number == 318
+        assert actions[0].issue_number == 228
+        assert actions[0].issue_key == "M1-228"
+
+    def test_no_enqueue_actions_without_facts(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        plan = planner.plan(make_snapshot())
+
+        assert plan.actions_of_type(ActionType.ENQUEUE_TO_MERGE_QUEUE) == []

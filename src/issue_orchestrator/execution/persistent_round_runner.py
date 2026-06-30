@@ -347,6 +347,7 @@ def _submit_prompt_with_enter(
     label: str,
     timeout_seconds: float,
     write_timeout_seconds: float,
+    read_response: Callable[[], dict[str, Any] | None],
 ) -> tuple[int, dict[str, Any] | None]:
     """Write the prompt, let the echo settle, then submit with a standalone Enter.
 
@@ -382,7 +383,7 @@ def _submit_prompt_with_enter(
             write_timeout_seconds=write_timeout_seconds,
         )
     except PersistentRoundError:
-        recovered = _try_read_response(response_file)
+        recovered = read_response()
         if recovered is None:
             raise
         logger.info(
@@ -406,11 +407,15 @@ def send_round(
     now: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     role_label: str | None = None,
+    response_reader: Callable[[], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
-    """Inject ``prompt`` into the persistent agent and wait for its response file.
+    """Inject ``prompt`` into the persistent agent and wait for its response.
 
-    Stale response files are removed before the prompt is sent so the
-    appearance of the file is unambiguously this round's response.
+    The response source is selected by ``response_reader``: ``None`` (default)
+    polls ``response_file`` on disk (stale files are cleared first); when
+    provided, the loop polls that callable (the orchestrator-owned
+    ``TurnMailbox``, fed by ``exchange-respond``) and touches no file. The PTY
+    pumping, exit/idle detection, and heartbeats are identical either way.
 
     A response file that exists but does not yet parse as JSON is treated
     as still-being-written: the loop keeps polling until the JSON parses,
@@ -451,10 +456,11 @@ def send_round(
     label = role_label or f"pid={session.proc.pid}"
     payload = prompt.encode("utf-8")
     started_at = now()
+    channel = "file" if response_reader is None else "mailbox"
     logger.info(
-        "[send_round] start role=%s pid=%d response_file=%s prompt_bytes=%d "
-        "timeout=%.1fs write_timeout=%.1fs poll_interval=%.2fs",
-        label, session.proc.pid, response_file, len(payload),
+        "[send_round] start role=%s pid=%d channel=%s response_file=%s "
+        "prompt_bytes=%d timeout=%.1fs write_timeout=%.1fs poll_interval=%.2fs",
+        label, session.proc.pid, channel, response_file, len(payload),
         timeout_seconds, write_timeout_seconds, poll_interval_seconds,
     )
 
@@ -469,7 +475,18 @@ def send_round(
         now=now,
         sleep=sleep,
     )
-    response_file.unlink(missing_ok=True)
+
+    # When the mailbox is the channel, nothing is read from or written to
+    # ``response_file`` — so there is no stale file to clear and the read is
+    # the mailbox poll.
+    file_channel = response_reader is None
+    if file_channel:
+        response_file.unlink(missing_ok=True)
+        read_response: Callable[[], dict[str, Any] | None] = (
+            lambda: _try_read_response(response_file)
+        )
+    else:
+        read_response = response_reader
     write_deadline = started_at + min(timeout_seconds, write_timeout_seconds)
     written, recovered = _submit_prompt_with_enter(
         session, payload,
@@ -477,6 +494,7 @@ def send_round(
         now=now, sleep=sleep, label=label,
         timeout_seconds=timeout_seconds,
         write_timeout_seconds=write_timeout_seconds,
+        read_response=read_response,
     )
     if recovered is not None:
         return recovered
@@ -497,6 +515,8 @@ def send_round(
         now=now,
         sleep=sleep,
         label=label,
+        read_response=read_response,
+        file_channel=file_channel,
     )
 
 
@@ -513,9 +533,11 @@ def _wait_for_round_response(
     now: Callable[[], float],
     sleep: Callable[[float], None],
     label: str,
+    read_response: Callable[[], dict[str, Any] | None],
+    file_channel: bool,
 ) -> dict[str, Any]:
-    """Poll until the response file parses as JSON, the agent exits, or the
-    deadline expires.
+    """Poll until the response arrives (via ``read_response``), the agent
+    exits, or the deadline expires.
 
     An agent that exits is given one final response-file read — one-shot
     agents legitimately answer and then terminate. Exit without a valid
@@ -547,7 +569,7 @@ def _wait_for_round_response(
             last_activity_at = current
         if recording_size is not None:
             last_recording_size = recording_size
-        parsed = _try_read_response(response_file)
+        parsed = read_response()
         if parsed is not None:
             drain_pty_output_until_quiet(
                 session,
@@ -564,7 +586,7 @@ def _wait_for_round_response(
             return parsed
         ret = session.proc.poll()
         if ret is not None:
-            final = _try_read_response(response_file)
+            final = read_response()
             if final is not None:
                 logger.info(
                     "[send_round] response received at exit role=%s pid=%d "
@@ -572,7 +594,14 @@ def _wait_for_round_response(
                     label, session.proc.pid, ret, now() - started_at,
                 )
                 return final
-            if response_file.exists():
+            # "Invalid JSON left behind" is a file-channel concept only. In
+            # mailbox mode the response file is not the channel, so a stale or
+            # legacy file an agent leaves behind must NOT downgrade the round to
+            # the non-respawnable INVALID_RESPONSE — an exit without a mailbox
+            # delivery is a process that exited before responding (respawnable),
+            # honouring the fail-safe contract that a forgotten exchange-respond
+            # degrades to retry, never a wrong/missing classification.
+            if file_channel and response_file.exists():
                 logger.warning(
                     "[send_round] agent exited with invalid JSON role=%s pid=%d "
                     "exit_code=%d response_file=%s",

@@ -124,6 +124,29 @@ def _write_review_report_if_needed(outcome: str) -> None:
     report_path.write_text(report_text, encoding="utf-8")
 
 
+def _submit_verdict(payload: dict[str, object]) -> None:
+    """Submit the verdict the way production agents do.
+
+    Under the orchestrator-owned mailbox (Control API port present in env) run
+    the real ``exchange-respond`` CLI; otherwise fall back to the legacy
+    response file so file-channel tests keep working.
+    """
+    if os.environ.get("ISSUE_ORCHESTRATOR_API_PORT") or os.environ.get(
+        "ORCHESTRATOR_API_PORT"
+    ):
+        from issue_orchestrator.entrypoints.cli_tools.exchange_respond import (
+            main as exchange_respond_main,
+        )
+
+        rc = exchange_respond_main(["--json", json.dumps(payload)])
+        if rc != 0:
+            print(f"[stub-{role}] exchange-respond failed rc={rc}", flush=True)
+            sys.exit(9)
+    else:
+        response_file.parent.mkdir(parents=True, exist_ok=True)
+        response_file.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _coder_payload(round_index: int) -> dict[str, object]:
     worktree = Path.cwd()
     completion_full = worktree / completion_path_rel
@@ -186,8 +209,7 @@ while True:
     else:
         payload = _coder_payload(round_index)
     time.sleep(0.02)
-    response_file.parent.mkdir(parents=True, exist_ok=True)
-    response_file.write_text(json.dumps(payload), encoding="utf-8")
+    _submit_verdict(payload)
     print(f"[stub-{role}] wrote round {round_index}", flush=True)
     if _should_exit_after_response():
         print(f"[stub-{role}] exiting after response", flush=True)

@@ -1,5 +1,11 @@
 # Migrated to sectioned format
 
+repo:
+  name: BruceBGordon/issue-orchestrator
+  github:
+    keyring_service: issue-orchestrator
+    keyring_username: github-token
+
 worktrees:
   base: "../"
   worktree_branch_on_recreate: delete
@@ -82,6 +88,16 @@ review:
     # Persistent coder<->reviewer exchange (code default; explicit for clarity,
     # matching tixmeup's config).
     mode: "via-local-loop"
+
+# Route approved PRs through GitHub's native merge queue instead of reworking
+# them merely for being behind base. Requires the repo's branch protection to
+# have the merge queue enabled; otherwise enqueue attempts fail (logged, not
+# fatal). Conflicts and failed required checks still go to rework.
+merge_queue:
+  enabled: true
+  provider: "github"
+  enqueue_after: "code-reviewed"
+  failure_action: "rework"
 
 validation:
   quick:

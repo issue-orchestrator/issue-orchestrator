@@ -749,7 +749,12 @@ class TestSetupLogging:
 
                             setup_logging(repo_root="/tmp/test-repo", level="INFO")
 
-                            mock_logger.setLevel.assert_called_once()
+                            # Root logger set to the requested level. (setup_logging
+                            # also pins httpx/httpcore to WARNING, so setLevel is
+                            # called more than once — assert intent, not count.)
+                            import logging
+
+                            mock_logger.setLevel.assert_any_call(logging.INFO)
                             assert mock_file_handler.called or mock_rotating.called
                             mock_logger.addHandler.assert_called_once_with(mock_handler)
 
@@ -772,10 +777,11 @@ class TestSetupLogging:
 
                         setup_logging(repo_root="/tmp/test-repo", level="DEBUG")
 
-                        # Verify debug level was set
+                        # Verify debug level was set. setup_logging also pins
+                        # httpx/httpcore to WARNING, so assert intent, not count.
                         import logging
 
-                        mock_logger.setLevel.assert_called_once()
+                        mock_logger.setLevel.assert_any_call(logging.DEBUG)
 
     def test_setup_logging_removes_existing_handlers(self):
         """Verify logging removes existing handlers before setup."""

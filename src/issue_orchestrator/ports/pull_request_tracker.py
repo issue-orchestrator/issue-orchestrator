@@ -54,14 +54,122 @@ class StatusCheckRollupRead:
     - ``transient_error``: an ordinary GitHub failure (5xx, timeout).
       Safe to retry next tick; callers treat it as "rollup not yet
       known" (PENDING-equivalent) rather than escalating.
+
+    ``primary_source_denied`` is ``True`` when the primary (GraphQL)
+    rollup source was itself permission-denied on this read, *regardless*
+    of whether a fallback source (REST check-runs / combined status) then
+    produced a usable answer. The capability-owning gate keys its
+    repo-wide GraphQL backoff off this flag — so it can stop re-probing a
+    scope-blocked GraphQL source even when a fallback source saved this
+    particular read, without suppressing that still-classifying fallback.
+    A whole-read ``permission_denied`` can only arise when the primary
+    source was denied (and no fallback could read a result), so the two
+    facts are kept consistent (enforced in ``__post_init__``).
     """
 
     state: StatusCheckRollupState | None
     capability: StatusCheckRollupCapability = "ok"
+    primary_source_denied: bool = False
+
+    def __post_init__(self) -> None:
+        # A whole-read permission denial can only happen when the primary
+        # (GraphQL) source was denied AND no fallback source could read a
+        # result, so the two facts must never disagree.
+        if self.capability == "permission_denied" and not self.primary_source_denied:
+            raise ValueError(
+                "permission_denied rollup read must set primary_source_denied=True"
+            )
 
     @property
     def permission_denied(self) -> bool:
         return self.capability == "permission_denied"
+
+
+# GitHub `MergeQueueEntry.state` values (uppercase, as returned by GraphQL).
+# A PR that is not in the merge queue has no entry at all (``None``).
+MergeQueueEntryState = Literal[
+    "QUEUED", "AWAITING_CHECKS", "MERGEABLE", "PENDING", "LOCKED", "UNMERGEABLE"
+]
+
+# Entry states that mean the PR is still progressing through the queue and the
+# orchestrator should observe rather than re-enqueue or rework.
+_ACTIVE_MERGE_QUEUE_STATES: tuple[MergeQueueEntryState, ...] = (
+    "QUEUED",
+    "AWAITING_CHECKS",
+    "MERGEABLE",
+    "PENDING",
+    "LOCKED",
+)
+
+
+@dataclass(frozen=True)
+class MergeQueueEntry:
+    """A PR's current state/position in the provider's merge queue.
+
+    Carried by a ``PRESENT`` :class:`MergeQueueRead` from
+    :meth:`PullRequestTracker.read_merge_queue_entry`.
+    """
+
+    state: MergeQueueEntryState
+    position: int | None = None
+
+    @property
+    def is_active(self) -> bool:
+        """True while the entry is still progressing through the queue."""
+        return self.state in _ACTIVE_MERGE_QUEUE_STATES
+
+    @property
+    def is_failed(self) -> bool:
+        """True when GitHub has determined the entry cannot be merged."""
+        return self.state == "UNMERGEABLE"
+
+
+# Outcome kind of reading a PR's merge queue entry. Mirrors the three-valued
+# discipline of ``StatusCheckRollupRead``: callers must NOT collapse "could not
+# determine the queue state" into "not enqueued", because that turns a transient
+# read failure (or an unmodeled provider state) into an actionable "enqueue this
+# PR" / "rework this PR" decision based on stale PR status.
+MergeQueueReadStatus = Literal["PRESENT", "ABSENT", "INDETERMINATE"]
+
+
+@dataclass(frozen=True)
+class MergeQueueRead:
+    """Typed outcome of reading a PR's merge queue entry.
+
+    The merge queue coordinator must treat three cases differently, so this read
+    never collapses them into a bare ``MergeQueueEntry | None``:
+
+    - ``PRESENT``: the PR is in the queue; ``entry`` holds its state/position.
+    - ``ABSENT``: the provider confirms the PR is **not** in the queue. Only this
+      outcome may drive a fresh enqueue/rework/escalation decision.
+    - ``INDETERMINATE``: the queue state could not be determined — the read
+      failed (transient/auth) or the provider reported a state we do not model.
+      Callers must treat this as non-actionable (wait/observe next tick); it is
+      never "not enqueued".
+    """
+
+    status: MergeQueueReadStatus
+    entry: MergeQueueEntry | None = None
+
+    @staticmethod
+    def present(entry: MergeQueueEntry) -> "MergeQueueRead":
+        return MergeQueueRead("PRESENT", entry)
+
+    @staticmethod
+    def absent() -> "MergeQueueRead":
+        return MergeQueueRead("ABSENT")
+
+    @staticmethod
+    def indeterminate() -> "MergeQueueRead":
+        return MergeQueueRead("INDETERMINATE")
+
+    @property
+    def is_indeterminate(self) -> bool:
+        return self.status == "INDETERMINATE"
+
+    @property
+    def is_present(self) -> bool:
+        return self.status == "PRESENT"
 
 
 @dataclass
@@ -81,7 +189,9 @@ class PRInfo:
             blocked/...). Says merge readiness.
         status_check_rollup: Aggregated state of required + non-required checks
             on the PR head commit. Says check truth. `None` when not fetched
-            (only the single-PR `get_pr` path populates this).
+            (only the single-PR `get_pr` path populates this). Read-capability
+            (token cannot read check status vs. no checks configured) is carried
+            separately by :class:`StatusCheckRollupRead`, not on this field.
     """
 
     number: int
@@ -234,15 +344,28 @@ class PullRequestTracker(Protocol):
         """
         ...
 
-    def read_pr_status_check_rollup(self, pr_number: int) -> "StatusCheckRollupRead":
+    def read_pr_status_check_rollup(
+        self, pr_number: int, *, skip_primary_source: bool = False
+    ) -> "StatusCheckRollupRead":
         """Read a PR's head-commit status-check rollup, classifying failures.
 
-        Costs one GraphQL round-trip. Call this ONLY when the rollup is
-        decisive for a merge-readiness decision — the awaiting-merge
-        reconciler fetches it solely for reviewer-approved PRs whose
-        ``mergeable_state`` is ``unstable`` or ``blocked``. Terminal
-        (closed/merged) and ``clean``/``dirty``/``behind`` PRs must NOT
-        call this; they pay no rollup cost.
+        Costs one GraphQL round-trip on the happy path. Implementations may
+        fall back to other status sources after a GraphQL capability failure,
+        but callers must invoke this ONLY when the rollup is decisive for a
+        merge-readiness decision — the awaiting-merge reconciler fetches it
+        solely for reviewer-approved PRs whose ``mergeable_state`` is
+        ``unstable`` or ``blocked``. Terminal (closed/merged) and
+        ``clean``/``dirty``/``behind`` PRs must NOT call this; they pay no
+        rollup cost.
+
+        When ``skip_primary_source`` is True the primary (GraphQL) probe is
+        skipped entirely and only the fallback sources are read. The
+        capability-owning gate passes this during a primary-source
+        permission-backoff window: the GraphQL scope is known-missing, so
+        re-probing it would only waste a round-trip and re-log the same
+        permission error, yet the REST check-run/commit-status fallback can
+        still classify a now-readable failure. The returned read still carries
+        ``primary_source_denied=True`` in that case.
 
         Unlike a plain PR fetch, this never swallows a permission failure
         into a ``None`` rollup. The returned ``StatusCheckRollupRead``
@@ -251,9 +374,54 @@ class PullRequestTracker(Protocol):
         (``ok`` with ``state=None``) and from a transient GitHub failure
         (``transient_error``).
 
+        When the primary GraphQL rollup query is inaccessible (e.g. the token
+        lacks the scope), implementations should fall back to the REST
+        check-runs/combined-status API on the PR head SHA before giving up, so
+        completed-failed checks are still detected. Only when every source is
+        inaccessible should the read report ``permission_denied`` so callers can
+        tell "unreadable" apart from "no checks" (``ok`` with ``state=None``).
+
         Returns:
             A :class:`StatusCheckRollupRead` describing the rollup state
             and the read capability.
+        """
+        ...
+
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Add a pull request to the provider's native merge queue.
+
+        Only the merge queue coordinator should call this, and only for PRs
+        that have cleared the orchestrator's approval gate. GitHub remains the
+        merge authority — this just hands the PR to the queue; GitHub validates
+        required checks against the merge group and performs the protected
+        merge. Idempotent from the caller's perspective: enqueueing an
+        already-queued PR is a no-op (or a benign provider error the caller
+        treats as "already queued").
+
+        Raises:
+            RepositoryError: If there's an error reaching the provider.
+        """
+        ...
+
+    def read_merge_queue_entry(self, pr_number: int) -> "MergeQueueRead":
+        """Read a PR's current merge queue entry as a typed three-valued result.
+
+        Costs one GraphQL round-trip. The coordinator uses this to decide
+        between enqueueing a newly-eligible PR, observing one already in the
+        queue, and routing a failed (``UNMERGEABLE``) entry through the
+        configured failure policy.
+
+        Returns:
+            A :class:`MergeQueueRead`. ``PRESENT`` carries the
+            :class:`MergeQueueEntry`; ``ABSENT`` means the provider confirms the
+            PR is not enqueued; ``INDETERMINATE`` means the provider reported a
+            state we do not model (the queue state could not be determined and
+            must not be treated as "not enqueued").
+
+        Raises:
+            RepositoryError: If there's an error reaching the provider. Callers
+                that must not act on an unknown queue state (the coordinator)
+                map this to ``INDETERMINATE`` rather than to ``ABSENT``.
         """
         ...
 

@@ -18,6 +18,7 @@ from issue_orchestrator.control.actions import (
     LaunchValidationRetryAction,
     StopSessionAction,
     QueueReviewAction,
+    EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CreateTriageIssueAction,
     CleanupSessionAction,
@@ -2085,6 +2086,39 @@ class TestExpectedStateEnforcement:
         mock_labels.add_label.assert_not_called()
 
 
+class TestEnqueueToMergeQueueAction:
+    """The applier performs the protected enqueue and emits an event."""
+
+    def test_enqueue_calls_repository_and_emits_event(
+        self, applier, mock_repository_host, mock_events
+    ):
+        action = EnqueueToMergeQueueAction(
+            issue_number=228, pr_number=318, pr_url="https://x/pull/318",
+            issue_key="M1-228",
+        )
+
+        result = applier.apply(action)
+
+        assert result.result_type == ActionResultType.SUCCESS
+        mock_repository_host.enqueue_to_merge_queue.assert_called_once_with(318)
+        published = [
+            c.args[0] for c in mock_events.publish.call_args_list
+            if getattr(c.args[0], "name", None) == EventName.MERGE_QUEUE_ENQUEUED.value
+        ]
+        assert len(published) == 1
+        assert published[0].data["pr_number"] == 318
+
+    def test_enqueue_failure_is_reported_not_raised(
+        self, applier, mock_repository_host
+    ):
+        mock_repository_host.enqueue_to_merge_queue.side_effect = RuntimeError("boom")
+        action = EnqueueToMergeQueueAction(issue_number=228, pr_number=318)
+
+        result = applier.apply(action)
+
+        assert result.result_type == ActionResultType.FAILURE
+
+
 class TestClaimGateAudit:
     """Structural test: all GitHub-write action types must verify claim ownership.
 
@@ -2107,6 +2141,7 @@ class TestClaimGateAudit:
         ActionType.SET_ISSUE_STATE,
         ActionType.ESCALATE_TO_HUMAN,
         ActionType.QUEUE_REVIEW,
+        ActionType.ENQUEUE_TO_MERGE_QUEUE,
     }
 
     # Action types that legitimately skip claim verification:
@@ -2166,6 +2201,7 @@ class TestClaimGateAudit:
             ActionType.SET_ISSUE_STATE: "_apply_set_issue_state",
             ActionType.ESCALATE_TO_HUMAN: "_apply_escalate",
             ActionType.QUEUE_REVIEW: "_apply_queue_review",
+            ActionType.ENQUEUE_TO_MERGE_QUEUE: "_apply_enqueue_to_merge_queue",
         }
 
         for action_type in self.GITHUB_WRITE_ACTIONS:

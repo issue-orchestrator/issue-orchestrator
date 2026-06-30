@@ -153,6 +153,8 @@ class RetryHistoryState:
         self._clear_discovered_facts(issue_number, superseded_pr_numbers)
         self._clear_progress_flags(issue_number)
         self._clear_queue_and_ui_hints(issue_number)
+        for pr_number in superseded_pr_numbers:
+            self._state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
 
         return PendingStateClearResult(
             review_count_before=review_count_before,
@@ -260,6 +262,11 @@ class RetryHistoryState:
         ]
         self._state.discovered_awaiting_merge_escalations = [
             d for d in self._state.discovered_awaiting_merge_escalations
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_merge_queue_enqueues = [
+            d for d in self._state.discovered_merge_queue_enqueues
             if d.issue_number != issue_number
             and d.pr_number not in superseded_pr_numbers
         ]

@@ -32,6 +32,11 @@ from issue_orchestrator.domain.completion_finalization import (
     decide_completion_finalization,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.provider_resilience import (
+    ProviderStatus,
+    now_iso,
+    write_provider_status,
+)
 from issue_orchestrator.observation.observation import (
     SessionObservation,
     SessionObservationResult,
@@ -45,6 +50,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.ports import NullEventSink
 from issue_orchestrator.ports.event_sink import TraceEvent
+from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -286,6 +292,96 @@ class TestSessionControllerRunning:
 
 class TestSessionControllerTerminated:
     """Tests for TERMINATED observation (session exited)."""
+
+    def test_provider_success_is_returned_as_decision_effect(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Provider success effects are applied by the tick thread, not decide_outcome."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(CompletionOutcome.COMPLETED)
+        session_output = FileSystemSessionOutput()
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=session_output,
+            working_copy=StubWorkingCopy(),
+        )
+        session_name = "issue-123"
+        worktree = tmp_path / "worktree"
+        run_assets = make_session_run_assets(worktree, session_name, session_output)
+        write_provider_status(
+            run_assets.run_dir,
+            ProviderStatus(
+                provider="codex",
+                error_type=None,
+                attempts=1,
+                succeeded=True,
+                exit_code=0,
+                timed_out=False,
+                last_error_summary=None,
+                last_attempt_at=now_iso(),
+            ),
+        )
+
+        decision = controller.decide_outcome(
+            SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree,
+            123,
+            "Test Issue",
+            session_name,
+            session_run_assets=run_assets,
+        )
+
+        assert decision.status == SessionStatus.COMPLETED
+        assert decision.provider_success == "codex"
+
+    def test_provider_transient_failure_is_returned_as_decision_effect(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Provider failure effects are applied by the tick thread, not decide_outcome."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = None
+        session_output = FileSystemSessionOutput()
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=session_output,
+            working_copy=StubWorkingCopy(),
+            provider_blocked_label="blocked:provider-unavailable",
+        )
+        session_name = "issue-123"
+        worktree = tmp_path / "worktree"
+        run_assets = make_session_run_assets(worktree, session_name, session_output)
+        write_provider_status(
+            run_assets.run_dir,
+            ProviderStatus(
+                provider="codex",
+                error_type=ProviderErrorType.TRANSIENT,
+                attempts=3,
+                succeeded=False,
+                exit_code=1,
+                timed_out=False,
+                last_error_summary="provider overloaded",
+                last_attempt_at=now_iso(),
+            ),
+        )
+
+        decision = controller.decide_outcome(
+            SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree,
+            123,
+            "Test Issue",
+            session_name,
+            session_run_assets=run_assets,
+        )
+
+        assert decision.status == SessionStatus.BLOCKED
+        assert decision.provider_transient_failure is not None
+        assert decision.provider_transient_failure.provider == "codex"
+        assert decision.provider_transient_failure.error_summary == "provider overloaded"
+        assert decision.provider_transient_failure.attempts == 3
 
     def test_terminated_without_completion_record_is_failed(self, tmp_path: Path):
         """Session that exits without completion.json = FAILED."""

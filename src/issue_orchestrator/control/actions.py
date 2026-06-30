@@ -71,6 +71,9 @@ class ActionType(Enum):
     # Escalation
     ESCALATE_TO_HUMAN = "escalate_to_human"
 
+    # Merge queue (optional GitHub Merge Queue integration)
+    ENQUEUE_TO_MERGE_QUEUE = "enqueue_to_merge_queue"
+
     # Cleanup operations
     CLEANUP_SESSION = "cleanup_session"
 
@@ -412,6 +415,22 @@ class RecoverTerminalIssueAction(Action):
     action_type: ActionType = field(
         default=ActionType.RECOVER_TERMINAL_ISSUE, init=False
     )
+
+
+@dataclass(frozen=True)
+class EnqueueToMergeQueueAction(Action):
+    """Enqueue a reviewer-approved PR into the provider's native merge queue.
+
+    Produced by the planner from a ``DiscoveredMergeQueueEnqueue`` fact and
+    executed by the ActionApplier, which performs the protected enqueue via the
+    repository host. GitHub remains the merge authority.
+    """
+
+    issue_number: int = 0
+    pr_number: int = 0
+    pr_url: str = ""
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
+    action_type: ActionType = field(default=ActionType.ENQUEUE_TO_MERGE_QUEUE, init=False)
 
 
 # Action result types

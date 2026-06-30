@@ -11,15 +11,20 @@ from issue_orchestrator.control.isolation import (
     FORBIDDEN_ENV_VARS,
     GIT_SAFE_ENV,
     GRADLE_USER_HOME_ENV,
+    build_agent_tool_env,
+    build_agent_tool_env_assignments,
+    build_agent_tool_path,
     get_forbidden_env_vars,
     get_gradle_user_home,
     get_orchestrator_socket_path,
     build_runtime_tool_env,
     build_runtime_tool_env_assignments,
+    build_runtime_tool_path,
     build_env_unset_commands,
     build_git_safe_commands,
     build_home_isolation_command,
     build_isolation_prefix,
+    get_runtime_scripts_dir,
     verify_env_scrubbed,
     all_env_scrubbed,
 )
@@ -131,8 +136,28 @@ class TestRuntimeToolEnv:
             f"{worktree / '.venv' / 'bin'}{os.pathsep}/usr/local/bin:/bin"
         )
 
+    def test_build_runtime_tool_path_orders_worktree_before_ambient_path(self):
+        """Repo-local tools should win over ambient PATH."""
+        worktree = Path("/path/to/worktree")
+
+        path = build_runtime_tool_path(worktree, "/usr/bin:/bin")
+
+        assert path == f"{worktree / '.venv' / 'bin'}{os.pathsep}/usr/bin:/bin"
+
+    def test_build_agent_tool_path_orders_worktree_before_wrappers(self):
+        """Agent tools should resolve repo-local tools, then package wrappers."""
+        worktree = Path("/path/to/worktree")
+
+        path = build_agent_tool_path(worktree, "/usr/bin:/bin")
+
+        assert path == (
+            f"{worktree / '.venv' / 'bin'}"
+            f"{os.pathsep}{get_runtime_scripts_dir()}"
+            f"{os.pathsep}/usr/bin:/bin"
+        )
+
     def test_build_runtime_tool_env_assignments_quotes_spaces(self):
-        """Shell assignments should be safe for paths containing spaces."""
+        """Runtime shell assignments should be safe and omit agent wrappers."""
         worktree = Path("/path/with spaces/worktree")
 
         assignments = build_runtime_tool_env_assignments(worktree)
@@ -144,7 +169,7 @@ class TestRuntimeToolEnv:
         ]
 
     def test_build_runtime_tool_env_assignments_prepends_worktree_venv(self, tmp_path):
-        """Session launch exports should expose the worktree venv on PATH."""
+        """Runtime exports should expose the worktree venv on PATH."""
         worktree = tmp_path / "worktree with spaces"
 
         assignments = build_runtime_tool_env_assignments(worktree)
@@ -153,6 +178,30 @@ class TestRuntimeToolEnv:
             f"{GRADLE_USER_HOME_ENV}="
             f"{shlex.quote(str(get_gradle_user_home(worktree)))}",
             f"PATH={shlex.quote(str(worktree / '.venv' / 'bin'))}:$PATH",
+        ]
+
+    def test_build_agent_tool_env_exposes_wrappers(self, tmp_path):
+        """Only agent envs should expose package command wrappers."""
+        worktree = tmp_path / "worktree"
+
+        env = build_agent_tool_env(worktree, base_env={"PATH": "/bin"})
+
+        assert env["PATH"] == (
+            f"{worktree / '.venv' / 'bin'}"
+            f"{os.pathsep}{get_runtime_scripts_dir()}{os.pathsep}/bin"
+        )
+
+    def test_build_agent_tool_env_assignments_exposes_wrappers(self, tmp_path):
+        """Agent session exports should expose coding-done/exchange-respond."""
+        worktree = tmp_path / "worktree with spaces"
+
+        assignments = build_agent_tool_env_assignments(worktree)
+
+        assert assignments == [
+            f"{GRADLE_USER_HOME_ENV}="
+            f"{shlex.quote(str(get_gradle_user_home(worktree)))}",
+            f"PATH={shlex.quote(str(worktree / '.venv' / 'bin'))}:"
+            f"{shlex.quote(str(get_runtime_scripts_dir()))}:$PATH",
         ]
 
 

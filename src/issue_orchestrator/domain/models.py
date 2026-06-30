@@ -704,12 +704,15 @@ class StatusRollupCapability:
     reconciler (and the gate it delegates rollup reads to) are rebuilt
     every tick — only ``OrchestratorState`` survives across ticks. A
     single repo-wide timestamp is the right granularity: permission to
-    read ``statusCheckRollup`` is a property of the configured token, not
-    of any one PR, so once a read is denied every read fails identically
-    until an operator fixes the token. ``permission_denied_since`` records
-    when that denial was last observed; the gate suppresses further rollup
-    probes (and the repeated permission warning) until a backoff window
-    elapses, then re-probes once in case the token was fixed.
+    read the primary (GraphQL) ``statusCheckRollup`` is a property of the
+    configured token, not of any one PR, so once it is denied every GraphQL
+    probe fails identically until an operator fixes the token.
+    ``permission_denied_since`` records when that denial was last observed;
+    the gate suppresses further GraphQL probes (and the repeated permission
+    warning) until a backoff window elapses, then re-probes once in case
+    the token was fixed. The backoff is GraphQL-source-scoped only: the gate
+    still reads the REST check-run / commit-status fallback each tick, so a
+    fallback-readable failure is never masked by the backoff.
     """
 
     permission_denied_since: float | None = None
@@ -1396,6 +1399,10 @@ class DiscoveredRework:
     rework_cycle: int = 1
     source: str = "review_label"
     feedback: str | None = None
+    # Set when post-publish validation recovers a PR that had already been
+    # escalated to human review. The planner clears the stale human label while
+    # routing it back to automated rework.
+    clear_needs_human: bool = False
     # True when the discovery path already saw the feedback comment marker
     # on the PR, so the planner must not enqueue a duplicate comment. The
     # rework itself is still queued (idempotency is owned by labels/pending
@@ -1421,6 +1428,7 @@ PostPublishEscalationKind = Literal[
     "checks_pending_timeout",   # required checks pending > timeout after approval
     "branch_protection_blocked",  # mergeable_state=blocked but rollup=SUCCESS
     "status_rollup_permission_denied",  # token cannot read check status to decide
+    "merge_queue_failed",  # GitHub merge queue rejected the PR; failure_action=needs_human
 ]
 
 
@@ -1445,6 +1453,24 @@ class DiscoveredAwaitingMergeEscalation:
     rework_cycle: int  # carried for label/comment continuity
     kind: PostPublishEscalationKind
     reason: str  # short human-readable summary, used in the PR comment
+
+
+@dataclass(frozen=True)
+class DiscoveredMergeQueueEnqueue:
+    """A reviewer-approved PR is eligible to enter the GitHub merge queue.
+
+    Emitted only when merge queue mode is enabled and the merge queue
+    coordinator decides the PR has cleared the gate, is not already queued,
+    and is mergeable-or-behind (behind-base is enqueue-eligible, NOT rework).
+
+    This is a "fact" — the Planner converts it into an
+    ``EnqueueToMergeQueueAction`` and the ActionApplier performs the protected
+    enqueue. Mutations never happen in the discovery path.
+    """
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    issue_key: str
 
 
 @dataclass(frozen=True)
@@ -1906,6 +1932,7 @@ class OrchestratorState:
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_awaiting_merge_escalations: list[DiscoveredAwaitingMergeEscalation] = field(default_factory=list)  # Post-publish stuck-or-blocked escalations
+    discovered_merge_queue_enqueues: list[DiscoveredMergeQueueEnqueue] = field(default_factory=list)  # Approved PRs eligible for the merge queue
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
     # Immediate cleanups - sessions that need cleanup now (not deferred until review)
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)
@@ -1928,6 +1955,7 @@ class OrchestratorState:
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
     queue_refresh_requested: bool = False  # True when a manual refresh has been requested
     awaiting_merge_drift_scan_timestamps: dict[int, float] = field(default_factory=dict)  # issue_number -> last PR-list drift scan
+    awaiting_merge_rollup_scan_timestamps: dict[int, float] = field(default_factory=dict)  # pr_number -> last status-rollup scan
     # Per-issue first time we observed `WAIT_FOR_CHECKS` (mergeable_state in
     # {unstable, blocked} with the status-check rollup not yet conclusive).
     # Used to bound how long the orchestrator is willing to wait for required
