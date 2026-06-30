@@ -566,9 +566,13 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
     prompt_path.write_text("Stub agent prompt", encoding="utf-8")
 
     spawn_log = tmp_path / "stub-spawns.jsonl"
+    reviewer_outcome_counter = tmp_path / "reviewer-outcome-counter.txt"
     monkeypatch.setenv("STUB_SPAWN_LOG", str(spawn_log))
     monkeypatch.setenv("STUB_REQUIRE_INITIAL_PROMPT", "1")
     monkeypatch.setenv("STUB_REVIEWER_OUTCOMES", "changes_requested,ok")
+    monkeypatch.setenv(
+        "STUB_REVIEWER_OUTCOME_COUNTER_FILE", str(reviewer_outcome_counter)
+    )
 
     agent = AgentConfig(
         prompt_path=prompt_path,
@@ -613,6 +617,11 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
     assert spawn_records
     assert all(record["initial_prompt_present"] for record in spawn_records)
     assert all(record["initial_prompt_contains_wait"] for record in spawn_records)
+    reviewer_spawns = [
+        record for record in spawn_records if "reviewer" in str(record["role"])
+    ]
+    assert len(reviewer_spawns) == 2
+    assert len({record["pid"] for record in reviewer_spawns}) == 2
 
 
 @pytest.mark.skipif(not _CODEX_READY, reason="codex CLI not installed or not logged in")

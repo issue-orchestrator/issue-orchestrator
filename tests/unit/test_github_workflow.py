@@ -83,6 +83,44 @@ def test_scan_pending_pr_work_appends_post_publish_validation_reworks() -> None:
     assert state.discovered_reworks == [discovered]
 
 
+def test_scan_pending_pr_work_skips_general_scans_but_keeps_awaiting_merge_followups() -> None:
+    pr_scanner = MagicMock()
+    discovered = DiscoveredRework(
+        issue_number=42,
+        pr_number=1042,
+        branch_name="42-fix-validation",
+        agent_type="agent:backend",
+        rework_cycle=2,
+        source="post_publish_validation",
+        feedback="POST-PUBLISH VALIDATION FAILURE (address these issues):\n\n...",
+    )
+    workflow = GitHubWorkflow(
+        config=Config(),
+        events=MagicMock(),
+        repository_host=MagicMock(),
+        fact_gatherer=MagicMock(),
+        pr_scanner=pr_scanner,
+        label_sync=None,
+        event_context=EventContext(),
+    )
+    state = OrchestratorState()
+
+    with patch(
+        "issue_orchestrator.control.github_workflow.AwaitingMergeReconciler.discover",
+        return_value=AwaitingMergeReconciliationResult(
+            checked=1,
+            rework_discovered=1,
+            reworks=(discovered,),
+        ),
+    ):
+        workflow.scan_pending_pr_work(state, include_general_scans=False)
+
+    pr_scanner.load_issue_branches.assert_not_called()
+    pr_scanner.scan_for_reviews.assert_not_called()
+    pr_scanner.scan_for_reworks.assert_not_called()
+    assert state.discovered_reworks == [discovered]
+
+
 def test_fetch_delta_issues_propagates_repository_error() -> None:
     repository_host = MagicMock()
     repository_host.list_issues_delta.side_effect = GitHubHttpError(

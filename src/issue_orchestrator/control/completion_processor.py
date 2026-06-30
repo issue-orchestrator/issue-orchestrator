@@ -54,6 +54,10 @@ from ..ports.review_artifact_reader import (
 )
 from .background_job_supervisor import BackgroundJobSupervisor
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
+from ..infra.runtime_artifacts import (
+    build_forbidden_runtime_artifact_reason,
+    forbidden_branch_runtime_artifacts,
+)
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.review_exchange_runner import (
@@ -1170,6 +1174,16 @@ class CompletionProcessor:
         if test_skip_error:
             return test_skip_error
 
+        runtime_artifact_error = self._check_runtime_artifact_guard_if_required(
+            worktree,
+            record,
+            session_name,
+            issue_number,
+            run_assets,
+        )
+        if runtime_artifact_error:
+            return runtime_artifact_error
+
         return self._check_publish_gate_if_required(
             worktree,
             record,
@@ -1287,6 +1301,58 @@ class CompletionProcessor:
             session_name,
             issue_number,
             scan.reason(),
+            gate_record=None,
+            run_assets=run_assets,
+        )
+
+    def _check_runtime_artifact_guard_if_required(
+        self,
+        worktree: Path,
+        record: CompletionRecord,
+        session_name: str | None,
+        issue_number: int,
+        run_assets: SessionRunAssets,
+    ) -> ProcessingResult | None:
+        """Reject committed issue-orchestrator runtime artifacts before publish.
+
+        Runtime outputs under ``.issue-orchestrator/`` (review-exchange prompts,
+        persistent-pair recordings, validation records, …) must never enter an
+        agent branch: when they do, the reviewer-worktree fast-forward checkout
+        fails and a validated rework is turned into ``blocked-failed`` (#6659).
+        Fail early here with an actionable message instead of letting the
+        brittle reviewer-worktree checkout surface it opaquely mid-exchange.
+        """
+        if not self._requires_publish_gate(record):
+            return None
+
+        base_ref = f"origin/{self._base_branch()}"
+        paths_result = self.git_adapter.branch_post_image_paths_against_base(
+            worktree, base_ref
+        )
+        if not paths_result.success:
+            return self._handle_gate_failure(
+                worktree,
+                record,
+                session_name,
+                issue_number,
+                (
+                    "Could not scan branch paths for runtime artifacts "
+                    f"against {base_ref}: "
+                    f"{paths_result.error or 'unknown git error'}"
+                ),
+                gate_record=None,
+                run_assets=run_assets,
+            )
+
+        forbidden = forbidden_branch_runtime_artifacts(paths_result.paths)
+        if not forbidden:
+            return None
+        return self._handle_gate_failure(
+            worktree,
+            record,
+            session_name,
+            issue_number,
+            build_forbidden_runtime_artifact_reason(forbidden),
             gate_record=None,
             run_assets=run_assets,
         )

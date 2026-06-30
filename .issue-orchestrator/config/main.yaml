@@ -1,5 +1,11 @@
 # Migrated to sectioned format
 
+repo:
+  name: BruceBGordon/issue-orchestrator
+  github:
+    keyring_service: issue-orchestrator
+    keyring_username: github-token
+
 worktrees:
   base: "../"
   worktree_branch_on_recreate: delete
