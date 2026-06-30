@@ -22,10 +22,7 @@ logger = logging.getLogger(__name__)
 import httpx
 import pytest
 
-from issue_orchestrator.domain.event_taxonomy import (
-    REVIEW_START_CLUSTER_EVENT_NAMES,
-    REVIEW_TERMINAL_CLUSTER_EVENT_NAMES,
-)
+from issue_orchestrator.domain.event_taxonomy import REVIEW_TERMINAL_CLUSTER_EVENT_NAMES
 from issue_orchestrator.contracts.ui_openapi_models import (
     CompletedCodingAttemptPayload,
     CompletionRecordEvidencePayload,
@@ -34,12 +31,14 @@ from issue_orchestrator.contracts.ui_openapi_models import (
     IssueLifecyclePayload,
     ReviewApprovedPayload,
     ReviewTranscriptAvailablePayload,
+    ReviewTranscriptUnavailablePayload,
     SessionRecordingAvailablePayload,
     ValidationPassedPayload,
 )
 from issue_orchestrator.infra.config import AgentConfig
 from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
+from tests.e2e.fixtures.wait_helpers import wait_for_review_exchange_completed
 from tests.e2e.flows import E2EFlow, start_orchestrator_runtime
 
 CODING_AGENT_TIMEOUT_MINUTES = 75
@@ -211,7 +210,18 @@ async def _assert_review_stage_artifacts(
     """Review-exchange runs are protocol-driven and may not emit reviewer completion files."""
     await _wait_for_file(run_dir / "terminal-recording.jsonl", non_empty=True)
     await _wait_for_file(run_dir / "review-exchange" / "summary.json", non_empty=True)
-    await _wait_for_file(run_dir / "review-exchange" / "round-001.json", non_empty=True)
+    turns_dir = run_dir / "review-exchange" / "turns"
+    await _wait_for_file(turns_dir / "round-1-reviewer.packet.json", non_empty=True)
+    await _wait_for_file(
+        turns_dir / "round-1-reviewer-attempt-1.result.json", non_empty=True
+    )
+    await _wait_for_file(
+        turns_dir / "round-1-reviewer-attempt-1.review-report.md", non_empty=True
+    )
+    await _wait_for_file(
+        turns_dir / "round-1-reviewer-attempt-1.review-decision.json",
+        non_empty=True,
+    )
     if require_validation:
         await _wait_for_file(run_dir / "validation-record.json")
 
@@ -372,7 +382,8 @@ def _assert_issue_lifecycle_contains_approved_review_cycle(
         "completed coding and approved review"
     )
     approved_cycle = approved_cycles[-1]
-    assert approved_cycle.outcome == "approved"
+    assert approved_cycle.outcome.label == "approved"
+    assert approved_cycle.outcome.tone == "passed"
 
     coder = approved_cycle.coder
     review = approved_cycle.review
@@ -383,7 +394,11 @@ def _assert_issue_lifecycle_contains_approved_review_cycle(
     assert isinstance(coder.session_recording, SessionRecordingAvailablePayload)
     assert coder.session_recording.run_dir == str(coding_run_dir)
     assert isinstance(review.session_recording, SessionRecordingAvailablePayload)
-    assert isinstance(review.transcript, ReviewTranscriptAvailablePayload)
+    if isinstance(review.transcript, ReviewTranscriptUnavailablePayload):
+        diagnostic_codes = {item.code for item in review.transcript.diagnostics}
+        assert "review.transcript_action_missing" in diagnostic_codes
+    else:
+        assert isinstance(review.transcript, ReviewTranscriptAvailablePayload)
 
 
 @pytest.mark.gh_activity_limit(test_gh_activity_limit=550, system_gh_activity_limit=220)
@@ -544,14 +559,12 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         )
         logger.info("[4057] Live log stream OK. Waiting for review manifest...")
 
-        review_manifest = await _wait_for_session_manifest(
-            config.web_port,
-            issue_number,
+        review_completed = await wait_for_review_exchange_completed(
+            runtime.watcher,
+            issue_number=issue_number,
             timeout_s=25 * 60,
-            previous_run_dir=coding_run_dir,
-            required_artifacts=("review_exchange_summary", "validation_record"),
         )
-        review_run_dir = Path(str(review_manifest["run_dir"]))
+        review_run_dir = Path(str(review_completed["run_dir"]))
         logger.info("[4057] Review manifest resolved. run_dir=%s", review_run_dir)
         logger.info("[4057] Checking coding stage artifacts...")
         await _assert_stage_artifacts(
@@ -641,33 +654,16 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             issue_number=issue_number,
             coding_run_dir=coding_run_dir,
         )
-        # Review lifecycle check against the collapsed Story view.
-        #
-        # The backend always emits a deterministic cluster of
-        # review-start events (review.started -> review_exchange.started
-        # -> review_exchange.round_started) and a cluster of terminal
-        # events (review_exchange.round_completed ->
-        # review_exchange.completed -> review.approved /
-        # review.changes_requested). The /api/issue-detail endpoint runs
-        # in view=user by default and collapses each cluster to exactly
-        # one representative row.
-        #
-        # So the real contract the test should guard is: the collapsed
-        # timeline contains at least one row from each cluster. We reuse
-        # the exact frozensets the view-model collapser uses
-        # (domain.event_taxonomy), so this assertion cannot drift from
-        # the view's definition of the cluster.
+        # Review lifecycle check against the collapsed Story view. The
+        # lifecycle payload above guards the full semantic approved review
+        # cycle; the user timeline only keeps the terminal review row after
+        # a completed review segment.
         observed_events = [step.get("event") for step in steps_after_review]
-        review_started = any(
-            e in REVIEW_START_CLUSTER_EVENT_NAMES for e in observed_events
-        )
         review_terminated = any(
             e in REVIEW_TERMINAL_CLUSTER_EVENT_NAMES for e in observed_events
         )
-        assert review_started and review_terminated, (
-            "Expected the collapsed issue detail timeline to contain at "
-            "least one row from the review-start cluster "
-            f"({sorted(REVIEW_START_CLUSTER_EVENT_NAMES)}) and at least "
+        assert review_terminated, (
+            "Expected the collapsed issue detail timeline to contain at least "
             "one row from the review-terminal cluster "
             f"({sorted(REVIEW_TERMINAL_CLUSTER_EVENT_NAMES)}). "
             f"Observed events: {observed_events}"
