@@ -85,7 +85,7 @@ from .session_worktree_diagnostics import (
     write_worktree_diagnostic,
 )
 from .transition_log import log_transition
-from .isolation import build_runtime_tool_env, build_runtime_tool_env_assignments
+from .isolation import build_agent_tool_env_assignments, build_runtime_tool_env
 from .provider_command_wrapper import ProviderCommandWrapper
 
 logger = logging.getLogger(__name__)
@@ -372,7 +372,7 @@ class SessionLauncher:
         """
         orch_bin = Path(sys.executable).parent
         orch_src = Path(__file__).resolve().parents[2]
-        runtime_tool_assignments = " ".join(build_runtime_tool_env_assignments(worktree_path))
+        runtime_tool_assignments = " ".join(build_agent_tool_env_assignments(worktree_path))
         config_exports = ""
         if self.config.config_path is not None:
             config_name = self.config.config_path.name

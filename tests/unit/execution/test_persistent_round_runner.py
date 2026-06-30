@@ -1152,3 +1152,112 @@ class TestCloseSession:
         close_persistent_session(session)
         close_persistent_session(session)
         assert session.closed is True
+
+
+class TestSendRoundResponseReaderChannel:
+    """send_round can take its response from an injected reader (the
+    TurnMailbox channel) instead of the response file. The PTY pumping is
+    unchanged; only the response source differs.
+    """
+
+    def test_reader_value_is_returned_and_file_is_ignored(
+        self, tmp_path: Path,
+    ) -> None:
+        # The stub agent writes its own JSON to the response file, but with a
+        # reader provided send_round must return the reader's value — proving
+        # the file is not consulted when the mailbox is the channel.
+        stub = _write_stub_agent(tmp_path)
+        response_file = tmp_path / "response.json"
+        verdict = {"response_type": "ok", "response_text": "delivered via mailbox"}
+
+        session = open_persistent_session(
+            command=_stub_command(stub),
+            working_dir=tmp_path,
+            env=_stub_env(response_file),
+        )
+        try:
+            response = send_round(
+                session,
+                prompt="hello",
+                response_file=response_file,
+                timeout_seconds=5,
+                response_reader=lambda: verdict,
+            )
+        finally:
+            close_persistent_session(session)
+
+        assert response == verdict
+
+    def test_reader_channel_does_not_unlink_the_response_file(
+        self, tmp_path: Path,
+    ) -> None:
+        # The file channel clears the response file before each round; the
+        # reader channel must leave the filesystem untouched.
+        stub = _write_stub_agent(tmp_path)
+        response_file = tmp_path / "response.json"
+        sentinel = tmp_path / "sentinel.json"
+        sentinel.write_text("{}", encoding="utf-8")
+
+        session = open_persistent_session(
+            command=_stub_command(stub),
+            working_dir=tmp_path,
+            env=_stub_env(response_file),
+        )
+        try:
+            send_round(
+                session,
+                prompt="hello",
+                response_file=sentinel,
+                timeout_seconds=5,
+                response_reader=lambda: {"response_type": "ok", "response_text": "x"},
+            )
+        finally:
+            close_persistent_session(session)
+
+        assert sentinel.exists()
+
+    def test_mailbox_mode_exit_with_stale_file_is_respawnable_not_invalid(
+        self, tmp_path: Path,
+    ) -> None:
+        # Finding #2: in mailbox mode a stale/legacy response file left by an
+        # agent that exits without delivering must NOT downgrade the round to
+        # the non-respawnable INVALID_RESPONSE. It is a process that exited
+        # before responding (respawnable) — the fail-safe contract.
+        from issue_orchestrator.execution.persistent_round_runner import (
+            RoundFailureReason,
+        )
+
+        stale_file = tmp_path / "response.json"
+        agent = tmp_path / "stale_then_exit.py"
+        agent.write_text(textwrap.dedent(f"""
+            import json, time
+            from pathlib import Path
+            Path({str(stale_file)!r}).write_text(
+                json.dumps({{"response_type": "ok", "response_text": "stale legacy"}}),
+                encoding="utf-8",
+            )
+            time.sleep(0.4)
+        """).strip(), encoding="utf-8")
+
+        session = open_persistent_session(
+            command=[sys.executable, "-u", str(agent)],
+            working_dir=tmp_path,
+            env=dict(os.environ),
+        )
+        try:
+            with pytest.raises(PersistentRoundError) as excinfo:
+                send_round(
+                    session,
+                    prompt="go",
+                    response_file=stale_file,
+                    timeout_seconds=5,
+                    # Mailbox never delivers — models a forgotten exchange-respond.
+                    response_reader=lambda: None,
+                )
+        finally:
+            close_persistent_session(session)
+
+        assert stale_file.exists()  # the legacy file is present...
+        assert persistent_round_failure_reason(excinfo.value) == (
+            RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE.value
+        )

@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -252,6 +253,7 @@ def _patch_persistent_runner(
         "rounds_seen": [],
         "prompts_seen": [],
         "prompt_inboxes_seen": [],
+        "send_kwargs_seen": [],
         "run_dir": None,
         "registry": registry,
     }
@@ -323,10 +325,11 @@ def _patch_persistent_runner(
             log_writer=writer,
         )
 
-    def _send(session, *, prompt, response_file, timeout_seconds, **_):  # noqa: ARG001
+    def _send(session, *, prompt, response_file, timeout_seconds, **kwargs):  # noqa: ARG001
         role = session.role
         state["rounds_seen"].append((role, prompt[:40]))
         state["prompts_seen"].append((role, prompt))
+        state["send_kwargs_seen"].append((role, dict(kwargs)))
         prompt_inbox = Path(response_file).with_name("review-exchange-turn-prompt.md")
         if prompt_inbox.exists():
             state["prompt_inboxes_seen"].append(
@@ -662,6 +665,72 @@ class TestPersistentSessionExchangeHappyPath:
         assert not (
             reviewer_wt / ".issue-orchestrator" / "review-exchange-turn-prompt.md"
         ).exists()
+
+    def test_file_response_channel_does_not_open_or_poll_mailbox(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        prompt_path = tmp_path / "p.md"
+        prompt_path.write_text("Prompt", encoding="utf-8")
+        coder_wt, reviewer_wt = _setup_worktrees(tmp_path)
+        session_output = FileSystemSessionOutput()
+        state = _patch_persistent_runner(
+            monkeypatch,
+            response_script={
+                "reviewer": [
+                    {
+                        "response_type": "ok",
+                        "response_text": "Looks good",
+                        "getting_closer": True,
+                    }
+                ],
+                "coder": [],
+            },
+        )
+        mailbox = MagicMock(name="turn_mailbox")
+
+        outcome = pse.run_persistent_session_exchange(
+            exchange_run=_start_exchange_run(
+                session_output=session_output,
+                coder_worktree_path=coder_wt,
+                issue_number=42,
+                coder_label="agent:backend",
+            ),
+            session_output=session_output,
+            pair_registry=state["registry"],
+            persistent_pair_root=tmp_path / "persistent-pairs",
+            coder_worktree_path=coder_wt,
+            reviewer_worktree_factory=lambda: reviewer_wt,
+            issue_number=42,
+            issue_title="Test",
+            coder_label="agent:backend",
+            reviewer_label="agent:reviewer",
+            coder_agent=_make_agent(prompt_path),
+            reviewer_agent=_make_agent(prompt_path),
+            runtime_config=_runtime_config(tmp_path),
+            max_rounds=3,
+            max_no_progress=2,
+            require_validation=False,
+            turn_mailbox=mailbox,
+            response_channels=pse.ReviewExchangeResponseChannels.file_only(),
+        )
+
+        assert outcome.status == "ok"
+        mailbox.open.assert_not_called()
+        mailbox.try_take.assert_not_called()
+        mailbox.close.assert_not_called()
+        role, kwargs = state["send_kwargs_seen"][0]
+        assert role == "reviewer"
+        assert kwargs["response_reader"] is None
+        reviewer_prompt, reviewer_notice = next(
+            (prompt, notice)
+            for role, prompt, notice in state["prompt_inboxes_seen"]
+            if role == "reviewer"
+        )
+        assert "file channel" in reviewer_prompt
+        assert "Do not run `exchange-respond`" in reviewer_prompt
+        assert "writing JSON" in reviewer_notice
 
     def test_two_round_exchange_changes_then_ok(
         self,
@@ -4023,6 +4092,39 @@ class TestRoleEnvironmentScrubbing:
         assert env["GIT_TERMINAL_PROMPT"] == "0"
         # And GH_TOKEN was still scrubbed (sanity).
         assert "GH_TOKEN" not in env
+
+    def test_role_env_exposes_exchange_respond_wrapper(self, tmp_path: Path) -> None:
+        """Mailbox mode depends on the agent finding ``exchange-respond``."""
+        from issue_orchestrator.control.isolation import get_runtime_scripts_dir
+
+        run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        env = pse._build_role_env(  # noqa: SLF001 — testing the env contract
+            role="reviewer",
+            response_file=run_dir / "reviewer" / "review-response.json",
+            review_report_file=worktree / ".issue-orchestrator" / "review-report.md",
+            completion_path=run_dir / "reviewer" / "completion-reviewer.json",
+            validation_output_dir=run_dir,
+            worktree=worktree,
+            runtime_config=_runtime_config(tmp_path),
+            agent_label="agent:reviewer",
+            web_port=8080,
+            issue_number=4057,
+            session_name="exchange-1",
+        )
+
+        path_entries = env["PATH"].split(os.pathsep)
+        scripts_dir = get_runtime_scripts_dir()
+        assert path_entries[:2] == [
+            str(worktree / ".venv" / "bin"),
+            str(scripts_dir),
+        ]
+        exchange_respond = scripts_dir / "exchange-respond"
+        assert exchange_respond.exists()
+        assert os.access(exchange_respond, os.X_OK)
 
     def test_callback_token_propagates_when_set_in_orchestrator_env(
         self,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -15,6 +17,16 @@ from issue_orchestrator.infra.doctor.checks import guardrails as guardrail_check
 from issue_orchestrator.infra.doctor.checks import hooks as hook_checks
 from issue_orchestrator.infra.doctor.checks import schema as schema_checks
 from issue_orchestrator.infra.doctor.checks import workspace as workspace_checks
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_GIT_ENV_STRIP = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+)
 
 
 class _QueuePrompter:
@@ -56,24 +68,44 @@ class _QueuePrompter:
         raise AssertionError(f"Unexpected choice {answer!r} for {question}")
 
 
+def _clean_git_env() -> dict[str, str]:
+    """Return an env for fixture git commands isolated from agent sessions."""
+    env = os.environ.copy()
+    for var in _GIT_ENV_STRIP:
+        env.pop(var, None)
+    return env
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
+    env = _clean_git_env()
+    git_bin = shutil.which("git", path=env.get("PATH"))
+    if git_bin is None:
+        raise AssertionError(f"git executable not found on PATH: {env.get('PATH', '')}")
+
+    command = [git_bin, *args]
+    result = subprocess.run(
+        command,
         cwd=repo,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
+    if result.returncode != 0:
+        raise AssertionError(
+            "git command failed\n"
+            f"cwd: {repo}\n"
+            f"command: {command!r}\n"
+            f"returncode: {result.returncode}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    return result
 
 
 def _init_repo(repo: Path, origin_repo: Path) -> None:
     repo.mkdir()
-    subprocess.run(
-        ["git", "init", "--bare", str(origin_repo)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    _git(repo.parent, "init", "--bare", str(origin_repo))
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test User")

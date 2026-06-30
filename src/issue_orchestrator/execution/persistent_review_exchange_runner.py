@@ -33,6 +33,11 @@ from .persistent_session_exchange import (
     review_exchange_supervisor_timeout_seconds,
     run_persistent_session_exchange,
 )
+from ..ports.turn_mailbox import TurnMailbox
+from .review_exchange_response_channel import (
+    ResponseChannel,
+    ReviewExchangeResponseChannels,
+)
 from .reviewer_worktree import (
     create_reviewer_worktree,
     resolve_current_branch,
@@ -51,6 +56,32 @@ def persistent_pair_root_for_worktree(coder_worktree: Path) -> Path:
     return coder_worktree / ".issue-orchestrator" / "persistent-pairs"
 
 
+_CODEX_LOOPBACK_BLOCKING_SANDBOXES = frozenset({"read-only", "workspace-write"})
+
+
+def _codex_loopback_callbacks_blocked(agent: AgentConfig) -> bool:
+    provider = (agent.provider or agent.ai_system or "").lower()
+    if provider != "codex":
+        return False
+    approval_mode = str(agent.provider_args.get("approval_mode", "full-auto"))
+    if approval_mode == "yolo":
+        return False
+    sandbox_value = agent.provider_args.get("sandbox")
+    sandbox = (
+        "workspace-write"
+        if sandbox_value is None and approval_mode == "full-auto"
+        else str(sandbox_value or "")
+    )
+    return sandbox in _CODEX_LOOPBACK_BLOCKING_SANDBOXES
+
+
+def response_channel_for_agent(agent: AgentConfig) -> ResponseChannel:
+    """Select the verdict transport supported by an exchange role's sandbox."""
+    if _codex_loopback_callbacks_blocked(agent):
+        return "file"
+    return "mailbox"
+
+
 class PersistentReviewExchangeRunner:
     """Persistent-session implementation of :class:`ReviewExchangeRunner`.
 
@@ -64,9 +95,12 @@ class PersistentReviewExchangeRunner:
         self,
         session_output: SessionOutput,
         pair_registry: InMemoryPersistentExchangePairRegistry,
+        *,
+        turn_mailbox: "TurnMailbox | None" = None,
     ) -> None:
         self._session_output = session_output
         self._pair_registry = pair_registry
+        self._turn_mailbox = turn_mailbox
 
     def job_timeout_seconds(
         self,
@@ -108,6 +142,12 @@ class PersistentReviewExchangeRunner:
     ) -> ReviewExchangeOutcome:
         coder_branch = resolve_current_branch(coder_worktree)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        response_channels = ReviewExchangeResponseChannels.file_only()
+        if self._turn_mailbox is not None:
+            response_channels = ReviewExchangeResponseChannels(
+                coder=response_channel_for_agent(coder_agent),
+                reviewer=response_channel_for_agent(reviewer_agent),
+            )
 
         def _make_reviewer_worktree() -> Path:
             # Invoked at most once per pair — only on cache miss
@@ -145,4 +185,6 @@ class PersistentReviewExchangeRunner:
             web_port=web_port,
             events=events,
             event_context=event_context,
+            turn_mailbox=self._turn_mailbox,
+            response_channels=response_channels,
         )
