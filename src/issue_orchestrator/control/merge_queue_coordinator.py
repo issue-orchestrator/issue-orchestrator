@@ -123,11 +123,17 @@ class MergeQueueCoordinator:
     def gate_label(self) -> str:
         """The PR label required before a PR may be enqueued.
 
-        ``enqueue_after`` selects the approval gate. This lifecycle has a single
-        PR-readiness label (``code-reviewed``) — a triage issue's PR also earns
-        it once reviewed — so both supported values resolve to that gate.
+        ``enqueue_after`` selects the approval gate, and each gate resolves —
+        via the label owner — to its own PR-readiness label. ``code-reviewed``
+        (reviewer approval) and ``triage-reviewed`` (batch triage) are distinct
+        lifecycle gates and must not collapse onto one label: a repo configured
+        to wait for triage must not enqueue on code review alone. The triage
+        gate intentionally uses the unprefixed label because the triage
+        subsystem applies it raw (see ``LabelManager.triage_reviewed``).
         """
-        assert self.config.enqueue_after in ("code-reviewed", "triage-reviewed")
+        if self.config.enqueue_after == "triage-reviewed":
+            return self.label_manager.triage_reviewed
+        assert self.config.enqueue_after == "code-reviewed"
         return self.label_manager.code_reviewed
 
     def read_entry(self, pr_number: int) -> "MergeQueueEntry | None":

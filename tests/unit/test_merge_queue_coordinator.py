@@ -53,14 +53,20 @@ def _coordinator(
     *,
     failure_action: str = "rework",
     enabled: bool = True,
+    enqueue_after: str = "code-reviewed",
+    config: Config | None = None,
 ) -> tuple[MergeQueueCoordinator, InMemoryEventSink]:
     events = InMemoryEventSink()
     coordinator = MergeQueueCoordinator(
-        config=MergeQueueConfig(enabled=enabled, failure_action=failure_action),
+        config=MergeQueueConfig(
+            enabled=enabled,
+            failure_action=failure_action,
+            enqueue_after=enqueue_after,
+        ),
         repository_host=repository_host,
         events=events,
         event_context=EventContext(),
-        label_manager=LabelManager(Config()),
+        label_manager=LabelManager(config or Config()),
     )
     return coordinator, events
 
@@ -144,6 +150,116 @@ def test_pr_without_gate_label_is_not_enqueued() -> None:
 
     assert followup.enqueue is None
     assert followup == type(followup)()
+
+
+# --------------------------------------------------------------------------- #
+# enqueue_after gate resolution — code-reviewed vs triage-reviewed are distinct
+# --------------------------------------------------------------------------- #
+
+
+def test_triage_gate_does_not_enqueue_on_code_reviewed_alone() -> None:
+    """A repo waiting for triage must NOT enqueue a merely code-reviewed PR."""
+    repo = MagicMock()
+    repo.read_merge_queue_entry.return_value = None
+    coordinator, _ = _coordinator(repo, enqueue_after="triage-reviewed")
+
+    followup = coordinator.classify(
+        pr=_pr("clean", labels=["code-reviewed"]),  # not yet triage-reviewed
+        issue=_issue(),
+        issue_number=228,
+        pr_number=318,
+        entry=None,
+    )
+
+    assert followup.enqueue is None
+    assert followup == type(followup)()
+
+
+def test_triage_gate_enqueues_once_triage_reviewed_present() -> None:
+    repo = MagicMock()
+    repo.read_merge_queue_entry.return_value = None
+    coordinator, _ = _coordinator(repo, enqueue_after="triage-reviewed")
+
+    followup = coordinator.classify(
+        pr=_pr("clean", labels=["code-reviewed", "triage-reviewed"]),
+        issue=_issue(),
+        issue_number=228,
+        pr_number=318,
+        entry=None,
+    )
+
+    assert followup.enqueue is not None
+    assert followup.enqueue.pr_number == 318
+
+
+def test_code_reviewed_gate_does_not_require_triage_reviewed() -> None:
+    """The code-reviewed gate must enqueue without waiting for triage."""
+    repo = MagicMock()
+    repo.read_merge_queue_entry.return_value = None
+    coordinator, _ = _coordinator(repo, enqueue_after="code-reviewed")
+
+    followup = coordinator.classify(
+        pr=_pr("clean", labels=["code-reviewed"]),
+        issue=_issue(),
+        issue_number=228,
+        pr_number=318,
+        entry=None,
+    )
+
+    assert followup.enqueue is not None
+
+
+def test_triage_gate_honors_custom_triage_reviewed_label() -> None:
+    config = Config()
+    config.triage_reviewed_label = "batch-triaged"
+    repo = MagicMock()
+    repo.read_merge_queue_entry.return_value = None
+    coordinator, _ = _coordinator(
+        repo, enqueue_after="triage-reviewed", config=config
+    )
+
+    # The default triage label no longer satisfies the gate.
+    not_yet = coordinator.classify(
+        pr=_pr("clean", labels=["code-reviewed", "triage-reviewed"]),
+        issue=_issue(),
+        issue_number=228,
+        pr_number=318,
+        entry=None,
+    )
+    assert not_yet.enqueue is None
+
+    # The configured custom label does.
+    queued = coordinator.classify(
+        pr=_pr("clean", labels=["code-reviewed", "batch-triaged"]),
+        issue=_issue(),
+        issue_number=228,
+        pr_number=318,
+        entry=None,
+    )
+    assert queued.enqueue is not None
+
+
+def test_triage_gate_matches_raw_label_even_with_label_prefix() -> None:
+    """The triage subsystem writes the triage label unprefixed, so the gate
+    must match that raw label even when a label_prefix is configured."""
+    config = Config()
+    config.label_prefix = "bot"
+    repo = MagicMock()
+    repo.read_merge_queue_entry.return_value = None
+    coordinator, _ = _coordinator(
+        repo, enqueue_after="triage-reviewed", config=config
+    )
+
+    followup = coordinator.classify(
+        # Raw triage label is what completion planning actually applies.
+        pr=_pr("clean", labels=["bot:code-reviewed", "triage-reviewed"]),
+        issue=_issue(),
+        issue_number=228,
+        pr_number=318,
+        entry=None,
+    )
+
+    assert followup.enqueue is not None
 
 
 def test_behind_base_pr_is_enqueued_not_reworked() -> None:

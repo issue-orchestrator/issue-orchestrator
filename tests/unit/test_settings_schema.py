@@ -6,12 +6,14 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from issue_orchestrator.infra.config import Config, E2EConfig, FilteringConfig
+from issue_orchestrator.infra.config_models import MERGE_QUEUE_PROVIDERS
 from issue_orchestrator.infra.settings_schema import (
     CONFIG_VALUE_TYPE_PATH,
     DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
     DOCTOR_CHECK_PATH_EXISTS,
     DOCTOR_CHECK_REFERENCES_AGENT,
     FORM_CONTROL_DICT_ENUM,
+    FORM_CONTROL_ENUM,
     FORM_CONTROL_KINDS,
     TAB_DEFINITIONS,
     UnsupportedSettingsFieldError,
@@ -165,6 +167,15 @@ class TestValidation:
     def test_merge_queue_enqueue_after_enum(self):
         with pytest.raises(ValidationError):
             MergeQueueSettings(enqueue_after="whenever")
+
+    def test_merge_queue_provider_rejects_unsupported(self):
+        # Mirrors YAML-load validation: the settings POST path must not accept a
+        # provider outside MERGE_QUEUE_PROVIDERS (e.g. "gitlab").
+        with pytest.raises(ValidationError):
+            MergeQueueSettings(provider="gitlab")
+
+    def test_merge_queue_provider_accepts_supported(self):
+        assert MergeQueueSettings(provider="github").provider == "github"
 
     def test_review_max_rework_max(self):
         with pytest.raises(ValidationError):
@@ -379,6 +390,16 @@ class TestFormControlClassification:
                     f"{tab_key}.{field_name} classified to unknown kind "
                     f"{control['kind']!r}"
                 )
+
+    def test_merge_queue_provider_is_enum_with_allowed_providers(self):
+        # The provider must render as a select whose options match the single
+        # source of truth (MERGE_QUEUE_PROVIDERS), so the form cannot offer or
+        # save an unsupported provider. Guards against the enum drifting from
+        # the allowed set.
+        schemas = get_settings_json_schema()
+        control = schemas["merge_queue"]["properties"]["provider"]["x_control"]
+        assert control["kind"] == FORM_CONTROL_ENUM
+        assert control["options"] == list(MERGE_QUEUE_PROVIDERS)
 
     def test_nits_by_agent_is_dict_enum_with_policy_options(self):
         schemas = get_settings_json_schema()

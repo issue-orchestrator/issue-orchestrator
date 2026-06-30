@@ -14,7 +14,9 @@ from __future__ import annotations
 import functools
 from typing import Any, Literal, Optional, TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .config_models import MERGE_QUEUE_PROVIDERS
 
 from .settings_schema_support import (
     CONFIG_VALUE_TYPE_PATH,
@@ -24,6 +26,7 @@ from .settings_schema_support import (
     DOCTOR_SEVERITY_ERROR,
     DOCTOR_SEVERITY_WARNING,
     FORM_CONTROL_DICT_ENUM as FORM_CONTROL_DICT_ENUM,
+    FORM_CONTROL_ENUM as FORM_CONTROL_ENUM,
     FORM_CONTROL_KINDS as FORM_CONTROL_KINDS,
     UnsupportedSettingsFieldError as UnsupportedSettingsFieldError,
     classify_form_control as classify_form_control,
@@ -1087,15 +1090,23 @@ class MergeQueueSettings(BaseModel):
             },
         },
     )
+    # provider is constrained to MERGE_QUEUE_PROVIDERS (the same set YAML loading
+    # validates against) so the settings form can neither render nor POST an
+    # unsupported provider. A single-value Literal would emit a JSON-schema
+    # `const`, which this repo's form-control projection deliberately rejects;
+    # we instead expose the allowed set as an `enum` (rendered as a select) and
+    # enforce it with a validator at POST time. Both derive from one source.
     provider: str = Field(
         "github",
         title="Merge Queue Provider",
         description="Which merge queue backend to use",
         json_schema_extra={
+            "enum": list(MERGE_QUEUE_PROVIDERS),
             "doc_examples": ["github"],
             "doc_notes": (
                 "Only GitHub's native merge queue is supported today; the value "
-                "is validated against the allowed set when the config loads."
+                "is constrained to the allowed set so the settings form rejects "
+                "unsupported providers before they reach the running config."
             ),
             "section": "Merge Queue",
             "config_attr": "merge_queue.provider",
@@ -1132,6 +1143,15 @@ class MergeQueueSettings(BaseModel):
             "yaml_path": "merge_queue.failure_action",
         },
     )
+
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, value: str) -> str:
+        if value not in MERGE_QUEUE_PROVIDERS:
+            raise ValueError(
+                f"provider must be one of {list(MERGE_QUEUE_PROVIDERS)}, got {value!r}"
+            )
+        return value
 
 
 class AdvancedSettings(BaseModel):
