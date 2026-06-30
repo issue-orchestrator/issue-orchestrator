@@ -52,6 +52,11 @@ class EventName(str, Enum):
     # =========================================================================
     TICK_STARTED = "tick.started"
     TICK_COMPLETED = "tick.completed"
+    # A tick whose wall-clock exceeded the heartbeat budget. Machine-consumable
+    # counterpart to the "[LOOP] Tick took ..." log warning: carries the
+    # sub-phase breakdown (active-session vs planning seconds) so the UI/timeline
+    # can attribute a stall instead of inferring "stalled" from heartbeat age.
+    TICK_SLOW = "tick.slow"
 
     # =========================================================================
     # Facts gathering
