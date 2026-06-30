@@ -19,6 +19,8 @@ summary writes, chapter sidecars, reviewer-worktree lifecycle.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 import json
 import os
 import shlex
@@ -44,6 +46,7 @@ from issue_orchestrator.execution.session_output_adapter import FileSystemSessio
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.ports import TraceEvent
+from issue_orchestrator.ports.turn_mailbox import TurnMailbox
 
 
 _INTERACTIVE_REVIEW_AGENT = (
@@ -211,6 +214,70 @@ def _write_test_config(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return config_path.resolve()
+
+
+@contextmanager
+def _review_exchange_mailbox_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[tuple[int, TurnMailbox, list[str]]]:
+    """Run a Control-API-shaped verdict endpoint backed by a real mailbox."""
+    import http.server
+    import threading
+
+    from issue_orchestrator.domain.review_exchange_verdict import ExchangeVerdict
+    from issue_orchestrator.execution.review_exchange_turn_mailbox import (
+        InMemoryTurnMailbox,
+    )
+
+    token = "test-agent-callback-token"
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_AGENT_CALLBACK_TOKEN", token)
+
+    mailbox = InMemoryTurnMailbox()
+    deliveries: list[str] = []
+
+    class _Server(http.server.ThreadingHTTPServer):
+        daemon_threads = True
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - stdlib handler contract
+            if self.path != "/api/review-exchange/respond":
+                self.send_response(404)
+                self.end_headers()
+                return
+            if self.headers.get("Authorization") != f"Bearer {token}":
+                self.send_response(401)
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
+            body = json.loads(
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            )
+            try:
+                verdict = ExchangeVerdict.from_wire(body.get("payload"))
+            except ValueError:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"status":"error"}')
+                return
+            result = mailbox.deliver(body.get("key"), dict(verdict.to_wire()))
+            deliveries.append(result.status.value)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": result.status.value}).encode())
+
+        def log_message(self, *_args: object) -> None:
+            return
+
+    server = _Server(("127.0.0.1", 0), _Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        yield server.server_address[1], mailbox, deliveries
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
 
 
 @pytest.fixture(autouse=True)
@@ -560,15 +627,15 @@ def test_codex_shaped_interactive_agent_receives_argv_bootstrap_then_pty_rounds(
 @pytest.mark.skipif(not _CODEX_READY, reason="codex CLI not installed or not logged in")
 @pytest.mark.live_codex
 def test_real_interactive_codex_reviewer_round_trips_through_exchange(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """LIVE smoke: REAL interactive codex as the reviewer through the REAL
     exchange loop — the seams no stub covers:
 
       - the production ``build_reviewer_prompt`` output driving real codex,
       - the exchange-built provider command (no ``command`` override),
-      - codex booting in the exchange-created reviewer worktree with the
-        ``workspace-write`` sandbox writing the exchange's response path,
+      - codex booting in the exchange-created reviewer worktree and calling
+        back into the orchestrator-owned mailbox through ``exchange-respond``,
       - real codex emitting protocol-valid verdict JSON the exchange parses.
 
     The verdict itself is the LLM's judgment and is deliberately NOT pinned:
@@ -593,14 +660,16 @@ def test_real_interactive_codex_reviewer_round_trips_through_exchange(
     )
     # Reviewer = REAL codex: ai_system only, no command override, so the
     # exchange builds the production interactive invocation itself.
-    # Low reasoning effort keeps the live review fast; the model is left
-    # unset on purpose — the claude-vocabulary field default must NOT leak
+    # Low reasoning effort keeps the live review fast; approval_mode=yolo is
+    # required because the mailbox verdict is delivered through the loopback
+    # Control API, which Codex's workspace-write sandbox blocks. The model is
+    # left unset on purpose — the claude-vocabulary field default must NOT leak
     # into the codex invocation (the second bug this smoke test caught).
     reviewer = AgentConfig(
         prompt_path=prompt_path,
         ai_system="codex",
         timeout_minutes=10,
-        provider_args={"reasoning_effort": "low"},
+        provider_args={"reasoning_effort": "low", "approval_mode": "yolo"},
     )
     config = _make_config(tmp_path, coder, reviewer_agent=reviewer)
 
@@ -611,27 +680,39 @@ def test_real_interactive_codex_reviewer_round_trips_through_exchange(
             captured_events.append(event)
 
     session_output = FileSystemSessionOutput()
-    cre = CompletionReviewExchange(
-        config=config,
-        session_output=session_output,
-        emit_review_started=lambda **_: None,
-        emit_review_outcome=lambda **_: None,
-        review_exchange_runner=_make_review_exchange_runner(session_output),
-    )
+    with _review_exchange_mailbox_server(monkeypatch) as (
+        port,
+        mailbox,
+        deliveries,
+    ):
+        config.control_api_port = port
+        cre = CompletionReviewExchange(
+            config=config,
+            session_output=session_output,
+            emit_review_started=lambda **_: None,
+            emit_review_outcome=lambda **_: None,
+            review_exchange_runner=PersistentReviewExchangeRunner(
+                session_output,
+                InMemoryPersistentExchangePairRegistry(),
+                turn_mailbox=mailbox,
+            ),
+        )
 
-    from issue_orchestrator.events import EventContext
+        from issue_orchestrator.events import EventContext
 
-    outcome = _run_review_exchange_for_test(
-        cre,
-        session_output,
-        worktree=coder_wt,
-        issue_number=4062,
-        issue_title="Real interactive codex reviewer smoke",
-        session_name="issue-4062",
-        agent_label="agent:backend",
-        events=_Sink(),
-        event_context=EventContext(),
-    )
+        outcome = _run_review_exchange_for_test(
+            cre,
+            session_output,
+            worktree=coder_wt,
+            issue_number=4062,
+            issue_title="Real interactive codex reviewer smoke",
+            session_name="issue-4062",
+            agent_label="agent:backend",
+            events=_Sink(),
+            event_context=EventContext(),
+        )
+
+    assert deliveries, "real codex did not deliver a verdict through the mailbox"
 
     round_completed = [
         evt
@@ -1397,3 +1478,66 @@ def test_persistent_pair_response_and_completion_paths_stable_across_exchanges(
 
     # Cleanup is guaranteed by the ``pair_registry_with_cleanup``
     # fixture's finally-block, even if any of the assertions above fail.
+
+
+def test_persistent_review_exchange_end_to_end_through_mailbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Activate the orchestrator-owned mailbox end to end (PR #6550 finding 1).
+
+    The interactive fixture runs the real ``exchange-respond`` CLI, which
+    POSTs to a live Control-API-shaped server backed by the real
+    ``InMemoryTurnMailbox``; ``send_round`` polls that mailbox (no response
+    file). Proves the fixture/CLI -> endpoint -> mailbox -> send_round path.
+    """
+    with _review_exchange_mailbox_server(monkeypatch) as (
+        port,
+        mailbox,
+        deliveries,
+    ):
+        coder_wt, _branch = _bootstrap_git_worktree(tmp_path)
+        prompt_path = tmp_path / "prompt.md"
+        prompt_path.write_text("Stub agent prompt", encoding="utf-8")
+        agent = AgentConfig(
+            prompt_path=prompt_path,
+            ai_system="claude-code",
+            # Generous round timeout: this test spawns two real agent
+            # subprocesses plus a PTY and an HTTP server, and runs under the
+            # parallel validate-pr load where CPU is saturated.
+            timeout_minutes=3,
+            command=_interactive_review_agent_command(),
+        )
+        config = _make_config(tmp_path, agent)
+        config.control_api_port = port  # flows to the agent env as the API port
+
+        session_output = FileSystemSessionOutput()
+        runner = PersistentReviewExchangeRunner(
+            session_output,
+            InMemoryPersistentExchangePairRegistry(),
+            turn_mailbox=mailbox,
+        )
+        cre = CompletionReviewExchange(
+            config=config,
+            session_output=session_output,
+            emit_review_started=lambda **_: None,
+            emit_review_outcome=lambda **_: None,
+            review_exchange_runner=runner,
+        )
+
+        from issue_orchestrator.events import EventContext
+
+        outcome = _run_review_exchange_for_test(
+            cre,
+            session_output,
+            worktree=coder_wt,
+            issue_number=4058,
+            issue_title="Mailbox e2e",
+            session_name="issue-4058",
+            agent_label="agent:backend",
+            events=MagicMock(),
+            event_context=EventContext(),
+        )
+
+    assert outcome.status == "ok", f"unexpected outcome: {outcome}"
+    # The verdict reached the orchestrator through the mailbox, not a file.
+    assert deliveries and deliveries[0] == "accepted"

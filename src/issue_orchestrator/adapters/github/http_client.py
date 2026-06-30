@@ -6,7 +6,7 @@ import json as _json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 import httpx
@@ -32,6 +32,200 @@ logger = logging.getLogger(__name__)
 # final (short/empty) page, so the scan fails loud rather than report "absent"
 # from a truncated read.
 _MARKER_SCAN_PAGE_CAP = 20
+
+
+# Completed check-run conclusions that GitHub treats as acceptable for a
+# required status check: only `success`, `skipped`, and `neutral` clear merge.
+# Everything else completed — `failure`, `timed_out`, `action_required`,
+# `startup_failure`, and notably `cancelled`/`stale` — is non-passing and must
+# block, so the REST fallback cannot report it as SUCCESS. Modeling the PASS set
+# (rather than a FAIL set) is fail-safe: any unknown/new conclusion is treated
+# as non-passing. We only read the PR head commit, so `cancelled`/`stale` here
+# mean the head's own required check did not pass, not a superseded commit.
+# See https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/about-status-checks
+_PASSING_CHECK_CONCLUSIONS: frozenset[str] = frozenset(
+    {"success", "skipped", "neutral"}
+)
+
+# A check-state contribution from one source: (failure, pending, present).
+# `present` distinguishes "no checks at all" (→ rollup None) from "all green".
+_RollupSignal = tuple[bool, bool, bool]
+
+# Upper bound on check-run pages walked per commit. GitHub returns 100 runs per
+# page; a head commit with >2000 check runs is implausible, so this is purely a
+# runaway-loop backstop, not an expected limit.
+_MAX_CHECK_RUN_PAGES = 20
+
+# Why one REST rollup source did (not) yield a trustworthy reading. ``ok`` =
+# read in full; ``permission_denied`` = the token lacks the read scope;
+# ``transient_error`` = a retryable GitHub blip (5xx / rate-limit / timeout);
+# ``capped`` = the source was readable but truncated at the pagination safety
+# cap, so later pages are unread. Distinct causes so the gate that owns
+# permission backoff can apply the right policy (retry vs escalate).
+_SourceStatus = Literal["ok", "permission_denied", "transient_error", "capped"]
+
+# Aggregate read capability for a commit's rollup, mirroring the port's
+# ``StatusCheckRollupCapability`` (kept local to avoid an adapter→port import).
+_RollupCapability = Literal["ok", "permission_denied", "transient_error"]
+
+
+@dataclass(frozen=True)
+class CommitCheckRollup:
+    """REST-fallback rollup for a commit SHA, with a typed read capability.
+
+    ``state`` is the aggregate ``StatusState``-like rollup (``FAILURE`` /
+    ``PENDING`` / ``SUCCESS`` / ``None`` when the commit has no checks).
+
+    ``capability`` carries WHY the read is (un)trustworthy so the caller does
+    not collapse distinct facts:
+
+    - ``ok``: ``state`` is trustworthy — either every source was read in full,
+      or a readable source reported ``FAILURE`` (the top of the rollup
+      precedence ``FAILURE`` > ``PENDING`` > ``SUCCESS``/none, which no unread
+      source can outrank).
+    - ``permission_denied``: a source could not be read for lack of scope and no
+      readable ``FAILURE`` overrides it — a persistent operator problem.
+    - ``transient_error``: a source failed with a retryable blip (5xx /
+      rate-limit / timeout) OR was truncated at the pagination cap, and no
+      readable ``FAILURE`` overrides it — safe to retry next tick and, crucially,
+      must NOT arm the repo-wide permission backoff.
+
+    When ``capability`` is not ``ok`` the caller must NOT treat ``state`` as
+    truthful: an unread source could hold a failed required check/status that
+    outranks the non-failure aggregate that was read.
+    """
+
+    state: str | None
+    capability: _RollupCapability
+
+    @property
+    def complete(self) -> bool:
+        """Whether ``state`` is trustworthy (every source read, or a readable
+        FAILURE). Convenience over ``capability == "ok"``."""
+        return self.capability == "ok"
+
+
+@dataclass(frozen=True)
+class _SourceReadout:
+    """One REST rollup source's contribution: its signal plus a typed outcome.
+
+    ``outcome`` is the typed read result (see ``_SourceStatus``). Anything other
+    than ``ok`` means the (possibly partial) ``signal`` must NOT be mistaken for
+    "this source found nothing"; the caller folds the outcome into
+    ``CommitCheckRollup.capability``.
+    """
+
+    signal: _RollupSignal
+    outcome: _SourceStatus
+
+
+@dataclass(frozen=True)
+class _CommitStatusReadout:
+    """Outcome of a best-effort legacy combined-status read for one commit."""
+
+    payload: dict[str, Any] | None
+    outcome: _SourceStatus
+
+
+def _aggregate_check_runs(payload: object) -> _RollupSignal:
+    """Reduce a REST `/check-runs` response to a `_RollupSignal`."""
+    failure = pending = present = False
+    runs = payload.get("check_runs") if isinstance(payload, dict) else None
+    for run in runs or []:
+        if not isinstance(run, dict):
+            continue
+        present = True
+        if run.get("status") != "completed":
+            pending = True
+        elif str(run.get("conclusion") or "").lower() not in _PASSING_CHECK_CONCLUSIONS:
+            # Completed but not success/skipped/neutral (incl. cancelled/stale)
+            # → non-passing, so it blocks merge like any other failure.
+            failure = True
+    return failure, pending, present
+
+
+def _aggregate_combined_status(payload: object) -> _RollupSignal:
+    """Reduce a REST `/commits/{sha}/status` response to a `_RollupSignal`.
+
+    A commit with zero statuses reports ``state="pending"``, so only fold this
+    in when there are real statuses — otherwise it would mask a clean check-run
+    result as pending.
+    """
+    if not isinstance(payload, dict) or not (payload.get("statuses") or []):
+        return False, False, False
+    state = str(payload.get("state") or "").lower()
+    return state in ("failure", "error"), state == "pending", True
+
+
+# Markers in a GitHub error body that name a genuine missing-capability failure
+# (as opposed to a retryable throttle/5xx). GitHub returns HTTP 403 for BOTH a
+# missing scope and "secondary rate limit"/"API rate limit exceeded"; only the
+# former names a scope/permission, so we sniff the body rather than the status.
+_ROLLUP_PERMISSION_MARKERS: tuple[str, ...] = (
+    "forbidden",
+    "not accessible",
+    "scope",  # "...has not been granted the required scopes..."
+    "permission",
+    "must have",  # "...must have read access..."
+)
+
+
+def classify_github_http_failure(exc: GitHubHttpError) -> _RollupCapability:
+    """Tell a missing-permission rollup failure from a transient one.
+
+    A 401 is an authentication failure: the token cannot identify itself at all,
+    which is always an operator problem rather than a retryable blip.
+
+    Every other status (403, 429, 5xx, GraphQL-200-with-errors) is decided by
+    the response body, NOT the status code. A genuine missing-capability failure
+    names the gap — ``forbidden`` / ``not accessible`` / a required
+    ``scope``/``permission`` — so we sniff for those markers. GitHub also returns
+    HTTP 403 for retryable throttling ("API rate limit exceeded", "secondary
+    rate limit"); those bodies name no scope, so they fall through to
+    ``transient_error`` and are retried next tick instead of arming the repo-wide
+    permission backoff and escalating a bogus missing-scope error.
+    """
+    if exc.status_code == 401:
+        return "permission_denied"
+    haystack = f"{exc} {getattr(exc, 'response_text', '') or ''}".lower()
+    if any(marker in haystack for marker in _ROLLUP_PERMISSION_MARKERS):
+        return "permission_denied"
+    return "transient_error"
+
+
+def _aggregate_rollup_capability(*outcomes: _SourceStatus) -> _RollupCapability:
+    """Fold per-source read outcomes into one rollup capability.
+
+    Only reached for a NON-conclusive aggregate (no readable ``FAILURE``; a
+    readable failure short-circuits to ``ok`` before this). Precedence is biased
+    toward never falsely escalating a missing scope:
+
+    - any ``transient_error`` wins → retry next tick (a real but unread
+      permission gap will resurface once the transient clears);
+    - else any ``permission_denied`` → escalate the genuine scope problem;
+    - else any ``capped`` → ``transient_error`` (a truncated read is not a
+      permission failure, so it must not arm the permission backoff);
+    - else every source was read in full → ``ok``.
+    """
+    if "transient_error" in outcomes:
+        return "transient_error"
+    if "permission_denied" in outcomes:
+        return "permission_denied"
+    if "capped" in outcomes:
+        return "transient_error"
+    return "ok"
+
+
+def _combine_rollup_signals(*signals: _RollupSignal) -> str | None:
+    """Fold per-source signals into one `StatusState`-like rollup."""
+    failure = any(sig[0] for sig in signals)
+    pending = any(sig[1] for sig in signals)
+    present = any(sig[2] for sig in signals)
+    if failure:
+        return "FAILURE"
+    if pending:
+        return "PENDING"
+    return "SUCCESS" if present else None
 
 
 @dataclass
@@ -957,6 +1151,168 @@ class GitHubHttpClient:
             return None
         state = rollup.get("state")
         return state if isinstance(state, str) else None
+
+    def get_commit_check_rollup(self, sha: str) -> CommitCheckRollup:
+        """Aggregate REST check-runs + combined commit status into a single
+        `StatusState`-like rollup for a commit SHA.
+
+        This is the REST fallback for `get_pr_status_check_rollup` when the
+        GraphQL `statusCheckRollup` query is inaccessible to the running token.
+        The returned `CommitCheckRollup.state` is one of `FAILURE` / `PENDING`
+        / `SUCCESS`, or `None` when the commit has no checks or statuses at all.
+
+        The check-runs API is paginated. Pagination short-circuits only once a
+        FAILURE run is seen (the top of the rollup precedence, which no later
+        page can change); a pending run is remembered but pagination continues,
+        because a completed failing run on a later page must still override an
+        earlier in-progress one. Pagination is bounded by a safety cap of
+        `_MAX_CHECK_RUN_PAGES` full pages: if the cap is reached before a final
+        short page without finding a failure, the unread later pages could still
+        hold a failed required run, so the check-runs source is reported
+        unreadable (incomplete) rather than a conclusive success/pending.
+
+        The check-runs and combined-status sources are read INDEPENDENTLY: if
+        the check-runs API is inaccessible, the legacy combined-status source is
+        still consulted (and vice versa), so a conclusive failure/pending from
+        either readable source is honored even when the other cannot be read.
+
+        `CommitCheckRollup.capability` is `ok` only when `state` is trustworthy:
+        either every source was read in full, or a readable source produced a
+        `FAILURE`. `FAILURE` is the top of the rollup precedence (`FAILURE` >
+        `PENDING` > `SUCCESS`/none), so no signal an unread source could ADD
+        outranks it — a readable failure stays conclusive. A readable `PENDING`
+        is NOT conclusive when a source is unread, because that unread source
+        could hold a failed required check/status that outranks pending; the
+        capability then carries WHY the source was unread (`permission_denied`
+        vs `transient_error`) so the caller can escalate a real scope gap but
+        merely retry a transient/throttle/cap-truncated read. This method does
+        not raise on source access failures — the typed capability carries them.
+        """
+        encoded = quote(sha, safe="")
+        checks = self._read_check_run_signal(encoded)
+        status_readout = self._best_effort_commit_status(sha, encoded)
+        statuses = _aggregate_combined_status(status_readout.payload)
+        state = _combine_rollup_signals(checks.signal, statuses)
+        # A readable FAILURE is conclusive: it is the top of the rollup
+        # precedence (FAILURE > PENDING > SUCCESS/none), so no signal an unread
+        # source could ADD outranks it. Otherwise the aggregate is only as
+        # trustworthy as its least-read source, so fold the per-source outcomes
+        # into the read capability (which preserves permission vs transient vs
+        # cap-truncated, instead of collapsing every gap to permission-denied).
+        if state == "FAILURE":
+            return CommitCheckRollup(state="FAILURE", capability="ok")
+        capability = _aggregate_rollup_capability(checks.outcome, status_readout.outcome)
+        return CommitCheckRollup(state=state, capability=capability)
+
+    def _read_check_run_signal(self, encoded_sha: str) -> _SourceReadout:
+        """Fold the paginated check-runs API into one `_SourceReadout`.
+
+        Stops early only once a failure run is seen: failure is the top of the
+        rollup precedence (`_combine_rollup_signals` returns FAILURE before
+        PENDING), so no later page can change a FAILURE. A pending signal is NOT
+        conclusive — a completed failing run on a later page must still override
+        an earlier in-progress one — so pending is remembered but pagination
+        continues until a failure is found or the final page is read.
+
+        If the API is inaccessible, the source's `outcome` records WHY —
+        `permission_denied` (token lacks `checks:read`) vs `transient_error` (a
+        retryable 5xx/rate-limit/timeout) — with an empty signal rather than
+        raising, so the caller can still honor the combined-status source and
+        apply the right policy (escalate vs retry). A partial read that errored
+        mid-pagination before finding a failure is reported the same way (its
+        in-progress signal is discarded), because an unread page could still
+        hold a failure.
+
+        If pagination reaches the `_MAX_CHECK_RUN_PAGES` safety cap on a full
+        page without finding a failure, the unread later pages could likewise
+        hold a failed required run, so the source's `outcome` is `capped` — the
+        partial pending/present signal is preserved only as non-conclusive
+        evidence. A cap is NOT a permission failure, so the caller retries/waits
+        rather than arming the permission backoff, unless another readable
+        source already produced a FAILURE.
+        """
+        failure = pending = present = False
+        page = 1
+        while True:
+            try:
+                payload = self._request_json(
+                    "GET",
+                    f"/repos/{self._config.repo}/commits/{encoded_sha}/check-runs",
+                    params={"per_page": 100, "page": page},
+                    caller="get_commit_check_rollup_checks",
+                )
+            except GitHubTransportError as exc:
+                logger.debug(
+                    "check-runs read failed for %s (page %d, transient): %s",
+                    encoded_sha, page, exc,
+                )
+                return _SourceReadout((False, False, False), outcome="transient_error")
+            except GitHubHttpError as exc:
+                outcome = classify_github_http_failure(exc)
+                logger.debug(
+                    "check-runs unreadable for %s (page %d, %s): %s",
+                    encoded_sha, page, outcome, exc,
+                )
+                return _SourceReadout((False, False, False), outcome=outcome)
+            page_failure, page_pending, page_present = _aggregate_check_runs(payload)
+            failure = failure or page_failure
+            pending = pending or page_pending
+            present = present or page_present
+            if failure:
+                break  # FAILURE is conclusive — no later page can change it
+            runs = payload.get("check_runs") if isinstance(payload, dict) else None
+            if not isinstance(runs, list) or len(runs) < 100:
+                break  # last (or only) page
+            page += 1
+            if page > _MAX_CHECK_RUN_PAGES:
+                logger.warning(
+                    "check-runs pagination hit safety cap (%d pages) for %s "
+                    "without a failure; treating the check-runs source as "
+                    "truncated so an unread later-page failure cannot be "
+                    "masked as a conclusive success/pending",
+                    _MAX_CHECK_RUN_PAGES, encoded_sha,
+                )
+                # Cap reached on a full page (a further page exists) with no
+                # failure yet. The unread pages could hold a failed required
+                # run, which outranks the pending/present we have, so the source
+                # is truncated: outcome="capped" keeps the partial signal only
+                # as non-conclusive evidence. Only another readable FAILURE can
+                # still make the aggregate conclusive.
+                return _SourceReadout((failure, pending, present), outcome="capped")
+        return _SourceReadout((failure, pending, present), outcome="ok")
+
+    def _best_effort_commit_status(
+        self, sha: str, encoded_sha: str
+    ) -> _CommitStatusReadout:
+        """Fetch the legacy combined commit status, reporting access failures.
+
+        GitHub Actions checks live only in the Checks API, so an inaccessible
+        combined-status call must NOT poison a readable check-run result — it
+        is purely supplementary for repos using the older Status API. The
+        readout's typed `outcome` records WHY the source was unread
+        (`permission_denied` vs `transient_error`) so the caller preserves the
+        failure cause instead of silently treating an unreadable status source
+        as "no statuses".
+        """
+        try:
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/commits/{encoded_sha}/status",
+                caller="get_commit_check_rollup_status",
+            )
+        except GitHubTransportError as exc:
+            logger.debug(
+                "Combined commit status read failed for %s (transient): %s", sha, exc
+            )
+            return _CommitStatusReadout(payload=None, outcome="transient_error")
+        except GitHubHttpError as exc:
+            outcome = classify_github_http_failure(exc)
+            logger.debug(
+                "Combined commit status unavailable for %s (%s): %s", sha, outcome, exc
+            )
+            return _CommitStatusReadout(payload=None, outcome=outcome)
+        normalized = payload if isinstance(payload, dict) else None
+        return _CommitStatusReadout(payload=normalized, outcome="ok")
 
     def list_prs(self, *, state: str = "open", limit: int = 100) -> list[dict[str, Any]]:
         payload = self._request_json(

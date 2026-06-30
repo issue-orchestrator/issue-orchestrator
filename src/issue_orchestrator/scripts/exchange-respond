@@ -1,0 +1,39 @@
+#!/bin/bash
+# exchange-respond wrapper - forwards to the orchestrator's venv installation
+#
+# This script is placed in the scripts directory which gets prepended to PATH
+# when agents run. It forwards all arguments to the actual exchange-respond
+# command in the orchestrator's venv.
+
+# The scripts directory
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${SCRIPT_SOURCE%/*}"
+if [[ "$SCRIPT_DIR" == "$SCRIPT_SOURCE" ]]; then
+    SCRIPT_DIR="."
+fi
+SCRIPT_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+
+source "$SCRIPT_DIR/completion-wrapper-lib.sh"
+if EXCHANGE_RESPOND="$(completion_wrapper_resolve "$SCRIPT_DIR" "exchange-respond")"; then
+    exec "$EXCHANGE_RESPOND" "$@"
+fi
+
+# Fallback: try to find in PATH (if installed globally)
+REAL_EXCHANGE_RESPOND=$(which -a exchange-respond 2>/dev/null | grep -v "$SCRIPT_DIR" | head -1)
+if [[ -x "$REAL_EXCHANGE_RESPOND" ]]; then
+    exec "$REAL_EXCHANGE_RESPOND" "$@"
+fi
+
+echo "╔════════════════════════════════════════════════════════════════╗" >&2
+echo "║  ❌ ERROR: exchange-respond not found                          ║" >&2
+echo "╠════════════════════════════════════════════════════════════════╣" >&2
+echo "║                                                                ║" >&2
+echo "║  The issue-orchestrator package may not be installed.         ║" >&2
+echo "║                                                                ║" >&2
+echo "║  Checked locations:                                           ║" >&2
+for EXCHANGE_RESPOND in "${completion_candidate_paths[@]}"; do
+    echo "║  $EXCHANGE_RESPOND" >&2
+done
+echo "║                                                                ║" >&2
+echo "╚════════════════════════════════════════════════════════════════╝" >&2
+exit 1

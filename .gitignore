@@ -80,6 +80,17 @@ Thumbs.db
 .agent-done-marker
 /TODO.md
 
+# Review-exchange / persistent-pair runtime outputs. These are written by the
+# orchestrator and the live agent sessions during a review exchange; they must
+# never enter an agent branch or they break the reviewer-worktree fast-forward
+# checkout and bloat the review diff (see #6659).
+.issue-orchestrator/persistent-pairs/
+.issue-orchestrator/review-feedback/
+.issue-orchestrator/review-response.json
+.issue-orchestrator/review-report.md
+.issue-orchestrator/review-exchange-turn-prompt.md
+.issue-orchestrator/tool-homes/
+
 # Keep .issue-orchestrator/config/ tracked - it's project configuration
 .validate/
 .venv

@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -86,6 +86,7 @@ from ..domain.review_exchange_turn import (
     Role,
     TurnResultKind,
 )
+from ..ports.turn_mailbox import TurnMailbox
 from ..domain.review_exchange_run import ReviewExchangeRun, ReviewExchangeRunAssets
 from ..domain.review_exchange_summary import ReviewExchangeReason, ReviewExchangeStatus, ReviewExchangeSummaryArtifactRef, ReviewExchangeSummaryV1, ReviewExchangeTerminalState
 from ..domain.runtime_config import RuntimeConfigReference
@@ -122,6 +123,14 @@ from .persistent_role_prompt_policy import (
     RoleAttemptWorkspace as _RoleAttemptWorkspace,
     role_prompt_inbox_path as _role_prompt_inbox_path,
     role_session_needs_fresh_prompt_process,
+)
+from .review_exchange_response_channel import (
+    ResponseChannel,
+    ReviewExchangeResponseChannels,
+    build_bootstrap_prompt,
+    build_prompt_inbox_notice,
+    prompt_for_response_channel,
+    reviewer_prompt_with_artifact_contract,
 )
 from .recording_contract import recording_event_count
 
@@ -169,21 +178,6 @@ def review_exchange_supervisor_timeout_seconds(
         coder_timeout_seconds * coder_attempts_per_round
     )
     return float(per_round * rounds + grace_seconds)
-
-
-_BOOTSTRAP_PROMPT_TEMPLATE = (
-    "You are the {role} in a coder↔reviewer review exchange for issue "
-    "#{issue_number}: {issue_title}.\n\n"
-    "Wait for the orchestrator to send your role-specific instructions via "
-    "stdin. The orchestrator may send the full prompt directly, or it may "
-    "send a short notice pointing at a prompt file in this worktree. For "
-    "each turn, read the full instructions and follow them. Reviewers also "
-    "write the human-readable report to $ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE. "
-    "Each role writes exactly one line of JSON to the file at "
-    "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE. "
-    "Then wait for the next prompt. Do not exit on your own; the orchestrator "
-    "will terminate you when the exchange is done.\n"
-)
 
 
 @dataclass
@@ -415,6 +409,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     events: EventSink | None = None,
     event_context: EventContext | None = None,
     before_reviewer_round: Callable[[int], None] | None = None,
+    turn_mailbox: "TurnMailbox | None" = None,
+    response_channels: ReviewExchangeResponseChannels | None = None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange against a registry-owned persistent pair.
 
@@ -436,6 +432,11 @@ def run_persistent_session_exchange(  # noqa: PLR0913
     run_assets = exchange_run.assets
     exchange_dir = exchange_run.assets.exchange_dir
     exchange_dir.mkdir(parents=True, exist_ok=True)
+    effective_response_channels = (
+        response_channels or ReviewExchangeResponseChannels()
+    )
+    if turn_mailbox is None:
+        effective_response_channels = ReviewExchangeResponseChannels.file_only()
     _write_review_exchange_manifest_header(
         session_output,
         run_dir,
@@ -557,6 +558,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
+            response_channel=effective_response_channels.for_role(Role.CODER),
         )
         coder = _open_role_session_from_spec(coder_spec)
         # Reviewer-spawn-after-coder-success is the canonical
@@ -587,6 +589,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 issue_number=issue_number,
                 issue_title=issue_title,
                 session_name=session_name,
+                response_channel=effective_response_channels.for_role(Role.REVIEWER),
             )
             reviewer = _open_role_session_from_spec(reviewer_spec)
         except BaseException:
@@ -688,6 +691,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
+            response_channel=effective_response_channels.for_role(Role.CODER),
         ),
         slice_path=coder_session_slice,
     )
@@ -709,6 +713,7 @@ def run_persistent_session_exchange(  # noqa: PLR0913
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
+            response_channel=effective_response_channels.for_role(Role.REVIEWER),
         ),
         slice_path=reviewer_session_slice,
     )
@@ -774,6 +779,8 @@ def run_persistent_session_exchange(  # noqa: PLR0913
                 emit=_emit,
                 coder_mirror=coder_mirror,
                 reviewer_mirror=reviewer_mirror,
+                turn_mailbox=turn_mailbox,
+                response_channels=effective_response_channels,
             ),
         )
     except Exception as exc:
@@ -927,6 +934,7 @@ class _RoleSessionSpec:
     issue_number: int
     issue_title: str
     session_name: str
+    response_channel: ResponseChannel
 
 
 @dataclass
@@ -1091,10 +1099,12 @@ def _open_role_session(spec: _RoleSessionSpec) -> PersistentSession:
     issue_title = spec.issue_title
     session_name = spec.session_name
 
-    bootstrap = _BOOTSTRAP_PROMPT_TEMPLATE.format(
-        role=role,
+    bootstrap = build_bootstrap_prompt(
+        role=spec.role,
         issue_number=issue_number,
         issue_title=issue_title,
+        response_channel=spec.response_channel,
+        response_file=response_file,
     )
     bootstrap_agent = AgentConfig(
         prompt_path=agent.prompt_path,
@@ -1188,7 +1198,7 @@ def _build_role_env(
     files must be inside the role worktree; coder validation paths use the
     owner-provided run directory.
     """
-    from ..control.isolation import build_runtime_tool_env
+    from ..control.isolation import build_agent_tool_env
     from .agent_runner_env import build_filtered_env
 
     overrides: dict[str, str] = {
@@ -1207,7 +1217,7 @@ def _build_role_env(
     if review_report_file is not None:
         review_report_file.parent.mkdir(parents=True, exist_ok=True)
         overrides[f"{ENV_PREFIX}REVIEW_REPORT_FILE"] = str(review_report_file)
-    overrides.update(build_runtime_tool_env(worktree, base_env={}))
+    overrides.update(build_agent_tool_env(worktree, base_env={}))
     if web_port is not None:
         overrides["ORCHESTRATOR_API_PORT"] = str(web_port)
     return build_filtered_env(overrides=overrides)
@@ -1287,22 +1297,6 @@ def _write_role_prompt_inbox(response_file: Path, prompt_text: str) -> Path:
 
 def _clear_role_prompt_inbox(response_file: Path) -> None:
     _role_prompt_inbox_path(response_file).unlink(missing_ok=True)
-
-
-def _build_prompt_inbox_notice(
-    *,
-    role: Role,
-    round_index: int,
-    attempt_index: int,
-    prompt_path: Path,
-) -> str:
-    return (
-        f"Review-exchange {role.value} turn round={round_index} "
-        f"attempt={attempt_index} is ready.\n"
-        f"Read the full instructions from: {prompt_path}\n"
-        "Follow that file exactly, then write one JSON response line to "
-        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
-    )
 
 
 def _persist_turn_prompt(
@@ -1416,49 +1410,6 @@ def _persist_turn_contract(
     )
     path.write_text(json.dumps(fields, indent=2, sort_keys=True), encoding="utf-8")
     return path
-
-
-def _reviewer_prompt_with_artifact_contract(
-    prompt: str, *, nit_policy: NitPolicy
-) -> str:
-    return (
-        prompt.rstrip() + "\n\n"
-        "Review artifact contract:\n"
-        "- Write a human-readable markdown review to "
-        "$ISSUE_ORCHESTRATOR_REVIEW_REPORT_FILE.\n"
-        "- Also write the existing one-line JSON response to "
-        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE.\n"
-        "- The JSON must include a `decision` object with: "
-        "verdict, risk, blocking_findings, nits, tests_reviewed, "
-        "abstraction_review, nit_policy.\n"
-        "- Put review content in markdown; JSON item entries may be ID-only.\n"
-        "- Use stable IDs (`F1`, `F2`, `N1`, ...), and include every JSON ID "
-        "as a heading or bullet in the markdown report.\n"
-        "- Include `abstraction_review` with `status` set to `no_issues`, "
-        "`changes_requested`, or `deferred`. Use `A1`, `A2`, ... findings "
-        "when a bounded owner/port/command abstraction should be added. "
-        "Use `deferred` only with `follow_up_issue_url`.\n"
-        "- `approved` decisions must not include blocking findings. "
-        "`approved` decisions must not carry "
-        "`abstraction_review.status=changes_requested`.\n"
-        "- Review for the strongest bounded design, not merely for a working diff.\n"
-        f"- The active nit policy for this coder is `{nit_policy}`. "
-        "Classify nits honestly; the orchestrator decides whether to route them "
-        "back to the coder before PR creation.\n"
-        "- If the active policy is `address`, approved-with-nits is still an "
-        "`approved` decision in your JSON; the orchestrator will route those "
-        "nits through coder rework before PR creation.\n"
-        "\n"
-        "Example JSON shape:\n"
-        '{"response_type":"ok","getting_closer":true,'
-        '"response_text":"Looks good.",'
-        '"decision":{"verdict":"approved","risk":"low",'
-        '"blocking_findings":[],"nits":[],'
-        '"tests_reviewed":["pytest tests/unit -q"],'
-        '"abstraction_review":{"status":"no_issues","findings":[]},'
-        f'"nit_policy":"{nit_policy}"}}'
-        "\n"
-    )
 
 
 def _persist_reviewer_artifact_pair(
@@ -1674,6 +1625,10 @@ class _DriveRoundsCommand:
     emit: Callable[[EventName, dict[str, Any]], None]
     coder_mirror: _RoleSliceMirror
     reviewer_mirror: _RoleSliceMirror
+    turn_mailbox: "TurnMailbox | None" = None
+    response_channels: ReviewExchangeResponseChannels = field(
+        default_factory=ReviewExchangeResponseChannels
+    )
 
 
 def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
@@ -1708,6 +1663,8 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
     emit = command.emit
     coder_mirror = command.coder_mirror
     reviewer_mirror = command.reviewer_mirror
+    turn_mailbox = command.turn_mailbox
+    response_channels = command.response_channels
 
     no_progress_count = 0
     last_reviewer_text: str | None = None
@@ -1746,9 +1703,16 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
             last_reviewer_text=last_reviewer_text,
         )
         _persist_turn_packet(exchange_dir, reviewer_packet)
-        reviewer_prompt_text = _reviewer_prompt_with_artifact_contract(
+        reviewer_prompt_text = reviewer_prompt_with_artifact_contract(
             build_reviewer_prompt(reviewer_packet),
             nit_policy=nit_policy,
+        )
+        reviewer_response_channel = response_channels.for_role(Role.REVIEWER)
+        reviewer_prompt_text = prompt_for_response_channel(
+            reviewer_prompt_text,
+            role=Role.REVIEWER,
+            response_channel=reviewer_response_channel,
+            response_file=reviewer_response,
         )
         reviewer_prompt_path = _persist_turn_prompt(
             exchange_dir,
@@ -1833,6 +1797,8 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
                 session_name=session_name,
                 emit=emit,
                 mirror=reviewer_mirror,
+                turn_mailbox=turn_mailbox,
+                response_channel=reviewer_response_channel,
             )
         )
         if reviewer is None:
@@ -1923,7 +1889,13 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
             reviewer_feedback=artifact_pair.report_path.read_text(encoding="utf-8"),
         )
         _persist_turn_packet(exchange_dir, coder_packet)
-        coder_prompt_text = build_coder_prompt(coder_packet)
+        coder_response_channel = response_channels.for_role(Role.CODER)
+        coder_prompt_text = prompt_for_response_channel(
+            build_coder_prompt(coder_packet),
+            role=Role.CODER,
+            response_channel=coder_response_channel,
+            response_file=coder_response,
+        )
         coder_prompt_path = _persist_turn_prompt(
             exchange_dir,
             round_index=round_index,
@@ -1999,6 +1971,8 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
                 session_name=session_name,
                 emit=emit,
                 mirror=coder_mirror,
+                turn_mailbox=turn_mailbox,
+                response_channel=coder_response_channel,
             )
         )
         if coder is None:
@@ -2037,6 +2011,8 @@ def _drive_rounds(command: _DriveRoundsCommand) -> ReviewExchangeOutcome:
                 cycle_index=round_index,
                 emit=emit,
                 coder_mirror=coder_mirror,
+                turn_mailbox=turn_mailbox,
+                response_channel=coder_response_channel,
             )
         )
         if protocol_outcome is not None:
@@ -2110,6 +2086,8 @@ class _CoderProtocolCommand:
     cycle_index: int
     emit: Callable[[EventName, dict[str, Any]], None]
     coder_mirror: _RoleSliceMirror
+    turn_mailbox: "TurnMailbox | None" = None
+    response_channel: ResponseChannel = "mailbox"
 
 
 def _enforce_coder_protocol(
@@ -2144,6 +2122,7 @@ def _enforce_coder_protocol(
     cycle_index = command.cycle_index
     emit = command.emit
     coder_mirror = command.coder_mirror
+    turn_mailbox = command.turn_mailbox
 
     protocol_error = _validate_coder_completion(
         completion_path=coder_completion_path,
@@ -2162,8 +2141,14 @@ def _enforce_coder_protocol(
             f"{protocol_error}\n"
             "Run `coding-done completed --implementation '...' --problems '...'` "
             "(or `coding-done blocked --reason '...' --attempted '...'` if you "
-            "cannot continue), then write your one-line JSON response again to "
-            "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
+            "cannot continue), then submit your verdict again by running "
+            "`exchange-respond <ok|disagree> --text '...'`."
+        )
+        retry_prompt = prompt_for_response_channel(
+            retry_prompt,
+            role=Role.CODER,
+            response_channel=command.response_channel,
+            response_file=coder_workspace.response_file,
         )
         retry_prompt_path = _persist_turn_prompt(
             exchange_dir,
@@ -2241,6 +2226,8 @@ def _enforce_coder_protocol(
                 session_name=session_name,
                 emit=emit,
                 mirror=coder_mirror,
+                turn_mailbox=turn_mailbox,
+                response_channel=command.response_channel,
             )
         )
         if retry_response is None:
@@ -2296,6 +2283,8 @@ class _RoleRoundCommand:
     session_name: str
     emit: Callable[[EventName, dict[str, Any]], None]
     mirror: _RoleSliceMirror
+    turn_mailbox: "TurnMailbox | None" = None
+    response_channel: ResponseChannel = "mailbox"
     respawn_retries: int = 0
 
 
@@ -2336,6 +2325,8 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
     session_name = command.session_name
     emit = command.emit
     mirror = command.mirror
+    turn_mailbox = command.turn_mailbox
+    response_channel = command.response_channel
     respawn_retries = command.respawn_retries
 
     session = owner.ensure_live()
@@ -2343,12 +2334,35 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
     role_value = role.value
     attempt_index = turn_started.scope.attempt_index.value
     prompt_inbox_path = _write_role_prompt_inbox(workspace.response_file, prompt)
-    pty_notice = _build_prompt_inbox_notice(
+    pty_notice = build_prompt_inbox_notice(
         role=role,
         round_index=cycle_index,
         attempt_index=attempt_index,
         prompt_path=prompt_inbox_path,
+        response_channel=response_channel,
     )
+    # Open the orchestrator-owned rendezvous for this turn before prompting,
+    # so the agent's exchange-respond delivery has a slot to land in. The
+    # routing key is the per-role response-file path (stable, already in the
+    # agent's env) — used purely as an opaque identifier; nothing is written
+    # to or read from that path. ``response_reader`` makes send_round poll
+    # the mailbox instead of the filesystem. When no mailbox is wired (older
+    # call sites / unit stubs), send_round falls back to file polling.
+    mailbox_key = str(workspace.response_file)
+    response_reader: Callable[[], dict[str, Any] | None] | None = None
+    use_mailbox = response_channel == "mailbox" and turn_mailbox is not None
+    if use_mailbox:
+        assert turn_mailbox is not None
+        mailbox = turn_mailbox
+        mailbox.open(
+            mailbox_key,
+            turn_id=f"{role_value}-r{cycle_index}-a{attempt_index}",
+        )
+
+        def _read_from_mailbox() -> dict[str, Any] | None:
+            return mailbox.try_take(mailbox_key)
+
+        response_reader = _read_from_mailbox
     try:
         parsed = send_round(
             session,
@@ -2360,8 +2374,15 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
             # cross-referencing PIDs (#6160 e2e regression: 17 minutes
             # of unattributed silence).
             role_label=f"{role_value}@round-{cycle_index}",
+            response_reader=response_reader,
         )
     except (PersistentRoundTimeoutError, PersistentRoundError) as exc:
+        # Release the slot before respawn/return so a straggling delivery
+        # from this failed attempt is rejected (NO_OPEN_SLOT) rather than
+        # landing in a later turn's slot. A respawn re-opens a fresh slot.
+        if use_mailbox:
+            assert turn_mailbox is not None
+            turn_mailbox.close(mailbox_key)
         failure_reason = persistent_round_failure_reason(exc)
         logger.warning(
             "[REVIEW_EXCHANGE] %s round failed issue=%s session_name=%s "
@@ -2468,6 +2489,11 @@ def _send_role_round(command: _RoleRoundCommand) -> ReviewExchangeResponse | Non
         )
         return None
 
+    # Verdict received: release the slot so any duplicate/straggling delivery
+    # for this turn is rejected rather than buffered for the next turn.
+    if use_mailbox:
+        assert turn_mailbox is not None
+        turn_mailbox.close(mailbox_key)
     typed_result = ReviewExchangeTurnResult.from_agent_dict(parsed, raw_output=None)
     result_path = _persist_turn_result(
         exchange_dir,

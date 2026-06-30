@@ -405,6 +405,9 @@ def test_foreign_repo_scripts_dir_from_package() -> None:
     assert (scripts_dir / "reviewer-done").exists(), (
         f"Expected reviewer-done wrapper in scripts dir: {scripts_dir}"
     )
+    assert (scripts_dir / "exchange-respond").exists(), (
+        f"Expected exchange-respond wrapper in scripts dir: {scripts_dir}"
+    )
 
 
 @pytest.mark.integration
