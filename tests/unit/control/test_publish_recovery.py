@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from issue_orchestrator.control.actions import (
     AddLabelAction,
@@ -147,6 +148,39 @@ class _RecordingRunner:
         return done
 
 
+class _DrainDuringSubmitRunner:
+    """Runs the job inside ``submit`` and lets a hook fire before it returns.
+
+    This deterministically reproduces the fast-completion race: the worker
+    finishes and the tick drains it *before* ``submit()`` returns to the owner.
+    A correct owner records its in-flight context before the worker can start,
+    so the mid-submit drain still reconciles the result instead of dropping it.
+    """
+
+    def __init__(self) -> None:
+        self._done: list[CompletedJob] = []
+        self.on_submit: Callable[[], None] | None = None
+
+    def submit(self, job_id: str, fn: Callable[[], None]) -> bool:
+        error: BaseException | None = None
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 — mirror thread runner
+            error = exc
+        self._done.append(CompletedJob(job_id=job_id, error=error))
+        if self.on_submit is not None:
+            self.on_submit()
+        return True
+
+    def is_running(self, job_id: str) -> bool:
+        return False
+
+    def drain_completed(self) -> list[CompletedJob]:
+        done = self._done
+        self._done = []
+        return done
+
+
 @dataclass
 class _ActionApplier:
     repo: _Repo
@@ -178,9 +212,9 @@ def _service(
     lm: LabelManager,
     *,
     result: ProcessingResult | None = None,
-    runner: _RecordingRunner | None = None,
+    runner: Any = None,
     action_applier: _ActionApplier | None = None,
-) -> tuple[PublishRecoveryService, JsonPublishRetryLocatorStore, _RecordingRunner]:
+) -> tuple[PublishRecoveryService, JsonPublishRetryLocatorStore, Any]:
     store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
     runner = runner or _RecordingRunner()
     processor = _CompletionProcessor(
@@ -304,7 +338,7 @@ def test_retry_publish_failure_leaves_issue_retryable(make_session, tmp_path) ->
     state = OrchestratorState()
 
     assert service.retry_publish(4057, state).status == "submitted"
-    # While running, a second retry is rejected by the live-runner in-flight guard.
+    # While pending, a second retry is rejected by the owner in-flight guard.
     assert service.retry_publish(4057, state).status == "rejected"
 
     runner.run_all()
@@ -618,3 +652,63 @@ def test_abandoned_retry_supersede_survives_reconciliation_required(
 
     assert repo.superseded == []
     assert any(pr.number == 5453 for pr in repo.prs)
+
+
+# ---------------------------------------------------------------------------
+# Owner in-flight state independent of the worker's alive bit (F1)
+# ---------------------------------------------------------------------------
+
+
+def test_retry_completion_drained_during_submit_is_reconciled(make_session, tmp_path) -> None:
+    """A completion that drains before submit() returns must not be lost.
+
+    The owner records its in-flight context before the worker can start, so a
+    mid-submit drain reconciles the result instead of dropping it as an
+    unknown job_id.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    runner = _DrainDuringSubmitRunner()
+    service, store, _ = _service(tmp_path, repo, lm, runner=runner)
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+    # The runner drains the just-completed job while still inside submit().
+    runner.on_submit = lambda: service.drain_completed_retries(state)
+
+    assert service.retry_publish(4057, state).status == "submitted"
+
+    # The mid-submit drain reconciled the success exactly once.
+    assert lm.publish_failed in repo.removed
+    assert lm.pr_pending in repo.added
+    assert store.get(4057) is None
+    completed = [e for e in state.session_history if e.status == "completed"]
+    assert [e.issue_number for e in completed] == [4057]
+
+
+def test_completed_but_undrained_retry_rejects_duplicate_submit(make_session, tmp_path) -> None:
+    """A finished-but-not-yet-drained retry still blocks a second submission.
+
+    Duplicate detection is owner state, not the worker's alive bit: after the
+    job completes but before the tick drains it, a second Retry Publish click
+    must be rejected and reconcile exactly once on drain.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(tmp_path, repo, lm)
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()  # job completes; CompletedJob queued but NOT yet drained
+    assert not runner.is_running("republish:4057")  # worker alive bit is off
+
+    # Second click while completed-but-undrained: rejected, no new job queued.
+    assert service.retry_publish(4057, state).status == "rejected"
+
+    service.drain_completed_retries(state)
+
+    # The single original submission reconciled exactly once.
+    assert lm.pr_pending in repo.added
+    completed = [e for e in state.session_history if e.status == "completed"]
+    assert [e.issue_number for e in completed] == [4057]
+    assert store.get(4057) is None

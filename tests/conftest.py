@@ -983,7 +983,9 @@ def build_test_orchestrator_deps(
         runner=ThreadBackgroundJobRunner(),
         label_manager=label_manager,
         fresh_issue_reader=fresh_reader,
-        action_applier=action_applier,
+        # Use the resolved applier (same object OrchestratorDeps exposes), not
+        # the raw optional argument which is None when callers omit it.
+        action_applier=_action_applier,
     )
 
     return OrchestratorDeps(

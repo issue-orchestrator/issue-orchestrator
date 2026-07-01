@@ -3618,3 +3618,43 @@ class TestRefreshRequestPreservation:
         assert orchestrator.state.queue_refresh_requested is True
         assert 'issue-1' in orchestrator._inflight_stable_ids  # noqa: SLF001
         assert 'issue-2' in orchestrator._inflight_stable_ids  # noqa: SLF001
+
+
+def test_full_deps_publish_recovery_reconciles_through_shared_action_applier(sample_config):
+    """build_test_orchestrator_deps must wire the resolved (non-None) applier.
+
+    Production passes the resolved ActionApplier into PublishRecoveryService; the
+    test builder must use the same object OrchestratorDeps exposes, not the raw
+    optional argument (which is None when callers omit it). A reconciliation that
+    applies labels proves the wiring is intact — with a None applier this raises.
+    """
+    from issue_orchestrator.control.actions import AddLabelAction
+
+    orchestrator = create_test_orchestrator(sample_config)
+    deps = orchestrator.deps
+
+    # Spy on the applier OrchestratorDeps exposes. PublishRecoveryService must
+    # hold this same object for the spy to observe its label writes.
+    applied = []
+
+    def _spy(action):
+        applied.append(action)
+        return SimpleNamespace(success=True, error=None)
+
+    deps.action_applier.apply = _spy
+
+    deps.publish_recovery.reconcile_retry_publish_success(
+        state=OrchestratorState(),
+        issue_number=4057,
+        issue_title="UI: Surface provider status",
+        agent_label="agent:web",
+        pr_url="https://github.com/owner/repo/pull/5453",
+        pr_number=5453,
+        worktree_path=None,
+    )
+
+    assert any(
+        isinstance(action, AddLabelAction)
+        and action.label == deps.label_manager.pr_pending
+        for action in applied
+    ), "publish recovery must apply labels through deps.action_applier"

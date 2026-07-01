@@ -105,8 +105,16 @@ class _RetryDecision:
 
 @dataclass(frozen=True)
 class _RepublishContext:
-    """Reconcile context for an in-flight republish job, kept until it drains."""
+    """Reconcile context for an in-flight republish job, kept until it drains.
 
+    ``token`` is a per-submission id owned by :class:`PublishRecoveryService`
+    (not the worker thread's alive bit). The worker records its result under the
+    same token, and drain correlates the completed job back to this exact
+    submission before clearing owner state — so a fast completion can't be lost
+    and a stale completion can't be reconciled against a newer submission.
+    """
+
+    token: int
     issue_number: int
     issue_title: str
     agent_label: str | None
@@ -144,13 +152,22 @@ class PublishRecoveryService:
         self._fresh_issue_reader = fresh_issue_reader
         self._action_applier = action_applier
         self._lock = Lock()
+        # Owner-authoritative in-flight state, guarded by ``self._lock`` and
+        # independent of the worker thread's alive bit. ``_pending`` maps an
+        # issue to its live submission (recorded BEFORE the worker can start, so
+        # a fast completion is never lost); it is only removed when that
+        # submission's job is drained, so a completed-but-undrained job still
+        # blocks a duplicate retry. ``_results`` is keyed by submission token so
+        # a stale completion can't clobber a newer submission's result.
         self._pending: dict[int, _RepublishContext] = {}
         self._results: dict[int, "ProcessingResult"] = {}
+        self._token_seq: int = 0
         # Issues whose in-flight republish was abandoned (reset/termination)
-        # while the worker thread could not be force-killed. A late drain of
-        # such a job must supersede any PR it created rather than reconcile it
-        # as success. Consumed on the next drain of that issue's job.
-        self._tombstoned: set[int] = set()
+        # while the worker thread could not be force-killed, mapped to the
+        # abandoned submission token. A late drain of that token supersedes any
+        # PR it created rather than reconciling it as success. Consumed on the
+        # next drain of that issue's job.
+        self._tombstoned: dict[int, int] = {}
 
     # ------------------------------------------------------------------
     # Recording (called on the live completion path when a publish fails)
@@ -277,20 +294,23 @@ class PublishRecoveryService:
         - tombstones the issue so :meth:`drain_completed_retries` supersedes any
           PR the late worker created before it was abandoned.
 
-        The tombstone is scoped to the single in-flight job: it is consumed by
-        the next drain of that job (which fires within a tick, long before any
-        fresh attempt could fail publish and submit a new republish), so it
-        never drops a legitimate later retry.
+        The tombstone is scoped to the single in-flight submission (by token):
+        it is consumed by the next drain of that job (which fires within a tick,
+        long before any fresh attempt could fail publish and submit a new
+        republish), so it never drops a legitimate later retry.
         """
         with self._lock:
-            had_context = self._pending.pop(issue_number, None) is not None
-            self._results.pop(issue_number, None)
-            if had_context or self._runner.is_running(self._job_id(issue_number)):
-                self._tombstoned.add(issue_number)
+            context = self._pending.pop(issue_number, None)
+            if context is not None:
+                # Drop the in-flight result and tombstone this exact submission
+                # so its late completion is superseded, not reconciled.
+                self._results.pop(context.token, None)
+                self._tombstoned[issue_number] = context.token
                 logger.info(
-                    "[publish-retry] Abandoned in-flight republish for issue=%s; "
-                    "late completion will be superseded",
+                    "[publish-retry] Abandoned in-flight republish for issue=%s "
+                    "token=%s; late completion will be superseded",
                     issue_number,
+                    context.token,
                 )
         self._locator_store.clear(issue_number)
 
@@ -311,11 +331,18 @@ class PublishRecoveryService:
             if issue_number is None:
                 continue
             with self._lock:
-                tombstoned = issue_number in self._tombstoned
-                self._tombstoned.discard(issue_number)
+                tombstoned_token = self._tombstoned.pop(issue_number, None)
                 context = self._pending.pop(issue_number, None)
-                result = self._results.pop(issue_number, None)
-            if tombstoned:
+                # Correlate the result to the exact submission being reconciled
+                # (live context, else the abandoned token) so a stale completion
+                # never clears a newer submission's state.
+                if context is not None:
+                    result = self._results.pop(context.token, None)
+                elif tombstoned_token is not None:
+                    result = self._results.pop(tombstoned_token, None)
+                else:
+                    result = None
+            if tombstoned_token is not None:
                 self._supersede_abandoned_retry(issue_number, job, result)
                 continue
             if context is None:
@@ -503,8 +530,13 @@ class PublishRecoveryService:
             return "Issue is not blocked by a publish failure"
         if any(session.issue.number == issue_number for session in state.active_sessions):
             return "Issue has an active session"
-        if self._runner.is_running(self._job_id(issue_number)):
-            return "Issue already has a running publish job"
+        # Owner state, not the worker's alive bit: a submission stays "pending"
+        # until its job is drained, so a completed-but-undrained retry still
+        # blocks a duplicate. The authoritative gate is the atomic reserve in
+        # ``_submit_republish``; this only supplies an early, friendlier reason.
+        with self._lock:
+            if issue_number in self._pending:
+                return "Issue already has a pending publish retry"
         return None
 
     def _retry_locator_block_reason(self, locators: PublishRetryLocators) -> str | None:
@@ -534,6 +566,23 @@ class PublishRecoveryService:
         issue_number = locators.issue_number
         job_id = self._job_id(issue_number)
 
+        # Reserve the in-flight slot BEFORE the worker can start, so a fast
+        # completion that drains before submit() returns still has an owner
+        # context to reconcile against. Reject atomically if a prior submission
+        # is still pending (in-flight or completed-but-undrained).
+        with self._lock:
+            if issue_number in self._pending:
+                return False
+            token = self._token_seq
+            self._token_seq += 1
+            self._pending[issue_number] = _RepublishContext(
+                token=token,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                agent_label=agent_label,
+                worktree_path=locators.worktree_path,
+            )
+
         def run() -> None:
             self._restore_completion_record(locators)
             result = self._completion_processor.process(
@@ -546,17 +595,14 @@ class PublishRecoveryService:
                 agent_label=agent_label,
             )
             with self._lock:
-                self._results[issue_number] = result
+                self._results[token] = result
 
         if not self._runner.submit(job_id, run):
+            # The owner gate above already guarantees no live job for this issue,
+            # so this is defensive: undo the reservation to keep state consistent.
+            with self._lock:
+                self._pending.pop(issue_number, None)
             return False
-        with self._lock:
-            self._pending[issue_number] = _RepublishContext(
-                issue_number=issue_number,
-                issue_title=issue_title,
-                agent_label=agent_label,
-                worktree_path=locators.worktree_path,
-            )
         return True
 
     @staticmethod
