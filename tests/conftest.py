@@ -988,6 +988,9 @@ def build_test_orchestrator_deps(
         action_applier=_action_applier,
         code_review_agent_configured=bool(config.code_review_agent),
     )
+    # Same post-construction wiring as bootstrap: the ActionApplier abandons
+    # publish retries at issue terminal boundaries via the runtime terminator.
+    _action_applier.publish_recovery = publish_recovery
 
     return OrchestratorDeps(
         events=events,

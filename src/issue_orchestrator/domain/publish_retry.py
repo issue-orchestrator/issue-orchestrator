@@ -37,10 +37,15 @@ class PublishRetryLocators:
     run_assets: SessionRunAssets
     agent_label: str | None = None
     pr_number: int | None = None
-    # The original coding session's ``skip_review`` intent. Persisted because the
+    # The original coding session's review-routing state, persisted because the
     # retry-publish reconciliation reuses the same review-routing policy as the
-    # live completion path and cannot re-derive it from the worktree.
+    # live completion path and cannot re-derive it from the worktree. Without
+    # these, an existing-PR recovery (which runs no fresh completion) could not
+    # tell that the original completion already finished/halted a local review
+    # exchange, and would wrongly requeue an already-reviewed PR.
     skip_review: bool = False
+    review_exchange_completed: bool = False
+    review_exchange_halted: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -54,6 +59,8 @@ class PublishRetryLocators:
             "agent_label": self.agent_label,
             "pr_number": self.pr_number,
             "skip_review": self.skip_review,
+            "review_exchange_completed": self.review_exchange_completed,
+            "review_exchange_halted": self.review_exchange_halted,
         }
 
     @classmethod
@@ -72,6 +79,12 @@ class PublishRetryLocators:
             agent_label=_optional_str(data.get("agent_label"), "agent_label"),
             pr_number=_optional_int(data.get("pr_number"), "pr_number"),
             skip_review=_require_bool(data.get("skip_review", False), "skip_review"),
+            review_exchange_completed=_require_bool(
+                data.get("review_exchange_completed", False), "review_exchange_completed"
+            ),
+            review_exchange_halted=_require_bool(
+                data.get("review_exchange_halted", False), "review_exchange_halted"
+            ),
         )
 
 

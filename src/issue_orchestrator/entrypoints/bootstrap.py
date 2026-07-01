@@ -849,9 +849,13 @@ def build_orchestrator(
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire label_store into action_applier for write-through persistence
+    # Wire post-construction collaborators into action_applier: label_store for
+    # write-through persistence, and publish_recovery so its issue terminal
+    # boundaries abandon publish retries via the shared runtime terminator
+    # (post-construction because PublishRecoveryService depends on this applier).
     if action_applier is not None:
         action_applier.label_store = label_store
+        action_applier.publish_recovery = publish_recovery
 
     infra_services = InfraServices(
         label_manager=label_manager,
@@ -1174,9 +1178,12 @@ def build_orchestrator_for_testing(
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire label_store into action_applier for write-through persistence
+    # Wire post-construction collaborators into action_applier (same as the
+    # primary path): label_store for write-through persistence, publish_recovery
+    # so issue terminal boundaries abandon publish retries.
     if action_applier is not None:
         action_applier.label_store = label_store
+        action_applier.publish_recovery = publish_recovery
 
     infra_services = InfraServices(
         label_manager=label_manager,

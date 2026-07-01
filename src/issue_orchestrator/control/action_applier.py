@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
     from .label_manager import LabelManager
     from .review_exchange_lifecycle import IssueRuntimeTermination
+    from .review_exchange_lifecycle import PublishRetryAbandoner
     from .review_exchange_lifecycle import ReviewExchangeCancellation
     from ..ports.label_store import LabelStore
     from ..ports.persistent_exchange_pair_registry import (
@@ -189,6 +190,10 @@ class ActionApplier:
     # Shared background-job supervisor. Used with pair_registry to make
     # issue/rework cancellation a terminal review-exchange lifecycle event.
     background_job_supervisor: Optional["BackgroundJobSupervisor"] = None
+    # Publish-retry owner, abandoned at issue terminal boundaries via the shared
+    # runtime terminator so a late republish cannot repopulate a terminated
+    # issue. Wired post-construction (PublishRecoveryService needs this applier).
+    publish_recovery: Optional["PublishRetryAbandoner"] = None
     # Callback for worktree removal notifications
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
@@ -1052,6 +1057,7 @@ class ActionApplier:
             pair_registry=self.pair_registry,
             job_supervisor=self.background_job_supervisor,
             session_manager=self.sessions,
+            publish_recovery=self.publish_recovery,
         )
 
     def _apply_queue_operation(self, action: Action) -> ActionResult:

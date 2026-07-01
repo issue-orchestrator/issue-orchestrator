@@ -84,6 +84,91 @@ class RetrySuccessFinalizer:
         routing: RetryReviewRouting,
     ) -> None:
         labels = tuple(self._current_labels(issue_number))
+        # Decide review routing as a PURE step first (no state mutation): the
+        # external label cleanup below can raise, and a half-applied finalize
+        # must not leave review-discovery state queued for a PR whose
+        # publish-failed cleanup never completed (split-brain).
+        review_candidate = self._review_candidate(
+            issue_number=issue_number,
+            pr_url=pr_url,
+            pr_number=pr_number,
+            agent_label=agent_label,
+            routing=routing,
+        )
+        label_actions = self._build_label_actions(
+            issue_number=issue_number,
+            labels=labels,
+            pr_url=pr_url,
+            will_queue_review=review_candidate is not None,
+        )
+        # Apply external label cleanup FIRST. If it raises, nothing below runs:
+        # discovered_reviews stays untouched, no completed history is recorded,
+        # and the caller never reaches its locator clear — the issue stays fully
+        # in its publish-failed state and remains retryable.
+        self._apply_label_actions(label_actions)
+        if review_candidate is not None:
+            state.discovered_reviews.append(review_candidate)
+            logger.info(
+                "[publish-retry] Routing issue=%s PR #%s through code-review "
+                "discovery instead of finalizing to awaiting-merge",
+                issue_number,
+                review_candidate.pr_number,
+            )
+        self._record_completed_history(
+            state,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            agent_label=agent_label,
+            pr_url=pr_url,
+            worktree_path=worktree_path,
+            history_reason=history_reason,
+        )
+
+    def _review_candidate(
+        self,
+        *,
+        issue_number: int,
+        pr_url: str | None,
+        pr_number: int | None,
+        agent_label: str | None,
+        routing: RetryReviewRouting,
+    ) -> DiscoveredReview | None:
+        """Build the review-discovery candidate for a still-unreviewed PR (pure).
+
+        A publish failure is only ever recorded for a work session (review
+        sessions do not push / create PRs), so this PR always came from a work
+        session. When code review still applies, return the same
+        ``DiscoveredReview`` fact live completion uses so the planner owns
+        pr-pending + the review queue (and the dry-run / already-queued gates).
+        Returns ``None`` when no review is needed. Performs no mutation.
+        """
+        if pr_url is None or pr_number is None:
+            return None
+        if not should_queue_pr_review(
+            has_pr=True,
+            code_review_agent_configured=self._code_review_agent_configured,
+            skip_review=routing.skip_review,
+            is_review_session=False,
+            review_exchange_completed=routing.review_exchange_completed,
+            review_exchange_halted=routing.review_exchange_halted,
+        ):
+            return None
+        return DiscoveredReview(
+            issue_number,
+            pr_number,
+            pr_url,
+            routing.branch_name,
+            agent_label=agent_label,
+        )
+
+    def _build_label_actions(
+        self,
+        *,
+        issue_number: int,
+        labels: tuple[str, ...],
+        pr_url: str | None,
+        will_queue_review: bool,
+    ) -> list[AddLabelAction | RemoveLabelAction]:
         label_actions: list[AddLabelAction | RemoveLabelAction] = []
         if self._lm.publish_failed in labels:
             label_actions.append(
@@ -93,15 +178,9 @@ class RetrySuccessFinalizer:
                     reason="retry publish succeeded",
                 )
             )
-        if not self._route_review(
-            state,
-            issue_number=issue_number,
-            pr_url=pr_url,
-            pr_number=pr_number,
-            agent_label=agent_label,
-            routing=routing,
-        ) and pr_url and self._lm.pr_pending not in labels:
-            # No review needed: finalize to awaiting-merge directly.
+        if not will_queue_review and pr_url and self._lm.pr_pending not in labels:
+            # No review needed: finalize to awaiting-merge directly. When a review
+            # IS queued, the planner owns pr-pending via the discovered review.
             label_actions.append(
                 AddLabelAction(
                     issue_number=issue_number,
@@ -118,62 +197,7 @@ class RetrySuccessFinalizer:
                         reason="publish retry succeeded",
                     )
                 )
-        self._apply_label_actions(label_actions)
-        self._record_completed_history(
-            state,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            agent_label=agent_label,
-            pr_url=pr_url,
-            worktree_path=worktree_path,
-            history_reason=history_reason,
-        )
-
-    def _route_review(
-        self,
-        state: OrchestratorState,
-        *,
-        issue_number: int,
-        pr_url: str | None,
-        pr_number: int | None,
-        agent_label: str | None,
-        routing: RetryReviewRouting,
-    ) -> bool:
-        """Route a still-unreviewed PR through review-discovery; return whether it did.
-
-        A publish failure is only ever recorded for a work session (review
-        sessions do not push / create PRs), so this PR always came from a work
-        session. When code review still applies, append the same
-        ``DiscoveredReview`` fact live completion uses so the planner owns
-        pr-pending + the review queue (and the dry-run / already-queued gates).
-        """
-        if pr_url is None or pr_number is None:
-            return False
-        if not should_queue_pr_review(
-            has_pr=True,
-            code_review_agent_configured=self._code_review_agent_configured,
-            skip_review=routing.skip_review,
-            is_review_session=False,
-            review_exchange_completed=routing.review_exchange_completed,
-            review_exchange_halted=routing.review_exchange_halted,
-        ):
-            return False
-        state.discovered_reviews.append(
-            DiscoveredReview(
-                issue_number,
-                pr_number,
-                pr_url,
-                routing.branch_name,
-                agent_label=agent_label,
-            )
-        )
-        logger.info(
-            "[publish-retry] Routing issue=%s PR #%s through code-review "
-            "discovery instead of finalizing to awaiting-merge",
-            issue_number,
-            pr_number,
-        )
-        return True
+        return label_actions
 
     def _record_completed_history(
         self,

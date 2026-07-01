@@ -1273,12 +1273,12 @@
       "value": 5
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/action_applier.py": {
-      "detail": "1756 lines exceeds budget 800",
+      "detail": "1762 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/action_applier.py",
       "path": "src/issue_orchestrator/control/action_applier.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1756
+      "value": 1762
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
       "detail": "920 lines exceeds budget 800",
@@ -1513,12 +1513,12 @@
       "value": 1274
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/orchestrator.py": {
-      "detail": "1058 lines exceeds budget 800",
+      "detail": "1059 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/orchestrator.py",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1058
+      "value": 1059
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/supervisor.py": {
       "detail": "984 lines exceeds budget 800",
@@ -2560,10 +2560,10 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:addba387ea7d": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 161: Route orchestrator runtime state collection mutations through an owner abstraction.",
+    "semgrep_owner_boundaries:src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:d9d1893ba50b": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 110: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:addba387ea7d",
+      "metric_id": "src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:d9d1893ba50b",
       "path": "src/issue_orchestrator/control/publish_retry_finalize.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1

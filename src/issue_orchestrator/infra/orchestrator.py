@@ -194,6 +194,7 @@ class Orchestrator:
             job_supervisor=self.deps.services.background_job_supervisor,
             session_manager=self.deps.session_manager,
             active_sessions=self.state.active_sessions,
+            publish_recovery=self.deps.publish_recovery,
         )
 
     @cached_property

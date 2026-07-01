@@ -491,6 +491,10 @@ def _terminate_reset_retry_runtime(
         "background_job_supervisor",
     )
     session_manager = _configured_attr(deps, "session_manager")
+    # Publish-retry work has its own owner/runner outside the review-exchange
+    # supervisor; the shared runtime terminator abandons it on the same boundary
+    # so a late republish cannot repopulate the attempt being reset.
+    publish_recovery = _configured_attr(deps, "publish_recovery")
     terminate_issue_runtime(
         issue_number=issue_number,
         reason="reset-retry",
@@ -498,14 +502,8 @@ def _terminate_reset_retry_runtime(
         job_supervisor=background_job_supervisor,
         session_manager=session_manager,
         active_sessions=state.active_sessions,
+        publish_recovery=publish_recovery,
     )
-    # Publish-retry work has its own owner/runner outside the review-exchange
-    # supervisor, so terminate it explicitly on the same reset boundary. This
-    # drops any in-flight republish and stored locators so a late completion
-    # cannot repopulate the attempt being reset (see PublishRecoveryService).
-    publish_recovery = _configured_attr(deps, "publish_recovery")
-    if publish_recovery is not None:
-        publish_recovery.abandon_issue(issue_number)
 
 
 def _configured_attr(obj: Any, name: str) -> Any | None:

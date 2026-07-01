@@ -193,11 +193,17 @@ class _ActionApplier:
     # When set, applying a SupersedePullRequestAction raises this instead of
     # returning an outcome — mirrors ActionApplier re-raising claim/state races.
     raise_on_supersede: BaseException | None = None
+    # When set, applying any label action targeting this label returns a failure
+    # outcome (which _apply_label_actions turns into a RuntimeError) — models a
+    # GitHub label mutation failure during finalize cleanup.
+    fail_on_label: str | None = None
 
     def apply(
         self,
         action: AddLabelAction | RemoveLabelAction | SupersedePullRequestAction,
     ) -> SimpleNamespace:
+        if isinstance(action, (AddLabelAction, RemoveLabelAction)) and action.label == self.fail_on_label:
+            return SimpleNamespace(success=False, error=f"label mutation failed: {action.label}")
         if isinstance(action, AddLabelAction):
             self.repo.add_label(action.issue_number, action.label)
         elif isinstance(action, SupersedePullRequestAction):
@@ -253,6 +259,8 @@ def _record_failure(
     tmp_path: Path,
     *,
     agent_config: Any = None,
+    review_exchange_completed: bool = False,
+    review_exchange_halted: bool = False,
 ) -> Session:
     """Persist retry locators the way the live completion path does."""
     session = make_session(
@@ -264,7 +272,12 @@ def _record_failure(
     completion_file = session.worktree_path / session.completion_path
     completion_file.parent.mkdir(parents=True, exist_ok=True)
     completion_file.write_text("{}")
-    service.record_publish_failure(session, ["push_branch: Push failed: remote rejected"])
+    service.record_publish_failure(
+        session,
+        ["push_branch: Push failed: remote rejected"],
+        review_exchange_completed=review_exchange_completed,
+        review_exchange_halted=review_exchange_halted,
+    )
     return session
 
 
@@ -518,6 +531,80 @@ def test_retry_publish_recovers_existing_pr_and_clears_state(make_session, tmp_p
     )
     assert state.session_history[-1].status == "completed"
     assert state.session_history[-1].pr_url == PR_URL
+
+
+def test_recover_existing_pr_honors_original_review_exchange_completed(
+    make_session, tmp_path
+) -> None:
+    """An existing-PR recovery must not requeue a PR whose review already completed.
+
+    When the original completion finished a local review exchange and then
+    publish failed leaving an open PR, recovery honors that persisted state and
+    finalizes directly to pr-pending instead of contradicting the shared policy.
+    """
+    lm = LabelManager(_config(tmp_path))
+    issue = _issue(lm)
+    repo = _Repo(
+        issue=issue,
+        labels=list(issue.labels),
+        prs=[
+            PRInfo(
+                number=5453,
+                title="#4057: UI: Surface provider status",
+                url=PR_URL,
+                branch=BRANCH,
+                body="",
+                state="open",
+                labels=[],
+            )
+        ],
+    )
+    service, store, _ = _service(
+        tmp_path, repo, lm, code_review_agent_configured=True
+    )
+    _record_failure(service, make_session, tmp_path, review_exchange_completed=True)
+    state = OrchestratorState()
+
+    result = service.retry_publish(4057, state)
+
+    assert result.status == "recovered_existing_pr"
+    # Already reviewed to approval in-band: no new review discovery, and the PR
+    # finalizes straight to awaiting-merge.
+    assert state.discovered_reviews == []
+    assert lm.pr_pending in repo.added
+    assert store.get(4057) is None
+
+
+def test_finalize_failure_leaves_no_partial_review_or_history(
+    make_session, tmp_path
+) -> None:
+    """A cleanup-label failure must not leave split-brain review/history state.
+
+    If the external publish-failed label removal fails mid-finalize, the retry
+    must not have already queued review-discovery, recorded completed history,
+    or cleared its locators — the issue stays fully retryable.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    applier = _ActionApplier(repo, fail_on_label=lm.publish_failed)
+    service, store, runner = _service(
+        tmp_path, repo, lm, action_applier=applier, code_review_agent_configured=True
+    )
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()
+    # The label cleanup raises during drain; the tick surfaces it rather than
+    # silently finalizing.
+    with pytest.raises(RuntimeError):
+        service.drain_completed_retries(state)
+
+    assert state.discovered_reviews == []
+    assert not any(entry.issue_number == 4057 for entry in state.session_history)
+    assert 4057 not in state.completed_today
+    # Locators survive: the issue is still retryable, not half-finalized.
+    assert store.get(4057) is not None
 
 
 def test_retry_publish_rejected_without_locators(make_session, tmp_path) -> None:

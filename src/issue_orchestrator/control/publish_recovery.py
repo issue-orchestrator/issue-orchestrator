@@ -191,11 +191,17 @@ class PublishRecoveryService:
         self,
         session: "Session",
         processing_errors: Sequence[str] | None,
+        *,
+        review_exchange_completed: bool = False,
+        review_exchange_halted: bool = False,
     ) -> None:
         """Persist durable retry locators when a session's publish fails.
 
         Idempotent per issue: overwrites any prior locators. No-op when the
-        completion errors are not a publish (push/PR) failure.
+        completion errors are not a publish (push/PR) failure. The original
+        completion's review-exchange state is captured so an existing-PR recovery
+        (which runs no fresh completion) honors the same review-routing policy as
+        live completion.
         """
         if not is_publish_failure(processing_errors):
             return
@@ -210,6 +216,8 @@ class PublishRecoveryService:
             agent_label=session.agent_label,
             pr_number=session.pr_number,
             skip_review=session.agent_config.skip_review,
+            review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
         )
         self._locator_store.save(locators)
         logger.info(
@@ -253,9 +261,11 @@ class PublishRecoveryService:
                     branch_name=locators.branch_name,
                     skip_review=locators.skip_review,
                     # Recovering an already-open PR runs no fresh completion, so
-                    # there is no in-flight review exchange to skip.
-                    review_exchange_completed=False,
-                    review_exchange_halted=False,
+                    # honor the ORIGINAL completion's review-exchange outcome: if
+                    # it already completed/halted a local review exchange, the PR
+                    # must not be requeued for review.
+                    review_exchange_completed=locators.review_exchange_completed,
+                    review_exchange_halted=locators.review_exchange_halted,
                 ),
             )
             self._locator_store.clear(issue_number)

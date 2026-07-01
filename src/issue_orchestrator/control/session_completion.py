@@ -287,7 +287,12 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # label-retryable while Retry Publish stays unavailable. Recording first
     # closes that window. No-op for non-publish failures.
     if publish_recovery is not None:
-        publish_recovery.record_publish_failure(session, processing_errors)
+        publish_recovery.record_publish_failure(
+            session,
+            processing_errors,
+            review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
+        )
 
     run_dir = resolve_session_run_dir(session_output, session)
     session_output.attach_claude_log(run_dir)
