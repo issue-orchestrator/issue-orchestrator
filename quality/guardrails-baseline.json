@@ -1,12 +1,12 @@
 {
   "metrics": {
     "control_policy_branch_sites:src/issue_orchestrator/control/action_applier.py": {
-      "detail": "17 branch site(s) mention lifecycle/control terms",
+      "detail": "18 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/action_applier.py",
       "path": "src/issue_orchestrator/control/action_applier.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 17
+      "value": 18
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/actions.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
@@ -113,12 +113,12 @@
       "value": 5
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/github_workflow.py": {
-      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "detail": "7 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/github_workflow.py",
       "path": "src/issue_orchestrator/control/github_workflow.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 6
+      "value": 7
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/goal_pilot.py": {
       "detail": "2 branch site(s) mention lifecycle/control terms",
@@ -153,12 +153,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/label_manager.py": {
-      "detail": "2 branch site(s) mention lifecycle/control terms",
+      "detail": "4 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/label_manager.py",
       "path": "src/issue_orchestrator/control/label_manager.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 2
+      "value": 4
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/label_sync.py": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
@@ -369,12 +369,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/startup_manager.py": {
-      "detail": "12 branch site(s) mention lifecycle/control terms",
+      "detail": "14 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py",
       "path": "src/issue_orchestrator/control/startup_manager.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 12
+      "value": 14
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/triage_manifest_builder.py": {
       "detail": "2 branch site(s) mention lifecycle/control terms",
@@ -425,12 +425,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/entrypoints/bootstrap.py": {
-      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "detail": "7 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 6
+      "value": 7
     },
     "control_policy_branch_sites:src/issue_orchestrator/entrypoints/cli.py": {
       "detail": "14 branch site(s) mention lifecycle/control terms",
@@ -1297,12 +1297,20 @@
       "value": 5
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/action_applier.py": {
-      "detail": "1537 lines exceeds budget 800",
+      "detail": "1756 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/action_applier.py",
       "path": "src/issue_orchestrator/control/action_applier.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1537
+      "value": 1756
+    },
+    "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
+      "detail": "963 lines exceeds budget 800",
+      "kind": "file_line_budget",
+      "metric_id": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
+      "path": "src/issue_orchestrator/control/awaiting_merge_reconciler.py",
+      "rule_id": "oversized_control_hotspots",
+      "value": 963
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_handler.py": {
       "detail": "1235 lines exceeds budget 800",
@@ -1313,12 +1321,12 @@
       "value": 1235
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_processor.py": {
-      "detail": "2466 lines exceeds budget 800",
+      "detail": "2696 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/completion_processor.py",
       "path": "src/issue_orchestrator/control/completion_processor.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2466
+      "value": 2696
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_review_exchange.py": {
       "detail": "1506 lines exceeds budget 800",
@@ -1337,12 +1345,12 @@
       "value": 1452
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/planner.py": {
-      "detail": "1683 lines exceeds budget 800",
+      "detail": "1732 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/planner.py",
       "path": "src/issue_orchestrator/control/planner.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1683
+      "value": 1732
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_controller.py": {
       "detail": "1910 lines exceeds budget 800",
@@ -1353,20 +1361,20 @@
       "value": 1910
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_launcher.py": {
-      "detail": "2035 lines exceeds budget 800",
+      "detail": "2203 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py",
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2035
+      "value": 2203
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
-      "detail": "898 lines exceeds budget 800",
+      "detail": "990 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/startup_manager.py",
       "path": "src/issue_orchestrator/control/startup_manager.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 898
+      "value": 990
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/validation.py": {
       "detail": "865 lines exceeds budget 800",
@@ -1377,12 +1385,12 @@
       "value": 865
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/bootstrap.py": {
-      "detail": "1260 lines exceeds budget 800",
+      "detail": "1315 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1260
+      "value": 1315
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/cli.py": {
       "detail": "964 lines exceeds budget 800",
@@ -1497,20 +1505,20 @@
       "value": 1641
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
-      "detail": "1473 lines exceeds budget 800",
+      "detail": "1488 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1473
+      "value": 1488
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
-      "detail": "862 lines exceeds budget 800",
+      "detail": "900 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config_sections.py",
       "path": "src/issue_orchestrator/infra/config_sections.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 862
+      "value": 900
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/e2e_db.py": {
       "detail": "1624 lines exceeds budget 800",
@@ -1761,12 +1769,12 @@
       "value": 13
     },
     "ruff_complexity_noqa:src/issue_orchestrator/infra/config.py:C901:to_dict": {
-      "detail": "C901 line 752: `to_dict` is too complex (139 > 10)",
+      "detail": "C901 line 762: `to_dict` is too complex (144 > 10)",
       "kind": "ruff_finding",
       "metric_id": "src/issue_orchestrator/infra/config.py:C901:to_dict",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "ruff_complexity_noqa",
-      "value": 139
+      "value": 144
     },
     "ruff_complexity_noqa:src/issue_orchestrator/timeline.py:C901:_detail_from_data": {
       "detail": "C901 line 615: `_detail_from_data` is too complex (29 > 10)",
@@ -1904,18 +1912,10 @@
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
     },
-    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-364": {
-      "detail": "line 364: # noqa: ANN201",
+    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-379": {
+      "detail": "line 379: # noqa: ANN201",
       "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-364",
-      "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
-      "rule_id": "ruff_noqa_suppressions",
-      "value": 1
-    },
-    "ruff_noqa_suppressions:src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-365": {
-      "detail": "line 365: # noqa: ANN201",
-      "kind": "ruff_noqa_suppression",
-      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-365",
+      "metric_id": "src/issue_orchestrator/entrypoints/bootstrap.py:d35936aca3a1:line-379",
       "path": "src/issue_orchestrator/entrypoints/bootstrap.py",
       "rule_id": "ruff_noqa_suppressions",
       "value": 1
@@ -2824,18 +2824,10 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-815": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 815: Route orchestrator runtime state collection mutations through an owner abstraction.",
+    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-817": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 817: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-815",
-      "path": "src/issue_orchestrator/infra/orchestrator.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-832": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 832: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-832",
+      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-817",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1

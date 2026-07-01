@@ -14,6 +14,7 @@ from issue_orchestrator.domain.models import (
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredEscalation,
     DiscoveredFailure,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredReview,
     DiscoveredRework,
     ImmediateCleanup,
@@ -469,6 +470,20 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 reason="Branch protection blocks merge.",
             ),
         ],
+        discovered_merge_queue_enqueues=[
+            DiscoveredMergeQueueEnqueue(
+                issue_number=target,
+                pr_number=100,
+                pr_url="url",
+                issue_key="target",
+            ),
+            DiscoveredMergeQueueEnqueue(
+                issue_number=other,
+                pr_number=200,
+                pr_url="url",
+                issue_key="other",
+            ),
+        ],
         immediate_cleanups=[
             ImmediateCleanup(
                 issue_number=target,
@@ -559,6 +574,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert all(d.issue_number != target for d in state.discovered_awaiting_merge_reconciliations)
     assert all(d.issue_number != target for d in state.discovered_awaiting_merge_drifts)
     assert all(d.issue_number != target for d in state.discovered_awaiting_merge_escalations)
+    assert all(d.issue_number != target for d in state.discovered_merge_queue_enqueues)
     assert all(c.issue_number != target for c in state.immediate_cleanups)
     assert target not in state.failed_this_cycle
     assert target not in state.stale_issue_ticks
@@ -588,6 +604,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert any(d.issue_number == other for d in state.discovered_awaiting_merge_reconciliations)
     assert any(d.issue_number == other for d in state.discovered_awaiting_merge_drifts)
     assert any(d.issue_number == other for d in state.discovered_awaiting_merge_escalations)
+    assert any(d.issue_number == other for d in state.discovered_merge_queue_enqueues)
     assert any(c.issue_number == other for c in state.immediate_cleanups)
     assert other in state.failed_this_cycle
     assert other in state.stale_issue_ticks

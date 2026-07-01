@@ -590,6 +590,8 @@ class Orchestrator:
                 self.deps.worktree_manager,
                 self._kill_session,
                 self.config,
+                completion_dispatcher=self.deps.completion_dispatcher,
+                provider_resilience=self.deps.provider_resilience,
             )
             # Check lease renewals for active sessions
             self._check_lease_renewals()
@@ -1257,7 +1259,7 @@ class Orchestrator:
     def update_queue_cache(self) -> None: self._plan_applier.update_queue_cache()
     def _update_dependency_problems(self, dep_blocked: list[tuple["Issue", str]]) -> None: self._github_workflow.update_dependency_problems(self.state, dep_blocked)
     @property
-    def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.deps.events, self.deps.repository_host, self.deps.fact_gatherer, self.deps.pr_scanner, self.deps.label_sync, self._event_context, self.deps.label_manager)
+    def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.deps.events, self.deps.repository_host, self.deps.fact_gatherer, self.deps.pr_scanner, self.deps.label_sync, self._event_context, self.deps.label_manager, self.scheduler.dependency_evaluator)
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]: return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def _launch_triage_session(self, triage: PendingTriageReview) -> None: _launch_triage_session(triage, self.config, self.launch_session)

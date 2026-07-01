@@ -168,6 +168,9 @@ class FactGatherer:
             discovered_awaiting_merge_escalations=tuple(
                 state.discovered_awaiting_merge_escalations
             ),
+            discovered_merge_queue_enqueues=tuple(
+                state.discovered_merge_queue_enqueues
+            ),
             discovered_failures=tuple(state.discovered_failures),
             triage_facts=self.gather_triage_facts(state),
             cleanup_facts=self.gather_cleanup_facts(state),

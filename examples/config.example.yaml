@@ -170,6 +170,17 @@ goal_pilot:
   approval_batch_size: 10
   approval_batch_window_minutes: 60
 
+# Optional GitHub Merge Queue integration. When enabled, approved PRs that have
+# cleared the orchestrator gate are enqueued into GitHub's native merge queue
+# instead of being reworked merely for being behind base. GitHub stays the merge
+# authority (branch protection, required checks, queue ordering); the
+# orchestrator owns eligibility, enqueue decisions, and failure routing.
+merge_queue:
+  enabled: false
+  # provider: "github"              # only github is supported today
+  # enqueue_after: "code-reviewed"  # gate that must pass first: code-reviewed | triage-reviewed
+  # failure_action: "rework"        # how to route a failed queue entry: rework | needs_human
+
 cleanup:
   with_triage:
     close_ai_session_tabs: true

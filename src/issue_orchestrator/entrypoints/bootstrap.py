@@ -71,6 +71,10 @@ from ..execution.command_runner import LocalCommandRunner
 from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..execution.review_artifact_reader import ManifestReviewArtifactReader
 from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+from ..control.completion_dispatcher import (
+    BackgroundCompletionDispatcher,
+    SynchronousCompletionDispatcher,
+)
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, RetrospectiveReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
@@ -316,12 +320,22 @@ def _create_planner(
             events=events,
         )
 
+    predecessor_facts_provider = None
+    if github:
+        from ..control.label_manager import LabelManager
+        from ..execution.stack_predecessor_facts import GitStackPredecessorFactsProvider
+
+        predecessor_facts_provider = GitStackPredecessorFactsProvider(
+            github, label_manager or LabelManager(config), repo=config.repo,
+        )
+
     dependency_evaluator = DependencyEvaluator(
         issue_checker=github,
         events=events,
         issue_resolver=issue_resolver,
         repo=config.repo,
         foundation_milestone=config.foundation_milestone,
+        predecessor_facts_provider=predecessor_facts_provider,
     ) if github else None
 
     scheduler = Scheduler(config=config, dependency_evaluator=dependency_evaluator)
@@ -477,12 +491,41 @@ def _create_completion_components(
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
         max_validation_retries=config.retry.max_validation_retries,
-        provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
         review_exchange_canceller=_cancel_review_exchange,
     ) if completion_processor else None
 
     return completion_processor, session_controller_instance
+
+
+def _wire_stack_publish_gate(
+    completion_processor: "CompletionProcessor | None",
+    dependency_evaluator: DependencyEvaluator | None,
+    github: GitHubAdapter | None,
+    command_runner: "LocalCommandRunner",
+    config: Config,
+) -> None:
+    """Wire the stack publish-gate + branch ancestry (ADR-0029 / #6596).
+
+    Attaches the git ancestry checker to the single dependency-gate evaluator
+    and gives the completion processor a :class:`StackPublishGate` so a
+    Stack-after: successor's PR is based on its predecessor branch and a blocked
+    publish gate fails fast. A no-op when any collaborator is absent, so
+    non-stack deployments and tests keep prior behavior.
+    """
+    if completion_processor is None or dependency_evaluator is None or github is None:
+        return
+    from ..control.stack_publish_gate import StackBaseGate
+    from ..execution.stack_branch_ancestry import GitStackBranchAncestry
+
+    dependency_evaluator.attach_branch_ancestry(GitStackBranchAncestry(command_runner))
+    completion_processor.attach_stack_publish_gate(
+        StackBaseGate(
+            evaluator=dependency_evaluator,
+            issue_reader=github,
+            configured_base_branch=config.worktree_base_branch_override,
+        )
+    )
 
 
 def _create_async_completion_components(
@@ -740,6 +783,7 @@ def build_orchestrator(
         repository_host=github,
         worktree_manager=worktree_manager,
         fresh_issue_reader=fresh_issue_reader,
+        label_manager=label_manager,
         reconcile=True,
     ) if github else None
 
@@ -810,6 +854,9 @@ def build_orchestrator(
         pair_registry=pair_registry,
         attempt_store=attempt_store,
         turn_mailbox=turn_mailbox,
+    )
+    _wire_stack_publish_gate(
+        completion_processor, _dependency_evaluator, github, command_runner, config,
     )
 
     # Create async completion components (observer + executor)
@@ -912,6 +959,9 @@ def build_orchestrator(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
+        # Run completion decisions (publish gate + push + PR) off the tick thread
+        # on a dedicated runner so a slow publish never blocks the heartbeat.
+        completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
         claim_manager=claim_manager,
         claim_gate=claim_gate,
@@ -1002,6 +1052,9 @@ def build_orchestrator_for_testing(
     label_manager = _LabelManager(config)
 
     default_label_sync = None
+    # Only bound when this root builds the planner; a caller-injected planner
+    # carries its own evaluator, so the stack publish-gate stays unwired there.
+    _dependency_evaluator: DependencyEvaluator | None = None
 
     # Create default planner if not provided
     if planner is None:
@@ -1053,6 +1106,7 @@ def build_orchestrator_for_testing(
             repository_host=github,
             worktree_manager=worktree_manager,
             fresh_issue_reader=fresh_issue_reader,
+            label_manager=label_manager,
             reconcile=False,  # Disable for testing by default
         )
 
@@ -1136,6 +1190,9 @@ def build_orchestrator_for_testing(
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
     )
+    _wire_stack_publish_gate(
+        completion_processor, _dependency_evaluator, github, command_runner, config,
+    )
 
     # Create SessionController for testing (with optional validation gate)
     from ..control.session_controller import SessionController
@@ -1149,7 +1206,6 @@ def build_orchestrator_for_testing(
         validation_timeout_seconds=config.validation.quick.timeout_seconds,
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
-        provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
         review_exchange_canceller=_cancel_review_exchange_for_testing,
     )
@@ -1243,6 +1299,9 @@ def build_orchestrator_for_testing(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,
+        # Tests default to synchronous (one-tick) completion; the background
+        # dispatcher is exercised explicitly where async behavior is under test.
+        completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
         claim_manager=claim_manager,
         claim_gate=claim_gate,

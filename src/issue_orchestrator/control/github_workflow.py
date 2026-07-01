@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from .cleanup_manager import CleanupManager
     from .state_machine_manager import StateMachineManager
     from .label_manager import LabelManager
+    from .dependency_evaluator import DependencyEvaluator
 
 from ..infra.config import Config
 from ..events import EventName, EventContext
@@ -32,6 +33,7 @@ from ..domain.models import (
 )
 from ..ports import EventSink, make_trace_event, RepositoryHost
 from .awaiting_merge_reconciler import AwaitingMergeReconciler
+from .merge_queue_coordinator import MergeQueueCoordinator
 from .retrospective_review import discover_retrospective_review_issues
 from .review_scope import ReviewScopeChecker
 
@@ -50,6 +52,7 @@ class GitHubWorkflow:
     label_sync: Optional["LabelSync"]
     event_context: EventContext
     label_manager: "LabelManager | None" = None
+    dependency_evaluator: "DependencyEvaluator | None" = None
 
     def fetch_all_issues(
         self,
@@ -183,6 +186,22 @@ class GitHubWorkflow:
             self.scan_retrospective_review_issues(state)
         self.scan_awaiting_merge_followups(state)
 
+    def _merge_queue_coordinator(self) -> MergeQueueCoordinator | None:
+        """Build the merge queue owner when the feature is enabled.
+
+        Returns ``None`` when merge queue mode is off or no label manager is
+        wired, so the reconciler keeps its default rework/escalation behavior.
+        """
+        if not self.config.merge_queue.enabled or self.label_manager is None:
+            return None
+        return MergeQueueCoordinator(
+            config=self.config.merge_queue,
+            repository_host=self.repository_host,
+            events=self.events,
+            event_context=self.event_context,
+            label_manager=self.label_manager,
+        )
+
     def scan_awaiting_merge_followups(self, state: "OrchestratorState") -> None:
         """Discover post-approval PR follow-up work for awaiting-merge issues."""
         result = AwaitingMergeReconciler(
@@ -192,11 +211,14 @@ class GitHubWorkflow:
                 self.config.post_publish_checks_pending_timeout_seconds
             ),
             repo=self.config.repo,
+            merge_queue=self._merge_queue_coordinator(),
+            dependency_evaluator=self.dependency_evaluator,
         ).discover(state)
         state.discovered_awaiting_merge_reconciliations.extend(result.reconciliations)
         state.discovered_awaiting_merge_drifts.extend(result.drifts)
         state.discovered_reworks.extend(result.reworks)
         state.discovered_awaiting_merge_escalations.extend(result.escalations)
+        state.discovered_merge_queue_enqueues.extend(result.enqueues)
         if result.discovered:
             logger.info(
                 "Discovered %d awaiting-merge history reconciliations",

@@ -16,6 +16,7 @@ the orchestrator focused on coordination and main loop logic.
 import logging
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Callable, Mapping, Sequence
@@ -47,7 +48,9 @@ from ..domain.models import (
     get_completion_path,
 )
 from ..domain.session_run import SessionRunAssets
+from ..domain.dependency_gates import Gate
 from .worktree_context import WorktreeContext
+from .stack_base import StackBaseDecision
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_manifest import TriageManifest
 from .triage_manifest_builder import TriageManifestBuilder
@@ -91,6 +94,21 @@ from .provider_command_wrapper import ProviderCommandWrapper
 logger = logging.getLogger(__name__)
 _TRUNCATION_MARKER_BUDGET = 30
 _MIN_USEFUL_TRUNCATED_HEAD = 100
+
+
+@dataclass(frozen=True)
+class _DependencyFreshness:
+    """Outcome of the just-before-launch dependency recheck (ADR-0029 / #6596).
+
+    ``failure`` is a non-``None`` :class:`LaunchResult` when the work gate is no
+    longer open (the launch must abort). ``stack_base_branch`` carries the same
+    gate report's selected stack base so the launcher can seed the successor's
+    worktree from the predecessor branch without re-evaluating (and re-gathering
+    predecessor facts), avoiding a second round of GitHub reads.
+    """
+
+    failure: "LaunchResult | None" = None
+    stack_base_branch: str | None = None
 
 
 def detect_existing_work(
@@ -431,39 +449,146 @@ class SessionLauncher:
 
         return None
 
-    def _verify_dependencies_fresh(self, issue: "IssueProtocol") -> LaunchResult | None:
+    def _verify_dependencies_fresh(self, issue: "IssueProtocol") -> _DependencyFreshness:
         """CAS check: verify dependencies haven't changed since scheduling.
 
-        Returns LaunchResult on failure, None if dependencies still satisfied.
+        Returns a :class:`_DependencyFreshness`: ``failure`` set when the work
+        gate is no longer open (abort the launch), otherwise the selected stack
+        base branch from the same gate report so the caller can seed a stack
+        successor's worktree from the predecessor branch.
         """
-        if not self._dependency_evaluator or not self._refresh_issue:
-            return None
+        if not self._dependency_evaluator:
+            return _DependencyFreshness()
 
-        fresh_issue = self._refresh_issue(issue.number)
-        if not fresh_issue or not fresh_issue.body:
-            return None
-
-        report = self._dependency_evaluator.evaluate(
-            issue_number=issue.number,
-            issue_body=fresh_issue.body,
-            source_milestone=fresh_issue.milestone,
-        )
-        if not report.runnable:
+        # Prefer the freshest body for the just-before-launch recheck, but fall
+        # back to the already-known issue body when refresh is unavailable/empty
+        # so a transient read miss does not collapse a stack successor into an
+        # ordinary issue. If no body can be obtained at all, the launch cannot
+        # prove the slice is non-stack and must fail closed (retryable) rather
+        # than seed the worktree from the default base (#6596 F1).
+        fresh_issue = self._refresh_issue(issue.number) if self._refresh_issue else None
+        body = (fresh_issue.body if fresh_issue else None) or issue.body
+        milestone = fresh_issue.milestone if fresh_issue else issue.milestone
+        if body is None:
+            reason = f"could not read issue #{issue.number} body to confirm stack base"
             log_transition(
-                "issue", issue.number, "AVAILABLE", "SKIP",
-                f"dependencies changed: {report.summary()}"
+                "issue", issue.number, "AVAILABLE", "SKIP", reason
             )
             self.events.publish(make_trace_event(
                 EventName.ISSUE_DEPENDENCY_BLOCKED,
                 {
                     "issue_number": issue.number,
                     "issue_title": issue.title,
-                    "reason": report.summary(),
+                    "reason": reason,
+                    "gate": Gate.WORK.value,
+                    "retryable": True,
                 },
             ))
-            return LaunchResult(None, False, f"Dependencies not satisfied: {report.summary()}")
+            return _DependencyFreshness(
+                failure=LaunchResult(None, False, f"Dependencies not satisfied: {reason}")
+            )
 
-        return None
+        # Re-gather predecessor facts at launch time so a predecessor branch or
+        # review-state change between scheduling and launch cannot start stale
+        # stack work (ADR-0029 just-before-launch recheck).
+        report = self._dependency_evaluator.evaluate_work_gate(
+            issue_number=issue.number,
+            issue_body=body,
+            source_milestone=milestone,
+        )
+        if not report.can_start_work:
+            summary = report.work_summary()
+            log_transition(
+                "issue", issue.number, "AVAILABLE", "SKIP",
+                f"dependencies changed: {summary}"
+            )
+            self.events.publish(make_trace_event(
+                EventName.ISSUE_DEPENDENCY_BLOCKED,
+                {
+                    "issue_number": issue.number,
+                    "issue_title": issue.title,
+                    "reason": summary,
+                    "gate": Gate.WORK.value,
+                    "blocked_reasons": [
+                        record.as_dict()
+                        for record in report.gate_block_records(Gate.WORK)
+                    ],
+                },
+            ))
+            return _DependencyFreshness(
+                failure=LaunchResult(None, False, f"Dependencies not satisfied: {summary}")
+            )
+
+        return _DependencyFreshness(stack_base_branch=report.stack_base_branch)
+
+    def _stack_base_decision(
+        self,
+        issue_number: int,
+        issue_body: str | None,
+        source_milestone: str | None,
+    ) -> StackBaseDecision:
+        """Typed stack base decision for a launch (ADR-0029 / #6596).
+
+        The single launch-side reader of stack base selection. Returns a
+        :class:`StackBaseDecision` so callers can distinguish a non-stack issue
+        (proceed on the default base) from an allowed stack successor (seed/reset
+        from the predecessor branch) from a blocked stack successor (predecessor
+        not ready, ambiguous base, etc. — fail closed and do NOT reset onto the
+        default base).
+
+        Absence semantics mirror the publish/work gate: when stack gating is
+        wired but ``issue_body`` is unavailable, the launch cannot *prove* the
+        slice is non-stack, so it returns a retryable blocked decision rather than
+        collapsing an unreadable issue into "ordinary issue" and seeding from the
+        default base. When the evaluator is not wired at all, stack gating is off
+        and the launch proceeds normally. A present body with no ``Stack-after:``
+        edge short-circuits to non-stack with no extra predecessor-fact I/O.
+        """
+        if not self._dependency_evaluator:
+            return StackBaseDecision.not_stack()
+        if issue_body is None:
+            return StackBaseDecision.blocked(
+                f"could not read issue #{issue_number} body to confirm stack base",
+                retryable=True,
+                is_stack=False,
+            )
+        if "stack-after" not in issue_body.lower():
+            return StackBaseDecision.not_stack()
+        report = self._dependency_evaluator.evaluate_work_gate(
+            issue_number=issue_number,
+            issue_body=issue_body,
+            source_milestone=source_milestone,
+            emit_event=False,
+        )
+        return StackBaseDecision.from_stack_report(report, Gate.WORK)
+
+    def _stack_relaunch_blocked_result(
+        self,
+        *,
+        issue_number: int,
+        issue_title: str,
+        decision: StackBaseDecision,
+        context: str,
+    ) -> LaunchResult:
+        """Emit the dependency-blocked signal and build a blocked launch result.
+
+        Shared by validation retry and rework so a closed stack work gate is
+        recorded consistently before any claim/worktree work, instead of silently
+        resetting the successor worktree onto the default base.
+        """
+        reason = decision.reason or "stack work gate blocked"
+        log_transition("issue", issue_number, "LAUNCHING", "SKIP", f"{context}: {reason}")
+        self.events.publish(make_trace_event(
+            EventName.ISSUE_DEPENDENCY_BLOCKED,
+            {
+                "issue_number": issue_number,
+                "issue_title": issue_title,
+                "reason": reason,
+                "gate": Gate.WORK.value,
+                "retryable": decision.retryable,
+            },
+        ))
+        return LaunchResult(None, False, f"Stack dependencies not satisfied: {reason}")
 
     def _acquire_issue_claim(self, issue: "IssueProtocol") -> ClaimAcquisitionResult:
         """Acquire distributed claim for an issue if claim manager is configured.
@@ -653,8 +778,9 @@ class SessionLauncher:
         )
 
         # Phase 2: Verify dependencies haven't changed (CAS check)
-        if result := self._verify_dependencies_fresh(issue):
-            return result
+        freshness = self._verify_dependencies_fresh(issue)
+        if freshness.failure:
+            return freshness.failure
 
         # Provider circuit breaker check
         if result := self._check_provider_circuit(agent_config.provider, issue.number):
@@ -696,6 +822,7 @@ class SessionLauncher:
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(force_fresh=from_scratch_pending),
             phase_name=phase_name,
+            stack_base_branch=freshness.stack_base_branch,
         )
 
         if ctx.error:
@@ -1004,17 +1131,14 @@ class SessionLauncher:
         active_sessions: list[Session],
     ) -> LaunchResult:
         """Launch a coding session that continues after validation failure."""
-        issue = self._resolve_validation_retry_issue(retry)
-        if issue is None or issue.agent_type is None:
+        resolved = self._resolve_validation_retry_issue(retry)
+        if resolved is None:
             return LaunchResult(
                 None,
                 False,
                 f"No agent config available for validation retry #{retry.issue_number}",
             )
-
-        agent_config = self.config.agents.get(issue.agent_type)
-        if not agent_config:
-            return LaunchResult(None, False, f"No agent config for {issue.agent_type}")
+        issue, agent_config, agent_label = resolved
 
         session_name = f"issue-{issue.number}"
         if result := self._check_launch_preconditions(issue, active_sessions, session_name):
@@ -1030,7 +1154,7 @@ class SessionLauncher:
             "task=%s session=%s retry_count=%s",
             issue.number,
             issue_key,
-            issue.agent_type,
+            agent_label,
             TaskKind.CODE.value,
             session_name,
             retry_count,
@@ -1043,6 +1167,20 @@ class SessionLauncher:
             "LAUNCHING",
             f"retry_count={retry_count}",
         )
+
+        # Honor the stack work gate before claim/worktree work: a blocked or
+        # ambiguous stack predecessor must not reset this successor's worktree
+        # (and a None base must not silently fall back to the default branch).
+        stack_decision = self._stack_base_decision(
+            issue.number, issue.body, issue.milestone
+        )
+        if not stack_decision.allowed:
+            return self._stack_relaunch_blocked_result(
+                issue_number=issue.number,
+                issue_title=issue.title,
+                decision=stack_decision,
+                context="validation retry stack gate",
+            )
 
         claim = self._acquire_issue_claim(issue)
         if not claim.success:
@@ -1057,12 +1195,13 @@ class SessionLauncher:
             issue_number=issue.number,
             issue_title=issue.title,
             session_name=session_name,
-            agent_label=issue.agent_type,
+            agent_label=agent_label,
             branch_name=retry.branch_name or None,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
             reuse_options=self._worktree_reuse_options(allow_remote_branch_delete=False),
             phase_name=phase_name,
+            stack_base_branch=stack_decision.base_branch,
         )
         if ctx.error:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
@@ -1087,7 +1226,7 @@ class SessionLauncher:
             "task": TaskKind.CODE.value,
             "issue_key": issue_key.stable_id(),
             "session_key": session_key.stable_id(),
-            "agent": issue.agent_type,
+            "agent": agent_label,
             "validation_retry": True,
             "validation_retry_count": retry_count,
             "validation_error_file": retry.validation_error_file,
@@ -1136,7 +1275,7 @@ class SessionLauncher:
             extra_provider_args=extra_args,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
-        completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
+        completion_path = get_completion_path(agent_label, run_dir=run.run_dir.name)
         self._session_output.update_manifest(
             run.run_dir,
             {
@@ -1147,7 +1286,7 @@ class SessionLauncher:
         env_exports = self._build_session_env(
             completion_path=completion_path,
             session_id=run.session_name,
-            agent_label=issue.agent_type,
+            agent_label=agent_label,
             issue_number=issue.number,
             run_assets=run,
             worktree_path=worktree_path,
@@ -1186,7 +1325,7 @@ class SessionLauncher:
             branch_name=branch_name,
             completion_path=completion_path,
             run_assets=run,
-            agent_label=issue.agent_type,
+            agent_label=agent_label,
             validation_retry_count=retry_count,
             original_prompt=retry.original_prompt,
             lease_id=claim.lease_id,
@@ -1205,7 +1344,7 @@ class SessionLauncher:
         self.events.publish(make_session_started_event({
             "issue_number": issue.number,
             "session_id": session_name,
-            "agent": issue.agent_type,
+            "agent": agent_label,
             "task": "code",
             "worktree_path": str(worktree_path),
             "branch_name": branch_name,
@@ -1241,16 +1380,28 @@ class SessionLauncher:
             return LaunchResult(None, False, f"Setup commands failed: {e}")
         return None
 
-    def _resolve_validation_retry_issue(self, retry: PendingValidationRetry) -> Issue | None:
-        """Resolve a pending validation retry into an issue snapshot with an agent."""
+    def _resolve_validation_retry_issue(
+        self, retry: PendingValidationRetry
+    ) -> tuple[Issue, AgentConfig, str] | None:
+        """Resolve a validation retry into an issue snapshot, agent config, label.
+
+        Returns ``None`` when no agent label can be determined or no agent config
+        is registered for it, so the caller has a single readiness branch instead
+        of separately re-checking the agent label and the config. The agent label
+        is returned as a concrete ``str`` so the caller never has to re-narrow the
+        optional ``Issue.agent_type`` property.
+        """
         fresh_issue = self._refresh_issue(retry.issue_number) if self._refresh_issue else None
         agent_label = retry.agent_label or (fresh_issue.agent_type if fresh_issue else None)
         if not agent_label:
             return None
+        agent_config = self.config.agents.get(agent_label)
+        if not agent_config:
+            return None
         labels = list(fresh_issue.labels) if fresh_issue else []
         if agent_label not in labels:
             labels.append(agent_label)
-        return Issue(
+        issue = Issue(
             number=retry.issue_number,
             title=(fresh_issue.title if fresh_issue else retry.issue_title),
             labels=labels,
@@ -1261,6 +1412,7 @@ class SessionLauncher:
             milestone_number=(fresh_issue.milestone_number if fresh_issue else None),
             milestone_due_on=(fresh_issue.milestone_due_on if fresh_issue else None),
         )
+        return issue, agent_config, agent_label
 
     def _render_validation_retry_prompt(
         self,
@@ -1898,8 +2050,25 @@ class SessionLauncher:
             wrap_provider_command=self._wrap_provider_command,
             build_session_env=self._build_session_env,
             check_provider_circuit=self._check_provider_circuit,
+            resolve_stack_decision=self._stack_decision_for_issue_number,
         )
         return launch_rework_flow(rework, active_sessions, deps)
+
+    def _stack_decision_for_issue_number(self, issue_number: int) -> StackBaseDecision:
+        """Resolve a rework issue's stack base decision from its freshest body.
+
+        Rework reuses the existing successor branch, so its worktree must be
+        reset onto the predecessor branch just like the initial launch — else the
+        reuse preflight would rebase the successor onto the default branch and the
+        publish ancestry gate would block it. Resolves the issue body via refresh
+        and delegates to :meth:`_stack_base_decision`, which fails the rework
+        closed (retryable) when stack gating is wired but the body cannot be read
+        — never collapsing an unreadable issue into "ordinary issue" (#6596 F1).
+        """
+        fresh_issue = self._refresh_issue(issue_number) if self._refresh_issue else None
+        body = fresh_issue.body if fresh_issue else None
+        milestone = fresh_issue.milestone if fresh_issue else None
+        return self._stack_base_decision(issue_number, body, milestone)
 
     def _run_setup_commands(self, worktree_path: Path) -> None:
         """Run setup commands in worktree."""

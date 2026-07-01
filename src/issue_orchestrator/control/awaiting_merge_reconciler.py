@@ -23,6 +23,7 @@ from ..ports.repository_host import RepositoryHostError
 from .awaiting_merge_drift_policy import classify_pr_set_drift
 from .awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_COMMENT_MARKER,
+    POST_PUBLISH_VALIDATION_SOURCE,
     REWORK_ACTIONS,
     PostApprovalAction,
     build_escalation,
@@ -39,11 +40,17 @@ from .status_rollup_gate import (
 )
 
 if TYPE_CHECKING:
-    from ..domain.models import OrchestratorState, SessionHistoryEntry
+    from ..domain.models import (
+        DiscoveredMergeQueueEnqueue,
+        OrchestratorState,
+        SessionHistoryEntry,
+    )
     from ..ports.issue import Issue
     from ..ports.pull_request_tracker import PRInfo
     from ..ports.repository_host import RepositoryHost
+    from .dependency_evaluator import DependencyEvaluator
     from .label_manager import LabelManager
+    from .merge_queue_coordinator import MergeQueueCoordinator
 
 
 logger = logging.getLogger(__name__)
@@ -53,7 +60,6 @@ AWAITING_MERGE_LABEL_DRIFT_SCAN_INTERVAL_SECONDS = 300.0
 AWAITING_MERGE_ROLLUP_SCAN_INTERVAL_SECONDS = 300.0
 
 ReconciliationOutcome = Literal["terminal", "still_pending", "skipped"]
-POST_PUBLISH_VALIDATION_SOURCE = "post_publish_validation"
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,7 @@ class AwaitingMergeEntryDiscovery:
     drift: DiscoveredAwaitingMergeDrift | None = None
     rework: DiscoveredRework | None = None
     escalation: DiscoveredAwaitingMergeEscalation | None = None
+    enqueue: "DiscoveredMergeQueueEnqueue | None" = None
 
 
 @dataclass(frozen=True)
@@ -76,12 +83,14 @@ class AwaitingMergeReconciliationResult:
     drift_discovered: int = 0
     rework_discovered: int = 0
     escalation_discovered: int = 0
+    enqueue_discovered: int = 0
     still_pending: int = 0
     skipped: int = 0
     reconciliations: tuple[DiscoveredAwaitingMergeReconciliation, ...] = ()
     drifts: tuple[DiscoveredAwaitingMergeDrift, ...] = ()
     reworks: tuple[DiscoveredRework, ...] = ()
     escalations: tuple[DiscoveredAwaitingMergeEscalation, ...] = ()
+    enqueues: tuple["DiscoveredMergeQueueEnqueue", ...] = ()
 
 
 DEFAULT_POST_PUBLISH_CHECKS_PENDING_TIMEOUT_SECONDS = 1800.0
@@ -107,6 +116,16 @@ class AwaitingMergeReconciler:
     )
     repo: str | None = None
     status_rollup_backoff_seconds: float = STATUS_ROLLUP_PERMISSION_BACKOFF_SECONDS
+    # Optional merge queue owner. When set and enabled, it takes over the
+    # post-approval merge-readiness decision (enqueue/observe/conflict-rework/
+    # failure-routing) instead of the default rework/escalation dispatch.
+    merge_queue: "MergeQueueCoordinator | None" = None
+    # Optional stack-policy owner (ADR-0029 / #6596). When set, a stacked
+    # successor whose merge gate is blocked (predecessors not merged in order)
+    # is held out of the post-approval merge-readiness dispatch entirely, so it
+    # is never enqueued or treated as silently mergeable ahead of its
+    # predecessors. Non-stack issues are never affected.
+    dependency_evaluator: "DependencyEvaluator | None" = None
 
     def _rollup_gate(self) -> StatusRollupGate:
         return StatusRollupGate(
@@ -123,12 +142,14 @@ class AwaitingMergeReconciler:
         drift_discovered = 0
         rework_discovered = 0
         escalation_discovered = 0
+        enqueue_discovered = 0
         still_pending = 0
         skipped = 0
         reconciliations: list[DiscoveredAwaitingMergeReconciliation] = []
         drifts: list[DiscoveredAwaitingMergeDrift] = []
         reworks: list[DiscoveredRework] = []
         escalations: list[DiscoveredAwaitingMergeEscalation] = []
+        enqueues: list["DiscoveredMergeQueueEnqueue"] = []
         pending_issue_numbers: set[int] = set()
         terminal_issue_numbers: set[int] = set()
 
@@ -165,6 +186,9 @@ class AwaitingMergeReconciler:
             if discovery.escalation is not None:
                 escalation_discovered += 1
                 escalations.append(discovery.escalation)
+            if discovery.enqueue is not None:
+                enqueue_discovered += 1
+                enqueues.append(discovery.enqueue)
 
         label_drifts = self._discover_label_drifts(
             state,
@@ -187,12 +211,14 @@ class AwaitingMergeReconciler:
             drift_discovered=drift_discovered,
             rework_discovered=rework_discovered,
             escalation_discovered=escalation_discovered,
+            enqueue_discovered=enqueue_discovered,
             still_pending=still_pending,
             skipped=skipped,
             reconciliations=tuple(reconciliations),
             drifts=tuple(drifts),
             reworks=tuple(reworks),
             escalations=tuple(escalations),
+            enqueues=tuple(enqueues),
         )
 
     def _awaiting_merge_entries(
@@ -315,7 +341,7 @@ class AwaitingMergeReconciler:
         if not self._post_publish_eligible(state, entry, pr):
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
             return AwaitingMergeEntryDiscovery("still_pending")
-        rework, escalation = self._discover_post_publish_followup(
+        rework, escalation, enqueue = self._discover_post_publish_followup(
             state=state,
             entry=entry,
             pr=pr,
@@ -326,6 +352,7 @@ class AwaitingMergeReconciler:
             "still_pending",
             rework=rework,
             escalation=escalation,
+            enqueue=enqueue,
         )
 
     def _discover_terminal_pr_issue_drift(
@@ -457,14 +484,56 @@ class AwaitingMergeReconciler:
         pr: PRInfo,
         issue: Issue,
         pr_number: int,
-    ) -> tuple[DiscoveredRework | None, DiscoveredAwaitingMergeEscalation | None]:
-        """Decide what to do with an approved-but-not-merged PR."""
+    ) -> tuple[
+        DiscoveredRework | None,
+        DiscoveredAwaitingMergeEscalation | None,
+        "DiscoveredMergeQueueEnqueue | None",
+    ]:
+        """Decide what to do with an approved-but-not-merged PR.
+
+        When merge queue mode is enabled the merge queue coordinator owns the
+        decision (enqueue / observe / conflict-rework / failure-route) instead
+        of the default rework/escalation dispatch below.
+        """
         if not self._post_publish_eligible(state, entry, pr):
             # Eligibility loss resets the WAIT_FOR_CHECKS budget, so future
             # re-approval starts fresh.
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
-            return None, None
+            return None, None, None
 
+        if self._stack_merge_held(issue):
+            # A stacked successor stays out of the merge-readiness dispatch until
+            # its predecessors merge in order (ADR-0029 / #6596). Holding here —
+            # before the merge-queue and default paths — means it is never
+            # enqueued, reworked, or escalated ahead of its predecessors, and so
+            # never left silently mergeable. It keeps observing until unblocked.
+            state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+            return None, None, None
+
+        if self.merge_queue is not None and self.merge_queue.enabled:
+            return self._discover_merge_queue_followup(
+                state=state, entry=entry, pr=pr, issue=issue, pr_number=pr_number,
+            )
+        return self._discover_default_post_publish_followup(
+            state=state, entry=entry, pr=pr, issue=issue, pr_number=pr_number,
+        )
+
+    def _discover_default_post_publish_followup(
+        self,
+        *,
+        state: OrchestratorState,
+        entry: SessionHistoryEntry,
+        pr: PRInfo,
+        issue: Issue,
+        pr_number: int,
+    ) -> tuple[
+        DiscoveredRework | None,
+        DiscoveredAwaitingMergeEscalation | None,
+        "DiscoveredMergeQueueEnqueue | None",
+    ]:
+        """Default (non-merge-queue) rework/escalation dispatch for an
+        approved-but-not-merged PR.
+        """
         # _post_publish_eligible returns False when label_manager is None.
         assert self.label_manager is not None
         # A stale post-publish human escalation may become reworkable later.
@@ -476,7 +545,7 @@ class AwaitingMergeReconciler:
             state, pr_number, self.rollup_scan_interval_seconds
         )
         if not due:
-            return None, None
+            return None, None, None
 
         # The gate reads the status rollup only when it is decisive
         # (unstable/blocked), bounding both the GraphQL round-trip and
@@ -492,14 +561,14 @@ class AwaitingMergeReconciler:
         if resolution.permission_denied:
             state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
             if already_escalated:
-                return None, None
+                return None, None, None
             return None, self._build_rollup_permission_escalation(
                 pr=pr,
                 issue_number=entry.issue_number,
                 issue_key=issue.key.stable_id(),
                 pr_number=pr_number,
                 reason=resolution.reason,
-            )
+            ), None
         pr.status_check_rollup = resolution.rollup_state
 
         action = classify_post_approval_state(pr)
@@ -520,25 +589,92 @@ class AwaitingMergeReconciler:
             return self._build_rework_discovery(
                 pr=pr, action=action, entry=entry, issue=issue, pr_number=pr_number,
                 clear_needs_human=already_escalated,
-            ), None
+            ), None, None
         if already_escalated:
-            return None, None
+            return None, None, None
         if action == "BLOCKED_TERMINAL":
             return None, self._build_branch_protection_escalation(
                 pr=pr,
                 issue_number=entry.issue_number,
                 issue_key=issue.key.stable_id(),
                 pr_number=pr_number,
-            )
+            ), None
         if action == "WAIT_FOR_CHECKS":
             return None, self._maybe_escalate_pending_checks(
                 state=state, pr=pr,
                 issue_number=entry.issue_number,
                 issue_key=issue.key.stable_id(),
                 pr_number=pr_number,
-            )
+            ), None
         # READY / UNKNOWN — nothing to do.
-        return None, None
+        return None, None, None
+
+    def _discover_merge_queue_followup(
+        self,
+        *,
+        state: OrchestratorState,
+        entry: SessionHistoryEntry,
+        pr: PRInfo,
+        issue: Issue,
+        pr_number: int,
+    ) -> tuple[
+        DiscoveredRework | None,
+        DiscoveredAwaitingMergeEscalation | None,
+        "DiscoveredMergeQueueEnqueue | None",
+    ]:
+        """Run the merge queue coordinator for one eligible approved PR.
+
+        Reads the queue entry first so an already-queued PR is observed without
+        paying for (or escalating on) a status-rollup read. Only a not-yet-queued
+        PR resolves the rollup, since the base eligibility classification needs
+        it for ``unstable``/``blocked`` states.
+        """
+        assert self.merge_queue is not None
+        read = self.merge_queue.read_entry(pr_number)
+        if read.is_indeterminate:
+            # The queue state could not be determined (transient read failure or
+            # an unmodeled provider state). Treat it as non-actionable: do NOT
+            # resolve the rollup or classify, so an unreadable queue can never
+            # enqueue, rework, or escalate a PR off stale status. Re-observe next
+            # tick.
+            return None, None, None
+        queue_entry = read.entry
+        if queue_entry is None:
+            decisive = rollup_is_decisive(pr.mergeable_state)
+            due = not decisive or self._rollup_gate().scan_due(
+                state, pr_number, self.rollup_scan_interval_seconds
+            )
+            if not due:
+                return None, None, None
+            resolution = self._rollup_gate().resolve_decisive(
+                state.status_rollup_capability,
+                pr=pr,
+                issue_number=entry.issue_number,
+                issue_key=issue.key.stable_id(),
+            )
+            if resolution.permission_denied:
+                state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+                return None, self._build_rollup_permission_escalation(
+                    pr=pr,
+                    issue_number=entry.issue_number,
+                    issue_key=issue.key.stable_id(),
+                    pr_number=pr_number,
+                    reason=resolution.reason,
+                ), None
+            pr.status_check_rollup = resolution.rollup_state
+
+        # Merge-queue mode does not run the WAIT_FOR_CHECKS timeout machine —
+        # GitHub re-runs required checks on the merge group — so clear any
+        # pending-checks bookkeeping a prior non-queue tick may have left.
+        state.awaiting_merge_checks_pending_since.pop(entry.issue_number, None)
+        followup = self.merge_queue.classify(
+            pr=pr,
+            issue=issue,
+            issue_number=entry.issue_number,
+            pr_number=pr_number,
+            entry=queue_entry,
+        )
+        return followup.rework, followup.escalation, followup.enqueue
 
     def _post_publish_eligible(
         self,
@@ -719,6 +855,33 @@ class AwaitingMergeReconciler:
                 exc,
             )
             raise
+
+    def _stack_merge_held(self, issue: Issue) -> bool:
+        """Whether a stacked successor must be held from merge readiness.
+
+        Consults the single dependency-gate owner's *merge* gate (ADR-0029): a
+        stack successor is not merge-ready until its predecessors have merged or
+        closed in order. Non-stack issues are never held — the cheap body
+        short-circuit means a slice with no ``Stack-after:`` edge keeps its exact
+        prior merge-readiness behavior, and even among stack issues the gate
+        only blocks while a predecessor remains unmerged.
+        """
+        if self.dependency_evaluator is None:
+            return False
+        body = issue.body or ""
+        if "stack-after" not in body.lower():
+            return False
+        report = self.dependency_evaluator.evaluate_merge_gate(
+            issue.number, body, issue.milestone,
+        )
+        if report.can_merge:
+            return False
+        logger.info(
+            "Holding stacked successor issue #%d from merge readiness: %s",
+            issue.number,
+            report.merge.summary(),
+        )
+        return True
 
     def _get_prs_for_issue(self, issue_number: int) -> list[PRInfo]:
         try:

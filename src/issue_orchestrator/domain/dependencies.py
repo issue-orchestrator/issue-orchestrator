@@ -31,6 +31,61 @@ class DependencyState(Enum):
     CROSS_MILESTONE = "cross_milestone"  # Dependency violates milestone scope
 
 
+class DependencyMode(Enum):
+    """Mode of a typed dependency edge (ADR-0029).
+
+    NORMAL is the existing ``Depends-on:`` semantics: the dependent issue waits
+    until the dependency issue is CLOSED.
+
+    STACK is a ``Stack-after:`` predecessor edge: the dependent slice may begin
+    work once its predecessor exposes a usable, validated, agent-reviewed branch,
+    while merge readiness stays strictly ordered behind the predecessor.
+    """
+
+    NORMAL = "normal"
+    STACK = "stack"
+
+
+class EdgeProblem(Enum):
+    """Structural problem with a declared dependency edge.
+
+    These are machine-readable reason codes for edges that are invalid
+    independent of the dependency issue's runtime state. They block every gate
+    in the dependency gate report because the declared graph cannot be trusted.
+    """
+
+    SELF_DEPENDENCY = "self_dependency"  # Issue declares a dependency on itself
+    DUPLICATE_DECLARATION = "duplicate_declaration"  # Same target declared twice
+    MODE_CONFLICT = "mode_conflict"  # Same target declared both normal and stack
+    MALFORMED_REFERENCE = "malformed_reference"  # Directive value is not a ref
+    CYCLE = "cycle"  # Edge participates in a dependency cycle
+
+
+@dataclass(frozen=True)
+class DependencyTarget:
+    """Repository-aware identity of a resolved dependency target (ADR-0029).
+
+    Distinguishes ``#20`` in the current repo from ``other/repo#20`` so the
+    gate-report inputs that key off a target — predecessor facts, same-stack
+    membership, and cycle graphs — cannot collide across targets that merely
+    share an issue number.
+
+    ``repository`` is ``None`` for a same-repo (local) target; a non-``None``
+    ``owner/repo`` value marks a cross-repo target. The pair is the stable key:
+    two targets are equal iff both repository and issue number match. Being a
+    frozen value object it is hashable, so it is used directly as a dict key /
+    set member rather than collapsing back to a bare ``int``.
+    """
+
+    issue_number: int
+    repository: str | None = None
+
+    def __str__(self) -> str:
+        if self.repository:
+            return f"{self.repository}#{self.issue_number}"
+        return f"#{self.issue_number}"
+
+
 @dataclass(frozen=True)
 class Dependency:
     """A single dependency reference."""
@@ -53,9 +108,29 @@ class Dependency:
     # Milestone of the dependency issue (for cross-milestone validation)
     milestone: str | None = None
 
+    # Typed edge mode (normal Depends-on vs stack Stack-after)
+    mode: DependencyMode = DependencyMode.NORMAL
+
+    # Structural problem with the edge declaration (self/duplicate/malformed/...)
+    problem: EdgeProblem | None = None
+
     @property
     def is_satisfied(self) -> bool:
         return self.state == DependencyState.SATISFIED
+
+    @property
+    def target(self) -> DependencyTarget | None:
+        """Repository-aware identity of this dependency after resolution.
+
+        ``None`` until the edge resolves to a concrete issue number (an
+        unresolved external ID or a malformed edge has no target yet). Gate
+        inputs key off this identity so a same-repo and a cross-repo target
+        that happen to share an issue number do not share predecessor facts,
+        same-stack membership, or cycle-graph nodes.
+        """
+        if self.issue_number is None:
+            return None
+        return DependencyTarget(issue_number=self.issue_number, repository=self.repository)
 
     @property
     def blocks_running(self) -> bool:
@@ -156,27 +231,75 @@ class DependencyReport:
         return "Blocked - " + "; ".join(parts)
 
 
-# Pattern to extract External-ID or issue number from Depends-on lines
-# Supports:
-#   - Depends-on: #123
-#   - Depends-on: M1-010
-#   - Depends-on: owner/repo#123
-DEPENDS_ON_PATTERN = re.compile(
-    r"Depends-on:\s*"
+# Single dependency-reference grammar, shared by the legacy ``Depends-on:``
+# parser and the typed edge parser. A reference is one of ``owner/repo#123``,
+# ``#123``, or ``M1-010``. This is the one grammar owner (ADR-0029 A1): both
+# paths build on it so a normal ``Depends-on:`` line cannot mean one thing to the
+# legacy evaluator and another to the typed gate report.
+_REFERENCE_GRAMMAR = (
     r"(?:"
     r"(?P<repo>[\w.-]+/[\w.-]+)?#(?P<issue>\d+)"  # owner/repo#123 or #123
     r"|"
     r"(?P<external_id>M\d+-\d{3})"  # M1-010 style external ID (3 digits)
-    r")",
+    r")"
+)
+
+# Pattern to extract External-ID or issue number from Depends-on lines.
+# Supports:
+#   - Depends-on: #123
+#   - Depends-on: M1-010
+#   - Depends-on: owner/repo#123
+# It finds the reference immediately after ``Depends-on:`` and tolerates any
+# trailing text (e.g. a documented inline ``# comment``). Behavior is unchanged;
+# it now reuses the shared reference grammar above.
+DEPENDS_ON_PATTERN = re.compile(
+    r"Depends-on:\s*" + _REFERENCE_GRAMMAR,
     re.IGNORECASE | re.MULTILINE,
 )
+
+# A directive value resolves to a reference when it *begins* with one, tolerating
+# trailing text exactly like the legacy parser. Anchoring at the start (not the
+# whole value) is what keeps a documented ``Depends-on: #123  # note`` line a
+# normal reference instead of a malformed one.
+_LEADING_REFERENCE_PATTERN = re.compile(r"^" + _REFERENCE_GRAMMAR, re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class _ReferenceParse:
+    """Identity fields parsed from one shared-grammar reference match.
+
+    The single place that interprets the grammar's capture groups, so the legacy
+    and typed parsers cannot drift on what ``#123`` / ``owner/repo#123`` /
+    ``M1-010`` resolve to.
+    """
+
+    issue_number: int | None
+    external_id: str | None
+    repository: str | None
+
+
+def _interpret_reference(match: re.Match[str]) -> _ReferenceParse:
+    """Turn a shared-grammar match into resolved identity fields."""
+    if match.group("issue"):
+        return _ReferenceParse(
+            issue_number=int(match.group("issue")),
+            external_id=None,
+            repository=match.group("repo"),
+        )
+    return _ReferenceParse(
+        issue_number=None,
+        external_id=match.group("external_id").upper(),
+        repository=None,
+    )
 
 
 @dataclass(frozen=True)
 class ParsedDependencyRef:
     """A parsed dependency reference before resolution.
 
-    Either issue_number or external_id will be set, not both.
+    Either issue_number or external_id will be set, not both. A reference whose
+    directive value could not be parsed carries ``problem=MALFORMED_REFERENCE``
+    and neither identity field set.
     """
 
     # Issue number if referenced via #123 or owner/repo#123
@@ -187,6 +310,32 @@ class ParsedDependencyRef:
 
     # Repository for cross-repo dependencies (owner/repo format)
     repository: str | None = None
+
+    # Typed edge mode (Depends-on -> normal, Stack-after -> stack)
+    mode: DependencyMode = DependencyMode.NORMAL
+
+    # Raw directive value, kept for diagnostics
+    source_text: str | None = None
+
+    # 1-based line number of the directive within the issue body, for diagnostics
+    source_line: int | None = None
+
+    # Structural problem detected at parse time (currently malformed references)
+    problem: EdgeProblem | None = None
+
+    @property
+    def target_key(self) -> str:
+        """Stable identity for duplicate detection before resolution.
+
+        External IDs and numeric references that resolve to the same issue are
+        only reconciled after resolution; this key catches textual duplicates.
+        """
+        if self.issue_number is not None:
+            repo = self.repository or ""
+            return f"{repo}#{self.issue_number}"
+        if self.external_id:
+            return f"ext:{self.external_id.upper()}"
+        return f"raw:{(self.source_text or '').strip().lower()}"
 
 
 def parse_dependencies(issue_body: str) -> list[tuple[int, str | None]]:
@@ -201,15 +350,14 @@ def parse_dependencies(issue_body: str) -> list[tuple[int, str | None]]:
     dependencies = []
 
     for match in DEPENDS_ON_PATTERN.finditer(issue_body):
-        if match.group("issue"):
-            issue_num = int(match.group("issue"))
-            repo = match.group("repo")
-            dependencies.append((issue_num, repo))
-        elif match.group("external_id"):
+        ref = _interpret_reference(match)
+        if ref.issue_number is not None:
+            dependencies.append((ref.issue_number, ref.repository))
+        else:
             # External ID references need resolution - use parse_dependency_refs()
             logger.debug(
                 "External ID dependency %s found - use parse_dependency_refs() for full support",
-                match.group("external_id"),
+                ref.external_id,
             )
 
     return dependencies
@@ -227,18 +375,91 @@ def parse_dependency_refs(issue_body: str) -> list[ParsedDependencyRef]:
     refs: list[ParsedDependencyRef] = []
 
     for match in DEPENDS_ON_PATTERN.finditer(issue_body):
-        if match.group("issue"):
-            refs.append(
-                ParsedDependencyRef(
-                    issue_number=int(match.group("issue")),
-                    repository=match.group("repo"),
-                )
+        ref = _interpret_reference(match)
+        refs.append(
+            ParsedDependencyRef(
+                issue_number=ref.issue_number,
+                external_id=ref.external_id,
+                repository=ref.repository,
             )
-        elif match.group("external_id"):
-            refs.append(
-                ParsedDependencyRef(
-                    external_id=match.group("external_id").upper(),
-                )
-            )
+        )
 
     return refs
+
+
+# Directive line for a typed dependency edge. Captures the keyword (which
+# selects the edge mode) and the whole remaining value. The reference itself is
+# then parsed with the shared ``_LEADING_REFERENCE_PATTERN`` so the typed path
+# applies exactly the same reference grammar as the legacy ``Depends-on:`` path.
+EDGE_DIRECTIVE_PATTERN = re.compile(
+    r"^[ \t]*(?P<keyword>Depends-on|Stack-after):[ \t]*(?P<value>.*?)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_KEYWORD_MODE = {
+    "depends-on": DependencyMode.NORMAL,
+    "stack-after": DependencyMode.STACK,
+}
+
+
+def parse_dependency_edges(issue_body: str) -> list[ParsedDependencyRef]:
+    """Parse typed dependency edges from an issue body.
+
+    Recognizes both ``Depends-on:`` (normal mode) and ``Stack-after:`` (stack
+    mode) directives. The reference is parsed with the same shared grammar the
+    legacy :func:`parse_dependency_refs` uses, so a normal ``Depends-on:`` line
+    means exactly the same thing on both paths — including the documented
+    inline-comment form ``Depends-on: #123  # note`` (trailing text tolerated).
+
+    A directive whose value has no leading reference is handled by mode so the
+    normal-edge contract is preserved:
+
+    - **Normal** (``Depends-on:``) keeps the legacy contract: an unparseable line
+      is silently ignored (it produces no edge), matching
+      :func:`parse_dependency_refs` and the documented "common mistakes" cases.
+    - **Stack** (``Stack-after:``) is new syntax with no legacy contract, so an
+      unparseable value is surfaced as ``MALFORMED_REFERENCE`` rather than
+      silently dropped, and therefore blocks every gate.
+
+    Each returned ref records its edge mode and source location for diagnostics.
+    Structural problems that need the source issue identity or the wider graph
+    (self-dependencies, duplicates, cycles) are annotated later by the
+    dependency evaluator.
+    """
+    edges: list[ParsedDependencyRef] = []
+
+    for match in EDGE_DIRECTIVE_PATTERN.finditer(issue_body):
+        mode = _KEYWORD_MODE[match.group("keyword").lower()]
+        value = match.group("value").strip()
+        line_number = issue_body.count("\n", 0, match.start()) + 1
+
+        ref_match = _LEADING_REFERENCE_PATTERN.match(value) if value else None
+        if ref_match is None:
+            # No leading reference. Normal edges keep the legacy "silently
+            # ignored" behavior; only the new stack syntax reports it as a
+            # malformed, gate-blocking edge.
+            if mode is DependencyMode.NORMAL:
+                continue
+            edges.append(
+                ParsedDependencyRef(
+                    mode=mode,
+                    source_text=value,
+                    source_line=line_number,
+                    problem=EdgeProblem.MALFORMED_REFERENCE,
+                )
+            )
+            continue
+
+        ref = _interpret_reference(ref_match)
+        edges.append(
+            ParsedDependencyRef(
+                issue_number=ref.issue_number,
+                external_id=ref.external_id,
+                repository=ref.repository,
+                mode=mode,
+                source_text=value,
+                source_line=line_number,
+            )
+        )
+
+    return edges

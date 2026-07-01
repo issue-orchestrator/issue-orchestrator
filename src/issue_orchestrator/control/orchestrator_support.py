@@ -38,6 +38,7 @@ from .queue_cache import (
 )
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .reconciliation import ReconciliationRequired, get_pause_label
+from .tick_telemetry import report_slow_tick
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
     ClosedIssueHistoryMutation,
@@ -59,6 +60,7 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
     "discovered_awaiting_merge_reconciliations",
     "discovered_awaiting_merge_drifts",
     "discovered_awaiting_merge_escalations",
+    "discovered_merge_queue_enqueues",
     "discovered_reworks",
     "discovered_escalations",
     "discovered_failures",
@@ -1444,8 +1446,7 @@ def run_tick(
         }),
     ))
     tick_elapsed = time.monotonic() - tick_start
-    if tick_elapsed > 10:
-        logger.warning("[LOOP] Tick took %.1fs", tick_elapsed)
+    report_slow_tick(events, event_context, state, tick_elapsed, active_elapsed)
     state.current_tick_phase = ""
     state.last_tick_completed_at = time.time()
     return loop_iteration, True

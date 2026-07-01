@@ -63,14 +63,18 @@ from .actions import (
     QueueReworkAction,
     QueueTriageAction,
     CreateTriageIssueAction,
+    EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
     ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
     SessionType,
     SyncLabelsAction,
 )
-from .awaiting_merge_post_publish_policy import build_post_publish_validation_comment
-from .awaiting_merge_reconciler import POST_PUBLISH_VALIDATION_SOURCE
+from .awaiting_merge_post_publish_policy import (
+    build_post_publish_validation_comment,
+    POST_PUBLISH_VALIDATION_SOURCE,
+)
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 
@@ -212,6 +216,12 @@ class Planner:
         # handed to a human because no further automated retries help.
         post_publish_escalation_actions = self._plan_awaiting_merge_escalations(snapshot)
         actions.extend(post_publish_escalation_actions)
+
+        # 1d3. Enqueue approved PRs into the merge queue (when enabled). The
+        # merge queue coordinator already decided eligibility during discovery;
+        # the planner just turns each fact into the protected enqueue action.
+        merge_queue_actions = self._plan_merge_queue_enqueues(snapshot)
+        actions.extend(merge_queue_actions)
 
         # 1e. Queue triage reviews for session failures
         failure_triage_actions = self._plan_discovered_failures(snapshot)
@@ -448,29 +458,48 @@ class Planner:
         }
 
         for reconciliation in snapshot.discovered_awaiting_merge_reconciliations:
-            actions.append(ReconcileHistoryEntryAction(
+            issue_key = reconciliation.issue_key or str(reconciliation.issue_number)
+            # Drift reconciliations ADD blocked:pr-closed (handled by the
+            # SyncLabelsAction below) rather than shedding, so there is no label
+            # cleanup to order ahead of the history transition — finalize the
+            # history entry on its own.
+            if reconciliation.issue_number in drift_issue_numbers:
+                actions.append(ReconcileHistoryEntryAction(
+                    issue_number=reconciliation.issue_number,
+                    pr_number=reconciliation.pr_number,
+                    pr_url=reconciliation.pr_url,
+                    status=reconciliation.status,
+                    source=reconciliation.source,
+                    issue_key=issue_key,
+                    reason=reconciliation.status_reason,
+                ))
+                continue
+            # Terminal recovery: the issue's work has landed (PR merged/closed
+            # or parent issue closed). Shed every transient workflow label that
+            # no longer applies — pr-pending, publish-failed, publish-fail-count-N,
+            # and any blocking label — and only then finalize the awaiting-merge
+            # history, as one owner command (RecoverTerminalIssueAction). The
+            # applier reads the issue's live labels to decide the exact set (the
+            # planner rarely has labels for an already closed/merged issue) and
+            # gates the history transition on the shed succeeding, so a transient
+            # label-removal failure leaves the entry reconcilable for a later
+            # discovery pass instead of terminalizing it and stranding the labels
+            # this P0 removes.
+            actions.append(RecoverTerminalIssueAction(
                 issue_number=reconciliation.issue_number,
                 pr_number=reconciliation.pr_number,
                 pr_url=reconciliation.pr_url,
                 status=reconciliation.status,
                 source=reconciliation.source,
-                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
-                reason=reconciliation.status_reason,
-            ))
-            # When the awaiting-merge state reaches a terminal status (PR
-            # merged/closed or parent issue closed), strip pr-pending so it
-            # doesn't outlive its meaning. Without this the only path that
-            # cleared the label was the drift discovery, which requires the
-            # issue to still be open and a 5-min cooldown — many merges and
-            # all issue-closes slipped through, stranding pr-pending rows in
-            # the local label_store forever.
-            if reconciliation.issue_number in drift_issue_numbers:
-                continue
-            actions.append(RemoveLabelAction(
-                issue_number=reconciliation.issue_number,
-                label=self._lm.pr_pending,
-                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
+                status_reason=reconciliation.status_reason,
+                issue_key=issue_key,
                 reason=f"awaiting-merge terminal: {reconciliation.status}",
+                # Carry the reconciliation pause guard the old terminal-cleanup
+                # RemoveLabelAction used to carry: an issue paused for
+                # reconciliation (io:needs-reconcile) must not have its labels
+                # shed or its awaiting-merge history finalized behind the
+                # fail-closed drift handling. The applier enforces this at the
+                # owner-command boundary before any write (#6431 F1).
                 expected=build_expected_for_mutation(),
             ))
 
@@ -893,6 +922,30 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 escalation.pr_number, escalation.kind,
             )
 
+        return actions
+
+    def _plan_merge_queue_enqueues(
+        self, snapshot: OrchestratorSnapshot
+    ) -> list[Action]:
+        """Plan enqueue actions for PRs the merge queue coordinator approved.
+
+        The coordinator owns eligibility (gate passed, not already queued,
+        mergeable-or-behind); the planner only maps each discovered fact to an
+        ``EnqueueToMergeQueueAction`` for the applier to execute.
+        """
+        actions: list[Action] = []
+        for enqueue in snapshot.discovered_merge_queue_enqueues:
+            actions.append(EnqueueToMergeQueueAction(
+                issue_number=enqueue.issue_number,
+                pr_number=enqueue.pr_number,
+                pr_url=enqueue.pr_url,
+                issue_key=enqueue.issue_key or str(enqueue.issue_number),
+                reason=f"PR #{enqueue.pr_number} eligible for merge queue",
+            ))
+            logger.info(
+                "Planner: enqueuing PR #%d to merge queue",
+                enqueue.pr_number,
+            )
         return actions
 
     def _plan_discovered_failures(self, snapshot: OrchestratorSnapshot) -> list[Action]:
@@ -1670,10 +1723,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         # Check dependencies
         issue = next((i for i in snapshot.issues if i.number == issue_number), None)
         if issue and self.dependency_evaluator and issue.body:
-            report = self.dependency_evaluator.evaluate(
-                issue.number, issue.body, source_milestone=issue.milestone
+            report = self.dependency_evaluator.evaluate_work_gate(
+                issue.number, issue.body, issue.milestone, emit_event=False
             )
-            if not report.runnable:
-                return f"Blocked by dependencies: {report.summary()}"
+            if not report.can_start_work:
+                return f"Blocked by dependencies: {report.work_summary()}"
 
         return "Unknown reason"

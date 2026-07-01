@@ -85,6 +85,93 @@ class StatusCheckRollupRead:
         return self.capability == "permission_denied"
 
 
+# GitHub `MergeQueueEntry.state` values (uppercase, as returned by GraphQL).
+# A PR that is not in the merge queue has no entry at all (``None``).
+MergeQueueEntryState = Literal[
+    "QUEUED", "AWAITING_CHECKS", "MERGEABLE", "PENDING", "LOCKED", "UNMERGEABLE"
+]
+
+# Entry states that mean the PR is still progressing through the queue and the
+# orchestrator should observe rather than re-enqueue or rework.
+_ACTIVE_MERGE_QUEUE_STATES: tuple[MergeQueueEntryState, ...] = (
+    "QUEUED",
+    "AWAITING_CHECKS",
+    "MERGEABLE",
+    "PENDING",
+    "LOCKED",
+)
+
+
+@dataclass(frozen=True)
+class MergeQueueEntry:
+    """A PR's current state/position in the provider's merge queue.
+
+    Carried by a ``PRESENT`` :class:`MergeQueueRead` from
+    :meth:`PullRequestTracker.read_merge_queue_entry`.
+    """
+
+    state: MergeQueueEntryState
+    position: int | None = None
+
+    @property
+    def is_active(self) -> bool:
+        """True while the entry is still progressing through the queue."""
+        return self.state in _ACTIVE_MERGE_QUEUE_STATES
+
+    @property
+    def is_failed(self) -> bool:
+        """True when GitHub has determined the entry cannot be merged."""
+        return self.state == "UNMERGEABLE"
+
+
+# Outcome kind of reading a PR's merge queue entry. Mirrors the three-valued
+# discipline of ``StatusCheckRollupRead``: callers must NOT collapse "could not
+# determine the queue state" into "not enqueued", because that turns a transient
+# read failure (or an unmodeled provider state) into an actionable "enqueue this
+# PR" / "rework this PR" decision based on stale PR status.
+MergeQueueReadStatus = Literal["PRESENT", "ABSENT", "INDETERMINATE"]
+
+
+@dataclass(frozen=True)
+class MergeQueueRead:
+    """Typed outcome of reading a PR's merge queue entry.
+
+    The merge queue coordinator must treat three cases differently, so this read
+    never collapses them into a bare ``MergeQueueEntry | None``:
+
+    - ``PRESENT``: the PR is in the queue; ``entry`` holds its state/position.
+    - ``ABSENT``: the provider confirms the PR is **not** in the queue. Only this
+      outcome may drive a fresh enqueue/rework/escalation decision.
+    - ``INDETERMINATE``: the queue state could not be determined — the read
+      failed (transient/auth) or the provider reported a state we do not model.
+      Callers must treat this as non-actionable (wait/observe next tick); it is
+      never "not enqueued".
+    """
+
+    status: MergeQueueReadStatus
+    entry: MergeQueueEntry | None = None
+
+    @staticmethod
+    def present(entry: MergeQueueEntry) -> "MergeQueueRead":
+        return MergeQueueRead("PRESENT", entry)
+
+    @staticmethod
+    def absent() -> "MergeQueueRead":
+        return MergeQueueRead("ABSENT")
+
+    @staticmethod
+    def indeterminate() -> "MergeQueueRead":
+        return MergeQueueRead("INDETERMINATE")
+
+    @property
+    def is_indeterminate(self) -> bool:
+        return self.status == "INDETERMINATE"
+
+    @property
+    def is_present(self) -> bool:
+        return self.status == "PRESENT"
+
+
 @dataclass
 class PRInfo:
     """Information about a pull request.
@@ -105,6 +192,10 @@ class PRInfo:
             (only the single-PR `get_pr` path populates this). Read-capability
             (token cannot read check status vs. no checks configured) is carried
             separately by :class:`StatusCheckRollupRead`, not on this field.
+        base_branch: The PR's base (target) branch. Carried so publish/reuse
+            decisions can confirm an existing PR targets the branch the stack
+            publish gate requires (ADR-0029 / #6596). `None` when the source did
+            not provide it.
     """
 
     number: int
@@ -117,6 +208,7 @@ class PRInfo:
     draft: bool | None = None
     mergeable_state: str | None = None
     status_check_rollup: StatusCheckRollupState | None = None
+    base_branch: str | None = None
 
     @property
     def is_closed_unmerged(self) -> bool:
@@ -300,6 +392,44 @@ class PullRequestTracker(Protocol):
         """
         ...
 
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Add a pull request to the provider's native merge queue.
+
+        Only the merge queue coordinator should call this, and only for PRs
+        that have cleared the orchestrator's approval gate. GitHub remains the
+        merge authority — this just hands the PR to the queue; GitHub validates
+        required checks against the merge group and performs the protected
+        merge. Idempotent from the caller's perspective: enqueueing an
+        already-queued PR is a no-op (or a benign provider error the caller
+        treats as "already queued").
+
+        Raises:
+            RepositoryError: If there's an error reaching the provider.
+        """
+        ...
+
+    def read_merge_queue_entry(self, pr_number: int) -> "MergeQueueRead":
+        """Read a PR's current merge queue entry as a typed three-valued result.
+
+        Costs one GraphQL round-trip. The coordinator uses this to decide
+        between enqueueing a newly-eligible PR, observing one already in the
+        queue, and routing a failed (``UNMERGEABLE``) entry through the
+        configured failure policy.
+
+        Returns:
+            A :class:`MergeQueueRead`. ``PRESENT`` carries the
+            :class:`MergeQueueEntry`; ``ABSENT`` means the provider confirms the
+            PR is not enqueued; ``INDETERMINATE`` means the provider reported a
+            state we do not model (the queue state could not be determined and
+            must not be treated as "not enqueued").
+
+        Raises:
+            RepositoryError: If there's an error reaching the provider. Callers
+                that must not act on an unknown queue state (the coordinator)
+                map this to ``INDETERMINATE`` rather than to ``ABSENT``.
+        """
+        ...
+
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.
 
@@ -345,6 +475,25 @@ class PullRequestTracker(Protocol):
         Args:
             pr_number: The PR number to update.
             draft: True to mark as draft, False to mark ready for review.
+        """
+        ...
+
+    def set_pr_base(self, pr_number: int, base: str) -> None:
+        """Retarget an existing pull request onto a new base branch.
+
+        Used by the stack publish gate (ADR-0029 / #6596) to bring an existing
+        PR's base into line with the branch the gate requires before the PR is
+        reused — e.g. when a successor PR was opened against ``main`` but must
+        target its predecessor branch, or still targets a predecessor branch
+        that has since merged. Idempotent from the caller's perspective:
+        retargeting a PR already on ``base`` is a harmless no-op.
+
+        Args:
+            pr_number: The PR number to retarget.
+            base: The base (target) branch the PR should point at.
+
+        Raises:
+            RepositoryError: If there's an error updating the PR.
         """
         ...
 

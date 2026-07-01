@@ -24,6 +24,8 @@ from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     StatusCheckRollupCapability,
     StatusCheckRollupRead,
@@ -105,6 +107,108 @@ def test_pr_info_is_closed_unmerged_distinguishes_merged_from_closed() -> None:
     assert _pr("merged").is_closed_unmerged is False
     assert _pr("closed").is_closed_unmerged is True
     assert _pr("open").is_closed_unmerged is False
+
+
+# --------------------------------------------------------------------------- #
+# Stacked-successor ordered-merge hold (ADR-0029 / #6596)
+# --------------------------------------------------------------------------- #
+
+
+def _stack_evaluator(predecessor_state: str, *, milestone: str = "M7"):
+    """A DependencyEvaluator whose predecessor (#220) has the given state."""
+    from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+    checker = MagicMock()
+    checker.get_issue_state.return_value = predecessor_state
+    checker.get_issue_milestone.return_value = milestone
+    return DependencyEvaluator(issue_checker=checker, events=InMemoryEventSink())
+
+
+def _stack_successor_issue() -> Issue:
+    return Issue(
+        number=228,
+        title="Stacked successor",
+        labels=["agent:backend", "pr-pending"],
+        state="open",
+        body="Stack-after: #220",
+        milestone="M7",
+    )
+
+
+def test_stacked_successor_held_from_merge_while_predecessor_open() -> None:
+    """A stack successor with an unmerged predecessor is held entirely: no
+    rework/escalation/enqueue is discovered even when its own PR looks ready."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    # PR is approved and dirty — the default path would normally discover rework.
+    _wire_pr(
+        repository_host,
+        _pr("open", mergeable_state="dirty", labels=["code-reviewed"]),
+    )
+    repository_host.get_issue.return_value = _stack_successor_issue()
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        dependency_evaluator=_stack_evaluator("open"),  # predecessor not merged
+    ).discover(state)
+
+    # Held: still observing, but nothing dispatched ahead of the predecessor.
+    assert result.still_pending == 1
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+    assert result.enqueue_discovered == 0
+
+
+def test_stacked_successor_released_once_predecessor_merges() -> None:
+    """Once the predecessor merges/closes, the successor rejoins the normal
+    post-approval dispatch (here: a dirty PR discovers post-publish rework)."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr("open", mergeable_state="dirty", labels=["code-reviewed"]),
+    )
+    repository_host.get_issue.return_value = _stack_successor_issue()
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        dependency_evaluator=_stack_evaluator("closed"),  # predecessor merged
+    ).discover(state)
+
+    # Not held: the default dispatch runs and discovers the dirty-PR rework.
+    assert result.rework_discovered == 1
+
+
+def test_non_stack_issue_is_never_held() -> None:
+    """An issue without a Stack-after: edge keeps its exact prior dispatch even
+    when a stack evaluator is wired (cheap body short-circuit, no gate call)."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr("open", mergeable_state="dirty", labels=["code-reviewed"]),
+    )
+    repository_host.get_issue.return_value = _issue("open")  # no Stack-after: body
+    repository_host.issue_comment_marker_present.return_value = False
+    evaluator = _stack_evaluator("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        dependency_evaluator=evaluator,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
 
 
 def test_recovered_awaiting_merge_entry_reconciles_when_pr_is_merged() -> None:
@@ -1687,3 +1791,200 @@ def test_decisive_pr_with_transient_rollup_error_waits_and_retries() -> None:
     now["t"] = 1301.0
     reconciler.discover(state)
     assert repository_host.read_pr_status_check_rollup.call_count == 2
+
+
+# --------------------------------------------------------------------------- #
+# Merge queue mode (merge_queue.enabled)
+# --------------------------------------------------------------------------- #
+
+
+def _merge_queue(repository_host: MagicMock, *, failure_action: str = "rework"):
+    from issue_orchestrator.control.merge_queue_coordinator import MergeQueueCoordinator
+    from issue_orchestrator.events import EventContext
+    from issue_orchestrator.infra.config_models import MergeQueueConfig
+
+    return MergeQueueCoordinator(
+        config=MergeQueueConfig(enabled=True, failure_action=failure_action),
+        repository_host=repository_host,
+        events=InMemoryEventSink(),
+        event_context=EventContext(),
+        label_manager=_label_manager(),
+    )
+
+
+def _reconciler_with_merge_queue(
+    repository_host: MagicMock, *, failure_action: str = "rework"
+) -> AwaitingMergeReconciler:
+    return AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        merge_queue=_merge_queue(repository_host, failure_action=failure_action),
+    )
+
+
+def test_merge_queue_behind_base_pr_is_enqueued_not_reworked() -> None:
+    """The headline behavior: with merge queue enabled, an approved PR that is
+    only *behind base* is enqueued, NOT sent to rework."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="behind", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.absent()
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.enqueue_discovered == 1
+    assert result.rework_discovered == 0
+    assert result.enqueues[0].pr_number == 318
+    assert result.enqueues[0].issue_number == 228
+
+
+def test_merge_queue_disabled_still_reworks_behind_base_pr() -> None:
+    """Without merge queue, the existing behind-base rework behavior is intact."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr("open", mergeable_state="behind", labels=["code-reviewed"]),
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host, label_manager=_label_manager(), clock=lambda: 1234.5,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    assert result.enqueue_discovered == 0
+
+
+def test_merge_queue_conflict_still_routes_to_rework() -> None:
+    """Merge conflicts cannot be fixed by the queue, so they still go to rework."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="dirty", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.absent()
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.rework_discovered == 1
+    assert result.enqueue_discovered == 0
+
+
+def test_merge_queue_already_queued_pr_waits() -> None:
+    """A PR already in the queue is observed, not re-enqueued or reworked."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="blocked", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.present(
+        MergeQueueEntry("QUEUED", position=1)
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.enqueue_discovered == 0
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+    # An already-queued PR must not pay for a status-rollup read.
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+
+
+def test_merge_queue_indeterminate_read_takes_no_action() -> None:
+    """A queue-read failure / unmodeled state must NOT enqueue, rework, or
+    escalate, and must not even pay for a status-rollup read. It is observed
+    again next tick instead of acting on the PR's (possibly stale) status."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    # A behind-base PR that, if the read were mistaken for ABSENT, would enqueue.
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="behind", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = (
+        MergeQueueRead.indeterminate()
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.enqueue_discovered == 0
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+    repository_host.read_pr_status_check_rollup.assert_not_called()
+
+
+def test_merge_queue_unreadable_entry_does_not_enqueue() -> None:
+    """End-to-end through the coordinator's own read path: a RepositoryHostError
+    from the provider resolves to INDETERMINATE, so no fact is produced."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="behind", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.side_effect = RepositoryHostError("boom")
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = _reconciler_with_merge_queue(repository_host).discover(state)
+
+    assert result.enqueue_discovered == 0
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+
+
+def test_merge_queue_failure_routes_to_rework() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="blocked", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.present(
+        MergeQueueEntry("UNMERGEABLE")
+    )
+    repository_host.get_issue.return_value = _issue("open")
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = _reconciler_with_merge_queue(
+        repository_host, failure_action="rework"
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+    assert result.enqueue_discovered == 0
+
+
+def test_merge_queue_failure_routes_to_needs_human() -> None:
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    repository_host.get_pr.return_value = _pr(
+        "open", mergeable_state="blocked", labels=["code-reviewed"]
+    )
+    repository_host.read_merge_queue_entry.return_value = MergeQueueRead.present(
+        MergeQueueEntry("UNMERGEABLE")
+    )
+    repository_host.get_issue.return_value = _issue("open")
+
+    result = _reconciler_with_merge_queue(
+        repository_host, failure_action="needs_human"
+    ).discover(state)
+
+    assert result.escalation_discovered == 1
+    assert result.escalations[0].kind == "merge_queue_failed"
+    assert result.rework_discovered == 0

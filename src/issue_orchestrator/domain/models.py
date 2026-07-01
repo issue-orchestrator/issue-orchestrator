@@ -1428,6 +1428,7 @@ PostPublishEscalationKind = Literal[
     "checks_pending_timeout",   # required checks pending > timeout after approval
     "branch_protection_blocked",  # mergeable_state=blocked but rollup=SUCCESS
     "status_rollup_permission_denied",  # token cannot read check status to decide
+    "merge_queue_failed",  # GitHub merge queue rejected the PR; failure_action=needs_human
 ]
 
 
@@ -1452,6 +1453,24 @@ class DiscoveredAwaitingMergeEscalation:
     rework_cycle: int  # carried for label/comment continuity
     kind: PostPublishEscalationKind
     reason: str  # short human-readable summary, used in the PR comment
+
+
+@dataclass(frozen=True)
+class DiscoveredMergeQueueEnqueue:
+    """A reviewer-approved PR is eligible to enter the GitHub merge queue.
+
+    Emitted only when merge queue mode is enabled and the merge queue
+    coordinator decides the PR has cleared the gate, is not already queued,
+    and is mergeable-or-behind (behind-base is enqueue-eligible, NOT rework).
+
+    This is a "fact" — the Planner converts it into an
+    ``EnqueueToMergeQueueAction`` and the ActionApplier performs the protected
+    enqueue. Mutations never happen in the discovery path.
+    """
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    issue_key: str
 
 
 @dataclass(frozen=True)
@@ -1913,6 +1932,7 @@ class OrchestratorState:
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_awaiting_merge_escalations: list[DiscoveredAwaitingMergeEscalation] = field(default_factory=list)  # Post-publish stuck-or-blocked escalations
+    discovered_merge_queue_enqueues: list[DiscoveredMergeQueueEnqueue] = field(default_factory=list)  # Approved PRs eligible for the merge queue
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
     # Immediate cleanups - sessions that need cleanup now (not deferred until review)
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)

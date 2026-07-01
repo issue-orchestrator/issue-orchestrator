@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
 from ...ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
     PRInfo,
     PRRef,
     StatusCheckRollupRead,
@@ -56,6 +58,39 @@ def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
         return upper  # type: ignore[return-value]
     logger.warning("Unknown statusCheckRollup state from GitHub: %r", raw)
     return None
+
+
+_VALID_MERGE_QUEUE_STATES: frozenset[str] = frozenset(
+    {"QUEUED", "AWAITING_CHECKS", "MERGEABLE", "PENDING", "LOCKED", "UNMERGEABLE"}
+)
+
+
+def _merge_queue_entry_from_api(raw: object) -> MergeQueueRead:
+    """Build a typed :class:`MergeQueueRead` from a GraphQL entry payload.
+
+    Distinguishes three outcomes so the coordinator never mistakes "we can't
+    classify this PR's queue state" for "this PR is not enqueued":
+
+    - no entry payload (GraphQL ``mergeQueueEntry`` is ``null``) -> ``ABSENT``.
+    - a modeled state -> ``PRESENT`` carrying the :class:`MergeQueueEntry`.
+    - an entry exists but its state is missing/unmodeled -> ``INDETERMINATE``.
+      The PR *is* in the queue (an entry object is present); we simply cannot
+      classify it, so acting as if it were absent could wrongly re-enqueue or
+      rework a queued PR.
+    """
+    if not isinstance(raw, dict):
+        return MergeQueueRead.absent()
+    state = raw.get("state")
+    if not isinstance(state, str) or state.upper() not in _VALID_MERGE_QUEUE_STATES:
+        logger.warning("Unmodeled mergeQueueEntry state from GitHub: %r", state)
+        return MergeQueueRead.indeterminate()
+    position = raw.get("position")
+    return MergeQueueRead.present(
+        MergeQueueEntry(
+            state=state.upper(),  # type: ignore[arg-type]
+            position=position if isinstance(position, int) else None,
+        )
+    )
 
 
 def _head_sha_from_pr(raw_pr: dict[str, Any]) -> str | None:
@@ -816,7 +851,12 @@ class GitHubAdapter:
                 pr_infos.append(pr_info)
         for pr_info in pr_infos:
             self._adapter_cache.cache_pr_info(pr_info)
-        return pr_infos
+        # Apply the documented state filter. The underlying search returns PRs
+        # in any state, so honor `state` here to match the cache-hit path and
+        # the port contract (callers like the stack work-gate ask for "open").
+        if state == "all":
+            return pr_infos
+        return [pr for pr in pr_infos if pr.state.lower() == state.lower()]
 
     def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
         """Return lightweight PR refs for an issue from a single search.
@@ -926,6 +966,28 @@ class GitHubAdapter:
                 primary_source_denied=capability == "permission_denied",
             )
         return StatusCheckRollupRead(state=_coerce_rollup_state(rollup), capability="ok")
+
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Add a PR to GitHub's native merge queue (GraphQL mutation)."""
+        try:
+            self._client.enqueue_pull_request(pr_number)
+        except GitHubHttpError as e:
+            logger.error("Failed to enqueue PR %s to merge queue: %s", pr_number, e)
+            raise
+
+    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
+        """Read a PR's merge queue entry (GraphQL) as a typed three-valued read.
+
+        Re-raises ``GitHubHttpError`` (a ``RepositoryHostError``) on a transient
+        read failure; the coordinator maps that to ``INDETERMINATE`` so an
+        unreadable queue cannot drive an enqueue/rework decision.
+        """
+        try:
+            raw = self._client.get_merge_queue_entry(pr_number)
+        except GitHubHttpError as e:
+            logger.error("Failed to read merge queue entry for PR %s: %s", pr_number, e)
+            raise
+        return _merge_queue_entry_from_api(raw)
 
     def _read_rollup_via_rest_fallback(
         self,
@@ -1078,6 +1140,7 @@ class GitHubAdapter:
                 state="open",
                 labels=[],
                 draft=draft,
+                base_branch=base,
             )
             # Cache the dry-run PR so get_prs_for_issue() doesn't hit GitHub API
             self._adapter_cache.cache_pr_info(pr_info)
@@ -1127,6 +1190,22 @@ class GitHubAdapter:
                 self._adapter_cache.cache_pr_info(pr_info)
         except GitHubHttpError as e:
             logger.error("Failed to update PR #%s draft=%s: %s", pr_number, draft, e)
+            raise
+
+    def set_pr_base(self, pr_number: int, base: str) -> None:
+        try:
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.GH_WRITE,
+                issue_key=str(pr_number),
+                scope=gh_audit.AuditScope.UNKNOWN,
+            ):
+                output = self._client.update_pr_base(pr_number, base)
+            if isinstance(output, dict):
+                pr_info = self._pr_info_from_api(output)
+                self._adapter_cache.cache_pr_info(pr_info)
+            logger.info("Retargeted PR #%s base to %s", pr_number, base)
+        except GitHubHttpError as e:
+            logger.error("Failed to retarget PR #%s base=%s: %s", pr_number, base, e)
             raise
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
@@ -1389,6 +1468,7 @@ class GitHubAdapter:
                 if pr.get("mergeable_state") is not None
                 else None
             ),
+            base_branch=(pr.get("base") or {}).get("ref") or pr.get("baseRefName") or None,
         )
 
     def _fetch_pr_info_from_search(self, pr: dict[str, Any]) -> PRInfo | None:
