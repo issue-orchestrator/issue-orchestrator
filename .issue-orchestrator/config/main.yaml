@@ -104,7 +104,7 @@ validation:
     cmd: make validate-quick
     timeout_seconds: 600
   publish:
-    cmd: make validate-pr-raw
+    cmd: "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
     # This repo's local publish gate runs the full PR validation slice
     # (unit/integration/web/vscode) and routinely exceeds 300s on busy machines,
     # even without any live agent work in the loop.
