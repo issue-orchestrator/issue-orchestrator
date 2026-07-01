@@ -192,6 +192,10 @@ class PRInfo:
             (only the single-PR `get_pr` path populates this). Read-capability
             (token cannot read check status vs. no checks configured) is carried
             separately by :class:`StatusCheckRollupRead`, not on this field.
+        base_branch: The PR's base (target) branch. Carried so publish/reuse
+            decisions can confirm an existing PR targets the branch the stack
+            publish gate requires (ADR-0029 / #6596). `None` when the source did
+            not provide it.
     """
 
     number: int
@@ -204,6 +208,7 @@ class PRInfo:
     draft: bool | None = None
     mergeable_state: str | None = None
     status_check_rollup: StatusCheckRollupState | None = None
+    base_branch: str | None = None
 
     @property
     def is_closed_unmerged(self) -> bool:
@@ -470,6 +475,25 @@ class PullRequestTracker(Protocol):
         Args:
             pr_number: The PR number to update.
             draft: True to mark as draft, False to mark ready for review.
+        """
+        ...
+
+    def set_pr_base(self, pr_number: int, base: str) -> None:
+        """Retarget an existing pull request onto a new base branch.
+
+        Used by the stack publish gate (ADR-0029 / #6596) to bring an existing
+        PR's base into line with the branch the gate requires before the PR is
+        reused — e.g. when a successor PR was opened against ``main`` but must
+        target its predecessor branch, or still targets a predecessor branch
+        that has since merged. Idempotent from the caller's perspective:
+        retargeting a PR already on ``base`` is a harmless no-op.
+
+        Args:
+            pr_number: The PR number to retarget.
+            base: The base (target) branch the PR should point at.
+
+        Raises:
+            RepositoryError: If there's an error updating the PR.
         """
         ...
 

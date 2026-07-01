@@ -261,6 +261,65 @@ class TestWorktreeContextCreate:
             # Verify prepare_for_session uses phase_name, not session_name
             mock_worktree.prepare_for_session.assert_called_once_with("coding-1")
 
+    def test_stack_base_branch_seeds_worktree_from_predecessor(
+        self, mock_worktree_manager, mock_config, mock_events, mock_session_output
+    ):
+        """A stack successor seeds from its predecessor branch (#6596).
+
+        The predecessor branch is passed as the worktree base and any configured
+        seed ref is suppressed so a freshly created successor branch is built
+        from the predecessor head (and the publish ancestry gate is satisfied
+        without manual rebasing).
+        """
+        mock_config.worktree_base_branch_override = "main"
+        mock_config.worktree_seed_ref = "seed-abc"
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls:
+            mock_worktree_cls.return_value = MagicMock()
+
+            WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                session_output=mock_session_output,
+                issue_number=123,
+                issue_title="Fix bug",
+                session_name="issue-123",
+                agent_label="agent:developer",
+                stack_base_branch="20-base",
+            )
+
+            call_kwargs = mock_worktree_manager.create.call_args.kwargs
+            assert call_kwargs["base_branch"] == "20-base"
+            assert call_kwargs["seed_ref"] is None
+
+    def test_no_stack_base_uses_configured_default(
+        self, mock_worktree_manager, mock_config, mock_events, mock_session_output
+    ):
+        """A non-stack issue keeps the configured base and seed ref unchanged."""
+        mock_config.worktree_base_branch_override = "main"
+        mock_config.worktree_seed_ref = "seed-abc"
+        with patch(
+            "issue_orchestrator.control.worktree_context.Worktree"
+        ) as mock_worktree_cls:
+            mock_worktree_cls.return_value = MagicMock()
+
+            WorktreeContext.create(
+                worktree_manager=mock_worktree_manager,
+                config=mock_config,
+                events=mock_events,
+                session_output=mock_session_output,
+                issue_number=123,
+                issue_title="Fix bug",
+                session_name="issue-123",
+                agent_label="agent:developer",
+            )
+
+            call_kwargs = mock_worktree_manager.create.call_args.kwargs
+            assert call_kwargs["base_branch"] == "main"
+            assert call_kwargs["seed_ref"] == "seed-abc"
+
     def test_session_output_uses_phase_name_for_run(
         self, mock_worktree_manager, mock_config, mock_events, mock_session_output
     ):

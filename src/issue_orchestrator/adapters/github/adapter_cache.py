@@ -109,6 +109,7 @@ class GitHubAdapterCacheSupport:
             "url": pr_info.url,
             "body": pr_info.body,
             "state": pr_info.state,
+            "base_branch": pr_info.base_branch,
             "issue_number": issue_number,
         }
         if issue_number is not None:
@@ -133,6 +134,7 @@ class GitHubAdapterCacheSupport:
             body=cached.get("body", ""),
             state=cached.get("state", "open"),
             labels=cached.get("labels", []),
+            base_branch=cached.get("base_branch"),
         )
 
     @staticmethod

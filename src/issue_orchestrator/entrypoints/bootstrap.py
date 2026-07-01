@@ -498,6 +498,36 @@ def _create_completion_components(
     return completion_processor, session_controller_instance
 
 
+def _wire_stack_publish_gate(
+    completion_processor: "CompletionProcessor | None",
+    dependency_evaluator: DependencyEvaluator | None,
+    github: GitHubAdapter | None,
+    command_runner: "LocalCommandRunner",
+    config: Config,
+) -> None:
+    """Wire the stack publish-gate + branch ancestry (ADR-0029 / #6596).
+
+    Attaches the git ancestry checker to the single dependency-gate evaluator
+    and gives the completion processor a :class:`StackPublishGate` so a
+    Stack-after: successor's PR is based on its predecessor branch and a blocked
+    publish gate fails fast. A no-op when any collaborator is absent, so
+    non-stack deployments and tests keep prior behavior.
+    """
+    if completion_processor is None or dependency_evaluator is None or github is None:
+        return
+    from ..control.stack_publish_gate import StackBaseGate
+    from ..execution.stack_branch_ancestry import GitStackBranchAncestry
+
+    dependency_evaluator.attach_branch_ancestry(GitStackBranchAncestry(command_runner))
+    completion_processor.attach_stack_publish_gate(
+        StackBaseGate(
+            evaluator=dependency_evaluator,
+            issue_reader=github,
+            configured_base_branch=config.worktree_base_branch_override,
+        )
+    )
+
+
 def _build_publish_recovery(
     *,
     repository_host: "GitHubAdapter",
@@ -803,6 +833,9 @@ def build_orchestrator(
         attempt_store=attempt_store,
         turn_mailbox=turn_mailbox,
     )
+    _wire_stack_publish_gate(
+        completion_processor, _dependency_evaluator, github, command_runner, config,
+    )
 
     # Create health gate
     health_gate = HealthGate(
@@ -988,6 +1021,9 @@ def build_orchestrator_for_testing(
     label_manager = _LabelManager(config)
 
     default_label_sync = None
+    # Only bound when this root builds the planner; a caller-injected planner
+    # carries its own evaluator, so the stack publish-gate stays unwired there.
+    _dependency_evaluator: DependencyEvaluator | None = None
 
     # Create default planner if not provided
     if planner is None:
@@ -1122,6 +1158,9 @@ def build_orchestrator_for_testing(
         review_exchange_canceller=_cancel_review_exchange_for_testing,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
+    )
+    _wire_stack_publish_gate(
+        completion_processor, _dependency_evaluator, github, command_runner, config,
     )
 
     # Create SessionController for testing (with optional validation gate)

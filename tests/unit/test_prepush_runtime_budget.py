@@ -8,6 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "repo-specific" / "scripts" / "check_prepush_runtime_budget.py"
+PUBLISH_COMMAND = "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
 
 
 def write_config(
@@ -22,7 +23,7 @@ def write_config(
         f"""
 pre_push_runtime:
   enabled: true
-  command: "make validate-pr-raw"
+  command: "{PUBLISH_COMMAND}"
   metric: "{metric}"
   baseline_seconds: {baseline_seconds}
   max_increase_seconds: {max_increase_seconds}
@@ -50,7 +51,7 @@ def successful_prepush_record(
         "phase": "validation_gate",
         "final_exit_code": 0,
         "head_sha": head_sha,
-        "command": "make validate-pr-raw",
+        "command": PUBLISH_COMMAND,
         "validation_cache_hit": cache_hit,
         "validation_elapsed_seconds": elapsed_seconds,
     }
@@ -148,7 +149,7 @@ def test_fails_when_no_successful_measurement_exists(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "no successful uncached pre-push timing record" in result.stderr
-    assert "matching command 'make validate-pr-raw'" in result.stderr
+    assert f"matching command '{PUBLISH_COMMAND}'" in result.stderr
 
 
 def test_rejects_bool_metric_value(tmp_path: Path) -> None:
