@@ -36,6 +36,7 @@ def _dry_run(target: str, **overrides: str) -> list[str]:
             "VALIDATE_JOBS": "10",
             "VALIDATE_TEST_JOBS": "1",
             "VALIDATE_WEB_JOBS": "1",
+            "VALIDATE_LIVE_WEB_JOBS": "2",
             "VALIDATE_AGENT_JOBS": "1",
             "VALIDATE_E2E_JOBS": "1",
             **overrides,
@@ -116,22 +117,31 @@ def _has_live_codex_marker(path: Path) -> bool:
 def test_validate_impl_runs_core_phases_with_separate_job_caps():
     lines = _dry_run("_validate-impl")
 
-    static_index = _find_line(lines, "_validate-static-impl")
-    core_tests_index = _find_line(lines, "_validate-core-tests-impl")
-    web_index = _find_line(lines, "test-web")
+    static_index = _find_line(lines, "validate-static-phase", "_validate-static-impl")
+    core_tests_index = _find_line(
+        lines,
+        "validate-core-tests-phase",
+        "_validate-core-tests-impl",
+    )
+    live_web_index = _find_line(
+        lines,
+        "validate-live-web-phase",
+        "test-integration-core-live-codex",
+        "test-web",
+    )
 
     _assert_job_count(lines[static_index], 10)
     _assert_job_count(lines[core_tests_index], 1)
-    _assert_job_count(lines[web_index], 1)
+    _assert_job_count(lines[live_web_index], 2)
 
-    assert static_index < core_tests_index < web_index
+    assert static_index < core_tests_index < live_web_index
 
 
 def test_validate_pr_impl_runs_agent_phase_after_validate_phase():
     lines = _dry_run("_validate-pr-impl")
 
-    validate_index = _find_line(lines, "_validate-impl")
-    agent_index = _find_line(lines, "_validate-agent-impl")
+    validate_index = _find_line(lines, "validate-main-phase", "_validate-impl")
+    agent_index = _find_line(lines, "validate-agent-phase", "_validate-agent-impl")
 
     _assert_job_count(lines[agent_index], 1)
 

@@ -241,6 +241,7 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
         )
     print()
 
+    wall_start = datetime.now(timezone.utc)
     start = time.monotonic()
     resource_sampler.start()
 
@@ -281,7 +282,8 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
 
         eof_marker = (
             f"[validate_runner] stdout_eof pid={child_pid} "
-            f"lines={line_count} bytes={byte_count} elapsed={time.monotonic() - start:.1f}s\n"
+            f"lines={line_count} bytes={byte_count} "
+            f"elapsed={(datetime.now(timezone.utc) - wall_start).total_seconds():.1f}s\n"
         )
         sys.stdout.write(eof_marker)
         sys.stdout.flush()
@@ -295,7 +297,7 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
             except subprocess.TimeoutExpired:
                 wait_marker = (
                     f"[validate_runner] waiting_for_exit pid={child_pid} "
-                    f"elapsed={time.monotonic() - start:.1f}s after_stdout_eof\n"
+                    f"elapsed={(datetime.now(timezone.utc) - wall_start).total_seconds():.1f}s after_stdout_eof\n"
                 )
                 sys.stdout.write(wait_marker)
                 sys.stdout.flush()
@@ -303,13 +305,20 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
                 f.flush()
 
     duration = 0.0
+    monotonic_duration = 0.0
+    wall_end = wall_start
+    monotonic_end = start
     exit_code = process.returncode if process.returncode is not None else 1
     try:
-        duration = time.monotonic() - start
+        wall_end = datetime.now(timezone.utc)
+        monotonic_end = time.monotonic()
+        duration = (wall_end - wall_start).total_seconds()
+        monotonic_duration = monotonic_end - start
         exit_code = process.returncode if process.returncode is not None else 1
         exit_marker = (
             f"[validate_runner] child_exited pid={child_pid} exit_code={exit_code} "
-            f"elapsed={duration:.1f}s lines={line_count} bytes={byte_count}\n"
+            f"elapsed={duration:.1f}s monotonic_elapsed={monotonic_duration:.1f}s "
+            f"lines={line_count} bytes={byte_count}\n"
         )
         # The exit marker is computed only after the child has fully exited and the
         # main streaming file handle is closed, so append it in a short final write.
@@ -322,7 +331,12 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
             resource_sampler.stop()
         finally:
             timing_recorder.finalize(
-                exit_code=exit_code, total_elapsed_seconds=duration
+                exit_code=exit_code,
+                total_elapsed_seconds=duration,
+                wall_started_at=wall_start,
+                monotonic_started_at=start,
+                wall_ended_at=wall_end,
+                monotonic_ended_at=monotonic_end,
             )
 
     print()

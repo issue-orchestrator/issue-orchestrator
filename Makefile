@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-quick validate-full verify-hooks-all _validate-pr _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-core-local test-integration-core-live-codex test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-quick validate-full verify-hooks-all _validate-pr _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -374,7 +374,9 @@ test-integration: sync-deps
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
 # Used in pre-push validation where full infra may not be available
-test-integration-core: sync-deps
+test-integration-core: test-integration-core-local test-integration-core-live-codex
+
+test-integration-core-local: sync-deps
 ifeq ($(INTEGRATION_PARALLEL),0)
 	$(call TIMED_RUN,test-integration-core,\
 		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra and not live_codex" \
@@ -390,6 +392,8 @@ else
 			--ignore=tests/integration/test_live_agent_chain.py \
 			$(PYTEST_TIMINGS))
 endif
+
+test-integration-core-live-codex: sync-deps
 	$(call TIMED_RUN,test-integration-core-live-codex,\
 		$(PYTEST) tests/integration -x -q --tb=short -m "live_codex and not requires_infra" \
 			--ignore=tests/integration/test_claude_execution.py \
@@ -540,11 +544,14 @@ VALIDATE_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || e
 VALIDATE_STATIC_JOBS ?= $(VALIDATE_JOBS)
 VALIDATE_TEST_JOBS ?= 1
 VALIDATE_WEB_JOBS ?= 1
+# Run the browser smoke lane beside the single live-Codex core check after
+# local xdist-heavy core tests pass.
+VALIDATE_LIVE_WEB_JOBS ?= 2
 VALIDATE_AGENT_JOBS ?= 1
 VALIDATE_E2E_JOBS ?= 1
 
 define VALIDATE_CONFIG
-	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL) integration_agent_parallel=$(INTEGRATION_AGENT_PARALLEL) static_jobs=$(VALIDATE_STATIC_JOBS) test_jobs=$(VALIDATE_TEST_JOBS) web_jobs=$(VALIDATE_WEB_JOBS) agent_jobs=$(VALIDATE_AGENT_JOBS) e2e_jobs=$(VALIDATE_E2E_JOBS)"
+	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL) integration_agent_parallel=$(INTEGRATION_AGENT_PARALLEL) static_jobs=$(VALIDATE_STATIC_JOBS) test_jobs=$(VALIDATE_TEST_JOBS) web_jobs=$(VALIDATE_WEB_JOBS) live_web_jobs=$(VALIDATE_LIVE_WEB_JOBS) agent_jobs=$(VALIDATE_AGENT_JOBS) e2e_jobs=$(VALIDATE_E2E_JOBS)"
 endef
 
 validate-raw:
@@ -569,17 +576,22 @@ _validate-pr:
 # each suite may already use xdist internally, so running many suites together
 # can oversubscribe local CPUs and starve browser/subprocess tests.
 _validate-impl:
-	@$(GMAKE) -j$(VALIDATE_STATIC_JOBS) --output-sync=target _validate-static-impl
-	@$(GMAKE) -j$(VALIDATE_TEST_JOBS) --output-sync=target _validate-core-tests-impl
-	@$(GMAKE) -j$(VALIDATE_WEB_JOBS) --output-sync=target test-web
+	$(call TIMED_RUN,validate-static-phase,\
+		$(GMAKE) -j$(VALIDATE_STATIC_JOBS) --output-sync=target _validate-static-impl)
+	$(call TIMED_RUN,validate-core-tests-phase,\
+		$(GMAKE) -j$(VALIDATE_TEST_JOBS) --output-sync=target _validate-core-tests-impl)
+	$(call TIMED_RUN,validate-live-web-phase,\
+		$(GMAKE) -j$(VALIDATE_LIVE_WEB_JOBS) --output-sync=target test-integration-core-live-codex test-web)
 
 _validate-static-impl: typecheck lint-arch lint-complexity
 
-_validate-core-tests-impl: test-unit test-simulated-core test-integration-core
+_validate-core-tests-impl: test-unit test-simulated-core test-integration-core-local
 
 _validate-pr-impl:
-	@$(GMAKE) --output-sync=target _validate-impl
-	@$(GMAKE) -j$(VALIDATE_AGENT_JOBS) --output-sync=target _validate-agent-impl
+	$(call TIMED_RUN,validate-main-phase,\
+		$(GMAKE) --output-sync=target _validate-impl)
+	$(call TIMED_RUN,validate-agent-phase,\
+		$(GMAKE) -j$(VALIDATE_AGENT_JOBS) --output-sync=target _validate-agent-impl)
 
 _validate-agent-impl: test-simulated-agent test-integration-agent
 
