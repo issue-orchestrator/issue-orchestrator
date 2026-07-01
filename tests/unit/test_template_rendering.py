@@ -115,6 +115,51 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
     assert "milestones=M7" in soup.select_one(".scope-summary").text
 
 
+def test_first_paint_renders_stack_chip_for_stacked_card(jinja_env):
+    # F1 (#6597): the server template must render the compact stack chip on the
+    # first paint. The card fingerprint already includes stack_signal, so if the
+    # first-paint DOM lacks the chip, the first client refresh takes the
+    # fingerprint-matched branch and never repairs it — the chip would stay hidden.
+    from issue_orchestrator.domain.dependencies import (
+        Dependency,
+        DependencyMode,
+        DependencyState,
+    )
+    from issue_orchestrator.domain.dependency_gates import (
+        DependencyGateSnapshot,
+        build_gate_report,
+    )
+
+    config = make_config()
+    config.agents = {"agent:web": make_agent_config()}
+    issue = Issue(number=201, title="Stacked successor", labels=["agent:web"],
+                  body="Stack-after: #5")
+    dep = Dependency(issue_number=5, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+        dependency_gate_snapshot=DependencyGateSnapshot(
+            reports={201: build_gate_report(201, [dep])}
+        ),
+    )
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    card = soup.select_one('.issue-card[data-issue="201"]')
+    assert card is not None
+    assert card.get("data-card-fingerprint")  # fingerprint is stamped on first paint
+    assert card.select_one(".stack-chip") is not None
+    status = card.select_one(".stack-chip-status")
+    assert status is not None
+    assert status.text.strip()  # text status, not colour only
+
+
 def test_dashboard_renders_manifest_js_chunks_in_order(jinja_env):
     config = make_config()
     state = OrchestratorState(startup_status="complete")

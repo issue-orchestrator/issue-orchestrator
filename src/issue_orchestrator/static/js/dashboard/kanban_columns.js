@@ -150,43 +150,19 @@ function compactCardPhaseAgeInnerHtml(card) {
     return ` &middot; ${escapeHtml(raw)}`;
 }
 
-// Compact stack-gate chip. Rendered only when the issue participates in a stack
-// (has_stack_edges). Status is conveyed by text ("blocked"/"stale"/"ready"), not
-// colour alone; the icon is decorative (aria-hidden) and the visible text is the
-// accessible name, with a fuller sentence in the title tooltip.
+// Compact stack-gate chip. Rendered from the server-precomputed card.stack_chip
+// so the first-paint DOM (Jinja) and this client rebuild are byte-identical —
+// the mode/tone/status/title logic lives once in the projection, not here. Status
+// is conveyed by text ("blocked"/"stale"/"ready"), not colour alone; the icon is
+// decorative (aria-hidden) and the visible text is the accessible name.
 function renderStackChipHtml(card) {
-    const sd = card && card.stack_dependency;
-    if (!sd || !sd.has_stack_edges) return '';
-    const predecessors = Array.isArray(sd.predecessors) ? sd.predecessors : [];
-    const successors = Array.isArray(sd.successors) ? sd.successors : [];
-    const blockedGates = Array.isArray(sd.blocked_gates) ? sd.blocked_gates : [];
-    const modeLabel = sd.mode === 'stack'
-        ? 'Stack'
-        : (predecessors.length ? 'Deps' : 'Base');
-    let tone = 'ok';
-    let statusText = 'ready';
-    if (sd.stale) {
-        tone = 'stale';
-        statusText = 'stale';
-    } else if (blockedGates.length) {
-        tone = 'blocked';
-        const extra = blockedGates.length > 1 ? ` +${blockedGates.length - 1}` : '';
-        statusText = `${blockedGates[0]}${extra} blocked`;
-    }
-    const detailParts = [];
-    if (predecessors.length) {
-        detailParts.push('after ' + predecessors.map(p => String(p.ref)).join(', '));
-    }
-    if (successors.length) {
-        detailParts.push('before ' + successors.map(s => String(s.ref)).join(', '));
-    }
-    const title = `${modeLabel}: ${statusText}`
-        + (detailParts.length ? ` — ${detailParts.join('; ')}` : '');
+    const chip = card && card.stack_chip;
+    if (!chip) return '';
     return `<div class="card-line card-stack">`
-        + `<span class="stack-chip stack-chip--${tone}" title="${escapeAttr(title)}">`
+        + `<span class="stack-chip stack-chip--${chip.tone}" title="${escapeAttr(String(chip.title || ''))}">`
         + `<span class="stack-chip-icon" aria-hidden="true">⛓</span>`
-        + `<span class="stack-chip-mode">${escapeHtml(modeLabel)}</span>`
-        + `<span class="stack-chip-status">${escapeHtml(statusText)}</span>`
+        + `<span class="stack-chip-mode">${escapeHtml(String(chip.mode_label || ''))}</span>`
+        + `<span class="stack-chip-status">${escapeHtml(String(chip.status_text || ''))}</span>`
         + `</span></div>`;
 }
 

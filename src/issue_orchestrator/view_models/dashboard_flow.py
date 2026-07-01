@@ -113,6 +113,9 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         # Precomputed by the item builder from the typed gate view; copied here
         # so the compact card (and its fingerprint) stay in step with the model.
         "stack_signal": item.get("stack_signal") or "",
+        # Precomputed chip display; carried so the server-rendered first paint and
+        # the client rebuild render the identical chip.
+        "stack_chip": item.get("stack_chip"),
     }
     card["fingerprint"] = compute_compact_card_fingerprint(card)
     return card

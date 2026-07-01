@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from ..contracts.public import (
+    StackChipView,
     StackDependencyGateView,
     StackGateStatusView,
     StackPredecessorEdgeView,
@@ -225,6 +226,46 @@ def stack_dependency_view(state, issue_number: int) -> StackDependencyGateView |
 def stack_dependency_payload(view: StackDependencyGateView | None) -> Any:
     """Serialize a stack gate view for embedding in a card / detail payload."""
     return view.model_dump(mode="json") if view is not None else None
+
+
+def stack_chip(view: StackDependencyGateView | None) -> StackChipView | None:
+    """Precompute the compact stack-chip display, or ``None`` when no chip shows.
+
+    The single owner of the chip's mode label / tone / status text / title. Both
+    the server template (first paint) and the client rebuild render from these
+    fields, so the display logic is not duplicated between Jinja and JS — the
+    divergence that let a first-paint stacked card match the refreshed fingerprint
+    yet lack the chip DOM (#6597). Status is conveyed by text (not colour only):
+    ``ready`` / ``stale`` / ``"<gate> [+N] blocked"``.
+    """
+    if view is None or not view.has_stack_edges:
+        return None
+    mode_label = (
+        "Stack" if view.mode == "stack" else ("Deps" if view.predecessors else "Base")
+    )
+    tone, status_text = "ok", "ready"
+    if view.stale:
+        tone, status_text = "stale", "stale"
+    elif view.blocked_gates:
+        tone = "blocked"
+        extra = f" +{len(view.blocked_gates) - 1}" if len(view.blocked_gates) > 1 else ""
+        status_text = f"{view.blocked_gates[0]}{extra} blocked"
+    detail_parts: list[str] = []
+    if view.predecessors:
+        detail_parts.append("after " + ", ".join(e.ref for e in view.predecessors))
+    if view.successors:
+        detail_parts.append("before " + ", ".join(e.ref for e in view.successors))
+    title = f"{mode_label}: {status_text}"
+    if detail_parts:
+        title += " — " + "; ".join(detail_parts)
+    return StackChipView(
+        tone=tone, mode_label=mode_label, status_text=status_text, title=title
+    )
+
+
+def stack_chip_payload(chip: StackChipView | None) -> Any:
+    """Serialize a precomputed stack chip for embedding in a card payload."""
+    return chip.model_dump(mode="json") if chip is not None else None
 
 
 def stack_signal(view: StackDependencyGateView | None) -> str:

@@ -149,7 +149,7 @@ class DashboardViewModelPayload(BaseModel):
     e2e_status: dict[str, Any]
     e2e_total: int
     e2e_total_pages: int
-    flow_columns: list[dict[str, Any]]
+    flow_columns: list[FlowColumnPayload]
     github_owner: str
     github_repo: str
     history_items: list[IssueItemPayload]
@@ -427,6 +427,15 @@ class FailedE2ETestExecutionPayload(BaseModel):
     nodeid: str
     started_at: str
 
+class FlowColumnPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    count: int
+    expandable: bool | None = None
+    id: str
+    items: list[IssueItemPayload]
+    session_scoped: bool | None = None
+    title: str
+
 class InfoDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rows: list[DialogRowPayload]
@@ -536,6 +545,9 @@ class IssueItemPayload(BaseModel):
     open_run_command: OpenE2ERunCommandPayload | None = None
     runtime_label: str | None = None
     show_stale_badge: bool
+    stack_chip: StackChipViewPayload | None = None
+    stack_dependency: StackDependencyGateViewPayload | None = None
+    stack_signal: str | None = None
     status: str | None = None
     title: str | None = None
     url: str | None = None
@@ -939,6 +951,13 @@ class ShowEventDetailsCommandPayload(BaseModel):
     event_ref: str
     kind: Literal['show_event_details']
     label: str
+
+class StackChipViewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode_label: str
+    status_text: str
+    title: str
+    tone: str
 
 class StackDependencyGatePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

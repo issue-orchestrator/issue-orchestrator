@@ -138,7 +138,7 @@ export interface DashboardViewModelPayload {
   e2e_status: Record<string, any>;
   e2e_total: number;
   e2e_total_pages: number;
-  flow_columns: Record<string, any>[];
+  flow_columns: FlowColumnPayload[];
   github_owner: string;
   github_repo: string;
   history_items: IssueItemPayload[];
@@ -417,6 +417,16 @@ export interface FailedE2ETestExecutionPayload {
   started_at: string;
 }
 
+export interface FlowColumnPayload {
+  count: number;
+  expandable?: boolean;
+  id: string;
+  items: IssueItemPayload[];
+  session_scoped?: boolean;
+  title: string;
+  [key: string]: any;
+}
+
 export interface InfoDialogPayload {
   rows: DialogRowPayload[];
   title: string;
@@ -525,6 +535,9 @@ export interface IssueItemPayload {
   open_run_command?: OpenE2ERunCommandPayload | null;
   runtime_label?: string | null;
   show_stale_badge: boolean;
+  stack_chip?: StackChipViewPayload | null;
+  stack_dependency?: StackDependencyGateViewPayload | null;
+  stack_signal?: string | null;
   status?: string | null;
   title?: string | null;
   url?: string | null;
@@ -930,6 +943,13 @@ export interface ShowEventDetailsCommandPayload {
   event_ref: string;
   kind: "show_event_details";
   label: string;
+}
+
+export interface StackChipViewPayload {
+  mode_label: string;
+  status_text: string;
+  title: string;
+  tone: string;
 }
 
 export interface StackDependencyGatePayload {

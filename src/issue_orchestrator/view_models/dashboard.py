@@ -16,6 +16,8 @@ from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra import gh_audit
 from .dependency_gate import (
+    stack_chip,
+    stack_chip_payload,
     stack_dependency_payload,
     stack_dependency_view,
     stack_signal,
@@ -439,6 +441,9 @@ def _attach_stack_payload(items: list[Any], state) -> None:
         view = stack_dependency_view(state, issue_number)
         item["stack_dependency"] = stack_dependency_payload(view)
         item["stack_signal"] = stack_signal(view)
+        # Precomputed chip display so the server template and JS render an
+        # identical chip (the first-paint DOM must match what the client rebuilds).
+        item["stack_chip"] = stack_chip_payload(stack_chip(view))
 
 
 def _refresh_meta(state, config, issue_number: int) -> dict[str, Any]:

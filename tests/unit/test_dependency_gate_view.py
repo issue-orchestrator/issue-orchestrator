@@ -27,6 +27,7 @@ from issue_orchestrator.domain.dependency_gates import (
 from issue_orchestrator.view_models.dependency_gate import (
     project_from_snapshot,
     project_stack_dependency_view,
+    stack_chip,
     stack_signal,
 )
 from issue_orchestrator.domain.dependency_gates import DependencyGateSnapshot
@@ -220,3 +221,52 @@ def test_stack_signal_changes_when_successor_ref_changes():
     succ_a = (SuccessorEdge(issue_number=30, ref="#30", mode=DependencyMode.STACK),)
     succ_b = (SuccessorEdge(issue_number=31, ref="#31", mode=DependencyMode.STACK),)
     assert stack_signal(_stack_view(10, succ_a)) != stack_signal(_stack_view(10, succ_b))
+
+
+def test_stack_chip_is_none_without_stack_participation():
+    dep = Dependency(issue_number=100, mode=DependencyMode.NORMAL,
+                     state=DependencyState.UNSATISFIED)
+    view = project_stack_dependency_view(1, build_gate_report(1, [dep]), ())
+    assert stack_chip(view) is None
+
+
+def test_stack_chip_ready_when_all_gates_open():
+    dep = Dependency(issue_number=20, mode=DependencyMode.STACK,
+                     state=DependencyState.SATISFIED)
+    chip = stack_chip(project_stack_dependency_view(1, build_gate_report(1, [dep]), ()))
+    assert chip is not None
+    assert chip.tone == "ok"
+    assert chip.status_text == "ready"
+    assert chip.mode_label == "Stack"
+
+
+def test_stack_chip_blocked_counts_extra_gates():
+    # Unsatisfied predecessor with no facts blocks all four gates; the chip shows
+    # the first blocked gate plus a "+N" extras count, as text (not colour only).
+    dep = Dependency(issue_number=20, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    chip = stack_chip(project_stack_dependency_view(1, build_gate_report(1, [dep]), ()))
+    assert chip is not None
+    assert chip.tone == "blocked"
+    assert chip.status_text == "work +3 blocked"
+
+
+def test_stack_chip_stale_takes_precedence_over_blocked():
+    dep = Dependency(issue_number=20, mode=DependencyMode.STACK,
+                     state=DependencyState.SATISFIED)
+    view = project_stack_dependency_view(
+        1, build_gate_report(1, [dep], approval_current=False), ()
+    )
+    chip = stack_chip(view)
+    assert chip is not None
+    assert chip.tone == "stale"
+    assert chip.status_text == "stale"
+
+
+def test_stack_chip_base_of_stack_shows_chain_context_in_title():
+    successors = (SuccessorEdge(issue_number=30, ref="#30", mode=DependencyMode.STACK),)
+    chip = stack_chip(project_stack_dependency_view(1, None, successors))
+    assert chip is not None
+    assert chip.mode_label == "Base"
+    assert chip.status_text == "ready"
+    assert "before #30" in chip.title

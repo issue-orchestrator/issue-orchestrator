@@ -3283,13 +3283,14 @@ def test_issue_detail_stack_section_uses_native_disclosure() -> None:
 
 def test_stack_chip_status_is_text_not_colour_only() -> None:
     # The compact card stack chip must carry a textual status; colour alone is
-    # not an acceptable signal.
+    # not an acceptable signal. The status *text* is precomputed server-side
+    # (test_dependency_gate_view.py::stack_chip asserts the ready/blocked/stale
+    # words); the JS renders that precomputed text into a status element.
     body = _function_body(
         _read(DASHBOARD_JS_DIR / "kanban_columns.js"), "renderStackChipHtml"
     )
     assert "stack-chip-status" in body
-    for word in ("'blocked'", "'stale'", "'ready'"):
-        assert word in body, f"expected status word {word} in stack chip"
+    assert "status_text" in body, "chip must render the precomputed textual status"
 
 
 def test_stack_chip_icon_is_decorative_aria_hidden() -> None:

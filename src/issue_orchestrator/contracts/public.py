@@ -186,6 +186,23 @@ class StackSuccessorEdgeView(ContractBase):
     mode: str
 
 
+class StackChipView(ContractBase):
+    """Precomputed compact stack-chip display fields.
+
+    The server template (first paint) and the client rebuild render the chip from
+    these identical fields, so the tone / label / status / title logic lives in
+    one place (the projection) rather than being duplicated between Jinja and JS.
+    ``tone`` is a presentation bucket (``ok`` / ``blocked`` / ``stale``);
+    ``status_text`` is the visible accessible-name text; ``title`` is the fuller
+    hover sentence including chain context.
+    """
+
+    tone: str
+    mode_label: str
+    status_text: str
+    title: str
+
+
 class StackDependencyGateView(ContractBase):
     """Producer-provided projection of the dependency gate report for one issue.
 
