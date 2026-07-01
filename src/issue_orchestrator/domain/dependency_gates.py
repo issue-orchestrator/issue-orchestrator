@@ -70,12 +70,22 @@ class GateBlockReason(Enum):
     MALFORMED_REFERENCE = "malformed_reference"
     CYCLE = "cycle"
     BASE_BRANCH_CONFLICT = "base_branch_conflict"  # stack base conflicts with rule
+    # More than one unmerged stack predecessor exposes a usable base branch, so
+    # there is no single branch a linear successor can be based on. The base is
+    # ambiguous and the gate must fail closed rather than fall back to the
+    # default branch (ADR-0029: stack base has exactly one owner).
+    AMBIGUOUS_STACK_BASE = "ambiguous_stack_base"
 
     # Stack-edge predecessor facts
     PREDECESSOR_BRANCH_UNUSABLE = "predecessor_branch_unusable"
     PREDECESSOR_VALIDATION_PENDING = "predecessor_validation_pending"
     PREDECESSOR_REVIEW_PENDING = "predecessor_review_pending"
     PREDECESSOR_NOT_MERGED = "predecessor_not_merged"
+    # The successor no longer contains the predecessor branch head it was built
+    # on (predecessor advanced / was force-pushed / reset / rebased). The
+    # successor is stale and must not be publishable or merge-ready until it
+    # contains the current predecessor head again.
+    PREDECESSOR_BRANCH_ADVANCED = "predecessor_branch_advanced"
 
     # Slice's own reviewed-commit freshness
     APPROVAL_STALE = "approval_stale"
@@ -107,6 +117,15 @@ class PredecessorFacts:
     agent_reviewed: bool = False  # predecessor branch head has passed agent review
     merged: bool = False  # predecessor PR/branch has merged
     branch_name: str | None = None  # predecessor branch, for base reconciliation
+    head_sha: str | None = None  # predecessor branch head commit, for staleness
+    # Whether the dependent slice's successor branch currently contains this
+    # predecessor's branch head (git ancestry). ``True`` is the conservative
+    # default for gates that do not evaluate ancestry (the WORK gate runs before
+    # a successor branch exists, so ancestry cannot apply there). The publish and
+    # merge gates set this from a real ancestry check: when ``branch_usable`` but
+    # ``not contained_in_successor`` the successor is stale and must not publish
+    # or merge until it is rebuilt onto the current predecessor head.
+    contained_in_successor: bool = True
 
 
 @dataclass(frozen=True)
@@ -189,6 +208,12 @@ class DependencyGateReport:
     merge: GateDecision
     approval_current: bool = True
     dependencies: tuple[Dependency, ...] = field(default_factory=tuple)
+    # The single owner of stack base selection (ADR-0029 / #6596): the branch a
+    # stack successor's PR must be based on. It is the usable branch of the lone
+    # unmerged stack predecessor, or ``None`` for a non-stack slice or one whose
+    # stack predecessor has already merged (which should base on the normal
+    # default branch). Publish wiring reads this instead of re-deriving the base.
+    stack_base_branch: str | None = None
 
     def gate(self, gate: Gate) -> GateDecision:
         return {
@@ -393,6 +418,21 @@ def _stack_edge_blocks(
         work.append(branch_block)
         review.append(branch_block)
         publish.append(branch_block)
+    elif not facts.contained_in_successor:
+        # The base branch exists but the successor no longer descends from the
+        # current predecessor head (predecessor advanced / force-pushed / reset).
+        # Ancestry is a publish/merge-readiness concern only: WORK already started
+        # from some earlier head, and a first REVIEW is still launchable. Block
+        # only publish and merge so the stale successor is rebuilt before it can
+        # become a PR base point or merge.
+        stale_block = GateBlock(
+            GateBlockReason.PREDECESSOR_BRANCH_ADVANCED,
+            ref,
+            "successor branch does not contain the current predecessor head"
+            + (f" {facts.head_sha}" if facts.head_sha else ""),
+        )
+        publish.append(stale_block)
+        merge.append(stale_block)
     # work additionally needs validation + agent review of the predecessor head.
     if not facts.validation_passed:
         work.append(GateBlock(GateBlockReason.PREDECESSOR_VALIDATION_PENDING, ref))
@@ -437,6 +477,66 @@ def _edge_gate_blocks(
     return _stack_edge_blocks(dep, ref, facts_by_target, configured_base_branch)
 
 
+@dataclass(frozen=True)
+class _StackBaseResolution:
+    """Resolved stack base plus the edges that make it ambiguous, if any.
+
+    ``base`` is the single branch a linear successor must be based on, or
+    ``None`` when there is no live predecessor base (all merged → default
+    branch) *or* when the base is ambiguous. ``ambiguous_edges`` is non-empty
+    only in the ambiguous case (more than one usable unmerged predecessor branch)
+    so the report can fail that case closed instead of falling back to default.
+    """
+
+    base: str | None
+    ambiguous_edges: tuple[Dependency, ...] = ()
+    branches: tuple[str, ...] = ()
+
+
+def _resolve_stack_base(
+    dependencies: Sequence[Dependency],
+    facts_by_target: Mapping[DependencyTarget, PredecessorFacts],
+) -> _StackBaseResolution:
+    """Resolve the stack successor's base branch (ADR-0029, #6596).
+
+    A linear stack has exactly one unmerged stack predecessor; its usable branch
+    is the successor's base. A satisfied (merged/closed) stack predecessor
+    contributes no base — the successor bases on the normal default branch. A
+    predecessor whose PR has ``merged`` likewise contributes no base even while
+    its dependency edge is still ``UNSATISFIED`` (its issue has not closed yet):
+    the merge gate already treats ``facts.merged`` as unblocking, so basing the
+    successor on the merged predecessor branch would target an already-merged
+    branch instead of the default base. When no unmerged stack predecessor
+    exposes a usable branch yet, the base is ``None`` (the per-edge
+    ``PREDECESSOR_BRANCH_UNUSABLE`` block already keeps the gate closed). When
+    *two or more* unmerged predecessors expose conflicting usable branches there
+    is no single base, so this reports the conflicting edges and the owner fails
+    the gate closed rather than guessing a default.
+    """
+    live: list[Dependency] = []
+    branches: list[str] = []
+    for dep in dependencies:
+        if (
+            dep.mode != DependencyMode.STACK
+            or dep.problem is not None
+            or dep.state != DependencyState.UNSATISFIED
+            or dep.target is None
+        ):
+            continue
+        facts = facts_by_target.get(dep.target)
+        if facts and facts.branch_usable and facts.branch_name and not facts.merged:
+            live.append(dep)
+            branches.append(facts.branch_name)
+    distinct = sorted(set(branches))
+    if len(distinct) == 1:
+        return _StackBaseResolution(base=distinct[0])
+    if len(distinct) > 1:
+        return _StackBaseResolution(
+            base=None, ambiguous_edges=tuple(live), branches=tuple(distinct)
+        )
+    return _StackBaseResolution(base=None)
+
+
 def build_gate_report(
     issue_number: int,
     dependencies: Sequence[Dependency],
@@ -477,6 +577,25 @@ def build_gate_report(
         publish += p
         merge += m
 
+    # Resolve the single stack base. When two or more unmerged predecessors
+    # expose conflicting usable branches there is no safe base, so fail the
+    # base-deciding gates closed instead of falling back to the default branch.
+    base_resolution = _resolve_stack_base(dependencies, facts_by_target)
+    if base_resolution.ambiguous_edges:
+        detail = (
+            "ambiguous stack base: unmerged predecessors expose conflicting "
+            f"usable branches {list(base_resolution.branches)}"
+        )
+        for dep in base_resolution.ambiguous_edges:
+            block = GateBlock(
+                GateBlockReason.AMBIGUOUS_STACK_BASE, dep.display_ref, detail
+            )
+            # Block every gate that selects or builds on the base: WORK seeds the
+            # successor worktree, PUBLISH picks the PR base, MERGE orders on it.
+            work.append(block)
+            publish.append(block)
+            merge.append(block)
+
     # The slice's own reviewed-commit freshness only re-blocks merge.
     if not approval_current:
         merge.append(
@@ -495,4 +614,5 @@ def build_gate_report(
         merge=GateDecision(Gate.MERGE, is_open=not merge, blocks=tuple(merge)),
         approval_current=approval_current,
         dependencies=tuple(dependencies),
+        stack_base_branch=base_resolution.base,
     )

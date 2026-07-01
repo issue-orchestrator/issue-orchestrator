@@ -1140,6 +1140,7 @@ class GitHubAdapter:
                 state="open",
                 labels=[],
                 draft=draft,
+                base_branch=base,
             )
             # Cache the dry-run PR so get_prs_for_issue() doesn't hit GitHub API
             self._adapter_cache.cache_pr_info(pr_info)
@@ -1189,6 +1190,22 @@ class GitHubAdapter:
                 self._adapter_cache.cache_pr_info(pr_info)
         except GitHubHttpError as e:
             logger.error("Failed to update PR #%s draft=%s: %s", pr_number, draft, e)
+            raise
+
+    def set_pr_base(self, pr_number: int, base: str) -> None:
+        try:
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.GH_WRITE,
+                issue_key=str(pr_number),
+                scope=gh_audit.AuditScope.UNKNOWN,
+            ):
+                output = self._client.update_pr_base(pr_number, base)
+            if isinstance(output, dict):
+                pr_info = self._pr_info_from_api(output)
+                self._adapter_cache.cache_pr_info(pr_info)
+            logger.info("Retargeted PR #%s base to %s", pr_number, base)
+        except GitHubHttpError as e:
+            logger.error("Failed to retarget PR #%s base=%s: %s", pr_number, base, e)
             raise
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
@@ -1451,6 +1468,7 @@ class GitHubAdapter:
                 if pr.get("mergeable_state") is not None
                 else None
             ),
+            base_branch=(pr.get("base") or {}).get("ref") or pr.get("baseRefName") or None,
         )
 
     def _fetch_pr_info_from_search(self, pr: dict[str, Any]) -> PRInfo | None:

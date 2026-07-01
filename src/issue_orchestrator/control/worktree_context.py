@@ -91,6 +91,7 @@ class WorktreeContext:
         pre_push_hook: Optional[Path] = None,
         reuse_options: Optional[WorktreeReuseOptions] = None,
         phase_name: Optional[str] = None,
+        stack_base_branch: Optional[str] = None,
     ) -> "WorktreeContext":
         """Create and prepare a worktree context for a session.
 
@@ -108,6 +109,12 @@ class WorktreeContext:
             reuse_options: Worktree reuse configuration
             phase_name: Logical phase name for session output (e.g., "coding-1").
                         Defaults to session_name if not provided.
+            stack_base_branch: For a stack successor (ADR-0029 / #6596), the
+                predecessor branch this issue's worktree must be seeded from and
+                reset onto, so a freshly created successor branch already contains
+                the predecessor head (and the publish ancestry gate is satisfied
+                without manual rebasing). ``None`` for a non-stack issue, which
+                keeps the configured/auto-detected default base.
 
         Returns:
             WorktreeContext with worktree ready for use, or with error set
@@ -128,6 +135,15 @@ class WorktreeContext:
                 worktree_base,
             )
 
+        # A stack successor seeds from (and resets onto) its predecessor branch
+        # so the new branch contains the predecessor head; otherwise keep the
+        # configured/auto-detected default base (ADR-0029 / #6596). A configured
+        # seed ref would otherwise take precedence over the base branch when a
+        # fresh successor branch is created, so it is suppressed for a stack
+        # successor — the predecessor branch must be the seed.
+        base_branch = stack_base_branch or config.worktree_base_branch_override
+        seed_ref = None if stack_base_branch else config.worktree_seed_ref
+
         # Create worktree
         try:
             worktree_info = worktree_manager.create(
@@ -135,8 +151,8 @@ class WorktreeContext:
                 issue_number=issue_number,
                 issue_title=issue_title,
                 worktree_base=worktree_base,
-                base_branch=config.worktree_base_branch_override,
-                seed_ref=config.worktree_seed_ref,
+                base_branch=base_branch,
+                seed_ref=seed_ref,
                 enforce_hooks=enforce_hooks,
                 reuse_options=reuse_options or WorktreeReuseOptions(),
                 branch_name=branch_name,

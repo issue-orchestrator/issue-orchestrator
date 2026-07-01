@@ -257,6 +257,47 @@ class TestCreateWorktree:
         assert not any(cmd[3:6] == ["fetch", "origin", "main"] for cmd in calls)
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_create_worktree_stack_successor_branches_from_predecessor(self, mock_run, tmp_path):
+        """A stack successor's fresh branch is created from origin/<predecessor>.
+
+        With no local/remote issue branch and no seed ref, passing the
+        predecessor branch as base makes the new branch descend from the
+        predecessor head, so the publish ancestry gate is satisfied without any
+        manual rebase (#6596).
+        """
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_base = tmp_path / "worktrees"
+
+        def run_side_effect(cmd, *args, **kwargs):
+            argv = cmd[3:]
+            if argv[:3] == ["rev-parse", "--verify", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["fetch", "origin", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "origin/20-base"]:
+                return MagicMock(returncode=0, stdout="basesha\n", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        worktree_path, branch_name, *_ = create_worktree(
+            repo_root,
+            123,
+            "Test",
+            worktree_base=worktree_base,
+            base_branch="20-base",
+            seed_ref=None,
+        )
+
+        assert branch_name == "123-test"
+        calls = [call_args[0][0] for call_args in mock_run.call_args_list]
+        worktree_cmd = next(cmd for cmd in calls if cmd[3:5] == ["worktree", "add"])
+        assert worktree_cmd[-3:] == ["-b", "123-test", "origin/20-base"]
+        assert "origin/main" not in worktree_cmd
+
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_default_base(self, mock_run, tmp_path):
         """Test worktree creation with default base directory."""
         # Setup
