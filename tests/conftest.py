@@ -986,6 +986,7 @@ def build_test_orchestrator_deps(
         # Use the resolved applier (same object OrchestratorDeps exposes), not
         # the raw optional argument which is None when callers omit it.
         action_applier=_action_applier,
+        code_review_agent_configured=bool(config.code_review_agent),
     )
 
     return OrchestratorDeps(

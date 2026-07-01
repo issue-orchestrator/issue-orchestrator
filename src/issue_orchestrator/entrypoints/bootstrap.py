@@ -530,6 +530,7 @@ def _build_publish_recovery(
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
+        code_review_agent_configured=bool(config.code_review_agent),
     )
 
 

@@ -220,6 +220,7 @@ def _service(
     result: ProcessingResult | None = None,
     runner: Any = None,
     action_applier: _ActionApplier | None = None,
+    code_review_agent_configured: bool = False,
 ) -> tuple[PublishRecoveryService, JsonPublishRetryLocatorStore, Any]:
     store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
     runner = runner or _RecordingRunner()
@@ -234,6 +235,7 @@ def _service(
         label_manager=lm,
         fresh_issue_reader=repo,
         action_applier=action_applier or _ActionApplier(repo),
+        code_review_agent_configured=code_review_agent_configured,
     )
     return service, store, runner
 
@@ -249,12 +251,15 @@ def _record_failure(
     service: PublishRecoveryService,
     make_session,
     tmp_path: Path,
+    *,
+    agent_config: Any = None,
 ) -> Session:
     """Persist retry locators the way the live completion path does."""
     session = make_session(
         issue_number=4057,
         issue_title="UI: Surface provider status",
         branch_name=BRANCH,
+        agent_config=agent_config,
     )
     completion_file = session.worktree_path / session.completion_path
     completion_file.parent.mkdir(parents=True, exist_ok=True)
@@ -332,6 +337,109 @@ def test_retry_publish_reconciles_success_on_drain(make_session, tmp_path) -> No
     assert store.get(4057) is None  # locators cleared on success
     assert state.session_history[-1].status == "completed"
     assert state.session_history[-1].pr_url == PR_URL
+
+
+def test_retry_publish_success_queues_code_review_when_configured(
+    make_session, tmp_path
+) -> None:
+    """A retry that produces a real PR must not bypass the configured review gate.
+
+    With a code review agent configured and no completed local review exchange,
+    reconciliation routes the PR through the same review-discovery fact the live
+    completion path uses (planner then owns pr-pending + the review queue),
+    instead of silently finalizing straight to awaiting-merge.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(
+        tmp_path, repo, lm, code_review_agent_configured=True
+    )
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    # The review-discovery fact was produced, carrying the real PR + branch.
+    assert len(state.discovered_reviews) == 1
+    review = state.discovered_reviews[0]
+    assert review.issue_number == 4057
+    assert review.pr_number == 5453
+    assert review.pr_url == PR_URL
+    assert review.branch_name == BRANCH
+    # Publish-failed state is still cleared and the issue is no longer retryable.
+    assert lm.publish_failed in repo.removed
+    assert store.get(4057) is None
+    # pr-pending is now owned by the planner (via the discovered review), not
+    # finalized here — the retry path must not double-own that policy.
+    assert lm.pr_pending not in repo.added
+
+
+def test_retry_publish_success_skips_review_when_exchange_completed(
+    make_session, tmp_path
+) -> None:
+    """An approved local review exchange must not enqueue another review.
+
+    ``review_exchange_completed=true`` means the PR was already reviewed to
+    approval in-band, so reconciliation finalizes to awaiting-merge directly
+    without producing a review-discovery fact.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(
+        tmp_path,
+        repo,
+        lm,
+        result=ProcessingResult(
+            success=True, message="ok", pr_url=PR_URL, review_exchange_completed=True
+        ),
+        code_review_agent_configured=True,
+    )
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    assert state.discovered_reviews == []
+    assert lm.pr_pending in repo.added
+    assert lm.publish_failed in repo.removed
+    assert store.get(4057) is None
+
+
+def test_retry_publish_success_skips_review_when_agent_opted_out(
+    make_session, sample_agent_config, tmp_path
+) -> None:
+    """A ``skip_review`` coding agent's PR must not be queued for review.
+
+    The intent is persisted in the locators at failure time and honored by the
+    same policy the live path uses, so retry does not re-introduce review for an
+    agent that explicitly opted out.
+    """
+    import dataclasses
+
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(
+        tmp_path, repo, lm, code_review_agent_configured=True
+    )
+    _record_failure(
+        service,
+        make_session,
+        tmp_path,
+        agent_config=dataclasses.replace(sample_agent_config, skip_review=True),
+    )
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    assert state.discovered_reviews == []
+    assert lm.pr_pending in repo.added
+    assert store.get(4057) is None
 
 
 def test_retry_publish_failure_leaves_issue_retryable(make_session, tmp_path) -> None:
@@ -525,6 +633,7 @@ def _service_with_processor(tmp_path, repo, lm):
         label_manager=lm,
         fresh_issue_reader=repo,
         action_applier=_ActionApplier(repo),
+        code_review_agent_configured=False,
     )
     return service, store, runner, processor
 

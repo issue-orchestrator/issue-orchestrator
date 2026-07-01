@@ -24,7 +24,6 @@ import logging
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Protocol
@@ -36,7 +35,7 @@ from ..control.actions import (
 )
 from .claim_gate import ClaimLostError
 from .reconciliation import ReconciliationRequired
-from ..domain.models import OrchestratorState, SessionHistoryEntry
+from ..domain.models import OrchestratorState
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..domain.publish_retry import PublishRetryLocators
 from ..ports.background_job import BackgroundJobRunner, CompletedJob
@@ -44,6 +43,7 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.publish_retry_locator_store import PublishRetryLocatorStore
 from ..ports.pull_request_tracker import PRInfo
 from .completion_types import ERROR_PREFIX_CREATE_PR, ERROR_PREFIX_PUSH
+from .publish_retry_finalize import RetryReviewRouting, RetrySuccessFinalizer
 from .republish_job_id import RepublishJobId
 
 if TYPE_CHECKING:
@@ -119,6 +119,8 @@ class _RepublishContext:
     issue_title: str
     agent_label: str | None
     worktree_path: str
+    branch_name: str
+    skip_review: bool
 
 
 def is_publish_failure(processing_errors: Sequence[str] | None) -> bool:
@@ -143,6 +145,7 @@ class PublishRecoveryService:
         label_manager: "LabelManager",
         fresh_issue_reader: FreshIssueReader,
         action_applier: _ActionApplier,
+        code_review_agent_configured: bool,
     ) -> None:
         self._repository_host = repository_host
         self._completion_processor = completion_processor
@@ -151,6 +154,16 @@ class PublishRecoveryService:
         self._lm = label_manager
         self._fresh_issue_reader = fresh_issue_reader
         self._action_applier = action_applier
+        # A successful retry that produces a PR must clear publish-failed state
+        # and route the PR through the same review-discovery policy live
+        # completion uses, so a retry-published PR cannot bypass the review gate
+        # (F1). That whole finalization is owned by RetrySuccessFinalizer.
+        self._finalizer = RetrySuccessFinalizer(
+            label_manager=label_manager,
+            fresh_issue_reader=fresh_issue_reader,
+            action_applier=action_applier,
+            code_review_agent_configured=code_review_agent_configured,
+        )
         self._lock = Lock()
         # Owner-authoritative in-flight state, guarded by ``self._lock`` and
         # independent of the worker thread's alive bit. ``_pending`` maps an
@@ -196,6 +209,7 @@ class PublishRecoveryService:
             run_assets=session.run_assets,
             agent_label=session.agent_label,
             pr_number=session.pr_number,
+            skip_review=session.agent_config.skip_review,
         )
         self._locator_store.save(locators)
         logger.info(
@@ -226,7 +240,7 @@ class PublishRecoveryService:
         locators = decision.locators
         existing_pr = self._matching_open_pr(issue_number, locators.branch_name)
         if existing_pr is not None:
-            self._finalize_success(
+            self._finalizer.finalize(
                 state=state,
                 issue_number=issue_number,
                 issue_title=decision.issue_title,
@@ -235,6 +249,14 @@ class PublishRecoveryService:
                 pr_number=existing_pr.number,
                 worktree_path=locators.worktree_path,
                 history_reason="Recovered awaiting-merge state from existing PR",
+                routing=RetryReviewRouting(
+                    branch_name=locators.branch_name,
+                    skip_review=locators.skip_review,
+                    # Recovering an already-open PR runs no fresh completion, so
+                    # there is no in-flight review exchange to skip.
+                    review_exchange_completed=False,
+                    review_exchange_halted=False,
+                ),
             )
             self._locator_store.clear(issue_number)
             logger.info(
@@ -398,6 +420,12 @@ class PublishRecoveryService:
                 pr_url=result.pr_url,
                 pr_number=self._extract_pr_number(result.pr_url),
                 worktree_path=context.worktree_path,
+                review_routing=RetryReviewRouting(
+                    branch_name=context.branch_name,
+                    skip_review=context.skip_review,
+                    review_exchange_completed=result.review_exchange_completed,
+                    review_exchange_halted=result.review_exchange_halted,
+                ),
             )
             self._locator_store.clear(issue_number)
 
@@ -411,9 +439,16 @@ class PublishRecoveryService:
         pr_url: str | None,
         pr_number: int | None,
         worktree_path: str | None,
+        review_routing: RetryReviewRouting | None = None,
     ) -> None:
-        """Clear stale publish-failed state after a manual publish retry succeeds."""
-        self._finalize_success(
+        """Clear stale publish-failed state after a manual publish retry succeeds.
+
+        ``review_routing`` carries the session-level inputs needed to decide
+        whether the (re)published PR still needs the configured code review. It
+        defaults to a review-neutral routing so callers that only want the label
+        cleanup keep their prior behavior.
+        """
+        self._finalizer.finalize(
             state=state,
             issue_number=issue_number,
             issue_title=issue_title,
@@ -422,6 +457,13 @@ class PublishRecoveryService:
             pr_number=pr_number,
             worktree_path=worktree_path,
             history_reason="Publish retry succeeded",
+            routing=review_routing
+            or RetryReviewRouting(
+                branch_name="",
+                skip_review=False,
+                review_exchange_completed=False,
+                review_exchange_halted=False,
+            ),
         )
         logger.info(
             "[publish-retry] Finalized successful retry for issue=%s pr=%s",
@@ -604,6 +646,8 @@ class PublishRecoveryService:
                 issue_title=issue_title,
                 agent_label=agent_label,
                 worktree_path=locators.worktree_path,
+                branch_name=locators.branch_name,
+                skip_review=locators.skip_review,
             )
         job_id = RepublishJobId(issue_number, token).encode()
 
@@ -687,72 +731,6 @@ class PublishRecoveryService:
             )
         return scoped.first_matching
 
-    def _finalize_success(
-        self,
-        *,
-        state: OrchestratorState,
-        issue_number: int,
-        issue_title: str,
-        agent_label: str | None,
-        pr_url: str | None,
-        pr_number: int | None,
-        worktree_path: str | None,
-        history_reason: str,
-    ) -> None:
-        labels = tuple(self._current_labels(issue_number))
-        label_actions: list[AddLabelAction | RemoveLabelAction] = []
-        if self._lm.publish_failed in labels:
-            label_actions.append(
-                RemoveLabelAction(
-                    issue_number=issue_number,
-                    label=self._lm.publish_failed,
-                    reason="retry publish succeeded",
-                )
-            )
-        if pr_url and self._lm.pr_pending not in labels:
-            label_actions.append(
-                AddLabelAction(
-                    issue_number=issue_number,
-                    label=self._lm.pr_pending,
-                    reason="publish retry recovered or succeeded",
-                )
-            )
-        for label in labels:
-            if self._lm.extract_publish_fail_count([label]) > 0:
-                label_actions.append(
-                    RemoveLabelAction(
-                        issue_number=issue_number,
-                        label=label,
-                        reason="publish retry succeeded",
-                    )
-                )
-        self._apply_label_actions(label_actions)
-
-        state.failed_this_cycle.discard(issue_number)
-        state.discovered_failures = [
-            failure for failure in state.discovered_failures
-            if failure.issue_number != issue_number
-        ]
-        state.session_history = [
-            entry for entry in state.session_history
-            if not self._is_publish_failure_history(entry, issue_number)
-        ]
-        if issue_number not in state.completed_today:
-            state.completed_today.append(issue_number)
-        state.session_history.append(
-            SessionHistoryEntry(
-                issue_number=issue_number,
-                title=issue_title,
-                agent_type=agent_label or "agent:unknown",
-                status="completed",
-                runtime_minutes=0,
-                pr_url=pr_url,
-                status_reason=history_reason,
-                worktree_path=Path(worktree_path) if worktree_path else None,
-                completed_at=datetime.now(timezone.utc),
-            )
-        )
-
     def _current_labels(self, issue_number: int) -> list[str]:
         return [str(label) for label in self._fresh_issue_reader.read_issue_labels(issue_number)]
 
@@ -763,25 +741,3 @@ class PublishRecoveryService:
         if locators.agent_label and locators.agent_label.strip():
             return locators.agent_label
         return None
-
-    def _apply_label_actions(self, actions: list[AddLabelAction | RemoveLabelAction]) -> None:
-        for action in actions:
-            result = self._action_applier.apply(action)
-            if result.success:
-                continue
-            raise RuntimeError(result.error or f"Label action failed for issue {action.issue_number}")
-
-    @staticmethod
-    def _is_publish_failure_history(entry: SessionHistoryEntry, issue_number: int) -> bool:
-        if entry.issue_number != issue_number:
-            return False
-        if entry.status not in {"blocked", "failed"}:
-            return False
-        reason = (entry.status_reason or "").strip().lower()
-        if not reason:
-            return False
-        return (
-            "push or pr creation failed" in reason
-            or "publishing failed" in reason
-            or "publish failed" in reason
-        )

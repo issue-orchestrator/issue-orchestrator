@@ -208,6 +208,14 @@
       "rule_id": "control_policy_branch_sites",
       "value": 13
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/publish_retry_finalize.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/publish_retry_finalize.py",
+      "path": "src/issue_orchestrator/control/publish_retry_finalize.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/queue_cache.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -2544,11 +2552,19 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/publish_recovery.py:issue-orchestrator.direct-runtime-state-mutation:0f1614ab9602": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 364: Route orchestrator runtime state collection mutations through an owner abstraction.",
+    "semgrep_owner_boundaries:src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:0f1614ab9602": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 199: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/publish_recovery.py:issue-orchestrator.direct-runtime-state-mutation:0f1614ab9602",
-      "path": "src/issue_orchestrator/control/publish_recovery.py",
+      "metric_id": "src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:0f1614ab9602",
+      "path": "src/issue_orchestrator/control/publish_retry_finalize.py",
+      "rule_id": "semgrep_owner_boundaries",
+      "value": 1
+    },
+    "semgrep_owner_boundaries:src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:addba387ea7d": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 161: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:addba387ea7d",
+      "path": "src/issue_orchestrator/control/publish_retry_finalize.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },

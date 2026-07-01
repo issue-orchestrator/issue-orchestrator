@@ -14,7 +14,9 @@ from issue_orchestrator.execution.json_publish_retry_locator_store import (
 BRANCH = "4057-scratch-1"
 
 
-def _locators(make_session, *, issue_number: int = 4057) -> PublishRetryLocators:
+def _locators(
+    make_session, *, issue_number: int = 4057, skip_review: bool = False
+) -> PublishRetryLocators:
     session = make_session(
         issue_number=issue_number,
         issue_title="UI: Surface provider status",
@@ -30,7 +32,23 @@ def _locators(make_session, *, issue_number: int = 4057) -> PublishRetryLocators
         run_assets=session.run_assets,
         agent_label=session.agent_label,
         pr_number=None,
+        skip_review=skip_review,
     )
+
+
+class _LoadWithoutKeyCheckStore(JsonPublishRetryLocatorStore):
+    """Loads entries without the startup key/issue guard.
+
+    Used only to exercise ``get()``'s own defense-in-depth check in isolation:
+    ``_load`` rejects a mismatched key at startup, so a live store never reaches
+    ``get()`` with one. This subclass bypasses that outer gate so the inner
+    ``get()`` guard is independently provable.
+    """
+
+    def _load(self):
+        if not self._store_path.exists():
+            return {}
+        return json.loads(self._store_path.read_text())
 
 
 def test_save_get_roundtrip_survives_reopen(make_session, tmp_path) -> None:
@@ -119,3 +137,73 @@ def test_clear_is_persisted(make_session, tmp_path) -> None:
 
     assert store.get(4057) is None
     assert JsonPublishRetryLocatorStore(path).get(4057) is None
+
+
+def test_skip_review_survives_roundtrip(make_session, tmp_path) -> None:
+    """The persisted ``skip_review`` intent is restored, not silently dropped."""
+    path = tmp_path / "publish_retry_locators.json"
+    JsonPublishRetryLocatorStore(path).save(
+        _locators(make_session, skip_review=True)
+    )
+
+    reopened = JsonPublishRetryLocatorStore(path).get(4057)
+
+    assert reopened is not None
+    assert reopened.skip_review is True
+
+
+def test_load_rejects_key_mismatched_with_entry_issue(make_session, tmp_path) -> None:
+    """A key that disagrees with the entry's issue_number is corruption.
+
+    Accepting key "4057" with an entry for issue 999 would let a retry of 4057
+    submit/finalize the wrong issue. Fail loudly at startup instead.
+    """
+    path = tmp_path / "publish_retry_locators.json"
+    entry = _locators(make_session, issue_number=999).to_dict()
+    path.write_text(json.dumps({"4057": entry}))
+
+    with pytest.raises(CorruptPublishRetryLocatorStoreError):
+        JsonPublishRetryLocatorStore(path)
+
+
+def test_load_rejects_non_integer_key(make_session, tmp_path) -> None:
+    path = tmp_path / "publish_retry_locators.json"
+    entry = _locators(make_session, issue_number=4057).to_dict()
+    path.write_text(json.dumps({"not-a-number": entry}))
+
+    with pytest.raises(CorruptPublishRetryLocatorStoreError):
+        JsonPublishRetryLocatorStore(path)
+
+
+def test_get_rejects_key_mismatched_with_entry_issue(make_session, tmp_path) -> None:
+    """``get()`` independently enforces the key/issue invariant (defense in depth)."""
+    path = tmp_path / "publish_retry_locators.json"
+    entry = _locators(make_session, issue_number=999).to_dict()
+    path.write_text(json.dumps({"4057": entry}))
+    # Bypass the startup guard so get()'s own check is what fires.
+    store = _LoadWithoutKeyCheckStore(path)
+
+    with pytest.raises(CorruptPublishRetryLocatorStoreError):
+        store.get(4057)
+
+
+def test_load_rejects_non_string_agent_label(make_session, tmp_path) -> None:
+    """``agent_label`` is consumed as ``str | None`` later; a wrong type is corruption."""
+    path = tmp_path / "publish_retry_locators.json"
+    entry = _locators(make_session, issue_number=4057).to_dict()
+    entry["agent_label"] = 123
+    path.write_text(json.dumps({"4057": entry}))
+
+    with pytest.raises(CorruptPublishRetryLocatorStoreError):
+        JsonPublishRetryLocatorStore(path)
+
+
+def test_load_rejects_non_int_pr_number(make_session, tmp_path) -> None:
+    """``pr_number`` is consumed as ``int | None`` later; a string is corruption."""
+    path = tmp_path / "publish_retry_locators.json"
+    entry = _locators(make_session, issue_number=4057).to_dict()
+    entry["pr_number"] = "5453"
+    path.write_text(json.dumps({"4057": entry}))
+
+    with pytest.raises(CorruptPublishRetryLocatorStoreError):
+        JsonPublishRetryLocatorStore(path)

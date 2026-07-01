@@ -37,6 +37,10 @@ class PublishRetryLocators:
     run_assets: SessionRunAssets
     agent_label: str | None = None
     pr_number: int | None = None
+    # The original coding session's ``skip_review`` intent. Persisted because the
+    # retry-publish reconciliation reuses the same review-routing policy as the
+    # live completion path and cannot re-derive it from the worktree.
+    skip_review: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,10 +53,14 @@ class PublishRetryLocators:
             "run_assets": self.run_assets.to_dict(),
             "agent_label": self.agent_label,
             "pr_number": self.pr_number,
+            "skip_review": self.skip_review,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "PublishRetryLocators":
+        # These fields are consumed as typed state later (label routing, republish
+        # job inputs, review policy), not re-serialized as opaque JSON. A wrong
+        # type here is store corruption, so validate rather than pass it through.
         return cls(
             issue_number=int(data["issue_number"]),
             issue_title=str(data["issue_title"]),
@@ -61,6 +69,33 @@ class PublishRetryLocators:
             branch_name=str(data["branch_name"]),
             completion_path=str(data["completion_path"]),
             run_assets=SessionRunAssets.from_dict(data["run_assets"]),
-            agent_label=data.get("agent_label"),
-            pr_number=data.get("pr_number"),
+            agent_label=_optional_str(data.get("agent_label"), "agent_label"),
+            pr_number=_optional_int(data.get("pr_number"), "pr_number"),
+            skip_review=_require_bool(data.get("skip_review", False), "skip_review"),
         )
+
+
+def _optional_str(value: Any, field_name: str) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise TypeError(
+            f"{field_name} must be a string or null, got {type(value).__name__}"
+        )
+    return value
+
+
+def _optional_int(value: Any, field_name: str) -> int | None:
+    # ``bool`` is an ``int`` subclass; reject it so a stray ``true`` is not
+    # silently accepted as PR #1.
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+        raise TypeError(
+            f"{field_name} must be an integer or null, got {type(value).__name__}"
+        )
+    return value
+
+
+def _require_bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(
+            f"{field_name} must be a boolean, got {type(value).__name__}"
+        )
+    return value

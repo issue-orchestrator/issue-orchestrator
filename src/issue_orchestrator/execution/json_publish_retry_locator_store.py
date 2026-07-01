@@ -72,14 +72,41 @@ class JsonPublishRetryLocatorStore:
         # failure this store exists to prevent.
         for key, entry in data.items():
             try:
-                PublishRetryLocators.from_dict(entry)
+                locators = PublishRetryLocators.from_dict(entry)
             except (KeyError, ValueError, TypeError, AttributeError) as exc:
                 raise CorruptPublishRetryLocatorStoreError(
                     f"Publish-retry locator store at {self._store_path} has a "
                     f"malformed entry for issue {key!r} ({exc}); repair or remove "
                     "the file."
                 ) from exc
+            self._require_key_matches_entry(key, locators)
         return data
+
+    def _require_key_matches_entry(
+        self, key: str, locators: PublishRetryLocators
+    ) -> None:
+        """Reject an entry whose JSON key disagrees with its own issue_number.
+
+        The key is the issue the label/locator gate matches on, while
+        ``locators.issue_number`` drives the republish job and reconciliation. If
+        they disagree, retrying issue ``key`` would submit/finalize a different
+        issue — a cross-field corruption that must fail loudly, not silently act
+        on the wrong issue.
+        """
+        try:
+            key_issue = int(key)
+        except (TypeError, ValueError) as exc:
+            raise CorruptPublishRetryLocatorStoreError(
+                f"Publish-retry locator store at {self._store_path} has a "
+                f"non-integer issue key {key!r} ({exc}); repair or remove the file."
+            ) from exc
+        if key_issue != locators.issue_number:
+            raise CorruptPublishRetryLocatorStoreError(
+                f"Publish-retry locator store at {self._store_path} has key {key!r} "
+                f"pointing at an entry for issue {locators.issue_number}; a retry of "
+                f"{key!r} would act on the wrong issue. Repair or remove the file."
+            )
+        return None
 
     def _persist(self, entries: dict[str, dict]) -> None:
         atomic_write_json(self._store_path, entries)
@@ -100,7 +127,7 @@ class JsonPublishRetryLocatorStore:
         if raw is None:
             return None
         try:
-            return PublishRetryLocators.from_dict(raw)
+            locators = PublishRetryLocators.from_dict(raw)
         except (KeyError, ValueError, TypeError, AttributeError) as exc:
             # Present-but-malformed is corruption, not "absent": fail loud rather
             # than silently hiding Retry Publish for a publish-failed issue.
@@ -108,6 +135,10 @@ class JsonPublishRetryLocatorStore:
                 f"Publish-retry locator entry for issue #{issue_number} in "
                 f"{self._store_path} is malformed ({exc}); repair or remove the file."
             ) from exc
+        # Enforce the same key/entry invariant on read: never hand back locators
+        # for a different issue than the one that was asked for.
+        self._require_key_matches_entry(str(issue_number), locators)
+        return locators
 
     def clear(self, issue_number: int) -> None:
         with self._lock:
