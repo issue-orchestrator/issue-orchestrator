@@ -562,5 +562,3 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert state.awaiting_merge_rollup_scan_timestamps[200] == 2.0
     assert other in state.priority_queue
     assert other in state.queue_pending_shrink_missing_issue_numbers
-
-

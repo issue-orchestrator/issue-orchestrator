@@ -3618,5 +3618,3 @@ class TestRefreshRequestPreservation:
         assert orchestrator.state.queue_refresh_requested is True
         assert 'issue-1' in orchestrator._inflight_stable_ids  # noqa: SLF001
         assert 'issue-2' in orchestrator._inflight_stable_ids  # noqa: SLF001
-
-

@@ -21,6 +21,7 @@ republish is dispatched to the runner rather than run inline.
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +34,8 @@ from ..control.actions import (
     RemoveLabelAction,
     SupersedePullRequestAction,
 )
+from .claim_gate import ClaimLostError
+from .reconciliation import ReconciliationRequired
 from ..domain.models import OrchestratorState, SessionHistoryEntry
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..domain.publish_retry import PublishRetryLocators
@@ -415,19 +418,34 @@ class PublishRecoveryService:
                 issue_number,
             )
             return
-        outcome = self._action_applier.apply(
-            SupersedePullRequestAction(
-                issue_number=issue_number,
-                pr_number=pr_number,
-                comment=(
-                    "Superseded: this PR was created by a publish retry that "
-                    "finished after the issue was reset. The orchestrator has "
-                    "discarded that attempt; a fresh attempt will publish "
-                    "separately."
-                ),
-                reason="publish retry completed after reset",
+        try:
+            outcome = self._action_applier.apply(
+                SupersedePullRequestAction(
+                    issue_number=issue_number,
+                    pr_number=pr_number,
+                    comment=(
+                        "Superseded: this PR was created by a publish retry that "
+                        "finished after the issue was reset. The orchestrator has "
+                        "discarded that attempt; a fresh attempt will publish "
+                        "separately."
+                    ),
+                    reason="publish retry completed after reset",
+                )
             )
-        )
+        except (ClaimLostError, ReconciliationRequired) as exc:
+            # ActionApplier re-raises these on a claim/state race (e.g. a fresh
+            # attempt already re-claimed the issue). This drain runs on the tick
+            # thread, so swallowing them keeps a reset/fresh-attempt race from
+            # aborting the whole tick after the tombstone was already consumed.
+            # The late PR is left open (stranded) rather than force-closed.
+            logger.warning(
+                "[publish-retry] Left late retry PR #%s for issue=%s open after "
+                "a claim/reconciliation race: %s",
+                pr_number,
+                issue_number,
+                exc,
+            )
+            return
         if not outcome.success:
             logger.error(
                 "[publish-retry] Failed to supersede late retry PR #%s for "
@@ -493,8 +511,12 @@ class PublishRecoveryService:
         worktree = Path(locators.worktree_path)
         if not worktree.exists():
             return "Retry worktree no longer exists"
+        # The live completion path preserves a run-scoped copy and then deletes
+        # the agent's original completion file, so a real publish failure leaves
+        # only the durable copy. Either source is a valid retry input.
         completion_path = worktree / locators.completion_path
-        if not completion_path.exists():
+        durable_copy = locators.run_assets.completion_record_copy.path
+        if not completion_path.exists() and not durable_copy.exists():
             return "Completion record for retry is missing"
         return None
 
@@ -513,6 +535,7 @@ class PublishRecoveryService:
         job_id = self._job_id(issue_number)
 
         def run() -> None:
+            self._restore_completion_record(locators)
             result = self._completion_processor.process(
                 Path(locators.worktree_path),
                 issue_number,
@@ -535,6 +558,32 @@ class PublishRecoveryService:
                 worktree_path=locators.worktree_path,
             )
         return True
+
+    @staticmethod
+    def _restore_completion_record(locators: PublishRetryLocators) -> None:
+        """Put a completion record back where ``process`` reads it.
+
+        ``CompletionProcessor.process`` re-reads ``worktree / completion_path``,
+        but the live completion path deletes that original agent file after
+        preserving a run-scoped copy. Restore the durable copy to the worktree
+        location so the republish has a valid input. No-op when the original is
+        still present or the durable copy is gone (the processor then fails
+        loudly on a genuinely missing record, keeping the issue retryable).
+        """
+        target = Path(locators.worktree_path) / locators.completion_path
+        if target.exists():
+            return
+        durable_copy = locators.run_assets.completion_record_copy.path
+        if not durable_copy.exists():
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(durable_copy, target)
+        logger.info(
+            "[publish-retry] Restored durable completion record for issue=%s "
+            "from %s",
+            locators.issue_number,
+            durable_copy,
+        )
 
     @staticmethod
     def _job_id(issue_number: int) -> str:

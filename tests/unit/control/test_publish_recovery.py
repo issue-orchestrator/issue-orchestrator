@@ -93,12 +93,16 @@ class _CompletionProcessor:
         completion_path: str | None = None,
         agent_label: str | None = None,
     ) -> ProcessingResult:
+        record_path = worktree / (completion_path or "completion.json")
         self.calls.append({
             "worktree": worktree,
             "issue_number": issue_number,
             "issue_title": issue_title,
             "completion_path": completion_path,
             "agent_label": agent_label,
+            # Captured at call time so tests can prove the completion record was
+            # available to the processor when the republish actually ran.
+            "completion_present": record_path.exists(),
         })
         return self.result
 
@@ -146,6 +150,9 @@ class _RecordingRunner:
 @dataclass
 class _ActionApplier:
     repo: _Repo
+    # When set, applying a SupersedePullRequestAction raises this instead of
+    # returning an outcome — mirrors ActionApplier re-raising claim/state races.
+    raise_on_supersede: BaseException | None = None
 
     def apply(
         self,
@@ -154,6 +161,8 @@ class _ActionApplier:
         if isinstance(action, AddLabelAction):
             self.repo.add_label(action.issue_number, action.label)
         elif isinstance(action, SupersedePullRequestAction):
+            if self.raise_on_supersede is not None:
+                raise self.raise_on_supersede
             self.repo.superseded.append(action.pr_number)
             self.repo.prs = [
                 pr for pr in self.repo.prs if pr.number != action.pr_number
@@ -170,6 +179,7 @@ def _service(
     *,
     result: ProcessingResult | None = None,
     runner: _RecordingRunner | None = None,
+    action_applier: _ActionApplier | None = None,
 ) -> tuple[PublishRecoveryService, JsonPublishRetryLocatorStore, _RecordingRunner]:
     store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
     runner = runner or _RecordingRunner()
@@ -183,7 +193,7 @@ def _service(
         runner=runner,
         label_manager=lm,
         fresh_issue_reader=repo,
-        action_applier=_ActionApplier(repo),
+        action_applier=action_applier or _ActionApplier(repo),
     )
     return service, store, runner
 
@@ -451,3 +461,160 @@ def test_abandon_issue_without_inflight_does_not_block_a_later_retry(
     assert store.get(4057) is None
     assert state.session_history[-1].status == "completed"
     assert repo.superseded == []
+
+
+# ---------------------------------------------------------------------------
+# Live failure-to-retry shape: durable record survives processor cleanup (F1/A1)
+# ---------------------------------------------------------------------------
+
+
+def _service_with_processor(tmp_path, repo, lm):
+    """Build a service and hand back the completion processor for inspection."""
+    store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
+    runner = _RecordingRunner()
+    processor = _CompletionProcessor(
+        ProcessingResult(success=True, message="ok", pr_url=PR_URL)
+    )
+    service = PublishRecoveryService(
+        repository_host=repo,
+        completion_processor=processor,
+        locator_store=store,
+        runner=runner,
+        label_manager=lm,
+        fresh_issue_reader=repo,
+        action_applier=_ActionApplier(repo),
+    )
+    return service, store, runner, processor
+
+
+def test_retry_after_live_cleanup_restores_durable_completion_record(
+    make_session, tmp_path
+) -> None:
+    """The live path deletes the agent completion file after preserving a copy.
+
+    Recording locators from that production shape (original gone, run-scoped
+    durable copy present) must still let retry_publish submit, and the worker
+    must restore the durable record so the processor reads a real input.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, _, runner, processor = _service_with_processor(tmp_path, repo, lm)
+
+    session = make_session(
+        issue_number=4057,
+        issue_title="UI: Surface provider status",
+        branch_name=BRANCH,
+    )
+    # Production shape: CompletionProcessor preserved a run-scoped copy, then
+    # unlinked the agent's original completion file.
+    durable = session.run_assets.completion_record_copy.path
+    durable.parent.mkdir(parents=True, exist_ok=True)
+    durable.write_text('{"outcome": "completed"}')
+    original = session.worktree_path / session.completion_path
+    assert not original.exists()
+
+    service.record_publish_failure(session, ["push_branch: Push failed: remote rejected"])
+    state = OrchestratorState()
+
+    # Not rejected for a missing completion record — the durable copy counts.
+    assert service.retry_publish(4057, state).status == "submitted"
+
+    runner.run_all()
+
+    # The worker restored the durable record so the processor had a valid input.
+    assert original.exists()
+    assert processor.calls[-1]["completion_present"] is True
+
+
+def test_retry_rejected_when_no_completion_record_anywhere(make_session, tmp_path) -> None:
+    """With neither the original nor the durable copy, retry is honestly rejected."""
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, _, _ = _service(tmp_path, repo, lm)
+
+    session = make_session(
+        issue_number=4057,
+        issue_title="UI: Surface provider status",
+        branch_name=BRANCH,
+    )
+    # No completion record written at all (original absent, durable absent).
+    service.record_publish_failure(session, ["push_branch: Push failed: remote rejected"])
+
+    result = service.retry_publish(4057, OrchestratorState())
+
+    assert result.status == "rejected"
+    assert "completion record" in result.message.lower()
+
+
+# ---------------------------------------------------------------------------
+# Abandoned-retry supersede survives claim/reconciliation races (F2)
+# ---------------------------------------------------------------------------
+
+
+def _drain_late_abandoned_retry(service, runner, state, repo) -> None:
+    """Submit a retry, abandon it, land a late PR, then drain the tombstoned job."""
+    assert service.retry_publish(4057, state).status == "submitted"
+    service.abandon_issue(4057)
+    repo.prs = [
+        PRInfo(
+            number=5453,
+            title="#4057: UI: Surface provider status",
+            url=PR_URL,
+            branch=BRANCH,
+            body="",
+            state="open",
+            labels=[],
+        )
+    ]
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+
+def test_abandoned_retry_supersede_survives_claim_lost(make_session, tmp_path) -> None:
+    """A ClaimLostError from the supersede must not abort the drain/tick."""
+    from issue_orchestrator.control.claim_gate import ClaimLostError
+
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    applier = _ActionApplier(
+        repo, raise_on_supersede=ClaimLostError(4057, "supersede pr")
+    )
+    service, _, runner = _service(tmp_path, repo, lm, action_applier=applier)
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    # Must not raise — the stranded PR is left open, tick survives.
+    _drain_late_abandoned_retry(service, runner, state, repo)
+
+    assert repo.superseded == []
+    assert any(pr.number == 5453 for pr in repo.prs)
+
+
+def test_abandoned_retry_supersede_survives_reconciliation_required(
+    make_session, tmp_path
+) -> None:
+    """A ReconciliationRequired from the supersede must not abort the drain/tick."""
+    from issue_orchestrator.control.reconciliation import (
+        ExternalSnapshot,
+        ReconciliationRequired,
+    )
+
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    applier = _ActionApplier(
+        repo,
+        raise_on_supersede=ReconciliationRequired(
+            entity_type="pr",
+            entity_id=5453,
+            expected=ExternalSnapshot.for_issue(5453, set()),
+            actual=ExternalSnapshot.for_issue(5453, {"drift"}),
+        ),
+    )
+    service, _, runner = _service(tmp_path, repo, lm, action_applier=applier)
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    _drain_late_abandoned_retry(service, runner, state, repo)
+
+    assert repo.superseded == []
+    assert any(pr.number == 5453 for pr in repo.prs)

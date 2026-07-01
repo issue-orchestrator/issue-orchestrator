@@ -137,5 +137,3 @@ def test_manifest_run_dir_must_match_injected_run_dir(tmp_path: Path) -> None:
             run_dir=wrong_run_dir,
             manifest=manifest,
         )
-
-
