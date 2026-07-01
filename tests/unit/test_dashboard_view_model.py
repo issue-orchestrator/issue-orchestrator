@@ -649,6 +649,67 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
     assert view_model.scope_summary["in_scope_total"] == 1
 
 
+def test_awaiting_merge_history_card_retains_stack_gate_payload():
+    # Regression (#6597): a completed-with-PR history entry can become the
+    # awaiting-merge card (it wins the dedupe over the queue item). It must still
+    # carry the producer stack payload/signal — otherwise a stacked successor
+    # loses its merge-gate / approval-freshness chip in the exact lane operators
+    # watch to see why the slice is still gated.
+    from issue_orchestrator.domain.dependencies import (
+        Dependency,
+        DependencyMode,
+        DependencyState,
+    )
+    from issue_orchestrator.domain.dependency_gates import (
+        DependencyGateSnapshot,
+        build_gate_report,
+    )
+
+    config = _make_config()
+    # Stacked successor whose predecessor has not merged → merge gate blocked.
+    dep = Dependency(issue_number=5, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    report = build_gate_report(4057, [dep])
+    state = OrchestratorState(
+        startup_status="complete",
+        dependency_gate_snapshot=DependencyGateSnapshot(reports={4057: report}),
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Stacked successor awaiting merge",
+                agent_type="agent:backend",
+                status="completed",
+                runtime_minutes=12,
+                pr_url="https://github.com/test/repo/pull/4124",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # The raw awaiting-merge item carries the projected stack payload + signal.
+    item = next(i for i in view_model.awaiting_merge_items if i["issue_number"] == 4057)
+    assert item["stack_dependency"] is not None
+    assert item["stack_dependency"]["has_stack_edges"] is True
+    assert "merge" in item["stack_dependency"]["blocked_gates"]
+    assert item["stack_signal"]  # non-empty
+
+    # ...and the rendered awaiting-merge flow-column card keeps them too, so the
+    # compact stack chip renders and the fingerprint reflects the gate state.
+    awaiting_column = next(c for c in view_model.flow_columns if c["id"] == "awaiting-merge")
+    card = next(i for i in awaiting_column["items"] if i["issue_number"] == 4057)
+    assert card["stack_dependency"] is not None
+    assert card["stack_dependency"]["has_stack_edges"] is True
+    assert card["stack_signal"]
+
+
 def test_merged_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     config = _make_config()
     pr_url = "https://github.com/test/repo/pull/4124"

@@ -453,6 +453,18 @@ def _refresh_meta(state, config, issue_number: int) -> dict[str, Any]:
     }
 
 
+def _stack_payload_fields(state, issue_number: int) -> Any:
+    """The card fields that surface an issue's producer stack-gate view.
+
+    Every kanban card source spreads these so a stacked slice keeps its
+    merge-gate / approval-freshness chip in *any* lane it lands in — notably the
+    awaiting-merge history path, where a completed-with-PR item can win the
+    dedupe over the queue item. One projection owner, so no lane can drop it.
+    """
+    view = stack_dependency_view(state, issue_number)
+    return {"stack_dependency": stack_dependency_payload(view), "stack_signal": stack_signal(view)}
+
+
 def _pending_issue_numbers(state) -> dict[str, set[int]]:
     pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
         r.issue_number for r in state.discovered_reviews
@@ -546,7 +558,6 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
 
         canonical_title = _canonical_issue_title(state, session.issue.number, session.issue.title)
         label_fields, display_title = _issue_label_fields(session.issue.number, canonical_title)
-        _active_stack_view = stack_dependency_view(state, session.issue.number)
         items.append({
             "card_id": session.terminal_id,
             "issue_number": session.issue.number,
@@ -571,8 +582,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            "stack_dependency": stack_dependency_payload(_active_stack_view),
-            "stack_signal": stack_signal(_active_stack_view),
+            **_stack_payload_fields(state, session.issue.number),
             "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
             **_refresh_meta(state, config, session.issue.number),
         })
@@ -718,7 +728,6 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             detail_label = queue_reason
 
         label_fields, display_title = _issue_label_fields(issue.number, issue.title)
-        _queue_stack_view = stack_dependency_view(state, issue.number)
         item = {
             "issue_number": issue.number,
             **label_fields,
@@ -740,8 +749,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "has_dependencies": has_deps,
             "dependencies": deps_json,
             "dependency_summary": dep_summary,
-            "stack_dependency": stack_dependency_payload(_queue_stack_view),
-            "stack_signal": stack_signal(_queue_stack_view),
+            **_stack_payload_fields(state, issue.number),
             "flow_stage": flow_stage,
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
@@ -909,6 +917,7 @@ def _build_history_items(state, config) -> HistoryLaneProjection:
             ),
             # History records with an open PR belong in Awaiting Merge, not Completed.
             "merge_pending": merge_pending,
+            **_stack_payload_fields(state, entry.issue_number),
             **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in BLOCKED_HISTORY_STATUSES:
@@ -1103,7 +1112,6 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             dep_summary if dep_summary else None,
         )
         label_fields, display_title = _issue_label_fields(issue.number, issue.title)
-        _backlog_stack_view = stack_dependency_view(state, issue.number)
         cards.append({
             "issue_number": issue.number,
             **label_fields,
@@ -1113,8 +1121,7 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             "flow_stage": "queued",
             "flow_stage_label": "Queued",
             "blocked_summary": blocked,
-            "stack_dependency": stack_dependency_payload(_backlog_stack_view),
-            "stack_signal": stack_signal(_backlog_stack_view),
+            **_stack_payload_fields(state, issue.number),
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
