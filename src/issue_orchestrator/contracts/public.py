@@ -155,6 +155,60 @@ class TimelineIssueContract(ContractBase):
     events: list[TimelineEventContract]
 
 
+class StackGateStatusView(ContractBase):
+    """One lifecycle gate (work/review/publish/merge) in the gate report.
+
+    ``reason_codes`` are stable, machine-readable ``GateBlockReason`` values so
+    the UI can branch on *why* a gate is closed without parsing human text;
+    ``reasons`` carries the human phrasing rendered in the drawer.
+    """
+
+    gate: str
+    open: bool
+    reason_codes: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class StackPredecessorEdgeView(ContractBase):
+    """A predecessor dependency edge this issue is gated on."""
+
+    ref: str
+    mode: str
+    state: str
+    problem: Optional[str] = None
+
+
+class StackSuccessorEdgeView(ContractBase):
+    """An issue that depends on / stacks after this issue (chain context)."""
+
+    issue_number: int
+    ref: str
+    mode: str
+
+
+class StackDependencyGateView(ContractBase):
+    """Producer-provided projection of the dependency gate report for one issue.
+
+    The dashboard and issue detail render stack state from this contract without
+    recomputing dependency policy in the UI. ``mode`` distinguishes normal
+    dependency edges from stack predecessor edges; ``gates`` carries the
+    work/review/publish/merge decisions; ``stale`` marks a successor invalidated
+    by a predecessor branch change or a stale own-approval.
+    """
+
+    issue_number: int
+    mode: str
+    has_stack_edges: bool
+    gates: list[StackGateStatusView] = Field(default_factory=list)
+    predecessors: list[StackPredecessorEdgeView] = Field(default_factory=list)
+    successors: list[StackSuccessorEdgeView] = Field(default_factory=list)
+    blocked_gates: list[str] = Field(default_factory=list)
+    blocked_reason_codes: list[str] = Field(default_factory=list)
+    stale: bool = False
+    stale_reason_codes: list[str] = Field(default_factory=list)
+    stack_base_branch: Optional[str] = None
+
+
 PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "dashboard.view_model": DashboardViewModelContract,
     "sse.session.started": SessionStartedPayload,
@@ -171,6 +225,7 @@ PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "sse.startup_complete": StartupCompletePayload,
     "sse.shutdown_requested": ShutdownRequestedPayload,
     "timeline.issue": TimelineIssueContract,
+    "stack.dependency_gate_view": StackDependencyGateView,
 }
 
 

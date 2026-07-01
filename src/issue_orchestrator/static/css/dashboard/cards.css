@@ -435,3 +435,47 @@ body.column-focus-mode .column-expanded {
     text-overflow: ellipsis;
     max-width: 100%;
 }
+
+/* Stack dependency gate chip (compact card). Status is conveyed by text, not
+   colour alone; the tone colours only reinforce the label, and both light and
+   dark palettes keep sufficient contrast via the shared theme variables. */
+.card-stack {
+    margin-top: 4px;
+}
+.stack-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    flex-wrap: wrap;
+    font-size: 10px;
+    line-height: 1.4;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    color: var(--text-muted);
+    background: color-mix(in srgb, var(--bg-panel) 78%, var(--bg) 22%);
+}
+.stack-chip-mode {
+    font-weight: 600;
+    color: var(--text);
+}
+.stack-chip-status {
+    color: var(--text-muted);
+    overflow-wrap: anywhere;
+}
+.stack-chip--blocked {
+    border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+}
+.stack-chip--blocked .stack-chip-status {
+    color: var(--danger);
+}
+.stack-chip--stale {
+    border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+}
+.stack-chip--stale .stack-chip-status {
+    color: var(--warn);
+}
+.stack-chip--ok .stack-chip-status {
+    color: var(--ok);
+}

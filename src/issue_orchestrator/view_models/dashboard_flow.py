@@ -50,6 +50,7 @@ def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
         _s(card.get("github_title")),
         _s(card.get("github_aria_label")),
         labels_str,
+        _s(card.get("stack_signal")),
     ]
     return "|".join(parts)
 
@@ -108,6 +109,10 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         "show_stale_badge": bool(item["show_stale_badge"]),
         "stale_reason": item.get("stale_reason", ""),
         "last_refreshed_age_seconds": item.get("last_refreshed_age_seconds", -1),
+        "stack_dependency": item.get("stack_dependency"),
+        # Precomputed by the item builder from the typed gate view; copied here
+        # so the compact card (and its fingerprint) stay in step with the model.
+        "stack_signal": item.get("stack_signal") or "",
     }
     card["fingerprint"] = compute_compact_card_fingerprint(card)
     return card

@@ -476,6 +476,7 @@ export interface IssueDetailPayload {
   raw_events_count: number;
   run_count: number;
   runs: JourneyRunPayload[];
+  stack_dependency?: StackDependencyGateViewPayload | null;
   status_explanation: string;
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
@@ -929,6 +930,40 @@ export interface ShowEventDetailsCommandPayload {
   event_ref: string;
   kind: "show_event_details";
   label: string;
+}
+
+export interface StackDependencyGatePayload {
+  gate: string;
+  open: boolean;
+  reason_codes: string[];
+  reasons: string[];
+}
+
+export interface StackDependencyGateViewPayload {
+  blocked_gates: string[];
+  blocked_reason_codes: string[];
+  gates: StackDependencyGatePayload[];
+  has_stack_edges: boolean;
+  issue_number: number;
+  mode: string;
+  predecessors: StackDependencyPredecessorPayload[];
+  stack_base_branch: string | null;
+  stale: boolean;
+  stale_reason_codes: string[];
+  successors: StackDependencySuccessorPayload[];
+}
+
+export interface StackDependencyPredecessorPayload {
+  mode: string;
+  problem: string | null;
+  ref: string;
+  state: string;
+}
+
+export interface StackDependencySuccessorPayload {
+  issue_number: number;
+  mode: string;
+  ref: string;
 }
 
 export interface SwitchE2ETimelineViewCommandPayload {

@@ -20,6 +20,7 @@ from ..infra.config import Config
 from .dependency_evaluator import DependencyEvaluator
 
 if TYPE_CHECKING:
+    from ..domain.dependency_gates import DependencyGateReport
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
@@ -180,12 +181,19 @@ class SchedulerResult:
 
 @dataclass(frozen=True)
 class IssueAvailabilityDecision:
-    """Availability result for a single issue."""
+    """Availability result for a single issue.
+
+    ``gate_report`` retains the dependency gate report evaluated while deciding
+    availability (present only for issues whose dependencies were checked), so
+    downstream consumers can surface the same producer-evaluated stack gate
+    state to the UI instead of re-deriving it.
+    """
 
     issue: Issue
     available: bool
     reason: str
     detail: str | None = None
+    gate_report: "DependencyGateReport | None" = None
 
 
 class Scheduler:
@@ -312,7 +320,11 @@ class Scheduler:
                     available=False,
                     reason="dependency_blocked",
                     detail=report.work_summary(),
+                    gate_report=report,
                 )
+            return IssueAvailabilityDecision(
+                issue=issue, available=True, reason="available", gate_report=report
+            )
 
         return IssueAvailabilityDecision(issue=issue, available=True, reason="available")
 

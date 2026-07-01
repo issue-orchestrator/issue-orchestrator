@@ -537,6 +537,41 @@ def _resolve_stack_base(
     return _StackBaseResolution(base=None)
 
 
+@dataclass(frozen=True)
+class SuccessorEdge:
+    """A dependent slice that stacks after / depends on a given issue.
+
+    The inverse of a predecessor edge: it names the *downstream* issue and the
+    mode of the edge it declared toward the predecessor. Used to render chain
+    context (predecessor and successor relationships) on issue detail.
+    """
+
+    issue_number: int
+    ref: str
+    mode: DependencyMode
+
+
+@dataclass(frozen=True)
+class DependencyGateSnapshot:
+    """Per-tick snapshot of dependency gate state for the whole in-scope set.
+
+    ``reports`` holds the producer-evaluated :class:`DependencyGateReport` for
+    each issue the scheduler evaluated (keyed by issue number); ``successors``
+    holds the inverted graph so issue detail can show who is stacked behind an
+    issue. This is the single producer-provided artifact the UI projects — the
+    UI never re-derives gate policy from issue bodies.
+    """
+
+    reports: Mapping[int, DependencyGateReport] = field(default_factory=dict)
+    successors: Mapping[int, tuple[SuccessorEdge, ...]] = field(default_factory=dict)
+
+    def report_for(self, issue_number: int) -> DependencyGateReport | None:
+        return self.reports.get(issue_number)
+
+    def successors_for(self, issue_number: int) -> tuple[SuccessorEdge, ...]:
+        return tuple(self.successors.get(issue_number, ()))
+
+
 def build_gate_report(
     issue_number: int,
     dependencies: Sequence[Dependency],

@@ -386,6 +386,10 @@
             <button class="issue-action-btn" id="issueDetailUnblockBtn" style="display:none;" onclick="unblockFromDrawer()">Unblock</button>
             <button class="issue-action-btn" id="issueDetailRetryPublishBtn" style="display:none;">Retry Publish</button>
         </div>
+        <details class="issue-detail-section issue-detail-stack" id="issueDetailStack" style="display:none;">
+            <summary id="issueDetailStackSummary">Stack dependencies &amp; gates</summary>
+            <div id="issueDetailStackBody"></div>
+        </details>
         <h3 class="issue-detail-section-title visually-hidden" id="issueDetailTimelineHeading">Timeline</h3>
         <div class="issue-detail-journey" id="issueDetailJourney" tabindex="-1" aria-labelledby="issueDetailTimelineHeading"></div>
         <details class="issue-detail-section" id="issueDetailPrevCycles" style="display:none;">

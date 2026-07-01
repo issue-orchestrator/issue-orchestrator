@@ -705,6 +705,87 @@ async function retryPublishFromDrawer() {
     }
 }
 
+// Render one lifecycle gate row. Status is text ("open"/"blocked") plus a
+// decorative icon (aria-hidden) — never colour alone. Blocked gates list their
+// human reason phrases so the "why" is readable without decoding reason codes.
+function _stackGateItemHtml(gate) {
+    const isOpen = Boolean(gate.open);
+    const state = isOpen ? 'open' : 'blocked';
+    const icon = isOpen ? '✓' : '⛔';
+    const reasons = (Array.isArray(gate.reasons) ? gate.reasons : []).filter(Boolean);
+    const reasonsHtml = (!isOpen && reasons.length)
+        ? `<span class="stack-gate-reasons">${escapeHtml(reasons.join('; '))}</span>`
+        : '';
+    return `<li class="stack-gate stack-gate--${state}">`
+        + `<span class="stack-gate-icon" aria-hidden="true">${icon}</span>`
+        + `<span class="stack-gate-name">${escapeHtml(String(gate.gate || ''))}</span>`
+        + `<span class="stack-gate-state">${state}</span>`
+        + reasonsHtml
+        + `</li>`;
+}
+
+function _stackEdgeItemHtml(edge, showState) {
+    const modeLabel = edge.mode === 'stack' ? 'stack' : 'normal';
+    const parts = [
+        `<span class="stack-edge-ref">${escapeHtml(String(edge.ref || ''))}</span>`,
+        `<span class="stack-edge-mode">${escapeHtml(modeLabel)}</span>`,
+    ];
+    if (showState && edge.state) {
+        parts.push(`<span class="stack-edge-state">${escapeHtml(String(edge.state))}</span>`);
+    }
+    if (edge.problem) {
+        parts.push(`<span class="stack-edge-problem">${escapeHtml(String(edge.problem))}</span>`);
+    }
+    return `<li class="stack-edge">${parts.join(' ')}</li>`;
+}
+
+// Populate the native <details> stack section from producer-provided contract
+// data (d.stack_dependency). The UI does not recompute any gate policy here.
+function renderIssueDetailStack(d) {
+    const section = document.getElementById('issueDetailStack');
+    if (!section) return;
+    const body = document.getElementById('issueDetailStackBody');
+    const sd = d && d.stack_dependency;
+    const predecessors = sd && Array.isArray(sd.predecessors) ? sd.predecessors : [];
+    const successors = sd && Array.isArray(sd.successors) ? sd.successors : [];
+    const gates = sd && Array.isArray(sd.gates) ? sd.gates : [];
+    if (!sd || (!predecessors.length && !successors.length && !gates.length)) {
+        section.style.display = 'none';
+        if (body) body.innerHTML = '';
+        return;
+    }
+    section.style.display = '';
+    const summaryEl = document.getElementById('issueDetailStackSummary');
+    if (summaryEl) {
+        summaryEl.textContent = sd.has_stack_edges
+            ? 'Stack dependencies & gates'
+            : 'Dependencies & gates';
+    }
+    let html = '';
+    if (sd.stale) {
+        const codes = Array.isArray(sd.stale_reason_codes) ? sd.stale_reason_codes.join(', ') : '';
+        html += `<p class="stack-stale" role="note">`
+            + `<span class="stack-stale-icon" aria-hidden="true">🔄</span> `
+            + `Stale — this slice needs rebuilding${codes ? ` (${escapeHtml(codes)})` : ''}.</p>`;
+    }
+    if (gates.length) {
+        html += `<h4 class="stack-subhead">Gates</h4>`
+            + `<ul class="stack-gates">${gates.map(_stackGateItemHtml).join('')}</ul>`;
+    }
+    if (predecessors.length) {
+        html += `<h4 class="stack-subhead">Depends on</h4>`
+            + `<ul class="stack-edges">${predecessors.map((e) => _stackEdgeItemHtml(e, true)).join('')}</ul>`;
+    }
+    if (successors.length) {
+        html += `<h4 class="stack-subhead">Stacked behind this</h4>`
+            + `<ul class="stack-edges">${successors.map((e) => _stackEdgeItemHtml(e, false)).join('')}</ul>`;
+    }
+    if (sd.stack_base_branch) {
+        html += `<p class="stack-base">Stack base branch: <code>${escapeHtml(String(sd.stack_base_branch))}</code></p>`;
+    }
+    if (body) body.innerHTML = html;
+}
+
 function renderIssueDetail() {
     if (!issueDetailData) return;
     const d = issueDetailData;
@@ -774,6 +855,8 @@ function renderIssueDetail() {
     } else {
         prevSection.style.display = 'none';
     }
+
+    renderIssueDetailStack(d);
 
     applyIssueDetailInitialFocus();
 }

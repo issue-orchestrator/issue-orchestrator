@@ -1,0 +1,182 @@
+{
+  "$defs": {
+    "StackGateStatusView": {
+      "additionalProperties": true,
+      "description": "One lifecycle gate (work/review/publish/merge) in the gate report.\n\n``reason_codes`` are stable, machine-readable ``GateBlockReason`` values so\nthe UI can branch on *why* a gate is closed without parsing human text;\n``reasons`` carries the human phrasing rendered in the drawer.",
+      "properties": {
+        "gate": {
+          "title": "Gate",
+          "type": "string"
+        },
+        "open": {
+          "title": "Open",
+          "type": "boolean"
+        },
+        "reason_codes": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "gate",
+        "open"
+      ],
+      "title": "StackGateStatusView",
+      "type": "object"
+    },
+    "StackPredecessorEdgeView": {
+      "additionalProperties": true,
+      "description": "A predecessor dependency edge this issue is gated on.",
+      "properties": {
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "problem": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Problem"
+        },
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "mode",
+        "state"
+      ],
+      "title": "StackPredecessorEdgeView",
+      "type": "object"
+    },
+    "StackSuccessorEdgeView": {
+      "additionalProperties": true,
+      "description": "An issue that depends on / stacks after this issue (chain context).",
+      "properties": {
+        "issue_number": {
+          "title": "Issue Number",
+          "type": "integer"
+        },
+        "mode": {
+          "title": "Mode",
+          "type": "string"
+        },
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_number",
+        "ref",
+        "mode"
+      ],
+      "title": "StackSuccessorEdgeView",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "description": "Producer-provided projection of the dependency gate report for one issue.\n\nThe dashboard and issue detail render stack state from this contract without\nrecomputing dependency policy in the UI. ``mode`` distinguishes normal\ndependency edges from stack predecessor edges; ``gates`` carries the\nwork/review/publish/merge decisions; ``stale`` marks a successor invalidated\nby a predecessor branch change or a stale own-approval.",
+  "properties": {
+    "blocked_gates": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blocked Gates",
+      "type": "array"
+    },
+    "blocked_reason_codes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blocked Reason Codes",
+      "type": "array"
+    },
+    "gates": {
+      "items": {
+        "$ref": "#/$defs/StackGateStatusView"
+      },
+      "title": "Gates",
+      "type": "array"
+    },
+    "has_stack_edges": {
+      "title": "Has Stack Edges",
+      "type": "boolean"
+    },
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    },
+    "mode": {
+      "title": "Mode",
+      "type": "string"
+    },
+    "predecessors": {
+      "items": {
+        "$ref": "#/$defs/StackPredecessorEdgeView"
+      },
+      "title": "Predecessors",
+      "type": "array"
+    },
+    "stack_base_branch": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stack Base Branch"
+    },
+    "stale": {
+      "default": false,
+      "title": "Stale",
+      "type": "boolean"
+    },
+    "stale_reason_codes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Stale Reason Codes",
+      "type": "array"
+    },
+    "successors": {
+      "items": {
+        "$ref": "#/$defs/StackSuccessorEdgeView"
+      },
+      "title": "Successors",
+      "type": "array"
+    }
+  },
+  "required": [
+    "issue_number",
+    "mode",
+    "has_stack_edges"
+  ],
+  "title": "StackDependencyGateView",
+  "type": "object"
+}

@@ -17,7 +17,11 @@ from ..contracts.ui_openapi_models import (
 )
 from ..domain.models import BLOCKED_HISTORY_STATUSES, DONE_HISTORY_STATUSES
 from ..infra.timeline_trace import is_timeline_trace_enabled
-from ..view_models.dashboard import issue_url_for
+from ..view_models.dashboard import (
+    issue_url_for,
+    stack_dependency_payload,
+    stack_dependency_view,
+)
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
 from ..view_models.lifecycle_projection import (
     project_dashboard_lifecycle_container,
@@ -430,6 +434,9 @@ def _finalize_issue_detail_payload(
     dropped_missing_semantics: int,
 ) -> dict[str, Any]:
     run_diagnostic = _current_run_validation_diagnostic(orchestrator, issue_number)
+    payload["stack_dependency"] = stack_dependency_payload(
+        stack_dependency_view(orchestrator.state, issue_number)
+    )
     _apply_issue_detail_actions(orchestrator, issue_number, payload)
     if run_diagnostic:
         _apply_issue_detail_run_diagnostic(payload, run_diagnostic)

@@ -36,6 +36,7 @@ from .queue_cache import (
     queue_shrink_confirmation_pending,
     record_issue_refreshes,
 )
+from .dependency_gate_snapshot import build_dependency_gate_snapshot
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .reconciliation import ReconciliationRequired, get_pause_label
 from .tick_telemetry import report_slow_tick
@@ -813,8 +814,19 @@ def _fetch_and_update_queue(
         github_workflow.scan_pending_pr_work(state, include_general_scans=sync_plan.run_pr_scan)
 
         if sync_plan.run_dependency_scan:
-            _, dep_blocked = scheduler.get_available_issues(all_issues)
+            # Evaluate availability once, then reuse the same decisions for both
+            # the dependency-blocked problem list and the stack gate snapshot the
+            # UI projects — no second evaluation, no extra GitHub I/O.
+            decisions = scheduler.evaluate_issues(all_issues)
+            dep_blocked = [
+                (d.issue, d.detail or "dependency blocked")
+                for d in decisions
+                if d.reason == "dependency_blocked"
+            ]
             github_workflow.update_dependency_problems(state, dep_blocked)
+            state.dependency_gate_snapshot = build_dependency_gate_snapshot(
+                decisions, all_issues
+            )
 
         # Capture old queue state BEFORE mutation so the diff is correct.
         # (replace_from_refresh mutates state.cached_queue_issues in-place.)

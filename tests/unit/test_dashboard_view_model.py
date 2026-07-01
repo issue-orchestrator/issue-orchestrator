@@ -1873,3 +1873,64 @@ def test_e2e_badge_state_failed_when_passed_run_has_failed_test_evidence():
 
     assert vm["badge"]["state"] == "failed"
     assert vm["badge"]["icon"] == "✗"
+
+
+def test_queue_card_embeds_producer_stack_gate_view():
+    # A queued stack successor's card must carry the producer-provided stack
+    # gate view (mode + per-gate status), sourced from the state snapshot rather
+    # than recomputed in the view model.
+    from issue_orchestrator.domain.dependencies import (
+        Dependency,
+        DependencyMode,
+        DependencyState,
+        DependencyTarget,
+    )
+    from issue_orchestrator.domain.dependency_gates import (
+        DependencyGateSnapshot,
+        PredecessorFacts,
+        SuccessorEdge,
+        build_gate_report,
+    )
+
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+
+    successor = Issue(number=1, title="Successor", labels=["agent:web"],
+                      body="Stack-after: #5")
+    dep = Dependency(issue_number=5, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    facts = {DependencyTarget(issue_number=5): PredecessorFacts(
+        branch_usable=True, validation_passed=True, agent_reviewed=True,
+        branch_name="feat/base",
+    )}
+    report = build_gate_report(1, [dep], facts)
+    snapshot = DependencyGateSnapshot(
+        reports={1: report},
+        successors={5: (SuccessorEdge(issue_number=1, ref="#1", mode=DependencyMode.STACK),)},
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[successor],
+        dependency_gate_snapshot=snapshot,
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    card = next(c for c in view_model.queue_items if c["issue_number"] == 1)
+    stack = card["stack_dependency"]
+    assert stack is not None
+    assert stack["mode"] == "stack"
+    assert stack["has_stack_edges"] is True
+    # Work is ready but merge stays ordered behind the predecessor.
+    gates = {g["gate"]: g["open"] for g in stack["gates"]}
+    assert gates["work"] is True
+    assert gates["merge"] is False
+    assert "merge" in stack["blocked_gates"]
+    assert stack["stack_base_branch"] == "feat/base"

@@ -487,6 +487,7 @@ class IssueDetailPayload(BaseModel):
     raw_events_count: int
     run_count: int
     runs: list[JourneyRunPayload]
+    stack_dependency: StackDependencyGateViewPayload | None = None
     status_explanation: str
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
@@ -938,6 +939,40 @@ class ShowEventDetailsCommandPayload(BaseModel):
     event_ref: str
     kind: Literal['show_event_details']
     label: str
+
+class StackDependencyGatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    gate: str
+    open: bool
+    reason_codes: list[str]
+    reasons: list[str]
+
+class StackDependencyGateViewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    blocked_gates: list[str]
+    blocked_reason_codes: list[str]
+    gates: list[StackDependencyGatePayload]
+    has_stack_edges: bool
+    issue_number: int
+    mode: str
+    predecessors: list[StackDependencyPredecessorPayload]
+    stack_base_branch: str | None
+    stale: bool
+    stale_reason_codes: list[str]
+    successors: list[StackDependencySuccessorPayload]
+
+class StackDependencyPredecessorPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: str
+    problem: str | None
+    ref: str
+    state: str
+
+class StackDependencySuccessorPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_number: int
+    mode: str
+    ref: str
 
 class SwitchE2ETimelineViewCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -15,6 +15,11 @@ from ..history import latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra import gh_audit
+from .dependency_gate import (
+    stack_dependency_payload,
+    stack_dependency_view,
+    stack_signal,
+)
 from .dashboard_e2e import E2E_PAGE_SIZE
 from .dashboard_e2e import build_e2e_items
 from .dashboard_e2e import build_e2e_view_model
@@ -541,6 +546,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
 
         canonical_title = _canonical_issue_title(state, session.issue.number, session.issue.title)
         label_fields, display_title = _issue_label_fields(session.issue.number, canonical_title)
+        _active_stack_view = stack_dependency_view(state, session.issue.number)
         items.append({
             "card_id": session.terminal_id,
             "issue_number": session.issue.number,
@@ -565,6 +571,8 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "stack_dependency": stack_dependency_payload(_active_stack_view),
+            "stack_signal": stack_signal(_active_stack_view),
             "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
             **_refresh_meta(state, config, session.issue.number),
         })
@@ -710,6 +718,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             detail_label = queue_reason
 
         label_fields, display_title = _issue_label_fields(issue.number, issue.title)
+        _queue_stack_view = stack_dependency_view(state, issue.number)
         item = {
             "issue_number": issue.number,
             **label_fields,
@@ -731,6 +740,8 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "has_dependencies": has_deps,
             "dependencies": deps_json,
             "dependency_summary": dep_summary,
+            "stack_dependency": stack_dependency_payload(_queue_stack_view),
+            "stack_signal": stack_signal(_queue_stack_view),
             "flow_stage": flow_stage,
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
@@ -1092,6 +1103,7 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             dep_summary if dep_summary else None,
         )
         label_fields, display_title = _issue_label_fields(issue.number, issue.title)
+        _backlog_stack_view = stack_dependency_view(state, issue.number)
         cards.append({
             "issue_number": issue.number,
             **label_fields,
@@ -1101,6 +1113,8 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             "flow_stage": "queued",
             "flow_stage_label": "Queued",
             "blocked_summary": blocked,
+            "stack_dependency": stack_dependency_payload(_backlog_stack_view),
+            "stack_signal": stack_signal(_backlog_stack_view),
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
