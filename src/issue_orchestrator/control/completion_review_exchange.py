@@ -42,15 +42,31 @@ RunReviewExchangeLoop = Callable[..., "ReviewExchangeOutcome"]
 _TerminalOutcomeMessage = Literal["approval accepted", "halt accepted"]
 
 
-def _review_exchange_job_id(issue_number: int, session_name: str | None) -> str:
-    """Stable job identity for a per-issue review exchange.
+def _review_exchange_job_id(
+    issue_number: int,
+    session_name: str | None,
+    run_id: str | None,
+) -> str:
+    """Stable, run-scoped job identity for a per-issue review exchange.
 
-    Using (issue_number, session_name) keeps retries on the same coding run
-    collapsed onto a single background thread while still letting a fresh
-    coding run (new session_name) start its own exchange.
+    The identity is ``review-exchange:{issue}:{session_name}:{run_id}``.
+    Including ``run_id`` keeps repeated completion checks for the *same* coding
+    run collapsed onto a single background thread (the run's ``run_id`` is
+    stable across ticks) while a retry of the same session name — which always
+    allocates a fresh run with a new ``run_id`` — starts its own exchange and
+    never reconsumes the prior run's cancellation/failure state (#6675).
+
+    ``session_name``/``run_id`` may be absent on degenerate paths that never
+    submit a job (e.g. a running-check before a session name is known); the id
+    then degrades to the coarser prefix, which no submitted job ever matches.
     """
     base = f"review-exchange:{issue_number}"
-    return f"{base}:{session_name}" if session_name else base
+    if not session_name:
+        return base
+    base = f"{base}:{session_name}"
+    if not run_id:
+        return base
+    return f"{base}:{run_id}"
 
 
 def is_review_exchange_job_for_issue(job_id: str, issue_number: int) -> bool:
@@ -213,6 +229,7 @@ class CompletionReviewExchange:
         issue_number: int,
         issue_title: str,
         session_name: str | None,
+        run_id: str,
         agent_label: str | None,
         record: CompletionRecord,
         errors: list[str],
@@ -262,6 +279,7 @@ class CompletionReviewExchange:
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
+            run_id=run_id,
             agent_label=agent_label,
             initial_validation_record_path=(
                 Path(record.validation_record_path)
@@ -314,6 +332,7 @@ class CompletionReviewExchange:
         *,
         issue_number: int,
         session_name: str | None,
+        run_id: str,
     ) -> bool:
         """Report whether a background review-exchange job is in flight.
 
@@ -321,8 +340,11 @@ class CompletionReviewExchange:
         polling ticks (no new work, just waiting for an existing job) from
         fresh attempts. Counting polling ticks would let a slow exchange
         exhaust the budget before it finishes.
+
+        ``run_id`` scopes the lookup to the current coding run so a retry never
+        observes a prior run's job (#6675).
         """
-        job_id = _review_exchange_job_id(issue_number, session_name)
+        job_id = _review_exchange_job_id(issue_number, session_name, run_id)
         return self._job_supervisor.is_running(job_id)
 
     def is_review_exchange_running_for_completion(
@@ -336,6 +358,7 @@ class CompletionReviewExchange:
         return self.is_review_exchange_running(
             issue_number=query.issue_number,
             session_name=query.session_name,
+            run_id=query.run_id,
         )
 
     def is_review_exchange_within_deadline_for_completion(
@@ -363,7 +386,9 @@ class CompletionReviewExchange:
         _require_review_exchange_running_query(query)
         if not query.requires_review_exchange:
             return False
-        job_id = _review_exchange_job_id(query.issue_number, query.session_name)
+        job_id = _review_exchange_job_id(
+            query.issue_number, query.session_name, query.run_id
+        )
         status = self._job_supervisor.status(job_id)
         return (
             status.running
@@ -378,6 +403,7 @@ class CompletionReviewExchange:
         issue_number: int,
         issue_title: str,
         session_name: str | None,
+        run_id: str,
         agent_label: str | None,
         initial_validation_record_path: Path | None,
         errors: list[str],
@@ -411,7 +437,7 @@ class CompletionReviewExchange:
             agent_label, exchange_mode
         )
         reviewer_label = self.resolve_reviewer_label(coder_label)
-        job_id = _review_exchange_job_id(issue_number, session_name)
+        job_id = _review_exchange_job_id(issue_number, session_name, run_id)
         background_failure = self._take_background_failure(
             job_id=job_id,
             issue_number=issue_number,

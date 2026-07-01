@@ -384,6 +384,7 @@ def test_first_pass_submits_background_job_and_returns_deferred(tmp_path: Path) 
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -400,7 +401,7 @@ def test_first_pass_submits_background_job_and_returns_deferred(tmp_path: Path) 
     assert len(job_runner.submitted) == 1
     assert called == []
     # Job id is stable for the same (issue, session_name).
-    assert job_runner.submitted[0][0] == "review-exchange:230:coding-1"
+    assert job_runner.submitted[0][0] == "review-exchange:230:coding-1:coding-run-1"
 
 
 def test_background_deadline_is_derived_from_runner_port(tmp_path: Path) -> None:
@@ -430,6 +431,7 @@ def test_background_deadline_is_derived_from_runner_port(tmp_path: Path) -> None
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -457,6 +459,7 @@ def test_second_pass_while_running_keeps_deferring(tmp_path: Path) -> None:
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -471,6 +474,7 @@ def test_second_pass_while_running_keeps_deferring(tmp_path: Path) -> None:
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -529,6 +533,7 @@ def test_running_background_job_without_deadline_halts(tmp_path: Path) -> None:
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=errors,
@@ -542,6 +547,7 @@ def test_running_background_job_without_deadline_halts(tmp_path: Path) -> None:
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=errors,
@@ -558,13 +564,13 @@ def test_running_background_job_without_deadline_halts(tmp_path: Path) -> None:
         (
             230,
             "background-job-unbounded",
-            ("review-exchange:230:coding-1",),
+            ("review-exchange:230:coding-1:coding-run-1",),
         )
     ]
-    assert supervisor.is_running("review-exchange:230:coding-1") is False
+    assert supervisor.is_running("review-exchange:230:coding-1:coding-run-1") is False
     assert errors == [
         "review_exchange: background job is running without a supervisor "
-        "deadline: job_id=review-exchange:230:coding-1"
+        "deadline: job_id=review-exchange:230:coding-1:coding-run-1"
     ]
 
 
@@ -613,6 +619,7 @@ def test_within_deadline_for_completion_returns_false_for_unbounded_job(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -623,6 +630,7 @@ def test_within_deadline_for_completion_returns_false_for_unbounded_job(
     query = ReviewExchangeRunningQuery(
         issue_number=230,
         session_name="coding-1",
+        run_id="coding-run-1",
         requested_actions=(RequestedAction.CREATE_PR,),
     )
     # Sanity: the BG job IS running (just without a deadline).
@@ -669,6 +677,7 @@ def test_within_deadline_for_completion_returns_true_for_bounded_running_job(
         issue_number=231,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -679,6 +688,7 @@ def test_within_deadline_for_completion_returns_true_for_bounded_running_job(
     query = ReviewExchangeRunningQuery(
         issue_number=231,
         session_name="coding-1",
+        run_id="coding-run-1",
         requested_actions=(RequestedAction.CREATE_PR,),
     )
     assert review.is_review_exchange_running_for_completion(query) is True
@@ -733,6 +743,7 @@ def test_background_deadline_failure_cancels_runtime(tmp_path: Path) -> None:
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=errors,
@@ -747,6 +758,7 @@ def test_background_deadline_failure_cancels_runtime(tmp_path: Path) -> None:
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=errors,
@@ -762,10 +774,10 @@ def test_background_deadline_failure_cancels_runtime(tmp_path: Path) -> None:
         (
             230,
             "background-job-timeout",
-            ("review-exchange:230:coding-1",),
+            ("review-exchange:230:coding-1:coding-run-1",),
         )
     ]
-    assert supervisor.is_running("review-exchange:230:coding-1") is False
+    assert supervisor.is_running("review-exchange:230:coding-1:coding-run-1") is False
     assert any("background job exceeded deadline" in error for error in errors)
 
 
@@ -807,6 +819,7 @@ def test_tick_after_completion_resolves_cached_outcome(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -827,6 +840,7 @@ def test_tick_after_completion_resolves_cached_outcome(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -888,6 +902,7 @@ def test_cached_review_is_reused_when_validation_sha_matches(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
         errors=[],
@@ -965,6 +980,7 @@ def test_cached_review_reuses_rework_head_when_completion_validation_is_stale(
         issue_number=277,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=stale_completion_validation),
         current_head_sha="rework-sha",
@@ -1005,6 +1021,7 @@ def test_cached_review_ignored_when_actual_worktree_head_moves_past_cache(
         issue_number=277,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=cached_rework_validation),
         current_head_sha="new-sha",
@@ -1053,6 +1070,7 @@ def test_cached_review_halt_is_logged_when_reused(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
         errors=errors,
@@ -1115,6 +1133,7 @@ def test_cached_review_is_ignored_when_validation_sha_differs(tmp_path: Path) ->
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
         errors=[],
@@ -1164,6 +1183,7 @@ def test_stale_no_completion_summary_still_trips_loop_budget(tmp_path: Path) -> 
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
         errors=errors,
@@ -1209,6 +1229,7 @@ def test_cached_review_before_scratch_boundary_is_ignored(tmp_path: Path) -> Non
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
         errors=[],
@@ -1265,6 +1286,7 @@ def test_cached_review_is_ignored_without_matching_cached_sha_even_when_validati
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
         errors=[],
@@ -1308,6 +1330,7 @@ def test_cached_review_is_ignored_when_current_validation_sha_is_unavailable(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
         errors=[],
@@ -1357,6 +1380,7 @@ def test_cached_review_is_ignored_when_current_validation_failed_on_same_sha(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(validation_record_path=current_validation),
         errors=[],
@@ -1418,6 +1442,7 @@ def test_no_job_runner_falls_back_to_inline_execution(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=[],
@@ -1486,6 +1511,7 @@ def test_inline_review_exchange_halt_is_logged(
         issue_number=230,
         issue_title="Example",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=_make_record(),
         errors=errors,
@@ -1511,3 +1537,106 @@ def test_inline_review_exchange_halt_is_logged(
     assert "reason=max_rounds_exceeded" in halt_message
     assert "rounds=3" in halt_message
     assert "reviewer_response_text='Still not done.'" in halt_message
+
+
+def test_retry_does_not_reconsume_prior_run_timeout_cancellation(
+    tmp_path: Path,
+) -> None:
+    """Regression for #6675.
+
+    A coding run defers a review exchange, then the visible session times out
+    and the timeout path cancels the background job with reason
+    ``session-timeout``. A retry with the *same session name* but a *fresh run*
+    (new ``run_id``) must NOT reconsume that stale cancellation and halt —
+    which previously produced a spurious ``blocked-failed``. Instead the retry
+    starts its own run-scoped exchange and defers.
+    """
+    from issue_orchestrator.control.background_job_supervisor import (
+        BackgroundJobSupervisor,
+    )
+    from issue_orchestrator.control.completion_review_exchange import (
+        is_review_exchange_job_for_issue,
+    )
+
+    job_runner = _FakeJobRunner()
+    supervisor = BackgroundJobSupervisor(job_runner)
+
+    @dataclass(frozen=True)
+    class _Cancellation:
+        cancelled_job_ids: tuple[str, ...]
+
+    def cancel(issue_number: int, reason: str) -> _Cancellation:
+        cancelled = tuple(
+            supervisor.cancel_matching(
+                lambda job_id: is_review_exchange_job_for_issue(job_id, issue_number),
+                reason=reason,
+            )
+        )
+        return _Cancellation(cancelled_job_ids=cancelled)
+
+    review = CompletionReviewExchange(
+        config=_make_config(tmp_path),
+        session_output=cast(SessionOutput, _FakeSessionOutput(tmp_path)),
+        emit_review_started=lambda **_: None,
+        emit_review_outcome=lambda **_: None,
+        review_exchange_runner=_FakeReviewExchangeRunner(),
+        job_supervisor=supervisor,
+        review_exchange_canceller=cancel,
+    )
+
+    def fake_loop(**_: Any) -> ReviewExchangeOutcome:
+        raise AssertionError("must defer; loop must not run on this thread")
+
+    # Original run (run-a) defers a background exchange.
+    (_, _, _, _, _, first_deferred) = review.prepare_review_exchange(
+        requested_actions=(RequestedAction.CREATE_PR,),
+        worktree=tmp_path,
+        issue_number=230,
+        issue_title="Example",
+        session_name="coding-1",
+        run_id="run-a",
+        agent_label="agent:backend",
+        record=_make_record(),
+        errors=[],
+        actions_taken=[],
+        run_review_exchange_loop=fake_loop,
+    )
+    assert first_deferred is True
+    assert job_runner.submitted[0][0] == "review-exchange:230:coding-1:run-a"
+
+    # Visible session times out: the issue-scoped cancel still terminates the
+    # live run-a job (acceptance criterion 4).
+    cancellation = cancel(230, "session-timeout")
+    assert cancellation.cancelled_job_ids == ("review-exchange:230:coding-1:run-a",)
+
+    # Retry: same session name, fresh run (run-b). Must NOT halt on the stale
+    # run-a cancellation; must start its own run-scoped exchange and defer.
+    retry_errors: list[str] = []
+    (_, _, retry_outcome, retry_completed, retry_halt, retry_deferred) = (
+        review.prepare_review_exchange(
+            requested_actions=(RequestedAction.CREATE_PR,),
+            worktree=tmp_path,
+            issue_number=230,
+            issue_title="Example",
+            session_name="coding-1",
+            run_id="run-b",
+            agent_label="agent:backend",
+            record=_make_record(),
+            errors=retry_errors,
+            actions_taken=[],
+            run_review_exchange_loop=fake_loop,
+        )
+    )
+
+    assert retry_halt is False
+    assert retry_deferred is True
+    assert retry_completed is False
+    assert retry_outcome is None
+    # No stale cancellation leaked into the retry's error surface.
+    assert not any("background job cancelled" in err for err in retry_errors)
+    # The retry submitted its own run-scoped job, distinct from run-a's.
+    submitted_ids = [job_id for job_id, _ in job_runner.submitted]
+    assert submitted_ids == [
+        "review-exchange:230:coding-1:run-a",
+        "review-exchange:230:coding-1:run-b",
+    ]

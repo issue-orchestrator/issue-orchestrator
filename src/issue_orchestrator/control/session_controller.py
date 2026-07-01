@@ -113,6 +113,7 @@ class SessionFinalizationContext:
     issue_title: str
     session_name: str
     run_dir: Path
+    run_id: str
     validation_retry_count: int
     original_prompt: str | None
     retry_prompt_template: str | None
@@ -276,6 +277,7 @@ class SessionController:
                 issue_title=issue_title,
                 session_name=validation_session_name,
                 run_dir=run_dir,
+                run_id=run_assets.run_id,
                 validation_retry_count=validation_retry_count,
                 original_prompt=original_prompt,
                 retry_prompt_template=retry_prompt_template,
@@ -414,6 +416,7 @@ class SessionController:
         finalization_plan = self.completion_processor.completion_finalization_plan(
             issue_number=context.issue_number,
             session_name=context.session_name,
+            run_id=context.run_id,
             outcome=context.record.outcome,
             requested_actions=tuple(context.record.requested_actions),
             runtime_state=(

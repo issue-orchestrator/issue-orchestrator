@@ -632,6 +632,7 @@ class CompletionProcessor:
         *,
         issue_number: int,
         session_name: str | None,
+        run_id: str,
         outcome: CompletionOutcome,
         requested_actions: tuple[RequestedAction, ...],
         runtime_state: CompletionRuntimeState,
@@ -642,6 +643,7 @@ class CompletionProcessor:
             issue_number=issue_number,
             session_name=session_name,
             requested_actions=requested_actions,
+            run_id=run_id,
         )
         running = self.is_review_exchange_running_for_completion(query)
         # Avoid the extra supervisor lookup on the happy path: the matrix
@@ -1018,6 +1020,7 @@ class CompletionProcessor:
             issue_number=issue_number,
             session_name=session_name,
             requested_actions=tuple(record.requested_actions),
+            run_id=run_assets.run_id,
         )
         if (
             record.outcome is CompletionOutcome.COMPLETED
@@ -1546,6 +1549,7 @@ class CompletionProcessor:
         if not self._review_exchange.is_review_exchange_running(
             issue_number=issue_number,
             session_name=session_name,
+            run_id=run_assets.run_id,
         ):
             budget_exhausted_result = self._consume_validation_reroute_budget(
                 session_name=session_name,
@@ -1566,6 +1570,7 @@ class CompletionProcessor:
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
+            run_id=run_assets.run_id,
             agent_label=agent_label,
             initial_validation_record_path=validation_record_path,
             current_head_sha=current_worktree_head_sha(
@@ -1753,6 +1758,7 @@ class CompletionProcessor:
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
+            run_id=run_assets.run_id,
             agent_label=agent_label,
             record=record,
             review_cache_boundary_started_at=cache_boundary_started_at,
