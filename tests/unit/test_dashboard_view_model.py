@@ -710,6 +710,102 @@ def test_awaiting_merge_history_card_retains_stack_gate_payload():
     assert card["stack_signal"]
 
 
+def _stack_report_for(issue_number: int):
+    """A stacked-successor gate report whose merge gate is blocked (predecessor
+    not merged) — enough to make an issue a stack participant with a chip."""
+    from issue_orchestrator.domain.dependencies import (
+        Dependency,
+        DependencyMode,
+        DependencyState,
+    )
+    from issue_orchestrator.domain.dependency_gates import build_gate_report
+
+    dep = Dependency(issue_number=5, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    return build_gate_report(issue_number, [dep])
+
+
+def _assert_card_has_stack_payload(item):
+    assert item["stack_dependency"] is not None
+    assert item["stack_dependency"]["has_stack_edges"] is True
+    assert "merge" in item["stack_dependency"]["blocked_gates"]
+    assert item["stack_signal"]  # non-empty
+
+
+def test_label_blocked_card_retains_stack_gate_payload():
+    # Regression (#6597): a label-blocked stack participant is surfaced by the
+    # scope-blocked builder, which does not spread the stack fields itself. The
+    # finalization owner must stamp them so the blocked-column card keeps its chip.
+    from issue_orchestrator.domain.dependency_gates import DependencyGateSnapshot
+
+    config = _make_config()
+    blocked_issue = Issue(number=7, title="Blocked stacked slice",
+                          labels=["agent:web", "blocked"], body="Stack-after: #5")
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[blocked_issue],
+        dependency_gate_snapshot=DependencyGateSnapshot(reports={7: _stack_report_for(7)}),
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    item = next(i for i in view_model.blocked_items if i["issue_number"] == 7)
+    _assert_card_has_stack_payload(item)
+    blocked_column = next(c for c in view_model.flow_columns if c["id"] == "blocked")
+    card = next(i for i in blocked_column["items"] if i["issue_number"] == 7)
+    _assert_card_has_stack_payload(card)
+
+
+def test_pending_validation_retry_card_retains_stack_gate_payload():
+    # Regression (#6597): a validation-retry card is a pending non-queue source
+    # that also did not spread the stack fields. The finalization owner covers it.
+    from issue_orchestrator.domain.dependency_gates import DependencyGateSnapshot
+
+    config = _make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        dependency_gate_snapshot=DependencyGateSnapshot(reports={359: _stack_report_for(359)}),
+        pending_validation_retries=[
+            PendingValidationRetry(
+                issue_number=359,
+                issue_title="Validation retry stacked slice",
+                agent_label="agent:backend",
+                worktree_path="/tmp/repo-359",
+                branch_name="issue-359",
+                original_prompt="original task",
+                validation_error="Working tree is dirty",
+                validation_error_file="/tmp/repo-359/validation-errors.txt",
+                retry_count=1,
+                source_task=TaskKind.CODE,
+                validation_cmd="./scripts/validate.sh",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    item = next(i for i in view_model.blocked_items if i["issue_number"] == 359)
+    assert item["status"] == "validation_retry"
+    _assert_card_has_stack_payload(item)
+    blocked_column = next(c for c in view_model.flow_columns if c["id"] == "blocked")
+    card = next(i for i in blocked_column["items"] if i["issue_number"] == 359)
+    _assert_card_has_stack_payload(card)
+
+
 def test_merged_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     config = _make_config()
     pr_url = "https://github.com/test/repo/pull/4124"

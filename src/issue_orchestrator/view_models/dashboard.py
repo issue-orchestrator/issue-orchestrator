@@ -423,6 +423,24 @@ def _attach_refresh_meta(items: list[dict[str, Any]], state, config, now_ts: flo
         item.update(_refresh_meta_for_issue(state, config, issue_number, now_ts))
 
 
+def _attach_stack_payload(items: list[Any], state) -> None:
+    """Finalization owner for the "every visible card carries the stack view" policy.
+
+    Projects each card's producer ``stack_dependency`` / ``stack_signal`` from the
+    state snapshot. Runs over each assembled lane list — after all card builders,
+    before columns and awaiting-merge derive from them — so no individual builder
+    can omit the fields and a new lane cannot regress the chip by forgetting to
+    set them. This is the single enrichment boundary; builders never set them.
+    """
+    for item in items:
+        issue_number = item.get("issue_number")
+        if not isinstance(issue_number, int):
+            continue
+        view = stack_dependency_view(state, issue_number)
+        item["stack_dependency"] = stack_dependency_payload(view)
+        item["stack_signal"] = stack_signal(view)
+
+
 def _refresh_meta(state, config, issue_number: int) -> dict[str, Any]:
     refreshed_at = state.issue_refresh_timestamps.get(issue_number, 0.0)
     queue_interval = config.queue_refresh_seconds if config else 600
@@ -451,18 +469,6 @@ def _refresh_meta(state, config, issue_number: int) -> dict[str, Any]:
         "refresh_age_label": age_label,
         "is_stale": age_seconds >= stale_after,
     }
-
-
-def _stack_payload_fields(state, issue_number: int) -> Any:
-    """The card fields that surface an issue's producer stack-gate view.
-
-    Every kanban card source spreads these so a stacked slice keeps its
-    merge-gate / approval-freshness chip in *any* lane it lands in — notably the
-    awaiting-merge history path, where a completed-with-PR item can win the
-    dedupe over the queue item. One projection owner, so no lane can drop it.
-    """
-    view = stack_dependency_view(state, issue_number)
-    return {"stack_dependency": stack_dependency_payload(view), "stack_signal": stack_signal(view)}
 
 
 def _pending_issue_numbers(state) -> dict[str, set[int]]:
@@ -582,7 +588,6 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            **_stack_payload_fields(state, session.issue.number),
             "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
             **_refresh_meta(state, config, session.issue.number),
         })
@@ -749,7 +754,6 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "has_dependencies": has_deps,
             "dependencies": deps_json,
             "dependency_summary": dep_summary,
-            **_stack_payload_fields(state, issue.number),
             "flow_stage": flow_stage,
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
@@ -917,7 +921,6 @@ def _build_history_items(state, config) -> HistoryLaneProjection:
             ),
             # History records with an open PR belong in Awaiting Merge, not Completed.
             "merge_pending": merge_pending,
-            **_stack_payload_fields(state, entry.issue_number),
             **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in BLOCKED_HISTORY_STATUSES:
@@ -1121,7 +1124,6 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             "flow_stage": "queued",
             "flow_stage_label": "Queued",
             "blocked_summary": blocked,
-            **_stack_payload_fields(state, issue.number),
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
@@ -1236,6 +1238,9 @@ def build_dashboard_view_model(
         now_ts = datetime.now(timezone.utc).timestamp()
         for items in (active_items, queue_items, blocked_items, history_items, backlog_items):
             _attach_refresh_meta(items, state, config, now_ts)
+            # Single owner: every lane (incl. label-blocked / validation-retry /
+            # retrospective) gets the stack view; derived lanes inherit it.
+            _attach_stack_payload(items, state)
         stamp_issue_item_stale_badge_visibility(history_items, mode="when_stale_and_merge_pending")
 
         completed_items = history_projection.completed_items

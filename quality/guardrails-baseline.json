@@ -1553,12 +1553,12 @@
       "value": 984
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/dashboard.py": {
-      "detail": "1446 lines exceeds budget 800",
+      "detail": "1451 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/view_models/dashboard.py",
       "path": "src/issue_orchestrator/view_models/dashboard.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1446
+      "value": 1451
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/issue_detail.py": {
       "detail": "1084 lines exceeds budget 800",
