@@ -489,6 +489,24 @@ class TestStackBaseBranchSelection:
         report = build_gate_report(1, [self._stack_dep(state=DependencyState.SATISFIED)])
         assert report.stack_base_branch is None
 
+    def test_merged_facts_on_open_edge_do_not_select_merged_branch(self):
+        # The predecessor PR merged before its issue closed: the edge is still
+        # UNSATISFIED but facts.merged=True. The merge gate treats merged as
+        # unblocking, so the base must NOT be the already-merged predecessor
+        # branch -- the successor bases on the default branch instead.
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True,
+                validation_passed=True,
+                agent_reviewed=True,
+                merged=True,
+                branch_name="20-base",
+            )
+        }
+        report = build_gate_report(1, [self._stack_dep()], facts)
+        assert report.stack_base_branch is None
+        assert report.can_merge  # merged predecessor unblocks the merge gate
+
     def test_unusable_predecessor_branch_yields_no_base(self):
         report = build_gate_report(1, [self._stack_dep()])  # no facts
         assert report.stack_base_branch is None

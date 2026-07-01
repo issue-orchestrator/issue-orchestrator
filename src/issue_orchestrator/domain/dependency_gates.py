@@ -501,12 +501,17 @@ def _resolve_stack_base(
 
     A linear stack has exactly one unmerged stack predecessor; its usable branch
     is the successor's base. A satisfied (merged/closed) stack predecessor
-    contributes no base — the successor bases on the normal default branch. When
-    no unmerged stack predecessor exposes a usable branch yet, the base is
-    ``None`` (the per-edge ``PREDECESSOR_BRANCH_UNUSABLE`` block already keeps the
-    gate closed). When *two or more* unmerged predecessors expose conflicting
-    usable branches there is no single base, so this reports the conflicting
-    edges and the owner fails the gate closed rather than guessing a default.
+    contributes no base — the successor bases on the normal default branch. A
+    predecessor whose PR has ``merged`` likewise contributes no base even while
+    its dependency edge is still ``UNSATISFIED`` (its issue has not closed yet):
+    the merge gate already treats ``facts.merged`` as unblocking, so basing the
+    successor on the merged predecessor branch would target an already-merged
+    branch instead of the default base. When no unmerged stack predecessor
+    exposes a usable branch yet, the base is ``None`` (the per-edge
+    ``PREDECESSOR_BRANCH_UNUSABLE`` block already keeps the gate closed). When
+    *two or more* unmerged predecessors expose conflicting usable branches there
+    is no single base, so this reports the conflicting edges and the owner fails
+    the gate closed rather than guessing a default.
     """
     live: list[Dependency] = []
     branches: list[str] = []
@@ -519,7 +524,7 @@ def _resolve_stack_base(
         ):
             continue
         facts = facts_by_target.get(dep.target)
-        if facts and facts.branch_usable and facts.branch_name:
+        if facts and facts.branch_usable and facts.branch_name and not facts.merged:
             live.append(dep)
             branches.append(facts.branch_name)
     distinct = sorted(set(branches))
