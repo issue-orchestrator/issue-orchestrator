@@ -152,7 +152,7 @@ class DependencyEvaluator:
         *,
         predecessor_facts: Mapping[DependencyTarget, PredecessorFacts] | None = None,
         same_stack_members: frozenset[DependencyTarget] = frozenset(),
-        approval_current: bool = True,
+        approval_current: bool | None = True,
         configured_base_branch: str | None = None,
         dependency_graph: Mapping[DependencyTarget, Sequence[DependencyTarget]] | None = None,
     ) -> DependencyGateReport:
@@ -204,7 +204,7 @@ class DependencyEvaluator:
         source_milestone: str | None = None,
         *,
         worktree: Path | None = None,
-        approval_current: bool = True,
+        approval_current: bool | None = True,
         configured_base_branch: str | None = None,
     ) -> DependencyGateReport:
         """Build the full work/review/publish/merge report from every fact.
@@ -308,7 +308,7 @@ class DependencyEvaluator:
         issue_body: str,
         source_milestone: str | None = None,
         *,
-        approval_current: bool = True,
+        approval_current: bool | None = True,
         configured_base_branch: str | None = None,
     ) -> DependencyGateReport:
         """Build the gate report for an ordered *merge* decision (#6596).

@@ -191,6 +191,18 @@ def test_stack_signal_changes_when_predecessor_ref_changes():
     assert stack_signal(_stack_view(10)) != stack_signal(_stack_view(11))
 
 
+def test_projection_surfaces_tri_state_approval_freshness():
+    dep = Dependency(issue_number=20, mode=DependencyMode.STACK,
+                     state=DependencyState.SATISFIED)
+    assert _project(build_gate_report(1, [dep], approval_current=True))["approval_freshness"] == "fresh"
+    assert _project(build_gate_report(1, [dep], approval_current=False))["approval_freshness"] == "stale"
+    # Unknown is surfaced explicitly — the merge gate is not rendered fresh.
+    unknown = _project(build_gate_report(1, [dep], approval_current=None))
+    assert unknown["approval_freshness"] == "unknown"
+    assert _gate(unknown, "merge")["open"] is True  # unknown never blocks
+    assert unknown["stale"] is False  # unknown is not stale
+
+
 def test_stack_signal_changes_when_successor_ref_changes():
     # The chip also renders "before #30"; a successor changing from #30 to #31
     # must likewise re-fingerprint the card.

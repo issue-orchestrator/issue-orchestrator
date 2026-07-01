@@ -24,6 +24,7 @@ from ..contracts.public import (
 )
 from ..domain.dependencies import DependencyMode
 from ..domain.dependency_gates import (
+    ApprovalFreshness,
     DependencyGateReport,
     DependencyGateSnapshot,
     Gate,
@@ -184,6 +185,11 @@ def project_stack_dependency_view(
         stale=stale,
         stale_reason_codes=stale_reason_codes,
         stack_base_branch=report.stack_base_branch if report is not None else None,
+        approval_freshness=(
+            report.approval_freshness.value
+            if report is not None
+            else ApprovalFreshness.UNKNOWN.value
+        ),
     )
 
 

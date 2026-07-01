@@ -28,6 +28,7 @@ from issue_orchestrator.domain.dependencies import (
     parse_dependency_refs,
 )
 from issue_orchestrator.domain.dependency_gates import (
+    ApprovalFreshness,
     Gate,
     GateBlockReason,
     PredecessorFacts,
@@ -334,6 +335,22 @@ class TestBuildGateReport:
         assert report.can_publish
         assert not report.can_merge
         assert report.reason_codes(Gate.MERGE) == (GateBlockReason.APPROVAL_STALE,)
+
+    def test_unknown_approval_does_not_reblock_merge(self):
+        # Tri-state: None means "no freshness source answered". Unlike False it
+        # must NOT re-block merge (there is no evidence to block on) — it is
+        # surfaced via approval_freshness instead of masquerading as fresh.
+        dep = Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.SATISFIED)
+        report = build_gate_report(1, [dep], approval_current=None)
+        assert report.can_merge
+        assert GateBlockReason.APPROVAL_STALE not in report.reason_codes(Gate.MERGE)
+        assert report.approval_freshness is ApprovalFreshness.UNKNOWN
+
+    def test_approval_freshness_maps_the_tri_state_flag(self):
+        dep = Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.SATISFIED)
+        assert build_gate_report(1, [dep], approval_current=True).approval_freshness is ApprovalFreshness.FRESH
+        assert build_gate_report(1, [dep], approval_current=False).approval_freshness is ApprovalFreshness.STALE
+        assert build_gate_report(1, [dep], approval_current=None).approval_freshness is ApprovalFreshness.UNKNOWN
 
     def test_stack_satisfied_predecessor_opens_all(self):
         # A closed/merged predecessor fully satisfies the stack ordering.

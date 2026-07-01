@@ -19,6 +19,7 @@ from pathlib import Path
 from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 from issue_orchestrator.control.dependency_gate_snapshot import (
     DependencyGateSnapshotBuilder,
+    build_refresh_snapshot,
 )
 from issue_orchestrator.domain.dependencies import DependencyMode, DependencyTarget
 from issue_orchestrator.domain.dependency_gates import Gate, PredecessorFacts
@@ -279,7 +280,84 @@ def test_stale_approval_surfaces_approval_stale_on_merge_gate():
     view = project_from_snapshot(snapshot, 2)
     assert view is not None
     assert view.stale is True
+    assert view.approval_freshness == "stale"
     assert "approval_stale" in view.stale_reason_codes
+    merge = next(g for g in view.gates if g.gate == Gate.MERGE.value)
+    assert merge.open is False
+    assert "approval_stale" in merge.reason_codes
+
+
+def test_absent_approval_is_modelled_unknown_not_fresh():
+    # The reviewer's core F1 concern: an issue absent from the approval map must
+    # NOT be silently rendered fresh. It is modelled explicitly as unknown, so an
+    # awaiting-merge successor whose predecessor merged shows merge open but its
+    # approval freshness unverified — never a fabricated "fresh".
+    checker = _Checker()
+    checker.issues[10] = "closed"  # predecessor merged: merge otherwise open
+    builder = _builder(checker)
+    successor = Issue(
+        number=2, title="Unverified approval", labels=[], body="Stack-after: #10", milestone="M1",
+    )
+
+    snapshot = builder.build([successor])  # no approval map at all
+
+    view = project_from_snapshot(snapshot, 2)
+    assert view is not None
+    assert view.approval_freshness == "unknown"
+    assert view.stale is False  # unknown is not stale
+    merge = next(g for g in view.gates if g.gate == Gate.MERGE.value)
+    assert merge.open is True  # unknown does not block
+
+
+class _ApprovalFreshnessSource:
+    """Approval-freshness double: canned per-issue tri-state verdicts."""
+
+    def __init__(self, verdicts):
+        self._verdicts = verdicts
+
+    def approval_current_for(self, issues):
+        return {i.number: self._verdicts[i.number] for i in issues if i.number in self._verdicts}
+
+
+def test_refresh_path_without_source_reports_unknown_not_fresh():
+    # Production boundary: build_refresh_snapshot is what the refresh loop calls.
+    # With no approval-freshness source wired (today's reality), an awaiting-merge
+    # stacked successor's merge approval is reported unknown, never fresh.
+    checker = _Checker()
+    checker.issues[10] = "closed"
+    evaluator = _evaluator(checker)
+    successor = Issue(
+        number=2, title="Awaiting merge", labels=["pr-pending"],
+        body="Stack-after: #10", milestone="M1",
+    )
+
+    snapshot = build_refresh_snapshot(evaluator, [successor], active_sessions=[])
+
+    view = project_from_snapshot(snapshot, 2)
+    assert view is not None
+    assert view.approval_freshness == "unknown"
+
+
+def test_refresh_path_surfaces_stale_from_source():
+    # Production boundary: when an ApprovalFreshnessSource answers False for a
+    # stacked awaiting-merge successor, build_refresh_snapshot threads it through
+    # and the projected merge gate renders approval_stale.
+    checker = _Checker()
+    checker.issues[10] = "closed"  # predecessor merged: merge otherwise open
+    evaluator = _evaluator(checker)
+    successor = Issue(
+        number=2, title="Awaiting merge", labels=["pr-pending"],
+        body="Stack-after: #10", milestone="M1",
+    )
+    source = _ApprovalFreshnessSource({2: False})
+
+    snapshot = build_refresh_snapshot(
+        evaluator, [successor], active_sessions=[], approval_freshness=source
+    )
+
+    view = project_from_snapshot(snapshot, 2)
+    assert view is not None
+    assert view.approval_freshness == "stale"
     merge = next(g for g in view.gates if g.gate == Gate.MERGE.value)
     assert merge.open is False
     assert "approval_stale" in merge.reason_codes

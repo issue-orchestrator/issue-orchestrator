@@ -949,6 +949,7 @@ class StackDependencyGatePayload(BaseModel):
 
 class StackDependencyGateViewPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    approval_freshness: str
     blocked_gates: list[str]
     blocked_reason_codes: list[str]
     gates: list[StackDependencyGatePayload]

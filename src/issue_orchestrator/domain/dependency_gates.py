@@ -50,6 +50,33 @@ class Gate(Enum):
     MERGE = "merge"
 
 
+class ApprovalFreshness(Enum):
+    """Whether the slice's own agent-review approval still applies to its head.
+
+    A tri-state, not a bool, so a caller that *cannot determine* freshness is
+    modelled explicitly instead of being conflated with a positively-fresh
+    approval. ``UNKNOWN`` never re-blocks a gate (there is no evidence to block
+    on), but it is surfaced to the UI so the merge gate is not rendered as
+    verified-fresh when no freshness source answered it (ADR-0029 §2).
+    """
+
+    FRESH = "fresh"  # reviewed commit is still the slice head
+    STALE = "stale"  # reviewed commit is no longer the head → re-blocks merge
+    UNKNOWN = "unknown"  # no freshness source answered → not asserted fresh
+
+    @classmethod
+    def from_flag(cls, approval_current: "bool | None") -> "ApprovalFreshness":
+        """Map the tri-state ``approval_current`` flag onto the enum.
+
+        ``True`` → fresh, ``False`` → stale, ``None`` → unknown. Keeping the
+        mapping here means every consumer (gate report, projection) agrees on
+        what the flag means.
+        """
+        if approval_current is None:
+            return cls.UNKNOWN
+        return cls.FRESH if approval_current else cls.STALE
+
+
 class GateBlockReason(Enum):
     """Machine-readable reason a gate is blocked.
 
@@ -206,7 +233,10 @@ class DependencyGateReport:
     review: GateDecision
     publish: GateDecision
     merge: GateDecision
-    approval_current: bool = True
+    # Tri-state reviewed-commit freshness for the slice's own approval:
+    # ``True`` fresh, ``False`` stale (re-blocks merge with ``APPROVAL_STALE``),
+    # ``None`` unknown (no freshness source answered — not asserted fresh).
+    approval_current: bool | None = True
     dependencies: tuple[Dependency, ...] = field(default_factory=tuple)
     # The single owner of stack base selection (ADR-0029 / #6596): the branch a
     # stack successor's PR must be based on. It is the usable branch of the lone
@@ -242,6 +272,11 @@ class DependencyGateReport:
     @property
     def all_open(self) -> bool:
         return all(d.is_open for d in (self.work, self.review, self.publish, self.merge))
+
+    @property
+    def approval_freshness(self) -> ApprovalFreshness:
+        """Explicit tri-state of the slice's own reviewed-commit freshness."""
+        return ApprovalFreshness.from_flag(self.approval_current)
 
     def reason_codes(self, gate: Gate) -> tuple[GateBlockReason, ...]:
         return self.gate(gate).reason_codes
@@ -577,7 +612,7 @@ def build_gate_report(
     dependencies: Sequence[Dependency],
     predecessor_facts: Mapping[DependencyTarget, PredecessorFacts] | None = None,
     *,
-    approval_current: bool = True,
+    approval_current: bool | None = True,
     configured_base_branch: str | None = None,
 ) -> DependencyGateReport:
     """Build the dependency gate report from evaluated edges and git/PR facts.
@@ -593,8 +628,11 @@ def build_gate_report(
             with the same number from sharing facts. A stack predecessor with
             no entry is treated as having no usable branch yet (conservatively
             blocked).
-        approval_current: Whether the slice's own reviewed commit is still its
-            head. False re-blocks only the merge gate (``APPROVAL_STALE``).
+        approval_current: Tri-state freshness of the slice's own reviewed commit.
+            ``True`` fresh, ``False`` re-blocks only the merge gate
+            (``APPROVAL_STALE``), ``None`` unknown — no source answered, so it
+            does not block but is surfaced via ``approval_freshness`` rather than
+            implying fresh.
         configured_base_branch: An issue-specific base-branch rule, if any. When
             it conflicts with a stack predecessor's branch the edge is reported
             as a base-branch validation failure rather than silently resolved.
@@ -631,8 +669,12 @@ def build_gate_report(
             publish.append(block)
             merge.append(block)
 
-    # The slice's own reviewed-commit freshness only re-blocks merge.
-    if not approval_current:
+    # The slice's own reviewed-commit freshness only re-blocks merge, and only
+    # when it is *known* stale. ``None`` (freshness unknown — no source answered)
+    # must not re-block: there is no evidence to block on. It is surfaced to the
+    # UI via ``approval_freshness`` instead, so an unknown never masquerades as a
+    # positively-fresh merge gate.
+    if approval_current is False:
         merge.append(
             GateBlock(
                 GateBlockReason.APPROVAL_STALE,

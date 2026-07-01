@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ..domain.dependencies import parse_dependency_edges
 from ..domain.dependency_gates import (
@@ -99,7 +99,7 @@ class DependencyGateSnapshotBuilder:
         issues: Sequence[Issue],
         *,
         worktrees_by_issue: Mapping[int, Path] | None = None,
-        approval_current_by_issue: Mapping[int, bool] | None = None,
+        approval_current_by_issue: Mapping[int, bool | None] | None = None,
     ) -> DependencyGateSnapshot:
         """Assemble the dependency gate snapshot for the current in-scope set.
 
@@ -111,9 +111,11 @@ class DependencyGateSnapshotBuilder:
                 An issue with no active worktree keeps ancestry at its contained
                 default — the same conservative stance the live publish gate
                 takes when it has no working copy.
-            approval_current_by_issue: Per-issue reviewed-commit freshness. A
-                ``False`` entry re-blocks that issue's merge gate with
-                ``approval_stale``. Issues absent from the map default to fresh.
+            approval_current_by_issue: Per-issue reviewed-commit freshness.
+                ``True`` fresh, ``False`` re-blocks the merge gate with
+                ``approval_stale``. Issues **absent** from the map are modelled as
+                *unknown* (``None``) — not silently assumed fresh — so the merge
+                gate is never rendered verified-fresh when no source answered it.
         """
         worktrees = worktrees_by_issue or {}
         approvals = approval_current_by_issue or {}
@@ -127,7 +129,9 @@ class DependencyGateSnapshotBuilder:
                     issue.body,
                     issue.milestone,
                     worktree=worktrees.get(issue.number),
-                    approval_current=approvals.get(issue.number, True),
+                    # Absent → None (unknown): the UI must not imply fresh when no
+                    # approval-freshness source answered for this issue.
+                    approval_current=approvals.get(issue.number),
                 )
                 # An issue with no declared edges yields an all-open, edge-less
                 # report that never renders a stack section — skip it so the
@@ -140,22 +144,56 @@ class DependencyGateSnapshotBuilder:
         )
 
 
+@runtime_checkable
+class ApprovalFreshnessSource(Protocol):
+    """Answers per-issue reviewed-commit freshness for the merge gate.
+
+    The single owner boundary the merge-freshness fact flows through, so the
+    dashboard snapshot and (in future) the merge reconciler read the *same*
+    fact rather than each defaulting it. An implementation returns a map of
+    issue number → ``True`` (fresh) / ``False`` (stale) / ``None`` (unknown);
+    an issue it cannot answer is simply omitted, which the builder models as
+    unknown.
+
+    No production implementation exists yet: computing real freshness needs the
+    reviewed-commit SHA (captured when ``code-reviewed`` is applied) versus the
+    PR head SHA, which is ADR-0029 / #6596 enforcement work. Until that lands
+    the refresh path passes no source, so every stacked slice's merge approval
+    is reported *unknown* rather than a fabricated *fresh*.
+    """
+
+    def approval_current_for(
+        self, issues: Sequence[Issue]
+    ) -> Mapping[int, bool | None]:
+        """Return reviewed-commit freshness keyed by issue number."""
+        ...
+
+
 def build_refresh_snapshot(
     evaluator: "DependencyEvaluator | None",
     issues: Sequence[Issue],
     active_sessions: Sequence["Session"],
+    approval_freshness: "ApprovalFreshnessSource | None" = None,
 ) -> DependencyGateSnapshot:
     """Build the dependency gate snapshot for one queue-refresh tick.
 
     The refresh loop's composition helper: it derives each active successor's
     worktree from ``active_sessions`` (so the publish gate can run its ancestry
-    check) and delegates to :class:`DependencyGateSnapshotBuilder`. Keeping the
-    session→worktree mapping here means the refresh loop does not need to know
-    how the snapshot owner sources its ancestry facts.
+    check), consults ``approval_freshness`` for the merge-approval fact, and
+    delegates to :class:`DependencyGateSnapshotBuilder`. When no freshness source
+    is wired the merge gate is reported *unknown* (not fresh), so the dashboard
+    never claims a freshness it cannot verify.
     """
     worktrees_by_issue = {
         session.issue.number: session.worktree_path for session in active_sessions
     }
+    approval_current_by_issue = (
+        approval_freshness.approval_current_for(issues)
+        if approval_freshness is not None
+        else None
+    )
     return DependencyGateSnapshotBuilder(evaluator).build(
-        issues, worktrees_by_issue=worktrees_by_issue
+        issues,
+        worktrees_by_issue=worktrees_by_issue,
+        approval_current_by_issue=approval_current_by_issue,
     )

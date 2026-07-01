@@ -771,6 +771,16 @@ function renderIssueDetailStack(d) {
     if (gates.length) {
         html += `<h4 class="stack-subhead">Gates</h4>`
             + `<ul class="stack-gates">${gates.map(_stackGateItemHtml).join('')}</ul>`;
+        // When the merge gate is otherwise open but approval freshness could not
+        // be verified, say so explicitly instead of letting "merge: open" imply a
+        // verified-fresh approval. Only shown when merge is the deciding factor.
+        const mergeGate = gates.find((g) => g && g.gate === 'merge');
+        if (sd.approval_freshness === 'unknown' && mergeGate && mergeGate.open) {
+            html += `<p class="stack-approval-unverified" role="note">`
+                + `<span class="stack-approval-icon" aria-hidden="true">ⓘ</span> `
+                + `Merge readiness here does not include an approval-freshness check `
+                + `— whether the reviewed commit is still this slice's head is not tracked yet.</p>`;
+        }
     }
     if (predecessors.length) {
         html += `<h4 class="stack-subhead">Depends on</h4>`

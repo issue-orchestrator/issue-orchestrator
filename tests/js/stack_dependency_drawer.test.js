@@ -73,6 +73,7 @@ function stackDependency(overrides = {}) {
         stale: false,
         stale_reason_codes: [],
         stack_base_branch: 'feat/base',
+        approval_freshness: 'fresh',
         ...overrides,
     };
 }
@@ -117,6 +118,47 @@ test('summary label switches to plain dependencies when not a stack', () => {
         }),
     });
     assert.strictEqual(nodes.issueDetailStackSummary.textContent, 'Dependencies & gates');
+});
+
+test('unverified approval freshness on an open merge gate shows an explicit note', () => {
+    const { context, nodes } = loadStackRenderer();
+    context.renderIssueDetailStack({
+        stack_dependency: stackDependency({
+            approval_freshness: 'unknown',
+            gates: [{ gate: 'merge', open: true, reason_codes: [], reasons: [] }],
+            blocked_gates: [],
+        }),
+    });
+    const html = nodes.issueDetailStackBody.innerHTML;
+    // The merge gate is not silently rendered verified-fresh: an explicit note
+    // says approval freshness is not verified.
+    assert.match(html, /stack-approval-unverified/);
+    assert.match(html, /does not include an approval-freshness check/);
+    assert.match(html, /aria-hidden="true">ⓘ/);
+});
+
+test('no approval note when the merge gate is already blocked (not the deciding factor)', () => {
+    const { context, nodes } = loadStackRenderer();
+    context.renderIssueDetailStack({
+        stack_dependency: stackDependency({
+            approval_freshness: 'unknown',
+            gates: [{ gate: 'merge', open: false, reason_codes: ['predecessor_not_merged'], reasons: ['the predecessor has not merged yet'] }],
+        }),
+    });
+    const html = nodes.issueDetailStackBody.innerHTML;
+    assert.doesNotMatch(html, /stack-approval-unverified/);
+});
+
+test('no approval note when freshness is verified fresh', () => {
+    const { context, nodes } = loadStackRenderer();
+    context.renderIssueDetailStack({
+        stack_dependency: stackDependency({
+            approval_freshness: 'fresh',
+            gates: [{ gate: 'merge', open: true, reason_codes: [], reasons: [] }],
+            blocked_gates: [],
+        }),
+    });
+    assert.doesNotMatch(nodes.issueDetailStackBody.innerHTML, /stack-approval-unverified/);
 });
 
 test('stale slice shows a text stale note with reason codes', () => {

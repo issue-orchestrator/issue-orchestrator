@@ -796,7 +796,8 @@
           "blocked_reason_codes",
           "stale",
           "stale_reason_codes",
-          "stack_base_branch"
+          "stack_base_branch",
+          "approval_freshness"
         ],
         "properties": {
           "issue_number": {"type": "integer"},
@@ -809,7 +810,8 @@
           "blocked_reason_codes": {"type": "array", "items": {"type": "string"}},
           "stale": {"type": "boolean"},
           "stale_reason_codes": {"type": "array", "items": {"type": "string"}},
-          "stack_base_branch": {"type": ["string", "null"]}
+          "stack_base_branch": {"type": ["string", "null"]},
+          "approval_freshness": {"type": "string"}
         }
       },
       "IssueDetailPayload": {

@@ -940,6 +940,7 @@ export interface StackDependencyGatePayload {
 }
 
 export interface StackDependencyGateViewPayload {
+  approval_freshness: string;
   blocked_gates: string[];
   blocked_reason_codes: string[];
   gates: StackDependencyGatePayload[];

@@ -207,6 +207,11 @@ class StackDependencyGateView(ContractBase):
     stale: bool = False
     stale_reason_codes: list[str] = Field(default_factory=list)
     stack_base_branch: Optional[str] = None
+    # Reviewed-commit freshness of the slice's own agent-review approval:
+    # "fresh", "stale", or "unknown". "unknown" is surfaced explicitly (rather
+    # than implying "fresh") when no approval-freshness source answered — so the
+    # merge gate is never rendered verified-fresh on a guess (ADR-0029).
+    approval_freshness: str = "unknown"
 
 
 PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {

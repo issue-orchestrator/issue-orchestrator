@@ -100,6 +100,11 @@
   "additionalProperties": true,
   "description": "Producer-provided projection of the dependency gate report for one issue.\n\nThe dashboard and issue detail render stack state from this contract without\nrecomputing dependency policy in the UI. ``mode`` distinguishes normal\ndependency edges from stack predecessor edges; ``gates`` carries the\nwork/review/publish/merge decisions; ``stale`` marks a successor invalidated\nby a predecessor branch change or a stale own-approval.",
   "properties": {
+    "approval_freshness": {
+      "default": "unknown",
+      "title": "Approval Freshness",
+      "type": "string"
+    },
     "blocked_gates": {
       "items": {
         "type": "string"
