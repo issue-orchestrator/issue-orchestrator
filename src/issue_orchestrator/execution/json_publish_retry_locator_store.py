@@ -4,9 +4,20 @@ One tiny file at ``.issue-orchestrator/state/publish_retry_locators.json`` holds
 a dict keyed by issue number. Only publish-failed issues have an entry, and the
 entry is removed as soon as the retry succeeds, so the file stays small.
 
-A corrupt or unreadable file degrades to "no locators" rather than crashing the
-orchestrator: retry-publish is a manual recovery action, so losing a locator
-means the button is unavailable, not that the engine stops.
+Durability is the whole point of this store: it is what keeps a publish-failed
+issue retryable across an orchestrator restart. So it must not lose or hide
+retry state on a crash:
+
+- Writes go through :func:`atomic_write_json` (sibling tempfile + ``os.replace``)
+  so a crash or ``kill -9`` mid-write can never leave a torn file. The
+  in-memory index is only updated *after* the durable write succeeds, so a
+  failed persist preserves the previous on-disk and in-memory state instead of
+  silently dropping it.
+- A file that exists but is unreadable or not valid JSON is treated as
+  corruption and raised loudly (:class:`CorruptPublishRetryLocatorStoreError`)
+  rather than silently degrading to "no locators". Silently returning an empty
+  set would hide the Retry Publish action for every publish-failed issue with
+  only a log warning — exactly the durability loss this store exists to prevent.
 """
 
 from __future__ import annotations
@@ -17,8 +28,18 @@ import threading
 from pathlib import Path
 
 from ..domain.publish_retry import PublishRetryLocators
+from ..infra.atomic_json import atomic_write_json
 
 logger = logging.getLogger(__name__)
+
+
+class CorruptPublishRetryLocatorStoreError(RuntimeError):
+    """Raised when the on-disk locator file exists but cannot be read as JSON.
+
+    Surfacing this loudly is deliberate: the file is the durable source of
+    truth for which issues are still publish-retryable. Degrading a corrupt
+    file to an empty set would silently strip that recovery affordance.
+    """
 
 
 class JsonPublishRetryLocatorStore:
@@ -35,22 +56,30 @@ class JsonPublishRetryLocatorStore:
         try:
             data = json.loads(self._store_path.read_text())
         except (OSError, json.JSONDecodeError) as exc:
-            logger.warning(
-                "Failed to load publish-retry locators from %s: %s",
-                self._store_path,
-                exc,
+            raise CorruptPublishRetryLocatorStoreError(
+                f"Publish-retry locator store at {self._store_path} is unreadable "
+                f"or corrupt ({exc}). Refusing to start with silently lost retry "
+                "state; inspect and repair or remove the file to continue."
+            ) from exc
+        if not isinstance(data, dict):
+            raise CorruptPublishRetryLocatorStoreError(
+                f"Publish-retry locator store at {self._store_path} is not a JSON "
+                f"object (found {type(data).__name__}); repair or remove the file."
             )
-            return {}
-        return data if isinstance(data, dict) else {}
+        return data
 
-    def _persist(self) -> None:
-        self._store_path.parent.mkdir(parents=True, exist_ok=True)
-        self._store_path.write_text(json.dumps(self._entries, indent=2, default=str))
+    def _persist(self, entries: dict[str, dict]) -> None:
+        atomic_write_json(self._store_path, entries)
 
     def save(self, locators: PublishRetryLocators) -> None:
         with self._lock:
-            self._entries[str(locators.issue_number)] = locators.to_dict()
-            self._persist()
+            # Build a candidate, persist it durably, and only then commit it to
+            # the in-memory index. If the durable write fails, both the file and
+            # the index keep their previous contents.
+            candidate = dict(self._entries)
+            candidate[str(locators.issue_number)] = locators.to_dict()
+            self._persist(candidate)
+            self._entries = candidate
 
     def get(self, issue_number: int) -> PublishRetryLocators | None:
         with self._lock:
@@ -69,5 +98,9 @@ class JsonPublishRetryLocatorStore:
 
     def clear(self, issue_number: int) -> None:
         with self._lock:
-            if self._entries.pop(str(issue_number), None) is not None:
-                self._persist()
+            if str(issue_number) not in self._entries:
+                return
+            candidate = dict(self._entries)
+            candidate.pop(str(issue_number), None)
+            self._persist(candidate)
+            self._entries = candidate

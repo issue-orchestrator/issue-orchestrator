@@ -6,7 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
+from issue_orchestrator.control.actions import (
+    AddLabelAction,
+    RemoveLabelAction,
+    SupersedePullRequestAction,
+)
 from issue_orchestrator.control.completion_types import ProcessingResult
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.publish_recovery import PublishRecoveryService
@@ -42,6 +46,7 @@ class _Repo:
     prs: list[PRInfo] = field(default_factory=list)
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
+    superseded: list[int] = field(default_factory=list)
 
     def get_issue(self, issue_number: int) -> Issue | None:
         return self.issue if self.issue.number == issue_number else None
@@ -142,9 +147,17 @@ class _RecordingRunner:
 class _ActionApplier:
     repo: _Repo
 
-    def apply(self, action: AddLabelAction | RemoveLabelAction) -> SimpleNamespace:
+    def apply(
+        self,
+        action: AddLabelAction | RemoveLabelAction | SupersedePullRequestAction,
+    ) -> SimpleNamespace:
         if isinstance(action, AddLabelAction):
             self.repo.add_label(action.issue_number, action.label)
+        elif isinstance(action, SupersedePullRequestAction):
+            self.repo.superseded.append(action.pr_number)
+            self.repo.prs = [
+                pr for pr in self.repo.prs if pr.number != action.pr_number
+            ]
         else:
             self.repo.remove_label(action.issue_number, action.label)
         return SimpleNamespace(success=True, error=None)
@@ -356,3 +369,85 @@ def test_retry_publish_rejected_without_locators(make_session, tmp_path) -> None
 
     assert result.status == "rejected"
     assert "locators" in result.message.lower()
+
+
+# ---------------------------------------------------------------------------
+# Termination: abandon in-flight retry on reset (F1/A1 regression)
+# ---------------------------------------------------------------------------
+
+
+def test_abandon_issue_supersedes_late_retry_and_skips_reconcile(
+    make_session, tmp_path
+) -> None:
+    """Reset while a republish is in flight must not repopulate the attempt.
+
+    Start a retry, abandon the issue (as reset does), then drain a *successful*
+    late retry result. It must supersede the PR the late worker created and
+    must NOT add pr-pending, remove publish-failed, append completed history,
+    or leave an unsuperseded stale PR.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(tmp_path, repo, lm)
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+
+    # Operator resets the issue before the republish thread drains.
+    service.abandon_issue(4057)
+    assert store.get(4057) is None  # durable locators dropped by abandon
+
+    # The abandoned worker still finishes and lands a PR past reset's scan.
+    repo.prs = [
+        PRInfo(
+            number=5453,
+            title="#4057: UI: Surface provider status",
+            url=PR_URL,
+            branch=BRANCH,
+            body="",
+            state="open",
+            labels=[],
+        )
+    ]
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    # Late PR is superseded, not adopted as the issue's live attempt.
+    assert repo.superseded == [5453]
+    assert lm.pr_pending not in repo.added
+    assert lm.publish_failed not in repo.removed
+    assert not any(entry.issue_number == 4057 for entry in state.session_history)
+    assert 4057 not in state.completed_today
+    assert store.get(4057) is None
+
+
+def test_abandon_issue_without_inflight_does_not_block_a_later_retry(
+    make_session, tmp_path
+) -> None:
+    """Abandon with no in-flight work only clears locators, leaves no tombstone.
+
+    A stale tombstone would silently drop the next legitimate retry, so prove a
+    fresh retry after abandon still reconciles normally.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(tmp_path, repo, lm)
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    service.abandon_issue(4057)
+    assert store.get(4057) is None
+
+    # A fresh attempt fails publish again and is retried.
+    _record_failure(service, make_session, tmp_path)
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    # Reconciled as a normal success — the earlier abandon left no tombstone.
+    assert lm.publish_failed in repo.removed
+    assert lm.pr_pending in repo.added
+    assert store.get(4057) is None
+    assert state.session_history[-1].status == "completed"
+    assert repo.superseded == []

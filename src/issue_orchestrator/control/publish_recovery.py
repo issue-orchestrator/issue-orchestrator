@@ -28,11 +28,15 @@ from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Protocol
 
-from ..control.actions import AddLabelAction, RemoveLabelAction
+from ..control.actions import (
+    AddLabelAction,
+    RemoveLabelAction,
+    SupersedePullRequestAction,
+)
 from ..domain.models import OrchestratorState, SessionHistoryEntry
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..domain.publish_retry import PublishRetryLocators
-from ..ports.background_job import BackgroundJobRunner
+from ..ports.background_job import BackgroundJobRunner, CompletedJob
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.publish_retry_locator_store import PublishRetryLocatorStore
 from ..ports.pull_request_tracker import PRInfo
@@ -70,7 +74,10 @@ class _CompletionProcessor(Protocol):
 
 
 class _ActionApplier(Protocol):
-    def apply(self, action: AddLabelAction | RemoveLabelAction) -> Any: ...
+    def apply(
+        self,
+        action: AddLabelAction | RemoveLabelAction | SupersedePullRequestAction,
+    ) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -136,6 +143,11 @@ class PublishRecoveryService:
         self._lock = Lock()
         self._pending: dict[int, _RepublishContext] = {}
         self._results: dict[int, "ProcessingResult"] = {}
+        # Issues whose in-flight republish was abandoned (reset/termination)
+        # while the worker thread could not be force-killed. A late drain of
+        # such a job must supersede any PR it created rather than reconcile it
+        # as success. Consumed on the next drain of that issue's job.
+        self._tombstoned: set[int] = set()
 
     # ------------------------------------------------------------------
     # Recording (called on the live completion path when a publish fails)
@@ -242,6 +254,44 @@ class PublishRecoveryService:
         )
 
     # ------------------------------------------------------------------
+    # Termination (called when an issue's attempt is reset / torn down)
+    # ------------------------------------------------------------------
+
+    def abandon_issue(self, issue_number: int) -> None:
+        """Abandon any in-flight publish retry and drop the durable locators.
+
+        Reset (and any issue-runtime teardown) calls this so a republish worker
+        that finishes *after* the attempt is discarded cannot repopulate the
+        superseded attempt — removing ``publish-failed``, adding ``pr-pending``,
+        appending completed history, or leaving an unsuperseded stale PR.
+
+        The daemon worker thread cannot be force-killed mid-``process``, so this
+        does the honest thing instead of pretending to cancel it:
+
+        - drops the in-flight republish context/result so a late drain is
+          ignored rather than reconciled as success,
+        - clears the stored locators (this attempt is no longer retryable),
+        - tombstones the issue so :meth:`drain_completed_retries` supersedes any
+          PR the late worker created before it was abandoned.
+
+        The tombstone is scoped to the single in-flight job: it is consumed by
+        the next drain of that job (which fires within a tick, long before any
+        fresh attempt could fail publish and submit a new republish), so it
+        never drops a legitimate later retry.
+        """
+        with self._lock:
+            had_context = self._pending.pop(issue_number, None) is not None
+            self._results.pop(issue_number, None)
+            if had_context or self._runner.is_running(self._job_id(issue_number)):
+                self._tombstoned.add(issue_number)
+                logger.info(
+                    "[publish-retry] Abandoned in-flight republish for issue=%s; "
+                    "late completion will be superseded",
+                    issue_number,
+                )
+        self._locator_store.clear(issue_number)
+
+    # ------------------------------------------------------------------
     # Reconciliation (drained on the tick thread)
     # ------------------------------------------------------------------
 
@@ -250,15 +300,21 @@ class PublishRecoveryService:
 
         On success: clear publish-failed state + stored locators. On failure or
         error: leave the publish-failed label and locators in place so the issue
-        stays retryable (no permanent lockout).
+        stays retryable (no permanent lockout). Jobs whose issue was abandoned
+        (reset/termination) are superseded, not reconciled.
         """
         for job in self._runner.drain_completed():
             issue_number = self._issue_from_job_id(job.job_id)
             if issue_number is None:
                 continue
             with self._lock:
+                tombstoned = issue_number in self._tombstoned
+                self._tombstoned.discard(issue_number)
                 context = self._pending.pop(issue_number, None)
                 result = self._results.pop(issue_number, None)
+            if tombstoned:
+                self._supersede_abandoned_retry(issue_number, job, result)
+                continue
             if context is None:
                 # A job_id we didn't dispatch (or already drained) — ignore.
                 continue
@@ -319,6 +375,72 @@ class PublishRecoveryService:
             "[publish-retry] Finalized successful retry for issue=%s pr=%s",
             issue_number,
             pr_number,
+        )
+
+    def _supersede_abandoned_retry(
+        self,
+        issue_number: int,
+        job: CompletedJob,
+        result: "ProcessingResult | None",
+    ) -> None:
+        """Close any PR left open by a republish that finished after abandon.
+
+        No labels/history are touched — the attempt was discarded by reset.
+        Only a PR the late worker created past reset's supersede scan needs
+        closing, and only while it is still open (reset may have already
+        superseded it if the push landed before the scan).
+        """
+        if job.error is not None:
+            logger.warning(
+                "[publish-retry] Abandoned republish for issue=%s raised after "
+                "reset: %s",
+                issue_number,
+                job.error,
+            )
+            return
+        pr_number = self._extract_pr_number(result.pr_url) if result else None
+        if result is None or not result.success or pr_number is None:
+            logger.info(
+                "[publish-retry] Abandoned republish for issue=%s produced no "
+                "PR to supersede",
+                issue_number,
+            )
+            return
+        open_prs = self._repository_host.get_prs_for_issue(issue_number, state="open")
+        if not any(pr.number == pr_number for pr in open_prs):
+            logger.info(
+                "[publish-retry] Late retry PR #%s for reset issue=%s already "
+                "closed/superseded",
+                pr_number,
+                issue_number,
+            )
+            return
+        outcome = self._action_applier.apply(
+            SupersedePullRequestAction(
+                issue_number=issue_number,
+                pr_number=pr_number,
+                comment=(
+                    "Superseded: this PR was created by a publish retry that "
+                    "finished after the issue was reset. The orchestrator has "
+                    "discarded that attempt; a fresh attempt will publish "
+                    "separately."
+                ),
+                reason="publish retry completed after reset",
+            )
+        )
+        if not outcome.success:
+            logger.error(
+                "[publish-retry] Failed to supersede late retry PR #%s for "
+                "issue=%s: %s",
+                pr_number,
+                issue_number,
+                outcome.error,
+            )
+            return
+        logger.info(
+            "[publish-retry] Superseded late retry PR #%s for reset issue=%s",
+            pr_number,
+            issue_number,
         )
 
     # ------------------------------------------------------------------
