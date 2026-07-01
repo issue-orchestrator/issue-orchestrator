@@ -6,6 +6,9 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
 
 from issue_orchestrator.control.actions import (
     AddLabelAction,
@@ -130,6 +133,9 @@ class _RecordingRunner:
 
     def is_running(self, job_id: str) -> bool:
         return job_id in self._running
+
+    def running_ids(self) -> set[str]:
+        return set(self._running)
 
     def run_all(self) -> None:
         for job_id, fn in list(self._pending.items()):
@@ -302,9 +308,11 @@ def test_retry_publish_submits_off_thread_without_running_inline(make_session, t
     result = service.retry_publish(4057, state)
 
     assert result.status == "submitted"
-    assert result.job_id == "republish:4057"
+    # Submission-scoped job id: republish:<issue>:<token>.
+    assert result.job_id is not None
+    assert result.job_id.startswith("republish:4057:")
     # The heavy publish work runs on the runner, not on the request thread.
-    assert runner.is_running("republish:4057")
+    assert runner.is_running(result.job_id)
 
 
 def test_retry_publish_reconciles_success_on_drain(make_session, tmp_path) -> None:
@@ -346,7 +354,7 @@ def test_retry_publish_failure_leaves_issue_retryable(make_session, tmp_path) ->
 
     # publish-failed + locators survive a failed republish, so retry is available again.
     assert store.get(4057) is not None
-    assert not runner.is_running("republish:4057")
+    assert not runner.running_ids()
     assert service.retry_publish(4057, state).status == "submitted"
 
 
@@ -392,7 +400,7 @@ def test_retry_publish_recovers_existing_pr_and_clears_state(make_session, tmp_p
     result = service.retry_publish(4057, state)
 
     assert result.status == "recovered_existing_pr"
-    assert not runner.is_running("republish:4057")  # no republish submitted
+    assert not runner.running_ids()  # no republish submitted
     assert store.get(4057) is None
     assert lm.publish_failed in repo.removed
     assert lm.pr_pending in repo.added
@@ -700,7 +708,7 @@ def test_completed_but_undrained_retry_rejects_duplicate_submit(make_session, tm
 
     assert service.retry_publish(4057, state).status == "submitted"
     runner.run_all()  # job completes; CompletedJob queued but NOT yet drained
-    assert not runner.is_running("republish:4057")  # worker alive bit is off
+    assert not runner.running_ids()  # worker alive bit is off
 
     # Second click while completed-but-undrained: rejected, no new job queued.
     assert service.retry_publish(4057, state).status == "rejected"
@@ -712,3 +720,103 @@ def test_completed_but_undrained_retry_rejects_duplicate_submit(make_session, tm
     completed = [e for e in state.session_history if e.status == "completed"]
     assert [e.issue_number for e in completed] == [4057]
     assert store.get(4057) is None
+
+
+# ---------------------------------------------------------------------------
+# Live completion ordering: locators persisted before publish-failed labels (F1)
+# ---------------------------------------------------------------------------
+
+
+def test_locators_persisted_before_publish_failed_labels_applied(make_session, tmp_path) -> None:
+    """handle_session_completion must record retry locators before applying the
+    publish-failed labels, so a crash between the two can't leave GitHub marked
+    publish-failed with no locators (Retry Publish permanently unavailable)."""
+    from issue_orchestrator.control.completion_handler import SessionStatus
+    from issue_orchestrator.control.session_completion import handle_session_completion
+
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, _ = _service(tmp_path, repo, lm)
+
+    session = make_session(
+        issue_number=4057,
+        issue_title="UI: Surface provider status",
+        branch_name=BRANCH,
+    )
+
+    completion_handler = MagicMock()
+    completion_handler.process_completion.return_value = SimpleNamespace(
+        actions=[
+            AddLabelAction(issue_number=4057, label=lm.publish_failed, reason="publish failed"),
+        ],
+    )
+    # Applying the publish-failed label crashes (simulates a mid-apply failure).
+    action_applier = MagicMock()
+    action_applier.apply_all.side_effect = RuntimeError("boom applying publish-failed")
+
+    with pytest.raises(RuntimeError):
+        handle_session_completion(
+            session=session,
+            status=SessionStatus.COMPLETED,
+            state=OrchestratorState(),
+            completion_handler=completion_handler,
+            action_applier=action_applier,
+            observer=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=lambda _terminal_id: None,
+            config=MagicMock(),
+            session_output=MagicMock(),
+            processing_errors=["push_branch: Push failed: remote rejected"],
+            publish_recovery=service,
+        )
+
+    # Even though the label application crashed, the durable locators were
+    # already persisted, so Retry Publish survives.
+    assert store.get(4057) is not None
+
+
+# ---------------------------------------------------------------------------
+# Submission-scoped drain: old abandoned completion can't evict a newer retry (F2)
+# ---------------------------------------------------------------------------
+
+
+def test_draining_abandoned_submission_does_not_drop_newer_retry(make_session, tmp_path) -> None:
+    """Abandon retry A, finish A undrained, submit retry B, then drain A.
+
+    B must remain pending and later reconcile normally — draining the old
+    tombstoned submission must not evict B's pending slot or ignore B's
+    completion as an unknown job.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(tmp_path, repo, lm)
+    state = OrchestratorState()
+
+    # Retry A, then abandon it (as reset does). A's worker still finishes.
+    _record_failure(service, make_session, tmp_path)
+    assert service.retry_publish(4057, state).status == "submitted"
+    service.abandon_issue(4057)
+    runner.run_all()  # A completes; CompletedJob queued but NOT yet drained
+
+    # A fresh attempt fails publish again and submits retry B for the same issue.
+    _record_failure(service, make_session, tmp_path)
+    assert service.retry_publish(4057, state).status == "submitted"
+
+    # Drain A (the abandoned submission). B must survive.
+    service.drain_completed_retries(state)
+
+    # A's tombstoned completion was superseded, not reconciled: no labels flipped.
+    assert lm.pr_pending not in repo.added
+    assert lm.publish_failed not in repo.removed
+    # B is still pending — a duplicate retry is rejected.
+    assert service.retry_publish(4057, state).status == "rejected"
+
+    # B now completes and drains: it reconciles normally.
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    assert lm.publish_failed in repo.removed
+    assert lm.pr_pending in repo.added
+    assert store.get(4057) is None
+    completed = [e for e in state.session_history if e.status == "completed"]
+    assert [e.issue_number for e in completed] == [4057]

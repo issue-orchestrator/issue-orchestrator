@@ -105,7 +105,7 @@ async def retry_publish_issue(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
-    """Retry publish for a publish-failed issue using the latest failed publish job."""
+    """Retry publish for a publish-failed issue using its persisted retry locators."""
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 

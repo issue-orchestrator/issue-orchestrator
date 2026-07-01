@@ -162,12 +162,13 @@ class PublishRecoveryService:
         self._pending: dict[int, _RepublishContext] = {}
         self._results: dict[int, "ProcessingResult"] = {}
         self._token_seq: int = 0
-        # Issues whose in-flight republish was abandoned (reset/termination)
-        # while the worker thread could not be force-killed, mapped to the
-        # abandoned submission token. A late drain of that token supersedes any
-        # PR it created rather than reconciling it as success. Consumed on the
-        # next drain of that issue's job.
-        self._tombstoned: dict[int, int] = {}
+        # Submission tokens whose republish was abandoned (reset/termination)
+        # while the worker thread could not be force-killed. Correlation is by
+        # token, not issue: an abandoned submission A and a later submission B
+        # for the same issue have distinct tokens and distinct runner job ids,
+        # so draining A's late completion supersedes A's PR without disturbing
+        # B's pending slot. Consumed on the next drain of that token's job.
+        self._tombstoned: set[int] = set()
 
     # ------------------------------------------------------------------
     # Recording (called on the live completion path when a publish fails)
@@ -249,12 +250,12 @@ class PublishRecoveryService:
                 pr_number=existing_pr.number,
             )
 
-        submitted = self._submit_republish(
+        job_id = self._submit_republish(
             locators,
             issue_title=decision.issue_title,
             agent_label=decision.agent_label,
         )
-        if not submitted:
+        if job_id is None:
             message = "A publish job is already active for this issue"
             logger.info(
                 "[publish-retry] Skipping duplicate retry submit for issue=%s",
@@ -270,7 +271,7 @@ class PublishRecoveryService:
         return RetryPublishResult(
             status="submitted",
             message="Publish retry queued",
-            job_id=self._job_id(issue_number),
+            job_id=job_id,
         )
 
     # ------------------------------------------------------------------
@@ -303,9 +304,11 @@ class PublishRecoveryService:
             context = self._pending.pop(issue_number, None)
             if context is not None:
                 # Drop the in-flight result and tombstone this exact submission
-                # so its late completion is superseded, not reconciled.
+                # (by token) so its late completion is superseded, not
+                # reconciled — and a fresh submission for the same issue is
+                # unaffected.
                 self._results.pop(context.token, None)
-                self._tombstoned[issue_number] = context.token
+                self._tombstoned.add(context.token)
                 logger.info(
                     "[publish-retry] Abandoned in-flight republish for issue=%s "
                     "token=%s; late completion will be superseded",
@@ -327,26 +330,29 @@ class PublishRecoveryService:
         (reset/termination) are superseded, not reconciled.
         """
         for job in self._runner.drain_completed():
-            issue_number = self._issue_from_job_id(job.job_id)
-            if issue_number is None:
+            parsed = self._parse_job_id(job.job_id)
+            if parsed is None:
                 continue
+            issue_number, token = parsed
             with self._lock:
-                tombstoned_token = self._tombstoned.pop(issue_number, None)
-                context = self._pending.pop(issue_number, None)
-                # Correlate the result to the exact submission being reconciled
-                # (live context, else the abandoned token) so a stale completion
-                # never clears a newer submission's state.
-                if context is not None:
-                    result = self._results.pop(context.token, None)
-                elif tombstoned_token is not None:
-                    result = self._results.pop(tombstoned_token, None)
+                # Correlate strictly by submission token. Only remove the
+                # issue's pending slot when THIS completion is the one it holds,
+                # so draining an old abandoned submission cannot evict a newer
+                # submission for the same issue (F2).
+                result = self._results.pop(token, None)
+                tombstoned = token in self._tombstoned
+                self._tombstoned.discard(token)
+                context = self._pending.get(issue_number)
+                if context is not None and context.token == token:
+                    self._pending.pop(issue_number, None)
                 else:
-                    result = None
-            if tombstoned_token is not None:
+                    context = None
+            if tombstoned:
                 self._supersede_abandoned_retry(issue_number, job, result)
                 continue
             if context is None:
-                # A job_id we didn't dispatch (or already drained) — ignore.
+                # A stale/abandoned/already-drained submission — ignore. (The
+                # newer submission stays pending and reconciles on its own drain.)
                 continue
             if job.error is not None:
                 logger.error(
@@ -562,9 +568,10 @@ class PublishRecoveryService:
         *,
         issue_title: str,
         agent_label: str | None,
-    ) -> bool:
+    ) -> str | None:
+        """Submit a republish; return its submission-scoped job id, or None if a
+        prior submission for the issue is still pending."""
         issue_number = locators.issue_number
-        job_id = self._job_id(issue_number)
 
         # Reserve the in-flight slot BEFORE the worker can start, so a fast
         # completion that drains before submit() returns still has an owner
@@ -572,7 +579,7 @@ class PublishRecoveryService:
         # is still pending (in-flight or completed-but-undrained).
         with self._lock:
             if issue_number in self._pending:
-                return False
+                return None
             token = self._token_seq
             self._token_seq += 1
             self._pending[issue_number] = _RepublishContext(
@@ -582,6 +589,7 @@ class PublishRecoveryService:
                 agent_label=agent_label,
                 worktree_path=locators.worktree_path,
             )
+        job_id = self._job_id(issue_number, token)
 
         def run() -> None:
             self._restore_completion_record(locators)
@@ -602,8 +610,8 @@ class PublishRecoveryService:
             # so this is defensive: undo the reservation to keep state consistent.
             with self._lock:
                 self._pending.pop(issue_number, None)
-            return False
-        return True
+            return None
+        return job_id
 
     @staticmethod
     def _restore_completion_record(locators: PublishRetryLocators) -> None:
@@ -632,15 +640,21 @@ class PublishRecoveryService:
         )
 
     @staticmethod
-    def _job_id(issue_number: int) -> str:
-        return f"{_JOB_PREFIX}{issue_number}"
+    def _job_id(issue_number: int, token: int) -> str:
+        # Submission-scoped: two retries for the same issue (e.g. an abandoned
+        # one and a fresh one) get distinct job ids so the runner tracks them
+        # independently and drain can correlate each completion to its exact
+        # submission.
+        return f"{_JOB_PREFIX}{issue_number}:{token}"
 
     @staticmethod
-    def _issue_from_job_id(job_id: str) -> int | None:
+    def _parse_job_id(job_id: str) -> tuple[int, int] | None:
         if not job_id.startswith(_JOB_PREFIX):
             return None
+        suffix = job_id[len(_JOB_PREFIX):]
+        issue_str, _, token_str = suffix.partition(":")
         try:
-            return int(job_id[len(_JOB_PREFIX):])
+            return int(issue_str), int(token_str)
         except ValueError:
             return None
 

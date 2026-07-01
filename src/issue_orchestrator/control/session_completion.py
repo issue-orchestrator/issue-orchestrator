@@ -279,6 +279,16 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         # registry cleanup is separate from the optional UI tab/worktree cleanup
         # action, otherwise a finished agent can be rediscovered as running.
         _terminate_finished_session(session, status, kill_session_fn)
+
+    # Persist durable retry locators BEFORE applying the publish-failed labels
+    # below. The completion actions include publish-failed / publish-fail-count
+    # labels; a crash between applying those and recording locators would leave
+    # GitHub marked publish-failed with no locators, making the issue visibly
+    # label-retryable while Retry Publish stays unavailable. Recording first
+    # closes that window. No-op for non-publish failures.
+    if publish_recovery is not None:
+        publish_recovery.record_publish_failure(session, processing_errors)
+
     run_dir = resolve_session_run_dir(session_output, session)
     session_output.attach_claude_log(run_dir)
     run_session_analysis(run_dir)
@@ -306,12 +316,6 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         state=state,
         completion_detail=completion_detail,
     )
-
-    # Persist durable retry locators when the publish (push/PR) failed so the
-    # dashboard "Retry publish" action survives an orchestrator restart. The
-    # recorder is a no-op for non-publish failures.
-    if publish_recovery is not None:
-        publish_recovery.record_publish_failure(session, processing_errors)
 
     # Observer handles session-level cleanup (kill sessions, close tabs)
     observer.handle_completion(session, status)

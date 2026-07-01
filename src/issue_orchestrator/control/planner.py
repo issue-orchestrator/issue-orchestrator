@@ -632,17 +632,17 @@ class Planner:
             # Add outcome-specific label immediately
             if observed.outcome == CompletionOutcome.COMPLETED:
                 # Session completed successfully - will create PR
-                # Add pr-pending immediately (don't wait for publish job)
+                # Add pr-pending immediately (don't wait for the publish to land)
                 if observed.needs_publish:
                     actions.append(AddLabelAction(
                         issue_number=issue_number,
                         label=self._lm.pr_pending,
-                        reason="session completed - publish job pending",
+                        reason="session completed - publish pending",
                         expected=build_expected_for_mutation(),
                         issue_key=ik,
                     ))
                     logger.debug(
-                        "Planner: projecting pr-pending label for issue #%d (publish job pending)",
+                        "Planner: projecting pr-pending label for issue #%d (publish pending)",
                         issue_number,
                     )
             elif observed.outcome == CompletionOutcome.BLOCKED:

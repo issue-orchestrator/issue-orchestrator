@@ -66,6 +66,19 @@ class JsonPublishRetryLocatorStore:
                 f"Publish-retry locator store at {self._store_path} is not a JSON "
                 f"object (found {type(data).__name__}); repair or remove the file."
             )
+        # Validate every persisted entry up front. A malformed per-issue entry is
+        # store corruption too — silently degrading it to "no locators" would
+        # hide Retry Publish for a genuinely publish-failed issue, the exact
+        # failure this store exists to prevent.
+        for key, entry in data.items():
+            try:
+                PublishRetryLocators.from_dict(entry)
+            except (KeyError, ValueError, TypeError, AttributeError) as exc:
+                raise CorruptPublishRetryLocatorStoreError(
+                    f"Publish-retry locator store at {self._store_path} has a "
+                    f"malformed entry for issue {key!r} ({exc}); repair or remove "
+                    "the file."
+                ) from exc
         return data
 
     def _persist(self, entries: dict[str, dict]) -> None:
@@ -88,13 +101,13 @@ class JsonPublishRetryLocatorStore:
             return None
         try:
             return PublishRetryLocators.from_dict(raw)
-        except (KeyError, ValueError, TypeError) as exc:
-            logger.warning(
-                "Discarding invalid publish-retry locators for issue #%s: %s",
-                issue_number,
-                exc,
-            )
-            return None
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            # Present-but-malformed is corruption, not "absent": fail loud rather
+            # than silently hiding Retry Publish for a publish-failed issue.
+            raise CorruptPublishRetryLocatorStoreError(
+                f"Publish-retry locator entry for issue #{issue_number} in "
+                f"{self._store_path} is malformed ({exc}); repair or remove the file."
+            ) from exc
 
     def clear(self, issue_number: int) -> None:
         with self._lock:

@@ -59,6 +59,20 @@ def test_non_object_store_raises(tmp_path) -> None:
         JsonPublishRetryLocatorStore(path)
 
 
+def test_malformed_entry_raises_instead_of_hiding_retry(tmp_path) -> None:
+    """A well-formed store object with a malformed per-issue entry is corruption.
+
+    Degrading it to "no locators" would silently hide Retry Publish for a
+    genuinely publish-failed issue — the exact failure this store must avoid.
+    """
+    path = tmp_path / "publish_retry_locators.json"
+    # Valid JSON object, but the entry is missing required locator fields.
+    path.write_text(json.dumps({"4057": {"issue_number": 4057}}))
+
+    with pytest.raises(CorruptPublishRetryLocatorStoreError):
+        JsonPublishRetryLocatorStore(path)
+
+
 def test_failed_persist_preserves_previous_state(make_session, tmp_path, monkeypatch) -> None:
     """A write failure must not lose the previously durable retry state."""
     path = tmp_path / "publish_retry_locators.json"
