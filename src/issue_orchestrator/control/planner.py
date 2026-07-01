@@ -29,9 +29,7 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..ports.issue import Issue
 from ..domain.models import (
-    CompletionOutcome,
     TriageFacts,
-    ObservedCompletion,
     active_retrospective_review_issue_numbers,
 )
 from ..domain.post_publish_escalation import build_post_publish_escalation_comment
@@ -188,11 +186,6 @@ class Planner:
         # 1a-2b. Apply provider resilience labels (provider unavailable/available)
         provider_label_actions = self._plan_provider_resilience_labels(snapshot, plan_context)
         actions.extend(provider_label_actions)
-
-        # 1a-3. Immediate label projection for observed completions (async processing)
-        # This runs BEFORE discovered_reviews so labels are applied immediately
-        completion_label_actions = self._plan_observed_completion_labels(snapshot, plan_context)
-        actions.extend(completion_label_actions)
 
         # 1b. Queue discovered reviews from session completions/scans
         queue_actions = self._plan_discovered_reviews(snapshot)
@@ -517,11 +510,6 @@ class Planner:
 
         return actions
 
-    def _blocked_label_for_record(self, observed: ObservedCompletion) -> str:
-        if observed.blocked_reason == "provider_unavailable":
-            return self._lm.provider_unavailable
-        return self._lm.blocked
-
     def _record_provider_skip(
         self,
         issue_number: int,
@@ -590,94 +578,6 @@ class Planner:
                     issue_key=issue.key.stable_id(),
                 ))
                 plan_context.record_remove(issue.number, label)
-        return actions
-
-    def _plan_observed_completion_labels(
-        self,
-        snapshot: OrchestratorSnapshot,
-        plan_context: PlanContext,
-    ) -> list[Action]:
-        """Plan immediate label updates for observed completions.
-
-        This is the "immediate label projection" phase for completion facts on
-        ``snapshot.observed_completions``. When such a fact is present we:
-        1. Remove in-progress label immediately
-        2. Add pr-pending label if outcome is COMPLETED (anticipating PR creation)
-        3. Add blocked label if outcome is BLOCKED
-        4. Add needs-human label if outcome is NEEDS_HUMAN
-
-        The live completion path applies these labels via ``CompletionHandler``.
-
-        Returns:
-            List of label actions to apply immediately
-        """
-        actions: list[Action] = []
-
-        if not snapshot.observed_completions:
-            return actions
-
-        for observed in snapshot.observed_completions:
-            issue_number = observed.issue_number
-            ik = observed.issue_key_str
-
-            # Always remove in-progress label when session completes
-            actions.append(RemoveLabelAction(
-                issue_number=issue_number,
-                label=self._lm.in_progress,
-                reason=f"session completed with outcome={observed.outcome}",
-                expected=build_expected_for_mutation(),
-                issue_key=ik,
-            ))
-
-            # Add outcome-specific label immediately
-            if observed.outcome == CompletionOutcome.COMPLETED:
-                # Session completed successfully - will create PR
-                # Add pr-pending immediately (don't wait for the publish to land)
-                if observed.needs_publish:
-                    actions.append(AddLabelAction(
-                        issue_number=issue_number,
-                        label=self._lm.pr_pending,
-                        reason="session completed - publish pending",
-                        expected=build_expected_for_mutation(),
-                        issue_key=ik,
-                    ))
-                    logger.debug(
-                        "Planner: projecting pr-pending label for issue #%d (publish pending)",
-                        issue_number,
-                    )
-            elif observed.outcome == CompletionOutcome.BLOCKED:
-                # Session blocked - add blocked label
-                blocked_label = self._blocked_label_for_record(observed)
-                if plan_context.should_add_label(issue_number, blocked_label):
-                    actions.append(AddLabelAction(
-                        issue_number=issue_number,
-                        label=blocked_label,
-                        reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
-                        expected=build_expected_for_mutation(),
-                        issue_key=ik,
-                    ))
-                    plan_context.record_add(issue_number, blocked_label)
-                    logger.debug("Planner: adding blocked label for issue #%d", issue_number)
-            elif observed.outcome == CompletionOutcome.NEEDS_HUMAN:
-                # Session needs human intervention - use BLOCKED_NEEDS_HUMAN
-                if plan_context.should_add_label(issue_number, self._lm.needs_human):
-                    actions.append(AddLabelAction(
-                        issue_number=issue_number,
-                        label=self._lm.needs_human,
-                        reason="session needs human intervention",
-                        expected=build_expected_for_mutation(),
-                        issue_key=ik,
-                    ))
-                    plan_context.record_add(issue_number, self._lm.needs_human)
-                    logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
-            elif observed.outcome in (CompletionOutcome.REVIEW_APPROVED, CompletionOutcome.REVIEW_CHANGES_REQUESTED):
-                # Review session completed - labels handled by review workflow
-                logger.debug(
-                    "Planner: review session completed for issue #%d, outcome=%s",
-                    issue_number,
-                    observed.outcome,
-                )
-
         return actions
 
     def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:

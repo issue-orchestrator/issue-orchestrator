@@ -38,16 +38,10 @@ from issue_orchestrator.domain.models import (
     PendingTriageReview,
     PendingValidationRetry,
     AgentConfig,
-    CompletionRecord,
-    CompletionOutcome,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
-    RequestedAction,
-    ObservedCompletion,
-    SessionIdentity,
-    WorktreeLocation,
 )
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -303,48 +297,26 @@ class TestPlanIssues:
         assert plan.actions[0].number == 2
 
 
-class TestObservedCompletionLabels:
-    """Tests for immediate label projection on observed completions."""
+class TestObservedCompletionDecommissioned:
+    """Pin the decommissioning of the dormant observed-completion label path.
 
-    def test_completed_completion_adds_pr_pending_when_publish_needed(self):
-        config = make_config()
-        scheduler = Scheduler(config)
-        planner = Planner(config=config, scheduler=scheduler)
+    Completion label policy is owned solely by the live completion path
+    (CompletionHandler / handle_session_completion). The planner must no longer
+    carry a parallel projection surface fed by observed_completions.
+    """
 
-        record = CompletionRecord(
-            session_id="session-1",
-            timestamp="2026-01-01T00:00:00",
-            outcome=CompletionOutcome.COMPLETED,
-            summary="done",
-            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
-        )
-        observed = ObservedCompletion(
-            identity=SessionIdentity(
-                issue_number=42,
-                issue_title="Test Issue",
-                session_key="code:42",
-                terminal_id="issue-42",
-            ),
-            worktree=WorktreeLocation(
-                path="/tmp/worktree-42",
-                branch_name="issue-42",
-                completion_path=".issue-orchestrator/completion.json",
-            ),
-            record=record,
-            run_assets=make_session_run_assets(
-                Path("/tmp/worktree-42"),
-                session_name="issue-42",
-            ),
-        )
+    def test_snapshot_and_state_have_no_observed_completions_surface(self):
+        from issue_orchestrator.domain.models import OrchestratorState
 
-        snapshot = make_snapshot(
-            issues=[],
-            observed_completions=(observed,),
-        )
-        plan = planner.plan(snapshot)
+        assert not hasattr(OrchestratorState(), "observed_completions")
+        assert "observed_completions" not in OrchestratorSnapshot.__dataclass_fields__
 
-        add_labels = [a for a in plan.actions if getattr(a, "label", None) == "pr-pending"]
-        assert len(add_labels) == 1
+    def test_planner_has_no_observed_completion_projection(self):
+        assert not hasattr(Planner, "_plan_observed_completion_labels")
+
+
+class TestMaxIssuesToStart:
+    """Tests for the max-issues-to-start planning limit."""
 
     def test_respects_max_issues_to_start(self):
         """Planner respects the max_issues_to_start limit."""

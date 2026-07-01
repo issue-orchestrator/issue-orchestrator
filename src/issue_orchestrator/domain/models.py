@@ -118,38 +118,6 @@ class RequestedAction(Enum):
     PUSH_BRANCH = "push_branch"
 
 
-# ===========================================================================
-# Identity and Location Abstractions
-# ===========================================================================
-
-
-@dataclass(frozen=True)
-class SessionIdentity:
-    """Identifies a session within the orchestrator.
-
-    Immutable snapshot of session identity used across:
-    - ObservedCompletion (observed facts)
-    - Event payloads
-    """
-    issue_number: int
-    issue_title: str
-    session_key: str  # e.g., "code:123" or "review:456"
-    terminal_id: str
-    issue_key: str = ""  # stable_id (e.g., "M1-011"); falls back to str(issue_number) when empty
-
-
-@dataclass(frozen=True)
-class WorktreeLocation:
-    """Location info for a worktree.
-
-    Immutable snapshot of where work is happening. Distinct from WorktreeInfo
-    (in ports/) which captures creation-time metadata like reuse status.
-    """
-    path: str  # String for immutability (not Path)
-    branch_name: str
-    completion_path: str  # Relative path to completion.json
-
-
 # ---------------------------------------------------------------------------
 # CompletionRecord untrusted-input bounds
 #
@@ -1588,126 +1556,6 @@ class PendingValidationRetry:
 PendingCTOReview = PendingTriageReview
 
 
-# =============================================================================
-# Observed Completion Model (fast observation-phase facts)
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class ObservedCompletion:
-    """Facts observed from a completed session.
-
-    This is produced by the observation phase (fast) and consumed by:
-    1. The planner (to project labels immediately)
-    2. The job queue (to enqueue background publish work)
-
-    Immutable to ensure it's a pure fact, not mutated during processing.
-
-    Uses composition for cleaner structure:
-    - identity: Who/what session this is
-    - worktree: Where the work happened
-    - record: What the agent reported (the completion record)
-    """
-    # Composed abstractions
-    identity: SessionIdentity
-    worktree: WorktreeLocation
-    record: CompletionRecord
-    run_assets: SessionRunAssets
-
-    # Session-specific fields (not from the completion record)
-    pr_number: int | None = None  # For review sessions
-    agent_label: str | None = None  # For per-agent reviewer
-
-    # Validation state (for sessions with validation configured)
-    validation_retry_count: int = 0
-    original_prompt: str | None = None
-
-    # Convenience accessors for commonly-used fields
-    @property
-    def issue_number(self) -> int:
-        return self.identity.issue_number
-
-    @property
-    def issue_title(self) -> str:
-        return self.identity.issue_title
-
-    @property
-    def session_key(self) -> str:
-        return self.identity.session_key
-
-    @property
-    def terminal_id(self) -> str:
-        return self.identity.terminal_id
-
-    @property
-    def issue_key_str(self) -> str:
-        """Stable issue key for SSE events; falls back to str(issue_number)."""
-        return self.identity.issue_key or str(self.identity.issue_number)
-
-    @property
-    def worktree_path(self) -> str:
-        return self.worktree.path
-
-    @property
-    def branch_name(self) -> str:
-        return self.worktree.branch_name
-
-    @property
-    def completion_path(self) -> str:
-        return self.worktree.completion_path
-
-    @property
-    def outcome(self) -> CompletionOutcome:
-        return self.record.outcome
-
-    @property
-    def requested_actions(self) -> list[RequestedAction]:
-        return self.record.requested_actions
-
-    @property
-    def summary(self) -> str:
-        return self.record.summary
-
-    @property
-    def needs_publish(self) -> bool:
-        """Check if this completion requires publishing (git push + PR)."""
-        return RequestedAction.PUSH_BRANCH in self.record.requested_actions
-
-    @property
-    def is_code_session(self) -> bool:
-        """Check if this is a code (issue) session vs review session."""
-        return self.pr_number is None
-
-    # Convenience accessors for CompletionRecord fields
-    @property
-    def implementation(self) -> Optional[str]:
-        return self.record.implementation
-
-    @property
-    def problems(self) -> Optional[str]:
-        return self.record.problems
-
-    @property
-    def blocked_reason(self) -> Optional[str]:
-        return self.record.blocked_reason
-
-    @property
-    def review_summary(self) -> Optional[str]:
-        return self.record.review_summary
-
-    @property
-    def review_issues(self) -> Optional[str]:
-        return self.record.review_issues
-
-    @property
-    def comment_body(self) -> Optional[str]:
-        return self.record.comment_body
-
-    @property
-    def pr_labels(self) -> Optional[list[str]]:
-        return self.record.pr_labels
-
-
 @dataclass
 class DependencyProblem:
     """A dependency problem for an issue (for web UI display)."""
@@ -1761,8 +1609,6 @@ class OrchestratorState:
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)
     # Stale in-progress tracking: issue_number -> consecutive ticks with stale in-progress
     stale_issue_ticks: dict[int, int] = field(default_factory=dict)
-    # Observation-phase completion facts detected this tick (planner label projection)
-    observed_completions: list["ObservedCompletion"] = field(default_factory=list)
     # Queue refresh/freshness tracking for dashboard UX and lazy refresh behavior
     queue_last_refresh_at: float = 0.0  # Epoch seconds of last queue refresh completion
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
