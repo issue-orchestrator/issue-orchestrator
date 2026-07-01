@@ -42,3 +42,18 @@ class ProcessingResult:
             completion_record_path=None,
             review_exchange_deferred=True,
         )
+
+    @property
+    def is_non_terminal(self) -> bool:
+        """True when completion has NOT finished for this record.
+
+        The review exchange is running in the background (``review_exchange_deferred``)
+        and/or a post-review validation failure was rerouted into coder rework
+        (``validation_failed_rerouted``). The live session path leaves such a
+        completion pending — ``SessionController`` maps it to ``SessionStatus.RUNNING``
+        and resumes publishing on a later tick. Other consumers of a
+        ``ProcessingResult`` (e.g. retry-publish reconciliation) must not treat a
+        non-terminal result as terminal success, or they would clear recovery
+        state before publish actually completes.
+        """
+        return self.review_exchange_deferred or self.validation_failed_rerouted

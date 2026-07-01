@@ -820,3 +820,37 @@ def test_draining_abandoned_submission_does_not_drop_newer_retry(make_session, t
     assert store.get(4057) is None
     completed = [e for e in state.session_history if e.status == "completed"]
     assert [e.issue_number for e in completed] == [4057]
+
+
+# ---------------------------------------------------------------------------
+# Non-terminal republish result must not be finalized as publish success (F1/A1)
+# ---------------------------------------------------------------------------
+
+
+def test_deferred_review_exchange_does_not_finalize_publish(make_session, tmp_path) -> None:
+    """A republish that defers to a background review exchange is NOT terminal.
+
+    The live completion path keeps such a completion RUNNING; retry-publish must
+    likewise leave the issue retryable — it must not remove publish-failed, add
+    pr-pending / completed history, or clear the durable locators.
+    """
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(
+        tmp_path, repo, lm,
+        result=ProcessingResult.for_review_exchange_deferred(),
+    )
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    # Nothing finalized: recovery state is preserved so the issue stays retryable.
+    assert lm.publish_failed not in repo.removed
+    assert lm.pr_pending not in repo.added
+    assert not any(entry.issue_number == 4057 for entry in state.session_history)
+    assert store.get(4057) is not None
+    # And a follow-up retry is available once the exchange settles.
+    assert service.retry_publish(4057, state).status == "submitted"

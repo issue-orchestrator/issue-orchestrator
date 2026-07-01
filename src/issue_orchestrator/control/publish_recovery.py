@@ -367,6 +367,22 @@ class PublishRecoveryService:
                     issue_number,
                 )
                 continue
+            if result.is_non_terminal:
+                # The republish started/continued a background review exchange
+                # (or rerouted a validation failure). Publish has NOT completed:
+                # the live path keeps such a completion RUNNING and resumes on a
+                # later tick. Retry-publish has no resume loop, so leave the
+                # publish-failed label + locators intact — the issue stays
+                # retryable and the operator can retry once the exchange settles.
+                logger.info(
+                    "[publish-retry] Republish for issue=%s is non-terminal "
+                    "(review_exchange_deferred=%s validation_failed_rerouted=%s); "
+                    "leaving issue retryable without finalizing",
+                    issue_number,
+                    result.review_exchange_deferred,
+                    result.validation_failed_rerouted,
+                )
+                continue
             if not result.success:
                 logger.warning(
                     "[publish-retry] Republish for issue=%s failed: %s",
