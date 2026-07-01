@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from ..contracts.public import StackDependencyGateView
 from ..contracts.ui_openapi_models import (
     E2ERunDetailPayload,
     E2ETestOutputPayload,
@@ -428,15 +429,21 @@ def _finalize_issue_detail_payload(
     orchestrator: Any,
     issue_number: int,
     payload: dict[str, Any],
+    stack_dependency: StackDependencyGateView | None,
     raw_events: list[dict[str, Any]],
     filtered_events: list[dict[str, Any]],
     events: list[dict[str, Any]],
     dropped_missing_semantics: int,
 ) -> dict[str, Any]:
     run_diagnostic = _current_run_validation_diagnostic(orchestrator, issue_number)
-    payload["stack_dependency"] = stack_dependency_payload(
-        stack_dependency_view(orchestrator.state, issue_number)
-    )
+    # Stack dependency state is route-scoped and passed in by the caller,
+    # never re-derived here from ``orchestrator.state`` by issue number.
+    # The live dashboard issue-detail route resolves it from the current
+    # ``dependency_gate_snapshot``; the E2E run drawer is scoped to an
+    # ephemeral run timeline and passes ``None`` so a production stack gate
+    # can never leak into an unrelated E2E scenario issue that happens to
+    # share a numeric issue id (#6597/#6680).
+    payload["stack_dependency"] = stack_dependency_payload(stack_dependency)
     _apply_issue_detail_actions(orchestrator, issue_number, payload)
     if run_diagnostic:
         _apply_issue_detail_run_diagnostic(payload, run_diagnostic)
@@ -574,6 +581,9 @@ async def get_issue_detail(
         orchestrator=orchestrator,
         issue_number=issue_number,
         payload=payload,
+        # Live dashboard route: resolve the producer stack gate snapshot
+        # for this issue number from the orchestrator's current state.
+        stack_dependency=stack_dependency_view(orchestrator.state, issue_number),
         raw_events=raw_events,
         filtered_events=filtered_events,
         events=events,
@@ -922,6 +932,10 @@ async def get_e2e_issue_detail(
         orchestrator=orchestrator,
         issue_number=issue_number,
         payload=payload,
+        # Ephemeral E2E run drawer: no run-scoped stack snapshot exists, so
+        # never surface the live dashboard's production stack gates for a
+        # scenario issue that happens to reuse this numeric id (#6597/#6680).
+        stack_dependency=None,
         raw_events=raw_events,
         filtered_events=filtered_events,
         events=events,
