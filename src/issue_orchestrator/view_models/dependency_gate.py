@@ -224,15 +224,21 @@ def stack_dependency_payload(view: StackDependencyGateView | None) -> Any:
 def stack_signal(view: StackDependencyGateView | None) -> str:
     """Compact, fingerprint-safe encoding of a card's visible stack gate state.
 
-    Empty when the issue does not participate in a stack. Otherwise encodes the
-    dependency mode, the currently blocked gates, staleness, and successor count
-    — exactly the inputs that change what the compact stack chip renders — so a
-    gate-state change re-fingerprints the compact card.
+    Empty when the issue does not participate in a stack. Otherwise it encodes
+    *every* input ``renderStackChipHtml`` reads to render the compact chip: the
+    dependency mode, the ordered blocked gates, staleness, and the predecessor
+    and successor refs shown in the chip's mode label and hover/title chain
+    context. The refs (not just a successor *count*) are included because the
+    chip's title changes when a base moves from "before #30" to "before #31" or
+    a successor from "after #10" to "after #11" even though the count and gates
+    are unchanged — omitting them would leave a reused card with stale chain
+    text. Any change to the rendered chip therefore re-fingerprints the card.
     """
     if view is None or not view.has_stack_edges:
         return ""
     parts = [view.mode, ",".join(view.blocked_gates)]
     if view.stale:
         parts.append("stale")
-    parts.append(str(len(view.successors)))
+    parts.append(",".join(edge.ref for edge in view.predecessors))
+    parts.append(",".join(edge.ref for edge in view.successors))
     return ":".join(parts)

@@ -27,6 +27,7 @@ from issue_orchestrator.domain.dependency_gates import (
 from issue_orchestrator.view_models.dependency_gate import (
     project_from_snapshot,
     project_stack_dependency_view,
+    stack_signal,
 )
 from issue_orchestrator.domain.dependency_gates import DependencyGateSnapshot
 
@@ -164,3 +165,35 @@ def test_base_of_stack_with_no_report_still_shows_successors():
 
 def test_snapshot_without_report_or_successors_projects_none():
     assert project_from_snapshot(DependencyGateSnapshot(), 99) is None
+
+
+def _stack_view(pred_number: int, successors=()):
+    dep = Dependency(
+        issue_number=pred_number,
+        mode=DependencyMode.STACK,
+        state=DependencyState.UNSATISFIED,
+    )
+    return project_stack_dependency_view(1, build_gate_report(1, [dep]), successors)
+
+
+def test_stack_signal_is_empty_without_stack_participation():
+    dep = Dependency(
+        issue_number=100, mode=DependencyMode.NORMAL, state=DependencyState.UNSATISFIED
+    )
+    view = project_stack_dependency_view(1, build_gate_report(1, [dep]), ())
+    assert stack_signal(view) == ""
+
+
+def test_stack_signal_changes_when_predecessor_ref_changes():
+    # The compact chip renders "after #10" in its hover/title chain context, so a
+    # predecessor moving from #10 to #11 (same gates, same successor count) must
+    # change the signal — otherwise the reused card keeps stale chain text.
+    assert stack_signal(_stack_view(10)) != stack_signal(_stack_view(11))
+
+
+def test_stack_signal_changes_when_successor_ref_changes():
+    # The chip also renders "before #30"; a successor changing from #30 to #31
+    # must likewise re-fingerprint the card.
+    succ_a = (SuccessorEdge(issue_number=30, ref="#30", mode=DependencyMode.STACK),)
+    succ_b = (SuccessorEdge(issue_number=31, ref="#31", mode=DependencyMode.STACK),)
+    assert stack_signal(_stack_view(10, succ_a)) != stack_signal(_stack_view(10, succ_b))

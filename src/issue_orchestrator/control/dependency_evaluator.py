@@ -197,6 +197,46 @@ class DependencyEvaluator:
             configured_base_branch=configured_base_branch,
         )
 
+    def evaluate_all_gates(
+        self,
+        issue_number: int,
+        issue_body: str,
+        source_milestone: str | None = None,
+        *,
+        worktree: Path | None = None,
+        approval_current: bool = True,
+        configured_base_branch: str | None = None,
+    ) -> DependencyGateReport:
+        """Build the full work/review/publish/merge report from every fact.
+
+        This is the single owner that composes *all* inputs the four gates read:
+        the issue's resolved edges, stack-predecessor git/PR facts, publish-time
+        branch ancestry (when a successor ``worktree`` is available), and the
+        slice's own merge-time ``approval_current`` freshness. The gate-specific
+        methods (:meth:`evaluate_work_gate`, :meth:`evaluate_publish_gate`,
+        :meth:`evaluate_merge_gate`) and the dashboard snapshot owner all route
+        through here, so no caller re-derives stack policy or drops a fact class.
+
+        It performs no availability short-circuit and emits no event, so it can
+        project the gate state of *any* lane — including a ``pr-pending`` /
+        awaiting-merge successor the scheduler never reaches. Facts unknowable in
+        the caller's context keep their conservative :class:`PredecessorFacts`
+        default (ancestry with no worktree stays "contained"; ``approval_current``
+        defaults fresh) rather than being invented, as the live gates behave.
+        """
+        deps = self._resolve_edges(
+            issue_number, issue_body, source_milestone, frozenset(), None
+        )
+        facts = self._gather_predecessor_facts(deps)
+        facts = self._refine_ancestry(facts, worktree)
+        return build_gate_report(
+            issue_number,
+            deps,
+            facts,
+            approval_current=approval_current,
+            configured_base_branch=configured_base_branch,
+        )
+
     def evaluate_work_gate(
         self,
         issue_number: int,
@@ -210,17 +250,14 @@ class DependencyEvaluator:
 
         This is the single owner the scheduler, session launch, and planner
         consume to decide whether an issue's *work* may start (ADR-0029 §3). It
-        resolves the issue's typed edges, gathers git/PR facts for any
-        unsatisfied stack predecessor via the injected
-        :class:`StackPredecessorFactsProvider`, and returns the unified gate
-        report. Callers read ``report.can_start_work`` (and the machine-readable
+        composes the report through :meth:`evaluate_all_gates` (with no worktree,
+        so ancestry stays contained, and a fresh approval) and reads
+        ``report.can_start_work`` (and the machine-readable
         ``gate_block_records(Gate.WORK)``) rather than re-deriving stack policy.
 
-        For an issue with only normal ``Depends-on:`` edges this is byte-for-byte
-        equivalent to the legacy :meth:`evaluate` / ``DependencyReport.runnable``
-        decision: the WORK gate is open iff every dependency is closed. Stack
-        edges additionally require the predecessor to expose a usable, validated,
-        agent-reviewed branch; with no facts (or no provider) they stay blocked.
+        For an issue with only normal ``Depends-on:`` edges this matches the
+        legacy ``DependencyReport.runnable`` decision (open iff every dependency
+        is closed); stack edges also need a usable, validated, reviewed branch.
 
         Args:
             configured_base_branch: An issue-specific base-branch rule, if any. A
@@ -229,17 +266,13 @@ class DependencyEvaluator:
             emit_event: Whether to publish the ``dependencies.evaluated`` trace
                 event. Diagnostics that only need the decision can suppress it.
         """
-        deps = self._resolve_edges(
-            issue_number, issue_body, source_milestone, frozenset(), None
-        )
-        facts = self._gather_predecessor_facts(deps)
-        report = build_gate_report(
+        report = self.evaluate_all_gates(
             issue_number,
-            deps,
-            facts,
+            issue_body,
+            source_milestone,
             configured_base_branch=configured_base_branch,
         )
-        if emit_event and deps:
+        if emit_event and report.dependencies:
             self._emit_work_gate_event(report)
         return report
 
@@ -254,31 +287,18 @@ class DependencyEvaluator:
     ) -> DependencyGateReport:
         """Build the gate report for a *publish* decision (ADR-0029 §3, #6596).
 
-        The same single owner the work gate uses: it resolves the issue's typed
-        edges, gathers stack-predecessor git/PR facts, and additionally — when a
-        ``worktree`` and a :class:`StackBranchAncestry` are available — checks
-        whether the successor still contains each predecessor's branch head.
         Callers read ``report.can_publish`` (and ``report.stack_base_branch`` for
-        the PR base) instead of re-deriving stack publish policy.
-
-        A stack successor's publish gate is open when the predecessor exposes a
-        usable branch, no issue-specific base-branch rule conflicts with it, and
-        the successor still descends from the predecessor head. A predecessor
-        that advanced without the successor containing it re-blocks publish with
-        ``PREDECESSOR_BRANCH_ADVANCED``.
-
-        For a non-stack issue this collapses to "publish open unless a normal
-        ``Depends-on:`` is still open", exactly as before.
+        the PR base). This is :meth:`evaluate_all_gates` with the successor
+        ``worktree`` wired in, so a predecessor that advanced without the
+        successor containing it re-blocks publish with
+        ``PREDECESSOR_BRANCH_ADVANCED``; a non-stack issue collapses to "publish
+        open unless a normal ``Depends-on:`` is still open", exactly as before.
         """
-        deps = self._resolve_edges(
-            issue_number, issue_body, source_milestone, frozenset(), None
-        )
-        facts = self._gather_predecessor_facts(deps)
-        facts = self._refine_ancestry(facts, worktree)
-        return build_gate_report(
+        return self.evaluate_all_gates(
             issue_number,
-            deps,
-            facts,
+            issue_body,
+            source_milestone,
+            worktree=worktree,
             configured_base_branch=configured_base_branch,
         )
 
@@ -293,25 +313,18 @@ class DependencyEvaluator:
     ) -> DependencyGateReport:
         """Build the gate report for an ordered *merge* decision (#6596).
 
-        Merge readiness stays strictly ordered: a stack successor's merge gate is
-        blocked (``PREDECESSOR_NOT_MERGED``) until its predecessor has merged or
-        closed, regardless of how ready the successor's own PR looks. The slice's
-        own stale approval re-blocks merge as well (``APPROVAL_STALE``). Ancestry
-        is *not* checked here — the merge path runs without a local successor
-        worktree, and once a predecessor merges, GitHub's own mergeable state
-        surfaces a behind/needs-rebase successor; publish-time ancestry already
-        guards the stale-base case.
-
-        For a non-stack issue this collapses to the legacy closed-only rule.
+        Merge stays strictly ordered: a stack successor's merge gate is blocked
+        (``PREDECESSOR_NOT_MERGED``) until its predecessor merges/closes, and the
+        slice's own stale approval re-blocks merge (``APPROVAL_STALE``). This is
+        :meth:`evaluate_all_gates` with *no* worktree — merge intentionally does
+        not run the successor-vs-predecessor ancestry check (publish-time
+        ancestry, then GitHub's own mergeable state, already guard the stale-base
+        case). A non-stack issue collapses to the legacy closed-only rule.
         """
-        deps = self._resolve_edges(
-            issue_number, issue_body, source_milestone, frozenset(), None
-        )
-        facts = self._gather_predecessor_facts(deps)
-        return build_gate_report(
+        return self.evaluate_all_gates(
             issue_number,
-            deps,
-            facts,
+            issue_body,
+            source_milestone,
             approval_current=approval_current,
             configured_base_branch=configured_base_branch,
         )
