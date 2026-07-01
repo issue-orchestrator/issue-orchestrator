@@ -487,8 +487,8 @@ class ValidationSettings(BaseModel):
         title="Publish Validation Command",
         description="Authoritative command run before push/publish",
         json_schema_extra={
-            "doc_examples": ["./scripts/validate-pr.sh", "make validate-pr-raw"],
-            "doc_notes": "This should match the repo's authoritative local PR/pre-push gate. If make validate-pr wraps the cache-aware verify hook, configure the underlying raw command instead.",
+            "doc_examples": ["./scripts/validate-pr.sh", "./scripts/validate-pr-suite.sh"],
+            "doc_notes": "This should match the repo's authoritative local PR/pre-push gate. If make validate-pr wraps the cache-aware verify hook, configure a private non-recursive suite command instead.",
             "section": "Publish Gate",
             "config_attr": "validation.publish.cmd",
             "yaml_path": "validation.publish.cmd",

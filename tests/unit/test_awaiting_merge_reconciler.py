@@ -109,6 +109,108 @@ def test_pr_info_is_closed_unmerged_distinguishes_merged_from_closed() -> None:
     assert _pr("open").is_closed_unmerged is False
 
 
+# --------------------------------------------------------------------------- #
+# Stacked-successor ordered-merge hold (ADR-0029 / #6596)
+# --------------------------------------------------------------------------- #
+
+
+def _stack_evaluator(predecessor_state: str, *, milestone: str = "M7"):
+    """A DependencyEvaluator whose predecessor (#220) has the given state."""
+    from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+    checker = MagicMock()
+    checker.get_issue_state.return_value = predecessor_state
+    checker.get_issue_milestone.return_value = milestone
+    return DependencyEvaluator(issue_checker=checker, events=InMemoryEventSink())
+
+
+def _stack_successor_issue() -> Issue:
+    return Issue(
+        number=228,
+        title="Stacked successor",
+        labels=["agent:backend", "pr-pending"],
+        state="open",
+        body="Stack-after: #220",
+        milestone="M7",
+    )
+
+
+def test_stacked_successor_held_from_merge_while_predecessor_open() -> None:
+    """A stack successor with an unmerged predecessor is held entirely: no
+    rework/escalation/enqueue is discovered even when its own PR looks ready."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    # PR is approved and dirty — the default path would normally discover rework.
+    _wire_pr(
+        repository_host,
+        _pr("open", mergeable_state="dirty", labels=["code-reviewed"]),
+    )
+    repository_host.get_issue.return_value = _stack_successor_issue()
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        dependency_evaluator=_stack_evaluator("open"),  # predecessor not merged
+    ).discover(state)
+
+    # Held: still observing, but nothing dispatched ahead of the predecessor.
+    assert result.still_pending == 1
+    assert result.rework_discovered == 0
+    assert result.escalation_discovered == 0
+    assert result.enqueue_discovered == 0
+
+
+def test_stacked_successor_released_once_predecessor_merges() -> None:
+    """Once the predecessor merges/closes, the successor rejoins the normal
+    post-approval dispatch (here: a dirty PR discovers post-publish rework)."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr("open", mergeable_state="dirty", labels=["code-reviewed"]),
+    )
+    repository_host.get_issue.return_value = _stack_successor_issue()
+    repository_host.issue_comment_marker_present.return_value = False
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        dependency_evaluator=_stack_evaluator("closed"),  # predecessor merged
+    ).discover(state)
+
+    # Not held: the default dispatch runs and discovers the dirty-PR rework.
+    assert result.rework_discovered == 1
+
+
+def test_non_stack_issue_is_never_held() -> None:
+    """An issue without a Stack-after: edge keeps its exact prior dispatch even
+    when a stack evaluator is wired (cheap body short-circuit, no gate call)."""
+    entry = _history_entry()
+    state = OrchestratorState(session_history=[entry])
+    repository_host = MagicMock()
+    _wire_pr(
+        repository_host,
+        _pr("open", mergeable_state="dirty", labels=["code-reviewed"]),
+    )
+    repository_host.get_issue.return_value = _issue("open")  # no Stack-after: body
+    repository_host.issue_comment_marker_present.return_value = False
+    evaluator = _stack_evaluator("open")
+
+    result = AwaitingMergeReconciler(
+        repository_host,
+        label_manager=_label_manager(),
+        clock=lambda: 1234.5,
+        dependency_evaluator=evaluator,
+    ).discover(state)
+
+    assert result.rework_discovered == 1
+
+
 def test_recovered_awaiting_merge_entry_reconciles_when_pr_is_merged() -> None:
     entry = _history_entry()
     state = OrchestratorState(session_history=[entry])

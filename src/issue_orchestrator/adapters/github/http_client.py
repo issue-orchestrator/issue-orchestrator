@@ -1334,6 +1334,18 @@ class GitHubHttpClient:
             caller="close_pr",
         )
 
+    def update_pr_base(self, pr_number: int, base: str) -> dict[str, Any] | None:
+        """Retarget a PR onto a new base branch via the REST PATCH endpoint."""
+        payload = self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/pulls/{pr_number}",
+            json_body={"base": base},
+            use_cache=False,
+            caller="update_pr_base",
+        )
+        self.invalidate_pr_etag(pr_number)
+        return payload if isinstance(payload, dict) else None
+
     # -------------------- Merge queue (GraphQL) --------------------
 
     def _pr_node_id(self, pr_number: int, *, caller: str) -> str:

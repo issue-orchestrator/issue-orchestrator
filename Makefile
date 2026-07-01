@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-pr-raw validate-quick validate-full verify-hooks-all _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast semgrep-venv worktree-setup install upgrade-deps release release-pr prepare-release preview-readme typecheck lint-arch lint-complexity quality-guardrails quality-guardrails-stale sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-heavy test-e2e-onboarding-live test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-raw validate-pr validate-quick validate-full verify-hooks-all _validate-pr _validate-impl _validate-static-impl _validate-core-tests-impl _validate-pr-impl _validate-agent-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -52,7 +52,6 @@ help:
 	@echo "  test                Run all tests"
 	@echo "  validate            Fast local validation: typecheck + lint + unit + simulated-core + integration-core + web-ui smoke"
 	@echo "  validate-pr         Cache-aware required PR gate; seeds/reuses pre-push validation"
-	@echo "  validate-pr-raw     Force required PR suite without cache lookup"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
 	@echo "  validate-full       Full validation: validate-pr + e2e tests"
 	@echo "  verify-hooks-all    Install + live-verify hooks for all supported CLIs"
@@ -554,14 +553,18 @@ validate-raw:
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed!"
 
-validate-pr-raw:
+_validate-pr:
+	@if [ "$${ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR:-}" != "1" ]; then \
+		echo "_validate-pr is internal; run make validate-pr so the cache is checked and seeded." >&2; \
+		exit 2; \
+	fi
 	$(VALIDATE_CONFIG)
 	@$(GMAKE) --output-sync=target _validate-pr-impl
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ Required PR validations passed!"
 
 # Internal phased validation targets. Invoke through validate-raw,
-# validate-pr-raw, or validate-full so timing metadata is emitted.
+# validate-pr, or validate-full so timing metadata is emitted.
 # Keep pytest suite fan-out low by default:
 # each suite may already use xdist internally, so running many suites together
 # can oversubscribe local CPUs and starve browser/subprocess tests.

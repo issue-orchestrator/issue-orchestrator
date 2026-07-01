@@ -45,7 +45,7 @@ _TerminalOutcomeMessage = Literal["approval accepted", "halt accepted"]
 def _review_exchange_job_id(
     issue_number: int,
     session_name: str | None,
-    run_id: str | None,
+    run_id: str,
 ) -> str:
     """Stable, run-scoped job identity for a per-issue review exchange.
 
@@ -56,17 +56,14 @@ def _review_exchange_job_id(
     allocates a fresh run with a new ``run_id`` — starts its own exchange and
     never reconsumes the prior run's cancellation/failure state (#6675).
 
-    ``session_name``/``run_id`` may be absent on degenerate paths that never
-    submit a job (e.g. a running-check before a session name is known); the id
-    then degrades to the coarser prefix, which no submitted job ever matches.
+    ``session_name`` may be absent on degenerate paths that never submit a job
+    (e.g. a running-check before a session name is known); the id then
+    degrades to the coarser prefix, which no submitted job ever matches.
     """
     base = f"review-exchange:{issue_number}"
     if not session_name:
         return base
-    base = f"{base}:{session_name}"
-    if not run_id:
-        return base
-    return f"{base}:{run_id}"
+    return f"{base}:{session_name}:{run_id}"
 
 
 def is_review_exchange_job_for_issue(job_id: str, issue_number: int) -> bool:

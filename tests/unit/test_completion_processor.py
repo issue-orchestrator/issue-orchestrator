@@ -329,6 +329,262 @@ class TestCompletionProcessorLabelActions:
         mock_label_adapter.remove_label.assert_not_called()
 
 
+class _FakeStackGate:
+    """Duck-typed StackBaseGate returning canned decisions (#6596).
+
+    ``decide_publish`` (PR creation) returns ``decision``; ``decide_work`` (push
+    retry rebase base) returns ``work_decision`` (defaulting to ``decision``).
+    """
+
+    def __init__(self, decision, work_decision=None):
+        self._decision = decision
+        self._work_decision = work_decision if work_decision is not None else decision
+        self.calls: list[int] = []
+        self.work_calls: list[int] = []
+
+    def decide_publish(self, issue_number, worktree):
+        self.calls.append(issue_number)
+        return self._decision
+
+    def decide_work(self, issue_number):
+        self.work_calls.append(issue_number)
+        return self._work_decision
+
+
+class TestStackPublishGateWiring:
+    """The processor consumes the stack publish gate to base the PR on the
+    predecessor branch (#6596) and to fail fast when the gate is blocked."""
+
+    @staticmethod
+    def _publish_record() -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            implementation="Added the feature",
+        )
+
+    def test_stack_successor_pr_bases_on_predecessor_branch(
+        self, processor, mock_pr_adapter, worktree_with_completion
+    ):
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(
+            _FakeStackGate(StackPublishDecision(
+                is_stack=True, allowed=True, base_branch="20-base",
+            ))
+        )
+        worktree = worktree_with_completion(self._publish_record())
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+        assert result.success
+        assert mock_pr_adapter.create_pr.call_args.kwargs["base"] == "20-base"
+
+    def test_blocked_stack_publish_gate_halts_pr_creation(
+        self, processor, mock_pr_adapter, worktree_with_completion
+    ):
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(
+            _FakeStackGate(StackPublishDecision(
+                is_stack=True, allowed=False,
+                reason="Stack publish gate blocked: publish: blocked (base_branch_conflict)",
+            ))
+        )
+        worktree = worktree_with_completion(self._publish_record())
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+        assert not result.success
+        mock_pr_adapter.create_pr.assert_not_called()
+        assert any("base_branch_conflict" in e for e in result.errors)
+
+    def test_non_stack_decision_keeps_default_base(
+        self, processor, mock_pr_adapter, worktree_with_completion
+    ):
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(
+            _FakeStackGate(StackPublishDecision.not_stack())
+        )
+        worktree = worktree_with_completion(self._publish_record())
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+        assert result.success
+        # No stack base -> the processor's default base (main) is used.
+        assert mock_pr_adapter.create_pr.call_args.kwargs["base"] == "main"
+
+
+class TestStackPublishGatePRReuse:
+    """A reused stack-successor PR must target the gate's required base (#6596).
+
+    F2: existing-PR reuse previously matched only on issue + head branch, so a
+    successor PR opened against the wrong base could be reused and pick up
+    review-completion labels while still targeting the wrong branch.
+    """
+
+    @staticmethod
+    def _publish_record() -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            implementation="Added the feature",
+        )
+
+    @staticmethod
+    def _stack_gate():
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        return _FakeStackGate(
+            StackPublishDecision(is_stack=True, allowed=True, base_branch="20-base")
+        )
+
+    @staticmethod
+    def _existing_pr(base_branch: str | None):
+        return PRInfo(
+            number=99,
+            title="#123 Existing PR",
+            url="https://github.com/owner/repo/pull/99",
+            branch="123-feature",
+            body="Body",
+            state="open",
+            labels=[],
+            base_branch=base_branch,
+        )
+
+    def _run(self, processor, mock_git_adapter, worktree_with_completion):
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        worktree = worktree_with_completion(self._publish_record())
+        return processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test Issue",
+        )
+
+    def test_reuse_with_correct_stack_base_does_not_retarget(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+        mock_pr_adapter.get_prs_for_issue.return_value = [self._existing_pr("20-base")]
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion)
+
+        assert result.success
+        assert result.pr_url == "https://github.com/owner/repo/pull/99"
+        mock_pr_adapter.set_pr_base.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_reuse_with_wrong_base_retargets_through_owned_op(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+        mock_pr_adapter.get_prs_for_issue.return_value = [self._existing_pr("main")]
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion)
+
+        assert result.success
+        assert result.pr_url == "https://github.com/owner/repo/pull/99"
+        mock_pr_adapter.set_pr_base.assert_called_once_with(99, "20-base")
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_reuse_blocks_when_retarget_fails(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+        mock_pr_adapter.get_prs_for_issue.return_value = [self._existing_pr("main")]
+        mock_pr_adapter.set_pr_base.side_effect = RuntimeError("403 forbidden")
+
+        result = self._run(processor, mock_git_adapter, worktree_with_completion)
+
+        assert not result.success
+        mock_pr_adapter.create_pr.assert_not_called()
+        assert any("retarget failed" in e for e in result.errors)
+
+
+class TestStackCreatedPRBaseEnforcement:
+    """Every stack PR from the create/collision path must target the gate's base.
+
+    F2: ``create_pr`` is idempotent by head branch, so it can return an existing
+    PR on the wrong base even when the issue-scoped reuse preflight misses it. The
+    processor must retarget (or fail closed) on the returned PR before labels.
+    """
+
+    @staticmethod
+    def _publish_record() -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            implementation="Added the feature",
+        )
+
+    @staticmethod
+    def _stack_gate():
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        return _FakeStackGate(
+            StackPublishDecision(is_stack=True, allowed=True, base_branch="20-base")
+        )
+
+    def _run(self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion):
+        # Issue-scoped reuse preflight finds nothing, but create_pr is idempotent
+        # and returns an existing PR targeting the wrong (default) base.
+        mock_pr_adapter.get_prs_for_issue.return_value = []
+        mock_git_adapter.get_current_branch.return_value = "123-feature"
+        mock_pr_adapter.create_pr.return_value = PRInfo(
+            number=42, title="#123: Test", url="https://github.com/owner/repo/pull/42",
+            branch="123-feature", body="", state="open", labels=[], base_branch="main",
+        )
+        worktree = worktree_with_completion(self._publish_record())
+        return processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
+
+    def test_idempotent_create_wrong_base_is_retargeted(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+
+        result = self._run(processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion)
+
+        assert result.success
+        mock_pr_adapter.set_pr_base.assert_called_once_with(42, "20-base")
+
+    def test_idempotent_create_wrong_base_halts_on_retarget_failure(
+        self, processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion
+    ):
+        processor.attach_stack_publish_gate(self._stack_gate())
+        mock_pr_adapter.set_pr_base.side_effect = RuntimeError("403 forbidden")
+
+        result = self._run(processor, mock_pr_adapter, mock_git_adapter, worktree_with_completion)
+
+        assert not result.success
+        assert any("retarget failed" in e for e in result.errors)
+        # Review-completion labels must not be applied to the wrong-base PR.
+        assert not any(
+            c.args and c.args[0] == 42 for c in mock_pr_adapter.add_comment.call_args_list
+        )
+
+
 class TestRuntimeArtifactBranchGuard:
     """Pre-publish guard rejects committed IO runtime artifacts (#6659).
 
@@ -2447,6 +2703,74 @@ class TestCompletionProcessorGitActions:
             worktree, "origin/main"
         )
         assert mock_git_adapter.push.call_count == 2
+
+    def test_push_retry_rebases_stack_successor_on_predecessor(
+        self, processor, mock_git_adapter, worktree_with_completion
+    ):
+        """F2: a stack successor's non-ff push retry rebases on the predecessor
+        branch via the stack work gate, not the default base."""
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(_FakeStackGate(
+            StackPublishDecision.not_stack(),
+            work_decision=StackPublishDecision(
+                is_stack=True, allowed=True, base_branch="20-base"
+            ),
+        ))
+        mock_git_adapter.push.side_effect = [
+            PushResult(success=False, branch="issue-123", remote="origin", message="non-fast-forward"),
+            PushResult(success=True, branch="issue-123", remote="origin", message="Pushed"),
+        ]
+        worktree = worktree_with_completion(make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        ))
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
+
+        assert result.success
+        mock_git_adapter.rebase_on_branch.assert_called_once_with(worktree, "origin/20-base")
+        assert mock_git_adapter.push.call_count == 2
+
+    def test_push_retry_fails_closed_when_stack_gate_blocked(
+        self, processor, mock_git_adapter, worktree_with_completion
+    ):
+        """F2: a blocked/ambiguous stack gate halts the non-ff push retry — no
+        default-base rebase and no second push onto the wrong shape."""
+        from issue_orchestrator.control.stack_publish_gate import StackPublishDecision
+
+        processor.attach_stack_publish_gate(_FakeStackGate(
+            StackPublishDecision.not_stack(),
+            work_decision=StackPublishDecision.blocked(
+                "Stack work gate blocked: work: blocked (ambiguous_stack_base)",
+                retryable=False,
+            ),
+        ))
+        mock_git_adapter.push.side_effect = [
+            PushResult(success=False, branch="issue-123", remote="origin", message="non-fast-forward"),
+            PushResult(success=True, branch="issue-123", remote="origin", message="Pushed"),
+        ]
+        worktree = worktree_with_completion(make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+        ))
+
+        result = processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Test",
+        )
+
+        assert not result.success
+        mock_git_adapter.rebase_on_branch.assert_not_called()
+        assert mock_git_adapter.push.call_count == 1
+        assert any("ambiguous_stack_base" in e for e in result.errors)
 
 
 class TestCompletionProcessorValidation:
