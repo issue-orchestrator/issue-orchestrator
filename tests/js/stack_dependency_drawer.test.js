@@ -107,6 +107,45 @@ test('section renders gates with text status, predecessors and successors', () =
     assert.match(html, /<span class="stack-gate-icon" aria-hidden="true">/);
 });
 
+test('normal dependents render under "Dependent issues", not "Stacked behind this"', () => {
+    const { context, nodes } = loadStackRenderer();
+    context.renderIssueDetailStack({
+        stack_dependency: stackDependency({
+            mode: 'none',
+            has_stack_edges: false,
+            predecessors: [],
+            gates: [],
+            stack_base_branch: null,
+            // #2 declared a plain `Depends-on: #this`, so it is a normal dependent
+            // of this issue — not stacked behind it.
+            successors: [{ issue_number: 2, ref: '#2', mode: 'normal' }],
+        }),
+    });
+    const html = nodes.issueDetailStackBody.innerHTML;
+    assert.match(html, /Dependent issues/);
+    assert.doesNotMatch(html, /Stacked behind this/);
+    assert.match(html, /#2/);
+});
+
+test('mixed successors split by mode into stack and dependent headings', () => {
+    const { context, nodes } = loadStackRenderer();
+    context.renderIssueDetailStack({
+        stack_dependency: stackDependency({
+            successors: [
+                { issue_number: 30, ref: '#30', mode: 'stack' },
+                { issue_number: 40, ref: '#40', mode: 'normal' },
+            ],
+        }),
+    });
+    const html = nodes.issueDetailStackBody.innerHTML;
+    // Both headings present; stack heading precedes the dependent heading.
+    assert.match(html, /Stacked behind this/);
+    assert.match(html, /Dependent issues/);
+    assert.ok(html.indexOf('Stacked behind this') < html.indexOf('Dependent issues'));
+    assert.match(html, /#30/);
+    assert.match(html, /#40/);
+});
+
 test('summary label switches to plain dependencies when not a stack', () => {
     const { context, nodes } = loadStackRenderer();
     context.renderIssueDetailStack({

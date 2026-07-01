@@ -146,6 +146,17 @@ def test_successor_edges_render_chain_context():
     assert dump["successors"] == [{"issue_number": 30, "ref": "#30", "mode": "stack"}]
 
 
+def test_normal_dependent_successor_preserves_normal_mode():
+    # A plain ``Depends-on: #this`` dependent inverts to a NORMAL-mode successor
+    # edge. The mode must survive into the payload so the drawer can label it a
+    # dependent rather than a stack relationship.
+    successors = [SuccessorEdge(issue_number=2, ref="#2", mode=DependencyMode.NORMAL)]
+    dump = _project(build_gate_report(1, []), successors)
+    assert dump["successors"] == [{"issue_number": 2, "ref": "#2", "mode": "normal"}]
+    # A purely-normal dependent does not make the base a stack participant.
+    assert dump["has_stack_edges"] is False
+
+
 def test_base_of_stack_with_no_report_still_shows_successors():
     # An issue that is the base of a stack has no dependency report of its own,
     # but must still surface its successors as chain context.

@@ -786,9 +786,18 @@ function renderIssueDetailStack(d) {
         html += `<h4 class="stack-subhead">Depends on</h4>`
             + `<ul class="stack-edges">${predecessors.map((e) => _stackEdgeItemHtml(e, true)).join('')}</ul>`;
     }
-    if (successors.length) {
+    // Successors carry the mode of the edge the downstream issue declared. Only
+    // a Stack-after successor is truly "stacked behind" this one; a normal
+    // Depends-on dependent must not be mislabelled as a stack relationship.
+    const stackSuccessors = successors.filter((e) => e && e.mode === 'stack');
+    const dependentSuccessors = successors.filter((e) => !e || e.mode !== 'stack');
+    if (stackSuccessors.length) {
         html += `<h4 class="stack-subhead">Stacked behind this</h4>`
-            + `<ul class="stack-edges">${successors.map((e) => _stackEdgeItemHtml(e, false)).join('')}</ul>`;
+            + `<ul class="stack-edges">${stackSuccessors.map((e) => _stackEdgeItemHtml(e, false)).join('')}</ul>`;
+    }
+    if (dependentSuccessors.length) {
+        html += `<h4 class="stack-subhead">Dependent issues</h4>`
+            + `<ul class="stack-edges">${dependentSuccessors.map((e) => _stackEdgeItemHtml(e, false)).join('')}</ul>`;
     }
     if (sd.stack_base_branch) {
         html += `<p class="stack-base">Stack base branch: <code>${escapeHtml(String(sd.stack_base_branch))}</code></p>`;

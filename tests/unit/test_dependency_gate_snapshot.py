@@ -116,6 +116,28 @@ def test_snapshot_inverts_stack_edges_into_successors():
     assert [s.issue_number for s in view.successors] == [2]
 
 
+def test_snapshot_inverts_normal_edge_into_normal_mode_successor():
+    # A plain Depends-on dependent inverts to a NORMAL-mode successor edge so the
+    # drawer can label it a dependent rather than a stack relationship.
+    checker = _Checker()
+    builder = _builder(checker)
+    issues = [
+        Issue(number=1, title="Base", labels=[], body="Base slice", milestone="M1"),
+        Issue(number=2, title="Dependent", labels=[], body="Depends-on: #1", milestone="M1"),
+    ]
+
+    snapshot = builder.build(issues)
+
+    assert [(e.issue_number, e.mode) for e in snapshot.successors_for(1)] == [
+        (2, DependencyMode.NORMAL)
+    ]
+    view = project_from_snapshot(snapshot, 1)
+    assert view is not None
+    # A purely-normal dependent is not a stack participant.
+    assert view.has_stack_edges is False
+    assert [(s.issue_number, s.mode) for s in view.successors] == [(2, "normal")]
+
+
 def test_snapshot_skips_cross_repo_and_self_edges():
     checker = _Checker()
     builder = _builder(checker)
