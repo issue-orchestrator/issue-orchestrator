@@ -44,6 +44,7 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.publish_retry_locator_store import PublishRetryLocatorStore
 from ..ports.pull_request_tracker import PRInfo
 from .completion_types import ERROR_PREFIX_CREATE_PR, ERROR_PREFIX_PUSH
+from .republish_job_id import RepublishJobId
 
 if TYPE_CHECKING:
     from ..domain.models import Session
@@ -53,7 +54,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_JOB_PREFIX = "republish:"
 _PUBLISH_FAILURE_PREFIXES = (ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR)
 
 
@@ -330,10 +330,10 @@ class PublishRecoveryService:
         (reset/termination) are superseded, not reconciled.
         """
         for job in self._runner.drain_completed():
-            parsed = self._parse_job_id(job.job_id)
+            parsed = RepublishJobId.parse(job.job_id)
             if parsed is None:
                 continue
-            issue_number, token = parsed
+            issue_number, token = parsed.issue_number, parsed.token
             with self._lock:
                 # Correlate strictly by submission token. Only remove the
                 # issue's pending slot when THIS completion is the one it holds,
@@ -605,7 +605,7 @@ class PublishRecoveryService:
                 agent_label=agent_label,
                 worktree_path=locators.worktree_path,
             )
-        job_id = self._job_id(issue_number, token)
+        job_id = RepublishJobId(issue_number, token).encode()
 
         def run() -> None:
             self._restore_completion_record(locators)
@@ -654,25 +654,6 @@ class PublishRecoveryService:
             locators.issue_number,
             durable_copy,
         )
-
-    @staticmethod
-    def _job_id(issue_number: int, token: int) -> str:
-        # Submission-scoped: two retries for the same issue (e.g. an abandoned
-        # one and a fresh one) get distinct job ids so the runner tracks them
-        # independently and drain can correlate each completion to its exact
-        # submission.
-        return f"{_JOB_PREFIX}{issue_number}:{token}"
-
-    @staticmethod
-    def _parse_job_id(job_id: str) -> tuple[int, int] | None:
-        if not job_id.startswith(_JOB_PREFIX):
-            return None
-        suffix = job_id[len(_JOB_PREFIX):]
-        issue_str, _, token_str = suffix.partition(":")
-        try:
-            return int(issue_str), int(token_str)
-        except ValueError:
-            return None
 
     @staticmethod
     def _extract_pr_number(pr_url: str | None) -> int | None:
