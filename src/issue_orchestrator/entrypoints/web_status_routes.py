@@ -56,26 +56,6 @@ async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
     instance_id = os.environ.get("INSTANCE_ID")
     e2e_role = get_e2e_role(config.e2e, instance_id=instance_id)
 
-    # Collect publish job status
-    publish_jobs = []
-    try:
-        executor = orchestrator.deps.publish_executor
-    except AttributeError:
-        publish_job_stats = {"running": 0, "pending": 0}
-    else:
-        for job in executor.get_running_jobs():
-            publish_jobs.append({
-                "job_id": job.job_id,
-                "issue_number": job.issue_number,
-                "session_key": job.session_key,
-                "status": job.status.value,
-                "started_at": job.started_at,
-            })
-        publish_job_stats = {
-            "running": executor.get_running_count(),
-            "pending": executor.get_pending_count(),
-        }
-
     return JSONResponse({
         "paused": state.paused,
         "shutdown_requested": orchestrator.shutdown_requested,
@@ -94,54 +74,7 @@ async def get_status(orchestrator: WebOrchestratorDependency) -> JSONResponse:
         "tick_id": tick_id,
         "last_tick_time": last_tick_time,
         "e2e_role": e2e_role if config.e2e.enabled else None,
-        "publish_jobs": publish_jobs,
-        "publish_job_stats": publish_job_stats,
     })
-
-
-@web_status_router.get("/api/publish-jobs")
-async def get_publish_jobs(
-    orchestrator: WebOrchestratorDependency,
-    issue_number: int | None = None,
-) -> JSONResponse:
-    """Get publish job history.
-
-    Query params:
-        issue_number: Optional filter to a specific issue
-
-    Returns:
-        List of recent publish jobs with their status and results.
-    """
-    if orchestrator is None:
-        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    try:
-        executor = orchestrator.deps.publish_executor
-    except AttributeError as exc:
-        return JSONResponse({"error": f"Publish executor unavailable: {exc}", "jobs": []}, status_code=500)
-
-    records = executor.get_job_history(issue_number=issue_number, limit=100)
-
-    jobs = []
-    for record in records:
-        jobs.append({
-            "job_id": record.job_id,
-            "issue_number": record.issue_number,
-            "session_key": record.session_key,
-            "worktree_path": record.worktree_path,
-            "worktree_id": record.worktree_id,
-            "branch_name": record.branch_name,
-            "status": record.status,
-            "created_at": record.created_at,
-            "started_at": record.started_at,
-            "finished_at": record.finished_at,
-            "pr_url": record.pr_url,
-            "pr_number": record.pr_number,
-            "error_message": record.error_message,
-            "duration_seconds": record.duration_seconds,
-        })
-
-    return JSONResponse({"jobs": jobs, "count": len(jobs)})
 
 
 @web_status_router.get("/api/excluded-issues")

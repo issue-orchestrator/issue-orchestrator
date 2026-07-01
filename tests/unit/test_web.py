@@ -181,15 +181,7 @@ def create_mock_orchestrator():
     mock_orch.request_shutdown = MagicMock()
     mock_orch.shutdown_requested = False  # Public property for JSON serialization
 
-    # Create a mock publish executor for async completion
-    mock_executor = MagicMock()
-    mock_executor.get_running_jobs.return_value = []
-    mock_executor.get_running_count.return_value = 0
-    mock_executor.get_pending_count.return_value = 0
-    mock_executor.get_job_history.return_value = []
-
     mock_deps = MagicMock()
-    mock_deps.publish_executor = mock_executor
     mock_deps.publish_recovery = MagicMock()
     mock_deps.publish_recovery.can_retry_publish.return_value = False
     mock_deps.timeline_reader = MagicMock()

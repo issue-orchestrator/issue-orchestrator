@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from .action_applier import ActionApplier
     from .completion_handler import CompletionHandler
     from .provider_resilience import ProviderResilienceManager
+    from .publish_recovery import PublishRecoveryService
     from .session_controller import SessionController, SessionDecision
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     completion_detail: Optional[dict[str, Any]] = None,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
+    publish_recovery: Optional["PublishRecoveryService"] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -305,6 +307,12 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         completion_detail=completion_detail,
     )
 
+    # Persist durable retry locators when the publish (push/PR) failed so the
+    # dashboard "Retry publish" action survives an orchestrator restart. The
+    # recorder is a no-op for non-publish failures.
+    if publish_recovery is not None:
+        publish_recovery.record_publish_failure(session, processing_errors)
+
     # Observer handles session-level cleanup (kill sessions, close tabs)
     observer.handle_completion(session, status)
 
@@ -376,6 +384,7 @@ def process_active_sessions(
     config: Config,
     completion_dispatcher: "CompletionDispatcher | None" = None,
     provider_resilience: "ProviderResilienceManager | None" = None,
+    publish_recovery: "PublishRecoveryService | None" = None,
 ) -> None:
     """Process active sessions - moved from Orchestrator per method table.
 
@@ -413,6 +422,7 @@ def process_active_sessions(
             config=config,
             session_output=session_controller.session_output,
             provider_resilience=provider_resilience,
+            publish_recovery=publish_recovery,
         )
 
     # Apply decisions that finished on a prior tick (background dispatcher)
@@ -525,6 +535,7 @@ def _apply_completed_decision(
     config: Config,
     session_output: SessionOutput,
     provider_resilience: "ProviderResilienceManager | None" = None,
+    publish_recovery: "PublishRecoveryService | None" = None,
 ) -> None:
     """Apply a finished completion decision on the tick thread."""
     if completed.error is not None:
@@ -576,6 +587,7 @@ def _apply_completed_decision(
         blocked_label=decision.blocked_label,
         blocked_reason=decision.blocked_reason,
         completion_detail=decision.completion_detail,
+        publish_recovery=publish_recovery,
     )
     elapsed = time.monotonic() - started
     if elapsed > 5:

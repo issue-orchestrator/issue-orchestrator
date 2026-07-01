@@ -599,15 +599,14 @@ class Planner:
     ) -> list[Action]:
         """Plan immediate label updates for observed completions.
 
-        This is the "immediate label projection" phase of async completion processing.
-        When a session completes, we:
-        1. Remove in-progress label immediately (don't wait for publish job)
+        This is the "immediate label projection" phase for completion facts on
+        ``snapshot.observed_completions``. When such a fact is present we:
+        1. Remove in-progress label immediately
         2. Add pr-pending label if outcome is COMPLETED (anticipating PR creation)
         3. Add blocked label if outcome is BLOCKED
         4. Add needs-human label if outcome is NEEDS_HUMAN
 
-        The actual publish work (git push, PR creation) happens in background
-        via the PublishJobExecutor.
+        The live completion path applies these labels via ``CompletionHandler``.
 
         Returns:
             List of label actions to apply immediately

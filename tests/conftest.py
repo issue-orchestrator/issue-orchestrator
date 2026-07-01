@@ -922,17 +922,6 @@ def build_test_orchestrator_deps(
         config=lease_config,
     )
 
-    # Create async completion components for testing
-    from issue_orchestrator.control.completion_observer import CompletionObserver
-    from issue_orchestrator.control.publish_executor import PublishJobExecutor, ExecutorConfig
-
-    completion_observer = CompletionObserver(session_output=session_output)
-    executor_config = ExecutorConfig(max_workers=1)
-    publish_executor = PublishJobExecutor(
-        completion_processor=completion_processor,
-        events=events,
-        config=executor_config,
-    )
     from issue_orchestrator.execution.goal_pilot_store import SqliteGoalPilotStore
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
     from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
@@ -978,9 +967,20 @@ def build_test_orchestrator_deps(
         attempt_store=attempt_store,
     )
 
+    from issue_orchestrator.execution.json_publish_retry_locator_store import (
+        JsonPublishRetryLocatorStore,
+    )
+    from issue_orchestrator.execution.thread_background_job_runner import (
+        ThreadBackgroundJobRunner,
+    )
+
     publish_recovery = PublishRecoveryService(
         repository_host=repo_host,
-        publish_executor=publish_executor,
+        completion_processor=completion_processor,
+        locator_store=JsonPublishRetryLocatorStore(
+            config.repo_root / ".issue-orchestrator" / "state" / "publish_retry_locators.json"
+        ),
+        runner=ThreadBackgroundJobRunner(),
         label_manager=label_manager,
         fresh_issue_reader=fresh_reader,
         action_applier=action_applier,
@@ -1013,8 +1013,6 @@ def build_test_orchestrator_deps(
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
-        completion_observer=completion_observer,
-        publish_executor=publish_executor,
         publish_recovery=publish_recovery,
         services=infra_services,
     )

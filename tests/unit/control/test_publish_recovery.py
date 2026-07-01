@@ -1,19 +1,31 @@
 from __future__ import annotations
 
-import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
-from issue_orchestrator.control.job_store import set_worktree_id, JobRecord
+from issue_orchestrator.control.completion_types import ProcessingResult
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.publish_recovery import PublishRecoveryService
-from issue_orchestrator.domain.models import Issue, OrchestratorState, PublishJob, SessionHistoryEntry
+from issue_orchestrator.domain.models import (
+    Issue,
+    OrchestratorState,
+    Session,
+    SessionHistoryEntry,
+)
+from issue_orchestrator.domain.session_run import SessionRunAssets
+from issue_orchestrator.execution.json_publish_retry_locator_store import (
+    JsonPublishRetryLocatorStore,
+)
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from issue_orchestrator.ports.background_job import CompletedJob
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+BRANCH = "4057-scratch-1"
+PR_URL = "https://github.com/owner/repo/pull/5453"
 
 
 def _config(tmp_path: Path) -> Config:
@@ -34,13 +46,10 @@ class _Repo:
     def get_issue(self, issue_number: int) -> Issue | None:
         return self.issue if self.issue.number == issue_number else None
 
-    def get_issue_labels(self, issue_number: int) -> list[str]:
+    def read_issue_labels(self, issue_number: int) -> list[str]:
         if self.issue.number != issue_number:
             return []
         return list(self.labels)
-
-    def read_issue_labels(self, issue_number: int) -> list[str]:
-        return self.get_issue_labels(issue_number)
 
     def add_label(self, issue_number: int, label: str) -> None:
         if self.issue.number != issue_number:
@@ -64,22 +73,69 @@ class _Repo:
 
 
 @dataclass
-class _Executor:
-    jobs: list[JobRecord]
-    running: list[PublishJob] = field(default_factory=list)
-    submitted: list[PublishJob] = field(default_factory=list)
+class _CompletionProcessor:
+    result: ProcessingResult
+    calls: list[dict] = field(default_factory=list)
 
-    def submit(self, job: PublishJob) -> bool:
-        self.submitted.append(job)
+    def process(
+        self,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        *,
+        run_assets: SessionRunAssets,
+        pr_number: int | None = None,
+        completion_path: str | None = None,
+        agent_label: str | None = None,
+    ) -> ProcessingResult:
+        self.calls.append({
+            "worktree": worktree,
+            "issue_number": issue_number,
+            "issue_title": issue_title,
+            "completion_path": completion_path,
+            "agent_label": agent_label,
+        })
+        return self.result
+
+
+class _RecordingRunner:
+    """A BackgroundJobRunner that captures submitted work and runs it on demand.
+
+    Keeps the republish off the request thread (``retry_publish`` only submits;
+    the work executes when the test calls ``run_all``), then reports completions
+    through ``drain_completed`` exactly like the production thread runner.
+    """
+
+    def __init__(self) -> None:
+        self._pending: dict[str, Callable[[], None]] = {}
+        self._running: set[str] = set()
+        self._done: list[CompletedJob] = []
+
+    def submit(self, job_id: str, fn: Callable[[], None]) -> bool:
+        if job_id in self._running:
+            return False
+        self._running.add(job_id)
+        self._pending[job_id] = fn
         return True
 
-    def get_job_history(self, issue_number: int | None = None, limit: int = 100) -> list[JobRecord]:
-        if issue_number is None:
-            return list(self.jobs)[:limit]
-        return [job for job in self.jobs if job.issue_number == issue_number][:limit]
+    def is_running(self, job_id: str) -> bool:
+        return job_id in self._running
 
-    def get_running_jobs(self) -> list[PublishJob]:
-        return list(self.running)
+    def run_all(self) -> None:
+        for job_id, fn in list(self._pending.items()):
+            error: BaseException | None = None
+            try:
+                fn()
+            except BaseException as exc:  # noqa: BLE001 — mirror thread runner
+                error = exc
+            self._done.append(CompletedJob(job_id=job_id, error=error))
+            self._pending.pop(job_id, None)
+            self._running.discard(job_id)
+
+    def drain_completed(self) -> list[CompletedJob]:
+        done = self._done
+        self._done = []
+        return done
 
 
 @dataclass
@@ -94,98 +150,174 @@ class _ActionApplier:
         return SimpleNamespace(success=True, error=None)
 
 
-def _failed_job(tmp_path: Path, *, issue_number: int = 4057, branch: str = "4057-scratch-1") -> JobRecord:
-    worktree = tmp_path / "worktree-4057"
-    worktree.mkdir(parents=True)
-    worktree_id = set_worktree_id(worktree, "wt-4057")
-    session_output = FileSystemSessionOutput()
-    run_assets = session_output.start_run(
-        worktree,
-        "coding-1",
-        issue_number=issue_number,
-        agent_label="agent:web",
-        backend="subprocess",
+def _service(
+    tmp_path: Path,
+    repo: _Repo,
+    lm: LabelManager,
+    *,
+    result: ProcessingResult | None = None,
+    runner: _RecordingRunner | None = None,
+) -> tuple[PublishRecoveryService, JsonPublishRetryLocatorStore, _RecordingRunner]:
+    store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
+    runner = runner or _RecordingRunner()
+    processor = _CompletionProcessor(
+        result or ProcessingResult(success=True, message="ok", pr_url=PR_URL)
     )
-    completion_rel = (
-        f".issue-orchestrator/sessions/{run_assets.run_dir.name}/"
-        "completion-agent-web.json"
+    service = PublishRecoveryService(
+        repository_host=repo,
+        completion_processor=processor,
+        locator_store=store,
+        runner=runner,
+        label_manager=lm,
+        fresh_issue_reader=repo,
+        action_applier=_ActionApplier(repo),
     )
-    completion_path = worktree / completion_rel
-    completion_path.parent.mkdir(parents=True, exist_ok=True)
-    completion_path.write_text("{}")
-    metadata = json.dumps({
-        "issue_title": "UI: Surface provider circuit breaker status",
-        "outcome": "completed",
-        "requested_actions": ["push_branch", "create_pr"],
-        "completion_path": completion_rel,
-        "agent_label": "agent:web",
-        "run_assets": run_assets.to_dict(),
-    })
-    return JobRecord(
-        job_id="job-failed-1",
-        issue_number=issue_number,
-        session_key="coding-1",
-        worktree_path=str(worktree),
-        worktree_id=worktree_id,
-        branch_name=branch,
-        status="failed",
-        created_at=10.0,
-        started_at=11.0,
-        finished_at=12.0,
-        error_message="push failed",
-        metadata_json=metadata,
-    )
+    return service, store, runner
 
 
-def test_retry_publish_submits_manual_publish_job(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    lm = LabelManager(config)
-    issue = Issue(
-        number=4057,
-        title="UI: Surface provider circuit breaker status",
-        labels=["agent:web", lm.publish_failed, lm.publish_fail_count_label(2)],
+def _issue(lm: LabelManager, *, publish_failed: bool = True) -> Issue:
+    labels = ["agent:web"]
+    if publish_failed:
+        labels += [lm.publish_failed, lm.publish_fail_count_label(2)]
+    return Issue(number=4057, title="UI: Surface provider status", labels=labels)
+
+
+def _record_failure(
+    service: PublishRecoveryService,
+    make_session,
+    tmp_path: Path,
+) -> Session:
+    """Persist retry locators the way the live completion path does."""
+    session = make_session(
+        issue_number=4057,
+        issue_title="UI: Surface provider status",
+        branch_name=BRANCH,
     )
-    repo = _Repo(issue=issue, labels=list(issue.labels))
-    executor = _Executor(jobs=[_failed_job(tmp_path)])
-    service = PublishRecoveryService(repo, executor, lm, repo, _ActionApplier(repo))
+    completion_file = session.worktree_path / session.completion_path
+    completion_file.parent.mkdir(parents=True, exist_ok=True)
+    completion_file.write_text("{}")
+    service.record_publish_failure(session, ["push_branch: Push failed: remote rejected"])
+    return session
+
+
+# ---------------------------------------------------------------------------
+# Command surface A: publish-fail -> persisted retry locators
+# ---------------------------------------------------------------------------
+
+
+def test_record_publish_failure_persists_retry_locators(make_session, tmp_path) -> None:
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, _ = _service(tmp_path, repo, lm)
+
+    session = _record_failure(service, make_session, tmp_path)
+
+    locators = store.get(4057)
+    assert locators is not None
+    assert locators.branch_name == BRANCH
+    assert locators.worktree_path == str(session.worktree_path)
+    assert locators.completion_path == session.completion_path
+
+
+def test_record_publish_failure_ignores_non_publish_errors(make_session, tmp_path) -> None:
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, _ = _service(tmp_path, repo, lm)
+
+    session = make_session(issue_number=4057, branch_name=BRANCH)
+    service.record_publish_failure(session, ["validation_failed: tests failed"])
+
+    assert store.get(4057) is None
+
+
+# ---------------------------------------------------------------------------
+# Command surface B: retry request -> runner submission + drain reconciliation
+# ---------------------------------------------------------------------------
+
+
+def test_retry_publish_submits_off_thread_without_running_inline(make_session, tmp_path) -> None:
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, _, runner = _service(tmp_path, repo, lm)
+    _record_failure(service, make_session, tmp_path)
     state = OrchestratorState()
 
     result = service.retry_publish(4057, state)
 
     assert result.status == "submitted"
-    assert len(executor.submitted) == 1
-    submitted = executor.submitted[0]
-    assert submitted.retry_publish is True
-    assert submitted.branch_name == "4057-scratch-1"
-    assert submitted.issue_number == 4057
-    assert submitted.job_id in state.pending_publish_jobs
+    assert result.job_id == "republish:4057"
+    # The heavy publish work runs on the runner, not on the request thread.
+    assert runner.is_running("republish:4057")
 
 
-def test_retry_publish_recovers_existing_pr_and_clears_publish_failed_state(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    lm = LabelManager(config)
-    issue = Issue(
-        number=4057,
-        title="UI: Surface provider circuit breaker status",
-        labels=["agent:web", lm.publish_failed, lm.publish_fail_count_label(2)],
+def test_retry_publish_reconciles_success_on_drain(make_session, tmp_path) -> None:
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(tmp_path, repo, lm)
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    assert lm.publish_failed in repo.removed
+    assert lm.publish_fail_count_label(2) in repo.removed
+    assert lm.pr_pending in repo.added
+    assert store.get(4057) is None  # locators cleared on success
+    assert state.session_history[-1].status == "completed"
+    assert state.session_history[-1].pr_url == PR_URL
+
+
+def test_retry_publish_failure_leaves_issue_retryable(make_session, tmp_path) -> None:
+    """A failed republish must not permanently lock out a second retry."""
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, runner = _service(
+        tmp_path, repo, lm,
+        result=ProcessingResult(success=False, message="push failed again"),
     )
+    _record_failure(service, make_session, tmp_path)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    # While running, a second retry is rejected by the live-runner in-flight guard.
+    assert service.retry_publish(4057, state).status == "rejected"
+
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    # publish-failed + locators survive a failed republish, so retry is available again.
+    assert store.get(4057) is not None
+    assert not runner.is_running("republish:4057")
+    assert service.retry_publish(4057, state).status == "submitted"
+
+
+# ---------------------------------------------------------------------------
+# Recovery of an already-created PR
+# ---------------------------------------------------------------------------
+
+
+def test_retry_publish_recovers_existing_pr_and_clears_state(make_session, tmp_path) -> None:
+    lm = LabelManager(_config(tmp_path))
+    issue = _issue(lm)
     repo = _Repo(
         issue=issue,
         labels=list(issue.labels),
         prs=[
             PRInfo(
                 number=5453,
-                title="#4057: UI: Surface provider circuit breaker status",
-                url="https://github.com/owner/repo/pull/5453",
-                branch="4057-scratch-1",
+                title="#4057: UI: Surface provider status",
+                url=PR_URL,
+                branch=BRANCH,
                 body="",
                 state="open",
                 labels=[],
             )
         ],
     )
-    executor = _Executor(jobs=[_failed_job(tmp_path)])
-    service = PublishRecoveryService(repo, executor, lm, repo, _ActionApplier(repo))
+    service, store, runner = _service(tmp_path, repo, lm)
+    _record_failure(service, make_session, tmp_path)
     state = OrchestratorState(
         session_history=[
             SessionHistoryEntry(
@@ -203,12 +335,24 @@ def test_retry_publish_recovers_existing_pr_and_clears_publish_failed_state(tmp_
     result = service.retry_publish(4057, state)
 
     assert result.status == "recovered_existing_pr"
+    assert not runner.is_running("republish:4057")  # no republish submitted
+    assert store.get(4057) is None
     assert lm.publish_failed in repo.removed
-    assert lm.publish_fail_count_label(2) in repo.removed
     assert lm.pr_pending in repo.added
     assert not any(
         entry.issue_number == 4057 and entry.status in {"blocked", "failed"}
         for entry in state.session_history
     )
     assert state.session_history[-1].status == "completed"
-    assert state.session_history[-1].pr_url == "https://github.com/owner/repo/pull/5453"
+    assert state.session_history[-1].pr_url == PR_URL
+
+
+def test_retry_publish_rejected_without_locators(make_session, tmp_path) -> None:
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, _, _ = _service(tmp_path, repo, lm)
+
+    result = service.retry_publish(4057, OrchestratorState())
+
+    assert result.status == "rejected"
+    assert "locators" in result.message.lower()
