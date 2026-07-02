@@ -38,7 +38,7 @@ def _timing_marker_command() -> str:
         "'[validate-timing] CONFIG validate_jobs=10 unit_parallel=auto "
         "simulated_parallel=auto integration_parallel=auto "
         "integration_agent_parallel=0 static_jobs=10 test_jobs=1 "
-        "web_jobs=1 agent_jobs=1 e2e_jobs=1' "
+        "web_jobs=1 live_web_jobs=2 agent_jobs=1 e2e_jobs=1' "
         "'[validate-timing] START target=test-unit at=2026-03-14T09:10:13-0600' "
         "'[validate-timing] END target=test-unit status=0 elapsed=12s "
         "at=2026-03-14T09:10:25-0600'"
