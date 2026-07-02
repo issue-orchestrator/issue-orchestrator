@@ -510,7 +510,44 @@
               {"$ref": "#/components/schemas/OpenE2ERunCommandPayload"},
               {"type": "null"}
             ]
+          },
+          "stack_dependency": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/StackDependencyGateViewPayload"},
+              {"type": "null"}
+            ]
+          },
+          "stack_signal": {"type": ["string", "null"]},
+          "stack_chip": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/StackChipViewPayload"},
+              {"type": "null"}
+            ]
           }
+        }
+      },
+      "StackChipViewPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tone", "mode_label", "status_text", "title"],
+        "properties": {
+          "tone": {"type": "string"},
+          "mode_label": {"type": "string"},
+          "status_text": {"type": "string"},
+          "title": {"type": "string"}
+        }
+      },
+      "FlowColumnPayload": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "title", "count", "items"],
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": "string"},
+          "count": {"type": "integer"},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "expandable": {"type": "boolean"},
+          "session_scoped": {"type": "boolean"}
         }
       },
       "DashboardDataPayload": {
@@ -591,7 +628,7 @@
           "e2e_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
           "completed_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
           "awaiting_merge_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
-          "flow_columns": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "flow_columns": {"type": "array", "items": {"$ref": "#/components/schemas/FlowColumnPayload"}},
           "scope_summary": {"type": "object", "additionalProperties": true},
           "active_count": {"type": "integer"},
           "queue_count": {"type": "integer"},
@@ -750,6 +787,70 @@
           "event_summary": {"type": "string"}
         }
       },
+      "StackDependencyGatePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate", "open", "reason_codes", "reasons"],
+        "properties": {
+          "gate": {"type": "string"},
+          "open": {"type": "boolean"},
+          "reason_codes": {"type": "array", "items": {"type": "string"}},
+          "reasons": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "StackDependencyPredecessorPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "mode", "state", "problem"],
+        "properties": {
+          "ref": {"type": "string"},
+          "mode": {"type": "string"},
+          "state": {"type": "string"},
+          "problem": {"type": ["string", "null"]}
+        }
+      },
+      "StackDependencySuccessorPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue_number", "ref", "mode"],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "ref": {"type": "string"},
+          "mode": {"type": "string"}
+        }
+      },
+      "StackDependencyGateViewPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue_number",
+          "mode",
+          "has_stack_edges",
+          "gates",
+          "predecessors",
+          "successors",
+          "blocked_gates",
+          "blocked_reason_codes",
+          "stale",
+          "stale_reason_codes",
+          "stack_base_branch",
+          "approval_freshness"
+        ],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "mode": {"type": "string"},
+          "has_stack_edges": {"type": "boolean"},
+          "gates": {"type": "array", "items": {"$ref": "#/components/schemas/StackDependencyGatePayload"}},
+          "predecessors": {"type": "array", "items": {"$ref": "#/components/schemas/StackDependencyPredecessorPayload"}},
+          "successors": {"type": "array", "items": {"$ref": "#/components/schemas/StackDependencySuccessorPayload"}},
+          "blocked_gates": {"type": "array", "items": {"type": "string"}},
+          "blocked_reason_codes": {"type": "array", "items": {"type": "string"}},
+          "stale": {"type": "boolean"},
+          "stale_reason_codes": {"type": "array", "items": {"type": "string"}},
+          "stack_base_branch": {"type": ["string", "null"]},
+          "approval_freshness": {"type": "string"}
+        }
+      },
       "IssueDetailPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -791,6 +892,12 @@
           "blocked_detail": {
             "oneOf": [
               {"$ref": "#/components/schemas/IssueDetailBlockedDetailPayload"},
+              {"type": "null"}
+            ]
+          },
+          "stack_dependency": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/StackDependencyGateViewPayload"},
               {"type": "null"}
             ]
           },

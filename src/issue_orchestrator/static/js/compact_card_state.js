@@ -33,6 +33,9 @@
         const githubTitle = card?.github_title ?? '';
         const githubAriaLabel = card?.github_aria_label ?? '';
         const labels = normalizeLabels(card?.orchestrator_labels).join(',');
+        // The server precomputes stack_signal (stack_signal() in
+        // view_models/dashboard.py), so both sides fingerprint identically.
+        const stackSignal = card?.stack_signal ?? '';
         return [
             cardId,
             issueNumber,
@@ -52,6 +55,7 @@
             githubTitle,
             githubAriaLabel,
             labels,
+            stackSignal,
         ].join('|');
     }
 

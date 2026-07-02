@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
+from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
@@ -1924,6 +1925,7 @@ class OrchestratorState:
     ui_visible_issue_numbers: list[int] = field(default_factory=list)  # Issue numbers currently visible in Flow UI
     ui_visible_updated_at: float = 0.0  # Unix timestamp when UI visibility hint was last updated
     dependency_problems: dict[int, "DependencyProblem"] = field(default_factory=dict)  # Issues blocked by dependencies (to migrate: dict[IssueKey, ...])
+    dependency_gate_snapshot: DependencyGateSnapshot = field(default_factory=DependencyGateSnapshot)  # Producer-evaluated stack gate reports + successor edges for the UI (#6597)
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
     discovered_retrospective_reviews: list[DiscoveredRetrospectiveReview] = field(default_factory=list)  # Existing implementation reviews from labels/UI
