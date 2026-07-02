@@ -42,6 +42,7 @@ from .settings_schema_support import (
     field_meta,
     generate_reference_markdown,
     project_tabs_to_yaml_document,
+    select_changed_tabs,
     setup_fields,
     summary_fields,
 )
@@ -1721,6 +1722,23 @@ def apply_to_yaml_document(
     Mutates and returns ``document``.
     """
     return project_tabs_to_yaml_document(TAB_DEFINITIONS, tabs, document)
+
+
+def changed_tabs(
+    snapshot: dict[str, BaseModel], submitted: dict[str, BaseModel]
+) -> dict[str, BaseModel]:
+    """Return only the submitted tabs whose values differ from the snapshot.
+
+    Settings-save persistence policy owner. The browser form posts every tab on
+    every save, so persistence must be scoped to genuinely edited tabs by
+    comparing each validated tab model against the current-config snapshot from
+    :func:`from_config`, not by trusting which tabs the request happens to
+    carry. Feed the result to :func:`apply_to_yaml_document` so a one-tab edit
+    patches only that tab's ``yaml_path`` keys and leaves every untouched
+    settings section (and unowned operational config) exactly as-is. See
+    :func:`~.settings_schema_support.select_changed_tabs` for the full rationale.
+    """
+    return select_changed_tabs(snapshot, submitted)
 
 
 def get_restart_fields() -> set[str]:

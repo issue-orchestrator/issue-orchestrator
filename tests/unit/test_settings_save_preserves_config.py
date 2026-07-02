@@ -25,6 +25,7 @@ from issue_orchestrator.infra.doctor import DoctorResult
 from issue_orchestrator.infra.settings_schema import (
     apply_to,
     apply_to_yaml_document,
+    changed_tabs,
     from_config,
 )
 
@@ -274,6 +275,28 @@ def test_save_document_patch_requires_a_path():
         config.save_document_patch(lambda doc: None)
 
 
+def test_changed_tabs_selects_only_edited_tabs(loaded_config):
+    """The persistence-policy owner returns exactly the tabs that changed.
+
+    This is the decision F1/A1 pin down: which tabs a save should persist. It
+    must be driven by a value comparison against the current-config snapshot,
+    never by which tabs a request happens to carry.
+    """
+    config, _ = loaded_config
+
+    snapshot = from_config(config)
+    submitted = from_config(config)  # A whole-form post: every tab present.
+
+    # No edits -> nothing to persist, even though every tab is "submitted".
+    assert changed_tabs(snapshot, submitted) == {}
+
+    # Edit one field in one tab -> only that tab is selected.
+    submitted["concurrency"].max_concurrent_sessions = 11
+    selected = changed_tabs(snapshot, submitted)
+    assert set(selected) == {"concurrency"}
+    assert selected["concurrency"].max_concurrent_sessions == 11
+
+
 async def test_update_settings_route_preserves_operational_config(
     loaded_config, monkeypatch
 ):
@@ -282,6 +305,12 @@ async def test_update_settings_route_preserves_operational_config(
     Exercises the real handler wiring (validate -> apply -> save) with doctor
     stubbed to a clean result so persistence runs. This is the acceptance
     scenario at the HTTP boundary the settings ``Save`` button hits.
+
+    Critically, the posted body mirrors the *real* browser producer: the
+    settings form's ``collectForm`` gathers every ``[data-tab][data-field]``
+    control, so a save carries ALL tabs, not just the edited one. The handler
+    must still persist only the changed tab, or every untouched tab's defaults
+    would be materialized into ``main.yaml``.
     """
     from issue_orchestrator.entrypoints import web_settings_routes
 
@@ -295,10 +324,14 @@ async def test_update_settings_route_preserves_operational_config(
 
     orchestrator = types.SimpleNamespace(config=config)
 
+    # Build the full whole-form payload the browser posts (every tab), then
+    # change exactly one Concurrency field -- exactly like the settings UI save.
+    full_payload = {key: model.model_dump() for key, model in from_config(config).items()}
+    full_payload["concurrency"]["max_concurrent_sessions"] = 8
+
     class _FakeRequest:
         async def json(self):
-            # Change a single tab, exactly like the settings UI save.
-            return {"concurrency": {"max_concurrent_sessions": 8}}
+            return full_payload
 
     response = await web_settings_routes.update_settings(_FakeRequest(), orchestrator)
 
@@ -314,8 +347,9 @@ async def test_update_settings_route_preserves_operational_config(
     assert saved["validation"]["publish"]["cmd"] == "./scripts/validate-pr.sh"
     assert saved["review"]["exchange"]["mode"] == "via-local-loop"
 
-    # Only the submitted (Concurrency) tab is persisted: other settings tabs'
-    # sections are neither rewritten nor materialized from defaults.
+    # Even though the request carried every tab, only the CHANGED (Concurrency)
+    # tab is persisted: other settings tabs' sections are neither rewritten nor
+    # materialized from defaults.
     assert "provider_resilience" not in saved  # Advanced tab, untouched
     assert "sqlite_backup" not in saved  # Advanced tab, untouched
     assert "goal_pilot" not in saved  # Goal Pilot tab, untouched

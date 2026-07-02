@@ -319,6 +319,36 @@ def project_tabs_to_yaml_document(
     return document
 
 
+def select_changed_tabs(
+    snapshot: dict[str, BaseModel],
+    submitted: dict[str, BaseModel],
+) -> dict[str, BaseModel]:
+    """Return only the submitted tabs whose values differ from ``snapshot``.
+
+    This is the settings-save persistence policy owner. A save must patch the
+    YAML document with exactly the tabs the operator actually changed -- never
+    every tab that merely appears in the request. The browser settings form
+    posts *every* tab on every save (``settings_form_controls.collectForm``
+    collects all ``[data-tab][data-field]`` controls in the document), so
+    "present in the request" is the whole tab set; persisting that set would
+    materialize defaults for untouched sections (``provider_resilience``,
+    ``sqlite_backup``, ``goal_pilot``, ``hooks.ai_gate.dangerous_allow_failure``,
+    ...) into ``main.yaml`` even for a one-field edit.
+
+    Comparing each validated tab model against the ``build_tabs_from_config``
+    snapshot keeps the persisted set to genuinely edited tabs regardless of what
+    the client chooses to send (whole-form or dirty-only). Both mappings hold
+    Pydantic models of the same per-tab classes, so equality is a structural
+    field-value comparison.
+    """
+    changed: dict[str, BaseModel] = {}
+    for key, model in submitted.items():
+        base = snapshot.get(key)
+        if base is None or model != base:
+            changed[key] = model
+    return changed
+
+
 def collect_restart_fields(tab_definitions: list[dict[str, Any]]) -> set[str]:
     """Return field names that require restart when changed."""
     fields: set[str] = set()
