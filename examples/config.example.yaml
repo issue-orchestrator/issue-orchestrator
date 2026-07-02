@@ -170,6 +170,17 @@ goal_pilot:
   approval_batch_size: 10
   approval_batch_window_minutes: 60
 
+# Optional GitHub Merge Queue integration. When enabled, approved PRs that have
+# cleared the orchestrator gate are enqueued into GitHub's native merge queue
+# instead of being reworked merely for being behind base. GitHub stays the merge
+# authority (branch protection, required checks, queue ordering); the
+# orchestrator owns eligibility, enqueue decisions, and failure routing.
+merge_queue:
+  enabled: false
+  # provider: "github"              # only github is supported today
+  # enqueue_after: "code-reviewed"  # gate that must pass first: code-reviewed | triage-reviewed
+  # failure_action: "rework"        # how to route a failed queue entry: rework | needs_human
+
 cleanup:
   with_triage:
     close_ai_session_tabs: true
@@ -187,11 +198,11 @@ validation:
     # test skips such as assumeTrue/assumeFalse/@Disabled in JVM projects).
     timeout_seconds: 300
   publish:
-    cmd: "make validate-pr-raw"
+    cmd: "./scripts/validate-pr-suite.sh"
     # Authoritative pre-push / pre-publish gate. issue-orchestrator caches
     # successful runs by HEAD SHA + command so git pre-push can reuse them.
-    # If `make validate-pr` calls scripts/verify-pr.sh, configure the raw
-    # underlying command here so pre-push validation does not re-enter itself.
+    # If `make validate-pr` calls scripts/verify-pr.sh, configure a private
+    # non-recursive command here so pre-push validation does not re-enter itself.
     timeout_seconds: 1800
     # tracked = block on staged + unstaged changes (default)
     # all = block on tracked + untracked changes

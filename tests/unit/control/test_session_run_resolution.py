@@ -6,7 +6,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from issue_orchestrator.control.completion_observer import CompletionObserver
 from issue_orchestrator.control.session_run_resolution import (
     resolve_run_dir,
     resolve_session_run_dir,
@@ -19,13 +18,7 @@ from issue_orchestrator.domain.models import (
     SessionKey,
     TaskKind,
 )
-from issue_orchestrator.infra.provider_resilience import (
-    ProviderStatus,
-    now_iso,
-    write_provider_status,
-)
 from issue_orchestrator.domain.session_run import SessionRunAssets
-from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 from issue_orchestrator.ports.session_output import SessionOutput
 from tests.unit.session_run_helpers import make_session_run_assets
 
@@ -144,37 +137,3 @@ def test_manifest_run_dir_must_match_injected_run_dir(tmp_path: Path) -> None:
             run_dir=wrong_run_dir,
             manifest=manifest,
         )
-
-
-def test_completion_observer_reads_provider_status_from_recorded_run_dir(
-    tmp_path: Path,
-) -> None:
-    run_dir = (
-        tmp_path
-        / "worktree"
-        / ".issue-orchestrator"
-        / "sessions"
-        / "20260525__coding-1"
-    )
-    write_provider_status(
-        run_dir,
-        ProviderStatus(
-            provider="codex",
-            error_type=ProviderErrorType.TRANSIENT,
-            attempts=3,
-            succeeded=False,
-            exit_code=1,
-            timed_out=False,
-            last_error_summary="provider unavailable",
-            last_attempt_at=now_iso(),
-        ),
-    )
-    session = _session(tmp_path, run_dir)
-    session_output = Mock(spec=SessionOutput)
-    observer = CompletionObserver(session_output=session_output)
-
-    provider_status = observer._read_provider_status(session)  # noqa: SLF001
-
-    assert provider_status is not None
-    assert provider_status.provider == "codex"
-    session_output.find_run_dir.assert_not_called()

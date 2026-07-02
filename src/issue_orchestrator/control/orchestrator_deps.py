@@ -46,8 +46,7 @@ if TYPE_CHECKING:
     from .session_restorer import SessionRestorer
     from .state_machine_manager import StateMachineManager
     from .completion_processor import CompletionProcessor
-    from .completion_observer import CompletionObserver
-    from .publish_executor import PublishJobExecutor
+    from .completion_dispatcher import CompletionDispatcher
     from .publish_recovery import PublishRecoveryService
     from .session_controller import SessionController
     from .health_gate import HealthGate
@@ -95,6 +94,9 @@ class OrchestratorDeps:
     state_machine_manager: "StateMachineManager"
     completion_processor: "CompletionProcessor"
     session_controller: "SessionController"
+    # Runs a terminated session's completion decision (publish gate + push + PR);
+    # the background impl keeps that work off the tick thread.
+    completion_dispatcher: "CompletionDispatcher"
     health_gate: "HealthGate"
 
     # IO adapters
@@ -109,9 +111,7 @@ class OrchestratorDeps:
     claim_gate: "ClaimGate"
     lease_renewer: "LeaseRenewer"
 
-    # Async completion processing
-    completion_observer: "CompletionObserver"
-    publish_executor: "PublishJobExecutor"
+    # Manual publish recovery ("Retry publish"): off-thread republish + reconcile
     publish_recovery: "PublishRecoveryService"
 
     # Cross-cutting infrastructure services (label mgmt, persistence, etc.)

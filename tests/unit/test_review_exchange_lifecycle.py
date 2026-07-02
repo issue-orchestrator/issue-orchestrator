@@ -29,6 +29,41 @@ def _active_session(terminal_id: str):
     return SimpleNamespace(terminal_id=terminal_id)
 
 
+class _FakePublishRetryAbandoner:
+    def __init__(self) -> None:
+        self.abandoned: list[int] = []
+
+    def abandon_issue(self, issue_number: int) -> None:
+        self.abandoned.append(issue_number)
+
+
+def test_terminate_issue_runtime_abandons_publish_retry() -> None:
+    """The shared boundary must also abandon in-flight publish retries."""
+    publish_recovery = _FakePublishRetryAbandoner()
+
+    terminate_issue_runtime(
+        issue_number=230,
+        reason="issue-completed",
+        pair_registry=None,
+        job_supervisor=None,
+        publish_recovery=publish_recovery,
+    )
+
+    assert publish_recovery.abandoned == [230]
+
+
+def test_terminate_issue_runtime_without_publish_recovery_is_noop() -> None:
+    """Omitting the abandoner keeps the boundary working (backward compatible)."""
+    result = terminate_issue_runtime(
+        issue_number=230,
+        reason="issue-completed",
+        pair_registry=None,
+        job_supervisor=None,
+    )
+
+    assert result.issue_number == 230
+
+
 def test_terminate_issue_runtime_stops_issue_rework_and_hidden_exchange() -> None:
     pair_registry = Mock()
     job_supervisor = Mock()

@@ -134,6 +134,13 @@ class TimelineEventContract(ContractBase):
     round_index: Optional[int] = None
     attempt_index: Optional[int] = None
     role: Optional[str] = None
+    # Per-role verdict carried by ``review_exchange.role_feedback`` events
+    # (the raw ``response_type`` the agent reported: ok / changes_requested /
+    # disagree / …).  Distinct from the round-level ``reviewer_response_type`` /
+    # ``coder_response_type`` recorded on ``round_completed``; the in-round
+    # Story progress projection reads this field, so it is part of the durable
+    # timeline contract (issue #6428).
+    response_type: Optional[str] = None
     reviewer_response_type: Optional[str] = None
     reviewer_response_text: Optional[str] = None
     review_decision_verdict: Optional[str] = None
@@ -146,6 +153,82 @@ class TimelineEventContract(ContractBase):
 class TimelineIssueContract(ContractBase):
     issue_number: int
     events: list[TimelineEventContract]
+
+
+class StackGateStatusView(ContractBase):
+    """One lifecycle gate (work/review/publish/merge) in the gate report.
+
+    ``reason_codes`` are stable, machine-readable ``GateBlockReason`` values so
+    the UI can branch on *why* a gate is closed without parsing human text;
+    ``reasons`` carries the human phrasing rendered in the drawer.
+    """
+
+    gate: str
+    open: bool
+    reason_codes: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class StackPredecessorEdgeView(ContractBase):
+    """A predecessor dependency edge this issue is gated on."""
+
+    ref: str
+    mode: str
+    state: str
+    problem: Optional[str] = None
+
+
+class StackSuccessorEdgeView(ContractBase):
+    """An issue that depends on / stacks after this issue (chain context)."""
+
+    issue_number: int
+    ref: str
+    mode: str
+
+
+class StackChipView(ContractBase):
+    """Precomputed compact stack-chip display fields.
+
+    The server template (first paint) and the client rebuild render the chip from
+    these identical fields, so the tone / label / status / title logic lives in
+    one place (the projection) rather than being duplicated between Jinja and JS.
+    ``tone`` is a presentation bucket (``ok`` / ``blocked`` / ``stale``);
+    ``status_text`` is the visible accessible-name text; ``title`` is the fuller
+    hover sentence including chain context.
+    """
+
+    tone: str
+    mode_label: str
+    status_text: str
+    title: str
+
+
+class StackDependencyGateView(ContractBase):
+    """Producer-provided projection of the dependency gate report for one issue.
+
+    The dashboard and issue detail render stack state from this contract without
+    recomputing dependency policy in the UI. ``mode`` distinguishes normal
+    dependency edges from stack predecessor edges; ``gates`` carries the
+    work/review/publish/merge decisions; ``stale`` marks a successor invalidated
+    by a predecessor branch change or a stale own-approval.
+    """
+
+    issue_number: int
+    mode: str
+    has_stack_edges: bool
+    gates: list[StackGateStatusView] = Field(default_factory=list)
+    predecessors: list[StackPredecessorEdgeView] = Field(default_factory=list)
+    successors: list[StackSuccessorEdgeView] = Field(default_factory=list)
+    blocked_gates: list[str] = Field(default_factory=list)
+    blocked_reason_codes: list[str] = Field(default_factory=list)
+    stale: bool = False
+    stale_reason_codes: list[str] = Field(default_factory=list)
+    stack_base_branch: Optional[str] = None
+    # Reviewed-commit freshness of the slice's own agent-review approval:
+    # "fresh", "stale", or "unknown". "unknown" is surfaced explicitly (rather
+    # than implying "fresh") when no approval-freshness source answered — so the
+    # merge gate is never rendered verified-fresh on a guess (ADR-0029).
+    approval_freshness: str = "unknown"
 
 
 PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
@@ -164,6 +247,7 @@ PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "sse.startup_complete": StartupCompletePayload,
     "sse.shutdown_requested": ShutdownRequestedPayload,
     "timeline.issue": TimelineIssueContract,
+    "stack.dependency_gate_view": StackDependencyGateView,
 }
 
 

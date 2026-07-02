@@ -18,11 +18,14 @@ from issue_orchestrator.control.actions import (
     LaunchValidationRetryAction,
     StopSessionAction,
     QueueReviewAction,
+    EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CreateTriageIssueAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
+    ShedRecoveredWorkflowLabelsAction,
     SupersedePullRequestAction,
     CloseIssueAction,
     SetIssueStateAction,
@@ -966,6 +969,65 @@ class TestCloseIssueAction:
         assert "GitHub refused" in (result.error or "")
 
 
+class _FakePublishRetryAbandoner:
+    def __init__(self) -> None:
+        self.abandoned: list[int] = []
+
+    def abandon_issue(self, issue_number: int) -> None:
+        self.abandoned.append(issue_number)
+
+
+class TestPublishRetryAbandonmentAtLifecycleBoundaries:
+    """Every issue terminal boundary abandons an in-flight publish retry.
+
+    The abandonment is owned by the shared runtime terminator, not each caller,
+    so escalation and issue-completed/closed reconciliation both drop a stored /
+    in-flight retry that could otherwise repopulate a terminated issue.
+    """
+
+    def test_escalation_abandons_publish_retry(self, applier, mock_labels):
+        publish_recovery = _FakePublishRetryAbandoner()
+        applier.publish_recovery = publish_recovery
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        assert applier.apply(action).success
+        assert publish_recovery.abandoned == [123]
+
+    def test_issue_completed_reconciliation_abandons_publish_retry(self, applier):
+        publish_recovery = _FakePublishRetryAbandoner()
+        applier.publish_recovery = publish_recovery
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.pair_registry = MagicMock(name="pair_registry")
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        )
+
+        assert applier.apply(action).success
+        assert publish_recovery.abandoned == [228]
+
+
 class TestEscalateToHumanAction:
     """Tests for ESCALATE_TO_HUMAN action."""
 
@@ -1498,6 +1560,364 @@ class TestApplyAll:
         assert summary_events == []
 
 
+class TestShedRecoveredWorkflowLabelsNotDispatchable:
+    """SHED_RECOVERED_WORKFLOW_LABELS is a private sub-step of the
+    RECOVER_TERMINAL_ISSUE owner command, not an independently dispatchable
+    action. Applying it directly must be a no-op skip so it can never bypass
+    the reconciliation pause gate the owner command enforces (#6431 F1).
+
+    The shed's label-selection behavior is covered through the owner command in
+    TestRecoverTerminalIssueAction — its only reachable entry point.
+    """
+
+    def test_standalone_shed_is_not_dispatched_and_mutates_nothing(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        mock_worktree_manager, mock_fresh_issue_reader,
+    ):
+        from issue_orchestrator.infra.config import Config
+        from issue_orchestrator.control.label_manager import LabelManager
+
+        # Wire everything for a shed that WOULD succeed (live transient labels,
+        # a real label_manager). Applying the shed directly must still do
+        # nothing, proving the gate cannot be bypassed by issuing the sub-step
+        # as a top-level action.
+        mock_fresh_issue_reader.read_issue_labels.return_value = [
+            "pr-pending", "publish-failed",
+        ]
+        applier = ActionApplier(
+            labels=mock_labels,
+            sessions=mock_sessions,
+            events=mock_events,
+            repository_host=mock_repository_host,
+            worktree_manager=mock_worktree_manager,
+            fresh_issue_reader=mock_fresh_issue_reader,
+            label_manager=LabelManager(Config(repo="o/r")),
+            reconcile=False,
+        )
+        action = ShedRecoveredWorkflowLabelsAction(
+            issue_number=228, issue_key="M1-228",
+        )
+
+        result = applier.apply(action)
+
+        assert not result.success
+        mock_labels.remove_label.assert_not_called()
+
+
+class TestRecoverTerminalIssueAction:
+    """Tests for RECOVER_TERMINAL_ISSUE — shed labels, then finalize history.
+
+    This action owns the terminal-recovery ordering invariant: history must
+    only terminalize after the label cleanup has succeeded, so a transient
+    label-removal failure leaves the history entry reconcilable for retry
+    instead of stranding pr-pending / publish-failed / publish-fail-count-*
+    labels (#6431 F1).
+    """
+
+    @pytest.fixture
+    def real_label_manager(self):
+        from issue_orchestrator.infra.config import Config
+        from issue_orchestrator.control.label_manager import LabelManager
+        return LabelManager(Config(repo="o/r"))
+
+    @pytest.fixture
+    def real_label_store(self, tmp_path):
+        from issue_orchestrator.execution.label_store import LabelStore
+        return LabelStore(tmp_path / "label_store.sqlite")
+
+    def _make_applier(
+        self,
+        mock_labels,
+        mock_sessions,
+        mock_events,
+        mock_repository_host,
+        real_label_manager,
+        github_labels,
+        history_entry,
+        *,
+        reconcile=False,
+        label_store=None,
+    ):
+        reader = MagicMock()
+        reader.read_issue_labels.return_value = list(github_labels)
+        applier = ActionApplier(
+            labels=mock_labels,
+            sessions=mock_sessions,
+            events=mock_events,
+            repository_host=mock_repository_host,
+            fresh_issue_reader=reader,
+            label_manager=real_label_manager,
+            label_store=label_store,
+            reconcile=reconcile,
+        )
+        applier.history_owner = SessionHistoryOwner([history_entry])
+        return applier
+
+    @staticmethod
+    def _awaiting_merge_entry(issue_number=228):
+        return SessionHistoryEntry(
+            issue_number=issue_number,
+            title="Recovered work",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+
+    def test_sheds_then_finalizes_history(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager,
+    ):
+        entry = self._awaiting_merge_entry()
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["pr-pending", "publish-failed", "agent:backend"],
+            history_entry=entry,
+        )
+        action = RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="PR merged; awaiting merge reconciled",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        removed = {call.args[1] for call in mock_labels.remove_label.call_args_list}
+        assert {"pr-pending", "publish-failed"} <= removed
+        assert "agent:backend" not in removed
+        # History finalized only after the shed succeeded.
+        assert entry.status == "merged"
+        assert entry.status_reason == "PR merged; awaiting merge reconciled"
+
+    def test_shed_failure_leaves_history_reconcilable(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager,
+    ):
+        """F1 regression: a label-removal failure must NOT terminalize history.
+
+        The entry must stay in its reconcilable awaiting-merge status so a
+        later awaiting-merge discovery pass re-finds and retries the cleanup.
+        """
+        mock_labels.remove_label.side_effect = Exception("GitHub 502 removing label")
+        entry = self._awaiting_merge_entry()
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["pr-pending", "publish-failed", "agent:backend"],
+            history_entry=entry,
+        )
+        action = RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="PR merged; awaiting merge reconciled",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        # Shed was attempted first...
+        assert mock_labels.remove_label.called
+        # ...it failed, so the action fails and history is left untouched.
+        assert not result.success
+        assert "reconcilable" in (result.error or "")
+        assert entry.status == "completed"
+        assert entry.status_reason == "Recovered awaiting merge state on startup"
+
+    def test_sheds_every_transient_label_and_keeps_durable_ones(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager,
+    ):
+        """The shed sub-step removes every transient workflow label (pr-pending,
+        publish-failed, publish-fail-count-N, blocking labels) and never touches
+        durable labels — reached only through the owner command."""
+        entry = self._awaiting_merge_entry()
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=[
+                "pr-pending", "publish-failed", "publish-fail-count-2",
+                "blocked:pr-closed", "agent:backend", "bug",
+            ],
+            history_entry=entry,
+        )
+        action = RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="PR merged; awaiting merge reconciled",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        removed = {call.args[1] for call in mock_labels.remove_label.call_args_list}
+        assert removed == {
+            "pr-pending", "publish-failed", "publish-fail-count-2", "blocked:pr-closed",
+        }
+        # Non-transient labels must never be touched.
+        assert "agent:backend" not in removed
+        assert "bug" not in removed
+        assert entry.status == "merged"
+
+    def test_cleans_label_store_mirror(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager, real_label_store,
+    ):
+        """A label_store row stranded by past drift (publish-fail-count-1) is
+        shed from the mirror even when the fresh GitHub read no longer surfaces
+        it."""
+        for label in ("pr-pending", "publish-failed", "publish-fail-count-1"):
+            real_label_store.add_label(228, label)
+        entry = self._awaiting_merge_entry()
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["pr-pending", "publish-failed"],
+            history_entry=entry,
+            label_store=real_label_store,
+        )
+        action = RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="PR merged; awaiting merge reconciled",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert real_label_store.load_labels(228) == set()
+        removed = {call.args[1] for call in mock_labels.remove_label.call_args_list}
+        assert "publish-fail-count-1" in removed
+
+    def test_noop_shed_still_finalizes_history(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager,
+    ):
+        """When the issue carries no transient workflow labels there is nothing
+        to shed, but the awaiting-merge history is still finalized."""
+        entry = self._awaiting_merge_entry()
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["agent:backend", "bug", "code-reviewed"],
+            history_entry=entry,
+        )
+        action = RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="PR merged; awaiting merge reconciled",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        mock_labels.remove_label.assert_not_called()
+        assert entry.status == "merged"
+
+    def test_fails_without_label_manager(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+    ):
+        """The shed sub-step requires a LabelManager; without one the owner
+        command fails before finalizing history."""
+        entry = self._awaiting_merge_entry()
+        reader = MagicMock()
+        reader.read_issue_labels.return_value = ["pr-pending"]
+        applier = ActionApplier(
+            labels=mock_labels,
+            sessions=mock_sessions,
+            events=mock_events,
+            repository_host=mock_repository_host,
+            fresh_issue_reader=reader,
+            reconcile=False,
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        action = RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="PR merged; awaiting merge reconciled",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+        )
+
+        result = applier.apply(action)
+
+        assert not result.success
+        # History is not finalized when the shed sub-step cannot run.
+        assert entry.status == "completed"
+
+    def test_reconcile_pause_label_blocks_recovery(
+        self, mock_labels, mock_sessions, mock_events, mock_repository_host,
+        real_label_manager,
+    ):
+        """F1: an issue paused for reconciliation (io:needs-reconcile) must not
+        be shed or finalized. With reconcile enabled and the pause label live,
+        the planner-issued expected guard makes the owner command raise
+        ReconciliationRequired before any label write, leaving the
+        awaiting-merge history entry reconcilable for a later discovery pass.
+        """
+        from issue_orchestrator.control.reconciliation import (
+            ReconciliationRequired,
+            build_expected_for_mutation,
+        )
+
+        entry = self._awaiting_merge_entry()
+        applier = self._make_applier(
+            mock_labels, mock_sessions, mock_events, mock_repository_host,
+            real_label_manager,
+            github_labels=["pr-pending", "publish-failed", "io:needs-reconcile"],
+            history_entry=entry,
+            reconcile=True,
+        )
+        action = RecoverTerminalIssueAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            status_reason="PR merged; awaiting merge reconciled",
+            issue_key="M1-228",
+            reason="awaiting-merge terminal: merged",
+            expected=build_expected_for_mutation(),
+        )
+
+        with pytest.raises(ReconciliationRequired):
+            applier.apply(action)
+
+        # No label write happened, and the history entry stays reconcilable.
+        mock_labels.remove_label.assert_not_called()
+        assert entry.status == "completed"
+        assert entry.status_reason == "Recovered awaiting merge state on startup"
+
+
 class TestReconciliation:
     """Tests for reconciliation behavior."""
 
@@ -1725,6 +2145,39 @@ class TestExpectedStateEnforcement:
         mock_labels.add_label.assert_not_called()
 
 
+class TestEnqueueToMergeQueueAction:
+    """The applier performs the protected enqueue and emits an event."""
+
+    def test_enqueue_calls_repository_and_emits_event(
+        self, applier, mock_repository_host, mock_events
+    ):
+        action = EnqueueToMergeQueueAction(
+            issue_number=228, pr_number=318, pr_url="https://x/pull/318",
+            issue_key="M1-228",
+        )
+
+        result = applier.apply(action)
+
+        assert result.result_type == ActionResultType.SUCCESS
+        mock_repository_host.enqueue_to_merge_queue.assert_called_once_with(318)
+        published = [
+            c.args[0] for c in mock_events.publish.call_args_list
+            if getattr(c.args[0], "name", None) == EventName.MERGE_QUEUE_ENQUEUED.value
+        ]
+        assert len(published) == 1
+        assert published[0].data["pr_number"] == 318
+
+    def test_enqueue_failure_is_reported_not_raised(
+        self, applier, mock_repository_host
+    ):
+        mock_repository_host.enqueue_to_merge_queue.side_effect = RuntimeError("boom")
+        action = EnqueueToMergeQueueAction(issue_number=228, pr_number=318)
+
+        result = applier.apply(action)
+
+        assert result.result_type == ActionResultType.FAILURE
+
+
 class TestClaimGateAudit:
     """Structural test: all GitHub-write action types must verify claim ownership.
 
@@ -1739,12 +2192,15 @@ class TestClaimGateAudit:
         ActionType.ADD_LABEL,
         ActionType.REMOVE_LABEL,
         ActionType.SYNC_LABELS,
+        ActionType.SHED_RECOVERED_WORKFLOW_LABELS,
+        ActionType.RECOVER_TERMINAL_ISSUE,
         ActionType.ADD_COMMENT,
         ActionType.SUPERSEDE_PR,
         ActionType.CLOSE_ISSUE,
         ActionType.SET_ISSUE_STATE,
         ActionType.ESCALATE_TO_HUMAN,
         ActionType.QUEUE_REVIEW,
+        ActionType.ENQUEUE_TO_MERGE_QUEUE,
     }
 
     # Action types that legitimately skip claim verification:
@@ -1794,12 +2250,17 @@ class TestClaimGateAudit:
             ActionType.ADD_LABEL: "_apply_add_label",
             ActionType.REMOVE_LABEL: "_apply_remove_label",
             ActionType.SYNC_LABELS: "_apply_sync_labels",
+            ActionType.SHED_RECOVERED_WORKFLOW_LABELS: (
+                "_apply_shed_recovered_workflow_labels"
+            ),
+            ActionType.RECOVER_TERMINAL_ISSUE: "_apply_recover_terminal_issue",
             ActionType.ADD_COMMENT: "_apply_add_comment",
             ActionType.SUPERSEDE_PR: "_apply_supersede_pr",
             ActionType.CLOSE_ISSUE: "_apply_close_issue",
             ActionType.SET_ISSUE_STATE: "_apply_set_issue_state",
             ActionType.ESCALATE_TO_HUMAN: "_apply_escalate",
             ActionType.QUEUE_REVIEW: "_apply_queue_review",
+            ActionType.ENQUEUE_TO_MERGE_QUEUE: "_apply_enqueue_to_merge_queue",
         }
 
         for action_type in self.GITHUB_WRITE_ACTIONS:

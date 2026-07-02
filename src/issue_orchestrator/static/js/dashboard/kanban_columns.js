@@ -150,6 +150,22 @@ function compactCardPhaseAgeInnerHtml(card) {
     return ` &middot; ${escapeHtml(raw)}`;
 }
 
+// Compact stack-gate chip. Rendered from the server-precomputed card.stack_chip
+// so the first-paint DOM (Jinja) and this client rebuild are byte-identical —
+// the mode/tone/status/title logic lives once in the projection, not here. Status
+// is conveyed by text ("blocked"/"stale"/"ready"), not colour alone; the icon is
+// decorative (aria-hidden) and the visible text is the accessible name.
+function renderStackChipHtml(card) {
+    const chip = card && card.stack_chip;
+    if (!chip) return '';
+    return `<div class="card-line card-stack">`
+        + `<span class="stack-chip stack-chip--${chip.tone}" title="${escapeAttr(String(chip.title || ''))}">`
+        + `<span class="stack-chip-icon" aria-hidden="true">⛓</span>`
+        + `<span class="stack-chip-mode">${escapeHtml(String(chip.mode_label || ''))}</span>`
+        + `<span class="stack-chip-status">${escapeHtml(String(chip.status_text || ''))}</span>`
+        + `</span></div>`;
+}
+
 function renderCompactCardHtml(card) {
     const n = card.issue_number;
     const cardId = String(card.card_id || `issue-${n}`);
@@ -212,6 +228,7 @@ function renderCompactCardHtml(card) {
         <div class="card-line">${phaseLineHtml}</div>
         ${queueWaitLine}
         ${detailLine}
+        ${renderStackChipHtml(card)}
         ${badgesDiv}
     </div>`;
 }

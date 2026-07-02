@@ -53,14 +53,7 @@ def _create_mock_orchestrator(issue_number: int, title: str) -> MagicMock:
     mock_orch.request_shutdown = MagicMock()
     mock_orch.shutdown_requested = False
 
-    mock_executor = MagicMock()
-    mock_executor.get_running_jobs.return_value = []
-    mock_executor.get_running_count.return_value = 0
-    mock_executor.get_pending_count.return_value = 0
-    mock_executor.get_job_history.return_value = []
-
     mock_deps = MagicMock()
-    mock_deps.publish_executor = mock_executor
     mock_deps.publish_recovery = MagicMock()
     mock_deps.publish_recovery.can_retry_publish.return_value = False
     mock_deps.timeline_reader = MagicMock()
@@ -190,14 +183,33 @@ class ReviewTimelineScenario:
         role: str,
         attempt_index: int = 1,
         artifact_refs: list[dict[str, str]] | None = None,
+        timestamp: str = "2026-03-22T13:34:33Z",
     ) -> TimelineRecord:
         return self._record(
             "review_exchange.role_prompted",
-            timestamp="2026-03-22T13:34:33Z",
+            timestamp=timestamp,
             round_index=round_index,
             role=role,
             attempt_index=attempt_index,
             artifact_refs=artifact_refs,
+        )
+
+    def review_role_feedback(
+        self,
+        *,
+        round_index: int,
+        role: str,
+        response_type: str | None = None,
+        attempt_index: int = 1,
+        timestamp: str = "2026-03-22T13:36:00Z",
+    ) -> TimelineRecord:
+        return self._record(
+            "review_exchange.role_feedback",
+            timestamp=timestamp,
+            round_index=round_index,
+            role=role,
+            attempt_index=attempt_index,
+            response_type=response_type,
         )
 
     def review_exchange_completed(self) -> TimelineRecord:
@@ -254,6 +266,7 @@ class ReviewTimelineScenario:
         role: str | None = None,
         attempt_index: int | None = None,
         artifact_refs: list[dict[str, str]] | None = None,
+        response_type: str | None = None,
     ) -> TimelineRecord:
         data: dict[str, Any] = {
             "issue_number": self.issue_number,
@@ -276,8 +289,10 @@ class ReviewTimelineScenario:
             data["attempt_index"] = attempt_index
         if artifact_refs is not None:
             data["artifact_refs"] = artifact_refs
+        if response_type is not None:
+            data["response_type"] = response_type
         return TimelineRecord(
-            event_id=f"{event_name}-{round_index or rounds or 'event'}",
+            event_id=f"{event_name}-{role or ''}-{round_index or rounds or 'event'}",
             timestamp=timestamp,
             event=event_name,
             data=data,

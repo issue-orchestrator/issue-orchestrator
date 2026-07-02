@@ -71,6 +71,10 @@ from ..execution.command_runner import LocalCommandRunner
 from ..execution.session_output_adapter import FileSystemSessionOutput
 from ..execution.review_artifact_reader import ManifestReviewArtifactReader
 from ..execution.thread_background_job_runner import ThreadBackgroundJobRunner
+from ..control.completion_dispatcher import (
+    BackgroundCompletionDispatcher,
+    SynchronousCompletionDispatcher,
+)
 from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, RetrospectiveReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
@@ -87,10 +91,10 @@ if TYPE_CHECKING:
     from ..control.pr_scanner import PRScanner
     from ..control.session_restorer import SessionRestorer
     from ..control.completion_processor import CompletionProcessor
-    from ..control.completion_observer import CompletionObserver
-    from ..control.publish_executor import PublishJobExecutor
+    from ..control.publish_recovery import PublishRecoveryService
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
+    from ..ports.fresh_issue_reader import FreshIssueReader
     from ..domain.attempt import AttemptKey
     from ..domain.issue_key import IssueKey
     from ..ports.e2e_issue_tracker import E2EIssueTracker
@@ -99,6 +103,7 @@ if TYPE_CHECKING:
     from ..execution.persistent_exchange_pair_registry_inmemory import (
         InMemoryPersistentExchangePairRegistry,
     )
+    from ..ports.turn_mailbox import TurnMailbox
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -315,12 +320,22 @@ def _create_planner(
             events=events,
         )
 
+    predecessor_facts_provider = None
+    if github:
+        from ..control.label_manager import LabelManager
+        from ..execution.stack_predecessor_facts import GitStackPredecessorFactsProvider
+
+        predecessor_facts_provider = GitStackPredecessorFactsProvider(
+            github, label_manager or LabelManager(config), repo=config.repo,
+        )
+
     dependency_evaluator = DependencyEvaluator(
         issue_checker=github,
         events=events,
         issue_resolver=issue_resolver,
         repo=config.repo,
         foundation_milestone=config.foundation_milestone,
+        predecessor_facts_provider=predecessor_facts_provider,
     ) if github else None
 
     scheduler = Scheduler(config=config, dependency_evaluator=dependency_evaluator)
@@ -407,6 +422,7 @@ def _create_completion_components(
     background_job_supervisor: "BackgroundJobSupervisor | None" = None,
     pair_registry: "InMemoryPersistentExchangePairRegistry | None" = None,
     attempt_store: "AttemptStore | None" = None,
+    turn_mailbox: "TurnMailbox | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -446,7 +462,12 @@ def _create_completion_components(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output, pair_registry),
+        # The review exchange delivers verdicts through the orchestrator-owned
+        # mailbox: agents run `exchange-respond`, the Control API delivers into
+        # the open turn slot, and send_round polls the mailbox (#6549).
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, pair_registry, turn_mailbox=turn_mailbox,
+        ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -470,7 +491,6 @@ def _create_completion_components(
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
         max_validation_retries=config.retry.max_validation_retries,
-        provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
         review_exchange_canceller=_cancel_review_exchange,
     ) if completion_processor else None
@@ -478,62 +498,70 @@ def _create_completion_components(
     return completion_processor, session_controller_instance
 
 
-def _create_async_completion_components(
-    completion_processor: "CompletionProcessor",
-    events: EventSink,
-    session_output: FileSystemSessionOutput,
-    command_runner: LocalCommandRunner,
+def _wire_stack_publish_gate(
+    completion_processor: "CompletionProcessor | None",
+    dependency_evaluator: DependencyEvaluator | None,
+    github: GitHubAdapter | None,
+    command_runner: "LocalCommandRunner",
     config: Config,
-    enable_persistence: bool = True,
-) -> tuple["CompletionObserver", "PublishJobExecutor"]:
-    """Create async completion processing components.
+) -> None:
+    """Wire the stack publish-gate + branch ancestry (ADR-0029 / #6596).
 
-    These components enable non-blocking completion handling:
-    - CompletionObserver: Fast observation of completions (no I/O)
-    - PublishJobExecutor: Background execution of publish jobs
-    - JobStore: SQLite persistence for crash recovery (optional)
-
-    Args:
-        completion_processor: For executing publish actions
-        events: Event sink for job lifecycle events
-        session_output: For reading session logs
-        command_runner: For running validation commands
-        config: Application configuration
-        enable_persistence: Whether to enable SQLite job persistence
-
-    Returns:
-        Tuple of (CompletionObserver, PublishJobExecutor)
+    Attaches the git ancestry checker to the single dependency-gate evaluator
+    and gives the completion processor a :class:`StackPublishGate` so a
+    Stack-after: successor's PR is based on its predecessor branch and a blocked
+    publish gate fails fast. A no-op when any collaborator is absent, so
+    non-stack deployments and tests keep prior behavior.
     """
-    from ..control.completion_observer import CompletionObserver
-    from ..control.publish_executor import PublishJobExecutor, ExecutorConfig
-    from ..control.job_store import JobStore, get_default_db_path
+    if completion_processor is None or dependency_evaluator is None or github is None:
+        return
+    from ..control.stack_publish_gate import StackBaseGate
+    from ..execution.stack_branch_ancestry import GitStackBranchAncestry
 
-    completion_observer = CompletionObserver(session_output=session_output)
-
-    executor_config = ExecutorConfig(
-        max_workers=2,  # Max concurrent publish jobs
-        job_timeout_seconds=600,  # 10 minutes max per job
-        enable_validation=config.validation.quick.cmd is not None,
-        validation_cmd=config.validation.quick.cmd,
-        validation_timeout_seconds=config.validation.quick.timeout_seconds,
+    dependency_evaluator.attach_branch_ancestry(GitStackBranchAncestry(command_runner))
+    completion_processor.attach_stack_publish_gate(
+        StackBaseGate(
+            evaluator=dependency_evaluator,
+            issue_reader=github,
+            configured_base_branch=config.worktree_base_branch_override,
+        )
     )
 
-    # Create job store for persistence (crash recovery)
-    job_store = None
-    if enable_persistence:
-        db_path = get_default_db_path(config.repo_root)
-        job_store = JobStore(db_path)
-        logger.info("[BOOTSTRAP] Job store enabled: %s", db_path)
 
-    publish_executor = PublishJobExecutor(
+def _build_publish_recovery(
+    *,
+    repository_host: "GitHubAdapter",
+    completion_processor: "CompletionProcessor",
+    label_manager: "LabelManager",
+    fresh_issue_reader: "FreshIssueReader",
+    action_applier: "ActionApplier",
+    config: Config,
+) -> "PublishRecoveryService":
+    """Wire the "Retry publish" owner: durable locator store + dedicated runner.
+
+    The republish runs on its own :class:`ThreadBackgroundJobRunner` (drained by
+    ``PublishRecoveryService.drain_completed_retries`` each tick), NOT the shared
+    completion/review-exchange runners — those are drained by other owners and
+    would steal or drop republish results.
+    """
+    from ..control.publish_recovery import PublishRecoveryService
+    from ..execution.json_publish_retry_locator_store import (
+        JsonPublishRetryLocatorStore,
+    )
+
+    locator_store = JsonPublishRetryLocatorStore(
+        state_dir(config.repo_root) / "publish_retry_locators.json"
+    )
+    return PublishRecoveryService(
+        repository_host=repository_host,
         completion_processor=completion_processor,
-        events=events,
-        config=executor_config,
-        command_runner=command_runner if config.validation.quick.cmd else None,
-        job_store=job_store,
+        locator_store=locator_store,
+        runner=ThreadBackgroundJobRunner(),
+        label_manager=label_manager,
+        fresh_issue_reader=fresh_issue_reader,
+        action_applier=action_applier,
+        code_review_agent_configured=bool(config.code_review_agent),
     )
-
-    return completion_observer, publish_executor
 
 
 def _validate_required_deps(
@@ -733,6 +761,7 @@ def build_orchestrator(
         repository_host=github,
         worktree_manager=worktree_manager,
         fresh_issue_reader=fresh_issue_reader,
+        label_manager=label_manager,
         reconcile=True,
     ) if github else None
 
@@ -778,6 +807,13 @@ def build_orchestrator(
     # reach it through ``deps.pair_registry``.
     pair_registry = _build_pair_registry_with_worktree_hook()
 
+    # Process-scoped rendezvous between the exchange worker thread and the
+    # agent-facing ``exchange-respond`` Control API handler. One instance,
+    # shared by the runner (which opens/awaits slots) and InfraServices
+    # (which the Control API reads to deliver verdicts).
+    from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
+    turn_mailbox = InMemoryTurnMailbox()
+
     # Wire the registry into action_applier so ``_apply_escalate``
     # and ``_apply_reconcile_history_entry`` can release the pair at
     # their lifecycle boundaries (escalation, await-merge terminal).
@@ -795,12 +831,11 @@ def build_orchestrator(
         background_job_supervisor=background_job_supervisor,
         pair_registry=pair_registry,
         attempt_store=attempt_store,
+        turn_mailbox=turn_mailbox,
     )
-
-    # Create async completion components (observer + executor)
-    completion_observer, publish_executor = _create_async_completion_components(
-        completion_processor, events, session_output, command_runner, config
-    ) if completion_processor else (None, None)
+    _wire_stack_publish_gate(
+        completion_processor, _dependency_evaluator, github, command_runner, config,
+    )
 
     # Create health gate
     health_gate = HealthGate(
@@ -829,23 +864,17 @@ def build_orchestrator(
     assert completion_processor is not None
     assert session_controller_instance is not None
     assert fresh_issue_reader is not None
-    assert completion_observer is not None
-    assert publish_executor is not None
     assert manifest_downloader is not None
     assert e2e_issue_tracker is not None
 
-    from ..control.publish_recovery import PublishRecoveryService
-    publish_recovery = PublishRecoveryService(
+    publish_recovery = _build_publish_recovery(
         repository_host=github,
-        publish_executor=publish_executor,
+        completion_processor=completion_processor,
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
+        config=config,
     )
-
-    # Wire up worktree removal callback for async completion job tracking
-    # When a worktree is removed, mark associated jobs as WORKTREE_GONE
-    action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
 
     # Build infrastructure services bundle
     from ..control.infra_services import InfraServices
@@ -853,9 +882,13 @@ def build_orchestrator(
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire label_store into action_applier for write-through persistence
+    # Wire post-construction collaborators into action_applier: label_store for
+    # write-through persistence, and publish_recovery so its issue terminal
+    # boundaries abandon publish retries via the shared runtime terminator
+    # (post-construction because PublishRecoveryService depends on this applier).
     if action_applier is not None:
         action_applier.label_store = label_store
+        action_applier.publish_recovery = publish_recovery
 
     infra_services = InfraServices(
         label_manager=label_manager,
@@ -868,6 +901,7 @@ def build_orchestrator(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         pair_registry=pair_registry,
+        turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
         instance_id=instance_id,
         state_health_check=timeline_store.check_health,
@@ -896,12 +930,13 @@ def build_orchestrator(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller_instance,
+        # Run completion decisions (publish gate + push + PR) off the tick thread
+        # on a dedicated runner so a slow publish never blocks the heartbeat.
+        completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
-        completion_observer=completion_observer,
-        publish_executor=publish_executor,
         publish_recovery=publish_recovery,
         services=infra_services,
     )
@@ -986,6 +1021,9 @@ def build_orchestrator_for_testing(
     label_manager = _LabelManager(config)
 
     default_label_sync = None
+    # Only bound when this root builds the planner; a caller-injected planner
+    # carries its own evaluator, so the stack publish-gate stays unwired there.
+    _dependency_evaluator: DependencyEvaluator | None = None
 
     # Create default planner if not provided
     if planner is None:
@@ -1037,6 +1075,7 @@ def build_orchestrator_for_testing(
             repository_host=github,
             worktree_manager=worktree_manager,
             fresh_issue_reader=fresh_issue_reader,
+            label_manager=label_manager,
             reconcile=False,  # Disable for testing by default
         )
 
@@ -1086,6 +1125,8 @@ def build_orchestrator_for_testing(
         cancel_issue_review_exchange,
     )
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
+    from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
+    turn_mailbox = InMemoryTurnMailbox()
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor
@@ -1106,7 +1147,9 @@ def build_orchestrator_for_testing(
         pr_adapter=github,
         git_adapter=working_copy,
         session_output=session_output,
-        review_exchange_runner=PersistentReviewExchangeRunner(session_output, pair_registry_for_testing),
+        review_exchange_runner=PersistentReviewExchangeRunner(
+            session_output, pair_registry_for_testing, turn_mailbox=turn_mailbox,
+        ),
         event_bus=None,
         label_config=label_manager.to_label_config_dict(),
         pre_publish_gate=PrePublishGate(command_runner) if config.enforce_hooks else None,
@@ -1115,6 +1158,9 @@ def build_orchestrator_for_testing(
         review_exchange_canceller=_cancel_review_exchange_for_testing,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
+    )
+    _wire_stack_publish_gate(
+        completion_processor, _dependency_evaluator, github, command_runner, config,
     )
 
     # Create SessionController for testing (with optional validation gate)
@@ -1129,7 +1175,6 @@ def build_orchestrator_for_testing(
         validation_timeout_seconds=config.validation.quick.timeout_seconds,
         attempt_store=attempt_store,
         validation_attempt_key_factory=_validation_attempt_key_factory(config),
-        provider_resilience=provider_resilience,
         provider_blocked_label=label_manager.provider_unavailable,
         review_exchange_canceller=_cancel_review_exchange_for_testing,
     )
@@ -1152,22 +1197,13 @@ def build_orchestrator_for_testing(
         config=lease_config,
     )
 
-    # Create async completion components for testing (persistence disabled by default)
-    completion_observer, publish_executor = _create_async_completion_components(
-        completion_processor, events, session_output, command_runner, config,
-        enable_persistence=False,  # Disable SQLite in tests to avoid file I/O
-    )
-
-    # Wire up worktree removal callback for async completion job tracking
-    action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
-
-    from ..control.publish_recovery import PublishRecoveryService
-    publish_recovery = PublishRecoveryService(
+    publish_recovery = _build_publish_recovery(
         repository_host=github,
-        publish_executor=publish_executor,
+        completion_processor=completion_processor,
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
+        config=config,
     )
 
     # Queue cache store for testing (uses repo_root state dir)
@@ -1181,9 +1217,12 @@ def build_orchestrator_for_testing(
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire label_store into action_applier for write-through persistence
+    # Wire post-construction collaborators into action_applier (same as the
+    # primary path): label_store for write-through persistence, publish_recovery
+    # so issue terminal boundaries abandon publish retries.
     if action_applier is not None:
         action_applier.label_store = label_store
+        action_applier.publish_recovery = publish_recovery
 
     infra_services = InfraServices(
         label_manager=label_manager,
@@ -1196,6 +1235,7 @@ def build_orchestrator_for_testing(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         pair_registry=pair_registry_for_testing,
+        turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
     )
 
@@ -1222,12 +1262,13 @@ def build_orchestrator_for_testing(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,
+        # Tests default to synchronous (one-tick) completion; the background
+        # dispatcher is exercised explicitly where async behavior is under test.
+        completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
-        completion_observer=completion_observer,
-        publish_executor=publish_executor,
         publish_recovery=publish_recovery,
         services=infra_services,
     )

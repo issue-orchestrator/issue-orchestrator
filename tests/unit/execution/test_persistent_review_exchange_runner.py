@@ -82,12 +82,20 @@ def stub_lifecycle(monkeypatch, tmp_path):
     return calls
 
 
-def _make_agent(tmp_path: Path) -> AgentConfig:
+def _make_agent(
+    tmp_path: Path,
+    *,
+    provider: str | None = None,
+    ai_system: str = "claude-code",
+    provider_args: dict[str, Any] | None = None,
+) -> AgentConfig:
     prompt = tmp_path / "prompt.md"
     prompt.write_text("hello")
     return AgentConfig(
         prompt_path=prompt,
-        ai_system="claude-code",
+        provider=provider,
+        ai_system=ai_system,
+        provider_args=provider_args or {},
         command="echo",
     )
 
@@ -130,7 +138,13 @@ def _canned_outcome(exchange_run: ReviewExchangeRun) -> ReviewExchangeOutcome:
     )
 
 
-def _run(runner, tmp_path):
+def _run(
+    runner,
+    tmp_path,
+    *,
+    coder_agent: AgentConfig | None = None,
+    reviewer_agent: AgentConfig | None = None,
+):
     exchange_run = _make_exchange_run(tmp_path)
     return runner.run(
         exchange_run=exchange_run,
@@ -139,8 +153,8 @@ def _run(runner, tmp_path):
         issue_title="t",
         coder_label="agent:coder",
         reviewer_label="agent:reviewer",
-        coder_agent=_make_agent(tmp_path),
-        reviewer_agent=_make_agent(tmp_path),
+        coder_agent=coder_agent or _make_agent(tmp_path),
+        reviewer_agent=reviewer_agent or _make_agent(tmp_path),
         runtime_config=_runtime_config(tmp_path),
         max_rounds=3,
         max_no_progress=3,
@@ -153,6 +167,119 @@ def _make_runner(tmp_path: Path) -> "prer.PersistentReviewExchangeRunner":
         MagicMock(name="session_output"),
         MagicMock(name="pair_registry"),
     )
+
+
+def test_response_channel_for_codex_workspace_write_uses_file(tmp_path: Path) -> None:
+    agent = _make_agent(
+        tmp_path,
+        provider="codex",
+        ai_system="codex",
+        provider_args={
+            "approval_mode": "full-auto",
+            "sandbox": "workspace-write",
+        },
+    )
+
+    assert prer.response_channel_for_agent(agent) == "file"
+
+
+def test_response_channel_for_codex_explicit_workspace_write_uses_file(
+    tmp_path: Path,
+) -> None:
+    agent = _make_agent(
+        tmp_path,
+        provider="codex",
+        ai_system="codex",
+        provider_args={
+            "approval_mode": "default",
+            "sandbox": "workspace-write",
+        },
+    )
+
+    assert prer.response_channel_for_agent(agent) == "file"
+
+
+def test_response_channel_for_codex_read_only_uses_file(tmp_path: Path) -> None:
+    agent = _make_agent(
+        tmp_path,
+        provider="codex",
+        ai_system="codex",
+        provider_args={
+            "approval_mode": "default",
+            "sandbox": "read-only",
+        },
+    )
+
+    assert prer.response_channel_for_agent(agent) == "file"
+
+
+def test_response_channel_for_codex_yolo_uses_mailbox(tmp_path: Path) -> None:
+    agent = _make_agent(
+        tmp_path,
+        provider="codex",
+        ai_system="codex",
+        provider_args={
+            "approval_mode": "yolo",
+            "sandbox": "danger-full-access",
+        },
+    )
+
+    assert prer.response_channel_for_agent(agent) == "mailbox"
+
+
+def test_run_passes_per_agent_response_channels(
+    monkeypatch,
+    tmp_path: Path,
+    stub_lifecycle,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_inner(**kwargs):
+        captured.update(kwargs)
+        return _canned_outcome(kwargs["exchange_run"])
+
+    monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
+    runner = prer.PersistentReviewExchangeRunner(
+        MagicMock(name="session_output"),
+        MagicMock(name="pair_registry"),
+        turn_mailbox=MagicMock(name="turn_mailbox"),
+    )
+    reviewer = _make_agent(
+        tmp_path,
+        provider="codex",
+        ai_system="codex",
+        provider_args={
+            "approval_mode": "full-auto",
+            "sandbox": "workspace-write",
+        },
+    )
+
+    _run(runner, tmp_path, reviewer_agent=reviewer)
+
+    channels = captured["response_channels"]
+    assert channels.coder == "mailbox"
+    assert channels.reviewer == "file"
+
+
+def test_run_uses_file_channels_when_no_mailbox_is_wired(
+    monkeypatch,
+    tmp_path: Path,
+    stub_lifecycle,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_inner(**kwargs):
+        captured.update(kwargs)
+        return _canned_outcome(kwargs["exchange_run"])
+
+    monkeypatch.setattr(prer, "run_persistent_session_exchange", _fake_inner)
+    runner = _make_runner(tmp_path)
+
+    _run(runner, tmp_path)
+
+    channels = captured["response_channels"]
+    assert channels.coder == "file"
+    assert channels.reviewer == "file"
 
 
 def test_run_threads_pair_registry_and_persistent_root_into_inner_runner(

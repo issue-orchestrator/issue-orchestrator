@@ -149,7 +149,7 @@ class DashboardViewModelPayload(BaseModel):
     e2e_status: dict[str, Any]
     e2e_total: int
     e2e_total_pages: int
-    flow_columns: list[dict[str, Any]]
+    flow_columns: list[FlowColumnPayload]
     github_owner: str
     github_repo: str
     history_items: list[IssueItemPayload]
@@ -372,6 +372,7 @@ class E2ETimelineEventPayload(BaseModel):
     parent_key: str
     phase: str
     removed: list[str] | None = None
+    response_type: str | None = None
     review_oriented: bool
     reviewer_agent: str | None = None
     reviewer_response_text: str | None = None
@@ -425,6 +426,15 @@ class FailedE2ETestExecutionPayload(BaseModel):
     linked_issues: list[LinkedIssueLifecyclePayload]
     nodeid: str
     started_at: str
+
+class FlowColumnPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    count: int
+    expandable: bool | None = None
+    id: str
+    items: list[IssueItemPayload]
+    session_scoped: bool | None = None
+    title: str
 
 class InfoDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -486,6 +496,7 @@ class IssueDetailPayload(BaseModel):
     raw_events_count: int
     run_count: int
     runs: list[JourneyRunPayload]
+    stack_dependency: StackDependencyGateViewPayload | None = None
     status_explanation: str
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
@@ -534,6 +545,9 @@ class IssueItemPayload(BaseModel):
     open_run_command: OpenE2ERunCommandPayload | None = None
     runtime_label: str | None = None
     show_stale_badge: bool
+    stack_chip: StackChipViewPayload | None = None
+    stack_dependency: StackDependencyGateViewPayload | None = None
+    stack_signal: str | None = None
     status: str | None = None
     title: str | None = None
     url: str | None = None
@@ -598,6 +612,7 @@ class JourneyStepPayload(BaseModel):
     day: str
     detail: str | None = None
     event: str
+    in_round_progress: bool | None = None
     narrative: str
     status: str
     time_label: str
@@ -936,6 +951,48 @@ class ShowEventDetailsCommandPayload(BaseModel):
     event_ref: str
     kind: Literal['show_event_details']
     label: str
+
+class StackChipViewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode_label: str
+    status_text: str
+    title: str
+    tone: str
+
+class StackDependencyGatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    gate: str
+    open: bool
+    reason_codes: list[str]
+    reasons: list[str]
+
+class StackDependencyGateViewPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    approval_freshness: str
+    blocked_gates: list[str]
+    blocked_reason_codes: list[str]
+    gates: list[StackDependencyGatePayload]
+    has_stack_edges: bool
+    issue_number: int
+    mode: str
+    predecessors: list[StackDependencyPredecessorPayload]
+    stack_base_branch: str | None
+    stale: bool
+    stale_reason_codes: list[str]
+    successors: list[StackDependencySuccessorPayload]
+
+class StackDependencyPredecessorPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: str
+    problem: str | None
+    ref: str
+    state: str
+
+class StackDependencySuccessorPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_number: int
+    mode: str
+    ref: str
 
 class SwitchE2ETimelineViewCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

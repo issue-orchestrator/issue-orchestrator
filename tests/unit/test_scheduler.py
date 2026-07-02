@@ -1481,3 +1481,157 @@ class TestLaunchSessionDependencyCAS:
         # The key assertion: no dependency_blocked event was emitted
         dep_blocked_events = [e for e in events.events if e.name == "issue.dependency_blocked"]
         assert len(dep_blocked_events) == 0, "Should not have blocked - deps are satisfied"
+
+
+class _StackFactsProvider:
+    """Test stack-predecessor facts provider with canned facts per target."""
+
+    def __init__(self, facts):
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+        self._facts = facts
+        self._default = PredecessorFacts()
+        self.calls = []
+
+    def gather_facts(self, targets):
+        self.calls.append(list(targets))
+        return {t: self._facts.get(t, self._default) for t in targets}
+
+
+class TestSchedulerStackGating:
+    """Scheduler consumes the dependency WORK gate for stack predecessors.
+
+    A stack successor stays blocked for work until its predecessor exposes a
+    usable, validated, agent-reviewed branch — without waiting for merge — while
+    normal Depends-on: issues keep waiting for a closed dependency exactly as
+    before.
+    """
+
+    @pytest.fixture
+    def checker(self):
+        return MockIssueChecker()
+
+    @pytest.fixture
+    def events(self):
+        return CollectingEventSink()
+
+    @pytest.fixture
+    def sample_config(self):
+        return Config(
+            repo="test/repo",
+            repo_root=Path("/tmp/test"),
+            worktree_base=Path("/tmp"),
+            agents={"claude": AgentConfig(prompt_path=Path("/tmp/prompt.txt"))},
+            max_concurrent_sessions=3,
+        )
+
+    def _evaluator(self, checker, events, provider=None):
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+        return DependencyEvaluator(
+            issue_checker=checker, events=events, predecessor_facts_provider=provider
+        )
+
+    def test_stack_successor_blocked_when_predecessor_not_ready(self, sample_config, checker, events):
+        from issue_orchestrator.domain.dependencies import DependencyTarget
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        checker.issues[20] = "open"  # predecessor open (unsatisfied)
+        provider = _StackFactsProvider(
+            {DependencyTarget(20): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=False)}
+        )
+        scheduler = Scheduler(
+            config=sample_config,
+            dependency_evaluator=self._evaluator(checker, events, provider),
+        )
+
+        issues = [Issue(number=2, title="Successor", labels=[], body="Stack-after: #20", milestone="M1")]
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        assert available == []
+        assert len(dep_blocked) == 1
+        assert dep_blocked[0][0].number == 2
+
+    def test_stack_successor_available_when_predecessor_ready(self, sample_config, checker, events):
+        from issue_orchestrator.domain.dependencies import DependencyTarget
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        checker.issues[20] = "open"  # predecessor still open, but branch ready
+        provider = _StackFactsProvider(
+            {DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True, branch_name="20-base"
+            )}
+        )
+        scheduler = Scheduler(
+            config=sample_config,
+            dependency_evaluator=self._evaluator(checker, events, provider),
+        )
+
+        issues = [Issue(number=2, title="Successor", labels=[], body="Stack-after: #20", milestone="M1")]
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        assert [i.number for i in available] == [2]
+        assert dep_blocked == []
+
+    def test_stack_successor_blocked_when_predecessor_state_missing(self, sample_config, checker, events):
+        # Predecessor open, but no facts gathered (no provider) -> conservatively blocked.
+        checker.issues[20] = "open"
+        scheduler = Scheduler(
+            config=sample_config,
+            dependency_evaluator=self._evaluator(checker, events, provider=None),
+        )
+
+        issues = [Issue(number=2, title="Successor", labels=[], body="Stack-after: #20", milestone="M1")]
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        assert available == []
+        assert len(dep_blocked) == 1
+
+    def test_normal_dependency_unaffected_by_provider(self, sample_config, checker, events):
+        from issue_orchestrator.domain.dependencies import DependencyTarget
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        # Even a "ready" provider must not unblock a normal (non-stack) open dep.
+        checker.issues[100] = "open"
+        provider = _StackFactsProvider(
+            {DependencyTarget(100): PredecessorFacts(branch_usable=True, validation_passed=True, agent_reviewed=True)}
+        )
+        scheduler = Scheduler(
+            config=sample_config,
+            dependency_evaluator=self._evaluator(checker, events, provider),
+        )
+
+        issues = [Issue(number=2, title="Normal", labels=[], body="Depends-on: #100", milestone="M1")]
+        available, dep_blocked = scheduler.get_available_issues(issues)
+
+        assert available == []
+        assert "waiting on: #100" in dep_blocked[0][1]
+        # Provider never consulted for a normal edge.
+        assert provider.calls == []
+
+    def test_blocked_event_identifies_mode_gate_predecessor_reason(self, sample_config, checker, events):
+        from issue_orchestrator.domain.dependencies import DependencyTarget
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        checker.issues[20] = "open"
+        provider = _StackFactsProvider(
+            {DependencyTarget(20): PredecessorFacts(branch_usable=False, validation_passed=False, agent_reviewed=False)}
+        )
+        scheduler = Scheduler(
+            config=sample_config,
+            dependency_evaluator=self._evaluator(checker, events, provider),
+        )
+
+        issues = [Issue(number=2, title="Successor", labels=[], body="Stack-after: #20", milestone="M1")]
+        scheduler.get_available_issues(issues)
+
+        evaluated = [e for e in events.events if e.name == "dependencies.evaluated"]
+        assert len(evaluated) == 1
+        data = evaluated[0].data
+        assert data["issue_number"] == 2
+        assert data["gate"] == "work"
+        assert data["runnable"] is False
+        reasons = data["blocked_reasons"]
+        assert any(
+            r["mode"] == "stack" and r["gate"] == "work" and r["predecessor"] == "#20"
+            and r["reason"] == "predecessor_branch_unusable"
+            for r in reasons
+        )

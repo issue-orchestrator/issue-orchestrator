@@ -33,6 +33,15 @@ from issue_orchestrator.domain.models import (
     SessionHistoryEntry,
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.dependencies import (
+    Dependency,
+    DependencyMode,
+    DependencyState,
+)
+from issue_orchestrator.domain.dependency_gates import (
+    DependencyGateSnapshot,
+    build_gate_report,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -1383,3 +1392,68 @@ def _issue_lifecycle(issue_number: int) -> IssueLifecycle:
             ),
         ),
     )
+
+
+def _stacked_view_model_dict() -> dict:
+    """A real dashboard payload whose queued flow card is a stacked successor."""
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+    issue = Issue(number=201, title="Stacked successor", labels=["agent:web"],
+                  body="Stack-after: #5")
+    dep = Dependency(issue_number=5, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+        dependency_gate_snapshot=DependencyGateSnapshot(
+            reports={201: build_gate_report(201, [dep])}
+        ),
+    )
+    view_model = build_dashboard_view_model(
+        _OrchestratorStub(state=state, config=config),
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+    return view_model.to_dict()
+
+
+def _stacked_flow_card(payload: dict) -> dict:
+    queued = next(c for c in payload["flow_columns"] if c["id"] == "queued")
+    return next(i for i in queued["items"] if i["issue_number"] == 201)
+
+
+def test_stack_dashboard_card_matches_ui_openapi() -> None:
+    # #6597 F2: the dashboard card's stack fields are strictly typed on the
+    # envelope, not passed through as generic extras.
+    payload = _stacked_view_model_dict()
+
+    _validator("DashboardViewModelPayload").validate(payload)
+
+    card = _stacked_flow_card(payload)
+    assert card["stack_dependency"] is not None
+    assert card["stack_dependency"]["has_stack_edges"] is True
+    assert card["stack_chip"] is not None
+    assert card["stack_chip"]["status_text"]
+    assert card["stack_signal"]
+
+
+def test_malformed_stack_dependency_rejected_by_ui_openapi() -> None:
+    payload = _stacked_view_model_dict()
+    # has_stack_edges must be a bool and required fields are missing, so this
+    # violates the strict StackDependencyGateViewPayload the card field references.
+    _stacked_flow_card(payload)["stack_dependency"] = {"has_stack_edges": "yes"}
+
+    with pytest.raises(JsonSchemaValidationError):
+        _validator("DashboardViewModelPayload").validate(payload)
+
+
+def test_malformed_stack_chip_rejected_by_ui_openapi() -> None:
+    payload = _stacked_view_model_dict()
+    # tone/mode_label/status_text/title are all required on the strict
+    # StackChipViewPayload; a missing required key must fail validation.
+    _stacked_flow_card(payload)["stack_chip"] = {"tone": "blocked"}
+
+    with pytest.raises(JsonSchemaValidationError):
+        _validator("DashboardViewModelPayload").validate(payload)

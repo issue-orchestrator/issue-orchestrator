@@ -13,7 +13,7 @@ from ._worktree_git import _git_run
 
 logger = logging.getLogger(__name__)
 
-# Marker file name for worktree identity (must match job_store.py)
+# Marker file name for worktree identity.
 WORKTREE_ID_MARKER = ".issue-orchestrator/worktree-id"
 
 # Claude Code settings to enforce completion command usage on exit.

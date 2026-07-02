@@ -271,10 +271,34 @@ class GitHubCache:
             )
 
     def invalidate_pr(self, pr_number: int) -> None:
-        """Invalidate cached PR data by PR number."""
+        """Invalidate cached PR data for a PR number across *every* index.
+
+        A single PR is cached under as many as three keys: its own PR number
+        (``_prs_by_number``), its linked issue number (``_prs_by_issue``), and
+        its head branch (``_prs_by_branch``). Label writes address a PR by its
+        own number (``add_label(pr_number, ...)``), so clearing only the
+        by-number index would leave a stale copy — including stale labels —
+        reachable through ``get_pr_by_issue`` / ``get_pr_by_branch``. The stack
+        predecessor work-gate reads ``get_prs_for_issue(predecessor_issue)`` and
+        trusts the PR's labels; without this cross-index clear a label write to
+        PR ``#101`` would not invalidate the predecessor-issue ``#20`` entry, so
+        the gate could keep seeing ``code-reviewed`` after the PR moved back to
+        ``needs-rework`` (#6595/#6670 F1). Remove every index entry for this PR.
+
+        Issue and PR numbers share one numbering space on GitHub, so matching by
+        the cached ``number`` field targets exactly the mutated PR.
+        """
         with self._lock:
-            if pr_number in self._prs_by_number:
-                del self._prs_by_number[pr_number]
+            removed = self._prs_by_number.pop(pr_number, None) is not None
+            for issue_number, entry in list(self._prs_by_issue.items()):
+                if entry.value.get("number") == pr_number:
+                    del self._prs_by_issue[issue_number]
+                    removed = True
+            for branch, entry in list(self._prs_by_branch.items()):
+                if entry.value.get("number") == pr_number:
+                    del self._prs_by_branch[branch]
+                    removed = True
+            if removed:
                 self._stats.invalidations += 1
         self._call_hooks("pr", pr_number)
 

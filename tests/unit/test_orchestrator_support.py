@@ -30,6 +30,11 @@ from issue_orchestrator.control.orchestrator_support import (
     _track_stale_ticks,
 )
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError
+from issue_orchestrator.control.issue_fetch_resilience import (
+    IssueFetchResilience,
+    PermanentIssueFetchError,
+    TransientIssueFetchError,
+)
 from issue_orchestrator.control.reconciliation import (
     ReconciliationRequired,
     ExpectedState,
@@ -57,6 +62,7 @@ from issue_orchestrator.domain.models import (
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeEscalation,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
     DiscoveredReview,
     DiscoveredRework,
@@ -218,7 +224,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.fetch_all_issues.return_value = [make_issue(2, labels=["agent:web"])]
 
@@ -231,6 +237,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=True,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.fetch_all_issues.assert_called_once()
@@ -248,7 +255,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, title="Updated 1", labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = [make_issue(3, labels=["agent:web"])]
@@ -262,6 +269,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.fetch_all_issues.assert_not_called()
@@ -282,7 +290,7 @@ class TestQueueFetchPlanner:
             queue_refresh_count=1,  # next refresh count = 2
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -296,12 +304,16 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
-        github_workflow.scan_pending_pr_work.assert_not_called()
-        scheduler.get_available_issues.assert_called_once()
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=False,
+        )
+        scheduler.evaluate_issues.assert_called_once()
 
     def test_pr_scan_uses_single_workflow_call_when_due(self, mock_event_sink, mock_repository_host):
         config = self._make_config()
@@ -312,7 +324,7 @@ class TestQueueFetchPlanner:
             queue_refresh_count=1,  # next refresh count = 2
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -326,9 +338,13 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
-        github_workflow.scan_pending_pr_work.assert_called_once_with(state)
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=True,
+        )
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
 
@@ -343,7 +359,7 @@ class TestQueueFetchPlanner:
             ui_visible_updated_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -357,6 +373,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.refresh_issues.assert_called_once_with([99, 1])
@@ -372,7 +389,7 @@ class TestQueueFetchPlanner:
             queue_refresh_count=1,
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -386,12 +403,16 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.scan_needs_code_review_prs.assert_not_called()
         github_workflow.scan_needs_rework_prs.assert_not_called()
-        github_workflow.scan_pending_pr_work.assert_not_called()
-        scheduler.get_available_issues.assert_not_called()
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=False,
+        )
+        scheduler.evaluate_issues.assert_not_called()
 
     def test_fetch_prunes_refresh_timestamps_for_issues_no_longer_tracked(
         self, mock_event_sink, mock_repository_host
@@ -403,7 +424,7 @@ class TestQueueFetchPlanner:
             issue_refresh_timestamps={1: 100.0, 999: 200.0},
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -417,6 +438,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert 1 in state.issue_refresh_timestamps
@@ -432,7 +454,7 @@ class TestQueueFetchPlanner:
             queue_delta_watermark="2026-01-01T00:00:00Z",
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_delta_issues.return_value = (
@@ -450,6 +472,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         github_workflow.fetch_delta_issues.assert_called_once_with(
@@ -468,7 +491,7 @@ class TestQueueFetchPlanner:
             queue_delta_watermark="2026-01-01T00:00:00Z",
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_delta_issues.side_effect = GitHubHttpError(
@@ -476,7 +499,10 @@ class TestQueueFetchPlanner:
             status_code=503,
         )
 
-        with pytest.raises(GitHubHttpError) as exc_info:
+        # The issue-list fetch is guarded, so a transient 503 surfaces as a
+        # TransientIssueFetchError (with the raw GitHubHttpError as its cause)
+        # rather than the raw error — but the queue must still be untouched.
+        with pytest.raises(TransientIssueFetchError) as exc_info:
             _fetch_and_update_queue(
                 config=config,
                 events=mock_event_sink,
@@ -486,13 +512,74 @@ class TestQueueFetchPlanner:
                 github_workflow=github_workflow,
                 refresh_requested=False,
                 inflight_stable_ids={},
+                issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             )
 
-        assert exc_info.value.status_code == 503
+        assert isinstance(exc_info.value.__cause__, GitHubHttpError)
+        assert exc_info.value.__cause__.status_code == 503
         assert [issue.number for issue in state.cached_queue_issues] == [1]
         assert state.queue_delta_watermark == "2026-01-01T00:00:00Z"
         assert state.queue_refresh_count == 0
         assert state.queue_refresh_in_progress is False
+
+    def test_post_fetch_pr_scan_error_is_not_classified_as_issue_fetch_failure(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """A RepositoryHostError from a *post-fetch* PR scan must surface as the
+        raw error — not be reclassified as an issue-list fetch failure.
+
+        The resilience guard wraps only the issue-list fetch. If it wrapped the
+        whole queue update, this 404 from ``scan_pending_pr_work`` would be
+        promoted to a PermanentIssueFetchError at tolerance 1 and shut the
+        orchestrator down as if the repository were missing.
+        """
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.evaluate_issues.return_value = []
+        github_workflow = Mock()
+        # The issue-list fetch itself succeeds...
+        github_workflow.fetch_all_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        # ...but the downstream PR scan hits a repository-host 404.
+        github_workflow.scan_pending_pr_work.side_effect = GitHubHttpError(
+            "GitHub GET /repos/owner/repo/pulls failed: 404", status_code=404
+        )
+        # Tolerance 1 means the *first* issue-fetch 404 would fail fast — so if
+        # the PR-scan 404 were (wrongly) routed through the policy, this would
+        # raise PermanentIssueFetchError instead of the raw error.
+        resilience = IssueFetchResilience("owner/repo", repo_not_found_tolerance=1)
+
+        with pytest.raises(GitHubHttpError) as exc_info:
+            _fetch_and_update_queue(
+                config=config,
+                events=mock_event_sink,
+                state=state,
+                repository_host=mock_repository_host,
+                scheduler=scheduler,
+                github_workflow=github_workflow,
+                refresh_requested=True,  # manual → full scan → PR scan runs
+                inflight_stable_ids={},
+                issue_fetch_resilience=resilience,
+            )
+
+        # Raw repository error surfaces, NOT a resilience classification.
+        assert exc_info.value.status_code == 404
+        assert not isinstance(exc_info.value, TransientIssueFetchError)
+        assert not isinstance(exc_info.value, PermanentIssueFetchError)
+        github_workflow.scan_pending_pr_work.assert_called_once_with(
+            state,
+            include_general_scans=True,
+        )
+        # The fetch succeeded, so the policy recorded success: a *genuine*
+        # issue-fetch 404 afterwards is still the first in its streak (proving
+        # the PR-scan 404 was never counted by the policy).
+        verdict = resilience.record_failure(
+            GitHubHttpError("issues 404", status_code=404)
+        )
+        assert verdict.consecutive_repo_not_found == 1
 
     def test_delta_sync_removes_out_of_scope_issue_from_cached_queue(
         self, mock_event_sink, mock_repository_host
@@ -504,7 +591,7 @@ class TestQueueFetchPlanner:
             queue_delta_watermark="2026-01-01T00:00:00Z",
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(7, labels=["agent:web"])]
         github_workflow.fetch_delta_issues.return_value = (
@@ -522,6 +609,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert all(issue.number != 7 for issue in state.cached_queue_issues)
@@ -555,6 +643,7 @@ class TestQueueFetchPlanner:
             last_network_sync=last_sync,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert next_sync == last_sync
@@ -582,7 +671,7 @@ class TestQueueFetchPlanner:
         planner = Mock()
         planner.plan.return_value = Mock(action_count=0, actions=[])
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = list(prior_issues[1:11])
         github_workflow.fetch_discovery_issues.return_value = []
@@ -603,6 +692,7 @@ class TestQueueFetchPlanner:
             last_network_sync=last_sync,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert next_sync >= last_sync
@@ -612,6 +702,94 @@ class TestQueueFetchPlanner:
         github_workflow.fetch_all_issues.assert_not_called()
         github_workflow.refresh_issues.assert_called_once_with(list(range(2, 12)))
         assert state.queue_pending_shrink_missing_issue_numbers == []
+
+    def test_run_planning_cycle_survives_transient_fetch_failure(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """A transient issue-list failure keeps the cached queue and keeps going."""
+        config = self._make_config()
+        cached = [make_issue(1, labels=["agent:web"]), make_issue(2, labels=["agent:web"])]
+        state = OrchestratorState(
+            cached_queue_issues=list(cached),
+            queue_last_full_scan_at=time.time(),
+        )
+        fact_gatherer = Mock()
+        fact_gatherer.create_snapshot.return_value = Mock()
+        planner = Mock()
+        planner.plan.return_value = Mock(action_count=0, actions=[])
+        scheduler = Mock()
+        scheduler.evaluate_issues.return_value = []
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.side_effect = GitHubHttpError(
+            "GitHub GET /repos/owner/repo/issues failed: 404", status_code=404
+        )
+
+        # Must NOT raise — the orchestrator stays up on a recoverable blip.
+        run_planning_cycle(
+            config=config,
+            events=mock_event_sink,
+            event_context=Mock(enrich=lambda payload: payload),
+            state=state,
+            fact_gatherer=fact_gatherer,
+            planner=planner,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            apply_plan_fn=Mock(),
+            clear_discovered_facts_fn=Mock(),
+            last_network_sync=0.0,
+            refresh_requested=True,
+            inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+        )
+
+        github_workflow.fetch_all_issues.assert_called_once()
+        # Cached queue is preserved, and planning still proceeds with it.
+        assert [issue.number for issue in state.cached_queue_issues] == [1, 2]
+        planner.plan.assert_called_once()
+
+    def test_run_planning_cycle_fails_fast_on_permanent_fetch_failure(
+        self, mock_event_sink, mock_repository_host
+    ):
+        """A persistent repo-not-found propagates a clear, actionable error."""
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+        )
+        fact_gatherer = Mock()
+        planner = Mock()
+        scheduler = Mock()
+        scheduler.evaluate_issues.return_value = []
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.side_effect = GitHubHttpError(
+            "GitHub GET /repos/owner/repo/issues failed: 404", status_code=404
+        )
+
+        with pytest.raises(PermanentIssueFetchError) as exc_info:
+            run_planning_cycle(
+                config=config,
+                events=mock_event_sink,
+                event_context=Mock(enrich=lambda payload: payload),
+                state=state,
+                fact_gatherer=fact_gatherer,
+                planner=planner,
+                repository_host=mock_repository_host,
+                scheduler=scheduler,
+                github_workflow=github_workflow,
+                apply_plan_fn=Mock(),
+                clear_discovered_facts_fn=Mock(),
+                last_network_sync=0.0,
+                refresh_requested=True,
+                inflight_stable_ids={},
+                issue_fetch_resilience=IssueFetchResilience(
+                    "owner/repo", repo_not_found_tolerance=1
+                ),
+            )
+
+        assert "owner/repo" in str(exc_info.value)
+        # Planning is never reached when the fetch fails fast.
+        planner.plan.assert_not_called()
 
     def test_suspicious_full_scan_shrink_retains_queue_and_watermark(
         self, mock_event_sink, mock_repository_host
@@ -628,7 +806,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.fetch_all_issues.return_value = [
             make_issue(1, labels=["agent:web"])
@@ -645,6 +823,7 @@ class TestQueueFetchPlanner:
             refresh_requested=True,
             inflight_stable_ids={},
             queue_cache_store=queue_cache_store,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert [issue.number for issue in state.cached_queue_issues] == list(range(1, 21))
@@ -667,7 +846,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -681,6 +860,7 @@ class TestQueueFetchPlanner:
             github_workflow=github_workflow,
             refresh_requested=False,
             inflight_stable_ids={},
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         assert "[FETCH-COST]" in caplog.text
@@ -918,6 +1098,14 @@ class TestClearDiscoveredFacts:
                 reason="Branch protection blocks merge.",
             )
         ]
+        sample_orchestrator_state.discovered_merge_queue_enqueues = [
+            DiscoveredMergeQueueEnqueue(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                issue_key="M0-001",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="agent:dev", rework_cycle=1)
         ]
@@ -935,6 +1123,7 @@ class TestClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_escalations) == 0
+        assert len(sample_orchestrator_state.discovered_merge_queue_enqueues) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1379,6 +1568,14 @@ class TestOrchestratorSupportClearDiscoveredFacts:
                 reason="Branch protection blocks merge.",
             )
         ]
+        sample_orchestrator_state.discovered_merge_queue_enqueues = [
+            DiscoveredMergeQueueEnqueue(
+                issue_number=1,
+                pr_number=100,
+                pr_url="url",
+                issue_key="M0-001",
+            )
+        ]
         sample_orchestrator_state.discovered_reworks = [
             DiscoveredRework(issue_number=2, pr_number=200, branch_name="br", agent_type="a", rework_cycle=1)
         ]
@@ -1398,6 +1595,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_drifts) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_escalations) == 0
+        assert len(sample_orchestrator_state.discovered_merge_queue_enqueues) == 0
         assert len(sample_orchestrator_state.discovered_reworks) == 0
         assert len(sample_orchestrator_state.discovered_escalations) == 0
         assert len(sample_orchestrator_state.discovered_failures) == 0
@@ -1751,6 +1949,65 @@ class TestRunTick:
         event_names = [e.name for e in mock_event_sink.events]
         assert EventName.TICK_STARTED in event_names
         assert EventName.TICK_COMPLETED in event_names
+
+    def test_emits_tick_slow_with_phase_breakdown_when_tick_overruns(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context, monkeypatch
+    ):
+        """A tick that overruns the heartbeat budget emits a machine TICK_SLOW
+        event carrying the sub-phase breakdown (so the UI can attribute the
+        stall instead of only inferring it from heartbeat age)."""
+        import types
+
+        clock = {"mono": 1000.0}
+        fake_time = types.SimpleNamespace(
+            monotonic=lambda: clock["mono"],
+            time=lambda: 1_700_000_000.0,
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.control.orchestrator_support.time", fake_time
+        )
+
+        def slow_active() -> None:
+            clock["mono"] += 153.9  # the synchronous publish that froze the tick
+
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids={},
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=slow_active,
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        slow_events = [e for e in mock_event_sink.events if e.name == EventName.TICK_SLOW]
+        assert len(slow_events) == 1
+        payload = slow_events[0].data
+        assert payload["duration_seconds"] == 153.9
+        assert payload["active_seconds"] == 153.9
+        assert payload["dominant_phase"] == "active_sessions"
+
+    def test_no_tick_slow_event_for_fast_tick(
+        self, sample_orchestrator_state, mock_event_sink, sample_event_context
+    ):
+        """A normal (fast) tick must not emit TICK_SLOW."""
+        run_tick(
+            loop_iteration=1,
+            event_context=sample_event_context,
+            inflight_stable_ids={},
+            state=sample_orchestrator_state,
+            events=mock_event_sink,
+            shutdown_requested=False,
+            process_active_sessions_fn=Mock(),
+            check_health_fn=Mock(return_value=HealthDecision.ok()),
+            run_planning_cycle_fn=Mock(),
+            emit_heartbeat_fn=Mock(),
+        )
+
+        assert not [e for e in mock_event_sink.events if e.name == EventName.TICK_SLOW]
 
     def test_skips_planning_when_health_check_fails(
         self, sample_orchestrator_state, mock_event_sink, sample_event_context

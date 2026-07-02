@@ -105,7 +105,7 @@ async def retry_publish_issue(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
 ) -> JSONResponse:
-    """Retry publish for a publish-failed issue using the latest failed publish job."""
+    """Retry publish for a publish-failed issue using its persisted retry locators."""
     if orchestrator is None:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -491,6 +491,10 @@ def _terminate_reset_retry_runtime(
         "background_job_supervisor",
     )
     session_manager = _configured_attr(deps, "session_manager")
+    # Publish-retry work has its own owner/runner outside the review-exchange
+    # supervisor; the shared runtime terminator abandons it on the same boundary
+    # so a late republish cannot repopulate the attempt being reset.
+    publish_recovery = _configured_attr(deps, "publish_recovery")
     terminate_issue_runtime(
         issue_number=issue_number,
         reason="reset-retry",
@@ -498,6 +502,7 @@ def _terminate_reset_retry_runtime(
         job_supervisor=background_job_supervisor,
         session_manager=session_manager,
         active_sessions=state.active_sessions,
+        publish_recovery=publish_recovery,
     )
 
 

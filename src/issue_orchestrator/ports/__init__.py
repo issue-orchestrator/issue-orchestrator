@@ -40,6 +40,9 @@ _EXPORTS = {
     "RepositoryHost": (".repository_host", "RepositoryHost"),
     "RepositoryHostError": (".repository_host", "RepositoryHostError"),
     "IssueResolver": (".issue_resolver", "IssueResolver"),
+    "StackPredecessorFactsProvider": (
+        ".stack_predecessor_facts", "StackPredecessorFactsProvider",
+    ),
     "WorktreeManager": (".worktree_manager", "WorktreeManager"),
     "WorktreeInfo": (".worktree_manager", "WorktreeInfo"),
     "WorktreeReuseOptions": (".worktree_manager", "WorktreeReuseOptions"),
@@ -120,6 +123,7 @@ __all__ = (
     "RepositoryHost",
     "RepositoryHostError",
     "IssueResolver",
+    "StackPredecessorFactsProvider",
     "WorktreeManager",
     "WorktreeInfo",
     "WorktreeReuseOptions",

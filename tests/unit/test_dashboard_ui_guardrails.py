@@ -220,6 +220,28 @@ def test_issue_detail_status_is_live_region() -> None:
     assert 'aria-atomic="true"' in status_tag
 
 
+def test_in_round_progress_step_has_text_affordance_not_colour_only() -> None:
+    # Issue #6428: the live in-round progress row must carry a textual badge
+    # with an accessible status role — status must not be signalled by colour
+    # alone. The renderer is the io.agent-context lifecycle plugin.
+    agent_context_js = (DASHBOARD_JS_DIR / "plugins" / "agent_context.js").read_text(
+        encoding="utf-8"
+    )
+    assert "in_round_progress" in agent_context_js
+    assert "journey-progress-badge" in agent_context_js
+    assert 'role="status"' in agent_context_js
+    assert "In progress" in agent_context_js
+
+
+def test_in_round_progress_css_neutralises_done_colour_and_respects_reduced_motion() -> None:
+    css = _read_dashboard_css_bundle()
+    assert ".journey-step-in-progress" in css
+    assert ".journey-progress-badge" in css
+    # The pulsing dot must be disabled when the user prefers reduced motion.
+    assert "@keyframes journey-progress-pulse" in css
+    assert "prefers-reduced-motion: reduce" in css
+
+
 def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     assert re.search(r'onclick="bulkRetryAwaitingMerge\(\)"\s+disabled', html)
@@ -3243,3 +3265,71 @@ def test_issue_row_fragment_is_not_treated_as_a_full_page() -> None:
     # partial rendered into an already-bootstrapped page must NOT be required
     # to carry its own CSRF meta tags.
     assert ISSUE_ROW_TEMPLATE not in _full_page_templates()
+
+
+# --- Stack dependency gates (#6597) ---------------------------------------
+
+def test_issue_detail_stack_section_uses_native_disclosure() -> None:
+    # The stack section must be a native <details>/<summary> so the
+    # expanded/collapsed relationship is keyboard-operable and exposed to
+    # assistive tech without hand-rolled ARIA.
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="issueDetailStack"' in html
+    assert "<details" in html and 'id="issueDetailStack"' in html
+    assert 'id="issueDetailStackSummary"' in html
+    # The summary is the accessible name for the region.
+    assert "<summary id=\"issueDetailStackSummary\"" in html
+
+
+def test_stack_chip_status_is_text_not_colour_only() -> None:
+    # The compact card stack chip must carry a textual status; colour alone is
+    # not an acceptable signal. The status *text* is precomputed server-side
+    # (test_dependency_gate_view.py::stack_chip asserts the ready/blocked/stale
+    # words); the JS renders that precomputed text into a status element.
+    body = _function_body(
+        _read(DASHBOARD_JS_DIR / "kanban_columns.js"), "renderStackChipHtml"
+    )
+    assert "stack-chip-status" in body
+    assert "status_text" in body, "chip must render the precomputed textual status"
+
+
+def test_stack_chip_icon_is_decorative_aria_hidden() -> None:
+    body = _function_body(
+        _read(DASHBOARD_JS_DIR / "kanban_columns.js"), "renderStackChipHtml"
+    )
+    assert 'stack-chip-icon" aria-hidden="true"' in body
+
+
+def test_stack_drawer_gate_state_is_labelled_text() -> None:
+    # Drawer gate rows must show an open/blocked word (not colour only) and the
+    # decorative status icon must be aria-hidden.
+    source = _read(DASHBOARD_JS_DIR / "issue_detail_drawer.js")
+    body = _function_body(source, "_stackGateItemHtml")
+    assert "stack-gate-state" in body
+    assert "isOpen ? 'open' : 'blocked'" in body
+    assert 'stack-gate-icon" aria-hidden="true"' in body
+
+
+def test_stack_section_summary_has_visible_focus_style() -> None:
+    css = _read_dashboard_css_bundle()
+    focus_body = _last_css_rule_body(css, ".issue-detail-section summary:focus-visible")
+    assert "outline" in focus_body
+
+
+def test_stack_chip_and_rows_wrap_to_avoid_clipping() -> None:
+    # Long refs/reasons must wrap rather than clip at narrow widths.
+    css = _read_dashboard_css_bundle()
+    assert "flex-wrap: wrap" in _last_css_rule_body(css, ".stack-chip")
+    gate_body = _last_css_rule_body(css, ".stack-gate,\n.stack-edge")
+    assert "flex-wrap: wrap" in gate_body
+    assert "overflow-wrap: anywhere" in gate_body
+
+
+def test_stack_status_colours_use_theme_variables_for_contrast() -> None:
+    # Tone colours must come from the shared light/dark theme variables so
+    # contrast holds in both themes (never hard-coded hex).
+    css = _read_dashboard_css_bundle()
+    blocked_body = _last_css_rule_body(css, ".stack-gate--blocked .stack-gate-state")
+    assert "var(--danger)" in blocked_body
+    open_body = _last_css_rule_body(css, ".stack-gate--open .stack-gate-state")
+    assert "var(--ok)" in open_body

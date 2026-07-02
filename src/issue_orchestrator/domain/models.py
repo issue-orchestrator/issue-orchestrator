@@ -10,8 +10,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
+from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
-from .session_key import SessionKey, TaskKind  # pyright: ignore[reportUnusedImport] (re-exported)
+from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
 
 if TYPE_CHECKING:
@@ -116,39 +117,6 @@ class RequestedAction(Enum):
     REMOVE_CODE_REVIEW_LABEL = "remove_code_review_label"
     POST_COMMENT = "post_comment"
     PUSH_BRANCH = "push_branch"
-
-
-# ===========================================================================
-# Identity and Location Abstractions
-# ===========================================================================
-
-
-@dataclass(frozen=True)
-class SessionIdentity:
-    """Identifies a session within the orchestrator.
-
-    Immutable snapshot of session identity used across:
-    - ObservedCompletion (observed facts)
-    - PublishJob (background work)
-    - Event payloads
-    """
-    issue_number: int
-    issue_title: str
-    session_key: str  # e.g., "code:123" or "review:456"
-    terminal_id: str
-    issue_key: str = ""  # stable_id (e.g., "M1-011"); falls back to str(issue_number) when empty
-
-
-@dataclass(frozen=True)
-class WorktreeLocation:
-    """Location info for a worktree.
-
-    Immutable snapshot of where work is happening. Distinct from WorktreeInfo
-    (in ports/) which captures creation-time metadata like reuse status.
-    """
-    path: str  # String for immutability (not Path)
-    branch_name: str
-    completion_path: str  # Relative path to completion.json
 
 
 # ---------------------------------------------------------------------------
@@ -694,6 +662,28 @@ TERMINAL_AWAITING_MERGE_HISTORY_STATUSES: frozenset[AwaitingMergeTerminalStatus]
 DONE_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = frozenset(
     {"completed", "merged", "closed"}
 )
+
+
+@dataclass
+class StatusRollupCapability:
+    """Repo-wide, cross-tick backoff state for reading PR status rollups.
+
+    Lives on :class:`OrchestratorState` because the awaiting-merge
+    reconciler (and the gate it delegates rollup reads to) are rebuilt
+    every tick — only ``OrchestratorState`` survives across ticks. A
+    single repo-wide timestamp is the right granularity: permission to
+    read the primary (GraphQL) ``statusCheckRollup`` is a property of the
+    configured token, not of any one PR, so once it is denied every GraphQL
+    probe fails identically until an operator fixes the token.
+    ``permission_denied_since`` records when that denial was last observed;
+    the gate suppresses further GraphQL probes (and the repeated permission
+    warning) until a backoff window elapses, then re-probes once in case
+    the token was fixed. The backoff is GraphQL-source-scoped only: the gate
+    still reads the REST check-run / commit-status fallback each tick, so a
+    fallback-readable failure is never masked by the backoff.
+    """
+
+    permission_denied_since: float | None = None
 BLOCKED_HISTORY_STATUSES: frozenset[SessionHistoryStatus] = frozenset(
     {"blocked", "needs_human", "failed", "validation_failed", "timed_out"}
 )
@@ -1377,6 +1367,15 @@ class DiscoveredRework:
     rework_cycle: int = 1
     source: str = "review_label"
     feedback: str | None = None
+    # Set when post-publish validation recovers a PR that had already been
+    # escalated to human review. The planner clears the stale human label while
+    # routing it back to automated rework.
+    clear_needs_human: bool = False
+    # True when the discovery path already saw the feedback comment marker
+    # on the PR, so the planner must not enqueue a duplicate comment. The
+    # rework itself is still queued (idempotency is owned by labels/pending
+    # state, not the comment).
+    feedback_comment_already_posted: bool = False
 
 
 @dataclass(frozen=True)
@@ -1396,6 +1395,8 @@ class DiscoveredEscalation:
 PostPublishEscalationKind = Literal[
     "checks_pending_timeout",   # required checks pending > timeout after approval
     "branch_protection_blocked",  # mergeable_state=blocked but rollup=SUCCESS
+    "status_rollup_permission_denied",  # token cannot read check status to decide
+    "merge_queue_failed",  # GitHub merge queue rejected the PR; failure_action=needs_human
 ]
 
 
@@ -1420,6 +1421,24 @@ class DiscoveredAwaitingMergeEscalation:
     rework_cycle: int  # carried for label/comment continuity
     kind: PostPublishEscalationKind
     reason: str  # short human-readable summary, used in the PR comment
+
+
+@dataclass(frozen=True)
+class DiscoveredMergeQueueEnqueue:
+    """A reviewer-approved PR is eligible to enter the GitHub merge queue.
+
+    Emitted only when merge queue mode is enabled and the merge queue
+    coordinator decides the PR has cleared the gate, is not already queued,
+    and is mergeable-or-behind (behind-base is enqueue-eligible, NOT rework).
+
+    This is a "fact" — the Planner converts it into an
+    ``EnqueueToMergeQueueAction`` and the ActionApplier performs the protected
+    enqueue. Mutations never happen in the discovery path.
+    """
+    issue_number: int
+    pr_number: int
+    pr_url: str
+    issue_key: str
 
 
 @dataclass(frozen=True)
@@ -1502,7 +1521,16 @@ class PendingValidationRetry:
     """A session that needs to be re-launched with validation retry prompt.
 
     When validation fails but retries are remaining, the orchestrator queues
-    a retry. The next tick will re-launch the session with error context.
+    a retry. The next tick will re-launch the session as a coding session with
+    error context.
+
+    ``source_task`` is the task kind of the session that produced the retry. It
+    is required so every queue/recovery call site must declare provenance: a
+    validation retry always relaunches as coding work, so a review-only source
+    (PR review / retrospective review) is rejected at construction. Review-only
+    sessions make no commits, and relaunching one as coding work opens a PR on an
+    empty branch (see issue #6426). This is the owner-boundary guard that
+    complements the recovery scanner skipping review-only run directories.
     """
     issue_number: int
     issue_title: str
@@ -1513,307 +1541,20 @@ class PendingValidationRetry:
     validation_error: str
     validation_error_file: str | None
     retry_count: int  # Current retry count (will be incremented on re-launch)
+    source_task: TaskKind
     validation_cmd: str | None = None  # For building retry prompt
+
+    def __post_init__(self) -> None:
+        if self.source_task.is_review_only:
+            raise ValueError(
+                "PendingValidationRetry cannot be created for review-only task "
+                f"{self.source_task.value} (issue #{self.issue_number}): review-only "
+                "sessions make no commits and must never enter the coder retry pipeline."
+            )
 
 
 # Backwards compatibility alias
 PendingCTOReview = PendingTriageReview
-
-
-# =============================================================================
-# Publish Job Models (Async Completion Processing)
-# =============================================================================
-
-
-class PublishJobStatus(Enum):
-    """Status of a publish job in the background queue."""
-    QUEUED = "queued"      # Job created, waiting for worker
-    RUNNING = "running"    # Worker is executing
-    SUCCEEDED = "succeeded"  # Job completed successfully
-    FAILED = "failed"      # Job failed (may be retryable)
-
-
-@dataclass(frozen=True)
-class ObservedCompletion:
-    """Facts observed from a completed session.
-
-    This is produced by the observation phase (fast) and consumed by:
-    1. The planner (to project labels immediately)
-    2. The job queue (to enqueue background publish work)
-
-    Immutable to ensure it's a pure fact, not mutated during processing.
-
-    Uses composition for cleaner structure:
-    - identity: Who/what session this is
-    - worktree: Where the work happened
-    - record: What the agent reported (the completion record)
-    """
-    # Composed abstractions
-    identity: SessionIdentity
-    worktree: WorktreeLocation
-    record: CompletionRecord
-    run_assets: SessionRunAssets
-
-    # Session-specific fields (not from the completion record)
-    pr_number: int | None = None  # For review sessions
-    agent_label: str | None = None  # For per-agent reviewer
-
-    # Validation state (for sessions with validation configured)
-    validation_retry_count: int = 0
-    original_prompt: str | None = None
-
-    # Convenience accessors for commonly-used fields
-    @property
-    def issue_number(self) -> int:
-        return self.identity.issue_number
-
-    @property
-    def issue_title(self) -> str:
-        return self.identity.issue_title
-
-    @property
-    def session_key(self) -> str:
-        return self.identity.session_key
-
-    @property
-    def terminal_id(self) -> str:
-        return self.identity.terminal_id
-
-    @property
-    def issue_key_str(self) -> str:
-        """Stable issue key for SSE events; falls back to str(issue_number)."""
-        return self.identity.issue_key or str(self.identity.issue_number)
-
-    @property
-    def worktree_path(self) -> str:
-        return self.worktree.path
-
-    @property
-    def branch_name(self) -> str:
-        return self.worktree.branch_name
-
-    @property
-    def completion_path(self) -> str:
-        return self.worktree.completion_path
-
-    @property
-    def outcome(self) -> CompletionOutcome:
-        return self.record.outcome
-
-    @property
-    def requested_actions(self) -> list[RequestedAction]:
-        return self.record.requested_actions
-
-    @property
-    def summary(self) -> str:
-        return self.record.summary
-
-    @property
-    def needs_publish(self) -> bool:
-        """Check if this completion requires publishing (git push + PR)."""
-        return RequestedAction.PUSH_BRANCH in self.record.requested_actions
-
-    @property
-    def is_code_session(self) -> bool:
-        """Check if this is a code (issue) session vs review session."""
-        return self.pr_number is None
-
-    # Convenience accessors for CompletionRecord fields
-    @property
-    def implementation(self) -> Optional[str]:
-        return self.record.implementation
-
-    @property
-    def problems(self) -> Optional[str]:
-        return self.record.problems
-
-    @property
-    def blocked_reason(self) -> Optional[str]:
-        return self.record.blocked_reason
-
-    @property
-    def review_summary(self) -> Optional[str]:
-        return self.record.review_summary
-
-    @property
-    def review_issues(self) -> Optional[str]:
-        return self.record.review_issues
-
-    @property
-    def comment_body(self) -> Optional[str]:
-        return self.record.comment_body
-
-    @property
-    def pr_labels(self) -> Optional[list[str]]:
-        return self.record.pr_labels
-
-
-@dataclass
-class PublishJob:
-    """A background job to publish completion work (git push, PR, validation).
-
-    Created from an ObservedCompletion when the planner decides to queue it.
-    Executed by the PublishJobExecutor in a background thread.
-    """
-    # Job identity (unique constraint: issue_number + session_key)
-    job_id: str  # UUID
-    issue_number: int
-    session_key: str
-    run_assets: SessionRunAssets
-
-    # Job state
-    status: PublishJobStatus = PublishJobStatus.QUEUED
-    created_at: float = 0.0  # time.monotonic() when created
-    started_at: float | None = None  # time.monotonic() when worker started
-    finished_at: float | None = None  # time.monotonic() when completed
-
-    # Work data (from ObservedCompletion)
-    worktree_path: str = ""
-    branch_name: str = ""
-    completion_path: str = ""
-    issue_title: str = ""
-    pr_number: int | None = None  # For review sessions
-    agent_label: str | None = None
-
-    # Completion record data (needed for PR body, labels, etc.)
-    outcome: str = ""
-    requested_actions: tuple[str, ...] = field(default_factory=tuple)
-    implementation: str | None = None
-    problems: str | None = None
-    comment_body: str | None = None
-    pr_labels: tuple[str, ...] | None = None
-
-    # Validation config (passed through for post-publish validation)
-    run_validation: bool = False
-    validation_retry_count: int = 0
-    original_prompt: str | None = None
-    retry_publish: bool = False
-
-    # Result (populated by worker)
-    result_success: bool | None = None
-    result_pr_url: str | None = None
-    result_pr_number: int | None = None
-    result_message: str | None = None
-    result_errors: tuple[str, ...] | None = None
-    result_diagnostic_path: str | None = None
-
-    # Retry tracking
-    attempt_count: int = 0
-    last_error: str | None = None
-
-    @classmethod
-    def from_observed_completion(
-        cls,
-        observed: ObservedCompletion,
-        job_id: str,
-        run_validation: bool = False,
-    ) -> "PublishJob":
-        """Create a publish job from an observed completion."""
-        import time
-        return cls(
-            job_id=job_id,
-            issue_number=observed.issue_number,
-            session_key=observed.session_key,
-            run_assets=observed.run_assets,
-            created_at=time.monotonic(),
-            worktree_path=observed.worktree_path,
-            branch_name=observed.branch_name,
-            completion_path=observed.completion_path,
-            issue_title=observed.issue_title,
-            pr_number=observed.pr_number,
-            agent_label=observed.agent_label,
-            # Convert enums to strings for storage
-            outcome=observed.outcome.value,
-            requested_actions=tuple(a.value for a in observed.requested_actions),
-            implementation=observed.implementation,
-            problems=observed.problems,
-            comment_body=observed.comment_body,
-            pr_labels=tuple(observed.pr_labels) if observed.pr_labels else None,
-            run_validation=run_validation,
-            validation_retry_count=observed.validation_retry_count,
-            original_prompt=observed.original_prompt,
-        )
-
-    def mark_started(self) -> None:
-        """Mark job as started by worker."""
-        import time
-        self.status = PublishJobStatus.RUNNING
-        self.started_at = time.monotonic()
-        self.attempt_count += 1
-
-    def mark_succeeded(
-        self,
-        pr_url: str | None = None,
-        pr_number: int | None = None,
-        message: str = "",
-    ) -> None:
-        """Mark job as successfully completed."""
-        import time
-        self.status = PublishJobStatus.SUCCEEDED
-        self.finished_at = time.monotonic()
-        self.result_success = True
-        self.result_pr_url = pr_url
-        self.result_pr_number = pr_number
-        self.result_message = message
-
-    def mark_failed(
-        self,
-        error: str,
-        errors: list[str] | None = None,
-        diagnostic_path: str | None = None,
-    ) -> None:
-        """Mark job as failed."""
-        import time
-        self.status = PublishJobStatus.FAILED
-        self.finished_at = time.monotonic()
-        self.result_success = False
-        self.result_message = error
-        self.last_error = error
-        if errors:
-            self.result_errors = tuple(errors)
-        self.result_diagnostic_path = diagnostic_path
-
-    @property
-    def duration_seconds(self) -> float | None:
-        """Duration of job execution in seconds."""
-        if self.started_at is None or self.finished_at is None:
-            return None
-        return self.finished_at - self.started_at
-
-    @property
-    def is_terminal(self) -> bool:
-        """Check if job is in a terminal state."""
-        return self.status in (PublishJobStatus.SUCCEEDED, PublishJobStatus.FAILED)
-
-
-@dataclass(frozen=True)
-class PublishJobResult:
-    """Result of a completed publish job, for consumption by orchestrator.
-
-    Immutable snapshot returned by job executor when polled.
-    """
-    job_id: str
-    issue_number: int
-    session_key: str
-    success: bool
-    pr_url: str | None = None
-    pr_number: int | None = None
-    message: str = ""
-    errors: tuple[str, ...] | None = None
-    diagnostic_path: str | None = None
-    duration_seconds: float | None = None
-    review_exchange_completed: bool = False
-    failure_kind: str | None = None
-
-    # Validation results (if validation was run)
-    validation_passed: bool | None = None
-    validation_error: str | None = None
-    validation_error_file: str | None = None
-    needs_validation_retry: bool = False
-    retry_publish: bool = False
-    issue_title: str = ""
-    agent_label: str | None = None
-    worktree_path: str | None = None
 
 
 @dataclass
@@ -1855,6 +1596,7 @@ class OrchestratorState:
     ui_visible_issue_numbers: list[int] = field(default_factory=list)  # Issue numbers currently visible in Flow UI
     ui_visible_updated_at: float = 0.0  # Unix timestamp when UI visibility hint was last updated
     dependency_problems: dict[int, "DependencyProblem"] = field(default_factory=dict)  # Issues blocked by dependencies (to migrate: dict[IssueKey, ...])
+    dependency_gate_snapshot: DependencyGateSnapshot = field(default_factory=DependencyGateSnapshot)  # Producer-evaluated stack gate reports + successor edges for the UI (#6597)
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
     discovered_retrospective_reviews: list[DiscoveredRetrospectiveReview] = field(default_factory=list)  # Existing implementation reviews from labels/UI
@@ -1863,34 +1605,31 @@ class OrchestratorState:
     discovered_reworks: list[DiscoveredRework] = field(default_factory=list)  # Reworks from scans
     discovered_escalations: list[DiscoveredEscalation] = field(default_factory=list)  # Escalations from scans
     discovered_awaiting_merge_escalations: list[DiscoveredAwaitingMergeEscalation] = field(default_factory=list)  # Post-publish stuck-or-blocked escalations
+    discovered_merge_queue_enqueues: list[DiscoveredMergeQueueEnqueue] = field(default_factory=list)  # Approved PRs eligible for the merge queue
     discovered_failures: list["DiscoveredFailure"] = field(default_factory=list)  # Failures for triage
     # Immediate cleanups - sessions that need cleanup now (not deferred until review)
     immediate_cleanups: list["ImmediateCleanup"] = field(default_factory=list)
     # Stale in-progress tracking: issue_number -> consecutive ticks with stale in-progress
     stale_issue_ticks: dict[int, int] = field(default_factory=dict)
-    # Async completion processing (publish jobs)
-    observed_completions: list["ObservedCompletion"] = field(default_factory=list)  # Completions detected this tick
-    pending_publish_jobs: dict[str, "PublishJob"] = field(default_factory=dict)  # job_id -> job (queued)
-    running_publish_jobs: dict[str, "PublishJob"] = field(default_factory=dict)  # job_id -> job (in progress)
-    # Tombstoned job IDs whose results must be discarded when the worker
-    # finishes. Populated by scratch reset for jobs that were in flight
-    # at reset time — their late results would otherwise re-populate
-    # discovered_reviews/completed_today for an issue we just declared
-    # fresh. Drained by _poll_job_results after the matching result is
-    # skipped, so the set is bounded by "in-flight at reset time and not
-    # yet polled."
-    superseded_job_ids: set[str] = field(default_factory=set)
     # Queue refresh/freshness tracking for dashboard UX and lazy refresh behavior
     queue_last_refresh_at: float = 0.0  # Epoch seconds of last queue refresh completion
     queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
     queue_refresh_requested: bool = False  # True when a manual refresh has been requested
     awaiting_merge_drift_scan_timestamps: dict[int, float] = field(default_factory=dict)  # issue_number -> last PR-list drift scan
+    awaiting_merge_rollup_scan_timestamps: dict[int, float] = field(default_factory=dict)  # pr_number -> last status-rollup scan
     # Per-issue first time we observed `WAIT_FOR_CHECKS` (mergeable_state in
     # {unstable, blocked} with the status-check rollup not yet conclusive).
     # Used to bound how long the orchestrator is willing to wait for required
     # checks before escalating the issue to needs_human. Cleared whenever the
     # PR leaves the WAIT_FOR_CHECKS state.
     awaiting_merge_checks_pending_since: dict[int, float] = field(default_factory=dict)
+    # Repo-wide backoff state for status-check-rollup reads. Bounds repeated
+    # `status_check_rollup` permission failures so a token that cannot read
+    # check status does not re-trigger the same GraphQL probe (and the same
+    # warning) on every tick. See StatusRollupGate.
+    status_rollup_capability: StatusRollupCapability = field(
+        default_factory=StatusRollupCapability
+    )
     # Candidate queue removals waiting for a targeted confirmation refresh.
     queue_pending_shrink_missing_issue_numbers: list[int] = field(default_factory=list)
     queue_pending_shrink_confirm_at: float = 0.0

@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 from issue_orchestrator.control.completion_record_validation import (
-    CompletionRecordLoadFailure,
     CompletionRecordValidator,
     WorktreeValidationFailure,
     _MAX_COMPLETION_FILE_BYTES,
@@ -200,40 +199,6 @@ def test_read_completion_record_accepts_reasonable_size(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.outcome == CompletionOutcome.COMPLETED
-
-
-def test_observer_also_applies_file_size_gate(tmp_path: Path) -> None:
-    """Regression for #6017 re-review-2 P3.
-
-    The CompletionObserver has its own read path; it must route through the
-    shared typed loader so the 2 MiB cap applies on observation just like it
-    does on publish, while preserving invalid-vs-missing classification.
-    """
-    from issue_orchestrator.control.completion_observer import (
-        CompletionObserver,
-    )
-
-    record_path = tmp_path / ".issue-orchestrator" / "completion.json"
-    record_path.parent.mkdir(parents=True)
-    record_path.write_bytes(
-        b"{" + b"a" * _MAX_COMPLETION_FILE_BYTES + b"}"
-    )
-
-    observer = CompletionObserver(session_output=None)  # type: ignore[arg-type]
-    result = observer._read_completion_record(  # noqa: SLF001
-        worktree=tmp_path,
-        completion_path=".issue-orchestrator/completion.json",
-        issue_number=1,
-    )
-    typed_result = observer._read_completion_record_result(  # noqa: SLF001
-        worktree=tmp_path,
-        completion_path=".issue-orchestrator/completion.json",
-        issue_number=1,
-    )
-
-    assert result is None
-    assert typed_result.invalid is True
-    assert typed_result.failure == CompletionRecordLoadFailure.OVERSIZED
 
 
 def test_read_completion_record_accepts_absolute_validation_path(

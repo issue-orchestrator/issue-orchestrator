@@ -12,10 +12,10 @@ from ..domain.models import (
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredEscalation,
     DiscoveredFailure,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredReview,
     DiscoveredRetrospectiveReview,
     DiscoveredRework,
-    ObservedCompletion,
     PendingReview,
     PendingRetrospectiveReview,
     PendingRework,
@@ -64,6 +64,9 @@ class OrchestratorSnapshot:
     discovered_awaiting_merge_escalations: tuple[
         DiscoveredAwaitingMergeEscalation, ...
     ] = field(default_factory=tuple)
+    discovered_merge_queue_enqueues: tuple[
+        DiscoveredMergeQueueEnqueue, ...
+    ] = field(default_factory=tuple)
     discovered_failures: tuple[DiscoveredFailure, ...] = field(default_factory=tuple)
     triage_facts: Optional[TriageFacts] = None
     cleanup_facts: Optional[CleanupFacts] = None
@@ -75,8 +78,6 @@ class OrchestratorSnapshot:
     failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
     # Issues that completed this session (have session_history entries)
     session_history_issue_numbers: frozenset[int] = field(default_factory=frozenset)
-    # Observed completions pending publish job submission (async completion processing)
-    observed_completions: tuple[ObservedCompletion, ...] = field(default_factory=tuple)
 
     @property
     def active_count(self) -> int:
@@ -107,12 +108,14 @@ class OrchestratorSnapshot:
         discovered_awaiting_merge_escalations: Sequence[
             DiscoveredAwaitingMergeEscalation
         ] = (),
+        discovered_merge_queue_enqueues: Sequence[
+            DiscoveredMergeQueueEnqueue
+        ] = (),
         discovered_failures: Sequence[DiscoveredFailure] = (),
         triage_facts: Optional[TriageFacts] = None,
         cleanup_facts: Optional[CleanupFacts] = None,
         stale_in_progress_issues: Sequence[Issue] = (),
         stale_claim_issues: Sequence[Issue] = (),
-        observed_completions: Sequence[ObservedCompletion] = (),
     ) -> "OrchestratorSnapshot":
         """Create snapshot from mutable state.
 
@@ -132,7 +135,6 @@ class OrchestratorSnapshot:
             cleanup_facts: Facts about pending cleanups and their review status
             stale_in_progress_issues: Issues with stale in-progress labels
             stale_claim_issues: Issues with stale/expired claims
-            observed_completions: Completions observed this tick (for immediate label projection)
         """
         return cls(
             issues=tuple(issues),
@@ -159,13 +161,15 @@ class OrchestratorSnapshot:
             discovered_awaiting_merge_escalations=tuple(
                 discovered_awaiting_merge_escalations
             ),
+            discovered_merge_queue_enqueues=tuple(
+                discovered_merge_queue_enqueues
+            ),
             discovered_failures=tuple(discovered_failures),
             triage_facts=triage_facts,
             cleanup_facts=cleanup_facts,
             stale_in_progress_issues=tuple(stale_in_progress_issues),
             stale_claim_issues=tuple(stale_claim_issues),
             failed_this_cycle=frozenset(state.failed_this_cycle),
-            observed_completions=tuple(observed_completions),
         )
 
 

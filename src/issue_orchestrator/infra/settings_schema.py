@@ -14,7 +14,9 @@ from __future__ import annotations
 import functools
 from typing import Any, Literal, Optional, TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from .config_models import MERGE_QUEUE_PROVIDERS
 
 from .settings_schema_support import (
     CONFIG_VALUE_TYPE_PATH,
@@ -24,6 +26,7 @@ from .settings_schema_support import (
     DOCTOR_SEVERITY_ERROR,
     DOCTOR_SEVERITY_WARNING,
     FORM_CONTROL_DICT_ENUM as FORM_CONTROL_DICT_ENUM,
+    FORM_CONTROL_ENUM as FORM_CONTROL_ENUM,
     FORM_CONTROL_KINDS as FORM_CONTROL_KINDS,
     UnsupportedSettingsFieldError as UnsupportedSettingsFieldError,
     classify_form_control as classify_form_control,
@@ -484,8 +487,8 @@ class ValidationSettings(BaseModel):
         title="Publish Validation Command",
         description="Authoritative command run before push/publish",
         json_schema_extra={
-            "doc_examples": ["./scripts/validate-pr.sh", "make validate-pr-raw"],
-            "doc_notes": "This should match the repo's authoritative local PR/pre-push gate. If make validate-pr wraps the cache-aware verify hook, configure the underlying raw command instead.",
+            "doc_examples": ["./scripts/validate-pr.sh", "./scripts/validate-pr-suite.sh"],
+            "doc_notes": "This should match the repo's authoritative local PR/pre-push gate. If make validate-pr wraps the cache-aware verify hook, configure a private non-recursive suite command instead.",
             "section": "Publish Gate",
             "config_attr": "validation.publish.cmd",
             "yaml_path": "validation.publish.cmd",
@@ -939,15 +942,24 @@ class ReviewSettings(BaseModel):
         json_schema_extra={
             "doc_examples": ["1800", "3600", "5400"],
             "doc_notes": (
-                "When GitHub reports mergeable_state in {unstable, blocked} "
-                "with the status-check rollup PENDING/EXPECTED/unknown, the "
-                "PR is treated as 'CI still running' and the orchestrator "
-                "waits rather than triggering rework. After this timeout "
-                "the issue is escalated to needs-human with a comment "
-                "explaining that required checks have been pending too "
-                "long. Branch-protection blocks (rollup=SUCCESS but "
-                "mergeable_state=blocked) escalate immediately; this "
-                "timeout only governs the 'waiting on CI' state."
+                "Governs ONLY the 'waiting on CI' (WAIT_FOR_CHECKS) state: "
+                "mergeable_state in {unstable, blocked} with the status-check "
+                "rollup reading PENDING/EXPECTED/unknown is treated as 'CI "
+                "still running', so the orchestrator waits rather than "
+                "triggering rework and escalates a 'checks pending too long' "
+                "timeout to needs-human only after this budget elapses. Two "
+                "other post-approval states are NOT bounded by this timeout "
+                "and escalate immediately. (1) Unreadable checks: when a "
+                "decisive PR's status-check rollup cannot be read (the "
+                "configured GitHub token is missing the Checks / commit-status "
+                "read scope), the orchestrator does not wait — it raises a "
+                "separate 'status_rollup_permission_denied' credential/scope "
+                "diagnostic right away. Repeated rollup probing and logging "
+                "for that case is throttled by the status-rollup permission "
+                "backoff, a separate window, not by this pending-checks "
+                "timeout. (2) Branch-protection blocks (rollup=SUCCESS but "
+                "mergeable_state=blocked) also escalate immediately. Tune this "
+                "only to control how long to wait on pending CI."
             ),
             "section": "Code Review Workflow",
             "config_attr": "post_publish_checks_pending_timeout_seconds",
@@ -1060,6 +1072,95 @@ class GoalPilotSettings(BaseModel):
             "yaml_path": "goal_pilot.approval_batch_window_minutes",
         },
     )
+
+
+class MergeQueueSettings(BaseModel):
+    """Settings for the Merge Queue tab."""
+
+    enabled: bool = Field(
+        False,
+        title="Enable Merge Queue",
+        description="Enqueue approved PRs into GitHub's native merge queue",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": (
+                "When enabled, approved PRs that have cleared the orchestrator "
+                "gate are enqueued into the provider's merge queue instead of "
+                "being reworked merely for being behind base. Requires a repo "
+                "whose branch protection has the merge queue configured."
+            ),
+            "section": "Merge Queue",
+            "config_attr": "merge_queue.enabled",
+            "yaml_path": "merge_queue.enabled",
+            "summary": {
+                "section": "merge_queue",
+                "format": SUMMARY_ENABLED_FLAG,
+                "label": "Merge Queue",
+            },
+        },
+    )
+    # provider is constrained to MERGE_QUEUE_PROVIDERS (the same set YAML loading
+    # validates against) so the settings form can neither render nor POST an
+    # unsupported provider. A single-value Literal would emit a JSON-schema
+    # `const`, which this repo's form-control projection deliberately rejects;
+    # we instead expose the allowed set as an `enum` (rendered as a select) and
+    # enforce it with a validator at POST time. Both derive from one source.
+    provider: str = Field(
+        "github",
+        title="Merge Queue Provider",
+        description="Which merge queue backend to use",
+        json_schema_extra={
+            "enum": list(MERGE_QUEUE_PROVIDERS),
+            "doc_examples": ["github"],
+            "doc_notes": (
+                "Only GitHub's native merge queue is supported today; the value "
+                "is constrained to the allowed set so the settings form rejects "
+                "unsupported providers before they reach the running config."
+            ),
+            "section": "Merge Queue",
+            "config_attr": "merge_queue.provider",
+            "yaml_path": "merge_queue.provider",
+        },
+    )
+    enqueue_after: Literal["code-reviewed", "triage-reviewed"] = Field(
+        "code-reviewed",
+        title="Enqueue After Gate",
+        description="Orchestrator gate that must pass before a PR is enqueued",
+        json_schema_extra={
+            "doc_examples": ["code-reviewed", "triage-reviewed"],
+            "doc_notes": (
+                "Names the approval gate the PR must clear before enqueue. "
+                "code-reviewed is the reviewer-approval gate."
+            ),
+            "section": "Merge Queue",
+            "config_attr": "merge_queue.enqueue_after",
+            "yaml_path": "merge_queue.enqueue_after",
+        },
+    )
+    failure_action: Literal["rework", "needs_human"] = Field(
+        "rework",
+        title="Queue Failure Action",
+        description="How to route a PR that fails the merge queue",
+        json_schema_extra={
+            "doc_examples": ["rework", "needs_human"],
+            "doc_notes": (
+                "rework sends the PR back to a coding agent; needs_human "
+                "escalates it for manual attention."
+            ),
+            "section": "Merge Queue",
+            "config_attr": "merge_queue.failure_action",
+            "yaml_path": "merge_queue.failure_action",
+        },
+    )
+
+    @field_validator("provider")
+    @classmethod
+    def _validate_provider(cls, value: str) -> str:
+        if value not in MERGE_QUEUE_PROVIDERS:
+            raise ValueError(
+                f"provider must be one of {list(MERGE_QUEUE_PROVIDERS)}, got {value!r}"
+            )
+        return value
 
 
 class AdvancedSettings(BaseModel):
@@ -1578,6 +1679,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "filtering", "label": "Filtering", "model": FilteringSettings},
     {"key": "milestones", "label": "Milestones", "model": MilestonesSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
+    {"key": "merge_queue", "label": "Merge Queue", "model": MergeQueueSettings},
     {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},
     {"key": "hooks", "label": "Hooks", "model": HooksSettings},
     {"key": "advanced", "label": "Advanced", "model": AdvancedSettings},

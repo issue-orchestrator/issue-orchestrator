@@ -153,6 +153,8 @@ class RetryHistoryState:
         self._clear_discovered_facts(issue_number, superseded_pr_numbers)
         self._clear_progress_flags(issue_number)
         self._clear_queue_and_ui_hints(issue_number)
+        for pr_number in superseded_pr_numbers:
+            self._state.awaiting_merge_rollup_scan_timestamps.pop(pr_number, None)
 
         return PendingStateClearResult(
             review_count_before=review_count_before,
@@ -191,37 +193,11 @@ class RetryHistoryState:
         ]
 
     def _clear_attempt_scoped_state(self, issue_number: int) -> None:
-        """Validation retries and publish jobs — purely per-attempt records.
-
-        For publish jobs, dropping the dict entry is not enough: the
-        worker thread inside ``PublishJobExecutor`` keeps running and
-        its result would flow through ``_poll_job_results`` after the
-        reset, re-populating ``discovered_reviews`` /
-        ``completed_today`` for the issue we just declared fresh. So
-        we tombstone the job IDs and let ``_poll_job_results`` skip
-        their late results. The executor has no per-job cancel
-        primitive — see PR #6131 review feedback.
-        """
+        """Validation retries — purely per-attempt records."""
         self._state.pending_validation_retries = [
             r for r in self._state.pending_validation_retries
             if r.issue_number != issue_number
         ]
-        for job_id, job in self._state.pending_publish_jobs.items():
-            if job.issue_number == issue_number:
-                self._state.superseded_job_ids.add(job_id)
-        for job_id, job in self._state.running_publish_jobs.items():
-            if job.issue_number == issue_number:
-                self._state.superseded_job_ids.add(job_id)
-        self._state.pending_publish_jobs = {
-            job_id: job
-            for job_id, job in self._state.pending_publish_jobs.items()
-            if job.issue_number != issue_number
-        }
-        self._state.running_publish_jobs = {
-            job_id: job
-            for job_id, job in self._state.running_publish_jobs.items()
-            if job.issue_number != issue_number
-        }
 
     def _clear_discovered_facts(
         self,
@@ -260,6 +236,11 @@ class RetryHistoryState:
         ]
         self._state.discovered_awaiting_merge_escalations = [
             d for d in self._state.discovered_awaiting_merge_escalations
+            if d.issue_number != issue_number
+            and d.pr_number not in superseded_pr_numbers
+        ]
+        self._state.discovered_merge_queue_enqueues = [
+            d for d in self._state.discovered_merge_queue_enqueues
             if d.issue_number != issue_number
             and d.pr_number not in superseded_pr_numbers
         ]

@@ -375,6 +375,49 @@ class TestHistoryEndpoints:
             lm.reset_retry_scratch_pending,
         ]
 
+    def test_reset_retry_abandons_publish_retry_work(self):
+        """Reset must abandon in-flight publish-retry work on its issue boundary.
+
+        Publish retries run on their own owner/runner outside the review-exchange
+        supervisor, so the reset boundary has to tell PublishRecoveryService to
+        drop the attempt or a late completion could repopulate it.
+        """
+        from issue_orchestrator.control.maintenance import ResetResult
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
+        mock_orch.deps.events = MagicMock()
+        publish_recovery = Mock()
+        mock_orch.deps.publish_recovery = publish_recovery
+        mock_orch.repository_host.get_issue_labels.return_value = [
+            "agent:web",
+            lm.publish_failed,
+        ]
+        mock_orch.repository_host.get_issue.return_value = create_issue(
+            4057,
+            labels=["agent:web", lm.reset_retry_pending],
+        )
+
+        set_orchestrator(mock_orch)
+
+        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
+            reset_issue_mock.return_value = ResetResult(
+                success=True,
+                issue_number=4057,
+                deleted_worktree="/tmp/worktree-4057",
+                deleted_branch="4057-fix",
+                labels_removed=[lm.publish_failed],
+            )
+            client = TestClient(app)
+            response = client.post("/api/reset-retry", json={"issues": [4057]})
+
+        assert response.status_code == 200
+        assert response.json()["failed"] == []
+        publish_recovery.abandon_issue.assert_called_once_with(4057)
+
     def test_retrospective_review_preflight_keeps_closed_issue_closed(self):
         """Retrospective review preview should not plan reopen/reset mutations."""
         from issue_orchestrator.domain.models import ORCHESTRATOR_PR_MARKER

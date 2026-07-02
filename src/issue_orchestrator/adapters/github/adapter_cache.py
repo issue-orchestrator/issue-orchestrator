@@ -26,11 +26,21 @@ class GitHubAdapterCacheSupport:
         return self._cache.get_issue_labels(issue_number)
 
     def update_label_cache(self, issue_number: int, labels: list[str]) -> None:
-        """Update cached labels for an issue and matching cached PR."""
+        """Refresh the cached *issue* labels for an issue.
+
+        This deliberately does NOT touch cached PR labels. Issue labels and PR
+        labels are distinct facts with separate owners: cached PR labels come
+        only from PR reads (``cache_pr_info``) and are invalidated on a
+        PR-number label write (``invalidate_pr``). Mirroring issue labels onto a
+        cached PR here would corrupt PR-scoped review state — an issue-label
+        refresh commonly yields ``[]``, which would erase a still-current
+        ``code-reviewed`` from the cached PR and make the stack predecessor
+        work-gate read ``agent_reviewed=False`` for a PR that is still reviewed
+        (#6595/#6670 F1). Issue-label and PR-label freshness stay separate.
+        """
         if not self._label_cache_enabled:
             return
         self._cache.set_issue_labels(issue_number, list(labels))
-        self._update_pr_cache_labels(issue_number, labels)
 
     def invalidate_label_cache(self, issue_number: int) -> None:
         """Invalidate cached labels for an issue."""
@@ -66,7 +76,20 @@ class GitHubAdapterCacheSupport:
         return None
 
     def get_cached_pr_for_issue(self, issue_number: int, state: str) -> PRInfo | None:
-        """Return cached PR info for an issue when it satisfies the requested state."""
+        """Return cached PR info for an issue when one cached PR is a valid answer.
+
+        The by-issue cache holds at most one PR per issue. That single entry can
+        prove a PR in a *specific* state exists, but it cannot prove it is the
+        *complete* set of an issue's PRs. ``get_prs_for_issue(state="all")``
+        callers depend on completeness — the awaiting-merge reconciler suppresses
+        ``blocked:pr-closed`` only after confirming no associated PR is open, and
+        snapshot building picks a primary PR by preferring open > merged > closed.
+        Answering ``all`` from one cached PR could hide a newer open PR behind an
+        older closed one, so this owner refuses the cache for ``all`` and lets the
+        adapter fetch the authoritative list.
+        """
+        if state == "all":
+            return None
         cached = self._cache.get_pr_by_issue(issue_number)
         if not cached:
             return None
@@ -86,21 +109,13 @@ class GitHubAdapterCacheSupport:
             "url": pr_info.url,
             "body": pr_info.body,
             "state": pr_info.state,
+            "base_branch": pr_info.base_branch,
             "issue_number": issue_number,
         }
         if issue_number is not None:
             self._cache.set_pr_by_issue(issue_number, pr_data, branch=pr_info.branch)
         elif pr_info.branch:
             self._cache.set_pr_by_branch(pr_info.branch, pr_data)
-
-    def _update_pr_cache_labels(self, issue_number: int, labels: list[str]) -> None:
-        """Update labels on a cached PR."""
-        cached = self._cache.get_pr_by_issue(issue_number)
-        if not cached:
-            return
-        cached["labels"] = list(labels)
-        branch = cached.get("branch")
-        self._cache.set_pr_by_issue(issue_number, cached, branch=branch)
 
     @staticmethod
     def _state_matches(pr_info: PRInfo, state: str) -> bool:
@@ -119,6 +134,7 @@ class GitHubAdapterCacheSupport:
             body=cached.get("body", ""),
             state=cached.get("state", "open"),
             labels=cached.get("labels", []),
+            base_branch=cached.get("base_branch"),
         )
 
     @staticmethod

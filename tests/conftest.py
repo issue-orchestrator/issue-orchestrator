@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
-from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
+from issue_orchestrator.ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
+    PRInfo,
+    PRRef,
+    StatusCheckRollupRead,
+)
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -54,29 +60,46 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     """Strip orchestrator env vars and set safe defaults.
 
     When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
-    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done. If the agent then runs
-    `make validate-quick` (pytest), these vars leak into unit tests and cause
-    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID
-    overrides mocked values.
+    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done — and
+    their legacy unprefixed ORCHESTRATOR_* fallbacks (ORCHESTRATOR_SESSION_ID,
+    ORCHESTRATOR_CONFIG_NAME/PATH, ORCHESTRATOR_API_PORT, ...). If the agent then
+    runs `make validate-quick` (pytest), these vars leak into unit tests and cause
+    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID forces
+    managed mode over mocked values, and a leaked ORCHESTRATOR_SESSION_ID breaks
+    TestAgentGateIntegration when tests mock ``get_session_id`` without injecting
+    a RUN_DIR. Code reads the legacy unprefixed names as fallbacks
+    (get_session_id, preflight push), so stripping only the ISSUE_-prefixed names
+    is not enough when the orchestrator self-hosts.
 
     Similarly, ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) can
-    override test expectations in resolve_base_branch tests.
+    override test expectations in resolve_base_branch tests; it is covered by the
+    ORCHESTRATOR_ prefix sweep below.
 
-    This fixture strips them so tests always start with a clean env, then
-    sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
+    This fixture strips both prefixes so tests always start with a clean env,
+    then sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
     resolves repo_root from the environment (e.g. SubprocessPlugin) never
     accidentally targets the real repo.  Tests that need a specific repo_root
     override this with their own ``monkeypatch.setenv()``.
+    Both env-var families are stripped. Several runtime readers accept a legacy
+    non-prefixed ``ORCHESTRATOR_*`` form as a fallback to the canonical
+    ``ISSUE_ORCHESTRATOR_*`` one (e.g. config resolution reads
+    ``ORCHESTRATOR_CONFIG_PATH`` / ``ORCHESTRATOR_CONFIG_NAME`` and managed-mode
+    detection reads ``ORCHESTRATOR_SESSION_ID``). Stripping only the prefixed
+    form left the legacy form leaking into the suite when the agent runs
+    ``make validate-quick`` inside an orchestrator session, so both prefixes are
+    cleared here.
     """
-    orchestrator_env_vars = [
-        "ORCHESTRATOR_WORKTREE_BASE_BRANCH",
-    ]
-    for var in orchestrator_env_vars:
-        monkeypatch.delenv(var, raising=False)
-
-    # Strip all ISSUE_ORCHESTRATOR_* vars (SESSION_ID, CONFIG_PATH, etc.)
+    # Strip every orchestrator-injected var so tests start from a clean env.
+    # The orchestrator exports ISSUE_ORCHESTRATOR_* and also a few bare, legacy
+    # ORCHESTRATOR_* forms — e.g. the persistent review-exchange runner sets
+    # ORCHESTRATOR_SESSION_ID, which coding-done/_is_managed_session still accept
+    # for compatibility. Leaving the bare forms in place makes every test look
+    # like a managed orchestrator session and breaks standalone-path tests, so
+    # strip both prefixes (this subsumes ORCHESTRATOR_WORKTREE_BASE_BRANCH). The
+    # two prefixes are disjoint ("ISSUE_ORCHESTRATOR_" does not start with
+    # "ORCHESTRATOR_"), so each var is handled once.
     for var in list(os.environ):
-        if var.startswith("ISSUE_ORCHESTRATOR_"):
+        if var.startswith("ISSUE_ORCHESTRATOR_") or var.startswith("ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)
 
     # Set a safe default REPO_ROOT so SubprocessPlugin (and anything else
@@ -214,6 +237,8 @@ class MockGitHubAdapter:
         self.comments: list[dict] = []
         self.pr_reviews: dict[int, list[dict]] = {}  # pr_number -> reviews
         self.close_pr_calls: list[int] = []
+        # pr_number -> current merge queue entry (None/absent = not enqueued)
+        self.merge_queue_entries: dict[int, "MergeQueueEntry"] = {}
 
         # Call tracking for assertions
         self.add_label_calls: list[tuple] = []
@@ -221,6 +246,7 @@ class MockGitHubAdapter:
         self.list_issues_calls: list[dict] = []
         self.get_prs_calls: list[dict] = []
         self.search_pr_refs_calls: list[int] = []
+        self.enqueue_merge_queue_calls: list[int] = []
 
     # IssueRepository methods
     def list_issues(
@@ -365,12 +391,39 @@ class MockGitHubAdapter:
                     return pr
         return None
 
-    def get_pr_with_status_check_rollup(self, pr_number: int) -> Optional[PRInfo]:
-        """Get a specific PR augmented with rollup. The mock has no
-        check-status concept, so return whatever ``status_check_rollup``
-        the test fixture set on the PRInfo (defaults to None). Real
-        adapter pays an extra GraphQL round-trip; the mock is free."""
-        return self.get_pr(pr_number)
+    def read_pr_status_check_rollup(
+        self, pr_number: int, *, skip_primary_source: bool = False
+    ) -> StatusCheckRollupRead:
+        """Read a PR's status-check rollup. The mock has no check-status
+        concept, so it reports ``ok`` with whatever ``status_check_rollup``
+        the test fixture set on the PRInfo (defaults to None). The real
+        adapter pays a GraphQL round-trip and can report permission/
+        transient failures; the mock is free and always-capable.
+
+        ``skip_primary_source`` is accepted for protocol parity (the gate
+        passes it during a GraphQL backoff window); the mock has a single
+        always-readable source, so it behaves identically either way."""
+        pr = self.get_pr(pr_number)
+        state = pr.status_check_rollup if pr is not None else None
+        return StatusCheckRollupRead(state=state, capability="ok")
+
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Record an enqueue and mark the PR as QUEUED (mock)."""
+        self.enqueue_merge_queue_calls.append(pr_number)
+        self.merge_queue_entries[pr_number] = MergeQueueEntry(state="QUEUED")
+
+    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
+        """Return the PR's typed merge queue read (mock).
+
+        PRESENT when an entry was recorded, ABSENT otherwise. Tests that need the
+        INDETERMINATE (unreadable/unmodeled) outcome inject it directly.
+        """
+        entry = self.merge_queue_entries.get(pr_number)
+        return (
+            MergeQueueRead.present(entry)
+            if entry is not None
+            else MergeQueueRead.absent()
+        )
 
     def create_pr(self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None) -> PRInfo:
         """Create a new PR (mock)."""
@@ -771,6 +824,7 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.control.pr_scanner import PRScanner
     from issue_orchestrator.control.health_gate import HealthGate
     from issue_orchestrator.control.session_restorer import SessionRestorer
+    from issue_orchestrator.control.completion_dispatcher import SynchronousCompletionDispatcher
     from issue_orchestrator.control.label_sync import LabelSync
     from issue_orchestrator.control.orchestrator_deps import OrchestratorDeps
     from issue_orchestrator.events import EventHub
@@ -880,17 +934,6 @@ def build_test_orchestrator_deps(
         config=lease_config,
     )
 
-    # Create async completion components for testing
-    from issue_orchestrator.control.completion_observer import CompletionObserver
-    from issue_orchestrator.control.publish_executor import PublishJobExecutor, ExecutorConfig
-
-    completion_observer = CompletionObserver(session_output=session_output)
-    executor_config = ExecutorConfig(max_workers=1)
-    publish_executor = PublishJobExecutor(
-        completion_processor=completion_processor,
-        events=events,
-        config=executor_config,
-    )
     from issue_orchestrator.execution.goal_pilot_store import SqliteGoalPilotStore
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
     from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
@@ -936,13 +979,30 @@ def build_test_orchestrator_deps(
         attempt_store=attempt_store,
     )
 
+    from issue_orchestrator.execution.json_publish_retry_locator_store import (
+        JsonPublishRetryLocatorStore,
+    )
+    from issue_orchestrator.execution.thread_background_job_runner import (
+        ThreadBackgroundJobRunner,
+    )
+
     publish_recovery = PublishRecoveryService(
         repository_host=repo_host,
-        publish_executor=publish_executor,
+        completion_processor=completion_processor,
+        locator_store=JsonPublishRetryLocatorStore(
+            config.repo_root / ".issue-orchestrator" / "state" / "publish_retry_locators.json"
+        ),
+        runner=ThreadBackgroundJobRunner(),
         label_manager=label_manager,
         fresh_issue_reader=fresh_reader,
-        action_applier=action_applier,
+        # Use the resolved applier (same object OrchestratorDeps exposes), not
+        # the raw optional argument which is None when callers omit it.
+        action_applier=_action_applier,
+        code_review_agent_configured=bool(config.code_review_agent),
     )
+    # Same post-construction wiring as bootstrap: the ActionApplier abandons
+    # publish retries at issue terminal boundaries via the runtime terminator.
+    _action_applier.publish_recovery = publish_recovery
 
     return OrchestratorDeps(
         events=events,
@@ -965,13 +1025,12 @@ def build_test_orchestrator_deps(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=_session_controller,
+        completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
         session_output=session_output,
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
-        completion_observer=completion_observer,
-        publish_executor=publish_executor,
         publish_recovery=publish_recovery,
         services=infra_services,
     )

@@ -4,10 +4,14 @@ import json
 from pathlib import Path
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
+from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
+from issue_orchestrator.execution.label_store import LabelStore
+from issue_orchestrator.ports.repository_host import RepositoryHostError
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import (
     Issue,
@@ -18,6 +22,32 @@ from issue_orchestrator.domain.models import (
     PendingTriageReview,
     ORCHESTRATOR_PR_MARKER,
 )
+
+
+class _FakeLabelSet:
+    """In-memory LabelSet standing in for the GitHub label surface.
+
+    Lets a real ActionApplier exercise its write-through against genuine
+    mutable state instead of a MagicMock, so tests observe the labels GitHub
+    would actually carry after recovery.
+    """
+
+    def __init__(self, labels_by_issue: dict[int, set[str]]) -> None:
+        self._labels: dict[int, set[str]] = {
+            number: set(labels) for number, labels in labels_by_issue.items()
+        }
+
+    def add_label(self, issue_number: int, label: str) -> None:
+        self._labels.setdefault(issue_number, set()).add(label)
+
+    def remove_label(self, issue_number: int, label: str) -> None:
+        self._labels.get(issue_number, set()).discard(label)
+
+    def has_label(self, issue_number: int, label: str) -> bool:
+        return label in self._labels.get(issue_number, set())
+
+    def labels_for(self, issue_number: int) -> set[str]:
+        return set(self._labels.get(issue_number, set()))
 
 
 @pytest.fixture
@@ -112,6 +142,7 @@ def startup_manager(
         restore_sessions_fn=MagicMock(),
         launch_session_fn=lambda issue: None,
         update_queue_cache_fn=lambda: None,
+        issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         label_store=mock_label_store,
     )
 
@@ -278,7 +309,15 @@ class TestStartupManagerInProgressIssues:
         with caplog.at_level("INFO"):
             await startup_manager.run_startup(sample_state)
 
-        mock_repository_host.get_issue.assert_called_once_with(4057)
+        # 4057 is probed twice for legitimate, distinct reasons: the in-progress
+        # recovery refetches it, and the later label_store reconcile re-reads it
+        # fresh because startup recovery mutated its labels (clearing the stale
+        # in-progress), so its pre-mutation cache entry can't be trusted.
+        mock_repository_host.get_issue.assert_any_call(4057)
+        assert all(
+            call_args == call(4057)
+            for call_args in mock_repository_host.get_issue.call_args_list
+        )
         analyzed_issues = [call.kwargs["issue"].number for call in mock_analyze.call_args_list]
         assert analyzed_issues == [4057]
         assert any(issue.number == 4057 for issue in sample_state.cached_queue_issues)
@@ -320,6 +359,7 @@ class TestStartupManagerInProgressIssues:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=queue_cache_store,
             label_store=mock_label_store,
         )
@@ -381,7 +421,16 @@ class TestStartupManagerInProgressIssues:
         with caplog.at_level("INFO"):
             await startup_manager.run_startup(sample_state)
 
-        mock_repository_host.get_issue.assert_called_once_with(4057)
+        # The in-progress recovery probes 4057 (and fails). The later
+        # label_store reconcile backstop, finding 4057 only in the store and
+        # not the warm cache, also probes it — and likewise leaves the mirror
+        # untouched on a None result. Both legitimately consult get_issue, so
+        # assert the probe happened rather than pinning an exact call count.
+        mock_repository_host.get_issue.assert_any_call(4057)
+        assert all(
+            call_args == call(4057)
+            for call_args in mock_repository_host.get_issue.call_args_list
+        )
         mock_analyze.assert_not_called()
         assert "Cached queue omitted 1 locally in-progress issue(s): [4057]" in caplog.text
         assert "Failed to refetch locally in-progress issue missing from cache: issue=4057" in caplog.text
@@ -416,6 +465,245 @@ class TestStartupManagerInProgressIssues:
 
         analyzed_issues = [call.kwargs["issue"].number for call in mock_analyze.call_args_list]
         assert analyzed_issues == [4057]
+
+
+class TestStartupManagerLabelStoreReconcile:
+    """Startup reconciles the local label_store mirror against GitHub."""
+
+    @pytest.mark.asyncio
+    async def test_reconcile_prunes_stale_store_label_using_cache(
+        self, startup_manager, sample_state, mock_label_store, mock_repository_host,
+    ):
+        # Store still records publish-failed for a recovered issue; the warm
+        # cache shows GitHub no longer carries it, so the mirror is pruned with
+        # zero extra GitHub calls.
+        sample_state.cached_queue_issues = [
+            Issue(number=228, title="Done", labels=["agent:backend"]),
+        ]
+        mock_label_store.load_all.return_value = {228: {"publish-failed"}}
+
+        await startup_manager.run_startup(sample_state)
+
+        # The reconciler rewrites the issue's rows atomically via save_labels;
+        # GitHub no longer carries the orchestrator label, so the desired set is
+        # empty.
+        mock_label_store.save_labels.assert_any_call(228, set())
+        mock_repository_host.get_issue.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_reconcile_does_not_undo_startup_pr_pending_recovery(
+        self,
+        mock_analyze,
+        mock_config,
+        mock_events,
+        mock_runner,
+        mock_issue_branches_fn,
+        sample_state,
+        tmp_path,
+    ):
+        """Reconciliation must not revert startup's own pr-pending recovery.
+
+        Startup recovery detects an open PR for a cached in-progress issue and
+        applies pr-pending / removes in-progress. Those mutations write through
+        to label_store, so the issue's pre-mutation warm-cache entry is now
+        stale. The later label_store reconciliation must read GitHub fresh for
+        that issue rather than treating the stale snapshot as truth — otherwise
+        it restores in-progress and drops the freshly persisted pr-pending,
+        re-introducing the very drift the change eliminates (#6431 F1).
+        """
+        # Real store + a fake GitHub label surface so the write-through and the
+        # reconciler operate on genuine state, not hand-coded mocks.
+        store = LabelStore(tmp_path / "label_store.sqlite")
+        store.add_label(1, "in-progress")  # orchestrator claim before the crash
+        github_labels = _FakeLabelSet({1: {"agent:web", "in-progress"}})
+
+        applier = ActionApplier(
+            labels=github_labels,
+            sessions=MagicMock(),
+            events=mock_events,
+            label_store=store,
+        )
+
+        mock_repository_host = MagicMock()
+        mock_repository_host.list_issues.return_value = []
+        mock_repository_host.get_prs_with_label.return_value = []
+        # Fresh GitHub reads reflect the live (post-mutation) label surface.
+        mock_repository_host.get_issue.side_effect = lambda n: Issue(
+            number=n, title=f"Issue {n}", labels=sorted(github_labels.labels_for(n))
+        )
+
+        startup_manager = StartupManager(
+            config=mock_config,
+            events=mock_events,
+            runner=mock_runner,
+            repository_host=mock_repository_host,
+            action_applier=applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            label_store=store,
+        )
+
+        # Warm cache snapshot captured before recovery: still in-progress.
+        sample_state.cached_queue_issues = [
+            Issue(number=1, title="Issue 1", labels=["agent:web", "in-progress"]),
+        ]
+
+        analysis = MagicMock()
+        analysis.has_session = False
+        analysis.has_open_pr = True
+        analysis.has_partial_work = False
+        analysis.is_orphaned_label = False
+        analysis.pr_url = "https://github.com/owner/repo/pull/9"
+        mock_analyze.return_value = analysis
+
+        await startup_manager.run_startup(sample_state)
+
+        # Recovery applied the swap on both GitHub and the mirror...
+        assert github_labels.labels_for(1) == {"agent:web", "pr-pending"}
+        # ...and reconciliation left the mirror in agreement with GitHub
+        # instead of resurrecting in-progress / dropping pr-pending.
+        assert store.load_labels(1) == {"pr-pending"}
+
+    def _make_degraded_startup(
+        self,
+        tmp_path,
+        mock_config,
+        mock_events,
+        mock_runner,
+        mock_issue_branches_fn,
+        get_issue,
+    ):
+        """Build a StartupManager whose queue sync degrades to a stale snapshot.
+
+        - label_store already holds the current set ({pr-pending}) from a prior
+          run's recovery.
+        - The persisted queue snapshot is stale (still pre-mutation in-progress).
+        - The delta sync fails transiently, forcing the degraded fallback onto
+          that stale snapshot.
+        - ``get_issue`` controls what a fresh per-issue read returns.
+        """
+        store = LabelStore(tmp_path / "label_store.sqlite")
+        store.add_label(1, "pr-pending")
+
+        queue_cache_store = MagicMock()
+        queue_cache_store.load_issues.return_value = [
+            Issue(number=1, title="Issue 1", labels=["agent:web", "in-progress"]),
+        ]
+        queue_cache_store.load_watermark.return_value = "2025-01-01T00:00:00Z"
+
+        mock_repository_host = MagicMock()
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues_delta.side_effect = RepositoryHostError(
+            "transient GitHub blip"
+        )
+        mock_repository_host.get_issue.side_effect = get_issue
+
+        sm = StartupManager(
+            config=mock_config,
+            events=mock_events,
+            runner=mock_runner,
+            repository_host=mock_repository_host,
+            action_applier=MagicMock(),
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            queue_cache_store=queue_cache_store,
+            label_store=store,
+        )
+        return sm, store, mock_repository_host
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_degraded_startup_does_not_reconcile_from_stale_snapshot(
+        self,
+        mock_analyze,
+        mock_config,
+        mock_events,
+        mock_runner,
+        mock_issue_branches_fn,
+        sample_state,
+        tmp_path,
+    ):
+        """A degraded startup must not treat the persisted snapshot as truth.
+
+        When the GitHub queue refresh fails transiently, startup comes up on the
+        persisted last-known-good snapshot, which can predate a prior run's
+        label mutation. Reconciliation must read GitHub fresh for such issues
+        rather than rewriting the mirror back to the stale persisted labels
+        (#6431 round-2 F1).
+        """
+        mock_analyze.return_value = MagicMock(
+            has_session=False,
+            has_open_pr=False,
+            has_partial_work=False,
+            is_orphaned_label=False,
+        )
+
+        sm, store, repo = self._make_degraded_startup(
+            tmp_path,
+            mock_config,
+            mock_events,
+            mock_runner,
+            mock_issue_branches_fn,
+            # Live GitHub still carries the current pr-pending, not in-progress.
+            get_issue=lambda n: Issue(
+                number=n, title=f"Issue {n}", labels=["agent:web", "pr-pending"]
+            ),
+        )
+
+        await sm.run_startup(sample_state)
+
+        # Reconciliation read GitHub fresh and left the mirror at the current
+        # pr-pending instead of resurrecting the stale persisted in-progress.
+        assert store.load_labels(1) == {"pr-pending"}
+        repo.get_issue.assert_any_call(1)
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_degraded_startup_leaves_store_untouched_when_fresh_read_fails(
+        self,
+        mock_analyze,
+        mock_config,
+        mock_events,
+        mock_runner,
+        mock_issue_branches_fn,
+        sample_state,
+        tmp_path,
+    ):
+        """Degraded startup + failed fresh read must leave the mirror untouched.
+
+        With no verified-fresh cache to trust and the per-issue read returning
+        nothing, the reconciler must not guess from the stale persisted
+        snapshot — it leaves the store as-is for a later startup to retry.
+        """
+        mock_analyze.return_value = MagicMock(
+            has_session=False,
+            has_open_pr=False,
+            has_partial_work=False,
+            is_orphaned_label=False,
+        )
+
+        sm, store, repo = self._make_degraded_startup(
+            tmp_path,
+            mock_config,
+            mock_events,
+            mock_runner,
+            mock_issue_branches_fn,
+            get_issue=lambda n: None,  # fresh read unavailable
+        )
+
+        await sm.run_startup(sample_state)
+
+        assert store.load_labels(1) == {"pr-pending"}
+        repo.get_issue.assert_any_call(1)
 
 
 class TestStartupManagerCodeReviewRecovery:
@@ -795,6 +1083,7 @@ class TestStartupManagerResumePartialWork:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=launch_session,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             label_store=mock_label_store,
         )
 
@@ -933,6 +1222,99 @@ class TestStartupManagerValidationRetryRecovery:
         assert len(sample_state.pending_validation_retries) == 0
 
     @pytest.mark.asyncio
+    async def test_review_only_run_scoped_retry_artifact_is_not_recovered(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """A retry artifact under a review-only run is never recovered as a coding retry.
+
+        Regression for #6426: a validation-state.json left under a
+        ``...__retrospective-review-<issue>`` run (pre-fix bug or crash boundary)
+        must not relaunch as TaskKind.CODE and open a PR on an empty branch.
+        """
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260501-010000Z__retrospective-review-42"
+        )
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "session_name": "retrospective-review-42",
+                    "validation_status": "retry",
+                }
+            )
+        )
+        (run_dir / "validation-state.json").write_text(
+            json.dumps(
+                {
+                    "retry_count": 1,
+                    "max_retries": 3,
+                    "validation_cmd": "make test",
+                    "last_error": "Stale review-only failure",
+                }
+            )
+        )
+        (run_dir / "retry-prompt.md").write_text("stale retry prompt")
+        mock_issue_branches_fn.return_value = {42: "42-fix-login"}
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_validation_retries == []
+
+    @pytest.mark.asyncio
+    async def test_unrecognized_run_scoped_retry_artifact_is_not_recovered(
+        self,
+        startup_manager,
+        sample_state,
+        mock_config,
+        mock_issue_branches_fn,
+        tmp_path,
+    ):
+        """A retry artifact under an unrecognized run identity is refused, not coerced to CODE.
+
+        Regression for #6426: provenance must be explicit. An unclassified
+        ``...__mystery-<issue>`` run with retry state must not be silently
+        relaunched as a coding (TaskKind.CODE) validation retry.
+        """
+        mock_config.worktree_base = tmp_path
+        worktree = tmp_path / f"{mock_config.repo_root.name}-42"
+        run_dir = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260501-010000Z__mystery-42"
+        )
+        run_dir.mkdir(parents=True)
+        (run_dir / "manifest.json").write_text(
+            json.dumps({"session_name": "mystery-42", "validation_status": "retry"})
+        )
+        (run_dir / "validation-state.json").write_text(
+            json.dumps(
+                {
+                    "retry_count": 1,
+                    "max_retries": 3,
+                    "validation_cmd": "make test",
+                    "last_error": "Unknown-provenance failure",
+                }
+            )
+        )
+        (run_dir / "retry-prompt.md").write_text("mystery retry prompt")
+        mock_issue_branches_fn.return_value = {42: "42-fix-login"}
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_validation_retries == []
+
+    @pytest.mark.asyncio
     async def test_no_recovery_when_no_pending_retry(
         self,
         startup_manager,
@@ -1029,6 +1411,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1060,6 +1443,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1084,6 +1468,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
         )
 
         await sm.run_startup(OrchestratorState())
@@ -1134,6 +1519,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 
@@ -1164,6 +1550,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 
@@ -1200,6 +1587,7 @@ class TestStartupGitHubCallBudget:
             restore_sessions_fn=MagicMock(),
             launch_session_fn=lambda issue: None,
             update_queue_cache_fn=update_queue_fn,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
             queue_cache_store=mock_store,
         )
 

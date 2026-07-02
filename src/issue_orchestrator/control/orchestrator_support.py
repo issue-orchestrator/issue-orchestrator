@@ -36,7 +36,10 @@ from .queue_cache import (
     queue_shrink_confirmation_pending,
     record_issue_refreshes,
 )
+from .dependency_gate_snapshot import build_refresh_snapshot
+from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .reconciliation import ReconciliationRequired, get_pause_label
+from .tick_telemetry import report_slow_tick
 from .session_history import (
     CLOSED_ISSUE_HISTORY_STATUS_REASON,
     ClosedIssueHistoryMutation,
@@ -58,6 +61,7 @@ _DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
     "discovered_awaiting_merge_reconciliations",
     "discovered_awaiting_merge_drifts",
     "discovered_awaiting_merge_escalations",
+    "discovered_merge_queue_enqueues",
     "discovered_reworks",
     "discovered_escalations",
     "discovered_failures",
@@ -657,6 +661,7 @@ def run_planning_cycle(
     last_network_sync: float,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
+    issue_fetch_resilience: IssueFetchResilience,
     observer: object | None = None,
     claim_manager: object | None = None,
     queue_cache_store: "QueueCacheStore | None" = None,
@@ -669,11 +674,31 @@ def run_planning_cycle(
     ) or refresh_requested or queue_shrink_confirmation_due(state, now)
 
     if should_fetch:
-        last_network_sync, refresh_requested = _fetch_and_update_queue(
-            config, events, state, repository_host, scheduler, github_workflow,
-            refresh_requested, inflight_stable_ids,
-            queue_cache_store=queue_cache_store,
-        )
+        try:
+            last_network_sync, refresh_requested = _fetch_and_update_queue(
+                config, events, state, repository_host, scheduler, github_workflow,
+                refresh_requested, inflight_stable_ids,
+                issue_fetch_resilience=issue_fetch_resilience,
+                queue_cache_store=queue_cache_store,
+            )
+        except TransientIssueFetchError as exc:
+            # Recoverable issue-list failure (transient 404/5xx/network): keep
+            # the cached queue and resume the normal refresh cadence instead of
+            # crashing or burning the loop error budget. The orchestrator is
+            # label-recoverable, so skipping a refresh is cheap.
+            #
+            # Only the issue-list fetch itself is guarded inside
+            # _fetch_and_update_queue; a RepositoryHostError from a downstream
+            # PR/dependency scan is *not* classified as an issue-fetch failure
+            # and propagates to the loop-error path instead.
+            logger.warning(
+                "[FETCH] %s — keeping cached queue (%d issue(s)); will retry next cycle. %s",
+                exc.summary, len(state.cached_queue_issues), exc.suggested_fix,
+            )
+            last_network_sync = now
+        # PermanentIssueFetchError is intentionally NOT caught here: it
+        # propagates to the run loop, which logs the actionable message and
+        # shuts down cleanly rather than crashing with a raw traceback.
 
     # Detect stale issues and claims
     stale_issues = _detect_stale_in_progress(observer, state, events, event_context)
@@ -696,6 +721,35 @@ def run_planning_cycle(
     return last_network_sync, refresh_requested
 
 
+def _fetch_issue_list(
+    config: "Config",
+    state: "OrchestratorState",
+    github_workflow: object,
+    required_stable_ids: set[str] | None,
+    sync_plan: "_SelectiveSyncPlan",
+    full_scan: bool,
+) -> tuple[list["Issue"], set[int], str | None]:
+    """Obtain the issue payload + next watermark from the repository host.
+
+    This is the single repository-host *issue-list fetch* the resilience policy
+    guards. It performs no queue mutation, PR/dependency scan, or persistence —
+    those are downstream of the guarded boundary in ``_fetch_and_update_queue``.
+    """
+    if full_scan:
+        all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
+        refreshed_numbers = {issue.number for issue in all_issues}
+        next_watermark: str | None = _iso_now_utc()
+    else:
+        all_issues, refreshed_numbers, next_watermark = _fetch_incremental_issues(
+            config,
+            state,
+            github_workflow,
+            required_stable_ids,
+            sync_plan,
+        )
+    return all_issues, refreshed_numbers, next_watermark
+
+
 def _fetch_and_update_queue(
     config: "Config",
     events: EventSink,
@@ -705,9 +759,19 @@ def _fetch_and_update_queue(
     github_workflow: object,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
+    *,
+    issue_fetch_resilience: IssueFetchResilience,
     queue_cache_store: "QueueCacheStore | None" = None,
 ) -> tuple[float, bool]:
-    """Fetch issues and update queue cache."""
+    """Fetch issues and update queue cache.
+
+    Only the issue-list fetch itself is run under ``issue_fetch_resilience``;
+    the downstream work (label cache, PR scan, dependency scan, closed-history
+    reconciliation, queue mutation, persistence) is *not* guarded. A
+    ``RepositoryHostError`` from those downstream operations is a genuine
+    failure of that operation, not an issue-list fetch failure, so it must not
+    be reclassified as a (potentially shutdown-promoting) issue-fetch error.
+    """
     from ..infra import gh_audit
 
     refresh_started_at = time.time()
@@ -728,21 +792,18 @@ def _fetch_and_update_queue(
         scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
         full_scan = _should_run_full_scan(config, state, manual_refresh, required_stable_ids, refresh_started_at)
         sync_plan = _build_selective_sync_plan(config, state, manual_refresh, full_scan)
-        refreshed_numbers: set[int]
-        next_watermark: str | None = state.queue_delta_watermark
+        # Guard *only* the issue-list fetch: a repository-host failure here is
+        # the issue-fetch failure the resilience policy owns (degrade vs.
+        # fail-fast). Everything after this block is downstream work whose
+        # failures must surface on their own, not be reclassified as a fetch
+        # failure. ``guard`` also records the success that resets the
+        # consecutive repo-not-found streak.
         with gh_audit.context(reason=reason, scope=scope):
-            if full_scan:
-                all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
-                refreshed_numbers = {issue.number for issue in all_issues}
-                next_watermark = _iso_now_utc()
-            else:
-                all_issues, refreshed_numbers, next_watermark = _fetch_incremental_issues(
-                    config,
-                    state,
-                    github_workflow,
-                    required_stable_ids,
-                    sync_plan,
+            all_issues, refreshed_numbers, next_watermark = issue_fetch_resilience.guard(
+                lambda: _fetch_issue_list(
+                    config, state, github_workflow, required_stable_ids, sync_plan, full_scan,
                 )
+            )
 
         refreshed_at = time.time()
         _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
@@ -750,12 +811,22 @@ def _fetch_and_update_queue(
         _record_issue_refreshes(state, refreshed_numbers, refreshed_at)
         _reconcile_closed_issue_history(state, all_issues)
 
-        if sync_plan.run_pr_scan:
-            github_workflow.scan_pending_pr_work(state)
+        github_workflow.scan_pending_pr_work(state, include_general_scans=sync_plan.run_pr_scan)
 
         if sync_plan.run_dependency_scan:
-            _, dep_blocked = scheduler.get_available_issues(all_issues)
+            # dep_blocked is the scheduler's *availability* verdict; the dashboard
+            # snapshot is the four-gate state for every lane, evaluated through the
+            # dependency-gate owner (not availability) with active-worktree ancestry.
+            decisions = scheduler.evaluate_issues(all_issues)
+            dep_blocked = [
+                (d.issue, d.detail or "dependency blocked")
+                for d in decisions
+                if d.reason == "dependency_blocked"
+            ]
             github_workflow.update_dependency_problems(state, dep_blocked)
+            state.dependency_gate_snapshot = build_refresh_snapshot(
+                scheduler.dependency_evaluator, all_issues, state.active_sessions
+            )
 
         # Capture old queue state BEFORE mutation so the diff is correct.
         # (replace_from_refresh mutates state.cached_queue_issues in-place.)
@@ -1387,8 +1458,7 @@ def run_tick(
         }),
     ))
     tick_elapsed = time.monotonic() - tick_start
-    if tick_elapsed > 10:
-        logger.warning("[LOOP] Tick took %.1fs", tick_elapsed)
+    report_slow_tick(events, event_context, state, tick_elapsed, active_elapsed)
     state.current_tick_phase = ""
     state.last_tick_completed_at = time.time()
     return loop_iteration, True

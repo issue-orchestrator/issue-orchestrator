@@ -31,7 +31,7 @@ validation:
 
 Errata: when the user-facing `make validate-pr` target wraps the cache-aware
 `scripts/verify-pr.sh` path, `validation.publish.cmd` should instead point to
-the underlying raw command, for example `make validate-pr-raw`.
+a private non-recursive suite command.
 
 `validation.quick.cmd` runs on `coding-done completed` and inside local
 coder/reviewer exchange. Repos should put fast tests, lint/type checks, and

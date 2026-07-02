@@ -6,10 +6,10 @@
 #
 # Maintainers should run `make validate-pr` to seed the pre-push cache. The
 # command below is the recorded inner publish command used to select timing
-# records; running the raw target directly bypasses the cache-aware wrapper.
+# records; the internal target refuses direct use without the guard env var.
 pre_push_runtime:
   enabled: true
-  command: "make validate-pr-raw"
+  command: "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
   metric: "validation_elapsed_seconds"
   baseline_seconds: 540
   max_increase_seconds: 240

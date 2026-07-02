@@ -515,7 +515,6 @@ class McpApp:
             "stale": await self._api.stale_issues(),
             "dependency_problems": await self._api.dependency_problems(),
             "excluded": await self._api.excluded_issues(),
-            "publish_jobs": await self._api.publish_jobs(),
             "history": await self._api.history(),
         }
 

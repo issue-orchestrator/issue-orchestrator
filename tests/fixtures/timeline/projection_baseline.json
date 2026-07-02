@@ -341,6 +341,18 @@
     "status": "completed",
     "step": "labels.synced"
   },
+  "merge_queue.enqueued": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "merge_queue.enqueued"
+  },
+  "merge_queue.failed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "merge_queue.failed"
+  },
   "observation.completion_detected": {
     "level": "detail",
     "phase": "in_progress",
@@ -886,6 +898,12 @@
     "phase": "system",
     "status": "completed",
     "step": "tick.completed"
+  },
+  "tick.slow": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "tick.slow"
   },
   "tick.started": {
     "level": "detail",

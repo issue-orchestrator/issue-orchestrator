@@ -116,11 +116,18 @@ def build_timing_envelope(
     *,
     wall_started_at: datetime,
     monotonic_started_at: float,
+    wall_ended_at: datetime | None = None,
+    monotonic_ended_at: float | None = None,
 ) -> dict[str, object]:
     """Return common elapsed-time fields for validation timing records."""
-    wall_ended_at = datetime.now(timezone.utc)
+    if wall_ended_at is None:
+        wall_ended_at = datetime.now(timezone.utc)
+    if monotonic_ended_at is None:
+        monotonic_ended_at = time.monotonic()
     return {
-        "monotonic_elapsed_seconds": round(time.monotonic() - monotonic_started_at, 3),
+        "monotonic_elapsed_seconds": round(
+            monotonic_ended_at - monotonic_started_at, 3
+        ),
         "wall_started_at": wall_started_at.isoformat(),
         "wall_ended_at": wall_ended_at.isoformat(),
         "wall_elapsed_seconds": round(
@@ -213,7 +220,16 @@ class ValidateTimingRecorder:
             record[key] = value
         append_jsonl(self.output_path, record)
 
-    def finalize(self, *, exit_code: int, total_elapsed_seconds: float) -> None:
+    def finalize(
+        self,
+        *,
+        exit_code: int,
+        total_elapsed_seconds: float,
+        wall_started_at: datetime | None = None,
+        monotonic_started_at: float | None = None,
+        wall_ended_at: datetime | None = None,
+        monotonic_ended_at: float | None = None,
+    ) -> None:
         record: dict[str, object] = {
             "kind": "run_summary",
             "run_id": self.run_id,
@@ -224,6 +240,15 @@ class ValidateTimingRecorder:
             "total_elapsed_seconds": round(total_elapsed_seconds, 3),
             "recorded_at": datetime.now(timezone.utc).isoformat(),
         }
+        if wall_started_at is not None and monotonic_started_at is not None:
+            record.update(
+                build_timing_envelope(
+                    wall_started_at=wall_started_at,
+                    monotonic_started_at=monotonic_started_at,
+                    wall_ended_at=wall_ended_at,
+                    monotonic_ended_at=monotonic_ended_at,
+                )
+            )
         for key, value in self.config.items():
             record[key] = value
         append_jsonl(self.output_path, record)

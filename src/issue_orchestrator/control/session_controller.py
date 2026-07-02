@@ -33,9 +33,9 @@ if TYPE_CHECKING:
     from ..domain.models import CompletionRecord
     from ..domain.attempt import AttemptKey
     from ..domain.issue_key import IssueKey
+    from ..domain.session_key import TaskKind
     from ..ports.attempt_store import AttemptStore
     from ..ports.validation_attempt_key_factory import ValidationAttemptKeyFactory
-    from .provider_resilience import ProviderResilienceManager
 
 from ..events import EventName
 from ..domain.artifact_contracts import (
@@ -68,7 +68,11 @@ from .completion_types import REVIEW_EXCHANGE_ERROR_PREFIX
 from .completion_record_validation import CompletionRecordLoadResult
 from .invalid_completion_record import report_invalid_completion_record
 from .review_exchange_contracts import ReviewExchangeCanceller
-from .session_decision import SessionDecision
+from .session_decision import (
+    SessionDecision,
+    provider_failure_from_status,
+    provider_success_from_status,
+)
 from .session_run_resolution import resolve_run_assets
 from .validation import PublishGate
 
@@ -108,7 +112,7 @@ class SessionFinalizationContext:
     issue_number: int
     issue_title: str
     session_name: str
-    run_dir: Path
+    run_assets: SessionRunAssets
     validation_retry_count: int
     original_prompt: str | None
     retry_prompt_template: str | None
@@ -151,7 +155,6 @@ class SessionController:
         attempt_store: "AttemptStore | None" = None,
         validation_attempt_key_factory: "ValidationAttemptKeyFactory | None" = None,
         max_validation_retries: int = 0,
-        provider_resilience: Optional["ProviderResilienceManager"] = None,
         provider_blocked_label: Optional[str] = None,
         review_exchange_canceller: ReviewExchangeCanceller | None = None,
     ):
@@ -187,7 +190,6 @@ class SessionController:
         )
         self._attempt_store = attempt_store
         self._validation_attempt_key_factory = validation_attempt_key_factory
-        self._provider_resilience = provider_resilience
         self._provider_blocked_label = provider_blocked_label
         self._review_exchange_canceller = review_exchange_canceller
 
@@ -206,11 +208,16 @@ class SessionController:
         retry_prompt_template: str | None = None,
         repo_root: Path | None = None,
         issue_key: "IssueKey | None" = None,
+        task_kind: "TaskKind | None" = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
 
         This is the core decision logic. For ANY non-running session, we check
         completion.json to determine the true outcome.
+
+        ``task_kind`` is the originating session's task. Review-only tasks make
+        no commits and publish nothing, so the code validation-retry gate does
+        not apply to them (see ``_run_validation_phase_if_needed``).
         """
         # If still running, nothing to decide
         if observation.observation == SessionObservation.RUNNING:
@@ -232,8 +239,7 @@ class SessionController:
         )
         run_dir = run_assets.run_dir
         provider_status = self._read_provider_status(run_dir)
-        if provider_status and provider_status.succeeded and self._provider_resilience:
-            self._provider_resilience.record_success(provider_status.provider)
+        provider_success = provider_success_from_status(provider_status)
 
         # Log and look up completion record
         self._log_completion_lookup(
@@ -245,7 +251,7 @@ class SessionController:
         record = load_result.record
 
         if record is None:
-            return self._handle_absent_completion_record(
+            decision = self._handle_absent_completion_record(
                 observation=observation,
                 worktree_path=worktree_path,
                 issue_number=issue_number,
@@ -253,7 +259,9 @@ class SessionController:
                 run_dir=run_dir,
                 completion_path=completion_path,
                 load_result=load_result,
+                provider_status=provider_status,
             )
+            return replace(decision, provider_success=provider_success)
 
         # Recover completed work from timed-out sessions when possible.
         recovered = observation.observation == SessionObservation.TIMED_OUT
@@ -267,7 +275,7 @@ class SessionController:
                 issue_number=issue_number,
                 issue_title=issue_title,
                 session_name=validation_session_name,
-                run_dir=run_dir,
+                run_assets=run_assets,
                 validation_retry_count=validation_retry_count,
                 original_prompt=original_prompt,
                 retry_prompt_template=retry_prompt_template,
@@ -276,7 +284,7 @@ class SessionController:
             )
         )
         if finalization_decision is not None:
-            return finalization_decision
+            return replace(finalization_decision, provider_success=provider_success)
 
         # Process completion record
         pr_number = self._extract_pr_number_from_session_name(session_name)
@@ -296,7 +304,7 @@ class SessionController:
             recovered=recovered,
         )
         if deferred_decision is not None:
-            return deferred_decision
+            return replace(deferred_decision, provider_success=provider_success)
         self._emit_processing_completed_event(
             worktree_path, issue_number, session_name, run_dir, result
         )
@@ -329,6 +337,7 @@ class SessionController:
             retry_prompt_template=retry_prompt_template,
             repo_root=repo_root,
             issue_key=issue_key,
+            task_kind=task_kind,
         )
         if validation_decision is not None:
             status = validation_decision.status
@@ -362,6 +371,7 @@ class SessionController:
             validation_error_file=validation_error_file,
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
+            provider_success=provider_success,
         )
 
     def _handle_absent_completion_record(
@@ -374,6 +384,7 @@ class SessionController:
         run_dir: Path,
         completion_path: str | None,
         load_result: CompletionRecordLoadResult,
+        provider_status: ProviderStatus | None,
     ) -> SessionDecision:
         """Route absent completion state without collapsing invalid into missing."""
         if load_result.invalid:
@@ -393,15 +404,18 @@ class SessionController:
             session_name,
             run_dir,
             completion_path,
+            provider_status,
         )
 
     def _handle_completion_finalization_preconditions(
         self,
         context: SessionFinalizationContext,
     ) -> SessionDecision | None:
+        has_validation = bool(self._validation_cmd and self._command_runner)
         finalization_plan = self.completion_processor.completion_finalization_plan(
             issue_number=context.issue_number,
             session_name=context.session_name,
+            run_id=context.run_assets.run_id,
             outcome=context.record.outcome,
             requested_actions=tuple(context.record.requested_actions),
             runtime_state=(
@@ -409,9 +423,7 @@ class SessionController:
                 if context.recovered
                 else CompletionRuntimeState.TERMINATED
             ),
-            validation_preflight_configured=bool(
-                self._validation_cmd and self._command_runner
-            ),
+            validation_preflight_configured=has_validation,
         )
         if (
             finalization_plan.decision
@@ -430,7 +442,7 @@ class SessionController:
         ):
             return self._deferred_review_exchange_decision(
                 result=self.completion_processor.deferred_review_exchange_result(),
-                run_dir=context.run_dir,
+                run_dir=context.run_assets.run_dir,
                 session_name=context.session_name,
                 issue_number=context.issue_number,
                 recovered=False,
@@ -446,7 +458,7 @@ class SessionController:
                 issue_number=context.issue_number,
                 issue_title=context.issue_title,
                 session_name=context.session_name,
-                run_dir=context.run_dir,
+                run_dir=context.run_assets.run_dir,
                 validation_retry_count=context.validation_retry_count,
                 original_prompt=context.original_prompt,
                 retry_prompt_template=context.retry_prompt_template,
@@ -682,12 +694,20 @@ class SessionController:
         retry_prompt_template: str | None,
         repo_root: Path | None,
         issue_key: "IssueKey | None",
+        task_kind: "TaskKind | None" = None,
     ) -> ValidationGateDecision | None:
         if not (
             status == SessionStatus.COMPLETED
             and self._validation_cmd
             and self._command_runner
         ):
+            return None
+        # Review-only sessions (PR review / retrospective review) make no commits
+        # and publish nothing, so the code validation-retry gate does not apply.
+        # Running it relaunches the work as a coder retry that ultimately tries
+        # to open a PR on an empty branch (see issue #6426).
+        if task_kind is not None and task_kind.is_review_only:
+            logger.debug(issue_log(issue_number, "Skipping code validation gate: review-only session"))
             return None
         return self._run_validation_gate(
             worktree_path,
@@ -771,6 +791,7 @@ class SessionController:
         session_name: str,
         run_dir: Path,
         completion_path: str | None,
+        provider_status: ProviderStatus | None,
     ) -> SessionDecision:
         """Handle case where no completion record exists."""
         debug_context = self._collect_completion_debug_context(
@@ -788,7 +809,6 @@ class SessionController:
             debug_context=debug_context,
         )
         session_log = self._get_session_log_tail(run_dir, session_name)
-        provider_status = self._read_provider_status(run_dir)
 
         payload = {
             "issue_number": issue_number,
@@ -805,18 +825,13 @@ class SessionController:
             and provider_status.error_type == ProviderErrorType.TRANSIENT
             and not provider_status.succeeded
         ):
-            if self._provider_resilience:
-                self._provider_resilience.record_transient_failure(
-                    provider_status.provider,
-                    error_summary=provider_status.last_error_summary,
-                    attempts=provider_status.attempts,
-                )
             return SessionDecision(
                 status=SessionStatus.BLOCKED,
                 reason="Provider unavailable",
                 blocked_label=self._provider_blocked_label,
                 blocked_reason=provider_status.last_error_summary
                 or "Provider unavailable",
+                provider_transient_failure=provider_failure_from_status(provider_status),
             )
 
         if observation.observation == SessionObservation.TIMED_OUT:

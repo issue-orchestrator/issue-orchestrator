@@ -25,7 +25,7 @@ import logging
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Iterator, Optional
+from typing import TYPE_CHECKING, Callable, Iterator, Optional, Sequence
 
 from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
     from .label_manager import LabelManager
+    from .label_store_reconciler import FreshLabelSnapshot
 from ..domain.models import (
     OrchestratorState,
     PendingRetrospectiveReview,
@@ -48,6 +49,7 @@ from ..domain.models import (
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
+from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
@@ -56,7 +58,7 @@ from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
 from ..infra import gh_audit
-from ..infra.validation_state import has_pending_retry, read_validation_state, get_retry_prompt_path
+from ..infra.validation_state import find_pending_retry_artifacts
 from ..infra.repo_identity import get_repo_head_sha
 from ..infra.sqlite_maintenance import enforce_pragmas_on_startup, run_backups_if_due
 from .worktree_manager import get_worktree_path
@@ -85,6 +87,7 @@ class StartupManager:
         restore_sessions_fn: Callable[[list[DiscoveredSession]], None],
         launch_session_fn: Callable[[Issue], Optional[Session]],
         update_queue_cache_fn: Callable[[], None],
+        issue_fetch_resilience: IssueFetchResilience,
         queue_cache_store: "QueueCacheStore | None" = None,
         label_manager: "LabelManager | None" = None,
         label_store: "LabelStore | None" = None,
@@ -101,6 +104,11 @@ class StartupManager:
             restore_sessions_fn: Callback to restore running sessions
             launch_session_fn: Callback to launch a new session
             update_queue_cache_fn: Callback to update the queue cache
+            issue_fetch_resilience: Shared owner of the issue-list fetch
+                resilience policy. Guards only the startup queue-sync fetch so a
+                transient repository blip degrades-and-continues while a
+                persistent repo-not-found/auth failure fails fast; downstream
+                recovery phases keep their own error handling.
             queue_cache_store: Persistent store for queue cache (enables warm restarts)
             label_manager: Label registry for prefix-aware queries.
         """
@@ -114,6 +122,7 @@ class StartupManager:
         self._restore_sessions = restore_sessions_fn
         self._launch_session = launch_session_fn
         self._update_queue_cache = update_queue_cache_fn
+        self._issue_fetch_resilience = issue_fetch_resilience
         self._queue_cache_store = queue_cache_store
         if label_manager is None:
             from .label_manager import LabelManager
@@ -126,6 +135,22 @@ class StartupManager:
             log_prefix="startup",
             require_open_issue=True,
         )
+        # Issue numbers whose orchestrator-owned labels were mutated during the
+        # current startup recovery (e.g. pr-pending added / in-progress removed
+        # for a crash-recovered open PR). ActionApplier writes those mutations
+        # through to label_store, so the pre-mutation warm-cache snapshot is now
+        # stale. label_store reconciliation must read GitHub fresh for these
+        # issues instead of trusting that snapshot, or it would rewrite the
+        # mirror back to the pre-recovery labels. Reset at the start of every
+        # run_startup.
+        self._startup_label_mutated_issues: set[int] = set()
+        # Whether this run's queue cache labels came from a successful
+        # GitHub-backed sync/full scan (True) rather than a degraded fallback
+        # onto the persisted last-known-good snapshot (False). Only fresh labels
+        # may be handed to label_store reconciliation as GitHub truth; a
+        # degraded startup must force per-issue fresh reads instead. Reset at
+        # the start of every run_startup.
+        self._queue_labels_fresh: bool = False
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filtering.label if configured."""
@@ -137,6 +162,13 @@ class StartupManager:
     def _apply_label_actions(self, actions: list[AddLabelAction | RemoveLabelAction]) -> None:
         """Apply label actions through the ActionApplier."""
         for action in actions:
+            # Record the touched issue before applying. The mutation writes
+            # through to label_store, so the issue's pre-mutation warm-cache
+            # entry can no longer be trusted as GitHub truth during
+            # label_store reconciliation; we record unconditionally so a
+            # partially-applied action also forces a fresh read rather than a
+            # guess. See _reconcile_label_store.
+            self._startup_label_mutated_issues.add(action.issue_number)
             result = self._action_applier.apply(action)
             if not result.success:
                 logger.warning("[startup] Label action failed: %s", result.error)
@@ -164,6 +196,8 @@ class StartupManager:
         """
         startup_start = time.time()
         state.startup_status = "running"
+        self._startup_label_mutated_issues = set()
+        self._queue_labels_fresh = False
         timings: dict[str, float] = {}
 
         # Emit merged configuration for debugging
@@ -247,6 +281,11 @@ class StartupManager:
         # Step 12: Resume issues with partial work
         with self._phase("resume_partial_work", timings):
             await self._resume_partial_work(state, issues_to_resume)
+
+        # Step 12b: Reconcile the local label_store against GitHub so the
+        # mirror cannot silently diverge from the source of truth.
+        with self._phase("reconcile_label_store", timings):
+            self._reconcile_label_store(state)
 
         # Step 13: Audit and cache the queue
         state.startup_message = "Auditing queue..."
@@ -458,6 +497,63 @@ class StartupManager:
                 "[startup] Recovered %d pr-pending issue(s) into dashboard history",
                 recovered,
             )
+
+    def _reconcile_label_store(self, state: OrchestratorState) -> None:
+        """Reconcile the local label_store mirror against GitHub labels.
+
+        Uses the warm queue/scope cache as the zero-cost label source only when
+        it is verified fresh for this run, and lets the reconciler fetch any
+        out-of-scope or non-fresh stored issues within its budget.
+        """
+        if self._label_store is None:
+            return
+        from .label_store_reconciler import LabelStoreReconciler
+
+        reconciler = LabelStoreReconciler(
+            label_store=self._label_store,
+            label_manager=self._lm,
+            repository_host=self.repository_host,
+        )
+        with gh_audit.context(
+            reason=gh_audit.AuditReason.STARTUP_REFRESH,
+            scope=gh_audit.AuditScope.STARTUP,
+        ):
+            result = reconciler.reconcile(self._fresh_label_snapshot(state))
+        if result.issues_changed:
+            logger.info(
+                "[startup] Reconciled label_store: %d issue(s) changed "
+                "(+%d/-%d labels)",
+                result.issues_changed,
+                result.labels_added,
+                result.labels_removed,
+            )
+
+    def _fresh_label_snapshot(self, state: OrchestratorState) -> "FreshLabelSnapshot":
+        """Build the GitHub-truth label snapshot for label_store reconciliation.
+
+        Centralizes the freshness contract so the reconciler never receives
+        unqualified cache data:
+
+        - If this run's queue sync degraded onto the persisted (possibly stale)
+          snapshot, return a degraded snapshot so the reconciler reads each
+          stored issue fresh within budget — or leaves the store untouched when
+          that read fails — rather than rewriting the mirror from cache that may
+          predate a prior run's label mutation.
+        - Otherwise return the freshly-synced queue/scope labels, still omitting
+          issues this run mutated (their pre-mutation cache entry is stale, so
+          they are re-read fresh too).
+        """
+        from .label_store_reconciler import FreshLabelSnapshot
+
+        if not self._queue_labels_fresh:
+            return FreshLabelSnapshot.degraded()
+
+        labels_by_issue: dict[int, Sequence[str]] = {}
+        for issue in [*state.cached_queue_issues, *state.cached_scope_issues]:
+            if issue.number in self._startup_label_mutated_issues:
+                continue
+            labels_by_issue.setdefault(issue.number, issue.labels)
+        return FreshLabelSnapshot.from_github_sync(labels_by_issue)
 
     def _analyze_and_handle_issue(
         self,
@@ -675,25 +771,22 @@ class StartupManager:
                 )
                 continue
 
-            # Check if this worktree has a pending validation retry
-            if not has_pending_retry(worktree_path):
+            # Resolve durable retry artifacts in one pass. The artifact owner has
+            # already resolved provenance: review-only and unrecognized run
+            # directories are refused upstream, so any artifact returned here
+            # carries a concrete coding-side ``source_task`` (#6426).
+            artifacts = find_pending_retry_artifacts(worktree_path)
+            if artifacts is None or not artifacts.state.can_retry:
                 continue
 
-            # Read the validation state to get retry details
-            validation_state = read_validation_state(worktree_path)
-            if validation_state is None:
-                continue
-
-            # Get the retry prompt path if it exists
-            retry_prompt_path = get_retry_prompt_path(worktree_path)
+            validation_state = artifacts.state
             retry_prompt = None
-            if retry_prompt_path:
+            if artifacts.retry_prompt_path is not None:
                 try:
-                    retry_prompt = retry_prompt_path.read_text()
+                    retry_prompt = artifacts.retry_prompt_path.read_text()
                 except OSError:
                     pass
 
-            # Create a pending validation retry entry
             pending_retry = PendingValidationRetry(
                 issue_number=issue_number,
                 issue_title=f"Issue #{issue_number}",  # We don't have the full title here
@@ -704,6 +797,7 @@ class StartupManager:
                 validation_error=validation_state.last_error or "Unknown validation error",
                 validation_error_file=validation_state.last_error_file,
                 retry_count=validation_state.retry_count,
+                source_task=artifacts.source_task,
                 validation_cmd=validation_state.validation_cmd,
             )
             state.pending_validation_retries.append(pending_retry)
@@ -737,9 +831,15 @@ class StartupManager:
         """
         store = self._queue_cache_store
         if store is None:
-            # No persistent store configured — fall back to full scan.
+            # No persistent store configured — fall back to full scan. Guard the
+            # fetch so a transient repository blip degrades-and-continues rather
+            # than aborting the remaining startup recovery phases.
             state.startup_message = "Caching queue..."
-            self._update_queue_cache()
+            try:
+                self._issue_fetch_resilience.guard(self._update_queue_cache)
+                self._queue_labels_fresh = True
+            except TransientIssueFetchError as exc:
+                self._note_degraded_queue_fetch(exc, state)
             return
 
         state.startup_message = "Restoring queue cache..."
@@ -747,6 +847,47 @@ class StartupManager:
         cached_watermark = store.load_watermark()
         queue_cache = QueueCache(self.config, state, store)
 
+        try:
+            # Guard *only* the issue-list fetch. A persistent repo-not-found or
+            # auth failure here raises PermanentIssueFetchError, which propagates
+            # out of run_startup so the orchestrator fails fast with an
+            # actionable message. A transient failure degrades-and-continues.
+            self._issue_fetch_resilience.guard(
+                lambda: self._sync_queue_from_github(
+                    state, queue_cache, cached_issues, cached_watermark,
+                )
+            )
+        except TransientIssueFetchError as exc:
+            # Degrade: come up on the last-known-good cached queue (if any) and
+            # let the main loop re-sync. Persist nothing so the good snapshot
+            # stays intact, and let the remaining startup phases still run.
+            if cached_issues:
+                queue_cache.replace_from_refresh(list(cached_issues))
+                state.queue_delta_watermark = cached_watermark
+            self._note_degraded_queue_fetch(exc, state)
+            return
+
+        # The queue now reflects a successful GitHub-backed sync, so its labels
+        # are safe to treat as source of truth during label_store reconciliation.
+        self._queue_labels_fresh = True
+        # Persist updated state to SQLite for next restart (success path only).
+        state.startup_message = "Persisting queue cache..."
+        queue_cache.save_snapshot()
+
+    def _sync_queue_from_github(
+        self,
+        state: OrchestratorState,
+        queue_cache: QueueCache,
+        cached_issues: Sequence[Issue],
+        cached_watermark: str | None,
+    ) -> None:
+        """Perform the startup issue-list fetch and apply it to the queue.
+
+        This is the single repository-host fetch the resilience policy guards at
+        startup; a ``RepositoryHostError`` raised here is classified by the
+        policy (degrade vs. fail-fast). Callers run it under
+        ``issue_fetch_resilience.guard``.
+        """
         if cached_watermark and not cached_issues:
             # Corrupt/partial persisted state: watermark exists but no issues were
             # loaded. A delta sync from the stale watermark would only pull issues
@@ -790,9 +931,21 @@ class StartupManager:
             logger.info("[STARTUP] Cold start: running full queue scan")
             self._update_queue_cache()
 
-        # Persist updated state to SQLite for next restart
-        state.startup_message = "Persisting queue cache..."
-        queue_cache.save_snapshot()
+    def _note_degraded_queue_fetch(
+        self, exc: TransientIssueFetchError, state: OrchestratorState
+    ) -> None:
+        """Log a transient startup queue-fetch failure and keep going.
+
+        The orchestrator is label-recoverable: coming up on the (possibly stale
+        or empty) cached queue and letting the main loop re-sync is far cheaper
+        than refusing to start. Only the queue fetch is skipped — the remaining
+        startup recovery phases still run.
+        """
+        logger.warning(
+            "[STARTUP] %s — coming up on the cached queue (%d issue(s)); the main "
+            "loop will re-sync. %s",
+            exc.summary, len(state.cached_queue_issues), exc.suggested_fix,
+        )
 
     async def _resume_partial_work(
         self,

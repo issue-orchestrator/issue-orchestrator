@@ -459,6 +459,7 @@ def build_journey_step(evt: EventDict, today: str) -> JourneyStep:
         event=str(evt.get("event") or ""),
         detail=_optional_str_strict(evt.get("detail")),
         actions=actions,
+        in_round_progress=evt.get("in_round_progress") is True,
     )
 
 

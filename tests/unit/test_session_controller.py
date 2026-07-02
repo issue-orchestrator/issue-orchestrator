@@ -32,6 +32,11 @@ from issue_orchestrator.domain.completion_finalization import (
     decide_completion_finalization,
 )
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.provider_resilience import (
+    ProviderStatus,
+    now_iso,
+    write_provider_status,
+)
 from issue_orchestrator.observation.observation import (
     SessionObservation,
     SessionObservationResult,
@@ -45,6 +50,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_run import SessionRunAssets
 from issue_orchestrator.ports import NullEventSink
 from issue_orchestrator.ports.event_sink import TraceEvent
+from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -214,6 +220,7 @@ class MockCompletionProcessor:
         *,
         issue_number: int,
         session_name: str | None,
+        run_id: str,
         outcome: CompletionOutcome,
         requested_actions: tuple[RequestedAction, ...],
         runtime_state: CompletionRuntimeState,
@@ -230,6 +237,7 @@ class MockCompletionProcessor:
                     issue_number=issue_number,
                     session_name=session_name,
                     requested_actions=requested_actions,
+                    run_id=run_id,
                 )
             ),
             validation_preflight_configured=validation_preflight_configured,
@@ -286,6 +294,96 @@ class TestSessionControllerRunning:
 
 class TestSessionControllerTerminated:
     """Tests for TERMINATED observation (session exited)."""
+
+    def test_provider_success_is_returned_as_decision_effect(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Provider success effects are applied by the tick thread, not decide_outcome."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(CompletionOutcome.COMPLETED)
+        session_output = FileSystemSessionOutput()
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=session_output,
+            working_copy=StubWorkingCopy(),
+        )
+        session_name = "issue-123"
+        worktree = tmp_path / "worktree"
+        run_assets = make_session_run_assets(worktree, session_name, session_output)
+        write_provider_status(
+            run_assets.run_dir,
+            ProviderStatus(
+                provider="codex",
+                error_type=None,
+                attempts=1,
+                succeeded=True,
+                exit_code=0,
+                timed_out=False,
+                last_error_summary=None,
+                last_attempt_at=now_iso(),
+            ),
+        )
+
+        decision = controller.decide_outcome(
+            SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree,
+            123,
+            "Test Issue",
+            session_name,
+            session_run_assets=run_assets,
+        )
+
+        assert decision.status == SessionStatus.COMPLETED
+        assert decision.provider_success == "codex"
+
+    def test_provider_transient_failure_is_returned_as_decision_effect(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Provider failure effects are applied by the tick thread, not decide_outcome."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = None
+        session_output = FileSystemSessionOutput()
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=session_output,
+            working_copy=StubWorkingCopy(),
+            provider_blocked_label="blocked:provider-unavailable",
+        )
+        session_name = "issue-123"
+        worktree = tmp_path / "worktree"
+        run_assets = make_session_run_assets(worktree, session_name, session_output)
+        write_provider_status(
+            run_assets.run_dir,
+            ProviderStatus(
+                provider="codex",
+                error_type=ProviderErrorType.TRANSIENT,
+                attempts=3,
+                succeeded=False,
+                exit_code=1,
+                timed_out=False,
+                last_error_summary="provider overloaded",
+                last_attempt_at=now_iso(),
+            ),
+        )
+
+        decision = controller.decide_outcome(
+            SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree,
+            123,
+            "Test Issue",
+            session_name,
+            session_run_assets=run_assets,
+        )
+
+        assert decision.status == SessionStatus.BLOCKED
+        assert decision.provider_transient_failure is not None
+        assert decision.provider_transient_failure.provider == "codex"
+        assert decision.provider_transient_failure.error_summary == "provider overloaded"
+        assert decision.provider_transient_failure.attempts == 3
 
     def test_terminated_without_completion_record_is_failed(self, tmp_path: Path):
         """Session that exits without completion.json = FAILED."""
@@ -1078,6 +1176,106 @@ class MockWorkingCopy:
 
 class TestSessionControllerValidationCaching:
     """Tests for validation caching via PublishGate."""
+
+    def test_review_only_session_skips_code_validation_gate(self, tmp_path: Path):
+        """A retrospective review with a failing validation command must not retry.
+
+        Regression for #6426: a review-only session makes no commits and
+        publishes nothing, so feeding its (often transient) validation failure
+        into the coder retry loop relaunched the work as ``TaskKind.CODE``, which
+        then tried to open a PR on an empty branch -> publish-failed. The code
+        validation gate must be skipped entirely for review-only task kinds.
+        """
+        from issue_orchestrator.domain.session_key import TaskKind
+
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.REVIEW_APPROVED,
+            summary="Existing implementation looks good",
+            requested_actions=[],
+        )
+
+        # A failing validation command would normally force a retry.
+        command_runner = MockCommandRunner(returncode=1, stderr="network timeout")
+        events = RecordingEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="./scripts/validate-quick.sh",
+            validation_timeout_seconds=60,
+            max_validation_retries=3,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = decide_with_run_assets(
+            controller,
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=361,
+            issue_title="Review Existing Implementation #361",
+            session_name="retrospective-review-361",
+            task_kind=TaskKind.RETROSPECTIVE_REVIEW,
+        )
+
+        # The review completes on its read-only path: no retry, no gate run.
+        assert decision.status == SessionStatus.COMPLETED
+        assert decision.validation_passed is None
+        assert command_runner.run_calls == []
+        retry_events = [
+            event
+            for event in events.events
+            if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
+        ]
+        assert retry_events == []
+
+    def test_code_session_still_runs_validation_gate(self, tmp_path: Path):
+        """Coding sessions keep running the validation gate (skip is review-only).
+
+        Companion to ``test_review_only_session_skips_code_validation_gate`` to
+        prove the skip is scoped to review-only tasks, not a blanket change.
+        """
+        from issue_orchestrator.domain.session_key import TaskKind
+
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(returncode=1, stderr="real failure")
+        controller = SessionController(
+            completion_processor=processor,
+            events=RecordingEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=MockWorkingCopy(head_sha="deadbeef1234567890"),
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            max_validation_retries=3,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = decide_with_run_assets(
+            controller,
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+            task_kind=TaskKind.CODE,
+        )
+
+        assert decision.status == SessionStatus.NEEDS_VALIDATION_RETRY
+        assert decision.validation_passed is False
+        assert len(command_runner.run_calls) == 1
 
     def test_dirty_preflight_defers_while_review_exchange_running(
         self, tmp_path: Path

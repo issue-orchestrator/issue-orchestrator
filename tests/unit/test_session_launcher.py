@@ -20,9 +20,16 @@ from typing import Optional, cast
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.session_completion import (
+    _apply_completed_decisions,
+    _record_provider_resilience_effects,
     _terminate_finished_session,
     handle_session_completion,
     process_active_sessions,
+)
+from issue_orchestrator.control.completion_dispatcher import CompletedDecision
+from issue_orchestrator.control.session_decision import (
+    ProviderTransientFailureDecision,
+    SessionDecision,
 )
 from issue_orchestrator.control.session_launch_types import LaunchResult
 from issue_orchestrator.control.session_launcher import (
@@ -86,6 +93,11 @@ from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.adapters.github import GitHubAdapter
+from issue_orchestrator.adapters.github.cache import GitHubCache
+from issue_orchestrator.execution.stack_predecessor_facts import (
+    GitStackPredecessorFactsProvider,
+)
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.contracts.public import SessionStartedPayload
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -705,6 +717,69 @@ class TestLaunchIssueSession:
             for a in actions
         )
 
+    def test_ready_stack_successor_seeds_worktree_from_predecessor(
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        sample_issue,
+    ):
+        """A ready Stack-after issue creates its worktree from the predecessor (#6596).
+
+        The just-before-launch work gate resolves the predecessor branch as the
+        stack base; the launcher must thread that into the worktree manager so a
+        freshly created successor descends from the predecessor head.
+        """
+
+        class _Report:
+            can_start_work = True
+            stack_base_branch = "20-base"
+
+        class _Evaluator:
+            def evaluate_work_gate(self, *, issue_number, issue_body, source_milestone):
+                return _Report()
+
+        def refresh_issue(_number):
+            return Issue(
+                number=123,
+                title="Test issue",
+                labels=["agent:web"],
+                repo="test/repo",
+                body="Stack-after: #20",
+                milestone="M7",
+            )
+
+        launcher = SessionLauncher(
+            config=sample_config,
+            events=mock_events,
+            repository_host=mock_repo_host,
+            action_applier=MagicMock(),
+            session_manager=MagicMock(),
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            command_runner=mock_command_runner,
+            session_output=FileSystemSessionOutput(),
+            manifest_downloader=NullManifestDownloader(),
+            session_exists_fn=lambda name: False,
+            create_session_fn=lambda name, cmd, wd, title: True,
+            get_issue_machine=lambda issue: IssueStateMachine(issue),
+            get_session_machine=lambda name, n, timeout: SessionStateMachine(
+                name, n, timeout_minutes=timeout
+            ),
+            get_review_machine=lambda pr, issue: ReviewStateMachine(pr, issue),
+            refresh_issue_fn=refresh_issue,
+            dependency_evaluator=_Evaluator(),
+        )
+
+        result = launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert len(mock_worktree_manager.create_calls) == 1
+        assert mock_worktree_manager.create_calls[0]["base_branch"] == "20-base"
+
     def test_fails_when_in_progress_label_add_fails(
         self, launcher_bundle, sample_issue, mock_worktree_manager
     ):
@@ -872,31 +947,218 @@ class TestLaunchIssueSession:
         assert "ISSUE_ORCHESTRATOR_WORKTREE=" in cmd
 
     def test_checks_dependencies_before_launch(self, launcher_bundle):
-        """Verify CAS dependency check (lines 235-254)."""
-        # Create issue with body so dependency check is triggered
+        """Just-before-launch recheck consumes the work gate and blocks stale work."""
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        # Create issue with a real normal dependency so the work gate is consulted
         issue_with_body = Issue(
             number=123,
             title="Test issue",
             labels=["agent:web"],
             repo="test/repo",
-            body="Blocked by #100",  # Body required for dependency check
+            body="Depends-on: #100",
+            milestone="M1",
         )
 
-        # Set up dependency evaluator mock
-        mock_evaluator = MagicMock()
-        mock_report = MagicMock()
-        mock_report.runnable = False
-        mock_report.summary.return_value = "Blocked by #100"
-        mock_evaluator.evaluate.return_value = mock_report
+        class _Checker:
+            def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "open" if issue_number == 100 else None  # dependency still open
 
-        # noqa: SLF001 - Test infrastructure: injecting mock dependency evaluator
-        launcher_bundle.launcher._dependency_evaluator = mock_evaluator  # noqa: SLF001
+            def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "M1"
+
+        evaluator = DependencyEvaluator(issue_checker=_Checker(), events=NullEventSink())
+
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
         launcher_bundle.launcher._refresh_issue = lambda n: issue_with_body  # noqa: SLF001
 
         result = launcher_bundle.launcher.launch_issue_session(issue_with_body, active_sessions=[])
 
         assert result.success is False
         assert "Dependencies not satisfied" in result.reason
+        assert "#100" in result.reason
+
+    def test_recheck_blocks_stale_stack_work_changed_after_planning(
+        self, launcher_bundle, mock_events
+    ):
+        """Predecessor review state changing between planning and launch blocks start.
+
+        The just-before-launch recheck re-gathers predecessor facts, so a stack
+        successor that was work-ready at planning time must not start once the
+        predecessor's branch/review state regresses (ADR-0029 race guard).
+        """
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+        from issue_orchestrator.domain.dependency_gates import PredecessorFacts
+
+        issue = Issue(
+            number=300,
+            title="Stacked successor",
+            labels=["agent:web"],
+            repo="test/repo",
+            body="Stack-after: #200",
+            milestone="M1",
+        )
+
+        class _Checker:
+            def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "open" if issue_number == 200 else None  # predecessor still open
+
+            def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
+                return "M1"
+
+        class _MutableProvider:
+            """Returns whatever facts are current at gather time."""
+
+            def __init__(self):
+                self.facts = PredecessorFacts(
+                    branch_usable=True, validation_passed=True,
+                    agent_reviewed=True, branch_name="200-base",
+                )
+
+            def gather_facts(self, targets):
+                return {t: self.facts for t in targets}
+
+        provider = _MutableProvider()
+        evaluator = DependencyEvaluator(
+            issue_checker=_Checker(), events=mock_events,
+            predecessor_facts_provider=provider,
+        )
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
+        launcher_bundle.launcher._refresh_issue = lambda n: issue  # noqa: SLF001
+
+        # At planning time the predecessor was validated + reviewed -> work-ready.
+        planning = evaluator.evaluate_work_gate(300, "Stack-after: #200", "M1", emit_event=False)
+        assert planning.can_start_work is True
+
+        # Predecessor review is withdrawn (e.g. a new push) before launch.
+        provider.facts = PredecessorFacts(
+            branch_usable=True, validation_passed=True, agent_reviewed=False,
+        )
+        mock_events.clear()
+
+        result = launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is False
+        assert "Dependencies not satisfied" in result.reason
+        blocked = mock_events.get_events_by_name("issue.dependency_blocked")
+        assert len(blocked) == 1
+        data = blocked[0].data
+        assert data["gate"] == "work"
+        assert any(
+            r["mode"] == "stack"
+            and r["predecessor"] == "#200"
+            and r["reason"] == "predecessor_review_pending"
+            for r in data["blocked_reasons"]
+        )
+
+    @pytest.mark.parametrize("rework_via", ["add", "remove"])
+    def test_recheck_through_real_pr_cache_passes_until_pr_label_changes(
+        self, launcher_bundle, mock_events, rework_via
+    ):
+        """Planning and the just-before-launch recheck both pass with no PR-label
+        change, and the recheck blocks only after an actual PR-number label write.
+
+        Round-2 F1 regression wired end-to-end through the real ``GitHubAdapter``
+        cache and ``GitStackPredecessorFactsProvider``: the recheck re-runs
+        ``evaluate_work_gate`` (session_launcher ``_verify_dependencies_fresh``),
+        which gathers PR-scoped review labels and then issue labels. Before the
+        cache-owner fix, the first evaluation's empty issue-label refresh
+        corrupted the cached PR's ``code-reviewed``, so this second (recheck)
+        evaluation falsely blocked a still-reviewed predecessor. With unchanged
+        live PR labels the recheck must pass; after a real PR-number add of
+        ``needs-rework`` or removal of ``code-reviewed`` it must block.
+        """
+        from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
+
+        config = Config(
+            repo="test/repo",
+            repo_root=Path("/tmp/repo"),
+            worktree_base=Path("/tmp"),
+            agents={"agent:web": AgentConfig(prompt_path=Path("/tmp/prompt.txt"))},
+        )
+        config.github_token = "test-token"
+        config.github_cache_ttl_seconds = 60
+
+        live_labels = ["code-reviewed"]  # PR #201 is reviewed; issue #200 has none
+        http = MagicMock()
+        http.get_prs_for_issue.return_value = [{"number": 201}]
+        http.get_issue_labels.return_value = []
+
+        def _get_pr(number):
+            assert number == 201
+            return {
+                "number": 201,
+                "title": "#200: predecessor",
+                "html_url": "https://example/pr/201",
+                "head": {"ref": "200-base"},
+                "body": "",
+                "state": "open",
+                "labels": [{"name": name} for name in live_labels],
+            }
+
+        http.get_pr.side_effect = _get_pr
+        adapter = GitHubAdapter(
+            repo="test/repo",
+            config=config,
+            cache=GitHubCache(default_ttl=300.0),
+            http_client=http,
+            verify_writes=False,
+        )
+        provider = GitStackPredecessorFactsProvider(
+            repository_host=adapter,
+            label_manager=LabelManager(config),
+            repo="test/repo",
+        )
+
+        class _Checker:
+            def get_issue_state(self, issue_number, repo=None):
+                return "open" if issue_number == 200 else None  # predecessor open
+
+            def get_issue_milestone(self, issue_number, repo=None):
+                return "M1"
+
+        evaluator = DependencyEvaluator(
+            issue_checker=_Checker(), events=mock_events,
+            predecessor_facts_provider=provider,
+        )
+
+        issue = Issue(
+            number=300,
+            title="Stacked successor",
+            labels=["agent:web"],
+            repo="test/repo",
+            body="Stack-after: #200",
+            milestone="M1",
+        )
+        launcher_bundle.launcher._dependency_evaluator = evaluator  # noqa: SLF001
+        launcher_bundle.launcher._refresh_issue = lambda n: issue  # noqa: SLF001
+
+        # Planning: the work gate opens (predecessor open + reviewed PR).
+        planning = evaluator.evaluate_work_gate(
+            300, "Stack-after: #200", "M1", emit_event=False
+        )
+        assert planning.can_start_work is True
+
+        # Just-before-launch recheck with NO PR-label change must still pass —
+        # the issue-label refresh during gather must not corrupt the cached PR —
+        # and it resolves the predecessor branch as the successor's stack base.
+        freshness = launcher_bundle.launcher._verify_dependencies_fresh(issue)  # noqa: SLF001
+        assert freshness.failure is None
+        assert freshness.stack_base_branch == "200-base"
+
+        # The predecessor PR actually moves out of a clean review, by PR NUMBER.
+        if rework_via == "add":
+            live_labels.append("needs-rework")
+            adapter.add_label(201, "needs-rework")
+        else:
+            live_labels.remove("code-reviewed")
+            adapter.remove_label(201, "code-reviewed")
+
+        # Now the recheck must block the stale stack work.
+        result = launcher_bundle.launcher._verify_dependencies_fresh(issue)  # noqa: SLF001
+        assert result.failure is not None
+        assert result.failure.success is False
+        assert "Dependencies not satisfied" in result.failure.reason
 
 
 class TestLaunchValidationRetrySession:
@@ -918,6 +1180,7 @@ class TestLaunchValidationRetrySession:
             validation_error="Validation blocked before running command: dirty worktree",
             validation_error_file="/tmp/validation-errors.txt",
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
 
@@ -2029,6 +2292,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
         other_retry = PendingValidationRetry(
@@ -2041,6 +2305,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="failed",
             validation_error_file=None,
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry, other_retry])
@@ -2085,6 +2350,7 @@ class TestOrchestratorLaunchValidationRetrySession:
             validation_error="dirty worktree",
             validation_error_file=None,
             retry_count=1,
+            source_task=TaskKind.CODE,
             validation_cmd="make test",
         )
         state = OrchestratorState(pending_validation_retries=[retry])
@@ -2491,6 +2757,70 @@ class TestRestoreRunningSessions:
 class TestProcessActiveSessions:
     """Tests for process_active_sessions function (line 1034)."""
 
+    def test_completed_decision_batch_applies_siblings_before_raising(self):
+        """One failed completed decision must not discard the rest of the drain batch."""
+        first = CompletedDecision(
+            session=MagicMock(terminal_id="issue-1"),
+            decision=None,
+            error=RuntimeError("decide failed"),
+        )
+        second = CompletedDecision(
+            session=MagicMock(terminal_id="issue-2"),
+            decision=SessionDecision(
+                status=SessionStatus.RUNNING,
+                provider_success="codex",
+            ),
+            error=None,
+        )
+        provider_resilience = MagicMock()
+        applied: list[str] = []
+
+        def apply(completed: CompletedDecision) -> None:
+            applied.append(completed.session.terminal_id)
+            if completed.error is not None:
+                raise completed.error
+            assert completed.decision is not None
+            _record_provider_resilience_effects(
+                completed.decision,
+                provider_resilience,
+            )
+
+        with pytest.raises(RuntimeError, match="decide failed"):
+            _apply_completed_decisions([first, second], apply)
+
+        assert applied == ["issue-1", "issue-2"]
+        provider_resilience.record_success.assert_called_once_with("codex")
+
+    def test_provider_resilience_effects_are_recorded_on_apply_thread(self):
+        """Provider-circuit mutations happen when the drained decision is applied."""
+        provider_resilience = MagicMock()
+
+        _record_provider_resilience_effects(
+            SessionDecision(
+                status=SessionStatus.RUNNING,
+                provider_success="codex",
+            ),
+            provider_resilience,
+        )
+        _record_provider_resilience_effects(
+            SessionDecision(
+                status=SessionStatus.BLOCKED,
+                provider_transient_failure=ProviderTransientFailureDecision(
+                    provider="claude-code",
+                    error_summary="provider overloaded",
+                    attempts=3,
+                ),
+            ),
+            provider_resilience,
+        )
+
+        provider_resilience.record_success.assert_called_once_with("codex")
+        provider_resilience.record_transient_failure.assert_called_once_with(
+            "claude-code",
+            error_summary="provider overloaded",
+            attempts=3,
+        )
+
     def test_skips_running_sessions(self, sample_agent_config, tmp_path):
         """Verify running sessions are skipped."""
         from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
@@ -2579,6 +2909,57 @@ class TestProcessActiveSessions:
         assert state.active_sessions == [session]
         mock_completion_handler.process_completion.assert_not_called()
         mock_action_applier.apply_actions.assert_not_called()
+
+    def test_attributes_tick_phase_to_issue_being_handled(self, sample_agent_config, tmp_path):
+        """While a session's (synchronous) completion runs, the tick phase names
+        the issue, so a stall during publish shows up on the dashboard as
+        'active_sessions:#392' rather than a generic 'active_sessions'."""
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.observation.observation import SessionObservationResult
+
+        issue = Issue(number=392, title="Test", labels=["agent:backend"])
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-392",
+            worktree_path=tmp_path / "worktree",
+            branch_name="392-feature",
+            run_assets=make_session_run_assets(tmp_path / "worktree", session_name="issue-392"),
+        )
+
+        state = OrchestratorState()
+        state.active_sessions = [session]
+
+        mock_observer = MagicMock()
+        mock_observer.observe_session.return_value = SessionObservationResult.terminated()
+
+        captured_phase = {}
+
+        def capture_phase(*args, **kwargs):
+            # The heavy publish work happens inside decide_outcome; capture what
+            # the dashboard would read if it sampled mid-stall.
+            captured_phase["value"] = state.current_tick_phase
+            return SessionDecision(
+                status=SessionStatus.RUNNING,
+                reason="deferred",
+            )
+
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.side_effect = capture_phase
+
+        process_active_sessions(
+            state=state,
+            observer=mock_observer,
+            session_controller=mock_controller,
+            completion_handler=MagicMock(),
+            action_applier=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=MagicMock(),
+            config=MagicMock(),
+        )
+
+        assert captured_phase["value"] == "active_sessions:#392"
 
     def test_completion_event_fires_once_across_many_ticks_of_deferred_session(
         self, sample_agent_config, tmp_path
@@ -2752,6 +3133,98 @@ class TestProcessActiveSessions:
         mock_controller.decide_outcome.assert_called_once()
         mock_completion_handler.process_completion.assert_called_once()
         kill_session_fn.assert_called_once_with("issue-123")
+
+    def test_background_dispatcher_keeps_heartbeat_free_until_drained(
+        self, sample_agent_config, tmp_path
+    ):
+        """With a background dispatcher, a slow completion decision runs off the
+        tick thread: the dispatch tick returns immediately with the session
+        still active and no completion applied; a later tick (after the decision
+        finishes) drains it and applies handle_session_completion exactly once.
+        Regression for the 153.9s synchronous-publish freeze."""
+        import threading
+
+        from issue_orchestrator.control.completion_dispatcher import (
+            BackgroundCompletionDispatcher,
+        )
+        from issue_orchestrator.control.session_controller import SessionDecision
+        from issue_orchestrator.execution.thread_background_job_runner import (
+            ThreadBackgroundJobRunner,
+        )
+        from issue_orchestrator.observation.observation import SessionObservationResult
+
+        issue = Issue(number=392, title="Test", labels=["agent:web"])
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("392"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-392",
+            worktree_path=tmp_path / "worktree",
+            branch_name="392-feature",
+            run_assets=make_session_run_assets(tmp_path / "worktree", session_name="issue-392"),
+        )
+        state = OrchestratorState(active_sessions=[session])
+
+        mock_observer = MagicMock()
+        mock_observer.observe_session.return_value = SessionObservationResult.timed_out()
+
+        gate = threading.Event()
+
+        def slow_decide(*args, **kwargs):
+            gate.wait(5)  # stand in for the ~100s publish gate + push + PR
+            return SessionDecision(status=SessionStatus.TIMED_OUT, reason="done")
+
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.find_run_dir.return_value = None
+        mock_controller = MagicMock()
+        mock_controller.decide_outcome.side_effect = slow_decide
+        mock_controller.session_output = session_output
+
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.return_value = MagicMock(
+            actions=[],
+            history_entry=SessionHistoryEntry(
+                issue_number=392, title="Test", agent_type="agent:web",
+                status="timed_out", runtime_minutes=90,
+            ),
+            should_defer_cleanup=False, pending_cleanup=None,
+            should_queue_review=False, pr_url=None, pr_number=None,
+        )
+        kill_session_fn = MagicMock()
+        runner = ThreadBackgroundJobRunner()
+        dispatcher = BackgroundCompletionDispatcher(runner)
+
+        def run_tick():
+            process_active_sessions(
+                state=state,
+                observer=mock_observer,
+                session_controller=mock_controller,
+                completion_handler=mock_completion_handler,
+                action_applier=MagicMock(),
+                worktree_manager=None,
+                kill_session_fn=kill_session_fn,
+                config=MagicMock(),
+                completion_dispatcher=dispatcher,
+            )
+
+        # Tick 1: dispatch only — decision runs in the background, tick returns.
+        run_tick()
+        assert session in state.active_sessions  # not yet completed
+        mock_completion_handler.process_completion.assert_not_called()
+        assert dispatcher.in_flight("issue-392") is True
+
+        # Tick 2 (decision still running): in-flight, so no re-dispatch, no apply.
+        run_tick()
+        mock_controller.decide_outcome.assert_called_once()
+        assert state.active_sessions == [session]
+
+        # Decision finishes; the next tick drains and applies completion once.
+        gate.set()
+        assert runner.wait_until_idle(5) is True
+        run_tick()
+        assert state.active_sessions == []
+        mock_completion_handler.process_completion.assert_called_once()
+        kill_session_fn.assert_called_once_with("issue-392")
 
 
 # =============================================================================
@@ -3556,3 +4029,263 @@ class TestExtraProviderArgsFromLabels:
     def test_empty_labels_returns_none(self):
         result = SessionLauncher._extra_provider_args_from_labels([])  # noqa: SLF001 - unit test targets internal label parser
         assert result is None
+
+
+class TestStackRelaunchGate:
+    """Validation retry and rework honor the stack work gate (#6596 F1).
+
+    A blocked or ambiguous stack predecessor must fail the relaunch closed before
+    any worktree is created/reset, and must never seed the worktree from the
+    default base via a ``None`` stack base.
+    """
+
+    @staticmethod
+    def _ambiguous_report(issue_number):
+        from issue_orchestrator.domain.dependencies import (
+            Dependency,
+            DependencyMode,
+            DependencyState,
+            DependencyTarget,
+        )
+        from issue_orchestrator.domain.dependency_gates import (
+            PredecessorFacts,
+            build_gate_report,
+        )
+
+        deps = [
+            Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
+            Dependency(issue_number=21, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED),
+        ]
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-base",
+            ),
+            DependencyTarget(21): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="21-base",
+            ),
+        }
+        return build_gate_report(issue_number, deps, facts)
+
+    class _CannedWorkEvaluator:
+        def __init__(self, report_fn):
+            self._report_fn = report_fn
+
+        def evaluate_work_gate(
+            self, issue_number, issue_body, source_milestone,
+            *, configured_base_branch=None, emit_event=True,
+        ):
+            return self._report_fn(issue_number)
+
+    def _launcher(self, fixtures, *, report_fn, body, refresh=None):
+        (sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+         mock_working_copy, mock_command_runner) = fixtures
+
+        def default_refresh(_number):
+            return Issue(
+                number=123,
+                title="Test issue",
+                labels=["agent:web"],
+                repo="test/repo",
+                body=body,
+                milestone="M7",
+            )
+
+        refresh_issue = refresh if refresh is not None else default_refresh
+
+        return SessionLauncher(
+            config=sample_config,
+            events=mock_events,
+            repository_host=mock_repo_host,
+            action_applier=MagicMock(),
+            session_manager=MagicMock(),
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            command_runner=mock_command_runner,
+            session_output=FileSystemSessionOutput(),
+            manifest_downloader=NullManifestDownloader(),
+            session_exists_fn=lambda name: False,
+            create_session_fn=lambda name, cmd, wd, title: True,
+            get_issue_machine=lambda issue: IssueStateMachine(issue),
+            get_session_machine=lambda name, n, timeout: SessionStateMachine(
+                name, n, timeout_minutes=timeout
+            ),
+            get_review_machine=lambda pr, issue: ReviewStateMachine(pr, issue),
+            refresh_issue_fn=refresh_issue,
+            dependency_evaluator=self._CannedWorkEvaluator(report_fn),
+        )
+
+    @pytest.fixture
+    def _fixtures(
+        self, sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+        mock_working_copy, mock_command_runner,
+    ):
+        return (sample_config, mock_events, mock_repo_host, mock_worktree_manager,
+                mock_working_copy, mock_command_runner)
+
+    def test_validation_retry_blocks_on_ambiguous_stack_base(
+        self, _fixtures, mock_worktree_manager, mock_events
+    ):
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report,
+            body="Stack-after: #20\nStack-after: #21",
+        )
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Test issue",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-feature",
+            original_prompt="Work on issue #123",
+            validation_error="boom",
+            validation_error_file="/tmp/err.txt",
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert "Stack dependencies not satisfied" in (result.reason or "")
+        # Fail closed BEFORE any worktree create/reset (no default-base fallback).
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+    def test_rework_blocks_on_ambiguous_stack_base(
+        self, _fixtures, mock_worktree_manager, mock_repo_host, mock_events
+    ):
+        mock_repo_host.prs[123] = [
+            PRInfo(
+                number=456, title="Fix issue #123",
+                url="https://github.com/test/repo/pull/456",
+                branch="123-feature", body="", state="open", labels=[],
+            )
+        ]
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report,
+            body="Stack-after: #20\nStack-after: #21",
+        )
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is False
+        assert "Stack dependencies not satisfied" in (result.reason or "")
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+    @staticmethod
+    def _single_ready_report(issue_number):
+        from issue_orchestrator.domain.dependencies import (
+            Dependency,
+            DependencyMode,
+            DependencyState,
+            DependencyTarget,
+        )
+        from issue_orchestrator.domain.dependency_gates import (
+            PredecessorFacts,
+            build_gate_report,
+        )
+
+        deps = [Dependency(issue_number=20, mode=DependencyMode.STACK, state=DependencyState.UNSATISFIED)]
+        facts = {
+            DependencyTarget(20): PredecessorFacts(
+                branch_usable=True, validation_passed=True, agent_reviewed=True,
+                branch_name="20-base",
+            ),
+        }
+        return build_gate_report(issue_number, deps, facts)
+
+    def test_initial_launch_fails_closed_when_body_unreadable(
+        self, _fixtures, mock_worktree_manager, mock_events, sample_issue
+    ):
+        # refresh returns None AND the issue carries no body -> the launcher
+        # cannot prove non-stack, so it must fail closed, not seed from default.
+        assert sample_issue.body is None
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report, body=None,
+            refresh=lambda _n: None,
+        )
+
+        result = launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is False
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+    def test_initial_launch_uses_issue_body_fallback_when_refresh_none(
+        self, _fixtures, mock_worktree_manager, sample_issue
+    ):
+        # refresh fails but the already-known issue body proves a ready stack
+        # successor -> seed from the predecessor branch (not the default base).
+        sample_issue.body = "Stack-after: #20"
+        sample_issue.milestone = "M7"
+        launcher = self._launcher(
+            _fixtures, report_fn=self._single_ready_report, body="Stack-after: #20",
+            refresh=lambda _n: None,
+        )
+
+        result = launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert len(mock_worktree_manager.create_calls) == 1
+        assert mock_worktree_manager.create_calls[0]["base_branch"] == "20-base"
+
+    def test_validation_retry_fails_closed_when_issue_unreadable(
+        self, _fixtures, mock_worktree_manager, mock_events
+    ):
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report, body=None,
+            refresh=lambda _n: None,
+        )
+        retry = PendingValidationRetry(
+            issue_number=123,
+            issue_title="Test issue",
+            agent_label="agent:web",
+            worktree_path="/tmp/worktree-123",
+            branch_name="123-feature",
+            original_prompt="Work on issue #123",
+            validation_error="boom",
+            validation_error_file="/tmp/err.txt",
+            retry_count=1,
+            source_task=TaskKind.CODE,
+            validation_cmd="make test",
+        )
+
+        result = launcher.launch_validation_retry_session(retry, active_sessions=[])
+
+        assert result.success is False
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)
+
+    def test_rework_fails_closed_when_issue_unreadable(
+        self, _fixtures, mock_worktree_manager, mock_repo_host, mock_events
+    ):
+        mock_repo_host.prs[123] = [
+            PRInfo(
+                number=456, title="Fix issue #123",
+                url="https://github.com/test/repo/pull/456",
+                branch="123-feature", body="", state="open", labels=[],
+            )
+        ]
+        launcher = self._launcher(
+            _fixtures, report_fn=self._ambiguous_report, body=None,
+            refresh=lambda _n: None,
+        )
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is False
+        assert mock_worktree_manager.create_calls == []
+        assert any(str(e.name) == "issue.dependency_blocked" for e in mock_events.events)

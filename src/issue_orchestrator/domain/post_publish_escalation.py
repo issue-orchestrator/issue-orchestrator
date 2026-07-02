@@ -14,6 +14,10 @@ def build_post_publish_escalation_comment(
     """Markdown body posted to the PR when post-publish checks escalate."""
     if kind == "checks_pending_timeout":
         title = "⏱ Escalated to Human Review (CI checks timed out)"
+    elif kind == "status_rollup_permission_denied":
+        title = "🔑 Escalated to Human Review (cannot read check status)"
+    elif kind == "merge_queue_failed":
+        title = "🚦 Escalated to Human Review (merge queue rejected the PR)"
     else:  # branch_protection_blocked
         title = "🛑 Escalated to Human Review (branch protection)"
     return (

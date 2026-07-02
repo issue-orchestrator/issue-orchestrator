@@ -42,7 +42,9 @@ from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
+    from .label_manager import LabelManager
     from .review_exchange_lifecycle import IssueRuntimeTermination
+    from .review_exchange_lifecycle import PublishRetryAbandoner
     from .review_exchange_lifecycle import ReviewExchangeCancellation
     from ..ports.label_store import LabelStore
     from ..ports.persistent_exchange_pair_registry import (
@@ -66,10 +68,12 @@ from .actions import (
     AddLabelAction,
     RemoveLabelAction,
     SyncLabelsAction,
+    ShedRecoveredWorkflowLabelsAction,
     LaunchSessionAction,
     LaunchValidationRetryAction,
     StopSessionAction,
     QueueReviewAction,
+    EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     AddCommentAction,
     SupersedePullRequestAction,
@@ -79,6 +83,7 @@ from .actions import (
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 
@@ -174,6 +179,10 @@ class ActionApplier:
     lease_id_lookup: Optional[LeaseIdLookup] = None
     # Optional label persistence store for write-through tracking
     label_store: Optional["LabelStore"] = None
+    # Label policy owner. Required to apply ShedRecoveredWorkflowLabelsAction,
+    # which decides the labels to remove from the issue's live labels at apply
+    # time. Optional so unrelated tests need not wire it.
+    label_manager: Optional["LabelManager"] = None
     # Issue-scoped persistent coder/reviewer subprocess pair registry.
     # Used with the background supervisor to terminate hidden review-exchange
     # runtime work at issue lifecycle boundaries. ADR 0026 / B2.
@@ -181,6 +190,10 @@ class ActionApplier:
     # Shared background-job supervisor. Used with pair_registry to make
     # issue/rework cancellation a terminal review-exchange lifecycle event.
     background_job_supervisor: Optional["BackgroundJobSupervisor"] = None
+    # Publish-retry owner, abandoned at issue terminal boundaries via the shared
+    # runtime terminator so a late republish cannot repopulate a terminated
+    # issue. Wired post-construction (PublishRecoveryService needs this applier).
+    publish_recovery: Optional["PublishRetryAbandoner"] = None
     # Callback for worktree removal notifications
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
@@ -244,6 +257,12 @@ class ActionApplier:
             ActionType.ADD_LABEL: self._apply_add_label,
             ActionType.REMOVE_LABEL: self._apply_remove_label,
             ActionType.SYNC_LABELS: self._apply_sync_labels,
+            # SHED_RECOVERED_WORKFLOW_LABELS is intentionally NOT dispatchable:
+            # shedding transient workflow labels is a private sub-step of the
+            # RECOVER_TERMINAL_ISSUE owner command, which enforces the
+            # reconciliation pause gate before invoking it. Leaving it out of
+            # the dispatch table makes it impossible to call the shed as an
+            # independent mutating action that would bypass that gate (#6431 F1).
             ActionType.LAUNCH_SESSION: self._apply_launch_session,
             ActionType.LAUNCH_VALIDATION_RETRY: self._apply_launch_validation_retry,
             ActionType.STOP_SESSION: self._apply_stop_session,
@@ -253,6 +272,7 @@ class ActionApplier:
             ActionType.QUEUE_REWORK: self._apply_queue_operation,
             ActionType.QUEUE_TRIAGE: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
+            ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
             # Issue creation
             ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
             # Cleanup operations
@@ -265,6 +285,8 @@ class ActionApplier:
             ActionType.SET_ISSUE_STATE: self._apply_set_issue_state,
             # History operations
             ActionType.RECONCILE_HISTORY_ENTRY: self._apply_reconcile_history_entry,
+            # Terminal recovery: shed labels, then finalize history (ordered)
+            ActionType.RECOVER_TERMINAL_ISSUE: self._apply_recover_terminal_issue,
         }
 
         handler = handlers.get(action.action_type)
@@ -476,6 +498,50 @@ class ActionApplier:
                 f"PR #{action.pr_number} {step} failed: {e}",
                 pr_number=action.pr_number,
             )
+
+    def _apply_enqueue_to_merge_queue(self, action: Action) -> ActionResult:
+        """Enqueue a reviewer-approved PR into the provider's merge queue."""
+        assert isinstance(action, EnqueueToMergeQueueAction)
+        assert self.repository_host is not None, (
+            "repository_host required for enqueue_to_merge_queue"
+        )
+
+        # Enqueue is a GitHub write on a (possibly still-claimed) issue.
+        self._verify_claim_before_write(action, action.issue_number)
+
+        try:
+            self.repository_host.enqueue_to_merge_queue(action.pr_number)
+        except Exception as e:
+            logger.error(
+                issue_log(action.issue_number, "Failed to enqueue PR #%d to merge queue: %s"),
+                action.pr_number,
+                e,
+                exc_info=True,
+            )
+            return ActionResult.fail(
+                action,
+                f"PR #{action.pr_number} merge-queue enqueue failed: {e}",
+                pr_number=action.pr_number,
+            )
+
+        logger.info(
+            issue_log(action.issue_number, "Enqueued PR #%d to merge queue"),
+            action.pr_number,
+        )
+        self.events.publish(make_trace_event(
+            EventName.MERGE_QUEUE_ENQUEUED,
+            {
+                "issue_number": action.issue_number,
+                "issue_key": action.issue_key or str(action.issue_number),
+                "pr_number": action.pr_number,
+                "pr_url": action.pr_url,
+            },
+        ))
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+        )
 
     def _apply_close_issue(self, action: Action) -> ActionResult:
         """Close an issue through the repository host."""
@@ -773,6 +839,88 @@ class ActionApplier:
             removed=list(action.remove_labels),
         )
 
+    def _apply_shed_recovered_workflow_labels(self, action: Action) -> ActionResult:
+        """Shed transient workflow labels after an issue's work has landed.
+
+        Private sub-step of the RECOVER_TERMINAL_ISSUE owner command — it is not
+        registered in the dispatch table, so it can only be reached through
+        ``_apply_recover_terminal_issue`` after that command has enforced the
+        reconciliation pause gate. This keeps the gate the single enforcement
+        point and makes an independent, gate-bypassing shed impossible (#6431).
+
+        Reads the issue's live labels, asks the LabelManager which are
+        recovered-workflow labels (pr-pending, publish-failed,
+        publish-fail-count-N, blocking labels), and removes each from both
+        GitHub and the local label_store. GitHub is the source of truth for
+        which labels exist; the label_store is folded in too so a row stranded
+        there by past drift is also cleaned in the same pass.
+        """
+        assert isinstance(action, ShedRecoveredWorkflowLabelsAction)
+        assert self.label_manager is not None, (
+            "label_manager is required to shed recovered workflow labels"
+        )
+
+        # Verify claim ownership before write (raises ClaimLostError)
+        self._verify_claim_before_write(action, action.issue_number)
+
+        current = self._labels_for_recovery_shed(action.issue_number)
+        to_remove = self.label_manager.recovered_workflow_labels(sorted(current))
+
+        removed: list[str] = []
+        errors: list[str] = []
+        for label in to_remove:
+            self._record_label_stat(action.issue_number, "label_remove_attempted")
+            try:
+                self.labels.remove_label(action.issue_number, label)
+                self._persist_label_remove(action.issue_number, label)
+                self._record_label_stat(action.issue_number, "label_remove_applied")
+                self._log_label_mutation(
+                    level=logging.INFO,
+                    issue_number=action.issue_number,
+                    operation="remove",
+                    outcome="applied",
+                    label=label,
+                    reason=action.reason,
+                    detail="recovered workflow cleanup",
+                )
+                removed.append(label)
+            except Exception as e:
+                self._record_label_stat(action.issue_number, "label_mutation_failed")
+                errors.append(f"remove {label}: {e}")
+
+        if removed:
+            self._emit_issue_labels_changed(
+                action.issue_number, [], removed, issue_key=action.issue_key
+            )
+        if errors:
+            return ActionResult.fail(action, "; ".join(errors))
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            removed=removed,
+        )
+
+    def _labels_for_recovery_shed(self, issue_number: int) -> set[str]:
+        """Union of the issue's live GitHub labels and its label_store rows.
+
+        Live GitHub labels are authoritative; the label_store contribution
+        ensures a label the orchestrator believes it applied is still cleaned
+        even if the fresh read is unavailable or has already diverged.
+        """
+        labels: set[str] = set()
+        fresh = self._fetch_current_labels(issue_number)
+        if fresh is not None:
+            labels |= fresh
+        if self.label_store is not None:
+            try:
+                labels |= self.label_store.load_labels(issue_number)
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    issue_log(issue_number, "Failed to read label_store for shed: %s"),
+                    e,
+                )
+        return labels
+
     def _apply_launch_session(self, action: Action) -> ActionResult:
         """Launch a terminal session.
 
@@ -909,6 +1057,7 @@ class ActionApplier:
             pair_registry=self.pair_registry,
             job_supervisor=self.background_job_supervisor,
             session_manager=self.sessions,
+            publish_recovery=self.publish_recovery,
         )
 
     def _apply_queue_operation(self, action: Action) -> ActionResult:
@@ -1203,6 +1352,82 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             pr_number=action.pr_number,
             previous_status=outcome.previous_status,
             status=outcome.status,
+        )
+
+    def _apply_recover_terminal_issue(self, action: Action) -> ActionResult:
+        """Shed recovered-workflow labels, then finalize awaiting-merge history.
+
+        Owns the terminal-recovery ordering invariant in one place: the history
+        entry only transitions to its terminal status after the label cleanup
+        has succeeded. The shed is a best-effort GitHub write; finalizing the
+        history first and shedding second would take the entry out of the
+        reconcilable awaiting-merge statuses, so a later shed failure would
+        never be retried and would strand the pr-pending / publish-failed /
+        publish-fail-count-* labels this recovery removes.
+
+        On shed failure we return failure WITHOUT touching history, leaving the
+        entry reconcilable for the next awaiting-merge discovery pass to retry.
+        """
+        assert isinstance(action, RecoverTerminalIssueAction)
+
+        # Enforce the reconciliation pause gate at the owner-command boundary,
+        # before ANY label write (raises ReconciliationRequired). The previous
+        # terminal-cleanup path carried this guard on its RemoveLabelAction; the
+        # owner command must keep it so an issue paused for reconciliation
+        # (io:needs-reconcile) cannot have its transient labels shed or its
+        # awaiting-merge history finalized behind the fail-closed drift handling
+        # that ReconciliationRequired enforces (#6431 F1). This is the single
+        # enforcement point: the shed sub-step is reached only after it passes,
+        # and is not independently dispatchable.
+        self._require_expected(action, action.issue_number)
+
+        # Verify claim ownership at the owner-command boundary before any
+        # GitHub write (raises ClaimLostError). The shed sub-step verifies
+        # again; both checks key off the issue's lease, so this is a cheap,
+        # explicit guard that this command writes only to a still-claimed issue.
+        self._verify_claim_before_write(action, action.issue_number)
+
+        shed_result = self._apply_shed_recovered_workflow_labels(
+            ShedRecoveredWorkflowLabelsAction(
+                issue_number=action.issue_number,
+                issue_key=action.issue_key,
+                reason=action.reason,
+            )
+        )
+        if not shed_result.success:
+            # Do not finalize history; keep the entry reconcilable for retry.
+            return ActionResult.fail(
+                action,
+                "recovered-label shed failed; awaiting-merge history left "
+                f"reconcilable for retry: {shed_result.error}",
+                issue_number=action.issue_number,
+                pr_number=action.pr_number,
+            )
+
+        history_result = self._apply_reconcile_history_entry(
+            ReconcileHistoryEntryAction(
+                issue_number=action.issue_number,
+                pr_number=action.pr_number,
+                pr_url=action.pr_url,
+                status=action.status,
+                source=action.source,
+                issue_key=action.issue_key,
+                reason=action.status_reason,
+            )
+        )
+        if not history_result.success:
+            return ActionResult.fail(
+                action,
+                history_result.error or "history reconciliation failed",
+                issue_number=action.issue_number,
+                pr_number=action.pr_number,
+            )
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            pr_number=action.pr_number,
+            status=action.status,
+            shed_removed=list(shed_result.details.get("removed", [])),
         )
 
     def _apply_queue_review(self, action: Action) -> ActionResult:

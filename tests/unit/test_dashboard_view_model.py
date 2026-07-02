@@ -649,6 +649,163 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
     assert view_model.scope_summary["in_scope_total"] == 1
 
 
+def test_awaiting_merge_history_card_retains_stack_gate_payload():
+    # Regression (#6597): a completed-with-PR history entry can become the
+    # awaiting-merge card (it wins the dedupe over the queue item). It must still
+    # carry the producer stack payload/signal — otherwise a stacked successor
+    # loses its merge-gate / approval-freshness chip in the exact lane operators
+    # watch to see why the slice is still gated.
+    from issue_orchestrator.domain.dependencies import (
+        Dependency,
+        DependencyMode,
+        DependencyState,
+    )
+    from issue_orchestrator.domain.dependency_gates import (
+        DependencyGateSnapshot,
+        build_gate_report,
+    )
+
+    config = _make_config()
+    # Stacked successor whose predecessor has not merged → merge gate blocked.
+    dep = Dependency(issue_number=5, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    report = build_gate_report(4057, [dep])
+    state = OrchestratorState(
+        startup_status="complete",
+        dependency_gate_snapshot=DependencyGateSnapshot(reports={4057: report}),
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Stacked successor awaiting merge",
+                agent_type="agent:backend",
+                status="completed",
+                runtime_minutes=12,
+                pr_url="https://github.com/test/repo/pull/4124",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # The raw awaiting-merge item carries the projected stack payload + signal.
+    item = next(i for i in view_model.awaiting_merge_items if i["issue_number"] == 4057)
+    assert item["stack_dependency"] is not None
+    assert item["stack_dependency"]["has_stack_edges"] is True
+    assert "merge" in item["stack_dependency"]["blocked_gates"]
+    assert item["stack_signal"]  # non-empty
+
+    # ...and the rendered awaiting-merge flow-column card keeps them too, so the
+    # compact stack chip renders and the fingerprint reflects the gate state.
+    awaiting_column = next(c for c in view_model.flow_columns if c["id"] == "awaiting-merge")
+    card = next(i for i in awaiting_column["items"] if i["issue_number"] == 4057)
+    assert card["stack_dependency"] is not None
+    assert card["stack_dependency"]["has_stack_edges"] is True
+    assert card["stack_signal"]
+
+
+def _stack_report_for(issue_number: int):
+    """A stacked-successor gate report whose merge gate is blocked (predecessor
+    not merged) — enough to make an issue a stack participant with a chip."""
+    from issue_orchestrator.domain.dependencies import (
+        Dependency,
+        DependencyMode,
+        DependencyState,
+    )
+    from issue_orchestrator.domain.dependency_gates import build_gate_report
+
+    dep = Dependency(issue_number=5, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    return build_gate_report(issue_number, [dep])
+
+
+def _assert_card_has_stack_payload(item):
+    assert item["stack_dependency"] is not None
+    assert item["stack_dependency"]["has_stack_edges"] is True
+    assert "merge" in item["stack_dependency"]["blocked_gates"]
+    assert item["stack_signal"]  # non-empty
+
+
+def test_label_blocked_card_retains_stack_gate_payload():
+    # Regression (#6597): a label-blocked stack participant is surfaced by the
+    # scope-blocked builder, which does not spread the stack fields itself. The
+    # finalization owner must stamp them so the blocked-column card keeps its chip.
+    from issue_orchestrator.domain.dependency_gates import DependencyGateSnapshot
+
+    config = _make_config()
+    blocked_issue = Issue(number=7, title="Blocked stacked slice",
+                          labels=["agent:web", "blocked"], body="Stack-after: #5")
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[blocked_issue],
+        dependency_gate_snapshot=DependencyGateSnapshot(reports={7: _stack_report_for(7)}),
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    item = next(i for i in view_model.blocked_items if i["issue_number"] == 7)
+    _assert_card_has_stack_payload(item)
+    blocked_column = next(c for c in view_model.flow_columns if c["id"] == "blocked")
+    card = next(i for i in blocked_column["items"] if i["issue_number"] == 7)
+    _assert_card_has_stack_payload(card)
+
+
+def test_pending_validation_retry_card_retains_stack_gate_payload():
+    # Regression (#6597): a validation-retry card is a pending non-queue source
+    # that also did not spread the stack fields. The finalization owner covers it.
+    from issue_orchestrator.domain.dependency_gates import DependencyGateSnapshot
+
+    config = _make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        dependency_gate_snapshot=DependencyGateSnapshot(reports={359: _stack_report_for(359)}),
+        pending_validation_retries=[
+            PendingValidationRetry(
+                issue_number=359,
+                issue_title="Validation retry stacked slice",
+                agent_label="agent:backend",
+                worktree_path="/tmp/repo-359",
+                branch_name="issue-359",
+                original_prompt="original task",
+                validation_error="Working tree is dirty",
+                validation_error_file="/tmp/repo-359/validation-errors.txt",
+                retry_count=1,
+                source_task=TaskKind.CODE,
+                validation_cmd="./scripts/validate.sh",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    item = next(i for i in view_model.blocked_items if i["issue_number"] == 359)
+    assert item["status"] == "validation_retry"
+    _assert_card_has_stack_payload(item)
+    blocked_column = next(c for c in view_model.flow_columns if c["id"] == "blocked")
+    card = next(i for i in blocked_column["items"] if i["issue_number"] == 359)
+    _assert_card_has_stack_payload(card)
+
+
 def test_merged_history_with_pr_url_routes_to_completed_not_awaiting_merge():
     config = _make_config()
     pr_url = "https://github.com/test/repo/pull/4124"
@@ -845,6 +1002,7 @@ def test_pending_validation_retry_routes_to_blocked_lane_and_suppresses_queue_du
                 validation_error="Working tree is dirty",
                 validation_error_file="/tmp/repo-359/validation-errors.txt",
                 retry_count=1,
+                source_task=TaskKind.CODE,
                 validation_cmd="./scripts/validate.sh",
             ),
         ],
@@ -896,6 +1054,7 @@ def test_pending_validation_retry_takes_precedence_over_validation_failed_histor
                 validation_error="Working tree is dirty",
                 validation_error_file="/tmp/repo-359/validation-errors.txt",
                 retry_count=1,
+                source_task=TaskKind.CODE,
                 validation_cmd="./scripts/validate.sh",
             ),
         ],
@@ -1871,3 +2030,64 @@ def test_e2e_badge_state_failed_when_passed_run_has_failed_test_evidence():
 
     assert vm["badge"]["state"] == "failed"
     assert vm["badge"]["icon"] == "✗"
+
+
+def test_queue_card_embeds_producer_stack_gate_view():
+    # A queued stack successor's card must carry the producer-provided stack
+    # gate view (mode + per-gate status), sourced from the state snapshot rather
+    # than recomputed in the view model.
+    from issue_orchestrator.domain.dependencies import (
+        Dependency,
+        DependencyMode,
+        DependencyState,
+        DependencyTarget,
+    )
+    from issue_orchestrator.domain.dependency_gates import (
+        DependencyGateSnapshot,
+        PredecessorFacts,
+        SuccessorEdge,
+        build_gate_report,
+    )
+
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+
+    successor = Issue(number=1, title="Successor", labels=["agent:web"],
+                      body="Stack-after: #5")
+    dep = Dependency(issue_number=5, mode=DependencyMode.STACK,
+                     state=DependencyState.UNSATISFIED)
+    facts = {DependencyTarget(issue_number=5): PredecessorFacts(
+        branch_usable=True, validation_passed=True, agent_reviewed=True,
+        branch_name="feat/base",
+    )}
+    report = build_gate_report(1, [dep], facts)
+    snapshot = DependencyGateSnapshot(
+        reports={1: report},
+        successors={5: (SuccessorEdge(issue_number=1, ref="#1", mode=DependencyMode.STACK),)},
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[successor],
+        dependency_gate_snapshot=snapshot,
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    card = next(c for c in view_model.queue_items if c["issue_number"] == 1)
+    stack = card["stack_dependency"]
+    assert stack is not None
+    assert stack["mode"] == "stack"
+    assert stack["has_stack_edges"] is True
+    # Work is ready but merge stays ordered behind the predecessor.
+    gates = {g["gate"]: g["open"] for g in stack["gates"]}
+    assert gates["work"] is True
+    assert gates["merge"] is False
+    assert "merge" in stack["blocked_gates"]
+    assert stack["stack_base_branch"] == "feat/base"

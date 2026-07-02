@@ -61,6 +61,16 @@ class CLIProvider(ABC):
         """
         return self.interactive
 
+    def needs_fresh_prompt_process(self, **kwargs: object) -> bool:
+        """Whether a completed prompt turn should respawn before follow-up input.
+
+        Interactive providers normally keep one process alive across review
+        exchange turns. Providers that expose an interactive UI but cannot
+        reliably accept a second orchestrator-driven prompt should override
+        this capability.
+        """
+        return False
+
     @abstractmethod
     def build_command(
         self,

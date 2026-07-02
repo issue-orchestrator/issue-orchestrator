@@ -258,7 +258,7 @@ class TestValidateRunner:
         command = (
             "printf '[validate-timing] CONFIG validate_jobs=10 unit_parallel=auto "
             "simulated_parallel=auto integration_parallel=auto static_jobs=10 "
-            "test_jobs=1 web_jobs=1 agent_jobs=1 e2e_jobs=1\\n'"
+            "test_jobs=1 web_jobs=1 live_web_jobs=2 agent_jobs=1 e2e_jobs=1\\n'"
             " && printf '[validate-timing] START target=test-unit at=2026-03-14T09:10:13-0600\\n'"
             " && printf '[validate-timing] END target=test-unit status=0 elapsed=12s "
             "at=2026-03-14T09:10:25-0600\\n'"
@@ -293,6 +293,7 @@ class TestValidateRunner:
         assert target_record["static_jobs"] == "10"
         assert target_record["test_jobs"] == "1"
         assert target_record["web_jobs"] == "1"
+        assert target_record["live_web_jobs"] == "2"
         assert target_record["agent_jobs"] == "1"
         assert target_record["e2e_jobs"] == "1"
         assert target_record["started_at"] == "2026-03-14T09:10:13-0600"
@@ -333,6 +334,13 @@ class TestValidateRunner:
         assert summary_record["worktree"] == str(fake_git_repo)
         assert summary_record["exit_code"] == 0
         assert isinstance(summary_record["total_elapsed_seconds"], float)
+        assert isinstance(summary_record["monotonic_elapsed_seconds"], float)
+        assert isinstance(summary_record["wall_elapsed_seconds"], float)
+        assert summary_record["total_elapsed_seconds"] == pytest.approx(
+            summary_record["wall_elapsed_seconds"], abs=0.01
+        )
+        assert isinstance(summary_record["wall_started_at"], str)
+        assert isinstance(summary_record["wall_ended_at"], str)
 
     def test_appends_resource_samples_to_shared_git_dir(self, fake_git_repo: Path):
         """Validate runs should persist periodic resource samples."""

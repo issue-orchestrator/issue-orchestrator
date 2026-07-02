@@ -201,6 +201,40 @@
 .journey-step.status-blocked .journey-narrative { color: var(--danger, #e55); }
 .journey-step.status-completed .journey-narrative { color: var(--success, #5a5); }
 .journey-empty { color: var(--text-muted); font-size: 12px; padding: 8px 0; }
+
+/* Live in-round progress row (issue #6428): a transient row surfaced while a
+   review round is still open so the timeline keeps advancing. The underlying
+   event status is "completed" (the prompt was sent), but the round itself is
+   still running — neutralise the green "done" colour and mark it as live. */
+.journey-step.journey-step-in-progress .journey-narrative { color: var(--text); }
+.journey-progress-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    font-size: 10px;
+    line-height: 1.4;
+    padding: 1px 7px;
+    border-radius: 10px;
+    border: 1px solid var(--accent, #4a9eff);
+    color: var(--accent, #4a9eff);
+    background: rgba(74, 158, 255, 0.08);
+    white-space: nowrap;
+}
+.journey-progress-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: journey-progress-pulse 1.4s ease-in-out infinite;
+}
+@keyframes journey-progress-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .journey-progress-dot { animation: none; }
+}
 .journey-filter {
     display: flex;
     align-items: center;
@@ -473,4 +507,98 @@ button.journey-cycle-validation-badge:hover {
 
 @keyframes startup-spin {
     to { transform: rotate(360deg); }
+}
+
+/* Stack dependencies & gates section (issue detail drawer). Native <details>
+   disclosure keeps the semantic relationship; a visible focus ring is added on
+   the summary. Gate/edge status is text-first ("open"/"blocked"), with theme
+   colours only reinforcing — never the sole signal. */
+.issue-detail-section summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+.issue-detail-stack .stack-subhead {
+    margin: 10px 0 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+.stack-stale {
+    margin: 4px 0;
+    padding: 6px 8px;
+    border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border));
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 12px;
+}
+.stack-stale-icon { margin-right: 2px; }
+.stack-approval-unverified {
+    margin: 4px 0;
+    padding: 6px 8px;
+    border: 1px solid color-mix(in srgb, var(--accent-blue, var(--text-muted)) 40%, var(--border));
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.stack-approval-icon { margin-right: 2px; }
+.stack-gates,
+.stack-edges {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.stack-gate,
+.stack-edge {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text);
+    overflow-wrap: anywhere;
+}
+.stack-gate-name,
+.stack-edge-ref {
+    font-weight: 600;
+}
+.stack-gate-state,
+.stack-edge-mode,
+.stack-edge-state {
+    font-size: 11px;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 6px;
+}
+.stack-gate--blocked .stack-gate-state {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+}
+.stack-gate--open .stack-gate-state {
+    color: var(--ok);
+    border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+.stack-gate-reasons {
+    flex-basis: 100%;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+.stack-edge-problem {
+    color: var(--danger);
+    font-size: 11px;
+}
+.stack-base {
+    margin: 8px 0 0;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.stack-base code {
+    color: var(--text);
+    background: color-mix(in srgb, var(--bg-panel) 70%, var(--bg) 30%);
+    padding: 0 4px;
+    border-radius: 3px;
 }

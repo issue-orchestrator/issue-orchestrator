@@ -12,7 +12,14 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ...infra.config import Config
-from ...ports.pull_request_tracker import PRInfo, PRRef, StatusCheckRollupState
+from ...ports.pull_request_tracker import (
+    MergeQueueEntry,
+    MergeQueueRead,
+    PRInfo,
+    PRRef,
+    StatusCheckRollupRead,
+    StatusCheckRollupState,
+)
 from ...ports.repository_host import DependencyIssueSnapshot
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
@@ -20,6 +27,7 @@ from .errors import GitHubHttpError, GitHubTransportError
 from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
+    classify_github_http_failure,
 )
 from .tokens import resolve_github_token
 from .repo import get_repo_from_git, GitRepoError
@@ -51,6 +59,77 @@ def _coerce_rollup_state(raw: object) -> StatusCheckRollupState | None:
         return upper  # type: ignore[return-value]
     logger.warning("Unknown statusCheckRollup state from GitHub: %r", raw)
     return None
+
+
+_VALID_MERGE_QUEUE_STATES: frozenset[str] = frozenset(
+    {"QUEUED", "AWAITING_CHECKS", "MERGEABLE", "PENDING", "LOCKED", "UNMERGEABLE"}
+)
+
+
+def _merge_queue_entry_from_api(raw: object) -> MergeQueueRead:
+    """Build a typed :class:`MergeQueueRead` from a GraphQL entry payload.
+
+    Distinguishes three outcomes so the coordinator never mistakes "we can't
+    classify this PR's queue state" for "this PR is not enqueued":
+
+    - no entry payload (GraphQL ``mergeQueueEntry`` is ``null``) -> ``ABSENT``.
+    - a modeled state -> ``PRESENT`` carrying the :class:`MergeQueueEntry`.
+    - an entry exists but its state is missing/unmodeled -> ``INDETERMINATE``.
+      The PR *is* in the queue (an entry object is present); we simply cannot
+      classify it, so acting as if it were absent could wrongly re-enqueue or
+      rework a queued PR.
+    """
+    if not isinstance(raw, dict):
+        return MergeQueueRead.absent()
+    state = raw.get("state")
+    if not isinstance(state, str) or state.upper() not in _VALID_MERGE_QUEUE_STATES:
+        logger.warning("Unmodeled mergeQueueEntry state from GitHub: %r", state)
+        return MergeQueueRead.indeterminate()
+    position = raw.get("position")
+    return MergeQueueRead.present(
+        MergeQueueEntry(
+            state=state.upper(),  # type: ignore[arg-type]
+            position=position if isinstance(position, int) else None,
+        )
+    )
+
+
+def _head_sha_from_pr(raw_pr: dict[str, Any]) -> str | None:
+    head = raw_pr.get("head")
+    if not isinstance(head, dict):
+        return None
+    sha = head.get("sha")
+    return sha if isinstance(sha, str) and sha else None
+
+
+def _payload_indicates_merged(pr: dict[str, Any]) -> bool:
+    """True when a GitHub PR payload represents a merged pull request.
+
+    GitHub's REST detail payload carries a ``merged`` boolean; both the detail
+    and the list payloads carry a nullable ``merged_at`` timestamp. Either
+    signal means the PR was merged.
+    """
+    if pr.get("merged"):
+        return True
+    return bool(pr.get("merged_at"))
+
+
+def _pr_state_from_api(pr: dict[str, Any]) -> str:
+    """Normalize a PR payload's state, distinguishing merged from closed.
+
+    GitHub's REST ``state`` field is only ``"open"`` or ``"closed"`` — a merged
+    PR is reported as ``"closed"`` with ``merged``/``merged_at`` set. The
+    orchestrator's ``PRInfo.state`` contract distinguishes ``"merged"`` so
+    lifecycle reconciliation never mistakes a merged PR for a closed-unmerged
+    one (the source of false ``blocked:pr-closed`` labels). GraphQL-sourced
+    payloads already carry ``state == "merged"`` directly; preserve it.
+    """
+    raw_state = str(pr.get("state", "open")).lower()
+    if raw_state == "merged":
+        return raw_state
+    if _payload_indicates_merged(pr):
+        return "merged"
+    return raw_state
 
 
 class GitHubAdapter:
@@ -773,7 +852,12 @@ class GitHubAdapter:
                 pr_infos.append(pr_info)
         for pr_info in pr_infos:
             self._adapter_cache.cache_pr_info(pr_info)
-        return pr_infos
+        # Apply the documented state filter. The underlying search returns PRs
+        # in any state, so honor `state` here to match the cache-hit path and
+        # the port contract (callers like the stack work-gate ask for "open").
+        if state == "all":
+            return pr_infos
+        return [pr for pr in pr_infos if pr.state.lower() == state.lower()]
 
     def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
         """Return lightweight PR refs for an issue from a single search.
@@ -815,8 +899,8 @@ class GitHubAdapter:
 
         REST-only — does NOT populate ``status_check_rollup``. Callers
         that need check-status visibility must use
-        ``get_pr_with_status_check_rollup`` (the awaiting-merge
-        post-publish classifier is the sole consumer today).
+        ``read_pr_status_check_rollup`` (the awaiting-merge post-publish
+        classifier is the sole consumer today).
         """
         try:
             output = self._client.get_pr(pr_number)
@@ -829,30 +913,171 @@ class GitHubAdapter:
             logger.error("Failed to get PR %s: %s", pr_number, e)
             raise
 
-    def get_pr_with_status_check_rollup(self, pr_number: int) -> PRInfo | None:
-        """Get a PR augmented with the head-commit status-check rollup.
+    def read_pr_status_check_rollup(
+        self, pr_number: int, *, skip_primary_source: bool = False
+    ) -> StatusCheckRollupRead:
+        """Read a PR head-commit status-check rollup, classifying failures.
 
-        Pays one extra GraphQL round-trip on top of the REST PR fetch.
-        Used by the awaiting-merge reconciler to distinguish "merge
-        state is unstable because checks are running" (wait) from
-        "merge state is unstable because a check failed" (rework). A
-        failed rollup fetch leaves rollup=None — the reconciler treats
-        that as PENDING-equivalent, so we'll wait rather than rework
-        on bad signal.
+        Pays one GraphQL round-trip on the happy path. When GraphQL is blocked
+        by token capability, falls back to REST check-runs/combined-status on
+        the PR head SHA before reporting the rollup as unreadable.
+
+        When ``skip_primary_source`` is True the GraphQL probe is skipped and
+        only the REST fallback is read — the capability gate uses this during a
+        primary-source permission-backoff window so a fallback-readable failure
+        is still classified while the wasted GraphQL probe (and its repeated
+        permission log) stay suppressed. The fallback read carries
+        ``primary_source_denied=True`` so the gate keeps the GraphQL backoff
+        armed.
         """
-        pr_info = self.get_pr(pr_number)
-        if pr_info is None:
-            return None
+        if skip_primary_source:
+            # GraphQL is in its known permission-backoff window; go straight to
+            # the REST fallback, which may still classify a now-readable failure
+            # for this PR.
+            return self._read_rollup_via_rest_fallback(pr_number)
         try:
             rollup = self._client.get_pr_status_check_rollup(pr_number)
-        except GitHubHttpError as e:
+        except GitHubTransportError as e:
+            # A pre-response transport failure (timeout/network) has no status
+            # code to classify and is always retry-safe: treat it as transient
+            # so the reconciler waits a tick rather than aborting the scan.
             logger.warning(
-                "Failed to fetch status_check_rollup for PR %s: %s",
+                "status_check_rollup read failed for PR %s (transient_error): %s",
                 pr_number, e,
             )
-            rollup = None
-        pr_info.status_check_rollup = _coerce_rollup_state(rollup)
-        return pr_info
+            return StatusCheckRollupRead(state=None, capability="transient_error")
+        except GitHubHttpError as e:
+            capability = classify_github_http_failure(e)
+            if capability == "permission_denied":
+                # The primary GraphQL source is denied; the fallback stamps
+                # primary_source_denied=True on whatever it returns.
+                fallback = self._read_rollup_via_rest_fallback(pr_number)
+                if fallback.capability != "permission_denied":
+                    return fallback
+            logger.warning(
+                "status_check_rollup read failed for PR %s (%s): %s",
+                pr_number, capability, e,
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability=capability,
+                # A GraphQL permission denial backs off the primary source even
+                # when the fallback was also unreadable; a transient GraphQL
+                # error is not a denial and leaves the backoff untouched.
+                primary_source_denied=capability == "permission_denied",
+            )
+        return StatusCheckRollupRead(state=_coerce_rollup_state(rollup), capability="ok")
+
+    def enqueue_to_merge_queue(self, pr_number: int) -> None:
+        """Add a PR to GitHub's native merge queue (GraphQL mutation)."""
+        try:
+            self._client.enqueue_pull_request(pr_number)
+        except GitHubHttpError as e:
+            logger.error("Failed to enqueue PR %s to merge queue: %s", pr_number, e)
+            raise
+
+    def read_merge_queue_entry(self, pr_number: int) -> MergeQueueRead:
+        """Read a PR's merge queue entry (GraphQL) as a typed three-valued read.
+
+        Re-raises ``GitHubHttpError`` (a ``RepositoryHostError``) on a transient
+        read failure; the coordinator maps that to ``INDETERMINATE`` so an
+        unreadable queue cannot drive an enqueue/rework decision.
+        """
+        try:
+            raw = self._client.get_merge_queue_entry(pr_number)
+        except GitHubHttpError as e:
+            logger.error("Failed to read merge queue entry for PR %s: %s", pr_number, e)
+            raise
+        return _merge_queue_entry_from_api(raw)
+
+    def _read_rollup_via_rest_fallback(
+        self,
+        pr_number: int,
+    ) -> StatusCheckRollupRead:
+        """Read check state through REST after a GraphQL capability failure.
+
+        Only reached when the primary (GraphQL) source is denied or explicitly
+        skipped, so every read it returns carries ``primary_source_denied=True``
+        — the gate keeps the GraphQL backoff armed regardless of what the
+        fallback sources could read.
+        """
+        try:
+            raw_pr = self._client.get_pr(pr_number)
+        except GitHubTransportError as e:
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback failed for "
+                "PR %s (transient_error): %s",
+                pr_number,
+                e,
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability="transient_error",
+                primary_source_denied=True,
+            )
+        except GitHubHttpError as e:
+            capability = classify_github_http_failure(e)
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback failed for "
+                "PR %s (%s): %s",
+                pr_number,
+                capability,
+                e,
+            )
+            return StatusCheckRollupRead(
+                state=None, capability=capability, primary_source_denied=True
+            )
+        if not isinstance(raw_pr, dict):
+            logger.warning(
+                "REST PR fetch for status_check_rollup fallback returned "
+                "unexpected payload for PR %s",
+                pr_number,
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability="permission_denied",
+                primary_source_denied=True,
+            )
+
+        head_sha = _head_sha_from_pr(raw_pr)
+        if head_sha is None:
+            logger.warning(
+                "No head SHA for PR %s; cannot read check state via REST fallback",
+                pr_number,
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability="permission_denied",
+                primary_source_denied=True,
+            )
+
+        # get_commit_check_rollup owns its per-source HTTP/transport failures and
+        # carries the cause in `capability` (it does not raise for those), so an
+        # incomplete read is NOT collapsed to permission_denied: a transient/
+        # rate-limit/cap-truncated source stays transient_error (retry next tick)
+        # while only a real scope gap escalates as permission_denied.
+        rollup = self._client.get_commit_check_rollup(head_sha)
+        if rollup.capability != "ok":
+            logger.warning(
+                "REST check-run fallback incomplete for PR %s (sha %s, %s): a "
+                "rollup source was unread and the readable sources found no "
+                "failure, so an unread failed required check/status could be "
+                "hiding behind a %s aggregate",
+                pr_number,
+                head_sha,
+                rollup.capability,
+                rollup.state or "no-checks",
+            )
+            return StatusCheckRollupRead(
+                state=None,
+                capability=rollup.capability,
+                primary_source_denied=True,
+            )
+        return StatusCheckRollupRead(
+            state=_coerce_rollup_state(rollup.state),
+            capability="ok",
+            primary_source_denied=True,
+        )
 
     def list_prs(self, state: str = "open", limit: int = 100) -> list[PRInfo]:
         """List pull requests.
@@ -916,6 +1141,7 @@ class GitHubAdapter:
                 state="open",
                 labels=[],
                 draft=draft,
+                base_branch=base,
             )
             # Cache the dry-run PR so get_prs_for_issue() doesn't hit GitHub API
             self._adapter_cache.cache_pr_info(pr_info)
@@ -965,6 +1191,22 @@ class GitHubAdapter:
                 self._adapter_cache.cache_pr_info(pr_info)
         except GitHubHttpError as e:
             logger.error("Failed to update PR #%s draft=%s: %s", pr_number, draft, e)
+            raise
+
+    def set_pr_base(self, pr_number: int, base: str) -> None:
+        try:
+            with gh_audit.context(
+                reason=gh_audit.AuditReason.GH_WRITE,
+                issue_key=str(pr_number),
+                scope=gh_audit.AuditScope.UNKNOWN,
+            ):
+                output = self._client.update_pr_base(pr_number, base)
+            if isinstance(output, dict):
+                pr_info = self._pr_info_from_api(output)
+                self._adapter_cache.cache_pr_info(pr_info)
+            logger.info("Retargeted PR #%s base to %s", pr_number, base)
+        except GitHubHttpError as e:
+            logger.error("Failed to retarget PR #%s base=%s: %s", pr_number, base, e)
             raise
 
     def add_comment(self, issue_or_pr_number: int, body: str) -> str:
@@ -1216,7 +1458,7 @@ class GitHubAdapter:
             url=pr.get("html_url") or pr.get("url", ""),
             branch=(pr.get("head") or {}).get("ref", pr.get("headRefName", "")),
             body=pr.get("body", "") or "",
-            state=str(pr.get("state", "open")).lower(),
+            state=_pr_state_from_api(pr),
             labels=labels,
             draft=pr.get("draft"),
             mergeable_state=(
@@ -1224,6 +1466,7 @@ class GitHubAdapter:
                 if pr.get("mergeable_state") is not None
                 else None
             ),
+            base_branch=(pr.get("base") or {}).get("ref") or pr.get("baseRefName") or None,
         )
 
     def _fetch_pr_info_from_search(self, pr: dict[str, Any]) -> PRInfo | None:
@@ -1394,6 +1637,15 @@ class GitHubAdapter:
             List of comment dictionaries.
         """
         return self._client.get_issue_comments(issue_number)
+
+    def issue_comment_marker_present(self, issue_number: int, marker: str) -> bool:
+        """Return True if any comment on the issue/PR contains ``marker``.
+
+        Scans all comment pages (not just the first 100), so a marker comment
+        posted beyond the first page is still detected. Used to dedupe
+        orchestrator-authored marker comments before re-posting them.
+        """
+        return self._client.issue_comment_marker_present(issue_number, marker)
 
     def get_pr_reviews(self, pr_number: int) -> list[dict[str, Any]]:
         """Get all reviews on a pull request.

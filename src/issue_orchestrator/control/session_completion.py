@@ -26,17 +26,25 @@ from ..ports.event_sink import make_trace_event
 from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager
 from .active_sessions import has_active_terminal
+from .completion_dispatcher import (
+    CompletedDecision,
+    CompletionDispatcher,
+    SynchronousCompletionDispatcher,
+)
 from .session_completion_diagnostics import run_session_analysis, surface_failure_context
 from .session_run_resolution import resolve_session_run_dir
 from .transition_log import log_transition
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
+    from ..observation.observation import SessionObservationResult
     from ..observation.observer import SessionObserver
     from ..ports.claim_manager import ClaimManager
     from .action_applier import ActionApplier
     from .completion_handler import CompletionHandler
-    from .session_controller import SessionController
+    from .provider_resilience import ProviderResilienceManager
+    from .publish_recovery import PublishRecoveryService
+    from .session_controller import SessionController, SessionDecision
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +185,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     completion_detail: Optional[dict[str, Any]] = None,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
+    publish_recovery: Optional["PublishRecoveryService"] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -239,6 +248,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             validation_error=validation_error or "",
             validation_error_file=validation_error_file,
             retry_count=next_retry_count,
+            source_task=session.key.task,
             validation_cmd=config.validation.quick.cmd,
         )
         state.pending_validation_retries = [
@@ -269,6 +279,21 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         # registry cleanup is separate from the optional UI tab/worktree cleanup
         # action, otherwise a finished agent can be rediscovered as running.
         _terminate_finished_session(session, status, kill_session_fn)
+
+    # Persist durable retry locators BEFORE applying the publish-failed labels
+    # below. The completion actions include publish-failed / publish-fail-count
+    # labels; a crash between applying those and recording locators would leave
+    # GitHub marked publish-failed with no locators, making the issue visibly
+    # label-retryable while Retry Publish stays unavailable. Recording first
+    # closes that window. No-op for non-publish failures.
+    if publish_recovery is not None:
+        publish_recovery.record_publish_failure(
+            session,
+            processing_errors,
+            review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
+        )
+
     run_dir = resolve_session_run_dir(session_output, session)
     session_output.attach_claude_log(run_dir)
     run_session_analysis(run_dir)
@@ -366,11 +391,18 @@ def process_active_sessions(
     worktree_manager: Optional[WorktreeManager],
     kill_session_fn: Callable[[str], None],
     config: Config,
+    completion_dispatcher: "CompletionDispatcher | None" = None,
+    provider_resilience: "ProviderResilienceManager | None" = None,
+    publish_recovery: "PublishRecoveryService | None" = None,
 ) -> None:
     """Process active sessions - moved from Orchestrator per method table.
 
-    DEPRECATED: Use observe_active_sessions() for the new async completion flow.
-    This function is kept for backwards compatibility during migration.
+    Completion decisions (``decide_outcome``: publish gate + push + PR) run
+    through ``completion_dispatcher``. The default synchronous dispatcher keeps
+    the original one-tick behavior; the orchestrator injects a background
+    dispatcher so a slow publish no longer blocks the heartbeat. Decisions that
+    finished on a prior tick are drained and applied here, on the tick thread,
+    so all ``OrchestratorState`` mutation stays single-threaded.
 
     Args:
         state: Orchestrator state (active_sessions)
@@ -381,9 +413,34 @@ def process_active_sessions(
         worktree_manager: For worktree cleanup
         kill_session_fn: Function to kill terminal session
         config: Configuration
+        provider_resilience: Applies provider-circuit effects returned by decisions
     """
     from ..observation.observation import SessionObservation
 
+    dispatcher = completion_dispatcher or SynchronousCompletionDispatcher()
+
+    def apply(completed: CompletedDecision) -> None:
+        _apply_completed_decision(
+            completed,
+            state=state,
+            completion_handler=completion_handler,
+            action_applier=action_applier,
+            observer=observer,
+            worktree_manager=worktree_manager,
+            kill_session_fn=kill_session_fn,
+            config=config,
+            session_output=session_controller.session_output,
+            provider_resilience=provider_resilience,
+            publish_recovery=publish_recovery,
+        )
+
+    # Apply decisions that finished on a prior tick (background dispatcher)
+    # BEFORE dispatching new work: applying a completed decision removes its
+    # session from active_sessions, so the dispatch loop below won't re-dispatch
+    # a session whose decision already landed.
+    _apply_completed_decisions(dispatcher.drain(), apply)
+
+    seen_terminals: set[str] = set()
     for session in list(state.active_sessions):
         # Snapshot iteration is mutation-safe; the live check filters any
         # duplicate terminal already removed by an earlier snapshot entry.
@@ -393,70 +450,177 @@ def process_active_sessions(
                 session.terminal_id,
             )
             continue
-        session_start = time.monotonic()
+        if session.terminal_id in seen_terminals:
+            # A duplicate snapshot entry for a terminal we already handled this
+            # tick. The old inline path relied on handle_session_completion
+            # removing the terminal before the duplicate was reached; completion
+            # now applies in drain (possibly a later tick), so dedup explicitly.
+            continue
+        if dispatcher.in_flight(session.terminal_id):
+            # Its completion decision is already running off the tick thread;
+            # don't re-observe or re-dispatch until it lands in drain().
+            continue
+        seen_terminals.add(session.terminal_id)
+        # Attribute the tick to this issue while we handle it. Completion
+        # handling (validation gate + push + PR) is the slow work; if a
+        # synchronous dispatcher runs it here and it overruns the heartbeat
+        # budget, the dashboard reads current_tick_phase to explain the stall —
+        # naming the issue turns "(phase: active_sessions)" into
+        # "(phase: active_sessions:#392)".
+        state.current_tick_phase = f"active_sessions:#{session.issue.number}"
         obs = observer.observe_session(session)
         if obs.observation == SessionObservation.RUNNING:
             continue
-        decision = session_controller.decide_outcome(
+        dispatcher.dispatch(
+            session,
+            _completion_decider(session_controller, session, obs, config),
+        )
+
+    # Apply decisions a synchronous dispatcher just produced this tick (the
+    # background dispatcher returns nothing here — its work is still running).
+    _apply_completed_decisions(dispatcher.drain(), apply)
+
+
+def _completion_decider(
+    session_controller: "SessionController",
+    session: Session,
+    obs: "SessionObservationResult",
+    config: Config,
+) -> "Callable[[], SessionDecision]":
+    """Bind a no-arg call to decide this session's outcome.
+
+    Cheap per-session inputs (issue key, retry template) are computed now on the
+    tick thread; the returned callable performs the slow git/GitHub/validation
+    work and may run off-thread.
+    """
+    issue_key = _validation_issue_key(session, config)
+    retry_prompt_template = (
+        session.agent_config.retry_prompt_template or config.retry.retry_prompt_template
+    )
+
+    def decide() -> "SessionDecision":
+        return session_controller.decide_outcome(
             obs, session.worktree_path, session.issue.number,
             session.issue.title, session.terminal_id, session.completion_path,
             validation_retry_count=session.validation_retry_count,
             original_prompt=session.original_prompt,
-            retry_prompt_template=(
-                session.agent_config.retry_prompt_template
-                or config.retry.retry_prompt_template
-            ),
+            retry_prompt_template=retry_prompt_template,
             repo_root=config.repo_root,
-            issue_key=_validation_issue_key(session, config),
+            issue_key=issue_key,
             session_run_assets=session.run_assets,
+            task_kind=session.key.task,
         )
-        if decision.status == SessionStatus.RUNNING:
-            logger.info(
-                "[COMPLETION] Session remains active after completion decision: "
-                "session=%s issue=%s reason=%s",
-                session.terminal_id,
-                session.issue.number,
-                decision.reason,
-            )
-            continue
-        # Extract pr_url, errors, and diagnostic_path from completion processor result
-        pr_url_hint = None
-        processing_errors = None
-        diagnostic_path = None
-        validation_error = decision.validation_error
-        validation_error_file = decision.validation_error_file
-        review_exchange_completed = False
-        review_exchange_halted = False
-        if decision.processing_result:
-            if decision.processing_result.pr_url:
-                pr_url_hint = decision.processing_result.pr_url
-            if decision.processing_result.errors:
-                processing_errors = decision.processing_result.errors
-            if decision.processing_result.diagnostic_path:
-                diagnostic_path = decision.processing_result.diagnostic_path
-            review_exchange_completed = decision.processing_result.review_exchange_completed
-            review_exchange_halted = decision.processing_result.review_exchange_halted
-        diagnostic_path = decision.diagnostic_path or diagnostic_path
-        handle_session_completion(
-            session, decision.status, state, completion_handler, action_applier,
-            observer, worktree_manager, kill_session_fn, config,
-            session_output=session_controller.session_output,
-            pr_url_hint=pr_url_hint, processing_errors=processing_errors,
-            diagnostic_path=diagnostic_path,
-            validation_error=validation_error,
-            validation_error_file=str(validation_error_file) if validation_error_file else None,
-            review_exchange_completed=review_exchange_completed,
-            review_exchange_halted=review_exchange_halted,
-            blocked_label=decision.blocked_label,
-            blocked_reason=decision.blocked_reason,
-            completion_detail=decision.completion_detail,
+
+    return decide
+
+
+def _apply_completed_decisions(
+    completed_decisions: list[CompletedDecision],
+    apply: Callable[[CompletedDecision], None],
+) -> None:
+    """Apply every drained decision, then raise any apply failure."""
+    errors: list[BaseException] = []
+    for completed in completed_decisions:
+        try:
+            apply(completed)
+        except BaseException as exc:
+            errors.append(exc)
+    if not errors:
+        return
+    if len(errors) == 1:
+        raise errors[0]
+    raise BaseExceptionGroup("completion decision apply failures", errors)
+
+
+def _apply_completed_decision(
+    completed: CompletedDecision,
+    *,
+    state: "OrchestratorState",
+    completion_handler: "CompletionHandler",
+    action_applier: "ActionApplier",
+    observer: "SessionObserver",
+    worktree_manager: Optional[WorktreeManager],
+    kill_session_fn: Callable[[str], None],
+    config: Config,
+    session_output: SessionOutput,
+    provider_resilience: "ProviderResilienceManager | None" = None,
+    publish_recovery: "PublishRecoveryService | None" = None,
+) -> None:
+    """Apply a finished completion decision on the tick thread."""
+    if completed.error is not None:
+        # Surface a decision-time failure on the tick thread, preserving the
+        # fail-loud behavior of the old inline path.
+        raise completed.error
+    decision = completed.decision
+    assert decision is not None  # error is None => decision is set
+    _record_provider_resilience_effects(decision, provider_resilience)
+    session = completed.session
+    if decision.status == SessionStatus.RUNNING:
+        logger.info(
+            "[COMPLETION] Session remains active after completion decision: "
+            "session=%s issue=%s reason=%s",
+            session.terminal_id,
+            session.issue.number,
+            decision.reason,
         )
-        session_elapsed = time.monotonic() - session_start
-        if session_elapsed > 5:
-            logger.warning(
-                "[LOOP] Session handling took %.1fs (session=%s issue=%s observation=%s)",
-                session_elapsed,
-                session.terminal_id,
-                session.issue.number,
-                obs.observation.value,
-            )
+        return
+    started = time.monotonic()
+    # Extract pr_url, errors, and diagnostic_path from completion processor result
+    pr_url_hint = None
+    processing_errors = None
+    diagnostic_path = None
+    validation_error = decision.validation_error
+    validation_error_file = decision.validation_error_file
+    review_exchange_completed = False
+    review_exchange_halted = False
+    if decision.processing_result:
+        if decision.processing_result.pr_url:
+            pr_url_hint = decision.processing_result.pr_url
+        if decision.processing_result.errors:
+            processing_errors = decision.processing_result.errors
+        if decision.processing_result.diagnostic_path:
+            diagnostic_path = decision.processing_result.diagnostic_path
+        review_exchange_completed = decision.processing_result.review_exchange_completed
+        review_exchange_halted = decision.processing_result.review_exchange_halted
+    diagnostic_path = decision.diagnostic_path or diagnostic_path
+    handle_session_completion(
+        session, decision.status, state, completion_handler, action_applier,
+        observer, worktree_manager, kill_session_fn, config,
+        session_output=session_output,
+        pr_url_hint=pr_url_hint, processing_errors=processing_errors,
+        diagnostic_path=diagnostic_path,
+        validation_error=validation_error,
+        validation_error_file=str(validation_error_file) if validation_error_file else None,
+        review_exchange_completed=review_exchange_completed,
+        review_exchange_halted=review_exchange_halted,
+        blocked_label=decision.blocked_label,
+        blocked_reason=decision.blocked_reason,
+        completion_detail=decision.completion_detail,
+        publish_recovery=publish_recovery,
+    )
+    elapsed = time.monotonic() - started
+    if elapsed > 5:
+        logger.warning(
+            "[LOOP] Session handling took %.1fs (session=%s issue=%s)",
+            elapsed,
+            session.terminal_id,
+            session.issue.number,
+        )
+
+
+def _record_provider_resilience_effects(
+    decision: "SessionDecision",
+    provider_resilience: "ProviderResilienceManager | None",
+) -> None:
+    """Apply provider-circuit effects on the tick thread."""
+    if provider_resilience is None:
+        return
+    if decision.provider_success:
+        provider_resilience.record_success(decision.provider_success)
+    if decision.provider_transient_failure:
+        failure = decision.provider_transient_failure
+        provider_resilience.record_transient_failure(
+            failure.provider,
+            error_summary=failure.error_summary,
+            attempts=failure.attempts,
+        )

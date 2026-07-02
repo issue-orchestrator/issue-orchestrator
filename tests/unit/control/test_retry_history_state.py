@@ -14,6 +14,7 @@ from issue_orchestrator.domain.models import (
     DiscoveredAwaitingMergeReconciliation,
     DiscoveredEscalation,
     DiscoveredFailure,
+    DiscoveredMergeQueueEnqueue,
     DiscoveredReview,
     DiscoveredRework,
     ImmediateCleanup,
@@ -23,11 +24,9 @@ from issue_orchestrator.domain.models import (
     PendingRework,
     PendingTriageReview,
     PendingValidationRetry,
-    PublishJob,
-    PublishJobStatus,
     SessionHistoryEntry,
+    TaskKind,
 )
-from tests.unit.session_run_helpers import make_session_run_assets
 
 
 def _history_entry(issue_number: int) -> SessionHistoryEntry:
@@ -37,25 +36,6 @@ def _history_entry(issue_number: int) -> SessionHistoryEntry:
         agent_type="agent:web",
         status="failed",
         runtime_minutes=1,
-    )
-
-
-def _publish_job(
-    *,
-    job_id: str,
-    issue_number: int,
-    session_key: str,
-    status: PublishJobStatus,
-) -> PublishJob:
-    return PublishJob(
-        job_id=job_id,
-        issue_number=issue_number,
-        session_key=session_key,
-        run_assets=make_session_run_assets(
-            Path(f"/tmp/{job_id}"),
-            session_name=f"publish-{issue_number}",
-        ),
-        status=status,
     )
 
 
@@ -328,6 +308,7 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 validation_error="dirty tree",
                 validation_error_file=None,
                 retry_count=1,
+                source_task=TaskKind.CODE,
             ),
             PendingValidationRetry(
                 issue_number=other,
@@ -339,36 +320,9 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 validation_error="dirty tree",
                 validation_error_file=None,
                 retry_count=1,
+                source_task=TaskKind.CODE,
             ),
         ],
-        pending_publish_jobs={
-            f"job-{target}": _publish_job(
-                job_id=f"job-{target}",
-                issue_number=target,
-                session_key="session-1",
-                status=PublishJobStatus.QUEUED,
-            ),
-            f"job-{other}": _publish_job(
-                job_id=f"job-{other}",
-                issue_number=other,
-                session_key="session-2",
-                status=PublishJobStatus.QUEUED,
-            ),
-        },
-        running_publish_jobs={
-            f"running-{target}": _publish_job(
-                job_id=f"running-{target}",
-                issue_number=target,
-                session_key="session-1",
-                status=PublishJobStatus.RUNNING,
-            ),
-            f"running-{other}": _publish_job(
-                job_id=f"running-{other}",
-                issue_number=other,
-                session_key="session-2",
-                status=PublishJobStatus.RUNNING,
-            ),
-        },
         # discovered facts — Planner inputs that should not survive a scratch reset
         discovered_reviews=[
             DiscoveredReview(
@@ -466,6 +420,20 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
                 reason="Branch protection blocks merge.",
             ),
         ],
+        discovered_merge_queue_enqueues=[
+            DiscoveredMergeQueueEnqueue(
+                issue_number=target,
+                pr_number=100,
+                pr_url="url",
+                issue_key="target",
+            ),
+            DiscoveredMergeQueueEnqueue(
+                issue_number=other,
+                pr_number=200,
+                pr_url="url",
+                issue_key="other",
+            ),
+        ],
         immediate_cleanups=[
             ImmediateCleanup(
                 issue_number=target,
@@ -502,6 +470,7 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
         issue_refresh_timestamps={target: 1.0, other: 2.0},
         issue_last_refreshed_at={target: 1.0, other: 2.0},
         awaiting_merge_drift_scan_timestamps={target: 1.0, other: 2.0},
+        awaiting_merge_rollup_scan_timestamps={100: 1.0, 200: 2.0},
         # priority queue — manual override that should be re-seeded post-reset by
         # _enqueue_reset_retry_issue's prioritize_issue_front; clearing first ensures
         # idempotent re-add and prevents stale duplicate entries.
@@ -546,8 +515,6 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert all(c.issue.number != target for c in state.pending_cleanups)
     assert all(t.issue_number != target for t in state.pending_triage_reviews)
     assert all(v.issue_number != target for v in state.pending_validation_retries)
-    assert all(j.issue_number != target for j in state.pending_publish_jobs.values())
-    assert all(j.issue_number != target for j in state.running_publish_jobs.values())
     assert all(d.issue_number != target for d in state.discovered_reviews)
     assert all(d.issue_number != target for d in state.discovered_reworks)
     assert all(d.issue_number != target for d in state.discovered_escalations)
@@ -555,6 +522,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert all(d.issue_number != target for d in state.discovered_awaiting_merge_reconciliations)
     assert all(d.issue_number != target for d in state.discovered_awaiting_merge_drifts)
     assert all(d.issue_number != target for d in state.discovered_awaiting_merge_escalations)
+    assert all(d.issue_number != target for d in state.discovered_merge_queue_enqueues)
     assert all(c.issue_number != target for c in state.immediate_cleanups)
     assert target not in state.failed_this_cycle
     assert target not in state.stale_issue_ticks
@@ -563,6 +531,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert target not in state.issue_refresh_timestamps
     assert target not in state.issue_last_refreshed_at
     assert target not in state.awaiting_merge_drift_scan_timestamps
+    assert 100 not in state.awaiting_merge_rollup_scan_timestamps
     assert target not in state.priority_queue
     assert target not in state.queue_pending_shrink_missing_issue_numbers
 
@@ -574,8 +543,6 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert any(c.issue.number == other for c in state.pending_cleanups)
     assert any(t.issue_number == other for t in state.pending_triage_reviews)
     assert any(v.issue_number == other for v in state.pending_validation_retries)
-    assert any(j.issue_number == other for j in state.pending_publish_jobs.values())
-    assert any(j.issue_number == other for j in state.running_publish_jobs.values())
     assert any(d.issue_number == other for d in state.discovered_reviews)
     assert any(d.issue_number == other for d in state.discovered_reworks)
     assert any(d.issue_number == other for d in state.discovered_escalations)
@@ -583,6 +550,7 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert any(d.issue_number == other for d in state.discovered_awaiting_merge_reconciliations)
     assert any(d.issue_number == other for d in state.discovered_awaiting_merge_drifts)
     assert any(d.issue_number == other for d in state.discovered_awaiting_merge_escalations)
+    assert any(d.issue_number == other for d in state.discovered_merge_queue_enqueues)
     assert any(c.issue_number == other for c in state.immediate_cleanups)
     assert other in state.failed_this_cycle
     assert other in state.stale_issue_ticks
@@ -591,59 +559,6 @@ def test_clear_scratch_retry_state_contract_no_leaks_for_target() -> None:
     assert other in state.issue_refresh_timestamps
     assert other in state.issue_last_refreshed_at
     assert other in state.awaiting_merge_drift_scan_timestamps
+    assert state.awaiting_merge_rollup_scan_timestamps[200] == 2.0
     assert other in state.priority_queue
     assert other in state.queue_pending_shrink_missing_issue_numbers
-
-
-def test_clear_scratch_retry_records_tombstones_for_active_publish_jobs() -> None:
-    """Active publish jobs at reset time must be tombstoned, not just removed
-    from the dict. The PublishJobExecutor worker keeps running after the dict
-    entry is dropped — its late result would otherwise re-populate
-    discovered_reviews/completed_today for the freshly-reset issue. Bug
-    flagged in PR #6131 review.
-    """
-    target = 10
-    other = 11
-    state = OrchestratorState(
-        pending_publish_jobs={
-            "job-target-pending": _publish_job(
-                job_id="job-target-pending",
-                issue_number=target,
-                session_key="session-1",
-                status=PublishJobStatus.QUEUED,
-            ),
-            "job-other-pending": _publish_job(
-                job_id="job-other-pending",
-                issue_number=other,
-                session_key="session-2",
-                status=PublishJobStatus.QUEUED,
-            ),
-        },
-        running_publish_jobs={
-            "job-target-running": _publish_job(
-                job_id="job-target-running",
-                issue_number=target,
-                session_key="session-1",
-                status=PublishJobStatus.RUNNING,
-            ),
-            "job-other-running": _publish_job(
-                job_id="job-other-running",
-                issue_number=other,
-                session_key="session-2",
-                status=PublishJobStatus.RUNNING,
-            ),
-        },
-    )
-
-    RetryHistoryState(state).clear_scratch_retry_pending_state(
-        issue_number=target,
-        superseded_prs=[],
-    )
-
-    # Both pending and running job IDs for `target` are tombstoned.
-    assert "job-target-pending" in state.superseded_job_ids
-    assert "job-target-running" in state.superseded_job_ids
-    # Other issue's jobs are NOT tombstoned — its workers should still
-    # report their results normally.
-    assert "job-other-pending" not in state.superseded_job_ids
-    assert "job-other-running" not in state.superseded_job_ids

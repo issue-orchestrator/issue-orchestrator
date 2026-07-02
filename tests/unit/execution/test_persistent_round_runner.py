@@ -4,9 +4,12 @@ tolerance.
 Tests use a self-contained stub agent that supports a control-file gate
 (``STUB_RESPONSE_GATE``) and an opt-in partial-write race
 (``STUB_PARTIAL_WRITE_FIRST``). Coordination happens via gate files and
-injected ``now``/``sleep`` callables, never via real wall-clock waits, in
+injected ``now``/``sleep`` callables rather than real wall-clock waits, in
 keeping with ``tests/unit/AGENTS.md``'s ban on timing-based unit
-coordination.
+coordination. The single exception is the real-subprocess carve-out that
+file also allows: the late-trust test drives a real child process and uses
+the bounded ``_real_sleep`` helper below to yield wall-clock time so that
+process can make progress.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import logging
 import os
 import sys
 import textwrap
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -30,6 +34,11 @@ from issue_orchestrator.execution.persistent_round_runner import (
     send_round,
 )
 from issue_orchestrator.execution.recording_contract import recording_event_count
+
+# Bounded *real* sleep used only where a test drives a real subprocess and must
+# yield wall-clock time for it to make progress (see the late-trust test). Named
+# distinctly so fake-clock sleepers are never confused with real waiting.
+_real_sleep = time.sleep
 
 
 # ---------------------------------------------------------------------------
@@ -445,13 +454,35 @@ class TestPersistentSessionLifecycle:
         clock = _FakeClock()
         gate_opened = False
 
-        def sleeper(seconds: float) -> None:
+        def reveal_late_trust_prompt(seconds: float) -> None:
+            # The runner drives its deadline off the real monotonic clock
+            # (``now`` is deliberately not injected), so the round-trip has a
+            # genuine wall-clock budget and cannot lose a race against the real
+            # subprocess under CPU contention — a fake clock advanced only by
+            # this sleeper would burn the whole timeout in a few poll
+            # iterations regardless of real elapsed time and flake under load.
+            # The injected ``sleep`` only stages the *late* trust prompt: the
+            # first poll happens inside the runner's startup-interaction drain,
+            # at which point we reveal the prompt and block until the stub has
+            # rendered it. The real sleep keeps the poll loop yielding so the
+            # subprocess gets scheduled.
             nonlocal gate_opened
             clock.value += seconds
-            if not gate_opened and clock.value >= 0.35:
-                gate_opened = True
-                trust_gate.touch()
-                _wait_until(prompt_ready.exists)
+            if not gate_opened:
+                if clock.value >= 0.35:
+                    gate_opened = True
+                    trust_gate.touch()
+                    _wait_until(prompt_ready.exists)
+                return
+            # Once the trust prompt is handled, the round prompt is delivered to
+            # a *real* subprocess that needs real wall-clock time to read stdin
+            # and write its response file. Advancing only the fake clock would
+            # spin the response-poll loop through the whole timeout budget in
+            # ~0s of real time, starving the subprocess under CPU contention
+            # (the documented late-trust load flake). Yield real CPU here — a
+            # bounded wait on a real external system, which AGENTS.md permits —
+            # so completion is governed by the subprocess, not the fake clock.
+            _real_sleep(seconds)
 
         session = open_persistent_session(
             command=[str(codex_bin), "-u", str(script)],
@@ -464,8 +495,8 @@ class TestPersistentSessionLifecycle:
                 prompt="real round",
                 response_file=response_file,
                 timeout_seconds=5,
-                now=clock.now,
-                sleep=sleeper,
+                poll_interval_seconds=0.02,
+                sleep=reveal_late_trust_prompt,
             )
         finally:
             close_persistent_session(session)
@@ -1121,3 +1152,112 @@ class TestCloseSession:
         close_persistent_session(session)
         close_persistent_session(session)
         assert session.closed is True
+
+
+class TestSendRoundResponseReaderChannel:
+    """send_round can take its response from an injected reader (the
+    TurnMailbox channel) instead of the response file. The PTY pumping is
+    unchanged; only the response source differs.
+    """
+
+    def test_reader_value_is_returned_and_file_is_ignored(
+        self, tmp_path: Path,
+    ) -> None:
+        # The stub agent writes its own JSON to the response file, but with a
+        # reader provided send_round must return the reader's value — proving
+        # the file is not consulted when the mailbox is the channel.
+        stub = _write_stub_agent(tmp_path)
+        response_file = tmp_path / "response.json"
+        verdict = {"response_type": "ok", "response_text": "delivered via mailbox"}
+
+        session = open_persistent_session(
+            command=_stub_command(stub),
+            working_dir=tmp_path,
+            env=_stub_env(response_file),
+        )
+        try:
+            response = send_round(
+                session,
+                prompt="hello",
+                response_file=response_file,
+                timeout_seconds=5,
+                response_reader=lambda: verdict,
+            )
+        finally:
+            close_persistent_session(session)
+
+        assert response == verdict
+
+    def test_reader_channel_does_not_unlink_the_response_file(
+        self, tmp_path: Path,
+    ) -> None:
+        # The file channel clears the response file before each round; the
+        # reader channel must leave the filesystem untouched.
+        stub = _write_stub_agent(tmp_path)
+        response_file = tmp_path / "response.json"
+        sentinel = tmp_path / "sentinel.json"
+        sentinel.write_text("{}", encoding="utf-8")
+
+        session = open_persistent_session(
+            command=_stub_command(stub),
+            working_dir=tmp_path,
+            env=_stub_env(response_file),
+        )
+        try:
+            send_round(
+                session,
+                prompt="hello",
+                response_file=sentinel,
+                timeout_seconds=5,
+                response_reader=lambda: {"response_type": "ok", "response_text": "x"},
+            )
+        finally:
+            close_persistent_session(session)
+
+        assert sentinel.exists()
+
+    def test_mailbox_mode_exit_with_stale_file_is_respawnable_not_invalid(
+        self, tmp_path: Path,
+    ) -> None:
+        # Finding #2: in mailbox mode a stale/legacy response file left by an
+        # agent that exits without delivering must NOT downgrade the round to
+        # the non-respawnable INVALID_RESPONSE. It is a process that exited
+        # before responding (respawnable) — the fail-safe contract.
+        from issue_orchestrator.execution.persistent_round_runner import (
+            RoundFailureReason,
+        )
+
+        stale_file = tmp_path / "response.json"
+        agent = tmp_path / "stale_then_exit.py"
+        agent.write_text(textwrap.dedent(f"""
+            import json, time
+            from pathlib import Path
+            Path({str(stale_file)!r}).write_text(
+                json.dumps({{"response_type": "ok", "response_text": "stale legacy"}}),
+                encoding="utf-8",
+            )
+            time.sleep(0.4)
+        """).strip(), encoding="utf-8")
+
+        session = open_persistent_session(
+            command=[sys.executable, "-u", str(agent)],
+            working_dir=tmp_path,
+            env=dict(os.environ),
+        )
+        try:
+            with pytest.raises(PersistentRoundError) as excinfo:
+                send_round(
+                    session,
+                    prompt="go",
+                    response_file=stale_file,
+                    timeout_seconds=5,
+                    # Mailbox never delivers — models a forgotten exchange-respond.
+                    response_reader=lambda: None,
+                )
+        finally:
+            close_persistent_session(session)
+
+        assert stale_file.exists()  # the legacy file is present...
+        assert persistent_round_failure_reason(excinfo.value) == (
+            RoundFailureReason.PROCESS_EXITED_BEFORE_RESPONSE.value
+        )

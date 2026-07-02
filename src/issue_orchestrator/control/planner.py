@@ -29,9 +29,7 @@ from ..infra.config import Config
 from ..infra.logging_config import issue_log
 from ..ports.issue import Issue
 from ..domain.models import (
-    CompletionOutcome,
     TriageFacts,
-    ObservedCompletion,
     active_retrospective_review_issue_numbers,
 )
 from ..domain.post_publish_escalation import build_post_publish_escalation_comment
@@ -63,14 +61,17 @@ from .actions import (
     QueueReworkAction,
     QueueTriageAction,
     CreateTriageIssueAction,
+    EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
     ReconcileHistoryEntryAction,
+    RecoverTerminalIssueAction,
     SessionType,
     SyncLabelsAction,
 )
-from .awaiting_merge_reconciler import (
-    POST_PUBLISH_VALIDATION_SOURCE, build_post_publish_validation_comment,
+from .awaiting_merge_post_publish_policy import (
+    build_post_publish_validation_comment,
+    POST_PUBLISH_VALIDATION_SOURCE,
 )
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
@@ -186,11 +187,6 @@ class Planner:
         provider_label_actions = self._plan_provider_resilience_labels(snapshot, plan_context)
         actions.extend(provider_label_actions)
 
-        # 1a-3. Immediate label projection for observed completions (async processing)
-        # This runs BEFORE discovered_reviews so labels are applied immediately
-        completion_label_actions = self._plan_observed_completion_labels(snapshot, plan_context)
-        actions.extend(completion_label_actions)
-
         # 1b. Queue discovered reviews from session completions/scans
         queue_actions = self._plan_discovered_reviews(snapshot)
         actions.extend(queue_actions)
@@ -213,6 +209,12 @@ class Planner:
         # handed to a human because no further automated retries help.
         post_publish_escalation_actions = self._plan_awaiting_merge_escalations(snapshot)
         actions.extend(post_publish_escalation_actions)
+
+        # 1d3. Enqueue approved PRs into the merge queue (when enabled). The
+        # merge queue coordinator already decided eligibility during discovery;
+        # the planner just turns each fact into the protected enqueue action.
+        merge_queue_actions = self._plan_merge_queue_enqueues(snapshot)
+        actions.extend(merge_queue_actions)
 
         # 1e. Queue triage reviews for session failures
         failure_triage_actions = self._plan_discovered_failures(snapshot)
@@ -449,29 +451,48 @@ class Planner:
         }
 
         for reconciliation in snapshot.discovered_awaiting_merge_reconciliations:
-            actions.append(ReconcileHistoryEntryAction(
+            issue_key = reconciliation.issue_key or str(reconciliation.issue_number)
+            # Drift reconciliations ADD blocked:pr-closed (handled by the
+            # SyncLabelsAction below) rather than shedding, so there is no label
+            # cleanup to order ahead of the history transition — finalize the
+            # history entry on its own.
+            if reconciliation.issue_number in drift_issue_numbers:
+                actions.append(ReconcileHistoryEntryAction(
+                    issue_number=reconciliation.issue_number,
+                    pr_number=reconciliation.pr_number,
+                    pr_url=reconciliation.pr_url,
+                    status=reconciliation.status,
+                    source=reconciliation.source,
+                    issue_key=issue_key,
+                    reason=reconciliation.status_reason,
+                ))
+                continue
+            # Terminal recovery: the issue's work has landed (PR merged/closed
+            # or parent issue closed). Shed every transient workflow label that
+            # no longer applies — pr-pending, publish-failed, publish-fail-count-N,
+            # and any blocking label — and only then finalize the awaiting-merge
+            # history, as one owner command (RecoverTerminalIssueAction). The
+            # applier reads the issue's live labels to decide the exact set (the
+            # planner rarely has labels for an already closed/merged issue) and
+            # gates the history transition on the shed succeeding, so a transient
+            # label-removal failure leaves the entry reconcilable for a later
+            # discovery pass instead of terminalizing it and stranding the labels
+            # this P0 removes.
+            actions.append(RecoverTerminalIssueAction(
                 issue_number=reconciliation.issue_number,
                 pr_number=reconciliation.pr_number,
                 pr_url=reconciliation.pr_url,
                 status=reconciliation.status,
                 source=reconciliation.source,
-                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
-                reason=reconciliation.status_reason,
-            ))
-            # When the awaiting-merge state reaches a terminal status (PR
-            # merged/closed or parent issue closed), strip pr-pending so it
-            # doesn't outlive its meaning. Without this the only path that
-            # cleared the label was the drift discovery, which requires the
-            # issue to still be open and a 5-min cooldown — many merges and
-            # all issue-closes slipped through, stranding pr-pending rows in
-            # the local label_store forever.
-            if reconciliation.issue_number in drift_issue_numbers:
-                continue
-            actions.append(RemoveLabelAction(
-                issue_number=reconciliation.issue_number,
-                label=self._lm.pr_pending,
-                issue_key=reconciliation.issue_key or str(reconciliation.issue_number),
+                status_reason=reconciliation.status_reason,
+                issue_key=issue_key,
                 reason=f"awaiting-merge terminal: {reconciliation.status}",
+                # Carry the reconciliation pause guard the old terminal-cleanup
+                # RemoveLabelAction used to carry: an issue paused for
+                # reconciliation (io:needs-reconcile) must not have its labels
+                # shed or its awaiting-merge history finalized behind the
+                # fail-closed drift handling. The applier enforces this at the
+                # owner-command boundary before any write (#6431 F1).
                 expected=build_expected_for_mutation(),
             ))
 
@@ -488,11 +509,6 @@ class Planner:
             ))
 
         return actions
-
-    def _blocked_label_for_record(self, observed: ObservedCompletion) -> str:
-        if observed.blocked_reason == "provider_unavailable":
-            return self._lm.provider_unavailable
-        return self._lm.blocked
 
     def _record_provider_skip(
         self,
@@ -562,95 +578,6 @@ class Planner:
                     issue_key=issue.key.stable_id(),
                 ))
                 plan_context.record_remove(issue.number, label)
-        return actions
-
-    def _plan_observed_completion_labels(
-        self,
-        snapshot: OrchestratorSnapshot,
-        plan_context: PlanContext,
-    ) -> list[Action]:
-        """Plan immediate label updates for observed completions.
-
-        This is the "immediate label projection" phase of async completion processing.
-        When a session completes, we:
-        1. Remove in-progress label immediately (don't wait for publish job)
-        2. Add pr-pending label if outcome is COMPLETED (anticipating PR creation)
-        3. Add blocked label if outcome is BLOCKED
-        4. Add needs-human label if outcome is NEEDS_HUMAN
-
-        The actual publish work (git push, PR creation) happens in background
-        via the PublishJobExecutor.
-
-        Returns:
-            List of label actions to apply immediately
-        """
-        actions: list[Action] = []
-
-        if not snapshot.observed_completions:
-            return actions
-
-        for observed in snapshot.observed_completions:
-            issue_number = observed.issue_number
-            ik = observed.issue_key_str
-
-            # Always remove in-progress label when session completes
-            actions.append(RemoveLabelAction(
-                issue_number=issue_number,
-                label=self._lm.in_progress,
-                reason=f"session completed with outcome={observed.outcome}",
-                expected=build_expected_for_mutation(),
-                issue_key=ik,
-            ))
-
-            # Add outcome-specific label immediately
-            if observed.outcome == CompletionOutcome.COMPLETED:
-                # Session completed successfully - will create PR
-                # Add pr-pending immediately (don't wait for publish job)
-                if observed.needs_publish:
-                    actions.append(AddLabelAction(
-                        issue_number=issue_number,
-                        label=self._lm.pr_pending,
-                        reason="session completed - publish job pending",
-                        expected=build_expected_for_mutation(),
-                        issue_key=ik,
-                    ))
-                    logger.debug(
-                        "Planner: projecting pr-pending label for issue #%d (publish job pending)",
-                        issue_number,
-                    )
-            elif observed.outcome == CompletionOutcome.BLOCKED:
-                # Session blocked - add blocked label
-                blocked_label = self._blocked_label_for_record(observed)
-                if plan_context.should_add_label(issue_number, blocked_label):
-                    actions.append(AddLabelAction(
-                        issue_number=issue_number,
-                        label=blocked_label,
-                        reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
-                        expected=build_expected_for_mutation(),
-                        issue_key=ik,
-                    ))
-                    plan_context.record_add(issue_number, blocked_label)
-                    logger.debug("Planner: adding blocked label for issue #%d", issue_number)
-            elif observed.outcome == CompletionOutcome.NEEDS_HUMAN:
-                # Session needs human intervention - use BLOCKED_NEEDS_HUMAN
-                if plan_context.should_add_label(issue_number, self._lm.needs_human):
-                    actions.append(AddLabelAction(
-                        issue_number=issue_number,
-                        label=self._lm.needs_human,
-                        reason="session needs human intervention",
-                        expected=build_expected_for_mutation(),
-                        issue_key=ik,
-                    ))
-                    plan_context.record_add(issue_number, self._lm.needs_human)
-                    logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
-            elif observed.outcome in (CompletionOutcome.REVIEW_APPROVED, CompletionOutcome.REVIEW_CHANGES_REQUESTED):
-                # Review session completed - labels handled by review workflow
-                logger.debug(
-                    "Planner: review session completed for issue #%d, outcome=%s",
-                    issue_number,
-                    observed.outcome,
-                )
-
         return actions
 
     def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:
@@ -763,22 +690,19 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     and rework.pr_number > 0
                 ):
                     actions.append(RemoveLabelAction(
-                        issue_number=rework.pr_number,
-                        label=self._lm.code_reviewed,
-                        reason=(
-                            "post-publish validation failed after review approval; "
-                            "clearing code-reviewed"
-                        ),
+                        issue_number=rework.pr_number, label=self._lm.code_reviewed,
+                        reason="post-publish validation failed; clearing code-reviewed",
                     ))
+                    if rework.clear_needs_human:
+                        actions.append(RemoveLabelAction(
+                            issue_number=rework.pr_number, label=self._lm.needs_human,
+                            reason="post-publish state now reworkable; clearing needs-human",
+                        ))
                     actions.append(AddLabelAction(
-                        issue_number=rework.pr_number,
-                        label=self._lm.needs_rework,
-                        reason=(
-                            "post-publish validation failed after review approval; "
-                            "marking PR for rework"
-                        ),
+                        issue_number=rework.pr_number, label=self._lm.needs_rework,
+                        reason="post-publish validation failed; marking PR for rework",
                     ))
-                    if rework.feedback:
+                    if rework.feedback and not rework.feedback_comment_already_posted:
                         actions.append(AddCommentAction(
                             number=rework.pr_number,
                             is_pr=True,
@@ -897,6 +821,30 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 escalation.pr_number, escalation.kind,
             )
 
+        return actions
+
+    def _plan_merge_queue_enqueues(
+        self, snapshot: OrchestratorSnapshot
+    ) -> list[Action]:
+        """Plan enqueue actions for PRs the merge queue coordinator approved.
+
+        The coordinator owns eligibility (gate passed, not already queued,
+        mergeable-or-behind); the planner only maps each discovered fact to an
+        ``EnqueueToMergeQueueAction`` for the applier to execute.
+        """
+        actions: list[Action] = []
+        for enqueue in snapshot.discovered_merge_queue_enqueues:
+            actions.append(EnqueueToMergeQueueAction(
+                issue_number=enqueue.issue_number,
+                pr_number=enqueue.pr_number,
+                pr_url=enqueue.pr_url,
+                issue_key=enqueue.issue_key or str(enqueue.issue_number),
+                reason=f"PR #{enqueue.pr_number} eligible for merge queue",
+            ))
+            logger.info(
+                "Planner: enqueuing PR #%d to merge queue",
+                enqueue.pr_number,
+            )
         return actions
 
     def _plan_discovered_failures(self, snapshot: OrchestratorSnapshot) -> list[Action]:
@@ -1674,10 +1622,10 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         # Check dependencies
         issue = next((i for i in snapshot.issues if i.number == issue_number), None)
         if issue and self.dependency_evaluator and issue.body:
-            report = self.dependency_evaluator.evaluate(
-                issue.number, issue.body, source_milestone=issue.milestone
+            report = self.dependency_evaluator.evaluate_work_gate(
+                issue.number, issue.body, issue.milestone, emit_event=False
             )
-            if not report.runnable:
-                return f"Blocked by dependencies: {report.summary()}"
+            if not report.can_start_work:
+                return f"Blocked by dependencies: {report.work_summary()}"
 
         return "Unknown reason"
