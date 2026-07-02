@@ -14,6 +14,7 @@ from issue_orchestrator.control.stack_publish_gate import StackPublishGate
 from issue_orchestrator.domain.dependencies import DependencyTarget
 from issue_orchestrator.domain.dependency_gates import PredecessorFacts
 from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 
 
 class _Issue:
@@ -40,11 +41,8 @@ class _Checker:
         self._state = state
         self._milestone = milestone
 
-    def get_issue_state(self, issue_number, repo=None):
-        return self._state
-
-    def get_issue_milestone(self, issue_number, repo=None):
-        return self._milestone
+    def get_dependency_issue_snapshot(self, issue_number, repo=None):
+        return DependencyIssueSnapshot(state=self._state, milestone=self._milestone)
 
 
 class _FactsProvider:

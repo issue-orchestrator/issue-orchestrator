@@ -481,59 +481,78 @@ class DependencyEvaluator:
                 error="Source issue has no milestone but declares dependencies",
             )
 
-        return self._check_edge_state(
-            issue_number, external_id, repo, source_milestone, edge, same_stack_members
+        return self._check_dependency_state(
+            issue_number,
+            external_id,
+            repo,
+            source_milestone,
+            edge,
+            same_stack_members=same_stack_members,
         )
 
-    def _check_edge_state(
+    def _check_dependency_state(
         self,
         issue_number: int,
         external_id: str | None,
         repo: str | None,
         source_milestone: str,
-        edge: ParsedDependencyRef,
-        same_stack_members: frozenset[DependencyTarget],
+        ref: ParsedDependencyRef,
+        *,
+        same_stack_members: frozenset[DependencyTarget] | None = None,
     ) -> Dependency:
-        """State-check a resolved edge with mode-aware milestone scoping."""
-        try:
-            state = self.issue_checker.get_issue_state(issue_number, repo)
-            dep_milestone = self.issue_checker.get_issue_milestone(issue_number, repo)
+        """State-check a resolved dependency using one repository snapshot read.
 
-            if state is None:
+        The legacy ``evaluate()`` path and the live gate path both need the same
+        state + milestone facts. Keeping the snapshot read here prevents those
+        paths from drifting back into separate state/milestone fetches.
+        """
+        try:
+            snapshot = self.issue_checker.get_dependency_issue_snapshot(issue_number, repo)
+
+            if snapshot is None:
                 return Dependency(
                     issue_number=issue_number, external_id=external_id, repository=repo,
-                    mode=edge.mode, state=DependencyState.MISSING,
-                    error="Issue not found or inaccessible", milestone=dep_milestone,
+                    mode=ref.mode, state=DependencyState.MISSING,
+                    error="Issue not found or inaccessible",
                 )
 
-            milestone_error = self._check_milestone_scope_for_edge(
-                dep_milestone, source_milestone, edge, issue_number, same_stack_members
-            )
+            if same_stack_members is None:
+                milestone_error = self._check_milestone_scope(
+                    snapshot.milestone, source_milestone
+                )
+            else:
+                milestone_error = self._check_milestone_scope_for_edge(
+                    snapshot.milestone,
+                    source_milestone,
+                    ref,
+                    issue_number,
+                    same_stack_members,
+                )
             if milestone_error:
                 return Dependency(
                     issue_number=issue_number, external_id=external_id, repository=repo,
-                    mode=edge.mode, state=DependencyState.CROSS_MILESTONE,
-                    error=milestone_error, milestone=dep_milestone,
+                    mode=ref.mode, state=DependencyState.CROSS_MILESTONE,
+                    error=milestone_error, milestone=snapshot.milestone,
                 )
 
             dep_state = (
                 DependencyState.SATISFIED
-                if state.lower() == "closed"
+                if snapshot.state.lower() == "closed"
                 else DependencyState.UNSATISFIED
             )
             return Dependency(
                 issue_number=issue_number, external_id=external_id, repository=repo,
-                mode=edge.mode, state=dep_state, milestone=dep_milestone,
+                mode=ref.mode, state=dep_state, milestone=snapshot.milestone,
             )
 
         except Exception as e:
             logger.debug(
-                "Error checking dependency edge %s: %s",
-                edge.external_id or f"#{issue_number}", e,
+                "Error checking dependency %s: %s",
+                ref.external_id or f"#{issue_number}", e,
             )
             return Dependency(
                 issue_number=issue_number, external_id=external_id, repository=repo,
-                mode=edge.mode, state=DependencyState.UNKNOWN, error=str(e),
+                mode=ref.mode, state=DependencyState.UNKNOWN, error=str(e),
             )
 
     def _check_milestone_scope_for_edge(
@@ -702,7 +721,13 @@ class DependencyEvaluator:
         if issue_number is None:
             return Dependency(issue_number=None, external_id=external_id, repository=repo, state=DependencyState.UNKNOWN, error="No issue number to check")
 
-        return self._check_issue_state(issue_number, external_id, repo, source_milestone, ref)
+        return self._check_dependency_state(
+            issue_number,
+            external_id,
+            repo,
+            source_milestone,
+            ref,
+        )
 
     class _ExternalIdResult:
         """Result of resolving an external ID."""
@@ -742,34 +767,6 @@ class DependencyEvaluator:
             return self._ExternalIdResult(issue_number=handle)
 
         return self._ExternalIdResult(error=True, dependency=Dependency(issue_number=None, external_id=external_id, state=DependencyState.UNKNOWN, error=f"Resolver returned non-int handle: {type(handle).__name__}"))
-
-    def _check_issue_state(
-        self,
-        issue_number: int,
-        external_id: str | None,
-        repo: str | None,
-        source_milestone: str,
-        ref: ParsedDependencyRef,
-    ) -> Dependency:
-        """Check the state of a dependency issue."""
-        try:
-            snapshot = self.issue_checker.get_dependency_issue_snapshot(issue_number, repo)
-
-            if snapshot is None:
-                return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.MISSING, error="Issue not found or inaccessible")
-
-            # Check milestone scope
-            milestone_error = self._check_milestone_scope(snapshot.milestone, source_milestone)
-            if milestone_error:
-                return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.CROSS_MILESTONE, error=milestone_error, milestone=snapshot.milestone)
-
-            # Check open/closed state
-            dep_state = DependencyState.SATISFIED if snapshot.state.lower() == "closed" else DependencyState.UNSATISFIED
-            return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=dep_state, milestone=snapshot.milestone)
-
-        except Exception as e:
-            logger.debug("Error checking dependency %s: %s", ref.external_id or f"#{issue_number}", e)
-            return Dependency(issue_number=issue_number, external_id=external_id, repository=repo, state=DependencyState.UNKNOWN, error=str(e))
 
     def _check_milestone_scope(self, dep_milestone: str | None, source_milestone: str) -> str | None:
         """Check if dependency is in valid milestone scope. Returns error message or None."""

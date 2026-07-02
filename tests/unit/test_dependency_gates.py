@@ -36,6 +36,7 @@ from issue_orchestrator.domain.dependency_gates import (
     detect_cycles,
 )
 from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 
 
 class MockIssueChecker:
@@ -45,20 +46,25 @@ class MockIssueChecker:
         self.state: dict[int, str] = {}
         self.milestone: dict[int, str | None] = {}
         self.error_on: set[int] = set()
+        self.snapshot_calls: list[tuple[int, str | None]] = []
 
     def add(self, number: int, state: str, milestone: str | None = "M1"):
         self.state[number] = state
         self.milestone[number] = milestone
 
-    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+    def get_dependency_issue_snapshot(
+        self, issue_number: int, repo: str | None = None
+    ) -> DependencyIssueSnapshot | None:
+        self.snapshot_calls.append((issue_number, repo))
         if issue_number in self.error_on:
             raise RuntimeError("API error")
-        return self.state.get(issue_number)
-
-    def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
-        if issue_number in self.error_on:
-            raise RuntimeError("API error")
-        return self.milestone.get(issue_number)
+        state = self.state.get(issue_number)
+        if state is None:
+            return None
+        return DependencyIssueSnapshot(
+            state=state,
+            milestone=self.milestone.get(issue_number),
+        )
 
 
 @pytest.fixture

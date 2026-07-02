@@ -91,6 +91,7 @@ from issue_orchestrator.ports import (
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.adapters.github import GitHubAdapter
@@ -961,11 +962,15 @@ class TestLaunchIssueSession:
         )
 
         class _Checker:
-            def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
-                return "open" if issue_number == 100 else None  # dependency still open
-
-            def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
-                return "M1"
+            def get_dependency_issue_snapshot(
+                self, issue_number: int, repo: str | None = None
+            ) -> DependencyIssueSnapshot | None:
+                if issue_number != 100:
+                    return None
+                return DependencyIssueSnapshot(
+                    state="open",  # dependency still open
+                    milestone="M1",
+                )
 
         evaluator = DependencyEvaluator(issue_checker=_Checker(), events=NullEventSink())
 
@@ -1000,11 +1005,15 @@ class TestLaunchIssueSession:
         )
 
         class _Checker:
-            def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
-                return "open" if issue_number == 200 else None  # predecessor still open
-
-            def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
-                return "M1"
+            def get_dependency_issue_snapshot(
+                self, issue_number: int, repo: str | None = None
+            ) -> DependencyIssueSnapshot | None:
+                if issue_number != 200:
+                    return None
+                return DependencyIssueSnapshot(
+                    state="open",  # predecessor still open
+                    milestone="M1",
+                )
 
         class _MutableProvider:
             """Returns whatever facts are current at gather time."""
@@ -1111,11 +1120,13 @@ class TestLaunchIssueSession:
         )
 
         class _Checker:
-            def get_issue_state(self, issue_number, repo=None):
-                return "open" if issue_number == 200 else None  # predecessor open
-
-            def get_issue_milestone(self, issue_number, repo=None):
-                return "M1"
+            def get_dependency_issue_snapshot(self, issue_number, repo=None):
+                if issue_number != 200:
+                    return None
+                return DependencyIssueSnapshot(
+                    state="open",  # predecessor open
+                    milestone="M1",
+                )
 
         evaluator = DependencyEvaluator(
             issue_checker=_Checker(), events=mock_events,

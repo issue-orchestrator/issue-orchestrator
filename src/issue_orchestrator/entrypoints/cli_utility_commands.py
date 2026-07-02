@@ -32,16 +32,6 @@ class _DemoIssueChecker:
             milestone=self.milestones.get(issue_number),
         )
 
-    def get_issue_state(
-        self, issue_number: int, repo: str | None = None
-    ) -> str | None:
-        return self.states.get(issue_number)
-
-    def get_issue_milestone(
-        self, issue_number: int, repo: str | None = None
-    ) -> str | None:
-        return self.milestones.get(issue_number)
-
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Run unified diagnostics on configuration and environment."""

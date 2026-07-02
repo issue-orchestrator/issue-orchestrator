@@ -361,6 +361,28 @@ class TestDependencyGraphEvaluation:
         assert checker.state_calls == []
         assert checker.milestone_calls == []
 
+    def test_work_gate_uses_single_snapshot_fetch_per_dependency(self, evaluator, checker):
+        """The live gate path uses the same one-read snapshot path as evaluate()."""
+        checker.issues[10] = "closed"
+        checker.issues[20] = "closed"
+        checker.issues[30] = "closed"
+
+        report = evaluator.evaluate_work_gate(
+            issue_number=1,
+            issue_body="""
+            Depends-on: #10
+            Depends-on: #20
+            Depends-on: #30
+            """,
+            source_milestone="M1",
+        )
+
+        assert report.can_start_work
+        assert len(report.dependencies) == 3
+        assert checker.snapshot_calls == [(10, None), (20, None), (30, None)]
+        assert checker.state_calls == []
+        assert checker.milestone_calls == []
+
     def test_single_unsatisfied_blocks_even_with_many_satisfied(self, evaluator, checker):
         """One unsatisfied dependency blocks the issue."""
         checker.issues[10] = "closed"
