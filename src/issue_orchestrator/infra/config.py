@@ -1,9 +1,10 @@
 """Configuration loading and management."""
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 import yaml
 
@@ -1222,6 +1223,50 @@ class Config:
 
         return save_path
 
+    def save_document_patch(
+        self,
+        patch: Callable[[dict[str, Any]], Any],
+        path: Optional[Path] = None,
+    ) -> Path:
+        """Persist config by patching the existing on-disk YAML document.
+
+        Unlike :meth:`save`, which rebuilds a minimal canonical document via
+        :meth:`to_dict` and drops any operational config that serializer does
+        not represent (for example the whole ``repo.github`` auth subsection),
+        this reads the current YAML file, lets ``patch`` mutate the parsed
+        mapping in place, and writes it back. Only the keys ``patch`` touches
+        change; every unrelated section, key, and its order is preserved, and
+        the file's leading comment/header block is re-emitted.
+
+        Used by the settings page so a targeted one-tab edit never rewrites or
+        prunes unrelated live-run configuration. ``patch`` receives the parsed
+        mapping and mutates it in place (its return value is ignored).
+
+        Args:
+            patch: Callable that mutates the parsed YAML mapping in place.
+            path: Path to save to. If None, uses ``self.config_path``.
+
+        Returns:
+            The path the config was saved to.
+
+        Raises:
+            ValueError: If no path is available, or the on-disk document is not
+                a mapping.
+        """
+        save_path = path or self.config_path
+        if save_path is None:
+            raise ValueError("No path specified and config_path is not set")
+
+        document, header = _read_yaml_document_with_header(save_path)
+        patch(document)
+
+        with open(save_path, "w") as f:
+            if header:
+                f.write(header)
+            yaml.dump(document, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        return save_path
+
     @classmethod
     def load(cls, config_path: Path, overrides: Optional[list[str]] = None) -> "Config":
         """Load configuration from YAML file."""
@@ -1465,6 +1510,39 @@ class Config:
             raise ValueError(
                 "Configuration errors:\n  - " + "\n  - ".join(errors)
             )
+
+
+def _read_yaml_document_with_header(path: Path) -> tuple[dict[str, Any], str]:
+    """Read a YAML file into a mapping plus its leading comment block.
+
+    Returns ``(document, header)`` where ``document`` is the parsed mapping
+    (``{}`` when the file is missing or empty) and ``header`` is the verbatim
+    block of leading comment/blank lines. ``header`` lets a document-preserving
+    save re-emit the file's top header, which ``yaml.safe_load`` would
+    otherwise strip. The document is parsed WITHOUT ``${VAR}`` expansion so
+    secrets referenced via environment variables are never materialized into
+    the saved file.
+
+    Raises:
+        ValueError: If the file exists and its top-level document is not a
+            mapping.
+    """
+    if not path.exists():
+        return {}, ""
+    text = path.read_text()
+    document = yaml.safe_load(text)
+    if document is None:
+        document = {}
+    if not isinstance(document, dict):
+        raise ValueError(f"Config document at {path} is not a mapping")
+    header_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            header_lines.append(line)
+        else:
+            break
+    return document, "".join(header_lines)
 
 
 def _apply_yaml_overrides(data: dict, overrides: list[str]) -> None:
