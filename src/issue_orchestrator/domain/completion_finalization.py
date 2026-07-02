@@ -36,16 +36,23 @@ class CompletionFinalizationDecision(Enum):
 
 @dataclass(frozen=True)
 class ReviewExchangeRunningQuery:
-    """Typed query for review-exchange jobs that may already be in flight."""
+    """Typed query for review-exchange jobs that may already be in flight.
+
+    ``run_id`` scopes the query to one coding run so repeated completion checks
+    for the *same* run collapse onto one background exchange, while a retry
+    (fresh coding run → new ``run_id``) never observes a prior run's job state.
+    """
 
     issue_number: int
     session_name: str | None
     requested_actions: tuple[RequestedAction, ...]
+    run_id: str
 
     def __post_init__(self) -> None:
         _require_positive_issue_number(self.issue_number)
         _require_session_name(self.session_name)
         _require_requested_actions(self.requested_actions)
+        _require_non_empty_string(self.run_id, "run_id")
 
     @property
     def requires_review_exchange(self) -> bool:
