@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from .action_applier import ActionApplier
     from .completion_handler import CompletionHandler
     from .provider_resilience import ProviderResilienceManager
+    from .publish_recovery import PublishRecoveryService
     from .session_controller import SessionController, SessionDecision
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     completion_detail: Optional[dict[str, Any]] = None,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
+    publish_recovery: Optional["PublishRecoveryService"] = None,
 ) -> None:
     """Handle session completion - moved from Orchestrator per method table.
 
@@ -277,6 +279,21 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         # registry cleanup is separate from the optional UI tab/worktree cleanup
         # action, otherwise a finished agent can be rediscovered as running.
         _terminate_finished_session(session, status, kill_session_fn)
+
+    # Persist durable retry locators BEFORE applying the publish-failed labels
+    # below. The completion actions include publish-failed / publish-fail-count
+    # labels; a crash between applying those and recording locators would leave
+    # GitHub marked publish-failed with no locators, making the issue visibly
+    # label-retryable while Retry Publish stays unavailable. Recording first
+    # closes that window. No-op for non-publish failures.
+    if publish_recovery is not None:
+        publish_recovery.record_publish_failure(
+            session,
+            processing_errors,
+            review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
+        )
+
     run_dir = resolve_session_run_dir(session_output, session)
     session_output.attach_claude_log(run_dir)
     run_session_analysis(run_dir)
@@ -376,6 +393,7 @@ def process_active_sessions(
     config: Config,
     completion_dispatcher: "CompletionDispatcher | None" = None,
     provider_resilience: "ProviderResilienceManager | None" = None,
+    publish_recovery: "PublishRecoveryService | None" = None,
 ) -> None:
     """Process active sessions - moved from Orchestrator per method table.
 
@@ -413,6 +431,7 @@ def process_active_sessions(
             config=config,
             session_output=session_controller.session_output,
             provider_resilience=provider_resilience,
+            publish_recovery=publish_recovery,
         )
 
     # Apply decisions that finished on a prior tick (background dispatcher)
@@ -525,6 +544,7 @@ def _apply_completed_decision(
     config: Config,
     session_output: SessionOutput,
     provider_resilience: "ProviderResilienceManager | None" = None,
+    publish_recovery: "PublishRecoveryService | None" = None,
 ) -> None:
     """Apply a finished completion decision on the tick thread."""
     if completed.error is not None:
@@ -576,6 +596,7 @@ def _apply_completed_decision(
         blocked_label=decision.blocked_label,
         blocked_reason=decision.blocked_reason,
         completion_detail=decision.completion_detail,
+        publish_recovery=publish_recovery,
     )
     elapsed = time.monotonic() - started
     if elapsed > 5:

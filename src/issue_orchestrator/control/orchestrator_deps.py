@@ -47,8 +47,6 @@ if TYPE_CHECKING:
     from .state_machine_manager import StateMachineManager
     from .completion_processor import CompletionProcessor
     from .completion_dispatcher import CompletionDispatcher
-    from .completion_observer import CompletionObserver
-    from .publish_executor import PublishJobExecutor
     from .publish_recovery import PublishRecoveryService
     from .session_controller import SessionController
     from .health_gate import HealthGate
@@ -113,9 +111,7 @@ class OrchestratorDeps:
     claim_gate: "ClaimGate"
     lease_renewer: "LeaseRenewer"
 
-    # Async completion processing
-    completion_observer: "CompletionObserver"
-    publish_executor: "PublishJobExecutor"
+    # Manual publish recovery ("Retry publish"): off-thread republish + reconcile
     publish_recovery: "PublishRecoveryService"
 
     # Cross-cutting infrastructure services (label mgmt, persistence, etc.)

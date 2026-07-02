@@ -56,14 +56,6 @@
       "rule_id": "control_policy_branch_sites",
       "value": 35
     },
-    "control_policy_branch_sites:src/issue_orchestrator/control/completion_observer.py": {
-      "detail": "2 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/control/completion_observer.py",
-      "path": "src/issue_orchestrator/control/completion_observer.py",
-      "rule_id": "control_policy_branch_sites",
-      "value": 2
-    },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_pr_collision.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -144,14 +136,6 @@
       "rule_id": "control_policy_branch_sites",
       "value": 4
     },
-    "control_policy_branch_sites:src/issue_orchestrator/control/job_store.py": {
-      "detail": "1 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/control/job_store.py",
-      "path": "src/issue_orchestrator/control/job_store.py",
-      "rule_id": "control_policy_branch_sites",
-      "value": 1
-    },
     "control_policy_branch_sites:src/issue_orchestrator/control/label_manager.py": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -216,14 +200,6 @@
       "rule_id": "control_policy_branch_sites",
       "value": 1
     },
-    "control_policy_branch_sites:src/issue_orchestrator/control/publish_executor.py": {
-      "detail": "1 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/control/publish_executor.py",
-      "path": "src/issue_orchestrator/control/publish_executor.py",
-      "rule_id": "control_policy_branch_sites",
-      "value": 1
-    },
     "control_policy_branch_sites:src/issue_orchestrator/control/publish_recovery.py": {
       "detail": "13 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -231,6 +207,14 @@
       "path": "src/issue_orchestrator/control/publish_recovery.py",
       "rule_id": "control_policy_branch_sites",
       "value": 13
+    },
+    "control_policy_branch_sites:src/issue_orchestrator/control/publish_retry_finalize.py": {
+      "detail": "6 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/publish_retry_finalize.py",
+      "path": "src/issue_orchestrator/control/publish_retry_finalize.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 6
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/queue_cache.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
@@ -343,14 +327,6 @@
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "control_policy_branch_sites",
       "value": 17
-    },
-    "control_policy_branch_sites:src/issue_orchestrator/control/session_observation.py": {
-      "detail": "3 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/control/session_observation.py",
-      "path": "src/issue_orchestrator/control/session_observation.py",
-      "rule_id": "control_policy_branch_sites",
-      "value": 3
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/session_review_support.py": {
       "detail": "1 branch site(s) mention lifecycle/control terms",
@@ -1297,12 +1273,12 @@
       "value": 5
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/action_applier.py": {
-      "detail": "1756 lines exceeds budget 800",
+      "detail": "1762 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/action_applier.py",
       "path": "src/issue_orchestrator/control/action_applier.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1756
+      "value": 1762
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
       "detail": "963 lines exceeds budget 800",
@@ -1537,12 +1513,12 @@
       "value": 1274
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/orchestrator.py": {
-      "detail": "1295 lines exceeds budget 800",
+      "detail": "1059 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/orchestrator.py",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1295
+      "value": 1059
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/supervisor.py": {
       "detail": "984 lines exceeds budget 800",
@@ -2576,11 +2552,19 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/publish_recovery.py:issue-orchestrator.direct-runtime-state-mutation:0f1614ab9602": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 364: Route orchestrator runtime state collection mutations through an owner abstraction.",
+    "semgrep_owner_boundaries:src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:0f1614ab9602": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 199: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/publish_recovery.py:issue-orchestrator.direct-runtime-state-mutation:0f1614ab9602",
-      "path": "src/issue_orchestrator/control/publish_recovery.py",
+      "metric_id": "src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:0f1614ab9602",
+      "path": "src/issue_orchestrator/control/publish_retry_finalize.py",
+      "rule_id": "semgrep_owner_boundaries",
+      "value": 1
+    },
+    "semgrep_owner_boundaries:src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:d9d1893ba50b": {
+      "detail": "issue-orchestrator.direct-runtime-state-mutation line 110: Route orchestrator runtime state collection mutations through an owner abstraction.",
+      "kind": "semgrep_finding",
+      "metric_id": "src/issue_orchestrator/control/publish_retry_finalize.py:issue-orchestrator.direct-runtime-state-mutation:d9d1893ba50b",
+      "path": "src/issue_orchestrator/control/publish_retry_finalize.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
@@ -2680,22 +2664,6 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/session_observation.py:issue-orchestrator.direct-runtime-state-mutation:c49fc209558f": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 133: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/session_observation.py:issue-orchestrator.direct-runtime-state-mutation:c49fc209558f",
-      "path": "src/issue_orchestrator/control/session_observation.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/session_observation.py:issue-orchestrator.direct-runtime-state-mutation:d2909cb27256": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 58: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/session_observation.py:issue-orchestrator.direct-runtime-state-mutation:d2909cb27256",
-      "path": "src/issue_orchestrator/control/session_observation.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/session_routing.py:issue-orchestrator.direct-runtime-state-mutation:9c3454ea32bd": {
       "detail": "issue-orchestrator.direct-runtime-state-mutation line 48: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
@@ -2792,42 +2760,10 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:520ca8389bc0": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 766: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:520ca8389bc0",
-      "path": "src/issue_orchestrator/infra/orchestrator.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
     "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:7b590fc59f5f": {
       "detail": "issue-orchestrator.direct-runtime-state-mutation line 884: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:7b590fc59f5f",
-      "path": "src/issue_orchestrator/infra/orchestrator.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:f1f3ba7b0b5b": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 753: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:f1f3ba7b0b5b",
-      "path": "src/issue_orchestrator/infra/orchestrator.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 760: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1",
-      "path": "src/issue_orchestrator/infra/orchestrator.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-817": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 817: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/infra/orchestrator.py:issue-orchestrator.direct-runtime-state-mutation:fdc4fb5b8ce1:line-817",
       "path": "src/issue_orchestrator/infra/orchestrator.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
@@ -5941,14 +5877,6 @@
       "kind": "ui_openapi_uncontracted_route",
       "metric_id": "uncontracted:GET /api/milestones",
       "path": "src/issue_orchestrator/entrypoints/web_settings_routes.py",
-      "rule_id": "ui_openapi_routes",
-      "value": 1
-    },
-    "ui_openapi_routes:uncontracted:GET /api/publish-jobs": {
-      "detail": "GET /api/publish-jobs is a browser-facing JSON route absent from docs/api/ui-openapi.json; add it to the UI OpenAPI contract or explicitly accept the ratchet",
-      "kind": "ui_openapi_uncontracted_route",
-      "metric_id": "uncontracted:GET /api/publish-jobs",
-      "path": "src/issue_orchestrator/entrypoints/web_status_routes.py",
       "rule_id": "ui_openapi_routes",
       "value": 1
     },

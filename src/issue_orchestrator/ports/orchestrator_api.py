@@ -14,9 +14,6 @@ class OrchestratorApi(Protocol):
     def info(self) -> dict[str, Any]:
         ...
 
-    def publish_jobs(self, issue_number: int | None = None) -> dict[str, Any]:
-        ...
-
     def excluded_issues(self) -> dict[str, Any]:
         ...
 

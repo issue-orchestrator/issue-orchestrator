@@ -91,10 +91,10 @@ if TYPE_CHECKING:
     from ..control.pr_scanner import PRScanner
     from ..control.session_restorer import SessionRestorer
     from ..control.completion_processor import CompletionProcessor
-    from ..control.completion_observer import CompletionObserver
-    from ..control.publish_executor import PublishJobExecutor
+    from ..control.publish_recovery import PublishRecoveryService
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
+    from ..ports.fresh_issue_reader import FreshIssueReader
     from ..domain.attempt import AttemptKey
     from ..domain.issue_key import IssueKey
     from ..ports.e2e_issue_tracker import E2EIssueTracker
@@ -528,62 +528,40 @@ def _wire_stack_publish_gate(
     )
 
 
-def _create_async_completion_components(
+def _build_publish_recovery(
+    *,
+    repository_host: "GitHubAdapter",
     completion_processor: "CompletionProcessor",
-    events: EventSink,
-    session_output: FileSystemSessionOutput,
-    command_runner: LocalCommandRunner,
+    label_manager: "LabelManager",
+    fresh_issue_reader: "FreshIssueReader",
+    action_applier: "ActionApplier",
     config: Config,
-    enable_persistence: bool = True,
-) -> tuple["CompletionObserver", "PublishJobExecutor"]:
-    """Create async completion processing components.
+) -> "PublishRecoveryService":
+    """Wire the "Retry publish" owner: durable locator store + dedicated runner.
 
-    These components enable non-blocking completion handling:
-    - CompletionObserver: Fast observation of completions (no I/O)
-    - PublishJobExecutor: Background execution of publish jobs
-    - JobStore: SQLite persistence for crash recovery (optional)
-
-    Args:
-        completion_processor: For executing publish actions
-        events: Event sink for job lifecycle events
-        session_output: For reading session logs
-        command_runner: For running validation commands
-        config: Application configuration
-        enable_persistence: Whether to enable SQLite job persistence
-
-    Returns:
-        Tuple of (CompletionObserver, PublishJobExecutor)
+    The republish runs on its own :class:`ThreadBackgroundJobRunner` (drained by
+    ``PublishRecoveryService.drain_completed_retries`` each tick), NOT the shared
+    completion/review-exchange runners — those are drained by other owners and
+    would steal or drop republish results.
     """
-    from ..control.completion_observer import CompletionObserver
-    from ..control.publish_executor import PublishJobExecutor, ExecutorConfig
-    from ..control.job_store import JobStore, get_default_db_path
-
-    completion_observer = CompletionObserver(session_output=session_output)
-
-    executor_config = ExecutorConfig(
-        max_workers=2,  # Max concurrent publish jobs
-        job_timeout_seconds=600,  # 10 minutes max per job
-        enable_validation=config.validation.quick.cmd is not None,
-        validation_cmd=config.validation.quick.cmd,
-        validation_timeout_seconds=config.validation.quick.timeout_seconds,
+    from ..control.publish_recovery import PublishRecoveryService
+    from ..execution.json_publish_retry_locator_store import (
+        JsonPublishRetryLocatorStore,
     )
 
-    # Create job store for persistence (crash recovery)
-    job_store = None
-    if enable_persistence:
-        db_path = get_default_db_path(config.repo_root)
-        job_store = JobStore(db_path)
-        logger.info("[BOOTSTRAP] Job store enabled: %s", db_path)
-
-    publish_executor = PublishJobExecutor(
+    locator_store = JsonPublishRetryLocatorStore(
+        state_dir(config.repo_root) / "publish_retry_locators.json"
+    )
+    return PublishRecoveryService(
+        repository_host=repository_host,
         completion_processor=completion_processor,
-        events=events,
-        config=executor_config,
-        command_runner=command_runner if config.validation.quick.cmd else None,
-        job_store=job_store,
+        locator_store=locator_store,
+        runner=ThreadBackgroundJobRunner(),
+        label_manager=label_manager,
+        fresh_issue_reader=fresh_issue_reader,
+        action_applier=action_applier,
+        code_review_agent_configured=bool(config.code_review_agent),
     )
-
-    return completion_observer, publish_executor
 
 
 def _validate_required_deps(
@@ -859,11 +837,6 @@ def build_orchestrator(
         completion_processor, _dependency_evaluator, github, command_runner, config,
     )
 
-    # Create async completion components (observer + executor)
-    completion_observer, publish_executor = _create_async_completion_components(
-        completion_processor, events, session_output, command_runner, config
-    ) if completion_processor else (None, None)
-
     # Create health gate
     health_gate = HealthGate(
         max_concurrent_sessions=config.max_concurrent_sessions,
@@ -891,23 +864,17 @@ def build_orchestrator(
     assert completion_processor is not None
     assert session_controller_instance is not None
     assert fresh_issue_reader is not None
-    assert completion_observer is not None
-    assert publish_executor is not None
     assert manifest_downloader is not None
     assert e2e_issue_tracker is not None
 
-    from ..control.publish_recovery import PublishRecoveryService
-    publish_recovery = PublishRecoveryService(
+    publish_recovery = _build_publish_recovery(
         repository_host=github,
-        publish_executor=publish_executor,
+        completion_processor=completion_processor,
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
+        config=config,
     )
-
-    # Wire up worktree removal callback for async completion job tracking
-    # When a worktree is removed, mark associated jobs as WORKTREE_GONE
-    action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
 
     # Build infrastructure services bundle
     from ..control.infra_services import InfraServices
@@ -915,9 +882,13 @@ def build_orchestrator(
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire label_store into action_applier for write-through persistence
+    # Wire post-construction collaborators into action_applier: label_store for
+    # write-through persistence, and publish_recovery so its issue terminal
+    # boundaries abandon publish retries via the shared runtime terminator
+    # (post-construction because PublishRecoveryService depends on this applier).
     if action_applier is not None:
         action_applier.label_store = label_store
+        action_applier.publish_recovery = publish_recovery
 
     infra_services = InfraServices(
         label_manager=label_manager,
@@ -966,8 +937,6 @@ def build_orchestrator(
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
-        completion_observer=completion_observer,
-        publish_executor=publish_executor,
         publish_recovery=publish_recovery,
         services=infra_services,
     )
@@ -1228,22 +1197,13 @@ def build_orchestrator_for_testing(
         config=lease_config,
     )
 
-    # Create async completion components for testing (persistence disabled by default)
-    completion_observer, publish_executor = _create_async_completion_components(
-        completion_processor, events, session_output, command_runner, config,
-        enable_persistence=False,  # Disable SQLite in tests to avoid file I/O
-    )
-
-    # Wire up worktree removal callback for async completion job tracking
-    action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
-
-    from ..control.publish_recovery import PublishRecoveryService
-    publish_recovery = PublishRecoveryService(
+    publish_recovery = _build_publish_recovery(
         repository_host=github,
-        publish_executor=publish_executor,
+        completion_processor=completion_processor,
         label_manager=label_manager,
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
+        config=config,
     )
 
     # Queue cache store for testing (uses repo_root state dir)
@@ -1257,9 +1217,12 @@ def build_orchestrator_for_testing(
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire label_store into action_applier for write-through persistence
+    # Wire post-construction collaborators into action_applier (same as the
+    # primary path): label_store for write-through persistence, publish_recovery
+    # so issue terminal boundaries abandon publish retries.
     if action_applier is not None:
         action_applier.label_store = label_store
+        action_applier.publish_recovery = publish_recovery
 
     infra_services = InfraServices(
         label_manager=label_manager,
@@ -1306,8 +1269,6 @@ def build_orchestrator_for_testing(
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
-        completion_observer=completion_observer,
-        publish_executor=publish_executor,
         publish_recovery=publish_recovery,
         services=infra_services,
     )

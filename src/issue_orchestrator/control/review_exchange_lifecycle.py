@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Iterable, Protocol
 
 from .completion_review_exchange import is_review_exchange_job_for_issue
 
@@ -21,6 +21,18 @@ if TYPE_CHECKING:
     )
     from .background_job_supervisor import BackgroundJobSupervisor
     from .session_manager import SessionManager, SessionRef
+
+
+class PublishRetryAbandoner(Protocol):
+    """Issue-scoped publish-retry teardown seam for the runtime terminator.
+
+    ``PublishRecoveryService`` implements this structurally. Publish-retry work
+    runs on its own owner/runner outside the review-exchange supervisor, so the
+    shared issue-runtime boundary must abandon it explicitly or a late republish
+    could repopulate an already-terminated issue.
+    """
+
+    def abandon_issue(self, issue_number: int) -> None: ...
 
 from .session_manager import SessionType
 
@@ -99,6 +111,7 @@ def terminate_issue_runtime(
     job_supervisor: "BackgroundJobSupervisor | None",
     session_manager: "SessionManager | None" = None,
     active_sessions: list["Session"] | None = None,
+    publish_recovery: "PublishRetryAbandoner | None" = None,
     session_types: Iterable[SessionType] = ISSUE_RUNTIME_SESSION_TYPES,
 ) -> IssueRuntimeTermination:
     """Apply an issue terminal boundary to every issue-scoped runtime owner.
@@ -107,7 +120,9 @@ def terminate_issue_runtime(
     ``rework-N`` sessions are stopped when a ``SessionManager`` is supplied.
     If an active-session registry is supplied, stale records for already-gone
     issue/rework sessions are cleared in the same boundary so queue eligibility
-    does not remain blocked by a dead terminal.
+    does not remain blocked by a dead terminal. When a ``PublishRetryAbandoner``
+    is supplied, any in-flight/stored publish retry for the issue is abandoned in
+    the same boundary so a late republish cannot repopulate a terminated issue.
     """
     refs = tuple(_issue_runtime_session_refs(issue_number, session_types))
     active_names = _active_session_names(active_sessions)
@@ -124,6 +139,12 @@ def terminate_issue_runtime(
         pair_registry=pair_registry,
         job_supervisor=job_supervisor,
     )
+
+    if publish_recovery is not None:
+        # Publish-retry work has its own owner/runner outside the review-exchange
+        # supervisor, so terminate it on the same boundary. Idempotent: a no-op
+        # when the issue has no stored/in-flight retry.
+        publish_recovery.abandon_issue(issue_number)
 
     stopped: list[str] = []
     stale: list[str] = []

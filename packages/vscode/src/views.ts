@@ -6,7 +6,6 @@ import type {
   ActiveSession,
   PendingReview,
   HistoryEntry,
-  PublishJob,
 } from "./types.js";
 
 import type { OrchestratorClient } from "./orchestratorClient.js";
@@ -20,7 +19,6 @@ const SECTION = {
   history: "History",
   reviews: "Reviews",
   diagnostics: "Diagnostics",
-  publishJobs: "Publish Jobs",
 } as const;
 
 class SectionItem extends vscode.TreeItem {
@@ -69,14 +67,6 @@ class ReviewItem extends vscode.TreeItem {
     this.description = description;
     this.tooltip = tooltip;
     this.contextValue = "issue";
-  }
-}
-
-class PublishJobItem extends vscode.TreeItem {
-  constructor(label: string, description?: string, tooltip?: string) {
-    super(label, vscode.TreeItemCollapsibleState.None);
-    this.description = description;
-    this.tooltip = tooltip;
   }
 }
 
@@ -162,7 +152,6 @@ export class OrchestratorTreeDataProvider implements vscode.TreeDataProvider<vsc
         new SectionItem("history", `${SECTION.history} (${this.snapshot.history.count})`),
         new SectionItem("reviews", `${SECTION.reviews} (${this.snapshot.status.pending_reviews.length})`),
         new SectionItem("diagnostics", SECTION.diagnostics),
-        new SectionItem("publishJobs", `${SECTION.publishJobs} (${this.snapshot.publish_jobs.count})`),
       ];
     }
 
@@ -182,8 +171,6 @@ export class OrchestratorTreeDataProvider implements vscode.TreeDataProvider<vsc
           return this.buildReviewItems(this.snapshot.status.pending_reviews);
         case "diagnostics":
           return this.buildDiagnosticsItems();
-        case "publishJobs":
-          return this.buildPublishJobsItems(this.snapshot.publish_jobs.jobs);
         default:
           return [];
       }
@@ -248,14 +235,6 @@ export class OrchestratorTreeDataProvider implements vscode.TreeDataProvider<vsc
     items.push(new InfoItem("Stale Issues", String(this.snapshot?.stale.count ?? 0)));
     items.push(new InfoItem("Excluded Issues", String(this.snapshot?.excluded.count ?? 0)));
     return items;
-  }
-
-  private buildPublishJobsItems(jobs: PublishJob[]): vscode.TreeItem[] {
-    return jobs.map((job) => {
-      const label = `#${job.issue_number} ${job.status}`;
-      const description = job.pr_url ? "PR linked" : "";
-      return new PublishJobItem(label, description, job.error_message || undefined);
-    });
   }
 
   private updateStatusBar(): void {

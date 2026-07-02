@@ -16,7 +16,6 @@ from ..domain.models import (
     DiscoveredReview,
     DiscoveredRetrospectiveReview,
     DiscoveredRework,
-    ObservedCompletion,
     PendingReview,
     PendingRetrospectiveReview,
     PendingRework,
@@ -79,8 +78,6 @@ class OrchestratorSnapshot:
     failed_this_cycle: frozenset[int] = field(default_factory=frozenset)
     # Issues that completed this session (have session_history entries)
     session_history_issue_numbers: frozenset[int] = field(default_factory=frozenset)
-    # Observed completions pending publish job submission (async completion processing)
-    observed_completions: tuple[ObservedCompletion, ...] = field(default_factory=tuple)
 
     @property
     def active_count(self) -> int:
@@ -119,7 +116,6 @@ class OrchestratorSnapshot:
         cleanup_facts: Optional[CleanupFacts] = None,
         stale_in_progress_issues: Sequence[Issue] = (),
         stale_claim_issues: Sequence[Issue] = (),
-        observed_completions: Sequence[ObservedCompletion] = (),
     ) -> "OrchestratorSnapshot":
         """Create snapshot from mutable state.
 
@@ -139,7 +135,6 @@ class OrchestratorSnapshot:
             cleanup_facts: Facts about pending cleanups and their review status
             stale_in_progress_issues: Issues with stale in-progress labels
             stale_claim_issues: Issues with stale/expired claims
-            observed_completions: Completions observed this tick (for immediate label projection)
         """
         return cls(
             issues=tuple(issues),
@@ -175,7 +170,6 @@ class OrchestratorSnapshot:
             stale_in_progress_issues=tuple(stale_in_progress_issues),
             stale_claim_issues=tuple(stale_claim_issues),
             failed_this_cycle=frozenset(state.failed_this_cycle),
-            observed_completions=tuple(observed_completions),
         )
 
 
