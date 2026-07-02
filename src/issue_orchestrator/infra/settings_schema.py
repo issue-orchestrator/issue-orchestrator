@@ -28,6 +28,7 @@ from .settings_schema_support import (
     FORM_CONTROL_DICT_ENUM as FORM_CONTROL_DICT_ENUM,
     FORM_CONTROL_ENUM as FORM_CONTROL_ENUM,
     FORM_CONTROL_KINDS as FORM_CONTROL_KINDS,
+    SettingsSavePlan as SettingsSavePlan,
     UnsupportedSettingsFieldError as UnsupportedSettingsFieldError,
     classify_form_control as classify_form_control,
     SUMMARY_BOOLEAN_FLAG,
@@ -36,13 +37,12 @@ from .settings_schema_support import (
     SUMMARY_KEY_VALUE,
     apply_tabs_to_config,
     build_settings_json_schema,
+    build_settings_save_plan,
     build_tabs_from_config,
     collect_restart_fields,
     doctor_check_fields,
     field_meta,
     generate_reference_markdown,
-    project_tabs_to_yaml_document,
-    select_changed_tabs,
     setup_fields,
     summary_fields,
 )
@@ -1708,37 +1708,27 @@ def apply_to(tabs: dict[str, BaseModel], config: Config) -> bool:
     return apply_tabs_to_config(TAB_DEFINITIONS, tabs, config)
 
 
-def apply_to_yaml_document(
-    tabs: dict[str, BaseModel], document: dict[str, Any]
-) -> dict[str, Any]:
-    """Patch settings-owned ``yaml_path`` keys into an existing YAML document.
-
-    Persistence counterpart to :func:`apply_to`. It targets the parsed on-disk
-    YAML mapping instead of a live ``Config`` so that saving one settings tab
-    preserves unrelated operational config (``repo.github`` auth, merge queue,
-    hooks, validation publish, review exchange, ...) rather than rewriting the
-    whole file through the lossy full-config serializer.
-
-    Mutates and returns ``document``.
-    """
-    return project_tabs_to_yaml_document(TAB_DEFINITIONS, tabs, document)
-
-
-def changed_tabs(
+def build_save_plan(
     snapshot: dict[str, BaseModel], submitted: dict[str, BaseModel]
-) -> dict[str, BaseModel]:
-    """Return only the submitted tabs whose values differ from the snapshot.
+) -> SettingsSavePlan:
+    """Build the field-granular settings-save patch plan.
 
-    Settings-save persistence policy owner. The browser form posts every tab on
-    every save, so persistence must be scoped to genuinely edited tabs by
-    comparing each validated tab model against the current-config snapshot from
-    :func:`from_config`, not by trusting which tabs the request happens to
-    carry. Feed the result to :func:`apply_to_yaml_document` so a one-tab edit
-    patches only that tab's ``yaml_path`` keys and leaves every untouched
-    settings section (and unowned operational config) exactly as-is. See
-    :func:`~.settings_schema_support.select_changed_tabs` for the full rationale.
+    Settings-save persistence-policy owner entry point and the persistence
+    counterpart to :func:`apply_to`. Compares the submitted tab models against
+    the :func:`from_config` snapshot and returns a :class:`SettingsSavePlan`
+    carrying only the changed settings-owned ``yaml_path`` entries (reverse UI
+    transforms applied), with an explicit :attr:`SettingsSavePlan.is_empty`
+    no-op outcome.
+
+    Compose it with :meth:`Config.save_document_patch` via ``plan.apply`` so a
+    save patches only edited fields into the parsed on-disk YAML -- preserving
+    unrelated operational config (``repo.github`` auth, merge queue, hooks, ...)
+    AND unedited settings-owned raw values (a sibling ``${SECRET}`` reference is
+    not expanded) -- and skips the file write entirely for a no-op. See
+    :func:`~.settings_schema_support.build_settings_save_plan` for the full
+    rationale.
     """
-    return select_changed_tabs(snapshot, submitted)
+    return build_settings_save_plan(TAB_DEFINITIONS, snapshot, submitted)
 
 
 def get_restart_fields() -> set[str]:

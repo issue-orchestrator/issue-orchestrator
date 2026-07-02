@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -156,8 +157,8 @@ def reverse_ui_transform(transform: str | None, value: Any) -> Any:
 
     Mirrors ``build_tabs_from_config``'s forward transform. Shared by
     ``apply_tabs_to_config`` (display value -> live Config attribute) and
-    ``project_tabs_to_yaml_document`` (display value -> persisted YAML value)
-    so both directions stay in lock-step from a single definition.
+    ``build_settings_save_plan`` (display value -> persisted YAML value) so both
+    directions stay in lock-step from a single definition.
     """
     if transform == "comma_separated_list":
         return [s.strip() for s in value.split(",") if s.strip()] if value else []
@@ -283,70 +284,99 @@ def _set_nested_key(document: dict[str, Any], path: str, value: Any) -> None:
     cursor[parts[-1]] = value
 
 
-def project_tabs_to_yaml_document(
-    tab_definitions: list[dict[str, Any]],
-    tabs: dict[str, BaseModel],
-    document: dict[str, Any],
-) -> dict[str, Any]:
-    """Patch settings-owned ``yaml_path`` keys into an existing YAML document.
+@dataclass(frozen=True)
+class SettingsSavePatchEntry:
+    """One settings-owned YAML field to write during a save."""
 
-    Persistence counterpart to :func:`apply_tabs_to_config`. Where that writes
-    schema-owned values into a live ``Config``, this writes the same values into
-    the parsed on-disk YAML mapping. Only the paths each field declares via
-    ``yaml_path`` are touched; every other key and section already present in
-    ``document`` (``repo.github`` auth, merge queue extras, hooks, validation
-    publish, review exchange, hand-authored operational config, ...) is left
-    exactly as-is. This is what keeps a one-tab settings save from rewriting or
-    pruning unrelated live-run configuration.
+    yaml_path: str
+    value: Any
 
-    Mutates and returns ``document``.
+
+@dataclass(frozen=True)
+class SettingsSavePlan:
+    """A field-granular patch plan for a settings save.
+
+    Produced by :func:`build_settings_save_plan`. Carries exactly the
+    settings-owned ``yaml_path`` entries whose submitted value differs from the
+    current-config snapshot -- never whole tabs. :meth:`apply` writes only those
+    entries into a parsed YAML document, so every unedited field (even a sibling
+    field in the same tab as the edit) keeps its raw on-disk value: a
+    ``${SECRET}`` reference is not rewritten with its ``Config.load``-expanded
+    value, and hand-authored quoting/anchors on untouched keys survive.
+
+    :attr:`is_empty` is the explicit no-op outcome: when nothing changed the
+    caller must skip the file write entirely rather than round-trip (and thereby
+    reformat / strip non-leading comments from) an otherwise-unchanged file.
     """
+
+    entries: tuple[SettingsSavePatchEntry, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        """True when no settings-owned field changed (a no-op save)."""
+        return not self.entries
+
+    @property
+    def changed_yaml_paths(self) -> tuple[str, ...]:
+        """The ``yaml_path`` of each field this plan will write (for logging)."""
+        return tuple(entry.yaml_path for entry in self.entries)
+
+    def apply(self, document: dict[str, Any]) -> dict[str, Any]:
+        """Write only the changed entries into ``document`` (mutates it)."""
+        for entry in self.entries:
+            _set_nested_key(document, entry.yaml_path, entry.value)
+        return document
+
+
+def build_settings_save_plan(
+    tab_definitions: list[dict[str, Any]],
+    snapshot: dict[str, BaseModel],
+    submitted: dict[str, BaseModel],
+) -> SettingsSavePlan:
+    """Build the field-granular patch plan for a settings save.
+
+    Settings-save persistence-policy owner. Compares each submitted field value
+    against the ``build_tabs_from_config`` snapshot and emits a
+    ``(yaml_path, value)`` entry ONLY for fields whose value actually changed,
+    with the reverse UI transform applied to those changed entries alone.
+
+    Working at field / ``yaml_path`` granularity -- not whole tabs -- is what
+    upholds this issue's invariant. The browser settings form posts *every* tab
+    on every save (``settings_form_controls.collectForm`` collects all
+    ``[data-tab][data-field]`` controls), and both the snapshot and submitted
+    models come from ``from_config`` after ``Config.load`` has expanded every
+    ``${VAR}`` string. A whole-tab projection would therefore rewrite unedited
+    settings-owned values -- materializing defaults for untouched sections
+    (``provider_resilience``, ``sqlite_backup``, ``goal_pilot``, ...) and
+    replacing a sibling ``${SECRET}`` reference with its expanded value -- merely
+    because one field in that tab changed. Emitting only changed fields keeps the
+    persisted set correct regardless of what the client sends, and an empty plan
+    (:attr:`SettingsSavePlan.is_empty`) marks a no-op save the caller must not
+    write to disk.
+
+    Both mappings hold Pydantic models of the same per-tab classes, so the
+    per-field equality check is a structural value comparison in display form.
+    """
+    entries: list[SettingsSavePatchEntry] = []
     for tab in tab_definitions:
-        model = tabs.get(tab["key"])
-        if model is None:
+        submitted_model = submitted.get(tab["key"])
+        if submitted_model is None:
             continue
+        base_model = snapshot.get(tab["key"])
         model_cls = tab["model"]
         for field_name, field_info in model_cls.model_fields.items():
+            new_value = getattr(submitted_model, field_name)
+            if base_model is not None and new_value == getattr(base_model, field_name):
+                continue
             extra = field_info.json_schema_extra
             assert isinstance(extra, dict), f"Missing json_schema_extra on {field_name}"
             yaml_path = extra.get("yaml_path")
             assert yaml_path, f"Missing yaml_path on {field_name}"
-            value = getattr(model, field_name)
-            value = reverse_ui_transform(extra.get("ui_transform"), value)
+            value = reverse_ui_transform(extra.get("ui_transform"), new_value)
             if isinstance(value, Path):
                 value = str(value)
-            _set_nested_key(document, yaml_path, value)
-    return document
-
-
-def select_changed_tabs(
-    snapshot: dict[str, BaseModel],
-    submitted: dict[str, BaseModel],
-) -> dict[str, BaseModel]:
-    """Return only the submitted tabs whose values differ from ``snapshot``.
-
-    This is the settings-save persistence policy owner. A save must patch the
-    YAML document with exactly the tabs the operator actually changed -- never
-    every tab that merely appears in the request. The browser settings form
-    posts *every* tab on every save (``settings_form_controls.collectForm``
-    collects all ``[data-tab][data-field]`` controls in the document), so
-    "present in the request" is the whole tab set; persisting that set would
-    materialize defaults for untouched sections (``provider_resilience``,
-    ``sqlite_backup``, ``goal_pilot``, ``hooks.ai_gate.dangerous_allow_failure``,
-    ...) into ``main.yaml`` even for a one-field edit.
-
-    Comparing each validated tab model against the ``build_tabs_from_config``
-    snapshot keeps the persisted set to genuinely edited tabs regardless of what
-    the client chooses to send (whole-form or dirty-only). Both mappings hold
-    Pydantic models of the same per-tab classes, so equality is a structural
-    field-value comparison.
-    """
-    changed: dict[str, BaseModel] = {}
-    for key, model in submitted.items():
-        base = snapshot.get(key)
-        if base is None or model != base:
-            changed[key] = model
-    return changed
+            entries.append(SettingsSavePatchEntry(yaml_path=yaml_path, value=value))
+    return SettingsSavePlan(entries=tuple(entries))
 
 
 def collect_restart_fields(tab_definitions: list[dict[str, Any]]) -> set[str]:

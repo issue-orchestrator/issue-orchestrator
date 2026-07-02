@@ -5,12 +5,17 @@ lossy full-config serializer (``Config.to_dict``). The old path dropped every
 operational section that ``to_dict`` does not represent -- most notably the
 ``repo.github`` auth subsection -- and reordered/pruned the rest.
 
-The fix patches only schema-owned ``yaml_path`` keys into the existing YAML
-document. These tests cover both sides of that boundary:
+The fix builds a field-granular patch plan and writes only the settings-owned
+``yaml_path`` keys whose value actually changed. These tests cover both sides of
+that boundary:
 
-* the persistence owner (``Config.save_document_patch`` +
-  ``apply_to_yaml_document``), and
+* the persistence-policy owner (``build_save_plan`` -> ``SettingsSavePlan``,
+  composed with ``Config.save_document_patch`` via ``plan.apply``), and
 * the settings HTTP handler (``update_settings``) that wires them together.
+
+They pin the two invariants the field-granular plan protects: an unedited
+``${VAR}`` sibling in a changed tab keeps its literal form (never its expanded
+value), and a no-op save leaves the file byte-for-byte untouched.
 """
 
 from __future__ import annotations
@@ -24,8 +29,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.doctor import DoctorResult
 from issue_orchestrator.infra.settings_schema import (
     apply_to,
-    apply_to_yaml_document,
-    changed_tabs,
+    build_save_plan,
     from_config,
 )
 
@@ -99,12 +103,18 @@ def _save_one_tab_change(config: Config, cfg_path, mutate) -> dict:
     """Simulate a settings save: apply a mutation, patch the YAML doc, reload.
 
     ``mutate`` receives the ``from_config`` tab dict and edits one field, the
-    same way the settings POST handler does before persisting.
+    same way the settings POST handler does before persisting. Persistence goes
+    through the real field-granular owner (``build_save_plan`` -> ``plan.apply``)
+    so these tests exercise the same seam the route does, and the write is
+    skipped for an empty (no-op) plan.
     """
+    snapshot = from_config(config)
     tabs = from_config(config)
     mutate(tabs)
     apply_to(tabs, config)
-    config.save_document_patch(lambda doc: apply_to_yaml_document(tabs, doc))
+    plan = build_save_plan(snapshot, tabs)
+    if not plan.is_empty:
+        config.save_document_patch(plan.apply)
     return yaml.safe_load(cfg_path.read_text())
 
 
@@ -209,8 +219,8 @@ def test_partial_save_does_not_expand_env_var_references(tmp_path, monkeypatch):
     assert yaml.safe_load(text)["repo"]["github"]["token"] == "${SECRET_GH_TOKEN}"
 
 
-def test_apply_to_yaml_document_only_touches_owned_paths():
-    """apply_to_yaml_document writes owned yaml_paths and nothing else."""
+def test_save_plan_apply_only_touches_owned_changed_paths():
+    """The save plan writes only changed owned yaml_paths and nothing else."""
     document = {
         "repo": {"name": "owner/repo", "github": {"token_env": "T"}},
         "custom_operator_section": {"keep": "me"},
@@ -219,26 +229,28 @@ def test_apply_to_yaml_document_only_touches_owned_paths():
 
     # Build tabs from a minimal config, then flip one owned field.
     config = Config()
-    tabs = from_config(config)
-    tabs["concurrency"].max_concurrent_sessions = 5
+    snapshot = from_config(config)
+    submitted = from_config(config)
+    submitted["concurrency"].max_concurrent_sessions = 5
 
-    apply_to_yaml_document(tabs, document)
+    build_save_plan(snapshot, submitted).apply(document)
 
-    # Owned path updated.
+    # Owned path that changed is updated.
     assert document["execution"]["concurrency"]["max_concurrent_sessions"] == 5
     # Unowned keys untouched.
     assert document["repo"]["github"]["token_env"] == "T"
     assert document["custom_operator_section"] == {"keep": "me"}
 
 
-def test_apply_to_yaml_document_reverses_list_ui_transform():
+def test_save_plan_apply_reverses_list_ui_transform():
     """comma-separated display values are written back as YAML lists."""
     document: dict = {}
     config = Config()
-    tabs = from_config(config)
-    tabs["filtering"].exclude_labels = "test-data, skip"
+    snapshot = from_config(config)
+    submitted = from_config(config)
+    submitted["filtering"].exclude_labels = "test-data, skip"
 
-    apply_to_yaml_document(tabs, document)
+    build_save_plan(snapshot, submitted).apply(document)
 
     assert document["filtering"]["exclude_labels"] == ["test-data", "skip"]
 
@@ -275,26 +287,72 @@ def test_save_document_patch_requires_a_path():
         config.save_document_patch(lambda doc: None)
 
 
-def test_changed_tabs_selects_only_edited_tabs(loaded_config):
-    """The persistence-policy owner returns exactly the tabs that changed.
+def test_save_plan_selects_only_changed_fields(loaded_config):
+    """The persistence-policy owner emits only the changed field yaml_paths.
 
-    This is the decision F1/A1 pin down: which tabs a save should persist. It
-    must be driven by a value comparison against the current-config snapshot,
-    never by which tabs a request happens to carry.
+    This is the decision F1/A1/F2 pin down: which YAML paths a save should
+    persist. It must be a field-granular value comparison against the
+    current-config snapshot -- never whole tabs, and never which tabs a request
+    happens to carry.
     """
     config, _ = loaded_config
 
     snapshot = from_config(config)
     submitted = from_config(config)  # A whole-form post: every tab present.
 
-    # No edits -> nothing to persist, even though every tab is "submitted".
-    assert changed_tabs(snapshot, submitted) == {}
+    # No edits -> empty plan (a no-op save), even though every tab is submitted.
+    assert build_save_plan(snapshot, submitted).is_empty
 
-    # Edit one field in one tab -> only that tab is selected.
+    # Edit one field in one tab -> plan carries only that field's yaml_path,
+    # not the tab's other (unchanged) fields.
     submitted["concurrency"].max_concurrent_sessions = 11
-    selected = changed_tabs(snapshot, submitted)
-    assert set(selected) == {"concurrency"}
-    assert selected["concurrency"].max_concurrent_sessions == 11
+    plan = build_save_plan(snapshot, submitted)
+    assert plan.changed_yaml_paths == ("execution.concurrency.max_concurrent_sessions",)
+
+
+def test_save_plan_preserves_unedited_env_var_field_in_changed_tab(tmp_path, monkeypatch):
+    """A ``${VAR}`` sibling of an edit, in the SAME tab, keeps its literal form.
+
+    This is F1: ``Config.load`` expands ``${VAR}``, so ``from_config`` holds the
+    resolved secret. A field-granular plan must not rewrite the unedited sibling
+    with that resolved value merely because another field in the tab changed.
+    """
+    monkeypatch.setenv("SECRET_VALIDATE_CMD", "resolved-secret-cmd")
+    (tmp_path / "prompt.txt").write_text("p")
+    cfg_path = tmp_path / "main.yaml"
+    cfg_path.write_text(
+        "repo:\n"
+        "  name: owner/repo\n"
+        "validation:\n"
+        "  quick:\n"
+        "    cmd: ${SECRET_VALIDATE_CMD}\n"
+        "  publish:\n"
+        "    cmd: ./scripts/validate-pr.sh\n"
+        "    timeout_seconds: 1800\n"
+        "execution:\n"
+        "  concurrency:\n"
+        "    max_concurrent_sessions: 2\n"
+        "agents:\n"
+        "  agent:test:\n"
+        "    prompt: prompt.txt\n"
+    )
+    config = Config.load(cfg_path)
+
+    # Edit a sibling field in the SAME (Validation) tab as the ${VAR} field.
+    saved = _save_one_tab_change(
+        config,
+        cfg_path,
+        lambda tabs: setattr(tabs["validation"], "publish_timeout_seconds", 900),
+    )
+
+    text = cfg_path.read_text()
+    # The literal reference in the unedited sibling survives; no secret leaks.
+    assert "${SECRET_VALIDATE_CMD}" in text
+    assert "resolved-secret-cmd" not in text
+    assert saved["validation"]["quick"]["cmd"] == "${SECRET_VALIDATE_CMD}"
+    # The edited sibling field is persisted; the other unedited sibling is kept.
+    assert saved["validation"]["publish"]["timeout_seconds"] == 900
+    assert saved["validation"]["publish"]["cmd"] == "./scripts/validate-pr.sh"
 
 
 async def test_update_settings_route_preserves_operational_config(
@@ -355,3 +413,50 @@ async def test_update_settings_route_preserves_operational_config(
     assert "goal_pilot" not in saved  # Goal Pilot tab, untouched
     # An unedited field in an existing section is not added from its default.
     assert "dangerous_allow_failure" not in saved["hooks"]["ai_gate"]
+
+
+async def test_noop_settings_save_leaves_file_bytes_untouched(tmp_path, monkeypatch):
+    """A Save with no changed fields must not rewrite ``main.yaml`` (F2).
+
+    Re-dumping the parsed YAML would strip non-leading comments, anchors, and
+    hand-authored quoting even when nothing changed. The empty-plan path skips
+    the file write entirely, so the bytes -- including a non-leading inline
+    comment a YAML round-trip would drop -- are preserved exactly.
+    """
+    from issue_orchestrator.entrypoints import web_settings_routes
+
+    (tmp_path / "prompt.txt").write_text("p")
+    cfg_path = tmp_path / "main.yaml"
+    cfg_path.write_text(
+        "# Leading header\n"
+        "repo:\n"
+        "  name: owner/repo  # inline comment on a non-leading line\n"
+        "execution:\n"
+        "  concurrency:\n"
+        "    max_concurrent_sessions: 2\n"
+        "agents:\n"
+        "  agent:test:\n"
+        "    prompt: prompt.txt\n"
+    )
+    config = Config.load(cfg_path)
+
+    monkeypatch.setattr(
+        "issue_orchestrator.infra.doctor.run_doctor",
+        lambda **kwargs: DoctorResult(),
+    )
+    orchestrator = types.SimpleNamespace(config=config)
+
+    original_bytes = cfg_path.read_bytes()
+    # The real whole-form payload the browser posts, with NO edits.
+    full_payload = {key: model.model_dump() for key, model in from_config(config).items()}
+
+    class _FakeRequest:
+        async def json(self):
+            return full_payload
+
+    response = await web_settings_routes.update_settings(_FakeRequest(), orchestrator)
+
+    assert response.status_code == 200
+    # No field changed -> empty plan -> file not rewritten, byte-for-byte.
+    assert cfg_path.read_bytes() == original_bytes
+    assert b"# inline comment on a non-leading line" in cfg_path.read_bytes()

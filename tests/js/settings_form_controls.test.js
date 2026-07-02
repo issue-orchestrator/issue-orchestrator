@@ -118,10 +118,10 @@ test('escapeHtml escapes all dangerous characters', () => {
 test('collectForm posts every tab present in the document, not just edited ones', () => {
     // The settings form has no notion of a "dirty tab": collectForm gathers
     // every [data-tab][data-field] control in the document, so a save always
-    // carries ALL tabs. The server-side changed-tabs comparison
-    // (settings_schema.changed_tabs) exists precisely because of this producer
-    // contract -- if this test's shape ever narrowed to dirty-only, the
-    // persistence policy would need to change with it.
+    // carries ALL tabs. The server-side field-granular patch plan
+    // (settings_schema.build_save_plan) exists precisely because of this
+    // producer contract -- if this test's shape ever narrowed to dirty-only,
+    // the persistence policy would need to change with it.
     const nodes = [
         { dataset: { tab: 'concurrency', field: 'max_concurrent_sessions', type: 'integer' }, value: '3' },
         { dataset: { tab: 'advanced', field: 'sqlite_backup_enabled', type: 'boolean' }, checked: true },

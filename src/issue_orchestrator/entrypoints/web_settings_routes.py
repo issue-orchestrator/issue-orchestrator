@@ -13,8 +13,7 @@ from ..infra.config import Config
 from ..infra.settings_schema import (
     TAB_DEFINITIONS,
     apply_to,
-    apply_to_yaml_document,
-    changed_tabs,
+    build_save_plan,
     from_config,
     get_settings_json_schema,
 )
@@ -143,36 +142,36 @@ async def update_settings(
 
     # Save config to YAML.
     #
-    # Patch only the schema-owned yaml_paths of the tabs that actually CHANGED
-    # into the existing YAML document, rather than rewriting the whole file
-    # through the lossy full-config serializer (Config.save/to_dict). The set of
-    # tabs to persist is decided by `changed_tabs` (comparing each validated tab
-    # against the current-config snapshot), NOT by which tabs the request
-    # carries -- the settings form posts every tab on every save, so trusting
-    # request presence would materialize defaults for untouched sections
-    # (provider_resilience, sqlite_backup, goal_pilot, ...). A one-tab edit must
-    # not reorder, prune, or drop unrelated config -- neither operational
-    # sections the schema does not own (repo.github auth, rate limits, audit)
-    # nor other settings tabs the user did not touch.
-    edited_tabs = changed_tabs(snapshot, new_tabs)
-    try:
-        if config.config_path:
-            config.save_document_patch(
-                lambda document: apply_to_yaml_document(edited_tabs, document)
-            )
+    # Build a field-granular patch plan and write ONLY the settings-owned
+    # yaml_paths whose value actually changed, instead of rewriting the whole
+    # file through the lossy full-config serializer (Config.save/to_dict) or
+    # re-projecting every field of a changed tab. `build_save_plan` compares
+    # each submitted field against the current-config snapshot; the settings
+    # form posts every tab on every save, and the snapshot/submitted values come
+    # from `from_config` after Config.load expanded every ${VAR}, so anything
+    # coarser would (a) materialize defaults for untouched sections and (b)
+    # rewrite an unedited sibling "${SECRET}" reference with its expanded value.
+    # An empty plan is a no-op save: skip the file write so main.yaml's
+    # non-leading comments, anchors, and quoting stay byte-for-byte intact.
+    save_plan = build_save_plan(snapshot, new_tabs)
+    if save_plan.is_empty:
+        logger.info("[settings] No settings changed; config file left untouched")
+    elif config.config_path:
+        try:
+            config.save_document_patch(save_plan.apply)
             logger.info(
-                "[settings] Config saved to %s (tabs: %s)",
+                "[settings] Config saved to %s (paths: %s)",
                 config.config_path,
-                ", ".join(sorted(edited_tabs)) or "none",
+                ", ".join(save_plan.changed_yaml_paths),
             )
-    except Exception as e:
-        logger.error("[settings] Failed to save config: %s", e)
-        rollback_tabs = {tab["key"]: tab["model"](**snapshot_dump[tab["key"]])
-                         for tab in TAB_DEFINITIONS}
-        apply_to(rollback_tabs, config)
-        return JSONResponse({
-            "error": f"Failed to save config: {e}",
-        }, status_code=500)
+        except Exception as e:
+            logger.error("[settings] Failed to save config: %s", e)
+            rollback_tabs = {tab["key"]: tab["model"](**snapshot_dump[tab["key"]])
+                             for tab in TAB_DEFINITIONS}
+            apply_to(rollback_tabs, config)
+            return JSONResponse({
+                "error": f"Failed to save config: {e}",
+            }, status_code=500)
 
     return JSONResponse({
         "success": True,
