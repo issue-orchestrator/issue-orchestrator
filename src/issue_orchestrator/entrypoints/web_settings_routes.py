@@ -10,7 +10,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 
 from ..infra.config import Config
-from ..infra.settings_schema import TAB_DEFINITIONS, apply_to, from_config, get_settings_json_schema
+from ..infra.settings_schema import (
+    TAB_DEFINITIONS,
+    apply_to,
+    build_save_plan,
+    from_config,
+    get_settings_json_schema,
+)
 from .web_session_context import WebOrchestratorDependency
 from .web_templates import get_templates
 
@@ -95,7 +101,10 @@ async def update_settings(
     snapshot = from_config(config)
     snapshot_dump = {k: v.model_dump() for k, v in snapshot.items()}
 
-    # Validate + parse via Pydantic
+    # Validate + parse via Pydantic. Absent tabs fall back to the current
+    # snapshot so the live-config apply below always sees a complete tab set.
+    # Which tabs get *persisted* is decided later by comparing against the
+    # snapshot, not by request key presence (see the save step below).
     try:
         new_tabs = {}
         for tab in TAB_DEFINITIONS:
@@ -131,19 +140,38 @@ async def update_settings(
             "errors": [{"name": c.name, "detail": c.detail} for c in errors],
         }, status_code=400)
 
-    # Save config to YAML
-    try:
-        if config.config_path:
-            config.save()
-            logger.info("[settings] Config saved to %s", config.config_path)
-    except Exception as e:
-        logger.error("[settings] Failed to save config: %s", e)
-        rollback_tabs = {tab["key"]: tab["model"](**snapshot_dump[tab["key"]])
-                         for tab in TAB_DEFINITIONS}
-        apply_to(rollback_tabs, config)
-        return JSONResponse({
-            "error": f"Failed to save config: {e}",
-        }, status_code=500)
+    # Save config to YAML.
+    #
+    # Build a field-granular patch plan and write ONLY the settings-owned
+    # yaml_paths whose value actually changed, instead of rewriting the whole
+    # file through the lossy full-config serializer (Config.save/to_dict) or
+    # re-projecting every field of a changed tab. `build_save_plan` compares
+    # each submitted field against the current-config snapshot; the settings
+    # form posts every tab on every save, and the snapshot/submitted values come
+    # from `from_config` after Config.load expanded every ${VAR}, so anything
+    # coarser would (a) materialize defaults for untouched sections and (b)
+    # rewrite an unedited sibling "${SECRET}" reference with its expanded value.
+    # An empty plan is a no-op save: skip the file write so main.yaml's
+    # non-leading comments, anchors, and quoting stay byte-for-byte intact.
+    save_plan = build_save_plan(snapshot, new_tabs)
+    if save_plan.is_empty:
+        logger.info("[settings] No settings changed; config file left untouched")
+    elif config.config_path:
+        try:
+            config.save_document_patch(save_plan.apply)
+            logger.info(
+                "[settings] Config saved to %s (paths: %s)",
+                config.config_path,
+                ", ".join(save_plan.changed_yaml_paths),
+            )
+        except Exception as e:
+            logger.error("[settings] Failed to save config: %s", e)
+            rollback_tabs = {tab["key"]: tab["model"](**snapshot_dump[tab["key"]])
+                             for tab in TAB_DEFINITIONS}
+            apply_to(rollback_tabs, config)
+            return JSONResponse({
+                "error": f"Failed to save config: {e}",
+            }, status_code=500)
 
     return JSONResponse({
         "success": True,

@@ -112,3 +112,29 @@ test('escapeHtml escapes all dangerous characters', () => {
         '&lt;a href=&quot;x&quot; data-y=&#39;z&#39;&gt;&amp;&lt;/a&gt;',
     );
 });
+
+// --- collectForm: whole-form producer contract -------------------------------
+
+test('collectForm posts every tab present in the document, not just edited ones', () => {
+    // The settings form has no notion of a "dirty tab": collectForm gathers
+    // every [data-tab][data-field] control in the document, so a save always
+    // carries ALL tabs. The server-side field-granular patch plan
+    // (settings_schema.build_save_plan) exists precisely because of this
+    // producer contract -- if this test's shape ever narrowed to dirty-only,
+    // the persistence policy would need to change with it.
+    const nodes = [
+        { dataset: { tab: 'concurrency', field: 'max_concurrent_sessions', type: 'integer' }, value: '3' },
+        { dataset: { tab: 'advanced', field: 'sqlite_backup_enabled', type: 'boolean' }, checked: true },
+        { dataset: { tab: 'goal_pilot', field: 'enabled', type: 'boolean' }, checked: false },
+    ];
+    const rootEl = { querySelectorAll: () => nodes };
+
+    const { payload, problems } = controls.collectForm(rootEl);
+
+    assert.deepEqual(problems, []);
+    // Every tab with a control is present in the posted payload.
+    assert.deepEqual(Object.keys(payload).sort(), ['advanced', 'concurrency', 'goal_pilot']);
+    assert.equal(payload.concurrency.max_concurrent_sessions, 3);
+    assert.equal(payload.advanced.sqlite_backup_enabled, true);
+    assert.equal(payload.goal_pilot.enabled, false);
+});

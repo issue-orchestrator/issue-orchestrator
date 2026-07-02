@@ -93,7 +93,7 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -126,7 +126,7 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -210,7 +210,7 @@ class TestSettingsEndpoints:
             mock_result.checks = [mock_warning]
             mock_doctor.return_value = mock_result
 
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -249,7 +249,7 @@ class TestSettingsEndpoints:
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -372,7 +372,7 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            mock_orch.config.save = MagicMock(side_effect=IOError("Disk full"))
+            mock_orch.config.save_document_patch = MagicMock(side_effect=IOError("Disk full"))
 
             web._orchestrator = mock_orch
             try:
@@ -605,7 +605,7 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -638,7 +638,7 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -669,7 +669,7 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -704,7 +704,7 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -742,7 +742,7 @@ class TestSettingsEndpoints:
             return mock_result
 
         with patch("issue_orchestrator.infra.doctor.run_doctor", side_effect=run_doctor_asserts_path):
-            mock_orch.config.save = MagicMock()
+            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:

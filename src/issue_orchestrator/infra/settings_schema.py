@@ -28,6 +28,7 @@ from .settings_schema_support import (
     FORM_CONTROL_DICT_ENUM as FORM_CONTROL_DICT_ENUM,
     FORM_CONTROL_ENUM as FORM_CONTROL_ENUM,
     FORM_CONTROL_KINDS as FORM_CONTROL_KINDS,
+    SettingsSavePlan as SettingsSavePlan,
     UnsupportedSettingsFieldError as UnsupportedSettingsFieldError,
     classify_form_control as classify_form_control,
     SUMMARY_BOOLEAN_FLAG,
@@ -36,6 +37,7 @@ from .settings_schema_support import (
     SUMMARY_KEY_VALUE,
     apply_tabs_to_config,
     build_settings_json_schema,
+    build_settings_save_plan,
     build_tabs_from_config,
     collect_restart_fields,
     doctor_check_fields,
@@ -1704,6 +1706,29 @@ def apply_to(tabs: dict[str, BaseModel], config: Config) -> bool:
     Returns True if any field marked restart_required changed.
     """
     return apply_tabs_to_config(TAB_DEFINITIONS, tabs, config)
+
+
+def build_save_plan(
+    snapshot: dict[str, BaseModel], submitted: dict[str, BaseModel]
+) -> SettingsSavePlan:
+    """Build the field-granular settings-save patch plan.
+
+    Settings-save persistence-policy owner entry point and the persistence
+    counterpart to :func:`apply_to`. Compares the submitted tab models against
+    the :func:`from_config` snapshot and returns a :class:`SettingsSavePlan`
+    carrying only the changed settings-owned ``yaml_path`` entries (reverse UI
+    transforms applied), with an explicit :attr:`SettingsSavePlan.is_empty`
+    no-op outcome.
+
+    Compose it with :meth:`Config.save_document_patch` via ``plan.apply`` so a
+    save patches only edited fields into the parsed on-disk YAML -- preserving
+    unrelated operational config (``repo.github`` auth, merge queue, hooks, ...)
+    AND unedited settings-owned raw values (a sibling ``${SECRET}`` reference is
+    not expanded) -- and skips the file write entirely for a no-op. See
+    :func:`~.settings_schema_support.build_settings_save_plan` for the full
+    rationale.
+    """
+    return build_settings_save_plan(TAB_DEFINITIONS, snapshot, submitted)
 
 
 def get_restart_fields() -> set[str]:
