@@ -15,6 +15,13 @@ from ..history import latest_history_entries_by_issue
 from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra import gh_audit
+from .dependency_gate import (
+    stack_chip,
+    stack_chip_payload,
+    stack_dependency_payload,
+    stack_dependency_view,
+    stack_signal,
+)
 from .dashboard_e2e import E2E_PAGE_SIZE
 from .dashboard_e2e import build_e2e_items
 from .dashboard_e2e import build_e2e_view_model
@@ -416,6 +423,27 @@ def _attach_refresh_meta(items: list[dict[str, Any]], state, config, now_ts: flo
         if not isinstance(issue_number, int):
             continue
         item.update(_refresh_meta_for_issue(state, config, issue_number, now_ts))
+
+
+def _attach_stack_payload(items: list[Any], state) -> None:
+    """Finalization owner for the "every visible card carries the stack view" policy.
+
+    Projects each card's producer ``stack_dependency`` / ``stack_signal`` from the
+    state snapshot. Runs over each assembled lane list — after all card builders,
+    before columns and awaiting-merge derive from them — so no individual builder
+    can omit the fields and a new lane cannot regress the chip by forgetting to
+    set them. This is the single enrichment boundary; builders never set them.
+    """
+    for item in items:
+        issue_number = item.get("issue_number")
+        if not isinstance(issue_number, int):
+            continue
+        view = stack_dependency_view(state, issue_number)
+        item["stack_dependency"] = stack_dependency_payload(view)
+        item["stack_signal"] = stack_signal(view)
+        # Precomputed chip display so the server template and JS render an
+        # identical chip (the first-paint DOM must match what the client rebuilds).
+        item["stack_chip"] = stack_chip_payload(stack_chip(view))
 
 
 def _refresh_meta(state, config, issue_number: int) -> dict[str, Any]:
@@ -1215,6 +1243,9 @@ def build_dashboard_view_model(
         now_ts = datetime.now(timezone.utc).timestamp()
         for items in (active_items, queue_items, blocked_items, history_items, backlog_items):
             _attach_refresh_meta(items, state, config, now_ts)
+            # Single owner: every lane (incl. label-blocked / validation-retry /
+            # retrospective) gets the stack view; derived lanes inherit it.
+            _attach_stack_payload(items, state)
         stamp_issue_item_stale_badge_visibility(history_items, mode="when_stale_and_merge_pending")
 
         completed_items = history_projection.completed_items

@@ -580,6 +580,39 @@ class TestApiTimelineEndpoint:
         )
         assert any(action.get("id") == "retry_publish" for action in payload["actions"])
 
+    def test_issue_detail_exposes_producer_stack_dependency(self):
+        """Live dashboard drawer surfaces the producer stack gate for the issue.
+
+        Counterpart to the E2E-route regression that asserts the run-scoped
+        drawer never leaks this production payload (#6597/#6680). The live
+        route resolves the gate snapshot from ``orchestrator.state`` by issue
+        number, so the payload must be present here.
+        """
+        from issue_orchestrator.domain.dependencies import DependencyMode
+        from issue_orchestrator.domain.dependency_gates import (
+            DependencyGateSnapshot,
+            SuccessorEdge,
+        )
+
+        snapshot = DependencyGateSnapshot(
+            reports={},
+            successors={
+                42: (
+                    SuccessorEdge(issue_number=99, ref="#99", mode=DependencyMode.STACK),
+                )
+            },
+        )
+        payload = fetch_issue_detail_payload(
+            [build_timeline_event("session.started", summary="started")],
+            issue_number=42,
+            dependency_gate_snapshot=snapshot,
+        )
+        assert payload["stack_dependency"] is not None
+        assert payload["stack_dependency"]["has_stack_edges"] is True
+        assert payload["stack_dependency"]["successors"] == [
+            {"issue_number": 99, "ref": "#99", "mode": "stack"}
+        ]
+
     def test_issue_detail_survives_failed_coder_with_stale_review_start(self):
         """A failed coder terminal state owns the cycle even if review start leaked in."""
         payload = fetch_issue_detail_payload(

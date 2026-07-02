@@ -632,18 +632,12 @@ class CompletionProcessor:
         """Construct the standard async review-exchange deferral result."""
         return ProcessingResult.for_review_exchange_deferred()
 
-    def is_review_exchange_running_for_completion(
-        self,
-        query: ReviewExchangeRunningQuery,
-    ) -> bool:
-        """Answer a typed running-exchange query for completion finalization."""
-        return self._review_exchange.is_review_exchange_running_for_completion(query)
-
     def completion_finalization_plan(
         self,
         *,
         issue_number: int,
         session_name: str | None,
+        run_id: str,
         outcome: CompletionOutcome,
         requested_actions: tuple[RequestedAction, ...],
         runtime_state: CompletionRuntimeState,
@@ -654,8 +648,9 @@ class CompletionProcessor:
             issue_number=issue_number,
             session_name=session_name,
             requested_actions=requested_actions,
+            run_id=run_id,
         )
-        running = self.is_review_exchange_running_for_completion(query)
+        running = self._review_exchange.is_review_exchange_running_for_completion(query)
         # Avoid the extra supervisor lookup on the happy path: the matrix
         # only consults ``review_exchange_within_deadline`` when the BG job
         # is actually running. When it isn't, the field stays at its default
@@ -1025,16 +1020,17 @@ class CompletionProcessor:
         if error_result:
             return error_result
         assert record is not None  # Guaranteed if error_result is None
-
+        requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
             issue_number=issue_number,
             session_name=session_name,
-            requested_actions=tuple(record.requested_actions),
+            requested_actions=requested_actions,
+            run_id=run_assets.run_id,
         )
-        if (
-            record.outcome is CompletionOutcome.COMPLETED
-            and self.is_review_exchange_running_for_completion(running_query)
-        ):
+        exchange_running = self._review_exchange.is_review_exchange_running_for_completion(
+            running_query
+        )
+        if record.outcome is CompletionOutcome.COMPLETED and exchange_running:
             logger.info(
                 "Completion deferred before pre-action policies: issue=%d "
                 "session=%s reason=review exchange is already running",
@@ -1558,6 +1554,7 @@ class CompletionProcessor:
         if not self._review_exchange.is_review_exchange_running(
             issue_number=issue_number,
             session_name=session_name,
+            run_id=run_assets.run_id,
         ):
             budget_exhausted_result = self._consume_validation_reroute_budget(
                 session_name=session_name,
@@ -1578,6 +1575,7 @@ class CompletionProcessor:
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
+            run_id=run_assets.run_id,
             agent_label=agent_label,
             initial_validation_record_path=validation_record_path,
             current_head_sha=current_worktree_head_sha(
@@ -1765,6 +1763,7 @@ class CompletionProcessor:
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
+            run_id=run_assets.run_id,
             agent_label=agent_label,
             record=record,
             review_cache_boundary_started_at=cache_boundary_started_at,

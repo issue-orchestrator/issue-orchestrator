@@ -256,6 +256,9 @@
                                 <div class="card-line card-muted">{{ card.summary }}</div>
                                 {% endif %}
                                 {% endif %}
+                                {% if card.stack_chip %}
+                                <div class="card-line card-stack"><span class="stack-chip stack-chip--{{ card.stack_chip.tone }}" title="{{ card.stack_chip.title | e }}"><span class="stack-chip-icon" aria-hidden="true">&#x26D3;</span><span class="stack-chip-mode">{{ card.stack_chip.mode_label }}</span><span class="stack-chip-status">{{ card.stack_chip.status_text }}</span></span></div>
+                                {% endif %}
                                 {% set orch_labels = card.orchestrator_labels or [] %}
                                 {% if orch_labels or card.show_stale_badge %}
                                 <div class="card-badges">
@@ -386,6 +389,10 @@
             <button class="issue-action-btn" id="issueDetailUnblockBtn" style="display:none;" onclick="unblockFromDrawer()">Unblock</button>
             <button class="issue-action-btn" id="issueDetailRetryPublishBtn" style="display:none;">Retry Publish</button>
         </div>
+        <details class="issue-detail-section issue-detail-stack" id="issueDetailStack" style="display:none;">
+            <summary id="issueDetailStackSummary">Stack dependencies &amp; gates</summary>
+            <div id="issueDetailStackBody"></div>
+        </details>
         <h3 class="issue-detail-section-title visually-hidden" id="issueDetailTimelineHeading">Timeline</h3>
         <div class="issue-detail-journey" id="issueDetailJourney" tabindex="-1" aria-labelledby="issueDetailTimelineHeading"></div>
         <details class="issue-detail-section" id="issueDetailPrevCycles" style="display:none;">

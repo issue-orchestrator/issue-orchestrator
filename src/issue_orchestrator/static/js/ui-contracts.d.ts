@@ -138,7 +138,7 @@ export interface DashboardViewModelPayload {
   e2e_status: Record<string, any>;
   e2e_total: number;
   e2e_total_pages: number;
-  flow_columns: Record<string, any>[];
+  flow_columns: FlowColumnPayload[];
   github_owner: string;
   github_repo: string;
   history_items: IssueItemPayload[];
@@ -417,6 +417,16 @@ export interface FailedE2ETestExecutionPayload {
   started_at: string;
 }
 
+export interface FlowColumnPayload {
+  count: number;
+  expandable?: boolean;
+  id: string;
+  items: IssueItemPayload[];
+  session_scoped?: boolean;
+  title: string;
+  [key: string]: any;
+}
+
 export interface InfoDialogPayload {
   rows: DialogRowPayload[];
   title: string;
@@ -476,6 +486,7 @@ export interface IssueDetailPayload {
   raw_events_count: number;
   run_count: number;
   runs: JourneyRunPayload[];
+  stack_dependency?: StackDependencyGateViewPayload | null;
   status_explanation: string;
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
@@ -524,6 +535,9 @@ export interface IssueItemPayload {
   open_run_command?: OpenE2ERunCommandPayload | null;
   runtime_label?: string | null;
   show_stale_badge: boolean;
+  stack_chip?: StackChipViewPayload | null;
+  stack_dependency?: StackDependencyGateViewPayload | null;
+  stack_signal?: string | null;
   status?: string | null;
   title?: string | null;
   url?: string | null;
@@ -929,6 +943,48 @@ export interface ShowEventDetailsCommandPayload {
   event_ref: string;
   kind: "show_event_details";
   label: string;
+}
+
+export interface StackChipViewPayload {
+  mode_label: string;
+  status_text: string;
+  title: string;
+  tone: string;
+}
+
+export interface StackDependencyGatePayload {
+  gate: string;
+  open: boolean;
+  reason_codes: string[];
+  reasons: string[];
+}
+
+export interface StackDependencyGateViewPayload {
+  approval_freshness: string;
+  blocked_gates: string[];
+  blocked_reason_codes: string[];
+  gates: StackDependencyGatePayload[];
+  has_stack_edges: boolean;
+  issue_number: number;
+  mode: string;
+  predecessors: StackDependencyPredecessorPayload[];
+  stack_base_branch: string | null;
+  stale: boolean;
+  stale_reason_codes: string[];
+  successors: StackDependencySuccessorPayload[];
+}
+
+export interface StackDependencyPredecessorPayload {
+  mode: string;
+  problem: string | null;
+  ref: string;
+  state: string;
+}
+
+export interface StackDependencySuccessorPayload {
+  issue_number: number;
+  mode: string;
+  ref: string;
 }
 
 export interface SwitchE2ETimelineViewCommandPayload {
