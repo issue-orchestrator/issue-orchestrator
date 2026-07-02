@@ -151,6 +151,23 @@ def _classify_optional_control(
     )
 
 
+def reverse_ui_transform(transform: str | None, value: Any) -> Any:
+    """Reverse a display-form ``ui_transform`` back to its stored (list) form.
+
+    Mirrors ``build_tabs_from_config``'s forward transform. Shared by
+    ``apply_tabs_to_config`` (display value -> live Config attribute) and
+    ``project_tabs_to_yaml_document`` (display value -> persisted YAML value)
+    so both directions stay in lock-step from a single definition.
+    """
+    if transform == "comma_separated_list":
+        return [s.strip() for s in value.split(",") if s.strip()] if value else []
+    if transform == "space_separated_list":
+        return value.split() if value else []
+    if transform == "newline_separated_list":
+        return [s.strip() for s in value.split("\n") if s.strip()] if value else []
+    return value
+
+
 def _get_nested_attr(obj: Any, path: str) -> Any:
     """Get obj.a.b.c from dotted path 'a.b.c'."""
     for part in path.split("."):
@@ -235,13 +252,7 @@ def apply_tabs_to_config(tab_definitions: list[dict[str, Any]], tabs: dict[str, 
             value = getattr(model, field_name)
 
             # Handle transforms (string -> list for storage).
-            transform = extra.get("ui_transform")
-            if transform == "comma_separated_list":
-                value = [s.strip() for s in value.split(",") if s.strip()] if value else []
-            elif transform == "space_separated_list":
-                value = value.split() if value else []
-            elif transform == "newline_separated_list":
-                value = [s.strip() for s in value.split("\n") if s.strip()] if value else []
+            value = reverse_ui_transform(extra.get("ui_transform"), value)
 
             old = _get_nested_attr(config, config_attr)
             value = _coerce_config_value(extra, value, config)
@@ -252,6 +263,60 @@ def apply_tabs_to_config(tab_definitions: list[dict[str, Any]], tabs: dict[str, 
 
             _set_nested_attr(config, config_attr, value)
     return restart
+
+
+def _set_nested_key(document: dict[str, Any], path: str, value: Any) -> None:
+    """Set ``document['a']['b']['c'] = value`` for dotted path ``'a.b.c'``.
+
+    Creates intermediate mappings as needed. A non-mapping intermediate left
+    over from a stale document is replaced with a fresh mapping so a nested
+    settings write can never be blocked by an incompatible scalar.
+    """
+    parts = path.split(".")
+    cursor = document
+    for part in parts[:-1]:
+        nxt = cursor.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cursor[part] = nxt
+        cursor = nxt
+    cursor[parts[-1]] = value
+
+
+def project_tabs_to_yaml_document(
+    tab_definitions: list[dict[str, Any]],
+    tabs: dict[str, BaseModel],
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    """Patch settings-owned ``yaml_path`` keys into an existing YAML document.
+
+    Persistence counterpart to :func:`apply_tabs_to_config`. Where that writes
+    schema-owned values into a live ``Config``, this writes the same values into
+    the parsed on-disk YAML mapping. Only the paths each field declares via
+    ``yaml_path`` are touched; every other key and section already present in
+    ``document`` (``repo.github`` auth, merge queue extras, hooks, validation
+    publish, review exchange, hand-authored operational config, ...) is left
+    exactly as-is. This is what keeps a one-tab settings save from rewriting or
+    pruning unrelated live-run configuration.
+
+    Mutates and returns ``document``.
+    """
+    for tab in tab_definitions:
+        model = tabs.get(tab["key"])
+        if model is None:
+            continue
+        model_cls = tab["model"]
+        for field_name, field_info in model_cls.model_fields.items():
+            extra = field_info.json_schema_extra
+            assert isinstance(extra, dict), f"Missing json_schema_extra on {field_name}"
+            yaml_path = extra.get("yaml_path")
+            assert yaml_path, f"Missing yaml_path on {field_name}"
+            value = getattr(model, field_name)
+            value = reverse_ui_transform(extra.get("ui_transform"), value)
+            if isinstance(value, Path):
+                value = str(value)
+            _set_nested_key(document, yaml_path, value)
+    return document
 
 
 def collect_restart_fields(tab_definitions: list[dict[str, Any]]) -> set[str]:

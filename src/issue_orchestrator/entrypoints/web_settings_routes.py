@@ -10,7 +10,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 
 from ..infra.config import Config
-from ..infra.settings_schema import TAB_DEFINITIONS, apply_to, from_config, get_settings_json_schema
+from ..infra.settings_schema import (
+    TAB_DEFINITIONS,
+    apply_to,
+    apply_to_yaml_document,
+    from_config,
+    get_settings_json_schema,
+)
 from .web_session_context import WebOrchestratorDependency
 from .web_templates import get_templates
 
@@ -95,13 +101,16 @@ async def update_settings(
     snapshot = from_config(config)
     snapshot_dump = {k: v.model_dump() for k, v in snapshot.items()}
 
-    # Validate + parse via Pydantic
+    # Validate + parse via Pydantic. `submitted_keys` records which tabs the
+    # request actually edited so persistence only rewrites those sections.
     try:
         new_tabs = {}
+        submitted_keys = set()
         for tab in TAB_DEFINITIONS:
             key = tab["key"]
             if key in body:
                 new_tabs[key] = tab["model"].model_validate(body[key])
+                submitted_keys.add(key)
             else:
                 new_tabs[key] = snapshot[key]
     except ValidationError as e:
@@ -131,10 +140,20 @@ async def update_settings(
             "errors": [{"name": c.name, "detail": c.detail} for c in errors],
         }, status_code=400)
 
-    # Save config to YAML
+    # Save config to YAML.
+    #
+    # Patch only the schema-owned yaml_paths of the tabs that were actually
+    # submitted into the existing YAML document, rather than rewriting the whole
+    # file through the lossy full-config serializer (Config.save/to_dict). A
+    # one-tab edit must not reorder, prune, or drop unrelated config -- neither
+    # operational sections the schema does not own (repo.github auth, rate
+    # limits, audit) nor other settings tabs the user did not touch.
+    edited_tabs = {key: new_tabs[key] for key in submitted_keys}
     try:
         if config.config_path:
-            config.save()
+            config.save_document_patch(
+                lambda document: apply_to_yaml_document(edited_tabs, document)
+            )
             logger.info("[settings] Config saved to %s", config.config_path)
     except Exception as e:
         logger.error("[settings] Failed to save config: %s", e)

@@ -41,6 +41,7 @@ from .settings_schema_support import (
     doctor_check_fields,
     field_meta,
     generate_reference_markdown,
+    project_tabs_to_yaml_document,
     setup_fields,
     summary_fields,
 )
@@ -1704,6 +1705,22 @@ def apply_to(tabs: dict[str, BaseModel], config: Config) -> bool:
     Returns True if any field marked restart_required changed.
     """
     return apply_tabs_to_config(TAB_DEFINITIONS, tabs, config)
+
+
+def apply_to_yaml_document(
+    tabs: dict[str, BaseModel], document: dict[str, Any]
+) -> dict[str, Any]:
+    """Patch settings-owned ``yaml_path`` keys into an existing YAML document.
+
+    Persistence counterpart to :func:`apply_to`. It targets the parsed on-disk
+    YAML mapping instead of a live ``Config`` so that saving one settings tab
+    preserves unrelated operational config (``repo.github`` auth, merge queue,
+    hooks, validation publish, review exchange, ...) rather than rewriting the
+    whole file through the lossy full-config serializer.
+
+    Mutates and returns ``document``.
+    """
+    return project_tabs_to_yaml_document(TAB_DEFINITIONS, tabs, document)
 
 
 def get_restart_fields() -> set[str]:
