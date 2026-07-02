@@ -220,6 +220,7 @@ class MockCompletionProcessor:
         *,
         issue_number: int,
         session_name: str | None,
+        run_id: str,
         outcome: CompletionOutcome,
         requested_actions: tuple[RequestedAction, ...],
         runtime_state: CompletionRuntimeState,
@@ -236,6 +237,7 @@ class MockCompletionProcessor:
                     issue_number=issue_number,
                     session_name=session_name,
                     requested_actions=requested_actions,
+                    run_id=run_id,
                 )
             ),
             validation_preflight_configured=validation_preflight_configured,

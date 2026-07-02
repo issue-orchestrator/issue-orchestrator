@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 from .config import Config
 from ..ports.issue import Issue
-from ..domain.models import Session, SessionStatus, OrchestratorState, PendingRetrospectiveReview, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER, PublishJobResult
+from ..domain.models import Session, SessionStatus, OrchestratorState, PendingRetrospectiveReview, PendingReview, PendingRework, PendingTriageReview, AgentConfig, ORCHESTRATOR_PR_MARKER
 from ..observation.observer import SessionObserver
 from ..control.scheduler import Scheduler
 from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -56,8 +56,6 @@ from ..control.session_routing import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
-from ..control.session_observation import observe_active_sessions as _observe_active_sessions
-from ..control.publish_executor import create_publish_job
 from ..control.cleanup_manager import CleanupManager
 from ..control.review_exchange_lifecycle import (
     IssueRuntimeTermination,
@@ -196,6 +194,7 @@ class Orchestrator:
             job_supervisor=self.deps.services.background_job_supervisor,
             session_manager=self.deps.session_manager,
             active_sessions=self.state.active_sessions,
+            publish_recovery=self.deps.publish_recovery,
         )
 
     @cached_property
@@ -305,7 +304,6 @@ class Orchestrator:
         )
 
     async def startup(self) -> None:
-        self.start_publish_executor()
         self._sweep_orphan_atomic_write_tempfiles()
         try:
             await self._startup_manager.run_startup(self.state)
@@ -380,7 +378,7 @@ class Orchestrator:
             self._session_launcher,
             self.deps.session_restorer,
         )
-    def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output)
+    def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output, publish_recovery=self.deps.publish_recovery)
 
     def tick(self) -> bool:
         with self._state_lock:
@@ -394,6 +392,10 @@ class Orchestrator:
             supervisor = self.deps.services.background_job_supervisor
             if supervisor is not None:
                 supervisor.tick()
+            # Reconcile any off-thread "Retry publish" jobs that finished since
+            # the last tick (clears publish-failed state + stored locators on
+            # success; leaves them retryable on failure).
+            self.deps.publish_recovery.drain_completed_retries(self.state)
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
                 self._event_context,
@@ -592,6 +594,7 @@ class Orchestrator:
                 self.config,
                 completion_dispatcher=self.deps.completion_dispatcher,
                 provider_resilience=self.deps.provider_resilience,
+                publish_recovery=self.deps.publish_recovery,
             )
             # Check lease renewals for active sessions
             self._check_lease_renewals()
@@ -695,224 +698,6 @@ class Orchestrator:
             return True, "interval"
         return False, "throttled"
 
-    def _observe_active_sessions_async(self) -> None:
-        """Observe active sessions and collect completion facts (async flow).
-
-        This is the new async-aware version that:
-        1. Observes sessions using CompletionObserver (fast, no I/O)
-        2. Collects ObservedCompletion facts for the planner
-        3. The planner will plan label updates and create publish jobs
-        4. Jobs are submitted to PublishJobExecutor for background execution
-        """
-        _observe_active_sessions(
-            self.state,
-            self.observer,
-            self.deps.completion_observer,
-            self._kill_session,
-            claim_manager=self.deps.claim_manager,
-            events=self.deps.events,
-            provider_resilience=self.deps.provider_resilience,
-        )
-        # Check lease renewals for active sessions
-        self._check_lease_renewals()
-
-    def _submit_publish_jobs(self) -> None:
-        """Submit publish jobs for observed completions.
-
-        Called after planning to submit jobs to the background executor.
-        """
-        # Process observed completions and create jobs
-        for observed in list(self.state.observed_completions):
-            if observed.needs_publish:
-                job = create_publish_job(observed, run_validation=False)
-                submitted = self.deps.publish_executor.submit(job)
-                if submitted:
-                    self.state.pending_publish_jobs[job.job_id] = job
-                    logger.info(
-                        "[ASYNC] Submitted publish job: job_id=%s issue=%d",
-                        job.job_id,
-                        observed.issue_number,
-                    )
-
-        # Clear observed completions after processing
-        self.state.observed_completions = []
-
-    def _poll_job_results(self) -> None:
-        """Poll for completed publish jobs and handle results.
-
-        Called at the start of each tick to check for background job completion.
-        """
-        results = self.deps.publish_executor.poll_results()
-
-        for result in results:
-            # If the job was superseded by a scratch reset, its result
-            # must not flow into state — that would re-populate
-            # discovered_reviews / completed_today for an issue we
-            # just declared fresh. The executor has no per-job cancel
-            # primitive, so the worker still ran; we discard its
-            # in-memory output and reconcile any GitHub side effect
-            # the worker produced (a late PR creation) by superseding
-            # the PR here. Without this, scratch reset's
-            # _supersede_open_prs only sees PRs that existed at reset
-            # time — a worker that creates a PR seconds later leaks
-            # past that boundary.
-            if result.job_id in self.state.superseded_job_ids:
-                self.state.superseded_job_ids.discard(result.job_id)
-                self.state.pending_publish_jobs.pop(result.job_id, None)
-                if result.success and result.pr_number:
-                    self._supersede_late_publish_pr(result)
-                logger.info(
-                    "[ASYNC] Discarding superseded job result: "
-                    "job_id=%s issue=%d pr_number=%s (cleared by scratch reset)",
-                    result.job_id,
-                    result.issue_number,
-                    result.pr_number,
-                )
-                continue
-
-            logger.info(
-                "[ASYNC] Job completed: job_id=%s issue=%d success=%s pr_url=%s",
-                result.job_id,
-                result.issue_number,
-                result.success,
-                result.pr_url,
-            )
-
-            # Remove from pending
-            self.state.pending_publish_jobs.pop(result.job_id, None)
-
-            if result.retry_publish and result.success:
-                self.deps.publish_recovery.reconcile_retry_publish_success(
-                    state=self.state,
-                    issue_number=result.issue_number,
-                    issue_title=result.issue_title,
-                    agent_label=result.agent_label,
-                    pr_url=result.pr_url,
-                    pr_number=result.pr_number,
-                    worktree_path=result.worktree_path,
-                )
-
-            # Handle job result - queue review if successful and exchange not completed
-            if (
-                result.success
-                and result.pr_url
-                and result.pr_number
-                and not result.review_exchange_completed
-                and not result.retry_publish
-            ):
-                from ..domain.models import DiscoveredReview
-                # Queue for code review
-                # We need to look up the branch_name from the job or session
-                # For now, we'll construct it from the issue number
-                branch_name = f"issue-{result.issue_number}"  # Default pattern
-                self.state.discovered_reviews.append(DiscoveredReview(
-                    result.issue_number,
-                    result.pr_number,
-                    result.pr_url,
-                    branch_name,
-                    agent_label=None,  # TODO: track agent label in job
-                ))
-                self.state.completed_today.append(result.issue_number)
-            elif result.success and result.pr_url and result.pr_number and not result.retry_publish:
-                self.state.completed_today.append(result.issue_number)
-            elif not result.success and not result.retry_publish:
-                # Track failure
-                from ..domain.models import DiscoveredFailure
-                self.state.discovered_failures.append(DiscoveredFailure(
-                    result.issue_number,
-                    f"Issue #{result.issue_number}",
-                    result.failure_kind or "publish_failed",
-                ))
-                self.state.failed_this_cycle.add(result.issue_number)
-
-    def _supersede_late_publish_pr(self, result: PublishJobResult) -> None:
-        """Close + comment a PR created by a worker that completed after scratch reset.
-
-        Reset's ``_supersede_open_prs`` only acts on PRs open at reset time.
-        A worker that pushed a branch and created a PR after that boundary
-        leaks past it. Catching the result here is the only reliable
-        signal that such a PR exists. Failures are logged loudly but do
-        not abort the orchestrator — a stranded PR is recoverable via
-        the awaiting-merge-drift discovery path; an aborted orchestrator
-        is not.
-
-        ``ActionApplier.apply()`` can raise ``ClaimLostError`` or
-        ``ReconciliationRequired`` when a fresh attempt has already claimed
-        the issue (which is exactly the condition that produced the late
-        result we're cleaning up after). The caller in ``_poll_job_results``
-        has already drained the tombstone, so an unhandled exception both
-        aborts the tick and loses the only cleanup signal we have. We
-        therefore route those exceptions through the same failure-log path
-        as ``applied.success=False`` and let awaiting-merge-drift discovery
-        be the safety net.
-
-        Caller must guard ``result.pr_number is not None`` — _poll_job_results
-        does this in the skip path before invoking us.
-        """
-        from ..control.actions import SupersedePullRequestAction
-        from ..control.claim_gate import ClaimLostError
-        from ..control.reconciliation import ReconciliationRequired
-
-        assert result.pr_number is not None, (
-            "_supersede_late_publish_pr requires pr_number; caller in "
-            "_poll_job_results must guard the truthiness check first."
-        )
-        pr_number = result.pr_number
-
-        comment = (
-            "Superseded by reset and retry from scratch.\n\n"
-            "This PR was created by a publish-job worker that finished "
-            "after the orchestrator's scratch reset for the parent issue. "
-            "The orchestrator is discarding all artifacts from the prior "
-            "attempt; a fresh attempt will use a new branch."
-        )
-        try:
-            applied = self.deps.action_applier.apply(
-                SupersedePullRequestAction(
-                    issue_number=result.issue_number,
-                    pr_number=pr_number,
-                    comment=comment,
-                    reason="superseded late publish-job result after scratch reset",
-                )
-            )
-        except (ClaimLostError, ReconciliationRequired) as exc:
-            logger.error(
-                "[ASYNC] Late supersede of PR #%d for issue #%d aborted by "
-                "%s: %s. A fresh attempt has already claimed this issue; "
-                "the stale PR will be picked up by awaiting-merge-drift "
-                "discovery.",
-                pr_number,
-                result.issue_number,
-                type(exc).__name__,
-                exc,
-            )
-            return
-        if not applied.success:
-            logger.error(
-                "[ASYNC] Failed to supersede late PR #%d for issue #%d "
-                "after scratch reset: %s. PR will need manual cleanup or "
-                "will be picked up by awaiting-merge-drift discovery.",
-                pr_number,
-                result.issue_number,
-                applied.error or "unknown error",
-            )
-            return
-        logger.info(
-            "[ASYNC] Superseded late PR #%d for issue #%d (worker finished "
-            "after scratch reset)",
-            pr_number,
-            result.issue_number,
-        )
-
-    def start_publish_executor(self) -> None:
-        """Start the background publish executor. Call during orchestrator startup."""
-        self.deps.publish_executor.start()
-        logger.info("[ASYNC] Publish executor started")
-
-    def shutdown_publish_executor(self, wait: bool = True, timeout: float | None = None) -> None:
-        """Shutdown the background publish executor. Call during orchestrator shutdown."""
-        self.deps.publish_executor.shutdown(wait=wait, timeout=timeout)
-        logger.info("[ASYNC] Publish executor shutdown")
 
     def _check_lease_renewals(self) -> None:
         """Check and renew leases for active sessions.
@@ -1095,11 +880,6 @@ class Orchestrator:
         # Clean up E2E runner if active
         self._cleanup_e2e_runner()
 
-        # Shutdown publish executor gracefully - wait for running jobs to complete
-        # In-flight jobs will be saved to SQLite for recovery on next startup
-        logger.info("[SHUTDOWN] Waiting for background publish jobs to complete...")
-        self.shutdown_publish_executor(wait=True, timeout=60.0)
-
         # Wait for background review-exchange threads so daemon-thread kill
         # doesn't leave half-written summary.json / round-NNN.json files.
         self._drain_background_jobs()
@@ -1179,7 +959,6 @@ class Orchestrator:
     def close(self) -> None:
         """Release external resources for test harnesses and short-lived runs."""
         self._cleanup_e2e_runner()
-        self.shutdown_publish_executor(wait=True, timeout=60.0)
         # Tear down every persistent coder/reviewer pair the orchestrator
         # spawned so PTY-attached agent processes don't leak past the
         # orchestrator's lifetime. ADR 0026 / B2: pairs survive across

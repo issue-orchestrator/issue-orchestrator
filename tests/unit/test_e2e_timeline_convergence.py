@@ -1445,6 +1445,99 @@ class TestE2ERunDetailEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_e2e_issue_detail_never_leaks_production_stack_dependency(self, tmp_path):
+        """Production stack gate state must not bleed into an E2E run drawer.
+
+        The stack dependency payload is resolved from the live orchestrator's
+        ``dependency_gate_snapshot`` by numeric issue number. The E2E run
+        drawer is scoped to an ephemeral run timeline, so if an E2E scenario
+        issue reuses a real dashboard issue number, the run drawer must NOT
+        render that unrelated production stack gate (#6597/#6680).
+
+        Stages one run with an issue-42 event in its window, seeds a real
+        production stack snapshot for issue 42 on the orchestrator state, then
+        asserts the E2E drawer returns ``stack_dependency: null``.
+        """
+        import sqlite3
+        from unittest.mock import MagicMock
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.domain.dependencies import DependencyMode
+        from issue_orchestrator.domain.dependency_gates import (
+            DependencyGateSnapshot,
+            SuccessorEdge,
+        )
+        from issue_orchestrator.entrypoints.web import app, set_orchestrator
+        from issue_orchestrator.execution.timeline_store import SqliteTimelineStore
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        repo_root = tmp_path / "repo"
+        (repo_root / ".issue-orchestrator").mkdir(parents=True)
+        wt_state = tmp_path / "repo-e2e-worktree" / ".issue-orchestrator" / "state"
+        wt_state.mkdir(parents=True)
+
+        db = E2EDB(repo_root / ".issue-orchestrator" / "e2e.db")
+        run_id = db.start_run(
+            repo_root=str(repo_root),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id=run_id, status="failed", duration_seconds=60.0)
+        with sqlite3.connect(str(repo_root / ".issue-orchestrator" / "e2e.db")) as raw:
+            raw.execute(
+                "UPDATE e2e_runs SET started_at = ?, finished_at = ? WHERE id = ?",
+                ("2026-01-01T00:00:00Z", "2026-01-01T00:05:00Z", run_id),
+            )
+
+        wt_store = SqliteTimelineStore(db_path=wt_state / "timeline.sqlite")
+        wt_store.append(
+            TimelineKey.for_issue(42).to_store_key(),
+            TimelineRecord(
+                event_id="run-evt", timestamp="2026-01-01T00:02:30Z",
+                event="session.started",
+                data={
+                    "run_dir": "/tmp/run",
+                    "views": ["user", "ops", "debug"],
+                    "logical_run": 1,
+                    "logical_cycle": 1,
+                    "logical_phase": "coding",
+                    "timeline_schema_version": 4,
+                    "narrative": "Run session",
+                },
+                source_event="session.started",
+            ),
+        )
+
+        mock_orch = MagicMock()
+        mock_orch.config.repo_root = repo_root
+        mock_orch.deps.timeline_store = SqliteTimelineStore(
+            db_path=repo_root / ".issue-orchestrator" / "state" / "timeline.sqlite",
+        )
+        # Real production stack gate for issue 42 living in orchestrator state.
+        mock_orch.state.dependency_gate_snapshot = DependencyGateSnapshot(
+            reports={},
+            successors={
+                42: (
+                    SuccessorEdge(issue_number=99, ref="#99", mode=DependencyMode.STACK),
+                )
+            },
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/e2e-run/{run_id}/issue-detail/42?view=debug")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["e2e_run_id"] == run_id
+            # The run drawer is ephemeral: it must NOT surface the live
+            # dashboard's production stack gate for this reused issue number.
+            assert payload["stack_dependency"] is None, (
+                "E2E run drawer leaked production stack dependency payload: "
+                f"{payload['stack_dependency']!r}"
+            )
+        finally:
+            set_orchestrator(None)
+
     def test_e2e_issue_detail_surfaces_review_artifact_actions(self, tmp_path):
         """E2E issue drill-in exposes the same review report/JSON actions."""
         import sqlite3

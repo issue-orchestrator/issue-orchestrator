@@ -969,6 +969,65 @@ class TestCloseIssueAction:
         assert "GitHub refused" in (result.error or "")
 
 
+class _FakePublishRetryAbandoner:
+    def __init__(self) -> None:
+        self.abandoned: list[int] = []
+
+    def abandon_issue(self, issue_number: int) -> None:
+        self.abandoned.append(issue_number)
+
+
+class TestPublishRetryAbandonmentAtLifecycleBoundaries:
+    """Every issue terminal boundary abandons an in-flight publish retry.
+
+    The abandonment is owned by the shared runtime terminator, not each caller,
+    so escalation and issue-completed/closed reconciliation both drop a stored /
+    in-flight retry that could otherwise repopulate a terminated issue.
+    """
+
+    def test_escalation_abandons_publish_retry(self, applier, mock_labels):
+        publish_recovery = _FakePublishRetryAbandoner()
+        applier.publish_recovery = publish_recovery
+        action = EscalateToHumanAction(
+            issue_number=123,
+            pr_number=456,
+            escalation_reason="Max rework cycles exceeded",
+            rework_cycles=3,
+            needs_human_label="needs-human",
+            needs_rework_label="needs-rework",
+            max_rework_cycles=2,
+        )
+
+        assert applier.apply(action).success
+        assert publish_recovery.abandoned == [123]
+
+    def test_issue_completed_reconciliation_abandons_publish_retry(self, applier):
+        publish_recovery = _FakePublishRetryAbandoner()
+        applier.publish_recovery = publish_recovery
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Shared cache read misses",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=0,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.pair_registry = MagicMock(name="pair_registry")
+        action = ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        )
+
+        assert applier.apply(action).success
+        assert publish_recovery.abandoned == [228]
+
+
 class TestEscalateToHumanAction:
     """Tests for ESCALATE_TO_HUMAN action."""
 

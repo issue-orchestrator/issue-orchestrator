@@ -15,7 +15,6 @@ export interface Snapshot {
   stale: StalePayload;
   dependency_problems: DependencyProblemsPayload;
   excluded: ExcludedPayload;
-  publish_jobs: PublishJobsPayload;
   history: HistoryPayload;
 }
 
@@ -30,11 +29,6 @@ export interface StatusPayload {
   tick_id: number | null;
   last_tick_time: number | null;
   e2e_role: string | null;
-  publish_jobs: PublishJob[];
-  publish_job_stats: {
-    running: number;
-    pending: number;
-  };
 }
 
 export interface InfoPayload {
@@ -102,25 +96,6 @@ export interface DependencyProblemsPayload {
 export interface ExcludedPayload {
   excluded: IssueSummary[];
   count: number;
-}
-
-export interface PublishJobsPayload {
-  jobs: PublishJob[];
-  count: number;
-}
-
-export interface PublishJob {
-  job_id: string;
-  issue_number: number;
-  session_key?: string;
-  status: string;
-  started_at?: string;
-  created_at?: string;
-  finished_at?: string;
-  pr_url?: string;
-  pr_number?: number;
-  error_message?: string;
-  duration_seconds?: number;
 }
 
 export interface HistoryPayload {

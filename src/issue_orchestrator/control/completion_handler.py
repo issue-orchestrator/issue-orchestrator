@@ -57,6 +57,7 @@ from .invalid_record_actions import (
 )
 from .reconciliation import build_expected_for_mutation
 from .retrospective_review_completion import retrospective_review_completion_actions
+from .review_routing import should_queue_pr_review
 from .session_run_resolution import resolve_session_run_dir
 from pathlib import Path
 from ..infra.run_audit import write_run_audit
@@ -1096,20 +1097,24 @@ class CompletionHandler:
             TaskKind.REVIEW,
             TaskKind.RETROSPECTIVE_REVIEW,
         }
+        should_queue = should_queue_pr_review(
+            has_pr=bool(pr_url),
+            code_review_agent_configured=bool(self.config.code_review_agent),
+            skip_review=session.agent_config.skip_review,
+            is_review_session=is_review_session,
+            review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
+        )
         if review_exchange_completed:
             logger.info(
                 "[REVIEW] Review exchange completed - skipping PR review queue",
             )
-            return False
-        if review_exchange_halted:
+        elif review_exchange_halted:
             logger.info(
                 "[REVIEW] Review exchange halted - skipping PR review queue",
             )
-            return False
-
-        if pr_url and self.config.code_review_agent and not session.agent_config.skip_review and not is_review_session:
+        elif should_queue:
             logger.info(f"[REVIEW] Session #{session.issue.number} completed with PR, queuing code review")
-            return True
         elif pr_url and is_review_session:
             logger.info(f"[REVIEW] Review session {session.terminal_id} completed - no re-queue needed")
         elif pr_url and not self.config.code_review_agent:
@@ -1119,7 +1124,7 @@ class CompletionHandler:
         elif not pr_url:
             logger.info(f"[REVIEW] Session #{session.issue.number} completed but no PR found")
 
-        return False
+        return should_queue
 
     def _review_exchange_completion_actions(
         self,

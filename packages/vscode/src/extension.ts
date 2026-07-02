@@ -910,10 +910,6 @@ function findPrUrl(snapshot: Snapshot, issueNumber: number): string | null {
   if (history?.pr_url) {
     return history.pr_url;
   }
-  const job = snapshot.publish_jobs.jobs.find((j) => j.issue_number === issueNumber && j.pr_url);
-  if (job?.pr_url) {
-    return job.pr_url;
-  }
   return null;
 }
 

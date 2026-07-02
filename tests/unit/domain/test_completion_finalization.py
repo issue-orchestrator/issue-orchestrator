@@ -132,6 +132,17 @@ def test_review_exchange_running_query_requires_tuple_actions() -> None:
             issue_number=364,
             session_name="issue-364",
             requested_actions=[RequestedAction.CREATE_PR],  # type: ignore[arg-type]
+            run_id="20260630-205510Z",
+        )
+
+
+def test_review_exchange_running_query_requires_run_id() -> None:
+    with pytest.raises(ValueError, match="run_id"):
+        ReviewExchangeRunningQuery(
+            issue_number=364,
+            session_name="issue-364",
+            requested_actions=(RequestedAction.CREATE_PR,),
+            run_id="",
         )
 
 

@@ -115,12 +115,6 @@ class OrchestratorHttpApi(OrchestratorApi):
     def info(self) -> dict[str, Any]:
         return self._request("GET", "/api/info")
 
-    def publish_jobs(self, issue_number: int | None = None) -> dict[str, Any]:
-        path = "/api/publish-jobs"
-        if issue_number is not None:
-            path = f"{path}?issue_number={issue_number}"
-        return self._request("GET", path)
-
     def excluded_issues(self) -> dict[str, Any]:
         return self._request("GET", "/api/excluded-issues")
 
@@ -251,12 +245,6 @@ class OrchestratorAsyncHttpApi:
 
     async def info(self) -> dict[str, Any]:
         return await self._request("GET", "/api/info")
-
-    async def publish_jobs(self, issue_number: int | None = None) -> dict[str, Any]:
-        path = "/api/publish-jobs"
-        if issue_number is not None:
-            path = f"{path}?issue_number={issue_number}"
-        return await self._request("GET", path)
 
     async def excluded_issues(self) -> dict[str, Any]:
         return await self._request("GET", "/api/excluded-issues")

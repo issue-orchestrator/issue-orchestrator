@@ -224,7 +224,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.fetch_all_issues.return_value = [make_issue(2, labels=["agent:web"])]
 
@@ -255,7 +255,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, title="Updated 1", labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = [make_issue(3, labels=["agent:web"])]
@@ -290,7 +290,7 @@ class TestQueueFetchPlanner:
             queue_refresh_count=1,  # next refresh count = 2
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -313,7 +313,7 @@ class TestQueueFetchPlanner:
             state,
             include_general_scans=False,
         )
-        scheduler.get_available_issues.assert_called_once()
+        scheduler.evaluate_issues.assert_called_once()
 
     def test_pr_scan_uses_single_workflow_call_when_due(self, mock_event_sink, mock_repository_host):
         config = self._make_config()
@@ -324,7 +324,7 @@ class TestQueueFetchPlanner:
             queue_refresh_count=1,  # next refresh count = 2
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -359,7 +359,7 @@ class TestQueueFetchPlanner:
             ui_visible_updated_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -389,7 +389,7 @@ class TestQueueFetchPlanner:
             queue_refresh_count=1,
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -412,7 +412,7 @@ class TestQueueFetchPlanner:
             state,
             include_general_scans=False,
         )
-        scheduler.get_available_issues.assert_not_called()
+        scheduler.evaluate_issues.assert_not_called()
 
     def test_fetch_prunes_refresh_timestamps_for_issues_no_longer_tracked(
         self, mock_event_sink, mock_repository_host
@@ -424,7 +424,7 @@ class TestQueueFetchPlanner:
             issue_refresh_timestamps={1: 100.0, 999: 200.0},
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []
@@ -454,7 +454,7 @@ class TestQueueFetchPlanner:
             queue_delta_watermark="2026-01-01T00:00:00Z",
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_delta_issues.return_value = (
@@ -491,7 +491,7 @@ class TestQueueFetchPlanner:
             queue_delta_watermark="2026-01-01T00:00:00Z",
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_delta_issues.side_effect = GitHubHttpError(
@@ -539,7 +539,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         # The issue-list fetch itself succeeds...
         github_workflow.fetch_all_issues.return_value = [make_issue(1, labels=["agent:web"])]
@@ -591,7 +591,7 @@ class TestQueueFetchPlanner:
             queue_delta_watermark="2026-01-01T00:00:00Z",
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(7, labels=["agent:web"])]
         github_workflow.fetch_delta_issues.return_value = (
@@ -671,7 +671,7 @@ class TestQueueFetchPlanner:
         planner = Mock()
         planner.plan.return_value = Mock(action_count=0, actions=[])
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = list(prior_issues[1:11])
         github_workflow.fetch_discovery_issues.return_value = []
@@ -718,7 +718,7 @@ class TestQueueFetchPlanner:
         planner = Mock()
         planner.plan.return_value = Mock(action_count=0, actions=[])
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.fetch_all_issues.side_effect = GitHubHttpError(
             "GitHub GET /repos/owner/repo/issues failed: 404", status_code=404
@@ -760,7 +760,7 @@ class TestQueueFetchPlanner:
         fact_gatherer = Mock()
         planner = Mock()
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.fetch_all_issues.side_effect = GitHubHttpError(
             "GitHub GET /repos/owner/repo/issues failed: 404", status_code=404
@@ -806,7 +806,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.fetch_all_issues.return_value = [
             make_issue(1, labels=["agent:web"])
@@ -846,7 +846,7 @@ class TestQueueFetchPlanner:
             queue_last_full_scan_at=time.time(),
         )
         scheduler = Mock()
-        scheduler.get_available_issues.return_value = ([], [])
+        scheduler.evaluate_issues.return_value = []
         github_workflow = Mock()
         github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
         github_workflow.fetch_discovery_issues.return_value = []

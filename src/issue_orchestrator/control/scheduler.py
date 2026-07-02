@@ -180,7 +180,14 @@ class SchedulerResult:
 
 @dataclass(frozen=True)
 class IssueAvailabilityDecision:
-    """Availability result for a single issue."""
+    """Availability result for a single issue.
+
+    This carries only the scheduler's *availability* verdict. The dashboard's
+    four-gate state is projected separately by
+    :class:`~issue_orchestrator.control.dependency_gate_snapshot.DependencyGateSnapshotBuilder`
+    (which evaluates every lane through the dependency-gate owner), so the
+    availability decision no longer needs to smuggle a gate report to the UI.
+    """
 
     issue: Issue
     available: bool
@@ -313,6 +320,9 @@ class Scheduler:
                     reason="dependency_blocked",
                     detail=report.work_summary(),
                 )
+            return IssueAvailabilityDecision(
+                issue=issue, available=True, reason="available"
+            )
 
         return IssueAvailabilityDecision(issue=issue, available=True, reason="available")
 

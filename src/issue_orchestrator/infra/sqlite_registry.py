@@ -28,14 +28,6 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
     """Return the list of SQLite DBs used by the orchestrator."""
     return [
         SQLiteDatabase(
-            key="publish_jobs",
-            label="Publish Jobs",
-            path_fn=lambda cfg: _state_db(cfg, "publish_jobs.db"),
-            enabled_fn=lambda cfg: True,
-            backup=True,
-            enforce_pragmas=True,
-        ),
-        SQLiteDatabase(
             key="session_registry",
             label="Session Registry",
             path_fn=lambda cfg: _state_db(cfg, "session_registry.sqlite"),

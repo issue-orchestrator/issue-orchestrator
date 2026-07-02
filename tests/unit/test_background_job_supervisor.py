@@ -314,7 +314,8 @@ def test_review_exchange_halts_when_supervisor_records_failure() -> None:
     supervisor = BackgroundJobSupervisor(runner)
 
     # Pre-record a failure; review exchange should surface it on next visit.
-    supervisor.submit("review-exchange:42:coding-1", lambda: _raise_boom())
+    # The job id is run-scoped (#6675): issue:session_name:run_id.
+    supervisor.submit("review-exchange:42:coding-1:coding-run-1", lambda: _raise_boom())
     runner.wait_until_idle(timeout=5.0)
     supervisor.tick()
 
@@ -360,6 +361,7 @@ def test_review_exchange_halts_when_supervisor_records_failure() -> None:
         issue_number=42,
         issue_title="test",
         session_name="coding-1",
+        run_id="coding-run-1",
         agent_label="agent:backend",
         record=record,
         errors=errors,

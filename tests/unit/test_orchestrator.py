@@ -17,7 +17,6 @@ from issue_orchestrator.domain.models import (
     SessionStatus,
     AgentConfig,
     OrchestratorState,
-    PublishJobResult,
     ORCHESTRATOR_PR_MARKER,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -359,24 +358,6 @@ class TestOrchestratorInit:
 
 class TestStartup:
     """Test the startup method."""
-
-    @pytest.mark.asyncio
-    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
-    async def test_startup_initializes_publish_executor(
-        self,
-        _mock_analyze,
-        sample_config,
-        mock_repository_host,
-    ):
-        """Startup must initialize publish infrastructure before web/API access."""
-        mock_repository_host.issues = []
-
-        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
-        orchestrator.deps.publish_executor.start = MagicMock()
-
-        await orchestrator.startup()
-
-        orchestrator.deps.publish_executor.start.assert_called_once_with()
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
@@ -3639,230 +3620,41 @@ class TestRefreshRequestPreservation:
         assert 'issue-2' in orchestrator._inflight_stable_ids  # noqa: SLF001
 
 
-class TestAsyncPublishResults:
-    """Tests for async publish result handling."""
+def test_full_deps_publish_recovery_reconciles_through_shared_action_applier(sample_config):
+    """build_test_orchestrator_deps must wire the resolved (non-None) applier.
 
-    def test_poll_job_results_skips_review_when_exchange_completed(self, sample_config):
-        orchestrator = create_test_orchestrator(sample_config)
-        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+    Production passes the resolved ActionApplier into PublishRecoveryService; the
+    test builder must use the same object OrchestratorDeps exposes, not the raw
+    optional argument (which is None when callers omit it). A reconciliation that
+    applies labels proves the wiring is intact — with a None applier this raises.
+    """
+    from issue_orchestrator.control.actions import AddLabelAction
 
-        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
-            PublishJobResult(
-                job_id="job-1",
-                issue_number=42,
-                session_key="code:42",
-                success=True,
-                pr_url="https://github.com/test/repo/pull/123",
-                pr_number=123,
-                review_exchange_completed=True,
-            )
-        ])
+    orchestrator = create_test_orchestrator(sample_config)
+    deps = orchestrator.deps
 
-        orchestrator._poll_job_results()  # noqa: SLF001
+    # Spy on the applier OrchestratorDeps exposes. PublishRecoveryService must
+    # hold this same object for the spy to observe its label writes.
+    applied = []
 
-        assert orchestrator.state.discovered_reviews == []
-        assert orchestrator.state.completed_today == [42]
-        assert orchestrator.state.pending_publish_jobs == {}
+    def _spy(action):
+        applied.append(action)
+        return SimpleNamespace(success=True, error=None)
 
-    def test_poll_job_results_tracks_validation_failed_reason(self, sample_config):
-        orchestrator = create_test_orchestrator(sample_config)
-        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+    deps.action_applier.apply = _spy
 
-        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
-            PublishJobResult(
-                job_id="job-1",
-                issue_number=42,
-                session_key="code:42",
-                success=False,
-                failure_kind="validation_failed",
-                message="Validation failed: ERROR: Test-skipping patterns detected",
-            )
-        ])
+    deps.publish_recovery.reconcile_retry_publish_success(
+        state=OrchestratorState(),
+        issue_number=4057,
+        issue_title="UI: Surface provider status",
+        agent_label="agent:web",
+        pr_url="https://github.com/owner/repo/pull/5453",
+        pr_number=5453,
+        worktree_path=None,
+    )
 
-        orchestrator._poll_job_results()  # noqa: SLF001
-
-        assert len(orchestrator.state.discovered_failures) == 1
-        assert orchestrator.state.discovered_failures[0].failure_reason == "validation_failed"
-
-    def test_poll_job_results_skips_superseded_jobs_after_scratch_reset(self, sample_config):
-        """Scratch reset tombstones in-flight publish jobs; their late results
-        must not flow into discovered_reviews/completed_today/failures.
-
-        Closes the leak flagged in PR #6131 review: clearing the dict
-        entries doesn't stop the executor's worker thread, so when it
-        finishes its result must be discarded rather than re-populating
-        state for the freshly-reset issue.
-        """
-        from issue_orchestrator.control.actions import (
-            ActionType,
-            SupersedePullRequestAction,
-        )
-
-        orchestrator = create_test_orchestrator(sample_config)
-        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
-        # Tombstone the job — simulating a scratch reset that happened
-        # while the worker was running.
-        orchestrator.state.superseded_job_ids = {"job-1"}
-
-        # Stub the action_applier's apply so we can verify supersede was called.
-        # OrchestratorDeps is frozen, so patch the method on the existing
-        # applier rather than replacing the applier itself.
-        apply_mock = MagicMock(return_value=MagicMock(success=True, error=None))
-        orchestrator.deps.action_applier.apply = apply_mock
-
-        # Worker eventually finishes with what would otherwise be a
-        # successful publish for issue 42 — including a PR creation.
-        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
-            PublishJobResult(
-                job_id="job-1",
-                issue_number=42,
-                session_key="code:42",
-                success=True,
-                pr_url="https://github.com/test/repo/pull/123",
-                pr_number=123,
-                review_exchange_completed=False,
-            )
-        ])
-
-        orchestrator._poll_job_results()  # noqa: SLF001
-
-        # No state mutations from the discarded result.
-        assert orchestrator.state.discovered_reviews == []
-        assert orchestrator.state.completed_today == []
-        assert orchestrator.state.discovered_failures == []
-        assert orchestrator.state.failed_this_cycle == set()
-        # Tombstone drained — the job is now done.
-        assert "job-1" not in orchestrator.state.superseded_job_ids
-        # Pending dict cleared just like a normal completion.
-        assert orchestrator.state.pending_publish_jobs == {}
-
-        # The PR the late worker created must be superseded — reset's
-        # _supersede_open_prs only catches PRs open at reset time, so a
-        # PR created seconds later only gets reconciled here.
-        apply_mock.assert_called_once()
-        action = apply_mock.call_args[0][0]
-        assert isinstance(action, SupersedePullRequestAction)
-        assert action.action_type == ActionType.SUPERSEDE_PR
-        assert action.issue_number == 42
-        assert action.pr_number == 123
-        assert "scratch reset" in action.comment.lower()
-
-    def test_poll_job_results_superseded_pr_swallows_claim_lost_error(self, sample_config, caplog):
-        """If the fresh attempt has the claim, applier raises ClaimLostError —
-        skip path must log and continue, not abort the tick.
-
-        Caller has already drained the tombstone, so an unhandled exception
-        loses the only cleanup signal. Awaiting-merge-drift discovery is
-        the documented safety net.
-        """
-        from issue_orchestrator.control.claim_gate import ClaimLostError
-
-        orchestrator = create_test_orchestrator(sample_config)
-        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
-        orchestrator.state.superseded_job_ids = {"job-1"}
-
-        apply_mock = MagicMock(
-            side_effect=ClaimLostError(issue_number=42, operation="supersede")
-        )
-        orchestrator.deps.action_applier.apply = apply_mock
-
-        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
-            PublishJobResult(
-                job_id="job-1",
-                issue_number=42,
-                session_key="code:42",
-                success=True,
-                pr_url="https://github.com/test/repo/pull/123",
-                pr_number=123,
-                review_exchange_completed=False,
-            )
-        ])
-
-        # Must not raise — tick continues.
-        with caplog.at_level("ERROR"):
-            orchestrator._poll_job_results()  # noqa: SLF001
-
-        # Tombstone drained, pending cleared, no leakage into discovery.
-        assert "job-1" not in orchestrator.state.superseded_job_ids
-        assert orchestrator.state.discovered_reviews == []
-        assert orchestrator.state.completed_today == []
-        # Failure logged via the same path as success=False.
-        assert any(
-            "ClaimLostError" in rec.message and "PR #123" in rec.message
-            for rec in caplog.records
-        ), "ClaimLostError must be logged like other supersede failures"
-
-    def test_poll_job_results_superseded_pr_swallows_reconciliation_required(self, sample_config, caplog):
-        """ReconciliationRequired (state-mismatch optimistic-concurrency) must
-        also be caught — same shape as ClaimLostError, different exception.
-        """
-        from issue_orchestrator.control.reconciliation import (
-            ExternalSnapshot,
-            ReconciliationRequired,
-        )
-
-        orchestrator = create_test_orchestrator(sample_config)
-        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
-        orchestrator.state.superseded_job_ids = {"job-1"}
-
-        snap = ExternalSnapshot.for_issue(42, set())
-        apply_mock = MagicMock(side_effect=ReconciliationRequired(
-            entity_type="pr",
-            entity_id=123,
-            expected=snap,
-            actual=snap,
-            reason="state moved on",
-        ))
-        orchestrator.deps.action_applier.apply = apply_mock
-
-        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
-            PublishJobResult(
-                job_id="job-1",
-                issue_number=42,
-                session_key="code:42",
-                success=True,
-                pr_url="https://github.com/test/repo/pull/123",
-                pr_number=123,
-                review_exchange_completed=False,
-            )
-        ])
-
-        with caplog.at_level("ERROR"):
-            orchestrator._poll_job_results()  # noqa: SLF001
-
-        assert "job-1" not in orchestrator.state.superseded_job_ids
-        assert any(
-            "ReconciliationRequired" in rec.message and "PR #123" in rec.message
-            for rec in caplog.records
-        ), "ReconciliationRequired must be logged like other supersede failures"
-
-    def test_poll_job_results_superseded_no_pr_skips_supersede(self, sample_config):
-        """If the tombstoned worker hadn't yet created a PR, no supersede call.
-
-        Worker may have failed before pushing, or the result reports
-        success but no pr_number (e.g., review-only retry). In either
-        case the skip path should not invoke SupersedePullRequestAction.
-        """
-        orchestrator = create_test_orchestrator(sample_config)
-        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
-        orchestrator.state.superseded_job_ids = {"job-1"}
-
-        apply_mock = MagicMock(return_value=MagicMock(success=True))
-        orchestrator.deps.action_applier.apply = apply_mock
-
-        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
-            PublishJobResult(
-                job_id="job-1",
-                issue_number=42,
-                session_key="code:42",
-                success=True,
-                pr_url=None,
-                pr_number=None,
-                review_exchange_completed=False,
-            )
-        ])
-
-        orchestrator._poll_job_results()  # noqa: SLF001
-
-        apply_mock.assert_not_called()
-        assert "job-1" not in orchestrator.state.superseded_job_ids
+    assert any(
+        isinstance(action, AddLabelAction)
+        and action.label == deps.label_manager.pr_pending
+        for action in applied
+    ), "publish recovery must apply labels through deps.action_applier"

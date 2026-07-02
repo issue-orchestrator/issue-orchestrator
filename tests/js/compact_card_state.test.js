@@ -106,6 +106,27 @@ test('computeCompactCardFingerprint ignores phase_age tick changes', () => {
     assert.equal(before, after);
 });
 
+test('computeCompactCardFingerprint changes when the stack signal changes', () => {
+    // The server encodes the chip's rendered chain context (predecessor and
+    // successor refs) into stack_signal. A base moving from "before #30" to
+    // "before #31" — same gates, same successor count — changes the signal and
+    // must re-fingerprint the card, or the reused DOM node keeps stale chain
+    // text in the chip title.
+    const before = compactCardState.computeCompactCardFingerprint({
+        issue_number: 10,
+        title: 'Stacked slice',
+        show_stale_badge: false,
+        stack_signal: 'stack::#20',
+    });
+    const after = compactCardState.computeCompactCardFingerprint({
+        issue_number: 10,
+        title: 'Stacked slice',
+        show_stale_badge: false,
+        stack_signal: 'stack::#21',
+    });
+    assert.notEqual(before, after);
+});
+
 test('computeCompactCardFingerprint changes when stale badge visibility changes', () => {
     const before = compactCardState.computeCompactCardFingerprint({
         issue_number: 10,

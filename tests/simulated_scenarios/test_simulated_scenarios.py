@@ -614,7 +614,7 @@ def test_sqlite_backups_created_for_existing_dbs(scenario_repo: Path):
     state_dir = scenario_repo / ".issue-orchestrator" / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     db_paths = [
-        state_dir / "publish_jobs.db",
+        state_dir / "goal_pilot.sqlite",
         state_dir / "session_registry.sqlite",
     ]
     for db_path in db_paths:

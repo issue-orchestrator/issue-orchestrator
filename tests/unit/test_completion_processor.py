@@ -3600,8 +3600,13 @@ class TestCompletionProcessorPublishGate:
     ):
         mock_git_adapter.has_tracked_changes.return_value = True
         mock_git_adapter.list_dirty_files.return_value = ["src/app.py"]
+        # The background review-exchange job id is run-scoped (#6675):
+        # issue:session_name:run_id. Bind the running job to this run's id.
+        run_id = "20260603T000000000000Z"
         supervisor = BackgroundJobSupervisor(
-            _RunningReviewExchangeJobRunner({"review-exchange:123:test-session"})
+            _RunningReviewExchangeJobRunner(
+                {f"review-exchange:123:test-session:{run_id}"}
+            )
         )
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
@@ -3620,7 +3625,7 @@ class TestCompletionProcessorPublishGate:
 
         result = processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree),
+            run_assets=make_session_run_assets(worktree, run_id=run_id),
             issue_number=123,
             issue_title="Test",
         )
