@@ -112,7 +112,7 @@ class SessionFinalizationContext:
     issue_number: int
     issue_title: str
     session_name: str
-    run_dir: Path
+    run_assets: SessionRunAssets
     validation_retry_count: int
     original_prompt: str | None
     retry_prompt_template: str | None
@@ -275,7 +275,7 @@ class SessionController:
                 issue_number=issue_number,
                 issue_title=issue_title,
                 session_name=validation_session_name,
-                run_dir=run_dir,
+                run_assets=run_assets,
                 validation_retry_count=validation_retry_count,
                 original_prompt=original_prompt,
                 retry_prompt_template=retry_prompt_template,
@@ -411,9 +411,11 @@ class SessionController:
         self,
         context: SessionFinalizationContext,
     ) -> SessionDecision | None:
+        has_validation = bool(self._validation_cmd and self._command_runner)
         finalization_plan = self.completion_processor.completion_finalization_plan(
             issue_number=context.issue_number,
             session_name=context.session_name,
+            run_id=context.run_assets.run_id,
             outcome=context.record.outcome,
             requested_actions=tuple(context.record.requested_actions),
             runtime_state=(
@@ -421,9 +423,7 @@ class SessionController:
                 if context.recovered
                 else CompletionRuntimeState.TERMINATED
             ),
-            validation_preflight_configured=bool(
-                self._validation_cmd and self._command_runner
-            ),
+            validation_preflight_configured=has_validation,
         )
         if (
             finalization_plan.decision
@@ -442,7 +442,7 @@ class SessionController:
         ):
             return self._deferred_review_exchange_decision(
                 result=self.completion_processor.deferred_review_exchange_result(),
-                run_dir=context.run_dir,
+                run_dir=context.run_assets.run_dir,
                 session_name=context.session_name,
                 issue_number=context.issue_number,
                 recovered=False,
@@ -458,7 +458,7 @@ class SessionController:
                 issue_number=context.issue_number,
                 issue_title=context.issue_title,
                 session_name=context.session_name,
-                run_dir=context.run_dir,
+                run_dir=context.run_assets.run_dir,
                 validation_retry_count=context.validation_retry_count,
                 original_prompt=context.original_prompt,
                 retry_prompt_template=context.retry_prompt_template,
