@@ -17,6 +17,7 @@ from issue_orchestrator.ports.pull_request_tracker import (
     PRRef,
     StatusCheckRollupRead,
 )
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.domain.issue_key import FakeIssueKey, IssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -286,6 +287,17 @@ class MockGitHubAdapter:
         """Get the state of an issue."""
         issue = self.get_issue(issue_number)
         return issue.state if issue else None
+
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        """Get dependency-gating issue facts."""
+        issue = self.get_issue(issue_number)
+        if issue is None:
+            return None
+        return DependencyIssueSnapshot(state=issue.state, milestone=issue.milestone)
 
     def create_issue_key(self, issue_number: int) -> IssueKey:
         """Create an IssueKey for testing."""

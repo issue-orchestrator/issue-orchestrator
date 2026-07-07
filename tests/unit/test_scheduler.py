@@ -10,6 +10,7 @@ from issue_orchestrator.control.scheduler import (
 )
 from issue_orchestrator.domain.models import Issue, AgentConfig
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 
 
 def create_mock_issue(number, priority=None, milestone=None, state="open", milestone_number=None, milestone_due_on=None, title=None):
@@ -815,6 +816,16 @@ class MockIssueChecker:
     def __init__(self, default_milestone: str | None = "M1"):
         self.issues: dict[int, str] = {}  # issue_number -> state
         self._default_milestone = default_milestone
+
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        state = self.issues.get(issue_number)
+        if state is None:
+            return None
+        return DependencyIssueSnapshot(state=state, milestone=self._default_milestone)
 
     def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
         return self.issues.get(issue_number)
