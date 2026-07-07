@@ -11,6 +11,10 @@ globals().update(
     {name: value for name, value in vars(_support).items() if not name.startswith("__")}
 )
 
+_SETTINGS_SAVE_PATCH_TARGET = (
+    "issue_orchestrator.entrypoints.web_settings_routes.save_config_document_patch"
+)
+
 class TestSettingsEndpoints:
     """Tests for the settings page and API endpoints.
 
@@ -88,12 +92,13 @@ class TestSettingsEndpoints:
         mock_orch = create_mock_orchestrator()
         mock_orch.config.max_concurrent_sessions = 3
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-
-            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -121,12 +126,13 @@ class TestSettingsEndpoints:
 
         mock_orch = create_mock_orchestrator()
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-
-            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -201,7 +207,10 @@ class TestSettingsEndpoints:
 
         mock_orch = create_mock_orchestrator()
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             mock_warning = MagicMock()
             mock_warning.status = "warning"
             mock_warning.name = "Token Scope"
@@ -209,8 +218,6 @@ class TestSettingsEndpoints:
             mock_result = MagicMock()
             mock_result.checks = [mock_warning]
             mock_doctor.return_value = mock_result
-
-            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -245,11 +252,13 @@ class TestSettingsEndpoints:
         mock_orch = create_mock_orchestrator()
         mock_orch.config.review_nits_by_agent = {"agent:frontend": "address"}
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -367,12 +376,13 @@ class TestSettingsEndpoints:
         mock_orch = create_mock_orchestrator()
         original_value = mock_orch.config.max_concurrent_sessions
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET, side_effect=IOError("Disk full")),
+        ):
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-
-            mock_orch.config.save_document_patch = MagicMock(side_effect=IOError("Disk full"))
 
             web._orchestrator = mock_orch
             try:
@@ -600,12 +610,13 @@ class TestSettingsEndpoints:
         mock_orch = create_mock_orchestrator()
         mock_orch.config.filtering.milestone = "old-milestone"
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-
-            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -633,12 +644,13 @@ class TestSettingsEndpoints:
 
         mock_orch = create_mock_orchestrator()
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-
-            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -664,12 +676,13 @@ class TestSettingsEndpoints:
 
         mock_orch = create_mock_orchestrator()
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-
-            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -699,12 +712,13 @@ class TestSettingsEndpoints:
         mock_orch = create_mock_orchestrator()
         original_e2e_enabled = mock_orch.config.e2e.enabled
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+        with (
+            patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor,
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
-
-            mock_orch.config.save_document_patch = MagicMock()
 
             web._orchestrator = mock_orch
             try:
@@ -741,9 +755,13 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             return mock_result
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor", side_effect=run_doctor_asserts_path):
-            mock_orch.config.save_document_patch = MagicMock()
-
+        with (
+            patch(
+                "issue_orchestrator.infra.doctor.run_doctor",
+                side_effect=run_doctor_asserts_path,
+            ),
+            patch(_SETTINGS_SAVE_PATCH_TARGET),
+        ):
             web._orchestrator = mock_orch
             try:
                 client = TestClient(app)
