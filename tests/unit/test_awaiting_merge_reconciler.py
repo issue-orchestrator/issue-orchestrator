@@ -30,7 +30,10 @@ from issue_orchestrator.ports.pull_request_tracker import (
     StatusCheckRollupCapability,
     StatusCheckRollupRead,
 )
-from issue_orchestrator.ports.repository_host import RepositoryHostError
+from issue_orchestrator.ports.repository_host import (
+    DependencyIssueSnapshot,
+    RepositoryHostError,
+)
 
 
 def _wire_pr(
@@ -119,8 +122,10 @@ def _stack_evaluator(predecessor_state: str, *, milestone: str = "M7"):
     from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 
     checker = MagicMock()
-    checker.get_issue_state.return_value = predecessor_state
-    checker.get_issue_milestone.return_value = milestone
+    checker.get_dependency_issue_snapshot.return_value = DependencyIssueSnapshot(
+        state=predecessor_state,
+        milestone=milestone,
+    )
     return DependencyEvaluator(issue_checker=checker, events=InMemoryEventSink())
 
 

@@ -20,6 +20,7 @@ from ...ports.pull_request_tracker import (
     StatusCheckRollupRead,
     StatusCheckRollupState,
 )
+from ...ports.repository_host import DependencyIssueSnapshot
 from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .errors import GitHubHttpError, GitHubTransportError
@@ -1277,10 +1278,17 @@ class GitHubAdapter:
         else:
             return self._client.get_issue(issue_number)
 
-    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
-        """Get the state of an issue ('open', 'closed', or None if not found).
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        """Get dependency issue facts with one GitHub issue read.
 
-        This method implements the IssueStateChecker protocol for dependency evaluation.
+        This method implements the IssueStateChecker protocol for dependency
+        evaluation. It intentionally returns both state and milestone from a
+        single issue payload so dependency checks do not double-fetch each
+        dependency.
 
         Args:
             issue_number: The issue number to check.
@@ -1288,14 +1296,20 @@ class GitHubAdapter:
                   If None, uses this adapter's configured repo.
 
         Returns:
-            The issue state ('open' or 'closed'), or None if the issue cannot be found.
+            DependencyIssueSnapshot, or None if the issue cannot be found.
         """
         target_repo = repo or self.repo
         try:
             output = self._get_issue_for_repo(issue_number, target_repo)
 
             if isinstance(output, dict):
-                return output.get("state")
+                state = output.get("state")
+                if not isinstance(state, str):
+                    return None
+                milestone = output.get("milestone")
+                raw_milestone_title = milestone.get("title") if isinstance(milestone, dict) else None
+                milestone_title = raw_milestone_title if isinstance(raw_milestone_title, str) else None
+                return DependencyIssueSnapshot(state=state, milestone=milestone_title)
             return None
         except GitHubHttpError as e:
             if _is_not_found_error(e):
@@ -1306,38 +1320,22 @@ class GitHubAdapter:
         except Exception as e:
             logger.debug("Error checking issue %s in %s: %s", issue_number, target_repo, e)
             raise
+
+    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
+        """Get the state of an issue ('open', 'closed', or None if not found).
+
+        This method implements the IssueStateChecker compatibility method.
+        """
+        snapshot = self.get_dependency_issue_snapshot(issue_number, repo)
+        return snapshot.state if snapshot is not None else None
 
     def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
         """Get the milestone name of an issue (or None if no milestone).
 
-        This method implements the IssueStateChecker protocol for milestone validation.
-
-        Args:
-            issue_number: The issue number to check.
-            repo: Optional repository in owner/repo format for cross-repo dependencies.
-                  If None, uses this adapter's configured repo.
-
-        Returns:
-            The milestone name (title), or None if the issue has no milestone.
+        This method implements the IssueStateChecker compatibility method.
         """
-        target_repo = repo or self.repo
-        try:
-            output = self._get_issue_for_repo(issue_number, target_repo)
-
-            if isinstance(output, dict):
-                milestone = output.get("milestone")
-                if milestone and isinstance(milestone, dict):
-                    return milestone.get("title")
-            return None
-        except GitHubHttpError as e:
-            if _is_not_found_error(e):
-                logger.debug("Issue %s in %s not found: %s", issue_number, target_repo, e)
-                return None
-            logger.debug("Error checking milestone for issue %s in %s: %s", issue_number, target_repo, e)
-            raise
-        except Exception as e:
-            logger.debug("Error checking milestone for issue %s in %s: %s", issue_number, target_repo, e)
-            raise
+        snapshot = self.get_dependency_issue_snapshot(issue_number, repo)
+        return snapshot.milestone if snapshot is not None else None
 
     def create_issue_key(self, issue_number: int) -> "GitHubIssueKey":
         """Create a GitHubIssueKey for the given issue number.

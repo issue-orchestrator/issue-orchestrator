@@ -24,6 +24,7 @@ from issue_orchestrator.control.dependency_gate_snapshot import (
 from issue_orchestrator.domain.dependencies import DependencyMode, DependencyTarget
 from issue_orchestrator.domain.dependency_gates import Gate, PredecessorFacts
 from issue_orchestrator.domain.models import Issue
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.view_models.dependency_gate import project_from_snapshot
 
 
@@ -31,11 +32,13 @@ class _Checker:
     def __init__(self):
         self.issues: dict[int, str] = {}
 
-    def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
-        return self.issues.get(issue_number)
-
-    def get_issue_milestone(self, issue_number: int, repo: str | None = None) -> str | None:
-        return "M1"
+    def get_dependency_issue_snapshot(
+        self, issue_number: int, repo: str | None = None
+    ) -> DependencyIssueSnapshot | None:
+        state = self.issues.get(issue_number)
+        if state is None:
+            return None
+        return DependencyIssueSnapshot(state=state, milestone="M1")
 
 
 class _Events:
