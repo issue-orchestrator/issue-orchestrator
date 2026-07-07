@@ -10,7 +10,7 @@ The fix builds a field-granular patch plan and writes only the settings-owned
 that boundary:
 
 * the persistence-policy owner (``build_save_plan`` -> ``SettingsSavePlan``,
-  composed with ``Config.save_document_patch`` via ``plan.apply``), and
+  composed with ``save_config_document_patch`` via ``plan.apply``), and
 * the settings HTTP handler (``update_settings``) that wires them together.
 
 They pin the two invariants the field-granular plan protects: an unedited
@@ -26,6 +26,7 @@ import pytest
 import yaml
 
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.config_document_patch import save_config_document_patch
 from issue_orchestrator.infra.doctor import DoctorResult
 from issue_orchestrator.infra.settings_schema import (
     apply_to,
@@ -114,7 +115,7 @@ def _save_one_tab_change(config: Config, cfg_path, mutate) -> dict:
     apply_to(tabs, config)
     plan = build_save_plan(snapshot, tabs)
     if not plan.is_empty:
-        config.save_document_patch(plan.apply)
+        save_config_document_patch(config, plan.apply)
     return yaml.safe_load(cfg_path.read_text())
 
 
@@ -255,12 +256,13 @@ def test_save_plan_apply_reverses_list_ui_transform():
     assert document["filtering"]["exclude_labels"] == ["test-data", "skip"]
 
 
-def test_save_document_patch_starts_from_empty_when_file_missing(tmp_path):
+def test_save_config_document_patch_starts_from_empty_when_file_missing(tmp_path):
     """A missing file is treated as an empty document, not an error."""
     config = Config()
     target = tmp_path / "new.yaml"
 
-    config.save_document_patch(
+    save_config_document_patch(
+        config,
         lambda doc: doc.__setitem__("execution", {"concurrency": {"max_concurrent_sessions": 3}}),
         path=target,
     )
@@ -270,21 +272,21 @@ def test_save_document_patch_starts_from_empty_when_file_missing(tmp_path):
     ] == 3
 
 
-def test_save_document_patch_rejects_non_mapping_document(tmp_path):
+def test_save_config_document_patch_rejects_non_mapping_document(tmp_path):
     """A YAML file whose root is not a mapping fails fast."""
     config = Config()
     target = tmp_path / "list.yaml"
     target.write_text("- a\n- b\n")
 
     with pytest.raises(ValueError, match="not a mapping"):
-        config.save_document_patch(lambda doc: None, path=target)
+        save_config_document_patch(config, lambda doc: None, path=target)
 
 
-def test_save_document_patch_requires_a_path():
+def test_save_config_document_patch_requires_a_path():
     """No path and no config_path is a hard error."""
     config = Config()
     with pytest.raises(ValueError, match="No path specified"):
-        config.save_document_patch(lambda doc: None)
+        save_config_document_patch(config, lambda doc: None)
 
 
 def test_save_plan_selects_only_changed_fields(loaded_config):

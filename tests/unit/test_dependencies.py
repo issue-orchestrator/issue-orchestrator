@@ -19,6 +19,7 @@ from issue_orchestrator.domain.dependencies import (
 )
 from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 
 
 class TestParseDependencies:
@@ -178,6 +179,18 @@ class MockIssueChecker:
         self.issues: dict[int, str] = {}  # issue_number -> state
         self.error_on: set[int] = set()  # issues that raise errors
         self._default_milestone = default_milestone
+
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        if issue_number in self.error_on:
+            raise Exception("API error")
+        state = self.issues.get(issue_number)
+        if state is None:
+            return None
+        return DependencyIssueSnapshot(state=state, milestone=self._default_milestone)
 
     def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
         if issue_number in self.error_on:

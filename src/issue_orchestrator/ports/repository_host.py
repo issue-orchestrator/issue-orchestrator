@@ -9,6 +9,7 @@ issues, PRs, and labels. It combines IssueTracker, LabelSet, and
 PullRequestTracker into a single interface.
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from .issue_tracker import IssueTracker
@@ -20,6 +21,14 @@ if TYPE_CHECKING:
 
 
 RepositoryHostErrorKind = Literal["http", "transport", "other"]
+
+
+@dataclass(frozen=True)
+class DependencyIssueSnapshot:
+    """Issue facts needed to evaluate dependency gating."""
+
+    state: str
+    milestone: str | None
 
 
 class RepositoryHostError(Exception):
@@ -101,8 +110,28 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
     dependency. The orchestrator accepts this instead of concrete adapters.
 
     GitHubAdapter implements this protocol by implementing all three
-    component protocols plus the get_issue_state method for dependency checking.
+    component protocols plus dependency-checking issue fact methods.
     """
+
+    def get_dependency_issue_snapshot(
+        self,
+        issue_number: int,
+        repo: str | None = None,
+    ) -> DependencyIssueSnapshot | None:
+        """Get issue facts needed by dependency evaluation.
+
+        This method is used by DependencyEvaluator to check both dependency
+        completion state and milestone scope with one repository-host read.
+
+        Args:
+            issue_number: The issue number to check.
+            repo: Optional repository in owner/repo format for cross-repo
+                  dependencies. If None, uses the default repo.
+
+        Returns:
+            DependencyIssueSnapshot, or None if the issue doesn't exist.
+        """
+        ...
 
     def get_issue_state(self, issue_number: int, repo: str | None = None) -> str | None:
         """Get the state of an issue ('open', 'closed', or None if not found).

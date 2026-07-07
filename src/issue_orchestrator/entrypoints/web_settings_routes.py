@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import ValidationError
 
 from ..infra.config import Config
+from ..infra.config_document_patch import save_config_document_patch
 from ..infra.settings_schema import (
     TAB_DEFINITIONS,
     apply_to,
@@ -158,7 +159,7 @@ async def update_settings(
         logger.info("[settings] No settings changed; config file left untouched")
     elif config.config_path:
         try:
-            config.save_document_patch(save_plan.apply)
+            save_config_document_patch(config, save_plan.apply)
             logger.info(
                 "[settings] Config saved to %s (paths: %s)",
                 config.config_path,

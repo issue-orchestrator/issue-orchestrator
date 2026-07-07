@@ -21,6 +21,7 @@ agents:
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
+      effort: "xhigh"
       permission_mode: "bypassPermissions"
   agent:frontend:
     prompt: repo-specific/prompts/simple-fix.md
@@ -30,6 +31,7 @@ agents:
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
+      effort: "xhigh"
       permission_mode: "bypassPermissions"
   agent:mobile:
     prompt: repo-specific/prompts/simple-fix.md
@@ -39,6 +41,7 @@ agents:
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
+      effort: "xhigh"
       permission_mode: "bypassPermissions"
   agent:reviewer:
     prompt: repo-specific/prompts/reviewer.md
@@ -58,6 +61,7 @@ agents:
     timeout_minutes: 90
     reviewer: "agent:reviewer"
     provider_args:
+      effort: "xhigh"
       permission_mode: "bypassPermissions"
     initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
   agent:goal-pilot:
@@ -71,7 +75,7 @@ agents:
 
 execution:
   concurrency:
-    max_concurrent_sessions: 2
+    max_concurrent_sessions: 3
     session_timeout_minutes: 120
   terminal_adapter: subprocess
 
