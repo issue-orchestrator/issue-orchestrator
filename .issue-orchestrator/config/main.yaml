@@ -1,7 +1,7 @@
 # Migrated to sectioned format
 
 repo:
-  name: BruceBGordon/issue-orchestrator
+  name: issue-orchestrator/issue-orchestrator
   github:
     keyring_service: issue-orchestrator
     keyring_username: github-token
