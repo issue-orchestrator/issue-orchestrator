@@ -90,4 +90,4 @@ These docs in `docs/development/` cover specific topics in depth:
 | [Review Workflow](../development/REVIEW_WORKFLOW.md) | Code review pipeline, exchange mechanisms |
 | [Debugging](../development/debugging.md) | Event system debugging |
 | [Caching & ETags](../development/CACHING_ETAGS.md) | GitHub API caching implementation |
-| [GitHub Token Setup (Dev)](../development/GITHUB_TOKEN_SETUP.md) | Token resolution chain internals |
+| [GitHub Auth Setup (Dev)](../development/GITHUB_TOKEN_SETUP.md) | Token resolution chain internals and GitHub App auth |

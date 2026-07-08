@@ -297,6 +297,20 @@ class TestCheckGithubTokenScopes:
             mock_logger.info.assert_called()
             assert "unavailable" in mock_logger.info.call_args[0][0].lower()
 
+    def test_check_scopes_skips_github_app_auth(self) -> None:
+        """GitHub App auth has permissions, not OAuth scopes."""
+        config = Config()
+        config.github_required_scopes = ["repo"]
+
+        github_adapter = MagicMock()
+        github_adapter.auth_kind = "github_app"
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.logger") as mock_logger:
+            _check_github_token_scopes(config, github_adapter)
+
+        github_adapter.get_token_scopes.assert_not_called()
+        mock_logger.info.assert_called()
+
 
 class TestBuildOrchestratorForTesting:
     """Tests for build_orchestrator_for_testing function."""

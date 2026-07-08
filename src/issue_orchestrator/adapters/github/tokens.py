@@ -10,6 +10,7 @@ import sys
 from base64 import b64decode
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 from urllib.parse import urlparse
 
 import yaml
@@ -25,12 +26,168 @@ KEYRING_USERNAME = "github-token"
 _GO_KEYRING_B64_PREFIX = "go-keyring-base64:"
 
 
+class GitHubTokenProvider(Protocol):
+    """Supplies GitHub bearer tokens for HTTP and git transport auth."""
+
+    @property
+    def auth_kind(self) -> str:
+        """Return a stable identifier for the auth mode."""
+        ...
+
+    def get_token(self) -> str:
+        """Return a current GitHub bearer token."""
+        ...
+
+
+@dataclass(frozen=True)
+class StaticGitHubTokenProvider:
+    """Token provider for personal access tokens and other static tokens."""
+
+    token: str
+
+    @property
+    def auth_kind(self) -> str:
+        return "token"
+
+    def get_token(self) -> str:
+        return self.token
+
+
+@dataclass(frozen=True)
+class GitHubAppAuthConfig:
+    """GitHub App installation auth settings.
+
+    The private key may come from a file or an environment variable. This value
+    object deliberately does not perform HTTP; the GitHub HTTP adapter owns the
+    installation-token exchange.
+    """
+
+    client_id: str | None
+    app_id: str | None
+    installation_id: str
+    private_key_path: str | None
+    private_key_env: str | None
+    api_url: str = "https://api.github.com"
+    timeout_seconds: float = 20.0
+
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        client_id: str | None = None,
+        app_id: str | None = None,
+        installation_id: str | None = None,
+        private_key_path: str | None = None,
+        private_key_env: str | None = None,
+        api_url: str = "https://api.github.com",
+        timeout_seconds: float = 20.0,
+    ) -> "GitHubAppAuthConfig":
+        normalized_client_id = _normalize_optional_text(client_id)
+        normalized_app_id = _normalize_optional_text(app_id)
+        normalized_installation_id = _normalize_optional_text(installation_id)
+        normalized_private_key_path = _normalize_optional_text(private_key_path)
+        normalized_private_key_env = _normalize_optional_text(private_key_env)
+        if not (normalized_client_id or normalized_app_id):
+            raise GitHubAuthError(
+                "GitHub App auth requires repo.github.app.client_id or app_id."
+            )
+        if not normalized_installation_id:
+            raise GitHubAuthError(
+                "GitHub App auth requires repo.github.app.installation_id."
+            )
+        if not (normalized_private_key_path or normalized_private_key_env):
+            raise GitHubAuthError(
+                "GitHub App auth requires repo.github.app.private_key_path "
+                "or private_key_env."
+            )
+        return cls(
+            client_id=normalized_client_id,
+            app_id=normalized_app_id,
+            installation_id=normalized_installation_id,
+            private_key_path=normalized_private_key_path,
+            private_key_env=normalized_private_key_env,
+            api_url=api_url,
+            timeout_seconds=timeout_seconds,
+        )
+
+    @property
+    def jwt_issuer(self) -> str:
+        """Issuer for GitHub App JWTs. GitHub recommends Client ID when present."""
+        return self.client_id or self.app_id or ""
+
+    def read_private_key(self) -> str:
+        """Read the configured private key without logging its contents."""
+        if self.private_key_env:
+            value = os.environ.get(self.private_key_env)
+            if not value:
+                raise GitHubAuthError(
+                    f"GitHub App private key env var {self.private_key_env} is not set."
+                )
+            return value
+        if not self.private_key_path:
+            raise GitHubAuthError(
+                "GitHub App auth requires private_key_path or private_key_env."
+            )
+        path = Path(self.private_key_path).expanduser()
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise GitHubAuthError(
+                f"Could not read GitHub App private key at {path}: {exc}"
+            ) from exc
+
+    def describe_source(self) -> str:
+        issuer = f"client_id {self.client_id}" if self.client_id else f"app_id {self.app_id}"
+        key_source = (
+            f"env:{self.private_key_env}"
+            if self.private_key_env
+            else f"path:{self.private_key_path}"
+        )
+        return (
+            "GitHub App installation "
+            f"{self.installation_id} ({issuer}, private key {key_source})"
+        )
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    return value or None
+
+
+def has_github_app_auth_config(
+    *,
+    configured_app_client_id: str | None = None,
+    configured_app_id: str | None = None,
+    configured_app_installation_id: str | None = None,
+    configured_app_private_key_path: str | None = None,
+    configured_app_private_key_env: str | None = None,
+) -> bool:
+    """Return whether any GitHub App auth field was configured."""
+    return any(
+        _normalize_optional_text(value)
+        for value in (
+            configured_app_client_id,
+            configured_app_id,
+            configured_app_installation_id,
+            configured_app_private_key_path,
+            configured_app_private_key_env,
+        )
+    )
+
+
 def resolve_github_token(
     *,
     configured_token: str | None = None,
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
+    configured_app_client_id: str | None = None,
+    configured_app_id: str | None = None,
+    configured_app_installation_id: str | None = None,
+    configured_app_private_key_path: str | None = None,
+    configured_app_private_key_env: str | None = None,
     api_url: str = "https://api.github.com",
 ) -> str:
     """Resolve GitHub token from multiple sources.
@@ -51,6 +208,18 @@ def resolve_github_token(
     silently falling back to a different token that may not have access to the
     configured repository.
     """
+    if has_github_app_auth_config(
+        configured_app_client_id=configured_app_client_id,
+        configured_app_id=configured_app_id,
+        configured_app_installation_id=configured_app_installation_id,
+        configured_app_private_key_path=configured_app_private_key_path,
+        configured_app_private_key_env=configured_app_private_key_env,
+    ):
+        raise GitHubAuthError(
+            "GitHub App auth is configured; use the GitHub HTTP token provider "
+            "to mint an installation token."
+        )
+
     if configured_token:
         return configured_token
 
@@ -97,6 +266,11 @@ def describe_github_token_sources(
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
+    configured_app_client_id: str | None = None,
+    configured_app_id: str | None = None,
+    configured_app_installation_id: str | None = None,
+    configured_app_private_key_path: str | None = None,
+    configured_app_private_key_env: str | None = None,
     api_url: str = "https://api.github.com",
 ) -> list[str]:
     """Describe visible token sources for diagnostics.
@@ -105,9 +279,37 @@ def describe_github_token_sources(
     env var or keyring entry, diagnostics only report those sources and do not
     surface unrelated generic fallback tokens.
     """
+    app_sources = _describe_github_app_sources(
+        configured_app_client_id=configured_app_client_id,
+        configured_app_id=configured_app_id,
+        configured_app_installation_id=configured_app_installation_id,
+        configured_app_private_key_path=configured_app_private_key_path,
+        configured_app_private_key_env=configured_app_private_key_env,
+        api_url=api_url,
+    )
+    if app_sources is not None:
+        return app_sources
+
     repo_scoped_auth = any(
         (configured_env, configured_keyring_service, configured_keyring_username)
     )
+    token_sources = _describe_repo_scoped_token_sources(
+        configured_env=configured_env,
+        configured_keyring_service=configured_keyring_service,
+        configured_keyring_username=configured_keyring_username,
+    )
+    if repo_scoped_auth:
+        return token_sources
+    token_sources.extend(_describe_default_token_sources(api_url=api_url))
+    return token_sources
+
+
+def _describe_repo_scoped_token_sources(
+    *,
+    configured_env: str | None,
+    configured_keyring_service: str | None,
+    configured_keyring_username: str | None,
+) -> list[str]:
     token_sources: list[str] = []
     if configured_env:
         value = os.environ.get(configured_env)
@@ -121,8 +323,11 @@ def describe_github_token_sources(
             token_sources.append(
                 f"Keyring ({keyring_service}/{keyring_username}): {_mask_token(value)}"
             )
-    if repo_scoped_auth:
-        return token_sources
+    return token_sources
+
+
+def _describe_default_token_sources(*, api_url: str) -> list[str]:
+    token_sources: list[str] = []
     for env_name in ("ISSUE_ORCH_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"):
         value = os.environ.get(env_name)
         if value:
@@ -138,6 +343,37 @@ def describe_github_token_sources(
             f"Keyring ({KEYRING_SERVICE}/{KEYRING_USERNAME}): {_mask_token(value)}"
         )
     return token_sources
+
+
+def _describe_github_app_sources(
+    *,
+    configured_app_client_id: str | None,
+    configured_app_id: str | None,
+    configured_app_installation_id: str | None,
+    configured_app_private_key_path: str | None,
+    configured_app_private_key_env: str | None,
+    api_url: str,
+) -> list[str] | None:
+    if not has_github_app_auth_config(
+        configured_app_client_id=configured_app_client_id,
+        configured_app_id=configured_app_id,
+        configured_app_installation_id=configured_app_installation_id,
+        configured_app_private_key_path=configured_app_private_key_path,
+        configured_app_private_key_env=configured_app_private_key_env,
+    ):
+        return None
+    try:
+        app_config = GitHubAppAuthConfig.from_values(
+            client_id=configured_app_client_id,
+            app_id=configured_app_id,
+            installation_id=configured_app_installation_id,
+            private_key_path=configured_app_private_key_path,
+            private_key_env=configured_app_private_key_env,
+            api_url=api_url,
+        )
+    except GitHubAuthError:
+        return []
+    return [app_config.describe_source()]
 
 
 def _github_host_for_api_url(api_url: str) -> str:
@@ -407,6 +643,9 @@ def clear_keyring_token() -> bool:
 __all__ = [
     "KEYRING_SERVICE",
     "KEYRING_USERNAME",
+    "GitHubAppAuthConfig",
+    "GitHubTokenProvider",
+    "StaticGitHubTokenProvider",
     "TokenValidationResult",
     "_mask_token",
     "_gh_cli_account_for_host",
@@ -420,6 +659,7 @@ __all__ = [
     "_resolve_repo_scoped_github_token",
     "clear_keyring_token",
     "describe_github_token_sources",
+    "has_github_app_auth_config",
     "resolve_github_token",
     "store_keyring_token",
 ]

@@ -110,6 +110,11 @@ class TestConfig:
             "configured_env": "TIXMEUP_GITHUB_TOKEN",
             "configured_keyring_service": "tixmeup-github",
             "configured_keyring_username": "bruce",
+            "configured_app_client_id": None,
+            "configured_app_id": None,
+            "configured_app_installation_id": None,
+            "configured_app_private_key_path": None,
+            "configured_app_private_key_env": None,
         }
 
     def test_config_load_ui_ports_default_to_auto_assign(self, tmp_path):
@@ -3350,6 +3355,33 @@ repo:
 
         assert config.github_keyring_service == "tixmeup-github"
         assert config.github_keyring_username == "bruce"
+
+    def test_parses_repo_github_app_fields(self, tmp_path):
+        """repo.github.app fields load into config."""
+        config_content = """
+repo:
+  github:
+    app:
+      client_id: "Iv23example"
+      app_id: "4250697"
+      installation_id: "145305179"
+      private_key_path: "~/.config/issue-orchestrator/github-apps/bot.pem"
+      private_key_env: "ISSUE_ORCH_GITHUB_APP_PRIVATE_KEY"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.github_app_client_id == "Iv23example"
+        assert config.github_app_id == "4250697"
+        assert config.github_app_installation_id == "145305179"
+        assert (
+            config.github_app_private_key_path
+            == "~/.config/issue-orchestrator/github-apps/bot.pem"
+        )
+        assert config.github_app_private_key_env == "ISSUE_ORCH_GITHUB_APP_PRIVATE_KEY"
+        assert config.github_app_auth_configured() is True
 
     def test_expands_env_var_in_list(self, tmp_path, monkeypatch):
         """${VAR} works in list items."""

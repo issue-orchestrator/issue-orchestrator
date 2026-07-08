@@ -11,6 +11,11 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.adapters.github.auth import (
+    GitHubAppInstallationTokenProvider,
+    GitHubAuth,
+    build_github_auth,
+)
 from issue_orchestrator.adapters.github.http_client import (
     GitHubAuthError,
     GitHubHttpClient,
@@ -21,6 +26,8 @@ from issue_orchestrator.adapters.github.http_client import (
     validate_github_token,
 )
 from issue_orchestrator.adapters.github.tokens import (
+    GitHubAppAuthConfig,
+    StaticGitHubTokenProvider,
     _normalize_keyring_secret,
     _read_gh_hosts_record,
     _read_gh_cli_token,
@@ -202,6 +209,143 @@ def test_describe_github_token_sources_includes_gh_hosts(monkeypatch: pytest.Mon
     assert sources == ["GitHub CLI auth (github.com): gh-h...oken"]
 
 
+def test_describe_github_token_sources_reports_app_installation() -> None:
+    sources = describe_github_token_sources(
+        configured_app_client_id="Iv23example",
+        configured_app_installation_id="145305179",
+        configured_app_private_key_path="~/.config/issue-orchestrator/github-apps/bot.pem",
+    )
+
+    assert sources == [
+        "GitHub App installation 145305179 "
+        "(client_id Iv23example, private key "
+        "path:~/.config/issue-orchestrator/github-apps/bot.pem)"
+    ]
+
+
+def test_github_app_installation_provider_mints_and_caches_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key_path = tmp_path / "bot.private-key.pem"
+    key_path.write_text("-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n")
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "issue_orchestrator.adapters.github.auth.jwt.encode",
+        lambda payload, key, algorithm: "jwt-token",
+    )
+
+    def _post(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+        calls.append(url)
+        assert url == "https://api.github.com/app/installations/145305179/access_tokens"
+        assert headers["Authorization"] == "Bearer jwt-token"
+        assert timeout == 20.0
+        return httpx.Response(
+            201,
+            json={
+                "token": "installation-token",
+                "expires_at": "2026-07-08T12:00:00Z",
+            },
+        )
+
+    provider = GitHubAppInstallationTokenProvider(
+        GitHubAppAuthConfig.from_values(
+            client_id="Iv23example",
+            installation_id="145305179",
+            private_key_path=str(key_path),
+        ),
+        clock=lambda: 1_000.0,
+        post=_post,
+    )
+
+    assert provider.get_token() == "installation-token"
+    assert provider.get_token() == "installation-token"
+    assert calls == ["https://api.github.com/app/installations/145305179/access_tokens"]
+
+
+def test_github_auth_builds_git_env_overrides_without_token_in_remote() -> None:
+    auth = GitHubAuth(
+        token_provider=StaticGitHubTokenProvider("installation-token"),
+        source_descriptions=("GitHub App installation 145305179",),
+        api_url="https://api.github.com",
+        repo="owner/repo",
+        enable_git_push_auth=True,
+    )
+
+    env = auth.git_env_overrides(remote="origin")
+
+    assert env is not None
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Bearer installation-token"
+    assert env["GIT_CONFIG_VALUE_1"] == "https://github.com/owner/repo.git"
+    assert env["GIT_CONFIG_VALUE_2"] == "https://github.com/owner/repo.git"
+    assert "installation-token" not in env["GIT_CONFIG_VALUE_1"]
+    assert "installation-token" not in env["GIT_CONFIG_VALUE_2"]
+
+
+def test_github_http_client_uses_fresh_auth_headers_per_request() -> None:
+    class _Provider:
+        auth_kind = "github_app"
+
+        def __init__(self) -> None:
+            self.count = 0
+
+        def get_token(self) -> str:
+            self.count += 1
+            return f"token-{self.count}"
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["Authorization"])
+        return httpx.Response(200, json={"number": 1, "labels": []})
+
+    auth = GitHubAuth(
+        token_provider=_Provider(),
+        source_descriptions=("GitHub App installation 145305179",),
+        repo="owner/repo",
+    )
+    client = GitHubHttpClient(GitHubHttpConfig(repo="owner/repo", auth=auth))
+    client._client = httpx.Client(  # noqa: SLF001
+        transport=httpx.MockTransport(handler),
+        base_url="https://api.github.com",
+    )
+
+    client.get_issue(1)
+    client.get_issue_labels(1, use_cache=False)
+
+    assert seen == ["Bearer token-1", "Bearer token-2"]
+
+
+def test_github_auth_validates_app_installation_repo_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Provider:
+        auth_kind = "github_app"
+
+        def get_token(self) -> str:
+            return "installation-token"
+
+    def _get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+        assert url == "https://api.github.com/repos/owner/repo"
+        assert headers["Authorization"] == "Bearer installation-token"
+        assert timeout == 10.0
+        return httpx.Response(200, json={"full_name": "owner/repo"})
+
+    monkeypatch.setattr("issue_orchestrator.adapters.github.auth.httpx.get", _get)
+    auth = GitHubAuth(
+        token_provider=_Provider(),
+        source_descriptions=("GitHub App installation 145305179",),
+        repo="owner/repo",
+    )
+
+    result = auth.validate(repo="owner/repo")
+
+    assert result.valid is True
+    assert result.username == "GitHub App installation 145305179"
+
+
 def test_read_gh_cli_token_from_hosts_oauth_token(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -278,7 +422,7 @@ def test_read_gh_hosts_record_logs_malformed_yaml(
 
 def test_validate_github_token_checks_repo_access(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
-        assert headers["Authorization"] == "token repo-token"
+        assert headers["Authorization"] == "Bearer repo-token"
         assert timeout == 10.0
         if url == "https://api.github.com/user":
             return httpx.Response(200, json={"login": "octocat"})

@@ -34,7 +34,7 @@ def test_check_milestone_order_errors_when_missing(monkeypatch):
     cfg.milestone_order = ["M1", "M2"]
     cfg.repo = "owner/repo"
 
-    monkeypatch.setattr(milestone_checks, "resolve_github_token", lambda **_kw: "token")
+    monkeypatch.setattr(milestone_checks, "build_github_auth", lambda **_kw: object())
 
     class _Client:
         def __init__(self, _config):
@@ -60,7 +60,7 @@ def test_check_milestone_order_ok_when_all_found(monkeypatch):
     cfg.milestone_order = ["M1"]
     cfg.repo = "owner/repo"
 
-    monkeypatch.setattr(milestone_checks, "resolve_github_token", lambda **_kw: "token")
+    monkeypatch.setattr(milestone_checks, "build_github_auth", lambda **_kw: object())
 
     class _Client:
         def __init__(self, _config):

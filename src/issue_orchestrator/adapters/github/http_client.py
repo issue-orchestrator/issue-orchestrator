@@ -14,10 +14,18 @@ import httpx
 from ...events import EventName
 from ...infra import gh_audit
 from ... import __version__
+from .auth import (
+    GitHubAppInstallationTokenProvider,
+    GitHubAuth,
+    build_github_auth,
+    build_github_token_provider,
+)
 from .errors import GitHubAuthError, GitHubHttpError, GitHubTransportError
 from .tokens import (
     KEYRING_SERVICE,
     KEYRING_USERNAME,
+    GitHubTokenProvider,
+    StaticGitHubTokenProvider,
     TokenValidationResult,
     clear_keyring_token,
     describe_github_token_sources,
@@ -263,9 +271,11 @@ class GitHubRateLimitSnapshot:
 @dataclass
 class GitHubHttpConfig:
     repo: str
-    token: str
+    token: str | None = None
     base_url: str = "https://api.github.com"
     timeout_seconds: float = 20.0
+    token_provider: GitHubTokenProvider | None = None
+    auth: GitHubAuth | None = None
 
 
 @dataclass
@@ -362,9 +372,30 @@ class GitHubHttpClient:
     def __init__(self, config: GitHubHttpConfig) -> None:
         self._config = config
         self._etag_cache: dict[str, _ETagEntry] = {}
+        if config.auth is not None:
+            self._auth = config.auth
+        elif config.token_provider is not None:
+            self._token_provider = config.token_provider
+            self._auth = GitHubAuth(
+                token_provider=config.token_provider,
+                source_descriptions=(),
+                api_url=config.base_url,
+                repo=config.repo,
+            )
+        elif config.token:
+            self._token_provider = StaticGitHubTokenProvider(config.token)
+            self._auth = GitHubAuth(
+                token_provider=self._token_provider,
+                source_descriptions=(),
+                api_url=config.base_url,
+                repo=config.repo,
+            )
+        else:
+            raise GitHubAuthError("GitHub HTTP client requires a token provider.")
+        self._token_provider = self._auth.token_provider
+        self._config.auth = self._auth
         headers = {
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {config.token}",
             "User-Agent": f"issue-orchestrator/{__version__}",
         }
         self._client = httpx.Client(
@@ -378,8 +409,15 @@ class GitHubHttpClient:
         """Expose config for use by adapters that need to create temporary clients."""
         return self._config
 
+    @property
+    def auth_kind(self) -> str:
+        return self._auth.auth_kind
+
     def close(self) -> None:
         self._client.close()
+
+    def _auth_headers(self) -> dict[str, str]:
+        return self._auth.authorization_headers()
 
     def _cache_key(self, method: str, url: str, params: dict[str, Any] | None) -> str:
         if not params:
@@ -398,7 +436,7 @@ class GitHubHttpClient:
         caller: str = "github_http",
     ) -> Any:
         url = path
-        headers: dict[str, str] = {}
+        headers = self._auth_headers()
         cache_key = self._cache_key(method, url, params)
         if use_cache and method.upper() == "GET":
             cached = self._etag_cache.get(cache_key)
@@ -419,7 +457,7 @@ class GitHubHttpClient:
                     url,
                     params=params,
                     json=json_body,
-                    headers=headers or None,
+                    headers=headers,
                 )
             except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
                 error = f"transport_error: {exc}"
@@ -520,6 +558,7 @@ class GitHubHttpClient:
                     "POST",
                     "/graphql",
                     json=json_body,
+                    headers=self._auth_headers(),
                 )
             except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
                 error = f"transport_error: {exc}"
@@ -773,6 +812,7 @@ class GitHubHttpClient:
                 response = self._client.get(
                     f"/repos/{self._config.repo}/labels",
                     params={"per_page": 100, "page": page},
+                    headers=self._auth_headers(),
                 )
             except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
                 raise GitHubTransportError(
@@ -1894,7 +1934,11 @@ class GitHubHttpClient:
         status_code = None
         scopes: list[str] = []
         try:
-            response = self._client.request("GET", "/user")
+            response = self._client.request(
+                "GET",
+                "/user",
+                headers=self._auth_headers(),
+            )
             status_code = response.status_code
             response_text = response.text
             if status_code >= 400:
@@ -1950,8 +1994,14 @@ def validate_github_token(
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
+    configured_app_client_id: str | None = None,
+    configured_app_id: str | None = None,
+    configured_app_installation_id: str | None = None,
+    configured_app_private_key_path: str | None = None,
+    configured_app_private_key_env: str | None = None,
     repo: str | None = None,
     api_url: str = "https://api.github.com",
+    timeout_seconds: float = 10.0,
 ) -> TokenValidationResult:
     """Validate a GitHub token by calling the API.
 
@@ -1959,53 +2009,32 @@ def validate_github_token(
     this module owns GitHub HTTP transport and import-linter allows httpx here.
     """
     try:
-        if token is None:
-            token = resolve_github_token(
+        auth = (
+            GitHubAuth(
+                token_provider=StaticGitHubTokenProvider(token),
+                source_descriptions=("provided token",),
+                api_url=api_url,
+                repo=repo,
+            )
+            if token is not None
+            else build_github_auth(
                 configured_token=configured_token,
                 configured_env=configured_env,
                 configured_keyring_service=configured_keyring_service,
                 configured_keyring_username=configured_keyring_username,
+                configured_app_client_id=configured_app_client_id,
+                configured_app_id=configured_app_id,
+                configured_app_installation_id=configured_app_installation_id,
+                configured_app_private_key_path=configured_app_private_key_path,
+                configured_app_private_key_env=configured_app_private_key_env,
+                repo=repo,
                 api_url=api_url,
+                timeout_seconds=timeout_seconds,
             )
-    except GitHubAuthError as e:
-        return TokenValidationResult(valid=False, error=str(e))
-
-    base_url = api_url.rstrip("/")
-    try:
-        resp = httpx.get(
-            f"{base_url}/user",
-            headers={"Authorization": f"token {token}"},
-            timeout=10.0,
         )
-        if resp.status_code == 200:
-            user_info = resp.json()
-            username = user_info.get("login")
-            if repo:
-                repo_resp = httpx.get(
-                    f"{base_url}/repos/{repo}",
-                    headers={"Authorization": f"token {token}"},
-                    timeout=10.0,
-                )
-                if repo_resp.status_code != 200:
-                    return TokenValidationResult(
-                        valid=False,
-                        username=username,
-                        error=(
-                            f"Token cannot access repo {repo} "
-                            f"(HTTP {repo_resp.status_code})"
-                        ),
-                    )
-            return TokenValidationResult(
-                valid=True,
-                username=username,
-            )
-        else:
-            return TokenValidationResult(
-                valid=False,
-                error=f"Token invalid (HTTP {resp.status_code})",
-            )
-    except Exception as e:
-        return TokenValidationResult(valid=False, error=str(e))
+    except GitHubAuthError as exc:
+        return TokenValidationResult(valid=False, error=str(exc))
+    return auth.validate(repo=repo, timeout_seconds=timeout_seconds)
 
 
 def _api_ref_path(ref: str) -> str:
@@ -2040,6 +2069,7 @@ def _is_full_scan(method: str, path: str) -> bool:
 
 
 __all__ = [
+    "GitHubAppInstallationTokenProvider",
     "GitHubAuthError",
     "GitHubHttpClient",
     "GitHubHttpConfig",
@@ -2049,6 +2079,7 @@ __all__ = [
     "KEYRING_SERVICE",
     "KEYRING_USERNAME",
     "TokenValidationResult",
+    "build_github_token_provider",
     "clear_keyring_token",
     "describe_github_token_sources",
     "resolve_github_token",

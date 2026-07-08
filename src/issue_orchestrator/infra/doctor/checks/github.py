@@ -12,18 +12,26 @@ def check_github_auth(config: "Config | None" = None) -> list[Check]:
     from ....adapters.github.tokens import (
         KEYRING_SERVICE,
         KEYRING_USERNAME,
-        describe_github_token_sources,
     )
-    from ....adapters.github.http_client import validate_github_token
+    from ....adapters.github.errors import GitHubAuthError
+    from ....adapters.github.auth import build_github_auth
 
     checks: list[Check] = []
     auth_kwargs = config.github_auth_kwargs() if config else {}
-    token_sources = describe_github_token_sources(
-        configured_env=auth_kwargs.get("configured_env"),
-        configured_keyring_service=auth_kwargs.get("configured_keyring_service"),
-        configured_keyring_username=auth_kwargs.get("configured_keyring_username"),
-        api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
-    )
+    try:
+        auth = build_github_auth(
+            **auth_kwargs,
+            repo=getattr(config, "repo", None) if config else None,
+            api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
+            timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
+        )
+        token_sources = auth.describe_sources()
+    except GitHubAuthError as exc:
+        auth = None
+        token_sources = []
+        auth_error = str(exc)
+    else:
+        auth_error = None
 
     if token_sources:
         checks.append(Check(
@@ -32,7 +40,7 @@ def check_github_auth(config: "Config | None" = None) -> list[Check]:
             detail=", ".join(token_sources),
         ))
     else:
-        detail = "No GitHub token found"
+        detail = auth_error or "No GitHub auth source found"
         if config and any((
             getattr(config, "github_token_env", None),
             getattr(config, "github_keyring_service", None),
@@ -54,10 +62,17 @@ def check_github_auth(config: "Config | None" = None) -> list[Check]:
             detail=detail,
         ))
 
-    token_result = validate_github_token(
-        **auth_kwargs,
+    if auth is None:
+        checks.append(Check(
+            name="GitHub Auth",
+            status="error",
+            detail=auth_error or "Unknown GitHub auth error",
+        ))
+        return checks
+
+    token_result = auth.validate(
         repo=getattr(config, "repo", None) if config else None,
-        api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
+        timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
     )
     if token_result.valid:
         detail = f"Authenticated as: {token_result.username}"

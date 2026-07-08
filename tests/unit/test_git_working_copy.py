@@ -788,6 +788,44 @@ class TestPush:
             assert "push" in push_args
             assert "--force-with-lease" in push_args
 
+    def test_push_uses_injected_git_auth_env(self, mock_git, worktree_path):
+        """Authenticated publish injects env without putting tokens in argv."""
+        class _GitAuth:
+            def git_env_overrides(self, *, remote: str) -> dict[str, str]:
+                assert remote == "origin"
+                return {
+                    "GIT_CONFIG_COUNT": "3",
+                    "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+                    "GIT_CONFIG_VALUE_0": "Authorization: Bearer installation-token",
+                    "GIT_CONFIG_KEY_1": "remote.origin.url",
+                    "GIT_CONFIG_VALUE_1": "https://github.com/owner/repo.git",
+                    "GIT_CONFIG_KEY_2": "remote.origin.pushurl",
+                    "GIT_CONFIG_VALUE_2": "https://github.com/owner/repo.git",
+                }
+
+        git_wc = GitWorkingCopy(git=mock_git, git_auth=_GitAuth())
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+                MagicMock(returncode=0, stdout="", stderr=""),
+            ]
+
+            result = git_wc.push(worktree_path)
+
+            assert result.success is True
+            fetch_env = mock_run.call_args_list[1].kwargs["env"]
+            push_env = mock_run.call_args_list[2].kwargs["env"]
+            assert fetch_env["GIT_CONFIG_VALUE_0"] == (
+                "Authorization: Bearer installation-token"
+            )
+            assert push_env["GIT_CONFIG_VALUE_0"] == (
+                "Authorization: Bearer installation-token"
+            )
+            push_args = " ".join(mock_run.call_args_list[2].args[1])
+            assert "installation-token" not in push_args
+            assert "installation-token" not in push_env["GIT_CONFIG_VALUE_1"]
+
     def test_push_first_push_no_remote(self, git_wc, worktree_path):
         """Test first push when remote branch doesn't exist yet."""
         with patch.object(git_wc, "_run_git") as mock_run:

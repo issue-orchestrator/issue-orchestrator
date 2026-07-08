@@ -6,8 +6,7 @@ from ...infra import gh_audit
 from ...infra.config import Config
 from ...ports.fresh_issue_reader import FreshIssueReader
 from .errors import GitHubHttpError
-from .http_client import GitHubHttpClient, GitHubHttpConfig
-from .tokens import resolve_github_token
+from .http_client import GitHubHttpClient, GitHubHttpConfig, build_github_auth
 from .repo import get_repo_from_git, GitRepoError
 
 logger = logging.getLogger(__name__)
@@ -26,16 +25,18 @@ class GitHubFreshIssueReader(FreshIssueReader):
                 raise GitHubHttpError(f"Failed to resolve repo: {exc}") from exc
 
         auth_kwargs = config.github_auth_kwargs() if config else {}
-        token = resolve_github_token(
+        auth = build_github_auth(
             **auth_kwargs,
+            repo=self.repo,
             api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
+            timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
         )
         self._client = GitHubHttpClient(
             GitHubHttpConfig(
                 repo=self.repo,
-                token=token,
                 base_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
                 timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
+                auth=auth,
             )
         )
 

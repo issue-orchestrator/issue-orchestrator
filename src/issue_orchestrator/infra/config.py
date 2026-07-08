@@ -54,6 +54,7 @@ from .config_paths import (
     repo_root_from_config_path as repo_root_from_config_path,
     resolve_relative_path as resolve_relative_path,
 )
+from . import github_config as _github_config
 from .config_sections import (
     ALLOWED_AGENT_FIELDS as ALLOWED_AGENT_FIELDS,
     ALLOWED_TOP_LEVEL_FIELDS as ALLOWED_TOP_LEVEL_FIELDS,
@@ -126,6 +127,11 @@ class Config:
     github_token_env: Optional[str] = None  # Env var name for token (overrides defaults)
     github_keyring_service: Optional[str] = None  # Optional repo-specific keyring service name
     github_keyring_username: Optional[str] = None  # Optional repo-specific keyring username/account
+    github_app_client_id: Optional[str] = None  # GitHub App Client ID for installation auth
+    github_app_id: Optional[str] = None  # GitHub App ID fallback for JWT issuer
+    github_app_installation_id: Optional[str] = None  # GitHub App installation ID
+    github_app_private_key_path: Optional[str] = None  # PEM path for GitHub App private key
+    github_app_private_key_env: Optional[str] = None  # Env var containing GitHub App private key
     github_api_url: str = "https://api.github.com"
     github_http_timeout_seconds: float = 20.0
     github_cache_ttl_seconds: int = 300  # Cache TTL for GitHub adapter responses
@@ -423,12 +429,11 @@ class Config:
 
     def github_auth_kwargs(self) -> dict[str, str | None]:
         """Return repo-scoped GitHub auth settings keyed for auth helpers."""
-        return {
-            "configured_token": self.github_token,
-            "configured_env": self.github_token_env,
-            "configured_keyring_service": self.github_keyring_service,
-            "configured_keyring_username": self.github_keyring_username,
-        }
+        return _github_config.github_auth_kwargs(self)
+
+    def github_app_auth_configured(self) -> bool:
+        """Return whether any GitHub App auth field is configured."""
+        return _github_config.github_app_auth_configured(self)
 
     def get_reviewer_for_agent(self, agent_label: str) -> Optional[str]:
         """Get the effective reviewer for an agent.
@@ -497,14 +502,7 @@ class Config:
                 "name": self.repo,
                 "root": str(self.repo_root),
                 "github": {
-                    "token_env": self.github_token_env,
-                    "keyring_service": self.github_keyring_service,
-                    "keyring_username": self.github_keyring_username,
-                    "api_url": self.github_api_url,
-                    "http_timeout_seconds": self.github_http_timeout_seconds,
-                    "cache_ttl_seconds": self.github_cache_ttl_seconds,
-                    "required_scopes": list(self.github_required_scopes),
-                    "allowed_scopes": list(self.github_allowed_scopes),
+                    **_github_config.github_auth_event_fields(self),
                     "write_verify": {
                         "timeout_seconds": self.gh_write_verify_timeout_seconds,
                         "initial_delay_ms": self.gh_write_verify_initial_delay_ms,

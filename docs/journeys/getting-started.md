@@ -17,6 +17,10 @@ You'll need:
 - GitHub auth that can access your repo: `gh auth login`, `ISSUE_ORCH_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, or `issue-orchestrator auth store`
 - **An AI coding tool**: Claude Code, Cursor, or Codex CLI. The orchestrator launches these to work on issues. If you don't have one installed, nothing will run.
 
+Personal-token auth is enough for a first trial. For strict branch protection
+where you need to approve agent-created PRs yourself, plan for the GitHub App
+protected-branch model described in [GitHub Auth and Permissions](../user/github-permissions.md#protected-branch-mode-github-app).
+
 ## 1. Install
 
 ```bash

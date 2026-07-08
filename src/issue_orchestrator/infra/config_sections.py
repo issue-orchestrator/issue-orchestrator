@@ -41,6 +41,7 @@ from .config_models import (
 )
 from .config_paths import get_section, resolve_relative_path
 from .config_value_rules import normalize_optional_mapping
+from . import github_config as _github_config
 
 if TYPE_CHECKING:
     from .config import Config
@@ -366,21 +367,7 @@ def apply_optional_sections(config: "Config", sections: dict) -> None:
 def load_repo_section(config: "Config", repo_section: dict, github_section: dict) -> None:
     """Load repo and GitHub settings into config."""
     config.repo = repo_section.get("name")
-    config.github_token = github_section.get("token")
-    config.github_token_env = github_section.get("token_env")
-    config.github_keyring_service = github_section.get("keyring_service")
-    config.github_keyring_username = github_section.get("keyring_username")
-    config.github_api_url = github_section.get("api_url", "https://api.github.com")
-    config.github_http_timeout_seconds = github_section.get("http_timeout_seconds", 20.0)
-    config.github_cache_ttl_seconds = github_section.get("cache_ttl_seconds", 300)
-    required_scopes = github_section.get("required_scopes", []) or []
-    allowed_scopes = github_section.get("allowed_scopes", []) or []
-    if isinstance(required_scopes, str):
-        required_scopes = [s.strip() for s in required_scopes.split(",") if s.strip()]
-    if isinstance(allowed_scopes, str):
-        allowed_scopes = [s.strip() for s in allowed_scopes.split(",") if s.strip()]
-    config.github_required_scopes = list(required_scopes)
-    config.github_allowed_scopes = list(allowed_scopes)
+    _github_config.apply_github_section(config, github_section)
 
 
 def load_github_write_verify(config: "Config", github_section: dict) -> None:

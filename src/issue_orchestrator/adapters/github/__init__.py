@@ -9,6 +9,7 @@ This package provides the concrete adapter implementations for GitHub:
 
 from .github_adapter import GitHubAdapter
 from .errors import GitHubAuthError, GitHubHttpError
+from .auth import GitHubAuth, build_github_auth
 from .http_client import (
     GitHubHttpClient,
     GitHubHttpConfig,
@@ -21,6 +22,7 @@ from .repo import get_repo_from_git, GitRepoError
 
 __all__ = [
     "GitHubAdapter",
+    "GitHubAuth",
     "GitHubHttpClient",
     "GitHubHttpConfig",
     "GitHubHttpError",
@@ -28,6 +30,7 @@ __all__ = [
     "GitHubCache",
     "GitHubIssue",
     "GitHubIssueResolver",
+    "build_github_auth",
     "resolve_github_token",
     "get_repo_from_git",
     "GitRepoError",

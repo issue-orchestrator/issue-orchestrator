@@ -155,6 +155,11 @@ only when the variable is already present in the Control Center process
 environment; add `keyring_service` and `keyring_username` for a durable
 per-repo Keychain fallback.
 
+This PAT/keychain path makes issue-orchestrator act as the token owner. If your
+repo requires PR approval and the same human needs to approve agent PRs, use
+GitHub App auth instead so PRs are authored by a bot identity. See
+[GitHub Auth and Permissions](github-permissions.md#protected-branch-mode-github-app).
+
 ### Ignore Repo-Local Runtime Artifacts
 
 Use `.issue-orchestrator/runtime-ignore` when a tool writes repo-local runtime
