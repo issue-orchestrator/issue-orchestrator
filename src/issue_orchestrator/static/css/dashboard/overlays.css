@@ -142,6 +142,7 @@
     padding: 10px;
 }
 .session-replay-terminal {
+    position: relative;
     min-height: 420px;
     max-height: 60vh;
     overflow: auto;
@@ -164,11 +165,27 @@
     background: transparent;
 }
 .session-replay-empty {
+    position: absolute;
+    inset: 0;
     display: grid;
     place-items: center;
-    min-height: 240px;
+    text-align: center;
+    padding: 24px;
     color: var(--text-muted);
     font-size: 12px;
+    line-height: 1.5;
+    pointer-events: none;
+}
+/*
+ * Status colour is a supplementary cue only — the status text itself always
+ * names the state (start / playing / paused / end / empty), so colour is never
+ * the sole signal.
+ */
+.session-replay-shell[data-playback-state="playing"] .session-replay-status {
+    color: var(--accent);
+}
+.session-replay-shell[data-playback-state="empty"] .session-replay-status {
+    color: var(--warn, #f0b24f);
 }
 .session-replay-prompt details {
     border-top: 1px solid var(--border);

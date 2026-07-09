@@ -5,6 +5,13 @@ let logRunDir = null;
 let logRecordingContext = null;
 let sessionReplayState = null;
 
+// Cap the idle gap honored between recorded events during playback. Real
+// terminal output bursts have sub-100ms gaps and play at natural speed; long
+// human-typing / idle pauses (which made playback look frozen at "0 / N
+// events" — issue #6583) are compressed to this ceiling so the scrubber keeps
+// advancing and early output is inspectable within a second of pressing Play.
+const SESSION_REPLAY_MAX_IDLE_MS = 1000;
+
 function clearDiagnosticsActionMessage() {
     const msg = document.getElementById('diagActionMessage');
     if (!msg) return;
@@ -134,18 +141,18 @@ async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir 
     }
 
     const logContent = `
-        <div class="session-replay-shell">
+        <div class="session-replay-shell" id="sessionReplayShell">
             <div class="session-replay-toolbar">
                 <div class="session-replay-toolbar-main">
-                    <button class="issue-action-btn" id="sessionReplayRestart">Replay</button>
-                    <button class="issue-action-btn" id="sessionReplayPlayPause">Play</button>
-                    <button class="issue-action-btn" id="sessionReplayJumpLive">Jump to latest</button>
-                    <button class="issue-action-btn" id="sessionReplayRefresh">Refresh</button>
+                    <button class="issue-action-btn" id="sessionReplayRestart" title="Jump back to the first event and start playing">Replay</button>
+                    <button class="issue-action-btn" id="sessionReplayPlayPause" title="Play or pause replay of recorded output">Play</button>
+                    <button class="issue-action-btn" id="sessionReplayJumpLive" title="Jump to the newest recorded output">Jump to latest</button>
+                    <button class="issue-action-btn" id="sessionReplayRefresh" title="Fetch any newly recorded output">Refresh</button>
                 </div>
                 <div class="session-replay-toolbar-meta">
                     <label class="session-replay-control">
                         Speed
-                        <select id="sessionReplaySpeed">
+                        <select id="sessionReplaySpeed" title="Playback speed multiplier">
                             <option value="0.5">0.5x</option>
                             <option value="1" selected>1x</option>
                             <option value="2">2x</option>
@@ -156,19 +163,19 @@ async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir 
                         <input type="checkbox" id="logFollowToggle" checked>
                         Follow live
                     </label>
-                    <span class="session-replay-status" id="sessionReplayStatus"></span>
+                    <span class="session-replay-status" id="sessionReplayStatus" role="status" aria-live="polite"></span>
                 </div>
             </div>
             <div class="session-replay-chapters" id="sessionReplayChapters" hidden></div>
             <div class="session-replay-progress">
-                <input class="session-replay-seek" type="range" id="sessionReplaySeek" min="0" max="0" value="0" step="1">
+                <input class="session-replay-seek" type="range" id="sessionReplaySeek" min="0" max="0" value="0" step="1" aria-label="Replay position (events)">
                 <span class="session-replay-progress-text" id="sessionReplayProgressText">0 / 0 events</span>
                 <span class="session-replay-meta" id="sessionReplayClock">0.0s</span>
             </div>
             <div class="session-replay-terminal-wrap">
                 <div id="sessionReplayTerminal" class="session-replay-terminal"></div>
             </div>
-            <div class="session-replay-hint">Raw run-scoped terminal replay rendered in an emulator. Use Replay for after-the-fact inspection; keep Follow live on during active runs.</div>
+            <div class="session-replay-hint">Replay restarts from the first event; Play/Pause and the scrubber move through recorded output, with long idle gaps shortened so progress stays visible. Follow live pins you to the newest output during active runs; chapters jump to round boundaries.</div>
             <div class="session-replay-prompt">
                 <details>
                     <summary>Prompt</summary>
@@ -483,6 +490,8 @@ function renderSessionTranscript(issueNumber, runDir, payload) {
     if (follow) follow.disabled = true;
     const status = document.getElementById('sessionReplayStatus');
     if (status) status.textContent = 'Transcript view';
+    const shellEl = document.getElementById('sessionReplayShell');
+    if (shellEl) shellEl.dataset.playbackState = 'transcript';
     const progress = document.getElementById('sessionReplayProgressText');
     if (progress) progress.textContent = `${lines.length} line(s)`;
     const clock = document.getElementById('sessionReplayClock');
@@ -668,6 +677,28 @@ function pauseSessionReplay() {
     updateSessionReplayUi();
 }
 
+function computeSessionReplayStepDelay(events, index, speed) {
+    // Delay (ms) before rendering ``events[index]`` during playback. The raw
+    // gap is the offset difference from the previous event (or from zero for
+    // the first event). We clamp that gap to [0, SESSION_REPLAY_MAX_IDLE_MS]
+    // *before* applying the speed multiplier so long idle pauses collapse to a
+    // short, visible advance instead of stalling the scrubber, while natural
+    // sub-second output bursts keep their real cadence. Pure function so the
+    // timing policy is unit-testable without a DOM or timers.
+    const list = Array.isArray(events) ? events : [];
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+        return 0;
+    }
+    const previousOffset = index > 0 ? Number(list[index - 1]?.offset_ms || 0) : 0;
+    const nextOffset = Number(list[index]?.offset_ms || 0);
+    const rawGap = nextOffset - previousOffset;
+    const idleGap = Number.isFinite(rawGap)
+        ? Math.min(Math.max(rawGap, 0), SESSION_REPLAY_MAX_IDLE_MS)
+        : 0;
+    const effectiveSpeed = Math.max(Number(speed) || 1, 0.1);
+    return Math.max(0, Math.round(idleGap / effectiveSpeed));
+}
+
 function scheduleSessionReplayStep() {
     if (!sessionReplayState) return;
     if (sessionReplayState.playTimer) {
@@ -681,9 +712,11 @@ function scheduleSessionReplayStep() {
         return;
     }
     const nextIndex = sessionReplayState.playbackIndex;
-    const previousOffset = nextIndex > 0 ? Number(sessionReplayState.events[nextIndex - 1]?.offset_ms || 0) : 0;
-    const nextOffset = Number(sessionReplayState.events[nextIndex]?.offset_ms || 0);
-    const delayMs = Math.max(0, Math.round((nextOffset - previousOffset) / Math.max(sessionReplayState.speed || 1, 0.1)));
+    const delayMs = computeSessionReplayStepDelay(
+        sessionReplayState.events,
+        nextIndex,
+        sessionReplayState.speed,
+    );
     sessionReplayState.playTimer = setTimeout(() => {
         if (!sessionReplayState) return;
         applyTerminalRecordingEvent(sessionReplayState.events[nextIndex]);
@@ -691,6 +724,57 @@ function scheduleSessionReplayStep() {
         updateSessionReplayUi();
         scheduleSessionReplayStep();
     }, delayMs);
+}
+
+function describeSessionReplayPlayback(view) {
+    // Map the current playback position to a stable state key plus a
+    // human-facing label. The key drives ``data-playback-state`` (styling,
+    // a11y, tests); the label is announced via the ``aria-live`` status. Both
+    // stay in sync from one source so the viewer never looks ambiguously
+    // "stuck": empty (no events), start, playing, paused, and end are all
+    // named distinctly. Pure function — no DOM, so it is unit-testable.
+    const total = Math.max(0, Number(view && view.total) || 0);
+    const current = Math.max(0, Number(view && view.current) || 0);
+    const playing = !!(view && view.playing);
+    const follow = !!(view && view.follow);
+    const speed = Number(view && view.speed) || 1;
+    if (total === 0) {
+        return { key: 'empty', label: 'No events recorded yet' };
+    }
+    if (playing) {
+        return { key: 'playing', label: `Playing at ${speed}x — ${current} / ${total}` };
+    }
+    if (current >= total) {
+        return follow
+            ? { key: 'end', label: 'At latest output (following live)' }
+            : { key: 'end', label: 'Paused at end' };
+    }
+    if (current <= 0) {
+        return { key: 'start', label: 'At start — press Play to inspect early output' };
+    }
+    return { key: 'paused', label: `Paused at ${current} / ${total}` };
+}
+
+function updateSessionReplayEmptyState(isEmpty) {
+    // A blank emulator with events loaded is normal (the first frames may
+    // produce no visible output); a blank emulator with *zero* events is a
+    // capture gap. Surfacing an explicit overlay lets the viewer tell the two
+    // apart at a glance (issue #6583). The overlay sits above the xterm host
+    // and is removed as soon as any output arrives.
+    const host = document.getElementById('sessionReplayTerminal');
+    if (!host) return;
+    const existing = document.getElementById('sessionReplayEmpty');
+    if (!isEmpty) {
+        if (existing) existing.remove();
+        return;
+    }
+    if (existing) return;
+    const overlay = document.createElement('div');
+    overlay.id = 'sessionReplayEmpty';
+    overlay.className = 'session-replay-empty';
+    overlay.textContent = 'No terminal output has been recorded for this run yet. '
+        + 'The viewer is connected — output will appear here as it is captured.';
+    host.appendChild(overlay);
 }
 
 function updateSessionReplayUi() {
@@ -703,9 +787,12 @@ function updateSessionReplayUi() {
     const clockEl = document.getElementById('sessionReplayClock');
     const playPauseEl = document.getElementById('sessionReplayPlayPause');
     const followToggleEl = document.getElementById('logFollowToggle');
+    const shellEl = document.getElementById('sessionReplayShell');
     if (seekEl) {
         seekEl.max = String(total);
         seekEl.value = String(current);
+        seekEl.setAttribute('aria-valuemax', String(total));
+        seekEl.setAttribute('aria-valuenow', String(current));
     }
     if (progressEl) {
         progressEl.textContent = `${current} / ${total} events`;
@@ -715,17 +802,20 @@ function updateSessionReplayUi() {
         const offsetMs = Number(activeEvent?.offset_ms || 0);
         clockEl.textContent = `${(offsetMs / 1000).toFixed(1)}s`;
     }
+    const playback = describeSessionReplayPlayback({
+        total,
+        current,
+        playing: sessionReplayState.playing,
+        follow: sessionReplayState.follow,
+        speed: sessionReplayState.speed,
+    });
     if (statusEl) {
-        if (total === 0) {
-            statusEl.textContent = 'Waiting for first output...';
-        } else if (sessionReplayState.playing) {
-            statusEl.textContent = `Playing at ${sessionReplayState.speed}x`;
-        } else if (current >= total) {
-            statusEl.textContent = sessionReplayState.follow ? 'At latest output' : 'Paused at end';
-        } else {
-            statusEl.textContent = 'Paused';
-        }
+        statusEl.textContent = playback.label;
     }
+    if (shellEl) {
+        shellEl.dataset.playbackState = playback.key;
+    }
+    updateSessionReplayEmptyState(total === 0);
     if (playPauseEl) {
         playPauseEl.textContent = sessionReplayState.playing ? 'Pause' : 'Play';
     }
