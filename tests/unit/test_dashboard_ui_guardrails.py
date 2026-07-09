@@ -611,6 +611,60 @@ def test_session_replay_resize_event_does_not_fit_over_recorded_geometry() -> No
     assert "fitSessionReplayTerminal();" not in body
 
 
+def test_session_replay_compresses_idle_gaps_during_playback() -> None:
+    """Guardrail: playback delays route through a capped, pure helper.
+
+    The #6583 "looks frozen at 0 / N events" symptom was a raw offset gap
+    honored at 1x — a multi-minute idle pause stalled the scrubber. The step
+    scheduler must delegate to ``computeSessionReplayStepDelay``, which clamps
+    the idle gap to ``SESSION_REPLAY_MAX_IDLE_MS`` before applying speed so
+    progress keeps advancing and early output is reachable quickly.
+    """
+    js = _read(DASHBOARD_JS)
+    assert "const SESSION_REPLAY_MAX_IDLE_MS = 1000;" in js
+    delay_body = _function_body(js, "computeSessionReplayStepDelay")
+    assert "SESSION_REPLAY_MAX_IDLE_MS" in delay_body
+    assert "Math.min(" in delay_body
+    schedule_body = _function_body(js, "scheduleSessionReplayStep")
+    assert "computeSessionReplayStepDelay(" in schedule_body
+
+
+def test_session_replay_reports_explicit_playback_state_and_empty_distinction() -> None:
+    """Guardrail: the viewer names its state and distinguishes blank-vs-empty.
+
+    ``updateSessionReplayUi`` must drive a single source of truth
+    (``describeSessionReplayPlayback``) for both the ``aria-live`` status label
+    and the ``data-playback-state`` hook, and must surface an explicit
+    empty-state overlay when zero events are loaded so a blank terminal with
+    events is never confused with a capture gap.
+    """
+    js = _read(DASHBOARD_JS)
+    update_body = _function_body(js, "updateSessionReplayUi")
+    assert "describeSessionReplayPlayback(" in update_body
+    assert "shellEl.dataset.playbackState = playback.key" in update_body
+    assert "updateSessionReplayEmptyState(total === 0)" in update_body
+
+    describe_body = _function_body(js, "describeSessionReplayPlayback")
+    for key in ("'empty'", "'start'", "'playing'", "'paused'", "'end'"):
+        assert key in describe_body, f"missing playback state {key}"
+
+    open_body = _function_body(js, "openAgentLog")
+    assert 'id="sessionReplayShell"' in open_body
+    # Accessibility: the scrubber has an accessible name and the status region
+    # announces state changes politely.
+    assert 'aria-label="Replay position (events)"' in open_body
+    assert 'role="status" aria-live="polite"' in open_body
+
+
+def test_session_replay_empty_overlay_is_positioned_over_terminal() -> None:
+    css = _read_dashboard_css_bundle()
+    empty_rule = _last_css_rule_body(css, ".session-replay-empty")
+    assert "position: absolute" in empty_rule
+    assert "pointer-events: none" in empty_rule
+    terminal_rule = _last_css_rule_body(css, ".session-replay-terminal")
+    assert "position: relative" in terminal_rule
+
+
 def test_unblock_handlers_use_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
     for fn in (
