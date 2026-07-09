@@ -92,6 +92,14 @@ class WorktreeManager(Protocol):
         """
         ...
 
+    def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
+        """Return true when forced removal would only discard owned artifacts.
+
+        Implementations must return false when tracked changes are present or
+        when untracked paths are not known runtime/dependency outputs.
+        """
+        ...
+
     def extract_issue_number(self, branch_name: str) -> int | None:
         """Extract issue number from a branch name.
 

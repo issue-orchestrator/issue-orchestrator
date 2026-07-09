@@ -178,14 +178,58 @@ class CleanupManager:
                 success = False
 
         if remove_wt:
-            try:
-                self._worktree_manager.remove(pending.worktree_path)
+            if self._remove_worktree_for_cleanup(
+                pending.worktree_path,
+                issue_number=pending.issue_number,
+            ):
                 logger.info(f"[CLEANUP] Removed worktree for #{pending.issue_number}")
-            except Exception as e:
-                logger.warning(f"[CLEANUP] Failed to remove worktree for #{pending.issue_number}: {e}")
+            else:
                 success = False
 
         return success
+
+    def _remove_worktree_for_cleanup(self, worktree_path: Path, *, issue_number: int) -> bool:
+        """Remove a worktree, escalating only when no user changes would be lost."""
+        try:
+            self._worktree_manager.remove(worktree_path)
+            return True
+        except Exception as first_error:
+            try:
+                can_force = self._worktree_manager.can_remove_without_user_changes(worktree_path)
+            except Exception as safety_error:
+                logger.warning(
+                    "[CLEANUP] Failed to remove worktree for #%d: %s; "
+                    "could not verify forced removal safety: %s",
+                    issue_number,
+                    first_error,
+                    safety_error,
+                )
+                return False
+
+            if not can_force:
+                logger.warning(
+                    "[CLEANUP] Failed to remove worktree for #%d: %s; "
+                    "tracked or non-runtime changes are present",
+                    issue_number,
+                    first_error,
+                )
+                return False
+
+            logger.info(
+                "[CLEANUP] Retrying forced worktree removal for #%d after "
+                "runtime-only dirty state blocked clean removal",
+                issue_number,
+            )
+            try:
+                self._worktree_manager.remove(worktree_path, force=True)
+                return True
+            except Exception as force_error:
+                logger.warning(
+                    "[CLEANUP] Failed forced worktree removal for #%d: %s",
+                    issue_number,
+                    force_error,
+                )
+                return False
 
     def recover_orphaned_cleanups(
         self,
@@ -290,11 +334,11 @@ class CleanupManager:
                     pass  # Session probably already gone
 
             if remove_wt:
-                try:
-                    self._worktree_manager.remove(worktree_path)
+                if self._remove_worktree_for_cleanup(
+                    worktree_path,
+                    issue_number=issue_number,
+                ):
                     logger.info(f"[CLEANUP] Removed orphaned worktree for #{issue_number}")
-                except Exception as e:
-                    logger.warning(f"[CLEANUP] Failed to remove worktree for #{issue_number}: {e}")
 
             return True  # Found the worktree, no need to check other agents
 

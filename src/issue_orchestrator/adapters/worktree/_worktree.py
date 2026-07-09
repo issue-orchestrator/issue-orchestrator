@@ -1422,6 +1422,66 @@ def has_uncommitted_changes(worktree_path: Path) -> bool:
         raise WorktreeError(f"Error checking uncommitted changes: {e}")
 
 
+_DISCARDABLE_UNTRACKED_PATHS = frozenset({
+    ".githooks/pre-push.log",
+    ".mcp.json",
+})
+
+_DISCARDABLE_UNTRACKED_PREFIXES = (
+    ".issue-orchestrator/e2e-results",
+    ".issue-orchestrator/followups-",
+    ".issue-orchestrator/persistent-pairs",
+    ".issue-orchestrator/review-exchange-turn-prompt.md",
+    ".issue-orchestrator/review-feedback",
+    ".issue-orchestrator/review-report.md",
+    ".issue-orchestrator/review-response.json",
+    ".issue-orchestrator/sessions",
+    ".issue-orchestrator/state",
+)
+
+
+def _is_discardable_untracked_path(path: str) -> bool:
+    normalized = path.removeprefix("./").rstrip("/")
+    if normalized in _DISCARDABLE_UNTRACKED_PATHS:
+        return True
+    if normalized == ".venv" or normalized.endswith("/node_modules"):
+        return True
+    return normalized.startswith(_DISCARDABLE_UNTRACKED_PREFIXES)
+
+
+def can_remove_without_user_changes(worktree_path: Path) -> bool:
+    """Return true when forced removal would not discard user source changes."""
+    worktree_path = Path(worktree_path)
+
+    if not worktree_path.exists():
+        raise WorktreeError(f"Worktree does not exist at {worktree_path}")
+
+    try:
+        result = _git_run(
+            worktree_path,
+            ["status", "--porcelain"],
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise WorktreeError(
+                f"Failed to check worktree status: {result.stderr}"
+            )
+
+        for line in result.stdout.splitlines():
+            if line.startswith("?? "):
+                if not _is_discardable_untracked_path(line[3:]):
+                    return False
+                continue
+            return False
+        return True
+
+    except Exception as e:
+        if isinstance(e, WorktreeError):
+            raise
+        raise WorktreeError(f"Error checking worktree removal safety: {e}")
+
+
 def get_worktree_branch(worktree_path: Path) -> str | None:
     """
     Get the branch name for a worktree.
