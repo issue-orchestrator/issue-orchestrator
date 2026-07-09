@@ -234,6 +234,38 @@ def test_validation_warning_banner_has_css_in_both_themes() -> None:
     assert ".validation-warning-icon" in css
 
 
+def test_validation_warning_settings_link_routes_through_embedded_nav() -> None:
+    # Issue #4109 regression: the warning banner's Settings link must forward
+    # the Control Center embedded context (?embedded=1 & ?theme=) exactly like
+    # the settings-menu button's goToSettings(). It stays a semantic <a> with a
+    # base href="/settings" (works without JS / standalone), and the shared
+    # embeddedNav owner upgrades the href on load — the URL-preservation rule
+    # is never duplicated here.
+    html = _read(DASHBOARD_TEMPLATE)
+    # Every dashboard link to /settings must be routed through the owner
+    # (marked with data-embedded-settings-link); no ad-hoc raw link may sneak
+    # back in and drop the embedded context.
+    settings_anchors = re.findall(r'<a\b[^>]*\bhref="/settings"[^>]*>', html)
+    assert settings_anchors, "expected a /settings link in the warning banner"
+    for anchor in settings_anchors:
+        assert "data-embedded-settings-link" in anchor, (
+            f"raw /settings link bypasses embeddedNav owner: {anchor}"
+        )
+
+    # The dashboard boot hands the document to the owner so marked links get
+    # the embedded context applied, reusing the same rule as goToSettings().
+    js = _read(DASHBOARD_JS)
+    assert (
+        "embeddedNav.applySettingsLinks(document, window.location.search)" in js
+    )
+
+    # The owner actually exposes the link-upgrade behavior (single source of
+    # the propagation rule, shared with buildHref).
+    nav = _read(EMBEDDED_NAV_JS)
+    assert "function applySettingsLinks(" in nav
+    assert "buildHref('/settings', search)" in nav
+
+
 def test_issue_detail_status_is_live_region() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     match = re.search(r"<div[^>]*\bid=\"issueDetailStatus\"[^>]*>", html)

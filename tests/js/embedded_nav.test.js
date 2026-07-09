@@ -74,6 +74,61 @@ test('buildHref is a pure transformation (no mutation of inputs)', () => {
     assert.equal(search, '?embedded=1&theme=dark&tab=e2e');
 });
 
+// applySettingsLinks — the owner upgrades server-rendered Settings anchors
+// (e.g. the no-validation warning banner) so embedded context survives the
+// Dashboard → Settings round-trip, exactly like goToSettings() for the button.
+
+function fakeLink(initialHref) {
+    return {
+        href: initialHref,
+        setAttribute(name, value) {
+            if (name === 'href') this.href = value;
+        },
+    };
+}
+
+function fakeRoot(links) {
+    return {
+        querySelectorAll(selector) {
+            assert.equal(selector, 'a[data-embedded-settings-link]');
+            return links;
+        },
+    };
+}
+
+test('applySettingsLinks preserves embedded=1 and theme on the banner link', () => {
+    const banner = fakeLink('/settings');
+    embeddedNav.applySettingsLinks(fakeRoot([banner]), '?embedded=1&theme=dark');
+    assert.equal(banner.href, '/settings?embedded=1&theme=dark');
+});
+
+test('applySettingsLinks rewrites every marked Settings anchor', () => {
+    const first = fakeLink('/settings');
+    const second = fakeLink('/settings');
+    embeddedNav.applySettingsLinks(fakeRoot([first, second]), '?embedded=1&theme=light');
+    assert.equal(first.href, '/settings?embedded=1&theme=light');
+    assert.equal(second.href, '/settings?embedded=1&theme=light');
+});
+
+test('applySettingsLinks leaves a bare /settings href in standalone (no context params)', () => {
+    const banner = fakeLink('/settings');
+    embeddedNav.applySettingsLinks(fakeRoot([banner]), '');
+    assert.equal(banner.href, '/settings');
+});
+
+test('applySettingsLinks drops dashboard-internal params, keeping only context', () => {
+    const banner = fakeLink('/settings');
+    embeddedNav.applySettingsLinks(fakeRoot([banner]), '?embedded=1&theme=dark&tab=e2e');
+    assert.equal(banner.href, '/settings?embedded=1&theme=dark');
+});
+
+test('applySettingsLinks is a no-op when the root cannot be queried', () => {
+    // No banner rendered (validation configured) → document has no marked
+    // links; a missing/!queryable root must not throw during boot.
+    assert.doesNotThrow(() => embeddedNav.applySettingsLinks(null, '?embedded=1'));
+    assert.doesNotThrow(() => embeddedNav.applySettingsLinks({}, '?embedded=1'));
+});
+
 // resolveEffectiveTheme — shared precedence across Dashboard + Settings.
 
 test('resolveEffectiveTheme prefers explicit override over URL and storage', () => {
