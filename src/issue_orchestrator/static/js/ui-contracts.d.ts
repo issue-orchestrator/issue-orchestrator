@@ -103,7 +103,7 @@ export interface DashboardDataPayload {
   repo: string;
   repoRoot: string;
   startupComplete: boolean;
-  validationConfigured?: boolean;
+  validationConfigured: boolean;
   [key: string]: any;
 }
 

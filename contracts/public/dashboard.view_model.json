@@ -84,7 +84,6 @@
           "type": "boolean"
         },
         "validationConfigured": {
-          "default": true,
           "title": "Validationconfigured",
           "type": "boolean"
         }
@@ -98,7 +97,8 @@
         "repoRoot",
         "githubOwner",
         "githubRepo",
-        "agents"
+        "agents",
+        "validationConfigured"
       ],
       "title": "DashboardDataContract",
       "type": "object"

@@ -562,7 +562,8 @@
           "repoRoot",
           "githubOwner",
           "githubRepo",
-          "agents"
+          "agents",
+          "validationConfigured"
         ],
         "properties": {
           "startupComplete": {"type": "boolean"},
