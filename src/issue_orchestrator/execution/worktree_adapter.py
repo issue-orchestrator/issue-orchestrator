@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..ports.worktree_manager import WorktreeInfo, WorktreeReuseOptions
 from ..adapters.worktree._worktree import (
+    can_remove_without_user_changes,
     create_worktree,
     remove_worktree,
     extract_issue_number_from_branch,
@@ -58,6 +59,10 @@ class GitWorktreeManager:
     def remove(self, worktree_path: Path, *, force: bool = False) -> None:
         """Remove a git worktree."""
         remove_worktree(worktree_path, force=force)
+
+    def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
+        """Return true when forced removal would not discard user changes."""
+        return can_remove_without_user_changes(worktree_path)
 
     def extract_issue_number(self, branch_name: str) -> int | None:
         """Extract issue number from a branch name."""

@@ -17,6 +17,7 @@ from issue_orchestrator.infra.runtime_artifacts import (
     RUNTIME_IGNORE_FILE,
     filter_orchestrator_untracked_planted,
     filter_runtime_managed_dirty_paths,
+    is_cleanup_safe_untracked_path,
     is_orchestrator_untracked_planted,
     is_runtime_managed_dirty_path,
     load_runtime_ignore_patterns,
@@ -129,6 +130,27 @@ def test_runtime_metadata_filter_strips_claude_scheduled_tasks_lock() -> None:
     assert filter_runtime_managed_dirty_paths(
         [".claude/scheduled_tasks.lock", "src/app.py"]
     ) == ["src/app.py"]
+
+
+def test_cleanup_safe_untracked_paths_cover_completed_session_artifacts() -> None:
+    """Forced cleanup can discard known run artifacts without a second allowlist."""
+    assert is_cleanup_safe_untracked_path(".agent-done-marker")
+    assert is_cleanup_safe_untracked_path(".issue-orchestrator/validation/abc123.json")
+    assert is_cleanup_safe_untracked_path(
+        ".issue-orchestrator/sessions/run-1/validation-record.json"
+    )
+    assert is_cleanup_safe_untracked_path(
+        ".issue-orchestrator/persistent-pairs/issue-1/coder/terminal.jsonl"
+    )
+    assert is_cleanup_safe_untracked_path("web/node_modules/.cache/state.json")
+
+
+def test_cleanup_safe_untracked_paths_are_path_boundary_safe() -> None:
+    assert not is_cleanup_safe_untracked_path(".issue-orchestrator/stateful-notes")
+    assert not is_cleanup_safe_untracked_path(
+        ".issue-orchestrator/review-report.md.backup"
+    )
+    assert not is_cleanup_safe_untracked_path("packages/app_node_modules/file.txt")
 
 
 def test_loads_repo_local_runtime_ignore_file(tmp_path, caplog) -> None:

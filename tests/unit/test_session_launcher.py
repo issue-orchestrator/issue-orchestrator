@@ -221,8 +221,13 @@ class MockWorktreeManager:
             branch_name=branch_name or f"{issue_number}-feature",
         )
 
-    def remove(self, worktree_path: Path) -> None:
+    def remove(self, worktree_path: Path, *, force: bool = False) -> None:
+        del force
         self.remove_calls.append(worktree_path)
+
+    def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
+        del worktree_path
+        return False
 
 
 class MockWorkingCopy:

@@ -68,9 +68,15 @@ class MockWorktreeManager:
         })
         return WorktreeInfo(path=self.worktree_path, branch_name=self.branch_name)
 
-    def remove(self, worktree_path: Path) -> None:
+    def remove(self, worktree_path: Path, *, force: bool = False) -> None:
         """Track remove calls."""
+        del force
         self.remove_calls.append(worktree_path)
+
+    def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
+        """Test fakes do not opt into forced cleanup unless a test configures it."""
+        del worktree_path
+        return False
 
     def extract_issue_number(self, branch_name: str) -> int | None:
         """Extract issue number from branch name."""

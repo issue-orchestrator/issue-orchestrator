@@ -11,7 +11,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 import pytest
 
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError
@@ -86,6 +86,7 @@ def mock_worktree_manager():
     mgr = MagicMock()
     mgr.extract_issue_number.return_value = None
     mgr.remove.return_value = None
+    mgr.can_remove_without_user_changes.return_value = False
     return mgr
 
 
@@ -369,6 +370,63 @@ class TestProcessDeferredCleanups:
         assert "Failed to remove worktree" in caplog.text
         assert "Cleanup incomplete" in caplog.text
 
+    def test_forces_worktree_removal_for_runtime_only_dirty_state(
+        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
+    ):
+        """Runtime-only untracked artifacts do not strand deferred cleanups."""
+        mock_config.triage_review_agent = "agent:triage"
+        worktree_path = Path("/tmp/worktree")
+        mock_worktree_manager.remove.side_effect = [Exception("dirty"), None]
+        mock_worktree_manager.can_remove_without_user_changes.return_value = True
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_id="issue-123",
+                worktree_path=worktree_path,
+            )
+        ]
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+
+        result = cleanup_manager.process_deferred_cleanups(pending)
+
+        assert result == []
+        assert mock_worktree_manager.remove.call_args_list == [
+            call(worktree_path),
+            call(worktree_path, force=True),
+        ]
+
+    def test_does_not_force_worktree_removal_when_user_changes_are_present(
+        self, cleanup_manager, mock_config, mock_repository_host, mock_worktree_manager
+    ):
+        """Tracked or non-runtime dirty state remains pending for operator review."""
+        mock_config.triage_review_agent = "agent:triage"
+        worktree_path = Path("/tmp/worktree")
+        mock_worktree_manager.remove.side_effect = Exception("dirty")
+        mock_worktree_manager.can_remove_without_user_changes.return_value = False
+
+        pending = [
+            make_pending_cleanup(
+                issue_number=123,
+                pr_number=456,
+                terminal_id="issue-123",
+                worktree_path=worktree_path,
+            )
+        ]
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=456, url="...", title="PR", branch="123-fix",
+                   labels=[], body="", state="open")
+        ]
+
+        result = cleanup_manager.process_deferred_cleanups(pending)
+
+        assert result == pending
+        mock_worktree_manager.remove.assert_called_once_with(worktree_path)
+
     def test_handles_pr_fetch_failure(
         self, cleanup_manager, mock_config, mock_repository_host, caplog
     ):
@@ -570,10 +628,10 @@ class TestRecoverOrphanedCleanups:
 
         callback.assert_called_once_with("Checking for orphaned cleanups...")
 
-    def test_handles_worktree_removal_failure_during_recovery(
+    def test_does_not_count_worktree_removal_failure_during_recovery(
         self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, mock_worktree_manager, tmp_path, caplog
     ):
-        """Worktree removal failure is logged but doesn't stop recovery."""
+        """Worktree removal failure is logged and not counted as cleaned."""
         mock_config.triage_review_agent = "agent:triage"
         mock_config.agents = {"agent:triage": MagicMock()}
 
@@ -593,8 +651,7 @@ class TestRecoverOrphanedCleanups:
         with caplog.at_level(logging.WARNING):
             result = cleanup_manager.recover_orphaned_cleanups()
 
-        # Still counted as cleaned (attempted)
-        assert result == 1
+        assert result == 0
         assert "Failed to remove worktree" in caplog.text
 
     def test_skips_prs_without_extractable_issue_number(

@@ -697,8 +697,13 @@ class TempWorktreeManager:
         )
         return WorktreeInfo(path=worktree, branch_name=final_branch)
 
-    def remove(self, worktree_path: Path) -> None:
+    def remove(self, worktree_path: Path, *, force: bool = False) -> None:
+        del worktree_path, force
         return None
+
+    def can_remove_without_user_changes(self, worktree_path: Path) -> bool:
+        del worktree_path
+        return False
 
     def extract_issue_number(self, branch_name: str) -> int | None:
         parts = branch_name.split("-")

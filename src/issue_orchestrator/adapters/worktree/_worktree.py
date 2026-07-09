@@ -9,6 +9,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from ...infra.runtime_artifacts import is_cleanup_safe_untracked_path
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
@@ -1420,6 +1421,39 @@ def has_uncommitted_changes(worktree_path: Path) -> bool:
         if isinstance(e, WorktreeError):
             raise
         raise WorktreeError(f"Error checking uncommitted changes: {e}")
+
+
+def can_remove_without_user_changes(worktree_path: Path) -> bool:
+    """Return true when forced removal would not discard user source changes."""
+    worktree_path = Path(worktree_path)
+
+    if not worktree_path.exists():
+        raise WorktreeError(f"Worktree does not exist at {worktree_path}")
+
+    try:
+        result = _git_run(
+            worktree_path,
+            ["status", "--porcelain", "--untracked-files=all"],
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise WorktreeError(
+                f"Failed to check worktree status: {result.stderr}"
+            )
+
+        for line in result.stdout.splitlines():
+            if line.startswith("?? "):
+                if not is_cleanup_safe_untracked_path(line[3:], worktree_path):
+                    return False
+                continue
+            return False
+        return True
+
+    except Exception as e:
+        if isinstance(e, WorktreeError):
+            raise
+        raise WorktreeError(f"Error checking worktree removal safety: {e}")
 
 
 def get_worktree_branch(worktree_path: Path) -> str | None:

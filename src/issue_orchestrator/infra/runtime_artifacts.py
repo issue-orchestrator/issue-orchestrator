@@ -65,6 +65,47 @@ ORCHESTRATOR_UNTRACKED_PLANTED_PREFIXES: tuple[str, ...] = (
     "src/issue_orchestrator/entrypoints/cli_tools/",
 )
 
+CLEANUP_SAFE_UNTRACKED_EXACT: frozenset[str] = frozenset(
+    {
+        *RUNTIME_DIRTY_IGNORE_EXACT,
+        ".agent-done-marker",
+        ".githooks/pre-push.log",
+        ".mcp.json",
+        str(RUNTIME_IGNORE_FILE),
+        ".issue-orchestrator/allow-no-verify-dry-run",
+        ".issue-orchestrator/completion.json",
+        ".issue-orchestrator/dirty-rejection-count.json",
+        ".issue-orchestrator/retry-prompt.md",
+        ".issue-orchestrator/review-exchange-state.json",
+        ".issue-orchestrator/review-exchange-turn-prompt.md",
+        ".issue-orchestrator/review-report.md",
+        ".issue-orchestrator/review-response.json",
+        ".issue-orchestrator/validation-errors.txt",
+        ".issue-orchestrator/validation-state.json",
+        ".issue-orchestrator/worktree-id",
+    }
+)
+
+CLEANUP_SAFE_UNTRACKED_ROOTS: tuple[str, ...] = (
+    ".issue-orchestrator/attempts",
+    ".issue-orchestrator/backups",
+    ".issue-orchestrator/diagnostics",
+    ".issue-orchestrator/e2e-results",
+    ".issue-orchestrator/persistent-pairs",
+    ".issue-orchestrator/review-feedback",
+    ".issue-orchestrator/sessions",
+    ".issue-orchestrator/state",
+    ".issue-orchestrator/tool-homes",
+    ".issue-orchestrator/validation",
+    ".venv",
+)
+
+CLEANUP_SAFE_UNTRACKED_PATTERNS: tuple[str, ...] = (
+    ".issue-orchestrator/followups-*",
+)
+
+DEPENDENCY_OUTPUT_DIR_NAMES: frozenset[str] = frozenset({"node_modules"})
+
 
 def _normalize_runtime_pattern(pattern: str) -> str:
     normalized = pattern.strip().replace("\\", "/")
@@ -202,6 +243,47 @@ def filter_orchestrator_untracked_planted(paths: list[str]) -> list[str]:
     ``ls-files --others`` invocation, etc.).
     """
     return [path for path in paths if not is_orchestrator_untracked_planted(path)]
+
+
+def _path_matches_root(path: str, root: str) -> bool:
+    normalized = _normalize_runtime_pattern(path)
+    normalized_root = _normalize_runtime_pattern(root)
+    return normalized == normalized_root or normalized.startswith(f"{normalized_root}/")
+
+
+def _has_dependency_output_component(path: str) -> bool:
+    parts = _normalize_runtime_pattern(path).split("/")
+    return any(part in DEPENDENCY_OUTPUT_DIR_NAMES for part in parts)
+
+
+def is_cleanup_safe_untracked_path(path: str, worktree: Path | None = None) -> bool:
+    """Return True when an untracked path is owned runtime/dependency output.
+
+    This is intentionally narrower than ``is_runtime_managed_dirty_path``. Dirty
+    guards hide broad runtime roots, but forced worktree removal must only
+    discard paths with explicit runtime/dependency ownership and path-boundary
+    matches.
+    """
+    normalized = _normalize_runtime_pattern(path)
+    if not normalized:
+        return False
+    if normalized in CLEANUP_SAFE_UNTRACKED_EXACT:
+        return True
+    if any(_path_matches_root(normalized, root) for root in CLEANUP_SAFE_UNTRACKED_ROOTS):
+        return True
+    if any(
+        _matches_runtime_pattern(normalized, pattern)
+        for pattern in CLEANUP_SAFE_UNTRACKED_PATTERNS
+    ):
+        return True
+    if any(
+        _matches_runtime_pattern(normalized, pattern)
+        for pattern in load_runtime_ignore_patterns(worktree)
+    ):
+        return True
+    if is_orchestrator_untracked_planted(normalized):
+        return True
+    return _has_dependency_output_component(normalized)
 
 
 # --------------------------------------------------------------------------- #
