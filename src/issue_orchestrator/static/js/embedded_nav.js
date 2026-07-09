@@ -43,6 +43,22 @@
         return query ? basePath + '?' + query : basePath;
     }
 
+    // Rewrite every server-rendered Settings anchor so it carries the embedded
+    // context params, using the same rule as buildHref. Templates render these
+    // links with a plain href="/settings" (so they work without JS and in
+    // standalone mode); on load the dashboard hands the document to this owner
+    // and the href is upgraded in place. This keeps the Dashboard → Settings
+    // propagation rule owned here rather than duplicated at each link.
+    function applySettingsLinks(root, search) {
+        if (!root || typeof root.querySelectorAll !== 'function') {
+            return;
+        }
+        const href = buildHref('/settings', search);
+        for (const link of root.querySelectorAll('a[data-embedded-settings-link]')) {
+            link.setAttribute('href', href);
+        }
+    }
+
     // Single resolver for the effective theme across Dashboard and Settings.
     // Precedence: explicit override (postMessage from CC) > ?theme= URL > stored
     // localStorage preference > 'system'. A 'system' raw value is resolved to
@@ -57,6 +73,7 @@
     return {
         EMBEDDED_CONTEXT_PARAMS,
         buildHref,
+        applySettingsLinks,
         resolveEffectiveTheme,
     };
 });

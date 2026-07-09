@@ -250,6 +250,62 @@ def test_blocked_bulk_buttons_default_disabled_in_template() -> None:
     assert re.search(r'onclick="bulkClearViewed\(\)"\s+disabled', html)
 
 
+def test_validation_warning_banner_is_gated_and_accessible() -> None:
+    # Issue #4109: a persistent warning must render when validation is not
+    # configured. It is gated on ``validation_configured`` (so it disappears
+    # when validation is set), carries an alert role for assistive tech, and
+    # pairs an icon with text so colour is never the only status signal.
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "{% if not validation_configured %}" in html
+    match = re.search(r"<div[^>]*\bclass=\"validation-warning-banner\"[^>]*>", html)
+    assert match is not None
+    banner_tag = match.group(0)
+    assert 'role="alert"' in banner_tag
+    assert "validation-warning-icon" in html
+    assert "No validation configured" in html
+
+
+def test_validation_warning_banner_has_css_in_both_themes() -> None:
+    # Colour cannot be the only signal and the banner must be styled (not an
+    # unstyled block). The amber caution palette resolves in light and dark
+    # via themed custom properties, so a single rule set covers both themes.
+    css = _read_dashboard_css_bundle()
+    assert ".validation-warning-banner" in css
+    assert ".validation-warning-icon" in css
+
+
+def test_validation_warning_settings_link_routes_through_embedded_nav() -> None:
+    # Issue #4109 regression: the warning banner's Settings link must forward
+    # the Control Center embedded context (?embedded=1 & ?theme=) exactly like
+    # the settings-menu button's goToSettings(). It stays a semantic <a> with a
+    # base href="/settings" (works without JS / standalone), and the shared
+    # embeddedNav owner upgrades the href on load — the URL-preservation rule
+    # is never duplicated here.
+    html = _read(DASHBOARD_TEMPLATE)
+    # Every dashboard link to /settings must be routed through the owner
+    # (marked with data-embedded-settings-link); no ad-hoc raw link may sneak
+    # back in and drop the embedded context.
+    settings_anchors = re.findall(r'<a\b[^>]*\bhref="/settings"[^>]*>', html)
+    assert settings_anchors, "expected a /settings link in the warning banner"
+    for anchor in settings_anchors:
+        assert "data-embedded-settings-link" in anchor, (
+            f"raw /settings link bypasses embeddedNav owner: {anchor}"
+        )
+
+    # The dashboard boot hands the document to the owner so marked links get
+    # the embedded context applied, reusing the same rule as goToSettings().
+    js = _read(DASHBOARD_JS)
+    assert (
+        "embeddedNav.applySettingsLinks(document, window.location.search)" in js
+    )
+
+    # The owner actually exposes the link-upgrade behavior (single source of
+    # the propagation rule, shared with buildHref).
+    nav = _read(EMBEDDED_NAV_JS)
+    assert "function applySettingsLinks(" in nav
+    assert "buildHref('/settings', search)" in nav
+
+
 def test_issue_detail_status_is_live_region() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     match = re.search(r"<div[^>]*\bid=\"issueDetailStatus\"[^>]*>", html)

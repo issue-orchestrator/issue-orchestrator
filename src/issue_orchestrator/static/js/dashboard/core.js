@@ -628,6 +628,10 @@ async function _refreshViewModelImpl({ reloadOnListChange = true } = {}) {
 document.addEventListener('DOMContentLoaded', async () => {
     try {
         applyDashboardTheme();
+        // Upgrade server-rendered Settings links (e.g. the no-validation
+        // warning banner) so ?embedded=1 and ?theme= survive the round-trip,
+        // routed through the same embeddedNav owner as goToSettings().
+        embeddedNav.applySettingsLinks(document, window.location.search);
         setDashboardInitializing(window.dashboardData?.startupComplete === false);
         updateActionHints();
         initFlowLazyVisibleRefresh();

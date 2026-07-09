@@ -111,6 +111,44 @@ def test_view_model_active_session_and_dashboard_data():
     assert dashboard_data["refresh"]["fetchLayerEnabled"] is True
 
 
+def test_validation_configured_false_when_no_validation_command():
+    # Issue #4109: the dashboard must be able to warn when agents push code
+    # with no automated checks. A config with no validation command surfaces
+    # validation_configured=False so the template renders the warning banner.
+    config = _make_config()
+    assert config.is_validation_enabled() is False
+
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.validation_configured is False
+    # The typed dashboard_data payload (DashboardDataContract) carries the flag
+    # so the client/SSE contract exposes it too.
+    assert view_model.dashboard_data()["validationConfigured"] is False
+
+
+def test_validation_configured_true_when_validation_command_set():
+    config = _make_config()
+    config.validation.quick.cmd = "make validate"
+    assert config.is_validation_enabled() is True
+
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.validation_configured is True
+    assert view_model.dashboard_data()["validationConfigured"] is True
+
+
 def test_dashboard_data_exposes_e2e_failure_evidence_for_live_badge_updates():
     config = _make_config()
     state = OrchestratorState(startup_status="complete")
