@@ -733,6 +733,20 @@ class TestEvaluateGatesCrossMilestone:
         report = evaluator.evaluate_gates(1, "Stack-after: #30", "M1")
         assert report.reason_codes(Gate.WORK) == (GateBlockReason.CROSS_MILESTONE,)
 
+    def test_missing_source_milestone_explains_stack_fix(self, evaluator, checker):
+        checker.add(517, "open", milestone=None)
+        report = evaluator.evaluate_gates(520, "Stack-after: #517", None)
+
+        records = report.gate_block_records(Gate.WORK)
+        assert records[0].reason == "cross_milestone"
+        assert records[0].mode == "stack"
+        assert records[0].detail is not None
+        assert "Issue #520 has no milestone" in records[0].detail
+        assert "Stack-after: #517" in records[0].detail
+        assert "Fix: assign issue #520 and #517 to the same milestone" in records[0].detail
+        assert "foundation milestone M0" in records[0].detail
+        assert "cross-milestone: #517 (Issue #520 has no milestone" in report.work_summary()
+
     def test_valid_same_stack_exception_allows_cross_milestone(self, evaluator, checker):
         checker.add(30, "open", milestone="M2")
         report = evaluator.evaluate_gates(

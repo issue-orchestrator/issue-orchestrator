@@ -42,7 +42,11 @@ from ..ports.background_job import BackgroundJobRunner, CompletedJob
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.publish_retry_locator_store import PublishRetryLocatorStore
 from ..ports.pull_request_tracker import PRInfo
-from .completion_types import ERROR_PREFIX_CREATE_PR, ERROR_PREFIX_PUSH
+from .completion_types import (
+    ERROR_PREFIX_CREATE_PR,
+    ERROR_PREFIX_PUBLISH_BLOCKED,
+    ERROR_PREFIX_PUSH,
+)
 from .publish_retry_finalize import RetryReviewRouting, RetrySuccessFinalizer
 from .republish_job_id import RepublishJobId
 
@@ -54,7 +58,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PUBLISH_FAILURE_PREFIXES = (ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR)
+_PUBLISH_FAILURE_PREFIXES = (
+    ERROR_PREFIX_PUSH,
+    ERROR_PREFIX_CREATE_PR,
+    ERROR_PREFIX_PUBLISH_BLOCKED,
+)
 
 
 class _RepositoryHost(Protocol):

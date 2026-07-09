@@ -300,6 +300,27 @@ def test_record_publish_failure_persists_retry_locators(make_session, tmp_path) 
     assert locators.completion_path == session.completion_path
 
 
+def test_publish_blocked_failure_persists_retry_locators(make_session, tmp_path) -> None:
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    service, store, _ = _service(tmp_path, repo, lm)
+
+    session = make_session(
+        issue_number=4057,
+        issue_title="UI: Surface provider status",
+        branch_name=BRANCH,
+    )
+    service.record_publish_failure(
+        session,
+        ["publish_blocked: Could not determine current branch"],
+    )
+
+    locators = store.get(4057)
+    assert locators is not None
+    assert locators.branch_name == BRANCH
+    assert locators.worktree_path == str(session.worktree_path)
+
+
 def test_record_publish_failure_ignores_non_publish_errors(make_session, tmp_path) -> None:
     lm = LabelManager(_config(tmp_path))
     repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))

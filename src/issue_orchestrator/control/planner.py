@@ -1049,6 +1049,9 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             if d.reason == "dependency_blocked"
         ]
         decision_reason_by_issue = {d.issue.number: d.reason for d in scheduler_decisions}
+        decision_detail_by_issue = {
+            d.issue.number: d.detail for d in scheduler_decisions if d.detail
+        }
         scheduler_filtered = sum(
             1 for decision in scheduler_decisions
             if not decision.available and decision.reason != "dependency_blocked"
@@ -1180,7 +1183,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         launching_set = set(launching_numbers)
         dep_blocked_map = {issue.number: reason for issue, reason in dependency_blocked}
         decision_by_issue: dict[int, str] = {}
-        detail_by_issue: dict[int, str] = {}
+        detail_by_issue = dict(decision_detail_by_issue)
         for issue in snapshot.issues:
             if issue.number in launching_set:
                 decision_by_issue[issue.number] = "launch:scheduled"
@@ -1205,31 +1208,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
     ) -> None:
         """Emit queue decision traces only when they change, plus periodic summary."""
         for issue_number, decision in decision_by_issue.items():
-            previous = self._last_queue_decisions.get(issue_number)
-            if previous == decision:
-                continue
-            self._last_queue_decisions[issue_number] = decision
-            if decision.startswith("launch:"):
-                reason = decision.split(":", 1)[1]
-                logger.info(
-                    "trace-queue-decision issue=%d decision=launch reason=%s",
-                    issue_number,
-                    reason,
-                )
-                continue
-            reason = decision.split(":", 1)[1]
-            if reason == "dependency_blocked":
-                logger.info(
-                    "trace-queue-decision issue=%d decision=skip reason=dependency_blocked detail=%s",
-                    issue_number,
-                    detail_by_issue.get(issue_number, "dependency blocked"),
-                )
-            else:
-                logger.info(
-                    "trace-queue-decision issue=%d decision=skip reason=%s",
-                    issue_number,
-                    reason,
-                )
+            self._log_queue_decision_if_changed(
+                issue_number,
+                decision,
+                detail_by_issue.get(issue_number),
+            )
 
         # Prune stale issues no longer in this snapshot.
         current_numbers = set(decision_by_issue.keys())
@@ -1257,6 +1240,48 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             launch_count,
             len(decision_by_issue) - launch_count,
             reason_summary or "none",
+        )
+
+    def _log_queue_decision_if_changed(
+        self,
+        issue_number: int,
+        decision: str,
+        detail: str | None,
+    ) -> None:
+        fingerprint = f"{decision}|{detail}" if detail else decision
+        previous = self._last_queue_decisions.get(issue_number)
+        if previous == fingerprint:
+            return
+        self._last_queue_decisions[issue_number] = fingerprint
+        if decision.startswith("launch:"):
+            reason = decision.split(":", 1)[1]
+            logger.info(
+                "trace-queue-decision issue=%d decision=launch reason=%s",
+                issue_number,
+                reason,
+            )
+            return
+
+        reason = decision.split(":", 1)[1]
+        if reason == "dependency_blocked":
+            logger.info(
+                "trace-queue-decision issue=%d decision=skip reason=dependency_blocked detail=%s",
+                issue_number,
+                detail or "dependency blocked",
+            )
+            return
+        if detail:
+            logger.info(
+                "trace-queue-decision issue=%d decision=skip reason=%s detail=%s",
+                issue_number,
+                reason,
+                detail,
+            )
+            return
+        logger.info(
+            "trace-queue-decision issue=%d decision=skip reason=%s",
+            issue_number,
+            reason,
         )
 
     def _plan_reviews(
