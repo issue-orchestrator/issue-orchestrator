@@ -89,6 +89,14 @@ For a fine-grained PAT, grant repository access only to the target repo and set 
 
 No user permissions are required. `Actions`, `Administration`, `Projects`, `Packages`, `Deployments`, `Secrets`, and similar extra permissions are not needed for normal orchestrator operation.
 
+This token mode attributes orchestrator-created branches and PRs to the token
+owner. If your branch protection requires all PRs to be approved, GitHub will
+not let that same user approve the PR. For strict protected-branch operation,
+the recommended model is GitHub App auth so PRs are authored by an app/bot and
+reviewed by a human. In the local/self-hosted model each user or org creates
+its own GitHub App; a shared public app only works if there is a hosted service
+holding the app private key. See [GitHub Auth and Permissions](github-permissions.md#protected-branch-mode-github-app).
+
 **Q9: Do I need the `[M1-010]` prefix in issue titles?**
 A: No. The `[M?-nnn]` prefix (e.g., `[M1-010]`) gives an issue a stable, human-readable identity key used in session tracking, dependency resolution, and logs. If your title has no prefix, the orchestrator automatically falls back to the GitHub issue number (e.g., `42`) as the identity. Everything works either way — sessions, the dashboard, dependencies, and filtering all function normally. Use the prefix when you want milestone-scoped naming or cross-references like `Depends-on: M1-010`; skip it if you're referencing dependencies by issue number (`Depends-on: #42`) or just getting started. See the [Creating Issues for Agents](tutorial.md#issue-identity-keys) section for details.
 

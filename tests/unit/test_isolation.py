@@ -28,6 +28,10 @@ from issue_orchestrator.control.isolation import (
     verify_env_scrubbed,
     all_env_scrubbed,
 )
+from issue_orchestrator.infra.secret_env import (
+    EXTRA_FORBIDDEN_ENV_VARS_ENV,
+    GITHUB_APP_PRIVATE_KEY_ENV,
+)
 
 
 class TestForbiddenEnvVars:
@@ -73,6 +77,19 @@ class TestBuildEnvUnsetCommands:
         """Test that SSH_AUTH_SOCK unset is included."""
         commands = build_env_unset_commands()
         assert "unset SSH_AUTH_SOCK" in commands
+
+    def test_includes_default_github_app_private_key_env(self):
+        """GitHub App private keys must not leak into shell-launched agents."""
+        commands = build_env_unset_commands()
+        assert f"unset {GITHUB_APP_PRIVATE_KEY_ENV}" in commands
+
+    def test_includes_configured_github_app_private_key_env(self, monkeypatch):
+        """Configured private_key_env names must be unset in shell sessions."""
+        monkeypatch.setenv(EXTRA_FORBIDDEN_ENV_VARS_ENV, "CUSTOM_GH_APP_PRIVATE_KEY")
+
+        commands = build_env_unset_commands()
+
+        assert "unset CUSTOM_GH_APP_PRIVATE_KEY" in commands
 
 
 class TestGitSafeEnv:

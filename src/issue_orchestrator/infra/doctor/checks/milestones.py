@@ -7,8 +7,8 @@ from typing import Any
 from ..types import Check
 from ...config import Config
 from ....adapters.github.errors import GitHubAuthError
+from ....adapters.github.auth import build_github_auth
 from ....adapters.github.http_client import GitHubHttpClient, GitHubHttpConfig
-from ....adapters.github.tokens import resolve_github_token
 from ....adapters.github.repo import get_repo_from_git, GitRepoError
 
 
@@ -47,11 +47,11 @@ def check_milestone_order(config: Config) -> list[Check]:
         )]
 
     try:
-        token = resolve_github_token(
-            configured_token=config.github_token,
-            configured_env=config.github_token_env,
-            configured_keyring_service=config.github_keyring_service,
-            configured_keyring_username=config.github_keyring_username,
+        auth = build_github_auth(
+            **config.github_auth_kwargs(),
+            repo=repo,
+            api_url=config.github_api_url,
+            timeout_seconds=float(config.github_http_timeout_seconds),
         )
     except GitHubAuthError as exc:
         return [Check(
@@ -62,9 +62,9 @@ def check_milestone_order(config: Config) -> list[Check]:
 
     client = GitHubHttpClient(GitHubHttpConfig(
         repo=repo,
-        token=token,
         base_url=config.github_api_url,
         timeout_seconds=config.github_http_timeout_seconds,
+        auth=auth,
     ))
     try:
         milestones = client.list_milestones(state="open")

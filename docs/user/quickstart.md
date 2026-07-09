@@ -19,7 +19,11 @@ Install the CLI in the `issue-orchestrator` checkout, then run the remaining com
 export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
 ```
 
-You can also rely on an existing `gh auth login` session; the orchestrator reads GitHub CLI auth from its normal auth storage. `issue-orchestrator auth store` remains the app-specific keychain fallback. Whatever source you use must be able to access the target repo. See [GitHub Permissions](github-permissions.md) for details.
+You can also rely on an existing `gh auth login` session; the orchestrator reads GitHub CLI auth from its normal auth storage. `issue-orchestrator auth store` remains the app-specific keychain fallback. Whatever source you use must be able to access the target repo. See [GitHub Auth and Permissions](github-permissions.md) for details.
+
+Personal-token auth makes orchestrator PRs appear under that user. If your repo
+requires approvals and you need to approve agent-created PRs yourself, plan for
+the GitHub App protected-branch model in [GitHub Auth and Permissions](github-permissions.md#protected-branch-mode-github-app).
 
 You also need a supported AI coding tool installed. If Claude Code, Cursor, or Codex CLI is missing, sessions will not launch.
 

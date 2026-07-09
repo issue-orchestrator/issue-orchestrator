@@ -121,7 +121,10 @@ validation:
 export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
 ```
 
-See [GitHub Permissions](github-permissions.md) for required scopes.
+See [GitHub Auth and Permissions](github-permissions.md) for required scopes.
+If your repo requires PR approvals and you need to approve orchestrator-created
+PRs yourself, a personal token is not enough: use the GitHub App
+protected-branch model instead.
 
 ### Step 4: Create the Prompt File
 

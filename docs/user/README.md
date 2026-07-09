@@ -8,7 +8,7 @@ For the full documentation index, see [docs/README.md](../README.md).
 - [Tutorial](tutorial.md) - Hands-on walkthrough
 - [Configuration](configuration.md) - Getting started with config
 - [Configuration Reference](configuration_reference.md) - Every config field
-- [GitHub Permissions](github-permissions.md) - Token setup and scopes
+- [GitHub Auth and Permissions](github-permissions.md) - Token setup, GitHub App auth, and scopes
 - [E2E Test Runner](e2e.md) - Async test execution
 - [Goal Pilot](goal_pilot.md) *(planned)* - Autonomous goal-driven orchestration
 - [VS Code Integration](vscode.md) - IDE integration via MCP

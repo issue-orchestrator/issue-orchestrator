@@ -61,7 +61,7 @@ from ..control import (
 from ..control.action_applier import ActionApplier
 from ..control.fact_gatherer import FactGatherer
 from ..control.health_gate import HealthGate
-from ..adapters.github import GitHubIssueResolver, GitHubCache
+from ..adapters.github import GitHubAuth, GitHubIssueResolver, GitHubCache, build_github_auth
 from ..adapters.github.ref_claim_adapter import GitHubRefClaimAdapter
 from ..execution.verification_service import DefaultVerificationService
 from ..ports.verification import VerificationBudget
@@ -82,12 +82,16 @@ from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
 from ..infra.repo_identity import state_dir
+from ..infra.secret_env import (
+    configure_extra_forbidden_env_vars,
+)
 from ..ports.claim_manager import ClaimManager, NullClaimManager
 from ..domain.lease_config import LeaseConfig
 
 if TYPE_CHECKING:
     from ..control.label_manager import LabelManager
     from ..infra.orchestrator import Orchestrator
+    from ..ports.attempt_store import AttemptStore
     from ..control.pr_scanner import PRScanner
     from ..control.session_restorer import SessionRestorer
     from ..control.completion_processor import CompletionProcessor
@@ -191,7 +195,17 @@ def _resolve_repo(config: Config) -> str | None:
     return repo
 
 
-def _create_github_adapter(repo: str, config: Config) -> GitHubAdapter:
+def _create_github_auth(repo: str, config: Config) -> GitHubAuth:
+    """Create the shared GitHub auth owner for API and git transport."""
+    return build_github_auth(
+        **config.github_auth_kwargs(),
+        repo=repo,
+        api_url=config.github_api_url,
+        timeout_seconds=float(config.github_http_timeout_seconds),
+    )
+
+
+def _create_github_adapter(repo: str, config: Config, auth: GitHubAuth) -> GitHubAdapter:
     """Create GitHub adapter with cache and verification service."""
     cache_ttl = float(max(0, getattr(config, "fetch_layer_network_sync_seconds", 0)))
     github_cache = GitHubCache(default_ttl=cache_ttl)
@@ -211,6 +225,7 @@ def _create_github_adapter(repo: str, config: Config) -> GitHubAdapter:
         config=config,
         cache=github_cache,
         verification_service=verification_service,
+        auth=auth,
     )
 
 
@@ -361,7 +376,7 @@ def _create_planner(
     return planner, scheduler, dependency_evaluator, label_sync
 
 
-def _create_io_adapters() -> tuple[
+def _create_io_adapters(github_auth: GitHubAuth | None = None) -> tuple[
     GitWorktreeManager,
     GitWorkingCopy,
     LocalCommandRunner,
@@ -370,13 +385,13 @@ def _create_io_adapters() -> tuple[
     """Create IO adapter instances."""
     return (
         GitWorktreeManager(),
-        GitWorkingCopy(),
+        GitWorkingCopy(git_auth=github_auth),
         LocalCommandRunner(),
         FileSystemSessionOutput(),
     )
 
 
-def create_attempt_store(config: Config):  # noqa: ANN201
+def create_attempt_store(config: Config) -> "AttemptStore":
     """Create the attempt store for this repository."""
     from ..adapters.sidecar_attempt_store import SidecarAttemptStore
 
@@ -660,6 +675,7 @@ def build_orchestrator(
 
     # Make repo root visible to terminal plugins.
     os.environ[f"{ENV_PREFIX}REPO_ROOT"] = str(config.repo_root)
+    configure_extra_forbidden_env_vars([config.github_app_private_key_env])
 
     # TODO(env-scope): if a future use-case needs a *different* Python for
     # a specific subprocess (e.g. an adapter that must invoke a target
@@ -702,7 +718,8 @@ def build_orchestrator(
 
     # Resolve repo and create GitHub adapter
     repo = _resolve_repo(config)
-    github = _create_github_adapter(repo, config) if repo else None
+    github_auth = _create_github_auth(repo, config) if repo else None
+    github = _create_github_adapter(repo, config, github_auth) if repo and github_auth else None
 
     # Set up event sinks
     events, event_hub = _setup_event_sinks(base_events, github, timeline_sink)
@@ -738,7 +755,7 @@ def build_orchestrator(
     session_manager = SessionManager(runner=runner, events=events, config=config)
 
     # Create IO adapters
-    worktree_manager, working_copy, command_runner, session_output = _create_io_adapters()
+    worktree_manager, working_copy, command_runner, session_output = _create_io_adapters(github_auth)
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
     attempt_store = create_attempt_store(config)
 
@@ -945,6 +962,9 @@ def build_orchestrator(
 
 
 def _check_github_token_scopes(config: Config, github: GitHubAdapter) -> None:
+    if getattr(github, "auth_kind", None) == "github_app":
+        logger.info("Skipping OAuth scope check for GitHub App installation auth")
+        return
     required = {scope.strip() for scope in (config.github_required_scopes or []) if scope.strip()}
     allowed = {scope.strip() for scope in (config.github_allowed_scopes or []) if scope.strip()}
     try:

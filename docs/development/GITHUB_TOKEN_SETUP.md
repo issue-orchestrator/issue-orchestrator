@@ -1,11 +1,63 @@
-# GitHub Token Setup (Developer)
+# GitHub Auth Setup (Developer)
 
-How the orchestrator resolves GitHub tokens at runtime. For creating a token and required scopes, see [GitHub Permissions (User Guide)](../user/github-permissions.md).
+How the orchestrator resolves GitHub tokens at runtime. For creating a token and required scopes, see [GitHub Auth and Permissions](../user/github-permissions.md).
 
-The system does not shell out to the GitHub CLI for token discovery, but it does read GitHub CLI auth from `hosts.yml`. There are two supported patterns:
+The system does not shell out to the GitHub CLI for token discovery, but it does read GitHub CLI auth from `hosts.yml`. There are three supported patterns:
 
 1) Global auth sources
 2) Repo-scoped auth sources declared in config
+3) GitHub App installation auth declared in config
+
+Personal-token paths make issue-orchestrator act as the token owner. That is
+acceptable for simple local use, but it conflicts with strict branch protection
+when the same human needs to approve the PR: GitHub treats the PR as
+self-authored.
+
+## GitHub App Auth
+
+For protected-branch workflows, use a GitHub App installation token. The app
+acts as `app-name[bot]`, while the operator remains the human reviewer. That
+avoids personal bypasses and keeps GitHub's required approval rule honest.
+
+Configure it under `repo.github.app`:
+
+```yaml
+repo:
+  name: "owner/repo"
+  github:
+    app:
+      client_id: "Iv23..."
+      app_id: "4250697"          # optional fallback / metadata
+      installation_id: "145305179"
+      private_key_path: "~/.config/issue-orchestrator/github-apps/bot.private-key.pem"
+```
+
+Use `private_key_env` instead of `private_key_path` when an environment secret
+manager provides the PEM contents.
+
+Runtime shape:
+
+- read app ID, installation ID, and private key path/env from config
+- generate a GitHub App JWT
+- exchange the JWT for a one-hour installation access token
+- cache and refresh the installation token before expiry
+- use one `GitHubAuth` owner for GitHub REST/GraphQL calls, doctor validation,
+  and orchestrator-owned `git push`
+- keep app credentials scrubbed from agent environments
+- validate repository access without relying on PAT OAuth scopes
+
+Self-hosted users should create their own app in the account or organization
+that owns their repos. A public shared issue-orchestrator app would require a
+hosted service that holds the private key and brokers tokens; local users must
+not share a project-owned private key.
+
+Ownership guidance:
+
+- For one owner account, create an app installable only on that account.
+- For personal and organization repos, prefer separate apps per ownership
+  boundary.
+- If one app intentionally spans accounts, it must be installable on any
+  account, and each account installation has a separate installation ID.
 
 ## Rotate an Expiring Token
 

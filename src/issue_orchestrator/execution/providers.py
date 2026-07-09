@@ -52,6 +52,11 @@ def resolve_github_token(
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
+    configured_app_client_id: str | None = None,
+    configured_app_id: str | None = None,
+    configured_app_installation_id: str | None = None,
+    configured_app_private_key_path: str | None = None,
+    configured_app_private_key_env: str | None = None,
     api_url: str = "https://api.github.com",
 ) -> str:
     """Resolve GitHub token from various sources.
@@ -82,6 +87,11 @@ def resolve_github_token(
         configured_env=configured_env,
         configured_keyring_service=configured_keyring_service,
         configured_keyring_username=configured_keyring_username,
+        configured_app_client_id=configured_app_client_id,
+        configured_app_id=configured_app_id,
+        configured_app_installation_id=configured_app_installation_id,
+        configured_app_private_key_path=configured_app_private_key_path,
+        configured_app_private_key_env=configured_app_private_key_env,
         api_url=api_url,
     )
 
@@ -92,6 +102,11 @@ def validate_github_token(
     configured_env: str | None = None,
     configured_keyring_service: str | None = None,
     configured_keyring_username: str | None = None,
+    configured_app_client_id: str | None = None,
+    configured_app_id: str | None = None,
+    configured_app_installation_id: str | None = None,
+    configured_app_private_key_path: str | None = None,
+    configured_app_private_key_env: str | None = None,
     repo: str | None = None,
     api_url: str = "https://api.github.com",
 ) -> "TokenValidationResult":
@@ -115,6 +130,11 @@ def validate_github_token(
         configured_env=configured_env,
         configured_keyring_service=configured_keyring_service,
         configured_keyring_username=configured_keyring_username,
+        configured_app_client_id=configured_app_client_id,
+        configured_app_id=configured_app_id,
+        configured_app_installation_id=configured_app_installation_id,
+        configured_app_private_key_path=configured_app_private_key_path,
+        configured_app_private_key_env=configured_app_private_key_env,
         repo=repo,
         api_url=api_url,
     )

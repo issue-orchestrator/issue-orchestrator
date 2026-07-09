@@ -25,11 +25,12 @@ from ...infra import gh_audit
 from .github_issue import GitHubIssue
 from .errors import GitHubHttpError, GitHubTransportError
 from .http_client import (
+    GitHubAuth,
     GitHubHttpClient,
     GitHubHttpConfig,
+    build_github_auth,
     classify_github_http_failure,
 )
-from .tokens import resolve_github_token
 from .repo import get_repo_from_git, GitRepoError
 from .cache import GitHubCache
 from .adapter_cache import GitHubAdapterCacheSupport
@@ -160,6 +161,7 @@ class GitHubAdapter:
         cache: GitHubCache | None = None,
         verification_service: VerificationService | None = None,
         http_client: "GitHubHttpClient | None" = None,
+        auth: GitHubAuth | None = None,
         verify_writes: bool = True,
     ):
         """Initialize the GitHub adapter.
@@ -172,6 +174,7 @@ class GitHubAdapter:
                                   The service should be injected to preserve circuit breaker state.
             http_client: GitHubHttpClient instance. If None, one is created.
                          Inject for testing to avoid real API calls.
+            auth: GitHub auth object. Inject to share cached App installation tokens.
             verify_writes: Whether to verify writes. Defaults to True.
         """
         if repo:
@@ -181,20 +184,22 @@ class GitHubAdapter:
                 self.repo = get_repo_from_git()
             except GitRepoError as exc:
                 raise GitHubHttpError(f"Failed to resolve repo: {exc}") from exc
-        auth_kwargs = config.github_auth_kwargs() if config else {}
-        token = resolve_github_token(
-            **auth_kwargs,
-            api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
-        )
         if http_client is not None:
             self._client = http_client
         else:
+            auth_kwargs = config.github_auth_kwargs() if config else {}
+            auth = auth or build_github_auth(
+                **auth_kwargs,
+                repo=self.repo,
+                api_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
+                timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
+            )
             self._client = GitHubHttpClient(
                 GitHubHttpConfig(
                     repo=self.repo,
-                    token=token,
                     base_url=getattr(config, "github_api_url", "https://api.github.com") if config else "https://api.github.com",
                     timeout_seconds=float(getattr(config, "github_http_timeout_seconds", 20.0)) if config else 20.0,
+                    auth=auth,
                 )
             )
         self._verify_writes = verify_writes
@@ -1266,9 +1271,9 @@ class GitHubAdapter:
             temp_client = GitHubHttpClient(
                 GitHubHttpConfig(
                     repo=target_repo,
-                    token=self._client.config.token,
                     base_url=self._client.config.base_url,
                     timeout_seconds=self._client.config.timeout_seconds,
+                    auth=self._client.config.auth,
                 )
             )
             try:
@@ -1435,6 +1440,10 @@ class GitHubAdapter:
 
     def get_token_scopes(self) -> list[str]:
         return self._client.get_token_scopes()
+
+    @property
+    def auth_kind(self) -> str:
+        return self._client.auth_kind
 
     def _pr_info_from_api(self, pr: dict[str, Any]) -> PRInfo:
         raw_number = pr.get("number")

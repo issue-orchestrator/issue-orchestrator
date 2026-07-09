@@ -14,7 +14,9 @@ import time
 from pathlib import Path
 
 from ..adapters.git.git_cli import GitCLI
+from ..execution import git_push_operations as git_push_ops
 from ..execution.command_runner import LocalCommandRunner
+from ..execution.git_push_operations import GitAuthEnvProvider
 from ..infra.runtime_artifacts import filter_orchestrator_untracked_planted
 from ..ports.git import Git, GitError, GitResult
 from ..ports.working_copy import (
@@ -38,8 +40,9 @@ class GitWorkingCopy:
     without making policy decisions.
     """
 
-    def __init__(self, git: Git | None = None) -> None:
+    def __init__(self, git: Git | None = None, git_auth: GitAuthEnvProvider | None = None) -> None:
         self._git = git or GitCLI(runner=LocalCommandRunner())
+        self._git_auth = git_auth
 
     def _run_git(
         self,
@@ -47,6 +50,7 @@ class GitWorkingCopy:
         args: list[str],
         check: bool = True,
         timeout_s: int | None = None,
+        env: dict[str, str] | None = None,
     ) -> GitResult:
         """Run a git command in the worktree context.
 
@@ -65,6 +69,7 @@ class GitWorkingCopy:
             args,
             check=check,
             timeout_s=timeout_s,
+            env=env,
         )
 
     def _clear_stale_remote_ref(self, worktree: Path, remote: str, branch: str) -> None:
@@ -504,65 +509,6 @@ class GitWorkingCopy:
             )
         return None
 
-    def _fetch_for_push(
-        self, worktree: Path, remote: str, branch: str
-    ) -> PushResult | None:
-        """Fetch remote refs before push, return error result if fetch fails."""
-        try:
-            fetch_result = self._run_git(
-                worktree,
-                ["fetch", remote, branch],
-                check=False,
-                timeout_s=60,
-            )
-            if fetch_result.returncode != 0:
-                stderr = fetch_result.stderr or ""
-                if "couldn't find remote ref" not in stderr:
-                    return PushResult(
-                        success=False,
-                        branch=branch,
-                        remote=remote,
-                        message=f"Failed to update tracking refs before push: {stderr}",
-                        retryable=True,
-                    )
-                self._clear_stale_remote_ref(worktree, remote, branch)
-                logger.debug("Branch %s not on remote yet (first push)", branch)
-        except Exception as e:
-            error_str = str(e)
-            if "couldn't find remote ref" in error_str:
-                self._clear_stale_remote_ref(worktree, remote, branch)
-                logger.debug("Branch %s not on remote yet (first push, from exception)", branch)
-            else:
-                return PushResult(
-                    success=False,
-                    branch=branch,
-                    remote=remote,
-                    message=f"Failed to update tracking refs before push: {e}",
-                    retryable=True,
-                )
-        return None
-
-    def _build_push_args(
-        self, remote: str, branch: str, set_upstream: bool, skip_hooks: bool
-    ) -> list[str]:
-        """Build git push command arguments."""
-        args = ["push", "--force-with-lease"]
-        if skip_hooks:
-            args.append("--no-verify")
-        if set_upstream:
-            args.extend(["-u", remote, branch])
-        else:
-            args.append(remote)
-        return args
-
-    def _determine_retryable(self, error_msg: str) -> bool:
-        """Determine if a push error is retryable."""
-        if "non-fast-forward" in error_msg or "rejected" in error_msg:
-            return False
-        if "permission denied" in error_msg.lower():
-            return False
-        return True
-
     def push(
         self,
         worktree: Path,
@@ -595,15 +541,29 @@ class GitWorkingCopy:
             )
 
         # Try to fetch the branch to update tracking refs for --force-with-lease.
-        fetch_error = self._fetch_for_push(worktree, remote, branch)
+        auth_env, auth_error = git_push_ops.push_auth_env_or_failure(
+            self._git_auth,
+            remote=remote,
+            branch=branch,
+        )
+        if auth_error:
+            return auth_error
+        fetch_error = git_push_ops.fetch_for_push(
+            self._run_git,
+            self._clear_stale_remote_ref,
+            worktree,
+            remote,
+            branch,
+            env=auth_env,
+        )
         if fetch_error:
             return fetch_error
 
-        args = self._build_push_args(remote, branch, set_upstream, skip_hooks)
+        args = git_push_ops.build_push_args(remote, branch, set_upstream, skip_hooks)
 
         start = time.monotonic()
         try:
-            _result = self._run_git(worktree, args, timeout_s=300)
+            _result = self._run_git(worktree, args, timeout_s=300, env=auth_env)
             duration = time.monotonic() - start
             logger.info(
                 "Push completed in %.2fs: branch=%s remote=%s skip_hooks=%s",
@@ -634,7 +594,7 @@ class GitWorkingCopy:
                 branch=branch,
                 remote=remote,
                 message=error_msg,
-                retryable=self._determine_retryable(error_msg),
+                retryable=git_push_ops.determine_retryable(error_msg),
             )
 
     def get_issue_number_from_branch(self, worktree: Path) -> int | None:
@@ -668,47 +628,6 @@ class GitWorkingCopy:
 
         return None
 
-    def _fetch_for_preflight(
-        self, worktree: Path, remote: str, branch: str
-    ) -> PreflightResult | None:
-        """Fetch remote refs before preflight check, return error result if fetch fails."""
-        try:
-            fetch_result = self._run_git(
-                worktree,
-                ["fetch", remote, branch],
-                check=False,
-                timeout_s=60,
-            )
-            if fetch_result.returncode != 0:
-                stderr = fetch_result.stderr or ""
-                if "couldn't find remote ref" not in stderr:
-                    return PreflightResult(
-                        would_succeed=False,
-                        error=f"Failed to update tracking refs: {stderr}",
-                        fix_hint="Network or remote issue - retry later",
-                    )
-                self._clear_stale_remote_ref(worktree, remote, branch)
-        except Exception as e:
-            error_str = str(e)
-            if "couldn't find remote ref" not in error_str:
-                return PreflightResult(
-                    would_succeed=False,
-                    error=f"Failed to update tracking refs: {e}",
-                    fix_hint="Network or remote issue - retry later",
-                )
-            self._clear_stale_remote_ref(worktree, remote, branch)
-        return None
-
-    def _get_preflight_fix_hint(self, error_msg: str) -> str | None:
-        """Determine fix hint based on preflight error message."""
-        if "stale info" in error_msg or "rejected" in error_msg:
-            return "Branch has diverged. Run: git fetch origin && git rebase origin/main"
-        if "no upstream" in error_msg.lower():
-            return "No upstream branch set. This should be handled automatically."
-        if "permission denied" in error_msg.lower() or "authentication" in error_msg.lower():
-            return "Authentication issue - contact orchestrator administrator."
-        return None
-
     def push_preflight(
         self,
         worktree: Path,
@@ -731,21 +650,34 @@ class GitWorkingCopy:
             )
 
         # Try to fetch the branch to update tracking refs for --force-with-lease.
-        fetch_error = self._fetch_for_preflight(worktree, remote, branch)
+        auth_env, auth_error = git_push_ops.preflight_auth_env_or_failure(
+            self._git_auth,
+            remote=remote,
+        )
+        if auth_error:
+            return auth_error
+        fetch_error = git_push_ops.fetch_for_preflight(
+            self._run_git,
+            self._clear_stale_remote_ref,
+            worktree,
+            remote,
+            branch,
+            env=auth_env,
+        )
         if fetch_error:
             return fetch_error
 
         args = ["push", "--dry-run", "-u", remote, branch, "--force-with-lease"]
 
         try:
-            self._run_git(worktree, args, timeout_s=60)
+            self._run_git(worktree, args, timeout_s=60, env=auth_env)
             return PreflightResult(would_succeed=True)
         except GitError as e:
             error_msg = e.result.stderr if e.result.stderr else str(e)
             return PreflightResult(
                 would_succeed=False,
                 error=error_msg,
-                fix_hint=self._get_preflight_fix_hint(error_msg),
+                fix_hint=git_push_ops.get_preflight_fix_hint(error_msg),
             )
         except Exception as e:
             error_msg = str(e)

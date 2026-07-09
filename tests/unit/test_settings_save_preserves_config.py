@@ -47,6 +47,11 @@ repo:
   github:
     token_env: MY_GH_TOKEN
     keyring_service: io-gh
+    app:
+      client_id: Iv23example
+      app_id: "4250697"
+      installation_id: "145305179"
+      private_key_path: ~/.config/issue-orchestrator/github-apps/bot.pem
     api_url: https://ghe.example.com/api/v3
     write_verify:
       enabled: true
@@ -136,6 +141,13 @@ def test_partial_save_preserves_repo_github_and_operational_sections(loaded_conf
     github = saved["repo"]["github"]
     assert github["token_env"] == "MY_GH_TOKEN"
     assert github["keyring_service"] == "io-gh"
+    assert github["app"]["client_id"] == "Iv23example"
+    assert github["app"]["app_id"] == "4250697"
+    assert github["app"]["installation_id"] == "145305179"
+    assert (
+        github["app"]["private_key_path"]
+        == "~/.config/issue-orchestrator/github-apps/bot.pem"
+    )
     assert github["api_url"] == "https://ghe.example.com/api/v3"
     assert github["write_verify"]["enabled"] is True
     assert github["rate_limit"]["min_remaining"] == 100
@@ -164,6 +176,8 @@ def test_saved_config_reloads_with_github_auth_intact(loaded_config):
     reloaded = Config.load(cfg_path)
     assert reloaded.github_token_env == "MY_GH_TOKEN"
     assert reloaded.github_keyring_service == "io-gh"
+    assert reloaded.github_app_client_id == "Iv23example"
+    assert reloaded.github_app_installation_id == "145305179"
     assert reloaded.github_required_scopes == ["repo", "read:org"]
     assert reloaded.max_concurrent_sessions == 9
 

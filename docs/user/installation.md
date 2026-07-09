@@ -53,7 +53,10 @@ Or store it in the OS keychain:
 issue-orchestrator auth store
 ```
 
-See [GitHub Permissions](github-permissions.md) for required scopes and alternative auth methods.
+See [GitHub Auth and Permissions](github-permissions.md) for required scopes
+and alternative auth methods. If your repo enforces required PR approvals and
+you need to approve agent-created PRs yourself, read the GitHub App section
+before relying on a personal token.
 
 ## Next steps
 

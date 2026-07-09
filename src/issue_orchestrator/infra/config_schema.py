@@ -180,6 +180,13 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
             "token_env": LEAF,
             "keyring_service": LEAF,
             "keyring_username": LEAF,
+            "app": _leaf_keys(
+                "client_id",
+                "app_id",
+                "installation_id",
+                "private_key_path",
+                "private_key_env",
+            ),
             "api_url": LEAF,
             "http_timeout_seconds": LEAF,
             "cache_ttl_seconds": LEAF,
