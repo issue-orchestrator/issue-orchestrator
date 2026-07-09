@@ -3,8 +3,11 @@
 repo:
   name: issue-orchestrator/issue-orchestrator
   github:
-    keyring_service: issue-orchestrator
-    keyring_username: github-token
+    app:
+      client_id: "Iv23lijSPfPiSZ4Dmgjz"
+      app_id: "4250697"
+      installation_id: "145305179"
+      private_key_path: "~/.config/issue-orchestrator/github-apps/issue-orchestrator-bot.private-key.pem"
 
 worktrees:
   base: "../"
