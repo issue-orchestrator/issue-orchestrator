@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from base64 import b64encode
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -28,6 +29,12 @@ from .tokens import (
 
 _APP_JWT_LIFETIME_SECONDS = 540
 _APP_TOKEN_REFRESH_SKEW_SECONDS = 300
+
+
+def _git_basic_auth_header(token: str) -> str:
+    credential = f"x-access-token:{token}".encode("utf-8")
+    encoded = b64encode(credential).decode("ascii")
+    return f"Authorization: Basic {encoded}"
 
 
 class GitHubAppInstallationTokenProvider:
@@ -147,9 +154,8 @@ class GitHubAuth:
         return {
             "GIT_CONFIG_COUNT": "3",
             "GIT_CONFIG_KEY_0": f"http.{base_url}.extraheader",
-            "GIT_CONFIG_VALUE_0": (
-                "Authorization: Bearer "
-                f"{self.token_provider.get_token()}"
+            "GIT_CONFIG_VALUE_0": _git_basic_auth_header(
+                self.token_provider.get_token()
             ),
             "GIT_CONFIG_KEY_1": f"remote.{remote}.url",
             "GIT_CONFIG_VALUE_1": remote_url,

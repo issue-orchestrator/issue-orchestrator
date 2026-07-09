@@ -796,7 +796,10 @@ class TestPush:
                 return {
                     "GIT_CONFIG_COUNT": "3",
                     "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-                    "GIT_CONFIG_VALUE_0": "Authorization: Bearer installation-token",
+                    "GIT_CONFIG_VALUE_0": (
+                        "Authorization: Basic "
+                        "eC1hY2Nlc3MtdG9rZW46aW5zdGFsbGF0aW9uLXRva2Vu"
+                    ),
                     "GIT_CONFIG_KEY_1": "remote.origin.url",
                     "GIT_CONFIG_VALUE_1": "https://github.com/owner/repo.git",
                     "GIT_CONFIG_KEY_2": "remote.origin.pushurl",
@@ -817,10 +820,12 @@ class TestPush:
             fetch_env = mock_run.call_args_list[1].kwargs["env"]
             push_env = mock_run.call_args_list[2].kwargs["env"]
             assert fetch_env["GIT_CONFIG_VALUE_0"] == (
-                "Authorization: Bearer installation-token"
+                "Authorization: Basic "
+                "eC1hY2Nlc3MtdG9rZW46aW5zdGFsbGF0aW9uLXRva2Vu"
             )
             assert push_env["GIT_CONFIG_VALUE_0"] == (
-                "Authorization: Bearer installation-token"
+                "Authorization: Basic "
+                "eC1hY2Nlc3MtdG9rZW46aW5zdGFsbGF0aW9uLXRva2Vu"
             )
             push_args = " ".join(mock_run.call_args_list[2].args[1])
             assert "installation-token" not in push_args
