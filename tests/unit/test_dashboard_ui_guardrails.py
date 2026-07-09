@@ -102,6 +102,46 @@ def test_toast_severity_variants_have_css_rules() -> None:
         assert re.search(rf"#toast\.{severity}\s*\{{[^}}]*background:", css, re.DOTALL)
 
 
+def test_toast_is_bottom_centered_not_corner_or_cursor_anchored() -> None:
+    """Toast placement regression guard for issue #5855.
+
+    The toast used to live in the bottom-right corner, so feedback landed far
+    from where the user was looking and read as "nothing happened". A briefly
+    considered fix was to anchor the toast to the cursor/click position. We
+    revisited that and settled on a fixed **bottom-center** placement instead
+    (paired with sticky errors/warnings). Every other toast trait is guarded
+    elsewhere, but the placement itself — the actual subject of the issue — was
+    not, so a revert to a corner anchor or a cursor-anchored rewrite would slip
+    through. Lock the resolution in here.
+    """
+    css = _read_dashboard_css_bundle()
+
+    base = _last_css_rule_body(css, "#toast")
+    # Horizontally centered against the viewport, bottom-anchored.
+    assert "left: 50%;" in base
+    assert "transform: translate(-50%" in base
+    assert "bottom:" in base
+    # No corner/edge anchor: the old bottom-right placement pinned `right:`,
+    # and a top anchor would move it away from the settled bottom placement.
+    assert "right:" not in base
+    assert "top:" not in base
+    # The visible state must keep the horizontal centering (only the vertical
+    # slide-in offset changes), so the toast never drifts off-center.
+    visible = _last_css_rule_body(css, "#toast.visible")
+    assert "transform: translate(-50%, 0)" in visible
+
+    # Placement is fixed, not derived from pointer/click coordinates. The
+    # revisited cursor-anchored approach was rejected; showToast must never
+    # read the event's mouse position to place the toast.
+    js = _read(DASHBOARD_JS)
+    show_toast = _function_body(js, "showToast")
+    for cursor_anchor in ("clientX", "clientY", "pageX", "pageY", "getBoundingClientRect"):
+        assert cursor_anchor not in show_toast, (
+            "showToast must not cursor-anchor the toast (issue #5855 settled on "
+            f"fixed bottom-center placement); found {cursor_anchor!r}"
+        )
+
+
 def test_e2e_run_history_css_contract_prevents_clipped_rows() -> None:
     """Cheap guardrail for the Run History layout contract.
 
