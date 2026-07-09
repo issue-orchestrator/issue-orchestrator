@@ -112,6 +112,7 @@ test('plugin lifecycle renderer gives validation events an inline canonical-JUni
                     steps: [{
                         event: 'validation.failed',
                         narrative: 'Validation failed',
+                        time_label: 'Jul 09, 2026, 10:55:05 AM EDT',
                         run_dir: '/tmp/run',
                         actions: [
                             { type: 'open_validation_failure', label: 'Validation Details' },
@@ -125,6 +126,9 @@ test('plugin lifecycle renderer gives validation events an inline canonical-JUni
 
     assert.match(html, /journey-step-validation/);
     assert.match(html, /<button type="button" class="journey-step-inline-toggle"/);
+    assert.match(html, /<span class="journey-time">Jul 09, 2026, 10:55:05 AM EDT<\/span>/);
+    assert.match(html, /<span class="journey-main">/);
+    assert.match(html, /<span class="journey-narrative">Validation failed<\/span>/);
     assert.match(html, /aria-expanded="false"/);
     assert.match(html, /aria-controls="shared-cycle-0-0-step-0-body"/);
     assert.match(html, /journey-step-validation-body collapsed/);

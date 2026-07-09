@@ -1130,7 +1130,7 @@ async def control_issue_detail(
     the dashboard's issue-detail endpoint. Returns the same payload shape
     so the existing renderJourneyTimeline JS works without changes.
     """
-    from ..execution.timeline_store import SqliteTimelineStore
+    from ..execution.timeline_store import read_timeline_records
     from ..infra.e2e_worktree import get_e2e_worktree_path
     from ..timeline import TimelineStream
     from ..view_models.issue_detail import build_issue_detail_view_model
@@ -1153,8 +1153,7 @@ async def control_issue_detail(
         if not db_path.exists():
             continue
         try:
-            store = SqliteTimelineStore(db_path=db_path)
-            found = store.read(issue_number, limit=5000)
+            found = read_timeline_records(db_path, issue_number, limit=5000)
             if found:
                 records = found
                 break

@@ -838,7 +838,7 @@ async def get_e2e_issue_detail(
     view: str = "user",
 ) -> IssueDetailPayload | JSONResponse:
     """Return issue detail for an ephemeral E2E issue from a specific run."""
-    from ..execution.timeline_store import SqliteTimelineStore
+    from ..execution.timeline_store import read_timeline_records
     from ..infra.e2e_db import E2EDB
     from ..infra.e2e_worktree import get_e2e_worktree_path
     from ..timeline import TimelineStream
@@ -878,8 +878,7 @@ async def get_e2e_issue_detail(
         )
 
     try:
-        worktree_store = SqliteTimelineStore(db_path=worktree_timeline)
-        all_records = worktree_store.read(issue_number, limit=2000)
+        all_records = read_timeline_records(worktree_timeline, issue_number, limit=2000)
     except Exception as exc:
         logger.exception(
             "Failed to read e2e-worktree timeline for run %d issue %d",

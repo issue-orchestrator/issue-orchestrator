@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -74,6 +76,84 @@ def test_sqlite_timeline_store_read_limit_returns_tail(tmp_path: Path) -> None:
     records = store.read(issue, limit=1)
     assert len(records) == 1
     assert records[0].event_id == "c"
+
+
+def test_sqlite_timeline_store_reuses_one_connection_across_reader_threads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from issue_orchestrator.execution import timeline_store as timeline_store_module
+
+    original_open_sqlite = timeline_store_module.open_sqlite
+    calls: list[bool | None] = []
+    calls_lock = threading.Lock()
+
+    def counting_open_sqlite(*args: object, **kwargs: object):
+        with calls_lock:
+            check_same_thread = kwargs.get("check_same_thread")
+            assert check_same_thread is None or isinstance(check_same_thread, bool)
+            calls.append(check_same_thread)
+        return original_open_sqlite(*args, **kwargs)
+
+    monkeypatch.setattr(timeline_store_module, "open_sqlite", counting_open_sqlite)
+
+    store = SqliteTimelineStore(
+        tmp_path / "timeline.sqlite",
+        config=TimelineStoreConfig(max_records=10),
+    )
+    store.append(1, TimelineRecord(event_id="one", timestamp="t1", event="e1", data={}))
+
+    barrier = threading.Barrier(8)
+
+    def read_records() -> list[str]:
+        barrier.wait(timeout=5)
+        return [record.event_id for record in store.read(1)]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _: read_records(), range(8)))
+
+    assert results == [["one"]] * 8
+    assert calls == [False]
+
+
+def test_read_timeline_records_closes_short_lived_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from issue_orchestrator.execution import timeline_store as timeline_store_module
+
+    expected = [TimelineRecord(event_id="one", timestamp="t1", event="e1", data={})]
+    instances = []
+
+    class ClosingStore:
+        def __init__(self, db_path: Path) -> None:
+            self.db_path = db_path
+            self.closed = False
+            self.read_args: tuple[int, int | None] | None = None
+            instances.append(self)
+
+        def __enter__(self) -> "ClosingStore":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            self.closed = True
+
+        def read(self, issue_number: int, limit: int | None = None) -> list[TimelineRecord]:
+            self.read_args = (issue_number, limit)
+            return expected
+
+    monkeypatch.setattr(timeline_store_module, "SqliteTimelineStore", ClosingStore)
+
+    records = timeline_store_module.read_timeline_records(
+        tmp_path / "timeline.sqlite",
+        42,
+        limit=5,
+    )
+
+    assert records == expected
+    assert len(instances) == 1
+    assert instances[0].read_args == (42, 5)
+    assert instances[0].closed is True
 
 
 def test_sqlite_timeline_store_trims_total_records_across_issues(
