@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from base64 import b64decode
+
 import httpx
 
 import json
@@ -277,7 +279,12 @@ def test_github_auth_builds_git_env_overrides_without_token_in_remote() -> None:
 
     assert env is not None
     assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
-    assert env["GIT_CONFIG_VALUE_0"] == "Authorization: Bearer installation-token"
+    header = env["GIT_CONFIG_VALUE_0"]
+    assert header.startswith("Authorization: Basic ")
+    encoded_credential = header.removeprefix("Authorization: Basic ")
+    assert b64decode(encoded_credential).decode("utf-8") == (
+        "x-access-token:installation-token"
+    )
     assert env["GIT_CONFIG_VALUE_1"] == "https://github.com/owner/repo.git"
     assert env["GIT_CONFIG_VALUE_2"] == "https://github.com/owner/repo.git"
     assert "installation-token" not in env["GIT_CONFIG_VALUE_1"]
