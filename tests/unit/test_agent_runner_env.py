@@ -15,9 +15,16 @@ that relies on them.
 
 from __future__ import annotations
 
+import pytest
+
 from issue_orchestrator.execution.agent_runner_env import (
     ALWAYS_PASSTHROUGH_ENV_VARS,
     build_filtered_env,
+)
+from issue_orchestrator.infra.secret_env import (
+    EXTRA_FORBIDDEN_ENV_VARS_ENV,
+    GITHUB_APP_PRIVATE_KEY_ENV,
+    configure_extra_forbidden_env_vars,
 )
 
 
@@ -109,3 +116,42 @@ class TestAlwaysPassthroughInvariant:
             include_git_safe=False,
         )
         assert env.get("PYTHONPATH") == "/snapshot/src"
+
+    def test_allowlist_mode_cannot_reintroduce_scrubbed_secret(self) -> None:
+        """Allowlist mode is not allowed to override credential scrubbing."""
+        env = build_filtered_env(
+            base_env={GITHUB_APP_PRIVATE_KEY_ENV: "private-key", "SAFE": "ok"},
+            passthrough_vars=[GITHUB_APP_PRIVATE_KEY_ENV, "SAFE"],
+            include_git_safe=False,
+        )
+
+        assert GITHUB_APP_PRIVATE_KEY_ENV not in env
+        assert env["SAFE"] == "ok"
+
+
+class TestSecretEnvScrubbing:
+    """Agent subprocesses must not inherit orchestrator-owned app secrets."""
+
+    def test_default_github_app_private_key_env_is_scrubbed(self) -> None:
+        env = build_filtered_env(
+            base_env={GITHUB_APP_PRIVATE_KEY_ENV: "private-key", "SAFE": "ok"},
+            include_git_safe=False,
+        )
+
+        assert GITHUB_APP_PRIVATE_KEY_ENV not in env
+        assert env["SAFE"] == "ok"
+
+    def test_configured_github_app_private_key_env_is_scrubbed(self, monkeypatch) -> None:
+        monkeypatch.setenv(EXTRA_FORBIDDEN_ENV_VARS_ENV, "CUSTOM_GH_APP_PRIVATE_KEY")
+
+        env = build_filtered_env(
+            base_env={"CUSTOM_GH_APP_PRIVATE_KEY": "private-key", "SAFE": "ok"},
+            include_git_safe=False,
+        )
+
+        assert "CUSTOM_GH_APP_PRIVATE_KEY" not in env
+        assert env["SAFE"] == "ok"
+
+    def test_configured_secret_env_names_must_be_shell_safe(self) -> None:
+        with pytest.raises(ValueError, match="Invalid environment variable name"):
+            configure_extra_forbidden_env_vars(["BAD;rm"])

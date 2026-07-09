@@ -22,6 +22,12 @@ issue #6024.
 import os
 from typing import Mapping
 
+from ..infra.secret_env import (
+    EXTRA_FORBIDDEN_ENV_VARS_ENV,
+    GITHUB_APP_PRIVATE_KEY_ENV,
+    forbidden_agent_env_vars,
+)
+
 # Environment variables that should be scrubbed before agent sessions.
 # These are credentials that could allow agents to bypass guardrails.
 DEFAULT_FORBIDDEN_ENV_VARS: list[str] = [
@@ -33,6 +39,7 @@ DEFAULT_FORBIDDEN_ENV_VARS: list[str] = [
     # GitHub App credentials
     "GH_APP_ID",
     "GH_APP_PRIVATE_KEY",
+    GITHUB_APP_PRIVATE_KEY_ENV,
     "GH_INSTALLATION_ID",
     # OAuth tokens
     "GITHUB_OAUTH_TOKEN",
@@ -55,6 +62,7 @@ DEFAULT_FORBIDDEN_ENV_VARS: list[str] = [
     # same user with the real HOME (#6024). Real separation needs
     # OS-level isolation.
     "ISSUE_ORCHESTRATOR_API_TOKEN",
+    EXTRA_FORBIDDEN_ENV_VARS_ENV,
 ]
 
 # Environment variables to set for safe git behavior
@@ -138,8 +146,10 @@ def build_filtered_env(
 
     if scrub_vars is None:
         scrub_vars = DEFAULT_FORBIDDEN_ENV_VARS
+    scrub_vars = forbidden_agent_env_vars(scrub_vars)
 
     # Build the base environment
+    scrub_set = set(scrub_vars)
     if passthrough_vars is not None:
         # Allowlist mode: only specified vars pass through, PLUS the
         # always-passthrough set (snapshot PYTHONPATH, ISSUE_ORCHESTRATOR_PYTHON, …).
@@ -147,10 +157,9 @@ def build_filtered_env(
         # CC-launch-time invariants that must not be lost to an
         # allowlist a caller forgot to update.
         allowed = set(passthrough_vars) | set(ALWAYS_PASSTHROUGH_ENV_VARS)
-        env = {k: v for k, v in base_env.items() if k in allowed}
+        env = {k: v for k, v in base_env.items() if k in allowed and k not in scrub_set}
     else:
         # Denylist mode: all vars pass except scrubbed ones
-        scrub_set = set(scrub_vars)
         env = {k: v for k, v in base_env.items() if k not in scrub_set}
 
     # Apply git-safe settings
@@ -170,7 +179,7 @@ def get_forbidden_env_vars() -> list[str]:
     Returns:
         Copy of the default forbidden env vars list
     """
-    return DEFAULT_FORBIDDEN_ENV_VARS.copy()
+    return forbidden_agent_env_vars(DEFAULT_FORBIDDEN_ENV_VARS)
 
 
 def verify_env_scrubbed(
@@ -189,7 +198,7 @@ def verify_env_scrubbed(
         Dict mapping variable names to whether they are absent (True = good)
     """
     if forbidden is None:
-        forbidden = DEFAULT_FORBIDDEN_ENV_VARS
+        forbidden = get_forbidden_env_vars()
 
     return {var: var not in env for var in forbidden}
 

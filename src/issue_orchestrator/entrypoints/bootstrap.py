@@ -82,6 +82,9 @@ from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
 from ..infra.repo_identity import state_dir
+from ..infra.secret_env import (
+    configure_extra_forbidden_env_vars,
+)
 from ..ports.claim_manager import ClaimManager, NullClaimManager
 from ..domain.lease_config import LeaseConfig
 
@@ -672,6 +675,7 @@ def build_orchestrator(
 
     # Make repo root visible to terminal plugins.
     os.environ[f"{ENV_PREFIX}REPO_ROOT"] = str(config.repo_root)
+    configure_extra_forbidden_env_vars([config.github_app_private_key_env])
 
     # TODO(env-scope): if a future use-case needs a *different* Python for
     # a specific subprocess (e.g. an adapter that must invoke a target

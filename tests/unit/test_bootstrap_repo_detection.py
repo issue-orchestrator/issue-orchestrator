@@ -17,6 +17,7 @@ from issue_orchestrator.entrypoints.bootstrap import (
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
+from issue_orchestrator.infra.secret_env import EXTRA_FORBIDDEN_ENV_VARS_ENV
 from issue_orchestrator.ports import NullEventSink, NullSessionRunner
 from issue_orchestrator.ports.claim_manager import NullClaimManager
 
@@ -795,6 +796,30 @@ class TestBuildOrchestrator:
                 os.environ.pop(f"{ENV_PREFIX}REPO_ROOT", None)
             else:
                 os.environ[f"{ENV_PREFIX}REPO_ROOT"] = original_env
+
+    def test_build_orchestrator_registers_github_app_secret_env(
+        self,
+        minimal_config: Config,
+    ) -> None:
+        """Configured GitHub App private-key env names feed agent scrubbers."""
+        original_env = os.environ.get(EXTRA_FORBIDDEN_ENV_VARS_ENV)
+        minimal_config.github_app_private_key_env = "CUSTOM_GH_APP_PRIVATE_KEY"
+
+        try:
+            with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+                with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
+                    with patch("issue_orchestrator.entrypoints.bootstrap.build_github_auth"):
+                        with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter"):
+                            with patch("issue_orchestrator.adapters.github.fresh_issue_reader.GitHubFreshIssueReader"):
+                                with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
+                                    build_orchestrator(minimal_config)
+
+            assert os.environ.get(EXTRA_FORBIDDEN_ENV_VARS_ENV) == "CUSTOM_GH_APP_PRIVATE_KEY"
+        finally:
+            if original_env is None:
+                os.environ.pop(EXTRA_FORBIDDEN_ENV_VARS_ENV, None)
+            else:
+                os.environ[EXTRA_FORBIDDEN_ENV_VARS_ENV] = original_env
 
     def test_build_orchestrator_enables_sse_by_default(self, minimal_config: Config) -> None:
         """Registers SSE plugin when enable_sse=True (default)."""

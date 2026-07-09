@@ -15,6 +15,12 @@ import shlex
 from pathlib import Path
 from typing import Mapping
 
+from ..infra.secret_env import (
+    EXTRA_FORBIDDEN_ENV_VARS_ENV,
+    GITHUB_APP_PRIVATE_KEY_ENV,
+    forbidden_agent_env_vars,
+)
+
 logger = logging.getLogger(__name__)
 
 # Environment variables that should be scrubbed before agent sessions
@@ -29,6 +35,7 @@ FORBIDDEN_ENV_VARS = [
     # GitHub App credentials
     "GH_APP_ID",
     "GH_APP_PRIVATE_KEY",
+    GITHUB_APP_PRIVATE_KEY_ENV,
     "GH_INSTALLATION_ID",
     # OAuth tokens
     "GITHUB_OAUTH_TOKEN",
@@ -45,6 +52,7 @@ FORBIDDEN_ENV_VARS = [
     "CLAUDE_CODE_ENTRYPOINT",
     # Orchestrator internals - agents must not inherit these
     "ORCHESTRATOR_WORKTREE_BASE_BRANCH",
+    EXTRA_FORBIDDEN_ENV_VARS_ENV,
 ]
 
 # Environment variables to set for safe git behavior
@@ -194,7 +202,7 @@ def get_forbidden_env_vars() -> list[str]:
     Returns:
         List of environment variable names to unset
     """
-    return FORBIDDEN_ENV_VARS.copy()
+    return forbidden_agent_env_vars(FORBIDDEN_ENV_VARS)
 
 
 def build_env_unset_commands() -> list[str]:
@@ -203,7 +211,7 @@ def build_env_unset_commands() -> list[str]:
     Returns:
         List of shell 'unset' commands
     """
-    return [f"unset {var}" for var in FORBIDDEN_ENV_VARS]
+    return [f"unset {var}" for var in get_forbidden_env_vars()]
 
 
 def build_git_safe_commands() -> list[str]:
@@ -262,8 +270,9 @@ def build_isolation_prefix(
     commands = []
 
     if scrub_env:
-        commands.extend(build_env_unset_commands())
-        logger.debug("Added env scrubbing commands for %d variables", len(FORBIDDEN_ENV_VARS))
+        unset_commands = build_env_unset_commands()
+        commands.extend(unset_commands)
+        logger.debug("Added env scrubbing commands for %d variables", len(unset_commands))
 
     if isolate_home and isolation_mode == "standard":
         commands.append(build_home_isolation_command(worktree))
@@ -334,7 +343,7 @@ def verify_env_scrubbed() -> dict[str, bool]:
     import os
 
     results = {}
-    for var in FORBIDDEN_ENV_VARS:
+    for var in get_forbidden_env_vars():
         results[var] = os.environ.get(var) is None
     return results
 
