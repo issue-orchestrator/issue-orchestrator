@@ -82,6 +82,11 @@
         "startupComplete": {
           "title": "Startupcomplete",
           "type": "boolean"
+        },
+        "validationConfigured": {
+          "default": true,
+          "title": "Validationconfigured",
+          "type": "boolean"
         }
       },
       "required": [

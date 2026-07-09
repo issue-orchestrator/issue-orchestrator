@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from issue_orchestrator.contracts.public import (
+    DashboardDataContract,
     TimelineEventContract,
     TimelineIssueContract,
     generate_public_schemas,
@@ -27,6 +28,18 @@ def test_public_contract_schemas_are_current():
 
     for name, schema in generated.items():
         assert file_map[name] == schema
+
+
+def test_validation_configured_is_a_declared_dashboard_data_field():
+    # Issue #4109: the dashboard's "no validation configured" warning rides on
+    # ``dashboard_data.validationConfigured``. It must be a *declared* field on
+    # the public contract (not silently tolerated as a permissive extra) so the
+    # UI/SSE consumers can rely on it, and it must appear in the durable schema.
+    assert "validationConfigured" in DashboardDataContract.model_fields
+
+    schema = generate_public_schemas()["dashboard.view_model"]
+    data_schema = schema["$defs"]["DashboardDataContract"]
+    assert "validationConfigured" in data_schema["properties"]
 
 
 def test_role_feedback_response_type_is_a_declared_public_timeline_field():

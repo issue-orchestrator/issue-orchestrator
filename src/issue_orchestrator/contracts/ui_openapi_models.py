@@ -115,6 +115,7 @@ class DashboardDataPayload(BaseModel):
     repo: str
     repoRoot: str
     startupComplete: bool
+    validationConfigured: bool | None = None
 
 class DashboardIterationPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

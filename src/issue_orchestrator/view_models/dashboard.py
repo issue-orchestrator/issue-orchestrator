@@ -75,6 +75,7 @@ class DashboardViewModel:
     config_name: str
     github_owner: str
     github_repo: str
+    validation_configured: bool
 
     queue_page: int
     queue_total_pages: int
@@ -121,6 +122,7 @@ class DashboardViewModel:
             "repo_root": self.repo_root,
             "github_owner": self.github_owner,
             "github_repo": self.github_repo,
+            "validation_configured": self.validation_configured,
             "queue_page": self.queue_page,
             "queue_total_pages": self.queue_total_pages,
             "queue_total": self.queue_total,
@@ -148,6 +150,7 @@ class DashboardViewModel:
             "configName": self.config_name,
             "githubOwner": self.github_owner,
             "githubRepo": self.github_repo,
+            "validationConfigured": self.validation_configured,
             "e2eLastRun": self.e2e_status.get("last_run"),
             "e2eNeedsAttention": bool(self.e2e_status.get("needs_attention")),
             "e2eFailedTests": self.e2e_status.get("failed_tests") or [],
@@ -187,6 +190,8 @@ class DashboardViewModel:
             "repo_root": self.repo_root,
             "github_owner": self.github_owner,
             "github_repo": self.github_repo,
+            # validation_configured is carried inside ``dashboard_data`` (the
+            # typed DashboardDataContract), not as a top-level view-model key.
             "queue_page": self.queue_page,
             "queue_total_pages": self.queue_total_pages,
             "queue_total": self.queue_total,
@@ -1321,6 +1326,10 @@ def build_dashboard_view_model(
     config_name = config.config_path.name if config and config.config_path else ""
     github_owner = repo.split("/")[0] if repo and "/" in repo else ""
     github_repo = repo.split("/")[1] if repo and "/" in repo else ""
+    # When there is no config at all (pre-bootstrap render) we cannot know
+    # whether validation is configured, so suppress the warning rather than
+    # cry wolf. Once config is loaded the warning tracks the real setting.
+    validation_configured = config.is_validation_enabled() if config else True
 
     queue_refresh_seconds = config.queue_refresh_seconds if config else 600
     queue_last_refresh_age = (
@@ -1419,6 +1428,7 @@ def build_dashboard_view_model(
         config_name=config_name,
         github_owner=github_owner,
         github_repo=github_repo,
+        validation_configured=validation_configured,
         queue_page=queue_page,
         queue_total_pages=queue_total_pages,
         queue_total=queue_total,

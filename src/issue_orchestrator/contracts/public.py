@@ -29,6 +29,9 @@ class DashboardDataContract(ContractBase):
     githubRepo: Optional[str]
     e2eLastRun: Optional[dict[str, Any]] = None
     agents: list[str]
+    # False when no validation command is configured, so the UI can warn that
+    # agent output is pushed without any automated safety net (issue #4109).
+    validationConfigured: bool = True
 
 
 class DashboardViewModelContract(ContractBase):

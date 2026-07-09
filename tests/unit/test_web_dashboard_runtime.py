@@ -197,6 +197,41 @@ class TestDashboardStartupStatus:
             set_orchestrator(None)
 
 
+class TestDashboardValidationWarning:
+    """Issue #4109: persistent warning when no validation is configured."""
+
+    def test_dashboard_shows_warning_when_validation_missing(self):
+        mock_orch = create_mock_orchestrator()
+        # create_mock_orchestrator() builds a Config() with no validation cmd.
+        assert mock_orch.config.is_validation_enabled() is False
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/")
+
+            assert response.status_code == 200
+            assert "validation-warning-banner" in response.text
+            assert "No validation configured" in response.text
+        finally:
+            set_orchestrator(None)
+
+    def test_dashboard_hides_warning_when_validation_configured(self):
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.validation.quick.cmd = "make validate"
+        assert mock_orch.config.is_validation_enabled() is True
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/")
+
+            assert response.status_code == 200
+            assert "validation-warning-banner" not in response.text
+        finally:
+            set_orchestrator(None)
+
+
 class TestDashboardWithPendingReviews:
     """Test dashboard displays pending reviews."""
 

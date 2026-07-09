@@ -114,6 +114,41 @@ html[data-embedded="true"] body > .container > header {
     font-weight: 600;
 }
 
+/* Persistent "no validation configured" warning (issue #4109). Always shown
+   when validation is missing; not dismissable so it can't be forgotten. Uses
+   the amber caution palette plus an icon so color is never the only signal. */
+.validation-warning-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--status-paused-border);
+    background: var(--status-paused-bg);
+    color: var(--status-paused-text);
+    font-size: 13px;
+    line-height: 1.4;
+}
+.validation-warning-icon {
+    flex: 0 0 auto;
+    font-size: 15px;
+    line-height: 1.3;
+}
+.validation-warning-text strong {
+    font-weight: 700;
+}
+.validation-warning-banner a {
+    color: inherit;
+    font-weight: 600;
+    text-decoration: underline;
+}
+.validation-warning-banner a:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+}
+
 body.column-focus-mode {
     height: 100vh;
     overflow: hidden;

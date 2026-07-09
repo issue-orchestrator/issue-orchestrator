@@ -210,6 +210,30 @@ def test_blocked_bulk_buttons_default_disabled_in_template() -> None:
     assert re.search(r'onclick="bulkClearViewed\(\)"\s+disabled', html)
 
 
+def test_validation_warning_banner_is_gated_and_accessible() -> None:
+    # Issue #4109: a persistent warning must render when validation is not
+    # configured. It is gated on ``validation_configured`` (so it disappears
+    # when validation is set), carries an alert role for assistive tech, and
+    # pairs an icon with text so colour is never the only status signal.
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "{% if not validation_configured %}" in html
+    match = re.search(r"<div[^>]*\bclass=\"validation-warning-banner\"[^>]*>", html)
+    assert match is not None
+    banner_tag = match.group(0)
+    assert 'role="alert"' in banner_tag
+    assert "validation-warning-icon" in html
+    assert "No validation configured" in html
+
+
+def test_validation_warning_banner_has_css_in_both_themes() -> None:
+    # Colour cannot be the only signal and the banner must be styled (not an
+    # unstyled block). The amber caution palette resolves in light and dark
+    # via themed custom properties, so a single rule set covers both themes.
+    css = _read_dashboard_css_bundle()
+    assert ".validation-warning-banner" in css
+    assert ".validation-warning-icon" in css
+
+
 def test_issue_detail_status_is_live_region() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     match = re.search(r"<div[^>]*\bid=\"issueDetailStatus\"[^>]*>", html)

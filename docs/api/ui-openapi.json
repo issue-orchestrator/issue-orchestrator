@@ -574,7 +574,8 @@
           "githubOwner": {"type": "string"},
           "githubRepo": {"type": "string"},
           "e2eLastRun": {"type": ["object", "null"], "additionalProperties": true},
-          "agents": {"type": "array", "items": {"type": "string"}}
+          "agents": {"type": "array", "items": {"type": "string"}},
+          "validationConfigured": {"type": "boolean"}
         }
       },
       "DashboardViewModelPayload": {
