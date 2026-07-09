@@ -686,12 +686,15 @@ class TestCreateWorktree:
             "--",
             "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
         ] in skip_worktree_calls
-        assert ".venv" in exclude_path.read_text()
-        assert ".claude/settings.json" in exclude_path.read_text()
-        assert ".issue-orchestrator/session-latest.json" in exclude_path.read_text()
-        assert ".issue-orchestrator/sessions" in exclude_path.read_text()
-        assert ".issue-orchestrator/worktree-id" in exclude_path.read_text()
-        assert "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py" in exclude_path.read_text()
+        exclude_text = exclude_path.read_text()
+        assert ".agent-done-marker" in exclude_text
+        assert ".venv" in exclude_text
+        assert ".claude/settings.json" in exclude_text
+        assert ".issue-orchestrator/session-latest.json" in exclude_text
+        assert ".issue-orchestrator/sessions" in exclude_text
+        assert ".issue-orchestrator/validation" in exclude_text
+        assert ".issue-orchestrator/worktree-id" in exclude_text
+        assert "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py" in exclude_text
 
     @patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
@@ -1394,6 +1397,7 @@ class TestCanRemoveWithoutUserChanges:
         result = can_remove_without_user_changes(worktree_path)
 
         assert result is True
+        assert "--untracked-files=all" in mock_run.call_args[0][0]
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_runtime_only_untracked_paths_can_be_forced(self, mock_run, tmp_path):
@@ -1403,8 +1407,10 @@ class TestCanRemoveWithoutUserChanges:
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout=(
+                "?? .agent-done-marker\n"
                 "?? .issue-orchestrator/persistent-pairs/\n"
                 "?? .issue-orchestrator/review-response.json\n"
+                "?? .issue-orchestrator/validation/abc123.json\n"
                 "?? .githooks/pre-push.log\n"
                 "?? packages/vscode/node_modules\n"
             ),
@@ -1438,6 +1444,24 @@ class TestCanRemoveWithoutUserChanges:
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="?? notes.md\n",
+            stderr="",
+        )
+
+        result = can_remove_without_user_changes(worktree_path)
+
+        assert result is False
+
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_path_prefix_false_positives_cannot_be_forced(self, mock_run, tmp_path):
+        """Runtime roots must match exact paths or path-boundary subpaths."""
+        worktree_path = tmp_path / "worktree-123"
+        worktree_path.mkdir()
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                "?? .issue-orchestrator/stateful-notes\n"
+                "?? .issue-orchestrator/review-report.md.backup\n"
+            ),
             stderr="",
         )
 

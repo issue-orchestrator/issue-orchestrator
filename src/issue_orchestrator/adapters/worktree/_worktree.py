@@ -9,6 +9,7 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from ...infra.runtime_artifacts import is_cleanup_safe_untracked_path
 from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
@@ -1422,33 +1423,6 @@ def has_uncommitted_changes(worktree_path: Path) -> bool:
         raise WorktreeError(f"Error checking uncommitted changes: {e}")
 
 
-_DISCARDABLE_UNTRACKED_PATHS = frozenset({
-    ".githooks/pre-push.log",
-    ".mcp.json",
-})
-
-_DISCARDABLE_UNTRACKED_PREFIXES = (
-    ".issue-orchestrator/e2e-results",
-    ".issue-orchestrator/followups-",
-    ".issue-orchestrator/persistent-pairs",
-    ".issue-orchestrator/review-exchange-turn-prompt.md",
-    ".issue-orchestrator/review-feedback",
-    ".issue-orchestrator/review-report.md",
-    ".issue-orchestrator/review-response.json",
-    ".issue-orchestrator/sessions",
-    ".issue-orchestrator/state",
-)
-
-
-def _is_discardable_untracked_path(path: str) -> bool:
-    normalized = path.removeprefix("./").rstrip("/")
-    if normalized in _DISCARDABLE_UNTRACKED_PATHS:
-        return True
-    if normalized == ".venv" or normalized.endswith("/node_modules"):
-        return True
-    return normalized.startswith(_DISCARDABLE_UNTRACKED_PREFIXES)
-
-
 def can_remove_without_user_changes(worktree_path: Path) -> bool:
     """Return true when forced removal would not discard user source changes."""
     worktree_path = Path(worktree_path)
@@ -1459,7 +1433,7 @@ def can_remove_without_user_changes(worktree_path: Path) -> bool:
     try:
         result = _git_run(
             worktree_path,
-            ["status", "--porcelain"],
+            ["status", "--porcelain", "--untracked-files=all"],
             check=False,
         )
 
@@ -1470,7 +1444,7 @@ def can_remove_without_user_changes(worktree_path: Path) -> bool:
 
         for line in result.stdout.splitlines():
             if line.startswith("?? "):
-                if not _is_discardable_untracked_path(line[3:]):
+                if not is_cleanup_safe_untracked_path(line[3:], worktree_path):
                     return False
                 continue
             return False

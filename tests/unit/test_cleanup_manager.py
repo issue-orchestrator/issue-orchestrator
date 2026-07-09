@@ -628,10 +628,10 @@ class TestRecoverOrphanedCleanups:
 
         callback.assert_called_once_with("Checking for orphaned cleanups...")
 
-    def test_handles_worktree_removal_failure_during_recovery(
+    def test_does_not_count_worktree_removal_failure_during_recovery(
         self, cleanup_manager, cleanup_manager_bundle, mock_config, mock_repository_host, mock_worktree_manager, tmp_path, caplog
     ):
-        """Worktree removal failure is logged but doesn't stop recovery."""
+        """Worktree removal failure is logged and not counted as cleaned."""
         mock_config.triage_review_agent = "agent:triage"
         mock_config.agents = {"agent:triage": MagicMock()}
 
@@ -651,8 +651,7 @@ class TestRecoverOrphanedCleanups:
         with caplog.at_level(logging.WARNING):
             result = cleanup_manager.recover_orphaned_cleanups()
 
-        # Still counted as cleaned (attempted)
-        assert result == 1
+        assert result == 0
         assert "Failed to remove worktree" in caplog.text
 
     def test_skips_prs_without_extractable_issue_number(

@@ -36,6 +36,7 @@ CLAUDE_SETTINGS_FOR_AGENTS = {
 
 ALLOW_NO_VERIFY_DRY_RUN_PATH = Path(".issue-orchestrator") / "allow-no-verify-dry-run"
 WORKTREE_LOCAL_EXCLUDE_PATHS: tuple[Path, ...] = (
+    Path(".agent-done-marker"),
     Path(".venv"),
     Path(".claude/settings.json"),
     Path(".claude/scheduled_tasks.lock"),
@@ -52,6 +53,7 @@ WORKTREE_LOCAL_EXCLUDE_PATHS: tuple[Path, ...] = (
     Path(".issue-orchestrator/timeline.sqlite-shm"),
     Path(".issue-orchestrator/timeline.sqlite-wal"),
     Path(".issue-orchestrator/tool-homes"),
+    Path(".issue-orchestrator/validation"),
 )
 WORKTREE_TRACKED_RUNTIME_PATHS: tuple[Path, ...] = (
     Path(".claude/settings.json"),

@@ -339,6 +339,8 @@ class CleanupManager:
                     issue_number=issue_number,
                 ):
                     logger.info(f"[CLEANUP] Removed orphaned worktree for #{issue_number}")
+                else:
+                    return False
 
             return True  # Found the worktree, no need to check other agents
 
