@@ -19,6 +19,35 @@ from issue_orchestrator.timeline import (
 )
 
 
+def _patch_closing_timeline_store(monkeypatch, reads):
+    from issue_orchestrator.execution import timeline_store as timeline_store_module
+
+    planned_reads = list(reads)
+    instances = []
+
+    class ClosingTimelineStore:
+        def __init__(self, db_path):
+            self.db_path = db_path
+            self.closed = False
+            instances.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.closed = True
+
+        def read(self, issue_number, limit=None):
+            assert planned_reads, "Unexpected timeline read"
+            result = planned_reads.pop(0)
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+    monkeypatch.setattr(timeline_store_module, "SqliteTimelineStore", ClosingTimelineStore)
+    return instances
+
+
 class TestE2EPhaseDerivation:
     """E2E events map to domain-specific phases through the shared pipeline."""
 
@@ -2236,6 +2265,64 @@ class TestE2ETimelineControlEndpoint:
         assert payload["lifecycle"]["kind"] == "e2e_suite"
         assert payload["lifecycle"]["runs"][0]["e2e_run"]["tests"][0]["kind"] == "missing_e2e_test_evidence"
 
+    def test_e2e_run_timeline_closes_transient_store_on_success(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """E2E timeline endpoint closes its short-lived timeline store."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        timeline_db = tmp_path / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        timeline_db.parent.mkdir(parents=True)
+        timeline_db.touch()
+        instances = _patch_closing_timeline_store(
+            monkeypatch,
+            [[
+                TimelineRecord(
+                    event_id="run-started",
+                    timestamp="2026-01-01T00:00:00Z",
+                    event="e2e.run_started",
+                    data={},
+                    source_event="e2e.run_started",
+                )
+            ]],
+        )
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        assert [instance.closed for instance in instances] == [True]
+
+    def test_e2e_run_timeline_closes_transient_store_on_empty(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """E2E timeline endpoint closes its store before returning empty payloads."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        timeline_db = tmp_path / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        timeline_db.parent.mkdir(parents=True)
+        timeline_db.touch()
+        instances = _patch_closing_timeline_store(monkeypatch, [[]])
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/control/e2e/run/1/timeline",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["events"] == []
+        assert [instance.closed for instance in instances] == [True]
+
     def test_worktree_fallback_attaches_issue_numbers_end_to_end(self, tmp_path):
         """Full endpoint repro through the worktree-fallback agent-events route.
 
@@ -2440,6 +2527,80 @@ class TestControlIssueDetailEndpoint:
             params={"repo_root": str(tmp_path)},
         )
         assert response.status_code == 404
+
+    def test_control_issue_detail_closes_transient_store_on_success(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Issue-detail endpoint closes a short-lived store after a successful read."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.control_api import control_app
+
+        timeline_db = tmp_path / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        timeline_db.parent.mkdir(parents=True)
+        timeline_db.touch()
+        instances = _patch_closing_timeline_store(
+            monkeypatch,
+            [[
+                TimelineRecord(
+                    event_id="session-completed",
+                    timestamp="2026-01-01T00:00:00Z",
+                    event="session.completed",
+                    data={
+                        "logical_run": 1,
+                        "logical_cycle": 1,
+                        "logical_phase": "coding",
+                        "timeline_schema_version": 4,
+                        "views": ["user", "ops", "debug"],
+                    },
+                    source_event="session.completed",
+                )
+            ]],
+        )
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/api/issue-detail/42",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        assert [instance.closed for instance in instances] == [True]
+
+    def test_control_issue_detail_closes_transient_stores_on_exception_and_empty(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Issue-detail closes each candidate store when reads raise or return empty."""
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints.control_api import control_app
+        from issue_orchestrator.infra.e2e_worktree import get_e2e_worktree_path
+
+        base_db = tmp_path / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        worktree_db = (
+            get_e2e_worktree_path(tmp_path)
+            / ".issue-orchestrator"
+            / "state"
+            / "timeline.sqlite"
+        )
+        for db_path in (base_db, worktree_db):
+            db_path.parent.mkdir(parents=True)
+            db_path.touch()
+        instances = _patch_closing_timeline_store(
+            monkeypatch,
+            [RuntimeError("boom"), []],
+        )
+
+        client = TestClient(control_app)
+        response = client.get(
+            "/api/issue-detail/42",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 404
+        assert [instance.closed for instance in instances] == [True, True]
 
 
 class TestPruneWorktreeArtifacts:

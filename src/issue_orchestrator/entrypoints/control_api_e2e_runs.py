@@ -388,11 +388,10 @@ async def e2e_run_timeline_endpoint(
         )
 
     try:
-        from ..execution.timeline_store import SqliteTimelineStore
+        from ..execution.timeline_store import read_timeline_records
 
-        store = SqliteTimelineStore(db_path=timeline_db_path)
         store_key = TimelineKey.for_e2e_run(run_id).to_store_key()
-        records = store.read(store_key)
+        records = read_timeline_records(timeline_db_path, store_key)
 
         if not records:
             return JSONResponse(

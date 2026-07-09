@@ -79,7 +79,8 @@ class SqliteTimelineStore(TimelineStore):
         self._db_path = db_path
         self._config = config or TimelineStoreConfig()
         self._instance_id = instance_id
-        self._local = threading.local()
+        self._connection: sqlite3.Connection | None = None
+        self._connection_lock = threading.RLock()
         self._write_lock = threading.Lock()
         self._db_inode: int | None = None
         self.initialize()
@@ -94,9 +95,10 @@ class SqliteTimelineStore(TimelineStore):
 
     def initialize(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = self._get_connection()
-        self._ensure_schema(conn)
-        self._db_inode = self._capture_db_inode()
+        with self._connection_lock:
+            conn = self._get_connection()
+            self._ensure_schema(conn)
+            self._db_inode = self._capture_db_inode()
         logger.info(
             "Timeline store initialized: db=%s inode=%s pid=%d",
             self._db_path,
@@ -105,15 +107,32 @@ class SqliteTimelineStore(TimelineStore):
         )
 
     def _get_connection(self) -> sqlite3.Connection:
-        self._assert_db_file_unchanged()
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = open_sqlite(self._db_path, row_factory=sqlite3.Row)
-            self._ensure_schema(conn)
-            self._local.conn = conn
-            if self._db_inode is None:
-                self._db_inode = self._capture_db_inode()
-        return conn
+        with self._connection_lock:
+            self._assert_db_file_unchanged()
+            if self._connection is None:
+                self._connection = open_sqlite(
+                    self._db_path,
+                    row_factory=sqlite3.Row,
+                    check_same_thread=False,
+                )
+                self._ensure_schema(self._connection)
+                if self._db_inode is None:
+                    self._db_inode = self._capture_db_inode()
+            return self._connection
+
+    def close(self) -> None:
+        """Close the owned SQLite connection."""
+        with self._connection_lock:
+            conn = self._connection
+            self._connection = None
+            if conn is not None:
+                conn.close()
+
+    def __enter__(self) -> "SqliteTimelineStore":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
 
     def _ensure_schema(self, conn: sqlite3.Connection) -> None:
         version_row = conn.execute("PRAGMA user_version").fetchone()
@@ -167,13 +186,14 @@ class SqliteTimelineStore(TimelineStore):
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
         with self._write_lock:
-            conn = self._get_connection()
-            try:
-                yield conn
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+            with self._connection_lock:
+                conn = self._get_connection()
+                try:
+                    yield conn
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
 
     def append(self, issue_number: int, record: TimelineRecord) -> None:
         source = record.source_event or record.event
@@ -206,29 +226,30 @@ class SqliteTimelineStore(TimelineStore):
             )
 
     def read(self, issue_number: int, limit: int | None = None) -> list[TimelineRecord]:
-        conn = self._get_connection()
-        if limit is not None and limit > 0:
-            rows = conn.execute(
-                """
-                SELECT event_id, source_event, timestamp, event, data_json, instance_id
-                FROM timeline_events
-                WHERE issue_number = ?
-                ORDER BY sequence DESC
-                LIMIT ?
-                """,
-                (issue_number, limit),
-            ).fetchall()
-            rows = list(reversed(rows))
-        else:
-            rows = conn.execute(
-                """
-                SELECT event_id, source_event, timestamp, event, data_json, instance_id
-                FROM timeline_events
-                WHERE issue_number = ?
-                ORDER BY sequence ASC
-                """,
-                (issue_number,),
-            ).fetchall()
+        with self._connection_lock:
+            conn = self._get_connection()
+            if limit is not None and limit > 0:
+                rows = conn.execute(
+                    """
+                    SELECT event_id, source_event, timestamp, event, data_json, instance_id
+                    FROM timeline_events
+                    WHERE issue_number = ?
+                    ORDER BY sequence DESC
+                    LIMIT ?
+                    """,
+                    (issue_number, limit),
+                ).fetchall()
+                rows = list(reversed(rows))
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT event_id, source_event, timestamp, event, data_json, instance_id
+                    FROM timeline_events
+                    WHERE issue_number = ?
+                    ORDER BY sequence ASC
+                    """,
+                    (issue_number,),
+                ).fetchall()
 
         records: list[TimelineRecord] = []
         for row in rows:
@@ -349,3 +370,13 @@ class SqliteTimelineStore(TimelineStore):
 
 def _timeline_trace_enabled() -> bool:
     return is_timeline_trace_enabled()
+
+
+def read_timeline_records(
+    db_path: Path,
+    issue_number: int,
+    limit: int | None = None,
+) -> list[TimelineRecord]:
+    """Read a timeline from a short-lived SQLite store and close it."""
+    with SqliteTimelineStore(db_path=db_path) as store:
+        return store.read(issue_number, limit=limit)

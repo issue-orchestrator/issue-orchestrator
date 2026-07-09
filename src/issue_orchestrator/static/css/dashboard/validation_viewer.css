@@ -407,6 +407,9 @@ details.cvv-triage-card[open] > summary.cvv-triage-head > .cvv-caret {
 .journey-step-inline-toggle {
     display: flex;
     align-items: flex-start;
+    flex-wrap: wrap;
+    column-gap: 6px;
+    row-gap: 2px;
     flex: 1 1 auto;
     min-width: 0;
     padding: 6px 8px;
@@ -426,8 +429,12 @@ details.cvv-triage-card[open] > summary.cvv-triage-head > .cvv-caret {
     outline: 2px solid #3870e0;
     outline-offset: 2px;
 }
+.journey-step-inline-toggle .journey-time {
+    flex: 0 0 auto;
+    max-width: 100%;
+}
 .journey-step-inline-toggle .journey-main {
-    flex: 1 1 auto;
+    flex: 1 1 220px;
     min-width: 0;
 }
 .journey-step-inline-actions {

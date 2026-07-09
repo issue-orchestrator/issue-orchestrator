@@ -1727,6 +1727,19 @@ def test_journey_disclosure_rows_have_keyboard_focus_styles() -> None:
     assert ".journey-step-inline-toggle:focus-visible" in css
 
 
+def test_inline_validation_rows_reserve_timestamp_space_before_narrative() -> None:
+    css = _read_dashboard_css_bundle()
+    toggle_body = _last_css_rule_body(css, ".journey-step-inline-toggle")
+    time_body = _last_css_rule_body(css, ".journey-step-inline-toggle .journey-time")
+    main_body = _last_css_rule_body(css, ".journey-step-inline-toggle .journey-main")
+
+    assert "flex-wrap: wrap;" in toggle_body
+    assert "flex: 0 0 auto;" in time_body
+    assert "max-width: 100%;" in time_body
+    assert "flex: 1 1 220px;" in main_body
+    assert "min-width: 0;" in main_body
+
+
 def test_journey_disclosure_toggle_closes_open_timeline_menus() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "toggleJourneyCycle")
