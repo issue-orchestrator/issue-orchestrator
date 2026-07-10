@@ -609,6 +609,9 @@ async def run_with_web_dashboard(
     # Initialize shutdown manager with repo root for lock cleanup
     if orchestrator.config.repo_root:
         shutdown_manager.initialize(orchestrator.config.repo_root)
+    # shutdown_manager.exit() uses os._exit(), so register the engine-owned
+    # cleanup boundary before any HTTP or signal exit can bypass it.
+    shutdown_manager.add_cleanup_callback(orchestrator.close)
 
     def run_startup_sync():
         """Run startup synchronously in a thread.

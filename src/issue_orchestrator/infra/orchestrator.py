@@ -110,6 +110,8 @@ class Orchestrator:
     _loop_error_limit: int = field(default=3, init=False)
     _last_tick_time: float = field(default=0.0, init=False)
     _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _external_close_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _external_resources_closed: bool = field(default=False, init=False, repr=False)
     _last_backup_check: float = field(default=0.0, init=False)
     _last_orphan_reconcile_scan_at: float = field(default=0.0, init=False)
     _last_orphan_reconcile_active_count: int = field(default=0, init=False)
@@ -868,6 +870,7 @@ class Orchestrator:
                 "sessions": [s.issue.number for s in active],
             }),
         ))
+        self._close_external_resources()
         self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_SHUTDOWN_COMPLETED,
             self._event_context.enrich({
@@ -877,27 +880,31 @@ class Orchestrator:
             }),
         ))
 
-        # Clean up E2E runner if active
-        self._cleanup_e2e_runner()
-
-        # Wait for background review-exchange threads so daemon-thread kill
-        # doesn't leave half-written summary.json / round-NNN.json files.
-        self._drain_background_jobs()
-
-        # Tear down every persistent coder/reviewer pair (ADR 0026 / B2:
-        # pairs survive across exchanges within an issue, so the natural
-        # shutdown boundary is here, not per-exchange).
+    def _shutdown_runtime_owners(self) -> None:
+        """Terminate agent processes before waiting for their worker threads."""
+        logger.info("[SHUTDOWN] Terminating agent runtime owners")
         pair_registry = getattr(self.deps, "pair_registry", None)
         if pair_registry is not None:
             pair_registry.shutdown_all(reason="orchestrator-shutdown")
-
-        # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
         self.deps.runner.on_orchestrator_shutdown()
-        goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
-        if goal_pilot_store is not None:
-            close = getattr(goal_pilot_store, "close", None)
-            if callable(close):
-                close()
+        # Closing the agent processes above unblocks review-exchange workers.
+        self._drain_background_jobs()
+        logger.info("[SHUTDOWN] Agent runtime owners terminated")
+
+    def _close_external_resources(self) -> None:
+        """Close process-scoped resources exactly once across all exit paths."""
+        with self._external_close_lock:
+            if self._external_resources_closed:
+                logger.debug("[SHUTDOWN] External resources already closed")
+                return
+            self._cleanup_e2e_runner()
+            self._shutdown_runtime_owners()
+            goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
+            if goal_pilot_store is not None:
+                close = getattr(goal_pilot_store, "close", None)
+                if callable(close):
+                    close()
+            self._external_resources_closed = True
 
     def _drain_background_jobs(self, timeout: float = 60.0) -> None:
         """Block shutdown until review-exchange background threads finish.
@@ -958,21 +965,7 @@ class Orchestrator:
 
     def close(self) -> None:
         """Release external resources for test harnesses and short-lived runs."""
-        self._cleanup_e2e_runner()
-        # Tear down every persistent coder/reviewer pair the orchestrator
-        # spawned so PTY-attached agent processes don't leak past the
-        # orchestrator's lifetime. ADR 0026 / B2: pairs survive across
-        # exchanges within an issue, so the natural shutdown boundary
-        # is here, not in ``run_persistent_session_exchange``.
-        pair_registry = getattr(self.deps, "pair_registry", None)
-        if pair_registry is not None:
-            pair_registry.shutdown_all(reason="orchestrator-shutdown")
-        self.deps.runner.on_orchestrator_shutdown()
-        goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
-        if goal_pilot_store is not None:
-            close = getattr(goal_pilot_store, "close", None)
-            if callable(close):
-                close()
+        self._close_external_resources()
 
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         with self._state_lock:

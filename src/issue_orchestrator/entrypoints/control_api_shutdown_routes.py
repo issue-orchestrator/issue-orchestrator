@@ -17,7 +17,8 @@ from typing import Literal, Protocol
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ..infra.supervisor import SupervisorOps
+from ..infra.shutdown_timing import StopAborted
+from ..infra.supervisor import DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS, SupervisorOps
 from . import control_api_shutdown_state as shutdown_state
 from .control_api_shutdown_support import ControlApiShutdownDependency
 
@@ -100,7 +101,7 @@ async def shutdown_control_center(
 async def _parse_shutdown_request_body(request: Request) -> tuple[bool, bool, int]:
     stop_orchestrators = False
     force_orchestrators = False
-    graceful_timeout_seconds = 2
+    graceful_timeout_seconds = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -110,7 +111,6 @@ async def _parse_shutdown_request_body(request: Request) -> tuple[bool, bool, in
     force_orchestrators = bool(body.get("force_orchestrators", False))
     graceful_timeout_seconds = shutdown_state.coerce_graceful_timeout_seconds(
         body.get("graceful_timeout_seconds"),
-        default=2,
     )
     return stop_orchestrators, force_orchestrators, graceful_timeout_seconds
 
@@ -195,23 +195,32 @@ def _process_shutdown_repo(*, operation_id: str, repo_path: str, supervisor: Sup
     if not path.exists():
         return "skipped"
 
-    runtime = shutdown_state.resolve_shutdown_runtime(operation_id=operation_id, repo_path=repo_path)
-    if runtime is None:
+    stop_policy = shutdown_state.begin_shutdown_repo_stop(
+        operation_id=operation_id,
+        repo_path=repo_path,
+    )
+    if stop_policy is None:
         return "aborted"
-    timeout_seconds, force_now = runtime
+    initial_policy = stop_policy.snapshot()
+    if initial_policy.abort:
+        return "aborted"
 
     status_info = supervisor.status(path)
     if status_info.state != "running":
         return "skipped"
     logger.info("Stopping orchestrator for %s before shutdown", repo_path)
-    stopped_count = supervisor.stop_all_instances(
-        path,
-        force=force_now,
-        reason="control-center global shutdown",
-        actor="control-center.global-shutdown",
-        graceful_timeout_seconds=timeout_seconds,
-        force_if_graceful_fails=True,
-    )
+    try:
+        stopped_count = supervisor.stop_all_instances(
+            path,
+            force=initial_policy.force,
+            reason="control-center global shutdown",
+            actor="control-center.global-shutdown",
+            graceful_timeout_seconds=initial_policy.graceful_timeout_seconds,
+            force_if_graceful_fails=True,
+            stop_policy=stop_policy,
+        )
+    except StopAborted:
+        return "aborted"
     return "stopped" if stopped_count > 0 else "failed"
 
 
@@ -243,7 +252,7 @@ async def shutdown_update(request: Request) -> JSONResponse:
     except json.JSONDecodeError:
         body = {}
 
-    timeout_seconds = shutdown_state.coerce_graceful_timeout_seconds(body.get("graceful_timeout_seconds"), default=2)
+    timeout_seconds = shutdown_state.coerce_graceful_timeout_seconds(body.get("graceful_timeout_seconds"))
     force_override = bool(body.get("force_orchestrators", False)) if "force_orchestrators" in body else None
     update = shutdown_state.update_shutdown_policy(
         graceful_timeout_seconds=timeout_seconds,

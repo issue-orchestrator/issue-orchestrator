@@ -60,6 +60,7 @@ class TestControlCenterShutdownEndpoint:
             assert str(stop_args[0]) == "/tmp/repo-a"
             assert stop_kwargs["force"] is True
             assert stop_kwargs["force_if_graceful_fails"] is True
+            assert stop_kwargs["graceful_timeout_seconds"] == 120
             mock_thread.assert_called_once()
         finally:
             set_supervisor(DefaultSupervisorOps())
@@ -96,37 +97,110 @@ class TestControlCenterShutdownEndpoint:
             control_api_shutdown_state.reset_shutdown_operations_for_testing()
             set_supervisor(DefaultSupervisorOps())
 
-    def test_shutdown_abort_is_honored_after_current_repo_attempt(self):
-        from issue_orchestrator.entrypoints import control_api
+    def test_force_and_timeout_updates_reach_current_stop_controller(self, tmp_path):
+        from threading import Event
 
-        mock_supervisor = MagicMock()
-        mock_supervisor.status.return_value = SimpleNamespace(state="running")
-        mock_supervisor.stop_all_instances.return_value = 0
-        set_supervisor(mock_supervisor)
-        repos = [SimpleNamespace(path="/tmp/repo-a")]
+        from fastapi import FastAPI
+
+        from issue_orchestrator.entrypoints.control_api_shutdown_routes import (
+            control_shutdown_router,
+        )
+        from issue_orchestrator.entrypoints.control_api_shutdown_support import (
+            ControlApiShutdownDependencies,
+            install_control_api_shutdown_dependencies,
+        )
+        from issue_orchestrator.infra import repo_registry
+        from issue_orchestrator.infra.shutdown_timing import (
+            InterruptibleStopController,
+            StopPolicySnapshot,
+        )
+        from tests.unit.threading_helpers import wait_for_event
+
+        wait_started = Event()
+        resume_probe = Event()
+        force_stop_called = Event()
+        shutdown_finished = Event()
+        observed_policies: list[StopPolicySnapshot] = []
+
+        class RecordingPolicy:
+            def __init__(self, policy):  # noqa: ANN001
+                self.policy = policy
+
+            def snapshot(self) -> StopPolicySnapshot:
+                current = self.policy.snapshot()
+                observed_policies.append(current)
+                return current
+
+        def process_probe(_pid: int) -> bool:
+            wait_started.set()
+            wait_for_event(resume_probe, 2, label="resume stop probe")
+            return True
+
+        def force_stop() -> bool:
+            force_stop_called.set()
+            return True
+
+        def stop_all_instances(*args, stop_policy, **kwargs):  # noqa: ANN002, ANN003, ANN202, ARG001
+            controller = InterruptibleStopController(
+                RecordingPolicy(stop_policy),
+                pid=4242,
+                force_requested=False,
+                force_on_timeout=True,
+                request_graceful=lambda: True,
+                terminate=lambda: None,
+                force_stop=force_stop,
+                on_stopped=lambda: None,
+                clock=lambda: 0.0,
+                sleeper=lambda _seconds: None,
+                process_probe=process_probe,
+            )
+            return 1 if controller.stop() else 0
+
+        fake_supervisor = MagicMock()
+        fake_supervisor.status.return_value = SimpleNamespace(state="running")
+        fake_supervisor.stop_all_instances.side_effect = stop_all_instances
+        app = FastAPI()
+        app.include_router(control_shutdown_router)
+        install_control_api_shutdown_dependencies(
+            app,
+            ControlApiShutdownDependencies(
+                get_supervisor=lambda: fake_supervisor,
+                schedule_control_center_exit=shutdown_finished.set,
+            ),
+        )
         try:
-            with patch.object(control_api, "_schedule_control_center_exit", return_value=None):
-                with patch("issue_orchestrator.infra.repo_registry.list_repos", return_value=repos):
-                    with patch("pathlib.Path.exists", return_value=True):
-                        with patch("threading.Thread") as mock_thread:
-                            client = TestClient(control_app)
-                            response = client.post(
-                                "/control/shutdown",
-                                json={"stop_orchestrators": True, "force_orchestrators": False},
-                            )
-                            assert response.status_code == 200
-                            abort = client.post("/control/shutdown/abort")
-                            assert abort.status_code == 200
-                            target = mock_thread.call_args.kwargs.get("target")
-                            assert callable(target)
-                            target()
+            with patch.object(
+                repo_registry,
+                "list_repos",
+                return_value=[SimpleNamespace(path=str(tmp_path))],
+            ):
+                client = TestClient(app)
+                response = client.post(
+                    "/control/shutdown",
+                    json={"stop_orchestrators": True, "force_orchestrators": False},
+                )
+                assert response.status_code == 200
+                wait_for_event(wait_started, 2, label="current stop wait")
 
-            op = control_api_shutdown_state.snapshot_shutdown_ops()["global_shutdown"]
-            assert op is not None
-            assert op["state"] == "aborted"
+                update = client.post(
+                    "/control/shutdown/update",
+                    json={"graceful_timeout_seconds": 30},
+                )
+                force = client.post("/control/shutdown/force")
+                resume_probe.set()
+
+                assert update.status_code == 200
+                assert force.status_code == 200
+                wait_for_event(force_stop_called, 2, label="force stop")
+                wait_for_event(shutdown_finished, 2, label="global shutdown")
+
+            assert observed_policies[0].graceful_timeout_seconds == 120
+            assert observed_policies[0].force is False
+            assert observed_policies[-1].graceful_timeout_seconds == 30
+            assert observed_policies[-1].force is True
         finally:
+            resume_probe.set()
             control_api_shutdown_state.reset_shutdown_operations_for_testing()
-            set_supervisor(DefaultSupervisorOps())
 
     def test_shutdown_reports_superseded_engine_shutdowns(self):
         mock_supervisor = MagicMock()
