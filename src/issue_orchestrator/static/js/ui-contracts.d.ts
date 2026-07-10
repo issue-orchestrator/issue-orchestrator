@@ -188,6 +188,12 @@ export interface DoctorDialogPayload {
   title: string;
 }
 
+export interface E2EArtifactDiagnosticPayload {
+  collected_count: number;
+  configured_glob_count: number;
+  state: "collected" | "globs_matched_nothing" | "not_configured";
+}
+
 export interface E2EFailureDetailsAvailablePayload {
   kind: "available";
   longrepr: string;
@@ -207,6 +213,7 @@ export interface E2EIssueAffordancePayload {
 
 export interface E2ERunDetailPayload {
   actions: IssueDetailActionPayload[];
+  artifact_diagnostic: E2EArtifactDiagnosticPayload;
   artifacts: TestRunArtifactPayload[];
   blocked_detail: IssueDetailBlockedDetailPayload | null;
   cycles: E2ETimelineCyclePayload[];

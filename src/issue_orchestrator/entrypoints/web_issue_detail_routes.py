@@ -425,6 +425,8 @@ def _e2e_run_artifacts(run: dict[str, Any], db_artifacts: list[dict[str, Any]]) 
         if artifact["kind"] in {"junit_xml", "html_report", "json_report", "playwright_report"}
     ]
     return artifacts, reports
+
+
 def _finalize_issue_detail_payload(
     *,
     orchestrator: Any,
@@ -724,11 +726,9 @@ async def get_e2e_run_detail(
             status_code=404,
         )
     run_payload = _public_e2e_run_payload(dict(run_details["run"]), run_id)
+    db_artifacts = list(run_details.get("artifacts") or [])
     try:
-        artifacts, reports = _e2e_run_artifacts(
-            run_payload,
-            list(run_details.get("artifacts") or []),
-        )
+        artifacts, reports = _e2e_run_artifacts(run_payload, db_artifacts)
     except ValueError:
         logger.exception("Malformed E2E artifact rows for run %s", run_id)
         return JSONResponse(
@@ -747,6 +747,11 @@ async def get_e2e_run_detail(
     payload["results_by_category"] = results_by_category
     payload["artifacts"] = artifacts
     payload["reports"] = reports
+    from ..view_models.dashboard_e2e import build_e2e_artifact_diagnostic
+
+    payload["artifact_diagnostic"] = build_e2e_artifact_diagnostic(
+        orchestrator.config.e2e, collected_count=len(db_artifacts)
+    ).model_dump(mode="json")
     payload["lifecycle"] = project_e2e_suite_lifecycle_container_for_run(
         run_id=run_id,
         events=events,

@@ -1270,6 +1270,11 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
     payload["reports"] = [
         {"kind": "junit_xml", "label": "JUnit XML", "path": "/tmp/e2e-artifacts/run-88/junit.xml"},
     ]
+    payload["artifact_diagnostic"] = {
+        "state": "collected",
+        "collected_count": 1,
+        "configured_glob_count": 2,
+    }
     payload["issue_affordances"] = [{"issue_number": 12, "run_id": 88}]
     payload["lifecycle"] = _e2e_container().model_dump(mode="json")
 
@@ -1333,6 +1338,11 @@ def test_e2e_run_detail_payload_rejects_untyped_detail_fields() -> None:
     }
     payload["artifacts"] = []
     payload["reports"] = []
+    payload["artifact_diagnostic"] = {
+        "state": "not_configured",
+        "collected_count": 0,
+        "configured_glob_count": 0,
+    }
     payload["issue_affordances"] = [{"issue_number": 12, "run_id": 88}]
     payload["lifecycle"] = _e2e_container().model_dump(mode="json")
     payload["actions"] = [{"id": "retry", "label": "Retry"}]

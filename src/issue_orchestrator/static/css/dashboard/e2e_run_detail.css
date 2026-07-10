@@ -477,6 +477,68 @@
     flex-direction: column;
 }
 
+/* First-class "Run artifacts" section (issue #6593).  Mounted above the
+   canonical failure panel so collected e2e_run_artifacts (raw output log,
+   container logs, summaries, generated JUnit XML) are discoverable drill-downs
+   from the failure view instead of buried in the Diagnostics disclosure. */
+.e2e-run-artifacts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--surface-alt, #fafbfc);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.e2e-run-artifacts-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.e2e-run-artifacts-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+.e2e-run-artifacts-count {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.e2e-run-artifacts-buttons {
+    flex-wrap: wrap;
+}
+/* Diagnostic note explaining an empty (config-driven) artifact set.  Colour is
+   never the only signal — each state carries distinct wording plus an icon-free
+   but explicit sentence, so it reads in both themes and for colour-blind users. */
+.e2e-artifacts-note {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text, inherit);
+}
+.e2e-artifacts-note code {
+    font-family: SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 11px;
+}
+.e2e-artifacts-note-info {
+    background: var(--surface-alt, #f6f8fa);
+}
+.e2e-artifacts-note-warn {
+    background: var(--warning-surface, #fbf3dc);
+    border-color: var(--warning-border, #b07a00);
+}
+/* Keep artifact drill-downs keyboard-operable with a visible focus ring in
+   both themes (native <button> already gives us keyboard + accessible name). */
+.e2e-run-artifacts .issue-action-btn:focus-visible {
+    outline: 2px solid var(--focus-ring, #3870e0);
+    outline-offset: 2px;
+}
+
 /* ─── Issue #6334: inline E2E runs-as-rows list ─────────────────
    Each E2E run renders as a ``<details>`` row in the Run History
    panel.  Closed by default; expanding lazy-fetches
