@@ -60,6 +60,7 @@ class TestControlCenterShutdownEndpoint:
             assert str(stop_args[0]) == "/tmp/repo-a"
             assert stop_kwargs["force"] is True
             assert stop_kwargs["force_if_graceful_fails"] is True
+            assert stop_kwargs["graceful_timeout_seconds"] == 120
             mock_thread.assert_called_once()
         finally:
             set_supervisor(DefaultSupervisorOps())

@@ -243,6 +243,7 @@ def dual_orchestrator_configs(
 
 @pytest.fixture
 def dual_orchestrators(
+    request: pytest.FixtureRequest,
     dual_orchestrator_configs: tuple[Config, Config],
     e2e_project_root: Path,
     claim_test_label: str,
@@ -261,6 +262,17 @@ def dual_orchestrators(
         config_b, config_b.repo_root, source_root=e2e_project_root
     )
 
+    def _cleanup() -> None:
+        proc_b.stop()
+        proc_a.stop()
+        if not keep_artifacts():
+            shutil.rmtree(config_a.repo_root, ignore_errors=True)
+            shutil.rmtree(config_b.repo_root, ignore_errors=True)
+
+    # Register before starting either engine so partial setup failures cannot
+    # bypass process-group teardown.
+    request.addfinalizer(_cleanup)
+
     # Start both orchestrators
     proc_a.start(max_issues=5, extra_args=["--label", claim_test_label])
     proc_b.start(max_issues=5, extra_args=["--label", claim_test_label])
@@ -269,14 +281,6 @@ def dual_orchestrators(
     proc_b.wait_until_ready()
 
     yield proc_a, proc_b
-
-    # Stop both orchestrators
-    proc_a.stop()
-    proc_b.stop()
-
-    if not keep_artifacts():
-        shutil.rmtree(config_a.repo_root, ignore_errors=True)
-        shutil.rmtree(config_b.repo_root, ignore_errors=True)
 
 
 @pytest.fixture
@@ -385,6 +389,7 @@ class TestClaimTakeover:
     )
     async def test_second_orchestrator_detects_stale_claim_after_first_crashes(
         self,
+        request: pytest.FixtureRequest,
         dual_orchestrator_configs: tuple[Config, Config],
         e2e_project_root: Path,
         claim_test_issue: int,
@@ -398,6 +403,16 @@ class TestClaimTakeover:
         proc_a = OrchestratorProcess(
             config_a, config_a.repo_root, source_root=e2e_project_root
         )
+        started_processes = [proc_a]
+
+        def _cleanup() -> None:
+            for process in reversed(started_processes):
+                process.stop()
+            if not keep_artifacts():
+                shutil.rmtree(config_a.repo_root, ignore_errors=True)
+                shutil.rmtree(config_b.repo_root, ignore_errors=True)
+
+        request.addfinalizer(_cleanup)
         proc_a.start(max_issues=5, extra_args=["--label", claim_test_label])
 
         # Poll until A claims the issue — startup scan + claim convergence + session
@@ -415,10 +430,9 @@ class TestClaimTakeover:
 
         print(f"\n[CLAIM E2E] Orchestrator A claimed issue #{claim_test_issue}")
 
-        # Kill A (simulating crash - no graceful release)
-        if proc_a.process:
-            proc_a.process.kill()
-            proc_a.process.wait()
+        # Crash A without graceful lease release while the fixture still reaps
+        # the isolated agent process groups that the engine launched.
+        proc_a.crash()
 
         print("\n[CLAIM E2E] Orchestrator A crashed (killed)")
 
@@ -426,6 +440,7 @@ class TestClaimTakeover:
         proc_b = OrchestratorProcess(
             config_b, config_b.repo_root, source_root=e2e_project_root
         )
+        started_processes.append(proc_b)
         proc_b.start(max_issues=5, extra_args=["--label", claim_test_label])
         trigger_refresh(port=config_b.control_api_port)
 
@@ -457,11 +472,6 @@ class TestClaimTakeover:
 
         print("\n[CLAIM E2E] Test passed: stale claim handled after crash")
 
-        # Cleanup
-        proc_b.stop()
-        if not keep_artifacts():
-            shutil.rmtree(config_a.repo_root, ignore_errors=True)
-            shutil.rmtree(config_b.repo_root, ignore_errors=True)
 
 
 @pytest.mark.e2e

@@ -1,10 +1,17 @@
+import os
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from issue_orchestrator.infra.config import AgentConfig, Config
 from tests.e2e.fixtures.orchestrator_process import OrchestratorProcess
+from tests.e2e.fixtures.process_group_owner import ProcessGroupOwner
 
 
 def test_write_e2e_config_preserves_agent_prompt_contract(tmp_path: Path) -> None:
@@ -125,4 +132,81 @@ def test_start_runs_source_from_separate_repo_root(
 
     assert cmd[0] == str(executable)
     assert captured["cwd"] == repo_root
+    assert captured["start_new_session"] is True
     assert str(source_root / "src") == env["PYTHONPATH"].split(":", maxsplit=1)[0]
+
+
+def test_process_group_owner_snapshots_the_full_process_tree(monkeypatch) -> None:
+    process_table = """\
+      10   1 110
+      11  10 111
+      12  11 111
+      13  10 113
+      20   1 120
+    """
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=process_table),
+    )
+    snapshot = ProcessGroupOwner(10, protected_pgid=999).snapshot()
+
+    assert snapshot == frozenset({110, 111, 113})
+
+
+def test_crash_reaps_engine_and_isolated_agent_process_groups() -> None:
+    """A hard engine crash must not leave its detached agent child alive."""
+    root_script = """
+import subprocess
+import sys
+import time
+
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"],
+    start_new_session=True,
+)
+print(child.pid, flush=True)
+time.sleep(60)
+"""
+    root = subprocess.Popen(
+        [sys.executable, "-c", root_script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert root.stdout is not None
+    child_pid = int(root.stdout.readline().strip())
+    fixture = OrchestratorProcess(Config(), Path.cwd())
+    fixture.process = root
+
+    try:
+        groups = ProcessGroupOwner(root.pid).snapshot()
+        assert os.getpgid(root.pid) in groups
+        assert os.getpgid(child_pid) in groups
+
+        fixture.crash()
+
+        assert root.poll() is not None
+        deadline = time.monotonic() + 5
+        while _pid_exists(child_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_exists(child_pid)
+    finally:
+        for pid in (child_pid, root.pid):
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            root.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            root.kill()
+            root.wait(timeout=2)
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True

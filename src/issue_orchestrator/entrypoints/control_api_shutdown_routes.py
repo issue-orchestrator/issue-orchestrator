@@ -17,7 +17,7 @@ from typing import Literal, Protocol
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ..infra.supervisor import SupervisorOps
+from ..infra.supervisor import DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS, SupervisorOps
 from . import control_api_shutdown_state as shutdown_state
 from .control_api_shutdown_support import ControlApiShutdownDependency
 
@@ -100,7 +100,7 @@ async def shutdown_control_center(
 async def _parse_shutdown_request_body(request: Request) -> tuple[bool, bool, int]:
     stop_orchestrators = False
     force_orchestrators = False
-    graceful_timeout_seconds = 2
+    graceful_timeout_seconds = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -110,7 +110,6 @@ async def _parse_shutdown_request_body(request: Request) -> tuple[bool, bool, in
     force_orchestrators = bool(body.get("force_orchestrators", False))
     graceful_timeout_seconds = shutdown_state.coerce_graceful_timeout_seconds(
         body.get("graceful_timeout_seconds"),
-        default=2,
     )
     return stop_orchestrators, force_orchestrators, graceful_timeout_seconds
 
@@ -243,7 +242,7 @@ async def shutdown_update(request: Request) -> JSONResponse:
     except json.JSONDecodeError:
         body = {}
 
-    timeout_seconds = shutdown_state.coerce_graceful_timeout_seconds(body.get("graceful_timeout_seconds"), default=2)
+    timeout_seconds = shutdown_state.coerce_graceful_timeout_seconds(body.get("graceful_timeout_seconds"))
     force_override = bool(body.get("force_orchestrators", False)) if "force_orchestrators" in body else None
     update = shutdown_state.update_shutdown_policy(
         graceful_timeout_seconds=timeout_seconds,

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from .inflight_tracker import control_api_headers, trigger_refresh
+from .process_group_owner import OWNED_GROUP_STOP_TIMEOUT_SECONDS, ProcessGroupOwner
 
 if TYPE_CHECKING:
     from issue_orchestrator.infra.config import Config
@@ -31,6 +32,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 E2E_LOG_DIR = Path("/tmp/e2e-orchestrator-logs")
 E2E_LOG_DIR.mkdir(exist_ok=True)
+_GRACEFUL_STOP_TIMEOUT_SECONDS = 20
 
 
 def keep_artifacts() -> bool:
@@ -362,6 +364,7 @@ class OrchestratorProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
+            start_new_session=True,
         )
 
         # Start background log reader
@@ -402,33 +405,65 @@ class OrchestratorProcess:
 
         # Stop the log reader thread
         self._stop_logging = True
+        process_owner = ProcessGroupOwner(self.process.pid)
+        owned_groups = process_owner.snapshot()
+
+        if self.process.poll() is not None:
+            stdout, stderr = self.process.communicate()
+            process_owner.terminate_survivors(owned_groups)
+            return self._finish_process_stop(stdout, stderr, "already stopped")
 
         # Send SIGTERM for graceful shutdown
         self.process.send_signal(signal.SIGTERM)
 
         try:
-            stdout, stderr = self.process.communicate(timeout=5)
-            self._cleanup_log_tailers()
-            self._close_log_file()
-            print(f"  [E2E] Orchestrator stopped gracefully", flush=True)
-            return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
+            stdout, stderr = self.process.communicate(timeout=_GRACEFUL_STOP_TIMEOUT_SECONDS)
+            process_owner.terminate_survivors(owned_groups)
+            return self._finish_process_stop(stdout, stderr, "stopped gracefully")
         except subprocess.TimeoutExpired:
-            print(f"  [E2E] Sending second SIGTERM...", flush=True)
-            self.process.send_signal(signal.SIGTERM)
+            print("  [E2E] Graceful stop timed out; terminating owned process groups...", flush=True)
+            process_owner.signal(owned_groups, signal.SIGTERM)
             try:
-                stdout, stderr = self.process.communicate(timeout=5)
-                self._cleanup_log_tailers()
-                self._close_log_file()
-                print(f"  [E2E] Orchestrator stopped after second SIGTERM", flush=True)
-                return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
+                stdout, stderr = self.process.communicate(timeout=OWNED_GROUP_STOP_TIMEOUT_SECONDS)
+                process_owner.terminate_survivors(owned_groups)
+                return self._finish_process_stop(
+                    stdout, stderr, "stopped after owned-group SIGTERM"
+                )
             except subprocess.TimeoutExpired:
-                print(f"  [E2E] Force killing orchestrator...", flush=True)
-                self.process.kill()
+                print("  [E2E] Force killing owned process groups...", flush=True)
+                process_owner.signal(owned_groups, signal.SIGKILL)
                 stdout, stderr = self.process.communicate()
-                self._cleanup_log_tailers()
-                self._close_log_file()
-                print(f"  [E2E] Orchestrator killed", flush=True)
-                return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
+                process_owner.terminate_survivors(owned_groups)
+                return self._finish_process_stop(stdout, stderr, "force killed")
+
+    def crash(self) -> tuple[str, str]:
+        """Crash the engine and reap every isolated agent process group."""
+        if self.process is None:
+            return "", ""
+        self._stop_logging = True
+        process_owner = ProcessGroupOwner(self.process.pid)
+        owned_groups = process_owner.snapshot()
+        if self.process.poll() is None:
+            print(
+                f"  [E2E] Crashing orchestrator and owned agents "
+                f"(pid={self.process.pid}, logical_groups={len(owned_groups)})...",
+                flush=True,
+            )
+            process_owner.signal(owned_groups, signal.SIGKILL)
+        stdout, stderr = self.process.communicate()
+        process_owner.terminate_survivors(owned_groups)
+        return self._finish_process_stop(stdout, stderr, "crashed")
+
+    def _finish_process_stop(
+        self,
+        stdout: bytes | None,
+        stderr: bytes | None,
+        outcome: str,
+    ) -> tuple[str, str]:
+        self._cleanup_log_tailers()
+        self._close_log_file()
+        print(f"  [E2E] Orchestrator {outcome}", flush=True)
+        return stdout.decode() if stdout else "", stderr.decode() if stderr else ""
 
     @property
     def log_path(self) -> Path | None:

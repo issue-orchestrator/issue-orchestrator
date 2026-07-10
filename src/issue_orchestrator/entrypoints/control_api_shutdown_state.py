@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Any, Literal, TypedDict
 
+from ..infra.supervisor import DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS
+
 
 @dataclass(frozen=True)
 class GlobalShutdownConflict:
@@ -59,7 +61,10 @@ _global_shutdown_operation: GlobalShutdownOperation | None = None
 _engine_shutdown_operations: dict[str, EngineShutdownOperation] = {}
 
 
-def coerce_graceful_timeout_seconds(raw: object, default: int = 2) -> int:
+def coerce_graceful_timeout_seconds(
+    raw: object,
+    default: int = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
+) -> int:
     """Parse graceful timeout from API payload with safe bounds."""
     if raw is None:
         return default
@@ -178,7 +183,7 @@ def resolve_shutdown_runtime(*, operation_id: str, repo_path: str) -> tuple[int,
         if op.get("abort_requested"):
             return None
         op["current_repo"] = repo_path
-        timeout_seconds = coerce_graceful_timeout_seconds(op.get("graceful_timeout_seconds"), default=2)
+        timeout_seconds = coerce_graceful_timeout_seconds(op.get("graceful_timeout_seconds"))
         force_now = bool(op.get("force_orchestrators") or op.get("force_now_requested"))
     return timeout_seconds, force_now
 

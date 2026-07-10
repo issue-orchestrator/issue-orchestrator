@@ -3,11 +3,12 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from issue_orchestrator.infra.supervisor import (
+    DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
     LockInfo,
     SupervisorStatus,
     MultiInstanceStatus,
@@ -17,6 +18,35 @@ from issue_orchestrator.infra.supervisor import (
     find_free_port,
     status_all_instances,
 )
+
+
+def test_graceful_shutdown_default_allows_agent_runtime_cleanup() -> None:
+    assert DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS == 120
+
+
+def test_signal_fallback_honors_the_graceful_timeout(tmp_path: Path) -> None:
+    from issue_orchestrator.infra import supervisor
+
+    with (
+        patch.object(supervisor, "_send_kill_signal") as send_signal,
+        patch.object(
+            supervisor, "_wait_for_process_exit", return_value=True
+        ) as wait_for_exit,
+        patch.object(supervisor, "release_lock") as release_lock,
+    ):
+        stopped = supervisor._kill_with_signal_then_port(  # noqa: SLF001
+            repo_root=tmp_path,
+            pid=4242,
+            port=None,
+            instance_id=None,
+            force=False,
+            grace_seconds=17,
+        )
+
+    assert stopped is True
+    send_signal.assert_called_once_with(4242, False)
+    wait_for_exit.assert_called_once_with(4242, 170)
+    release_lock.assert_called_once_with(tmp_path, 4242, None)
 
 
 class TestSupervisorStatus:
