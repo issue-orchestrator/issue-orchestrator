@@ -184,7 +184,17 @@ def _config() -> Config:
     return config
 
 
-def _orchestrator_with_manager(manager: ProviderResilienceManager | None):
+class _FixedSnapshotManager:
+    """Behavior-level test double that keeps dashboard reads deterministic."""
+
+    def __init__(self, manager: ProviderResilienceManager) -> None:
+        self._manager = manager
+
+    def snapshot(self):
+        return self._manager.snapshot(NOW)
+
+
+def _orchestrator_with_manager(manager: object | None):
     class _Stub:
         def __init__(self) -> None:
             self.state = OrchestratorState(startup_status="complete")
@@ -198,7 +208,7 @@ def _orchestrator_with_manager(manager: ProviderResilienceManager | None):
 
 def test_dashboard_data_surfaces_open_circuit():
     manager = _manager(_open("anthropic", 300, error="overloaded"))
-    orchestrator = _orchestrator_with_manager(manager)
+    orchestrator = _orchestrator_with_manager(_FixedSnapshotManager(manager))
 
     view_model = build_dashboard_view_model(
         orchestrator,
