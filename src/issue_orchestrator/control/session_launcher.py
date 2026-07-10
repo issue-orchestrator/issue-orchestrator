@@ -54,7 +54,7 @@ from .stack_base import StackBaseDecision
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_manifest import TriageManifest
 from ..domain.triage_session import TRIAGE_ASSIGNMENT_FILENAME, TriageAssignment, TriageSessionFlavor
-from .triage_manifest_builder import TriageManifestBuilder
+from .triage_manifest_builder import TriageCandidatePolicy, TriageManifestBuilder
 from .triage_session_policy import is_triage_session
 from ..ports import (
     ManifestDownloader,
@@ -692,12 +692,12 @@ class SessionLauncher:
         Returns:
             The populated manifest, or None if no PRs need triage
         """
-        # Build manifest with PRs needing triage
+        # Build manifest with PRs needing triage; eligibility comes from the
+        # shared candidate owner so the audited set matches the threshold set.
         builder = TriageManifestBuilder(
             repository_host=self.repository_host,
             watch_label=self.config.triage_watch_label,
-            triage_reviewed_label=self.config.triage_reviewed_label or "triage-reviewed",
-            triage_failed_label=self.config.triage_failed_label or "triage-failed",
+            candidate_policy=TriageCandidatePolicy.from_config(self.config),
         )
 
         # Data goes in session run directory

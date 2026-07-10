@@ -306,6 +306,35 @@ class TestFactGathererTriageFacts:
         assert result.threshold == 2
         assert result.watch_label == "code-reviewed"
 
+    def test_triage_facts_exclude_terminally_triaged_prs(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Terminally-triaged PRs never count toward the threshold (#6768 r5).
+
+        Fact gathering shares the manifest builder's candidate predicate;
+        counting triage-reviewed/triage-failed PRs that the manifest then
+        filters out is what created endless empty-batch tracking issues.
+        """
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=10, url="...", title="Still pending", branch="b1",
+                   labels=["code-reviewed"], body="", state="open"),
+            PRInfo(number=11, url="...", title="Audited", branch="b2",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+            PRInfo(number=12, url="...", title="Audit failed", branch="b3",
+                   labels=["code-reviewed", "triage-failed"], body="", state="open"),
+        ]
+        mock_repository_host.list_issues.return_value = []
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.pr_count == 1
+        assert result.prs == ((10, "Still pending"),)
+
     def test_triage_facts_detects_existing_issue(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):

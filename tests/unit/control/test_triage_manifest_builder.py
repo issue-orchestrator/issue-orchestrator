@@ -3,7 +3,10 @@
 from dataclasses import dataclass
 from typing import Optional
 
-from issue_orchestrator.control.triage_manifest_builder import TriageManifestBuilder
+from issue_orchestrator.control.triage_manifest_builder import (
+    TriageCandidatePolicy,
+    TriageManifestBuilder,
+)
 
 
 @dataclass
@@ -38,7 +41,7 @@ class TestTriageManifestBuilder:
     def test_build_empty_when_no_prs(self):
         """Returns empty manifest when no PRs have the code-reviewed label."""
         host = MockRepositoryHost(prs=[])
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host, candidate_policy=TriageCandidatePolicy())
 
         manifest = builder.build(data_dir="triage-data")
 
@@ -67,7 +70,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host, candidate_policy=TriageCandidatePolicy())
 
         manifest = builder.build(data_dir="session/triage-data")
 
@@ -95,7 +98,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host, candidate_policy=TriageCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -122,7 +125,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host, candidate_policy=TriageCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -151,8 +154,10 @@ class TestTriageManifestBuilder:
         builder = TriageManifestBuilder(
             host,
             watch_label="my-reviewed",
-            triage_reviewed_label="my-triaged",
-            triage_failed_label="my-failed",
+            candidate_policy=TriageCandidatePolicy(
+                triage_reviewed_label="my-triaged",
+                triage_failed_label="my-failed",
+            ),
         )
 
         manifest = builder.build(data_dir="data")
@@ -166,7 +171,7 @@ class TestTriageManifestBuilder:
     def test_build_sets_generated_at(self):
         """Sets generated_at timestamp."""
         host = MockRepositoryHost(prs=[])
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host, candidate_policy=TriageCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -187,7 +192,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host, candidate_policy=TriageCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -240,7 +245,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host, candidate_policy=TriageCandidatePolicy())
 
         manifest = builder.build(data_dir="data")
 
@@ -252,3 +257,64 @@ class TestTriageManifestBuilder:
         assert 2 not in numbers
         assert 3 not in numbers
         assert 4 not in numbers
+
+    def test_build_honors_filter_label_scope(self):
+        """On filtered runs the manifest only audits filter-scoped PRs.
+
+        The shared candidate owner carries the repository filter, so the
+        manifest set matches the threshold set the fact gatherer counted.
+        """
+        prs = [
+            MockPR(number=1, title="In scope", url="u1", branch="b1",
+                   labels=["code-reviewed", "io:e2e:run-1"]),
+            MockPR(number=2, title="Out of scope", url="u2", branch="b2",
+                   labels=["code-reviewed"]),
+        ]
+        host = MockRepositoryHost(prs=prs)
+        builder = TriageManifestBuilder(
+            host,
+            candidate_policy=TriageCandidatePolicy(required_label="io:e2e:run-1"),
+        )
+
+        manifest = builder.build(data_dir="data")
+
+        assert [pr.number for pr in manifest.prs] == [1]
+
+
+class TestTriageCandidatePolicy:
+    """The single candidate-eligibility owner shared by facts + manifest (#6768 r5)."""
+
+    def test_candidate_truth_table(self):
+        policy = TriageCandidatePolicy()
+        assert policy.is_candidate(["code-reviewed"]) is True
+        assert policy.is_candidate(["code-reviewed", "triage-reviewed"]) is False
+        assert policy.is_candidate(["code-reviewed", "triage-failed"]) is False
+
+    def test_required_label_scopes_candidates(self):
+        policy = TriageCandidatePolicy(required_label="io:e2e:run-1")
+        assert policy.is_candidate(["code-reviewed", "io:e2e:run-1"]) is True
+        assert policy.is_candidate(["code-reviewed"]) is False
+
+    def test_from_config_honors_custom_labels_and_filter(self):
+        from issue_orchestrator.infra.config import Config
+
+        config = Config()
+        config.triage_reviewed_label = "my-triaged"
+        config.triage_failed_label = "my-failed"
+        config.filtering.label = "scope-x"
+
+        policy = TriageCandidatePolicy.from_config(config)
+
+        assert policy.is_candidate(["code-reviewed", "scope-x"]) is True
+        assert policy.is_candidate(["code-reviewed", "scope-x", "my-triaged"]) is False
+        assert policy.is_candidate(["code-reviewed", "scope-x", "my-failed"]) is False
+        assert policy.is_candidate(["code-reviewed"]) is False
+
+    def test_from_config_defaults(self):
+        from issue_orchestrator.infra.config import Config
+
+        policy = TriageCandidatePolicy.from_config(Config())
+
+        assert policy.is_candidate(["code-reviewed"]) is True
+        assert policy.is_candidate(["code-reviewed", "triage-reviewed"]) is False
+        assert policy.is_candidate(["code-reviewed", "triage-failed"]) is False

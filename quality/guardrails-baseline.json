@@ -352,14 +352,6 @@
       "rule_id": "control_policy_branch_sites",
       "value": 14
     },
-    "control_policy_branch_sites:src/issue_orchestrator/control/triage_manifest_builder.py": {
-      "detail": "2 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/control/triage_manifest_builder.py",
-      "path": "src/issue_orchestrator/control/triage_manifest_builder.py",
-      "rule_id": "control_policy_branch_sites",
-      "value": 2
-    },
     "control_policy_branch_sites:src/issue_orchestrator/control/validation.py": {
       "detail": "6 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",

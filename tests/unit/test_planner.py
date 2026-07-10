@@ -1189,6 +1189,51 @@ class TestPlanTriageIssueCreation:
         assert action.pr_count == 3
         assert "agent:triage" in action.labels
 
+    def test_completed_closed_batch_does_not_retrigger_empty_batch(self):
+        """Reviewer repro (#6768 r5): after a successful batch (PRs carry
+        triage-reviewed, tracker closed) re-gathering + planning against the
+        same PR observations must not create an empty successor batch.
+
+        Facts come from the REAL FactGatherer so the shared candidate
+        predicate (fact side == manifest side) is what this exercises.
+        """
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.fact_gatherer import FactGatherer
+        from issue_orchestrator.domain.models import OrchestratorState
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=2,
+            triage_reviewed_label="triage-reviewed",
+        )
+        host = MagicMock()
+        host.get_prs_with_label.return_value = [
+            PRInfo(number=1, url="...", title="PR 1", branch="b1",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+            PRInfo(number=2, url="...", title="PR 2", branch="b2",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+        ]
+        # The completed batch's tracking issue is CLOSED: open-state queries
+        # (the finder's contract) no longer return it.
+        host.list_issues.return_value = []
+
+        facts = FactGatherer(config=config, repository_host=host).gather_triage_facts(
+            OrchestratorState()
+        )
+        assert facts is not None
+        assert facts.pr_count == 0
+        assert facts.existing_triage_issue is None
+
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        create_actions = [
+            a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE
+        ]
+        assert create_actions == []
+
     def test_no_triage_issue_below_threshold(self):
         """Planner produces no CreateTriageIssueAction when below threshold."""
         from issue_orchestrator.domain.models import TriageFacts

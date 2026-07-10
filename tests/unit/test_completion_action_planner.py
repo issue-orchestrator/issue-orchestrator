@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+import pytest
+
 from issue_orchestrator.control.actions import (
     AddCommentAction,
     AddLabelAction,
@@ -274,6 +276,93 @@ def test_successful_batch_completion_without_manifest_still_closes(
     assert _triage_labels(actions) == []
     (close,) = _close_actions(actions)
     assert close.issue_number == session.issue.number
+
+
+def _triage_failed_labels(actions: tuple[object, ...]) -> list[AddLabelAction]:
+    return [
+        action for action in actions
+        if isinstance(action, AddLabelAction) and action.label == "triage-failed"
+    ]
+
+
+def test_failed_batch_labels_prs_failed_and_closes_tracking_issue(
+    tmp_path: Path,
+) -> None:
+    """A FAILED batch reaches the triage-failed contract (#6768 r5).
+
+    Manifest PRs carry the operator-visible triage-failed label and the
+    tracking issue closes (after the generic needs-human diagnosis and the PR
+    labels) so restart recovery cannot requeue it with an empty manifest.
+    """
+    config = _make_triage_config()
+    config.retry.interrupted_sessions.enabled = False
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(
+        session,
+        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+    )
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.FAILED,
+    )
+
+    assert {a.issue_number for a in _triage_failed_labels(actions)} == {101, 102}
+    (close,) = _close_actions(actions)
+    assert close.issue_number == session.issue.number
+    # Composes with (not replaces) the generic failure diagnosis...
+    assert "needs-human" in added_labels(actions)
+    # ...and the terminal close comes after every label action.
+    assert actions.index(close) == len(actions) - 1
+
+
+def test_timed_out_batch_labels_prs_failed_and_closes_tracking_issue(
+    tmp_path: Path,
+) -> None:
+    """A TIMED_OUT batch gets the same terminal lifecycle as a failed one."""
+    config = _make_triage_config()
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(
+        session,
+        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+    )
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.TIMED_OUT,
+    )
+
+    assert {a.issue_number for a in _triage_failed_labels(actions)} == {101, 102}
+    (close,) = _close_actions(actions)
+    assert close.issue_number == session.issue.number
+    # Composes with the generic timeout diagnosis; close is last.
+    assert "blocked-failed" in added_labels(actions)
+    assert actions.index(close) == len(actions) - 1
+
+
+@pytest.mark.parametrize("status", [SessionStatus.FAILED, SessionStatus.TIMED_OUT])
+def test_failure_investigation_failure_paths_preserve_source_issue(
+    tmp_path: Path, status: SessionStatus
+) -> None:
+    """Failed/timed-out investigations never touch manifest PRs or close their
+    anchor — it IS the original failed work issue (#6768 r5 controls)."""
+    config = _make_triage_config()
+    config.retry.interrupted_sessions.enabled = False
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(
+        session,
+        assignment=TriageAssignment(
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=1,
+            focus_reason="Investigate: timed out",
+        ),
+    )
+
+    actions = make_planner(config).generate_completion_actions(session, status)
+
+    assert _close_actions(actions) == []
+    assert _triage_failed_labels(actions) == []
+    assert _triage_labels(actions) == []
 
 
 def test_failure_investigation_triage_session_never_labels_manifest_prs(

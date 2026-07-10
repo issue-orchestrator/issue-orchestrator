@@ -127,16 +127,6 @@ def critical_processing_errors(
     return critical, downgraded
 
 
-def _has_critical_errors(
-    processing_errors: Optional[list[str]],
-    *,
-    pr_url: str | None = None,
-) -> bool:
-    """Check if processing_errors contains critical publish/finalize failures."""
-    critical, _ = critical_processing_errors(processing_errors, pr_url=pr_url)
-    return bool(critical)
-
-
 def has_review_exchange_errors(processing_errors: Optional[list[str]]) -> bool:
     """Check if processing_errors contains review exchange halt/failure markers."""
     if not processing_errors:
@@ -262,89 +252,99 @@ class CompletionActionPlanner:
             self.config.triage_review_agent, session.issue.agent_type
         )
 
-    def _generate_triage_actions(
-        self,
-        session: Session,
-        status: SessionStatus,
-        processing_errors: Optional[list[str]],
-        expected: ExpectedState,
-    ) -> list[Action]:
-        """Generate label/terminal actions for triage session completion.
+    def _resolve_batch_review_assignment(self, session: Session) -> TriageAssignment | None:
+        """Return the batch-review assignment for a triage session, else None.
 
-        Only batch-review sessions label PRs (the manifest set they audited).
-        Failure investigations audit one issue, never the global PR manifest,
-        so they must not touch manifest labels (#6768 B4) — and their anchor
-        IS the original failed work issue, so nothing here may close it.
-
-        A SUCCESSFUL batch review also closes its tracking issue (#6768
-        round 4): the open+agent-labeled issue is what startup recovery
-        requeues and what ``_find_existing_triage_issue`` treats as the
-        active batch, so leaving it open relaunches a finished batch after
-        restart AND suppresses all future batch creation. The close is
-        emitted after the PR labels so a mid-apply crash stays re-auditable.
+        None for non-triage sessions; for assignment-less (pre-upgrade)
+        sessions (fail-safe: PRs stay watch-labeled, re-enter the next batch);
+        and for failure investigations, whose anchor IS the original failed
+        work issue — never manifest-labeled, never closed (#6768 B4/round 5).
         """
-        actions: list[Action] = []
-
         if not self._is_triage_session(session):
-            return actions
-
+            return None
         assignment = _read_triage_assignment(session)
         if assignment is None:
-            # Fail-safe for pre-upgrade or assignment-less sessions: skip the
-            # labels so PRs stay watch-labeled and re-enter the next batch,
-            # rather than reproducing the old cross-variant mislabeling.
             logger.warning(
                 "[triage] No triage assignment for session %s; "
                 "skipping triage PR labels (PRs re-enter the next batch)",
                 session.terminal_id,
             )
-            return actions
+            return None
         if assignment.flavor is not TriageSessionFlavor.BATCH_REVIEW:
-            # Failure investigation: findings flow through the completion
-            # record; decision actions arrive with ADR-0031 PR2.
-            return actions
+            return None
+        return assignment
 
-        succeeded = status == SessionStatus.COMPLETED and not _has_critical_errors(
-            processing_errors
-        )
-
+    def _label_manifest_prs(
+        self, session: Session, label: str, reason: str, expected: ExpectedState
+    ) -> list[Action]:
+        """Label every PR in the session's triage manifest (empty when none)."""
         triage_manifest = _read_triage_manifest(session)
-        if triage_manifest and triage_manifest.prs:
-            if succeeded:
-                triage_label = self.config.triage_reviewed_label or "triage-reviewed"
-                reason = "Triage completed successfully"
-            else:
-                triage_label = self.config.triage_failed_label or "triage-failed"
-                reason = "Triage session failed"
-
-            logger.info(
-                "[triage] Adding '%s' label to %d PRs",
-                triage_label,
-                len(triage_manifest.prs),
+        if not triage_manifest or not triage_manifest.prs:
+            return []
+        logger.info(
+            "[triage] Adding '%s' label to %d PRs", label, len(triage_manifest.prs)
+        )
+        return [
+            AddLabelAction(
+                issue_number=pr.number, label=label, reason=reason, expected=expected
             )
+            for pr in triage_manifest.prs
+        ]
 
-            for pr in triage_manifest.prs:
-                actions.append(
-                    AddLabelAction(
-                        issue_number=pr.number,
-                        label=triage_label,
-                        reason=reason,
-                        expected=expected,
-                    )
-                )
+    def _generate_triage_actions(
+        self, session: Session, expected: ExpectedState
+    ) -> list[Action]:
+        """Batch-review SUCCESS effects: reviewed labels + close the tracker.
 
-        if succeeded:
-            # Terminal transition: the tracking issue stops being the active
-            # batch anchor. No comment: triage prompts promise the
-            # orchestrator posts none on the tracking issue.
-            actions.append(
-                CloseIssueAction(
-                    issue_number=session.issue.number,
-                    reason="Batch triage review completed - closing tracking issue",
-                    expected=expected,
-                )
+        The open+agent-labeled tracking issue is what startup recovery
+        requeues and what ``_find_existing_triage_issue`` treats as the active
+        batch, so every terminal batch outcome must close it (#6768 round 4),
+        after the PR labels so a mid-apply crash stays re-auditable. No
+        comment: triage prompts promise the orchestrator posts none.
+        """
+        if self._resolve_batch_review_assignment(session) is None:
+            return []
+        actions = self._label_manifest_prs(
+            session,
+            self.config.triage_reviewed_label or "triage-reviewed",
+            "Triage completed successfully",
+            expected,
+        )
+        actions.append(
+            CloseIssueAction(
+                issue_number=session.issue.number,
+                reason="Batch triage review completed - closing tracking issue",
+                expected=expected,
             )
+        )
+        return actions
 
+    def _generate_triage_failure_actions(
+        self, session: Session, expected: ExpectedState
+    ) -> list[Action]:
+        """Batch-review FAILURE/TIMEOUT effects (#6768 round 5).
+
+        Manifest PRs get the operator-visible triage-failed label; the tracker
+        closes after the generic failure diagnosis and the PR labels. An open
+        failed tracker would requeue at restart with an empty manifest (its
+        PRs are now candidate-filtered as triage-failed), looping forever.
+        """
+        if self._resolve_batch_review_assignment(session) is None:
+            return []
+        actions = self._label_manifest_prs(
+            session,
+            self.config.triage_failed_label or "triage-failed",
+            "Triage session failed",
+            expected,
+        )
+        actions.append(
+            CloseIssueAction(
+                issue_number=session.issue.number,
+                reason="Batch triage review failed - closing tracking issue "
+                "(manifest PRs carry triage-failed)",
+                expected=expected,
+            )
+        )
         return actions
 
     def generate_completion_actions(
@@ -396,7 +396,9 @@ class CompletionActionPlanner:
             return tuple(self._generate_review_exchange_halted_actions(session, expected))
 
         if status == SessionStatus.TIMED_OUT:
-            return tuple(self._generate_timeout_actions(session, expected))
+            timeout_actions = self._generate_timeout_actions(session, expected)
+            timeout_actions.extend(self._generate_triage_failure_actions(session, expected))
+            return tuple(timeout_actions)
 
         if status == SessionStatus.FAILED:
             detail = completion_detail
@@ -415,7 +417,13 @@ class CompletionActionPlanner:
             )
             if invalid_actions is not None:
                 return tuple(invalid_actions)
-            return tuple(self._generate_failure_actions(session, expected))
+            # Interrupted auto-retry relaunches the session: not terminal, so
+            # no triage failure effects (the retry re-audits the same PRs).
+            if retry_actions := self._generate_interrupted_retry_actions(session, expected):
+                return tuple(retry_actions)
+            failure_actions = self._generate_failure_actions(session, expected)
+            failure_actions.extend(self._generate_triage_failure_actions(session, expected))
+            return tuple(failure_actions)
 
         if status == SessionStatus.BLOCKED:
             return tuple(
@@ -437,11 +445,7 @@ class CompletionActionPlanner:
                     expected=expected,
                 )
             ]
-            actions.extend(
-                self._generate_triage_actions(
-                    session, status, processing_errors, expected
-                )
-            )
+            actions.extend(self._generate_triage_actions(session, expected))
             return tuple(actions)
 
         # NEEDS_HUMAN keeps in-progress to maintain the ownership claim.
@@ -650,10 +654,8 @@ class CompletionActionPlanner:
         session: Session,
         expected: ExpectedState,
     ) -> list[Action]:
-        """Generate actions when session failed without completion command."""
-        if retry_actions := self._generate_interrupted_retry_actions(session, expected):
-            return retry_actions
-
+        """Generate terminal actions when a session failed without a completion
+        command (interrupted auto-retry is decided by the caller)."""
         issue_number = session.issue.number
         in_progress_label = self._lm.in_progress
         is_issue_session = session.terminal_id.startswith("issue-")
