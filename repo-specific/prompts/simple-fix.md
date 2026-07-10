@@ -123,10 +123,11 @@ make validate  # Runs tests, type checks, linting
 ```
 
 For a full local PR/pre-push gate, run `make validate-pr`, not
-`_validate-pr`. `make validate-pr` is the cache-aware entrypoint: it records
-the successful `HEAD` + internal publish command result that the later pre-push
-hook reuses. `_validate-pr` is the guarded uncached command used inside that
-gate; running it manually bypasses the cache-aware wrapper and is blocked.
+`make validate-pr-raw`. `make validate-pr` is the cache-aware entrypoint: it
+records the successful `HEAD` + raw publish command result that the later
+pre-push hook reuses. `make validate-pr-raw` is the underlying uncached command
+used inside that gate; running it manually can make the real pre-push hook run
+the same expensive suite again.
 
 If validation fails:
 1. **Read the error output carefully** — identify the root cause, not just the first error

@@ -17,12 +17,12 @@ validation:
     cmd: "make test"
     timeout_seconds: 300
   publish:
-    cmd: "./scripts/validate-pr-suite.sh"
+    cmd: "make validate-pr-raw"
     timeout_seconds: 1800
     dirty_check: tracked
 ```
 
-Use a private non-recursive publish command when your user-facing
+Use the underlying raw publish command when your user-facing
 `make validate-pr` target wraps the cache-aware `scripts/verify-pr.sh` path.
 That keeps pre-push validation from re-entering itself.
 

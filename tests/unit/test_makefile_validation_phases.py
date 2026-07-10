@@ -159,29 +159,20 @@ def test_validate_full_impl_runs_e2e_after_pr_phase():
     assert pr_index < e2e_index
 
 
-def test_internal_validate_pr_does_not_schedule_entire_graph_at_validate_jobs():
-    lines = _dry_run("_validate-pr", ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR="1")
+def test_validate_pr_raw_does_not_schedule_entire_graph_at_validate_jobs():
+    lines = _dry_run("validate-pr-raw")
     raw_pr_index = _find_line(lines, "_validate-pr-impl")
 
     _assert_no_job_count(lines[raw_pr_index])
 
 
-def test_internal_validate_pr_rejects_direct_use():
-    env = dict(os.environ)
-    env.pop("MAKEFLAGS", None)
-    env.pop("ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR", None)
+def test_validate_pr_raw_does_not_reenter_cache_aware_verify_script():
+    # validation.publish.cmd points at `make validate-pr-raw`, which is what the
+    # cache-aware wrapper (scripts/verify-pr.sh) ultimately runs. If the raw
+    # target invoked verify-pr.sh again the pre-push gate would recurse.
+    lines = _dry_run("validate-pr-raw")
 
-    result = subprocess.run(
-        [_gnu_make(), "_validate-pr"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert "run make validate-pr" in result.stderr
+    assert all("verify-pr.sh" not in line for line in lines)
 
 
 def test_validate_pr_uses_cache_aware_verify_script():
