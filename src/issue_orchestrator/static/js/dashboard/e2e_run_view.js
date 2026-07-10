@@ -243,7 +243,6 @@ function _runArtifactDescriptors(data) {
     }
     for (const artifact of artifacts) {
         if (!artifact || !artifact.path) continue;
-        if (artifact.kind === 'raw_log') continue;
         pushDescriptor(artifact.path, artifact.label || artifact.path, 'issue-action-btn subtle');
     }
     return descriptors;

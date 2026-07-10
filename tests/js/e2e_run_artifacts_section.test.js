@@ -87,6 +87,57 @@ test('renders exactly one drill-down button per unique artifact path', () => {
     assert.doesNotMatch(html, /e2e-artifacts-note/);
 });
 
+test('persisted raw_log row with a distinct path renders as its own drill-down', () => {
+    // A collected ``e2e_run_artifacts`` row can carry ``kind: "raw_log"`` with a
+    // path different from ``run.log_path`` (e.g. a per-service raw log). The
+    // backend keys dedupe on ``(kind, path)`` and emits it, so the UI must not
+    // suppress it by kind — only path-based dedupe applies (issue #6593 F1).
+    const ctx = loadModule();
+    const PERSISTED_RAW_PATH = '/results/run_37/agent-runner.log';
+    const html = ctx._renderRunArtifactsSection({
+        run: { id: 37, log_path: RAW_LOG_PATH },
+        reports: [],
+        artifacts: [
+            { kind: 'raw_log', label: 'Raw Output', path: RAW_LOG_PATH },
+            { kind: 'raw_log', label: 'Raw Log: agent-runner.log', path: PERSISTED_RAW_PATH },
+        ],
+        artifact_diagnostic: { state: 'collected', collected_count: 2, configured_glob_count: 1 },
+    });
+
+    // Synthetic ``run.log_path`` still owns the ``Raw Output`` label (paths match
+    // the first persisted row, so dedupe keeps the synthetic one).
+    assert.match(html, /Raw Output/);
+    assert.match(html, /Raw Log: agent-runner.log/);
+
+    const paths = [...html.matchAll(/data-artifact-path="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual([...paths].sort(), [PERSISTED_RAW_PATH, RAW_LOG_PATH].sort());
+    // The distinct persisted raw log renders exactly once — not suppressed.
+    assert.strictEqual(paths.filter((p) => p === PERSISTED_RAW_PATH).length, 1);
+    assert.strictEqual(paths.filter((p) => p === RAW_LOG_PATH).length, 1);
+    assert.match(html, /class="e2e-run-artifacts-count">2 files</);
+});
+
+test('persisted raw_log renders even when the run has no log_path', () => {
+    // With no synthetic ``run.log_path``, the only raw log is the persisted DB
+    // row. A kind-based skip would leave the section with zero raw output; the
+    // path-based dedupe lets it through as a first-class drill-down.
+    const ctx = loadModule();
+    const PERSISTED_RAW_PATH = '/results/run_41/run-e2e-suite.log';
+    const html = ctx._renderRunArtifactsSection({
+        run: { id: 41 },
+        reports: [],
+        artifacts: [
+            { kind: 'raw_log', label: 'Raw Output', path: PERSISTED_RAW_PATH },
+        ],
+        artifact_diagnostic: { state: 'collected', collected_count: 1, configured_glob_count: 1 },
+    });
+
+    assert.match(html, /Raw Output/);
+    const paths = [...html.matchAll(/data-artifact-path="([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual(paths, [PERSISTED_RAW_PATH]);
+    assert.match(html, /class="e2e-run-artifacts-count">1 file</);
+});
+
 test('button dispatch opens the artifact path via openPath', () => {
     const ctx = loadModule();
     const opened = [];
