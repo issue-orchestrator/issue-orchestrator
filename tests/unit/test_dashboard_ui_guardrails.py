@@ -3553,16 +3553,38 @@ def test_stack_status_colours_use_theme_variables_for_contrast() -> None:
 # Provider circuit-breaker outage banner + health panel (issue #5980)
 # ---------------------------------------------------------------------------
 
-def test_provider_circuit_banner_container_is_a_labelled_alert() -> None:
-    # The banner container must exist, be an announced alert region, and start
-    # hidden (JS reveals it only when a circuit is open).
+def test_provider_circuit_banner_uses_a_scoped_assertive_announcer() -> None:
+    # Accessibility (issue #5980): the whole banner must NOT be the assertive
+    # live region. If it were, every countdown tick and every rebuild of the
+    # interactive <details> panel would re-announce the outage and could drop
+    # focus. The alert is a dedicated, visually hidden announcer; the banner
+    # container is a passive wrapper that only toggles visibility.
     template = _read(DASHBOARD_TEMPLATE)
-    assert 'id="providerCircuitBanner"' in template
     match = re.search(r'<div id="providerCircuitBanner"[^>]*>', template)
     assert match, "providerCircuitBanner container not found"
-    tag = match.group(0)
-    assert 'role="alert"' in tag
-    assert "display:none" in tag
+    banner_tag = match.group(0)
+    assert "display:none" in banner_tag
+    assert 'role="alert"' not in banner_tag, "the whole banner must not be an assertive alert region"
+    assert "aria-live" not in banner_tag
+
+    announcer = re.search(r'<span id="providerCircuitAnnouncer"[^>]*>', template)
+    assert announcer, "dedicated providerCircuitAnnouncer live region not found"
+    announcer_tag = announcer.group(0)
+    assert 'role="alert"' in announcer_tag
+    assert 'aria-live="assertive"' in announcer_tag
+
+    # The interactive health panel lives OUTSIDE the alert region and starts
+    # collapsed so live updates never re-announce it.
+    assert re.search(
+        r'<details id="providerCircuitDetails"[^>]*\shidden(\s|>)', template
+    ), "circuit details panel must be a native <details> that starts hidden"
+
+    # The announcer must be visually hidden so it is not a duplicate visible
+    # line -- it exists only to be announced.
+    css = _read_dashboard_css_bundle()
+    announcer_css = _last_css_rule_body(css, ".pcircuit-announcer")
+    assert "position: absolute" in announcer_css
+    assert "clip: rect(0, 0, 0, 0)" in announcer_css
 
 
 def test_provider_circuit_chunk_is_registered_and_wired() -> None:
@@ -3570,8 +3592,9 @@ def test_provider_circuit_chunk_is_registered_and_wired() -> None:
     # every live refresh, or the banner would never appear.
     assert "provider_circuit.js" in DASHBOARD_JS_CHUNKS
     bundle = _read_dashboard_js_bundle()
-    assert "function renderProviderCircuitBannerHtml(" in bundle
     assert "function updateProviderCircuitBanner(" in bundle
+    assert "function providerCircuitRowsHtml(" in bundle
+    assert "function renderProviderCircuitEntryRow(" in bundle
     core = _read(DASHBOARD_JS_DIR / "core.js")
     # Wired into the live refresh path and the initial DOMContentLoaded render.
     assert core.count("renderProviderCircuitFromDashboardData()") >= 2
@@ -3592,8 +3615,9 @@ def test_provider_circuit_status_is_text_not_colour_only() -> None:
     body = _function_body(source, "renderProviderCircuitEntryRow")
     assert "'Unavailable'" in body
     assert "'Recovering'" in body
-    banner_body = _function_body(source, "renderProviderCircuitBannerHtml")
-    assert 'pcircuit-icon" aria-hidden="true"' in banner_body
+    # The decorative icon lives in the static template skeleton, aria-hidden.
+    template = _read(DASHBOARD_TEMPLATE)
+    assert 'class="pcircuit-icon" aria-hidden="true"' in template
 
 
 def test_provider_circuit_banner_uses_theme_variables_for_contrast() -> None:

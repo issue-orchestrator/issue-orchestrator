@@ -1,10 +1,13 @@
 // JS-vm tests for the provider circuit-breaker outage banner (issue #5980).
 //
 // The banner renders from ``window.dashboardData.providerCircuit`` and must:
-//   - stay hidden when no circuit is open,
+//   - stay hidden when no circuit is open and the read succeeded,
 //   - surface the summary + per-provider disclosure when a circuit opens,
 //   - distinguish "Unavailable" (open) from "Recovering" (closed-but-tracked),
-//   - toggle the DOM container's visibility.
+//   - surface a warning when the circuit read itself failed,
+//   - and (accessibility, issue #5980) update WITHOUT re-announcing the
+//     assertive alert region on every countdown tick or collapsing an
+//     operator's expanded <details> panel across live refreshes.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -12,17 +15,48 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-function makeElement() {
-    return { innerHTML: '', style: { display: '' } };
+// A minimal stub element with a write-counting ``textContent`` so tests can
+// prove the assertive announcer is written only on semantic changes.
+function makeElement(extra) {
+    const el = Object.assign(
+        { _text: '', textContentWrites: 0, style: { display: '' }, innerHTML: '' },
+        extra || {},
+    );
+    Object.defineProperty(el, 'textContent', {
+        get() { return this._text; },
+        set(value) { this._text = value; this.textContentWrites += 1; },
+    });
+    return el;
+}
+
+function makeClassList() {
+    const set = new Set();
+    return {
+        add: (c) => set.add(c),
+        remove: (c) => set.delete(c),
+        contains: (c) => set.has(c),
+        toggle: (c, force) => {
+            const on = force === undefined ? !set.has(c) : !!force;
+            if (on) { set.add(c); } else { set.delete(c); }
+            return on;
+        },
+    };
 }
 
 function loadModule(dashboardData) {
-    const bannerEl = makeElement();
+    const els = {
+        providerCircuitBanner: makeElement(),
+        providerCircuitAnnouncer: makeElement({ dataset: {} }),
+        providerCircuitBody: makeElement({ classList: makeClassList() }),
+        providerCircuitSummary: makeElement(),
+        providerCircuitDetails: makeElement({ hidden: true, open: false }),
+        providerCircuitList: makeElement(),
+    };
     const context = {
         console,
         window: { dashboardData: dashboardData || null },
         document: {
-            getElementById: (id) => (id === 'providerCircuitBanner' ? bannerEl : null),
+            getElementById: (id) => (Object.prototype.hasOwnProperty.call(els, id) ? els[id] : null),
         },
         escapeHtml: (value) => String(value)
             .replace(/&/g, '&amp;')
@@ -42,7 +76,7 @@ function loadModule(dashboardData) {
         'utf8',
     );
     vm.runInContext(source, context, { filename: 'provider_circuit.js' });
-    return { context, bannerEl };
+    return { context, els };
 }
 
 function openCircuit() {
@@ -66,35 +100,38 @@ function openCircuit() {
     };
 }
 
-test('renders nothing when no circuit is provided', () => {
-    const { context } = loadModule();
-    assert.strictEqual(context.renderProviderCircuitBannerHtml(null), '');
-    assert.strictEqual(context.renderProviderCircuitBannerHtml({ any_open: false, entries: [] }), '');
-});
+function unavailableCircuit() {
+    return {
+        any_open: false,
+        open_count: 0,
+        open_providers: [],
+        summary_text: 'Provider circuit status unavailable — could not read circuit state.',
+        next_retry_at: null,
+        entries: [],
+        status_unavailable: true,
+    };
+}
 
-test('renders the outage banner for an open circuit', () => {
-    const { context } = loadModule();
-    const html = context.renderProviderCircuitBannerHtml(openCircuit());
+// --- Pure render helpers -------------------------------------------------
 
-    assert.match(html, /pcircuit-icon/);
-    assert.match(html, /Provider outage: anthropic unavailable/);
-    // Per-provider disclosure row: provider, Unavailable badge, cooldown, attempts, error.
-    assert.match(html, /<details class="pcircuit-details">/);
-    assert.match(html, /pcircuit-badge--open">Unavailable</);
-    assert.match(html, /Retry in 4m 12s/);
-    assert.match(html, /Attempts: 3/);
-    assert.match(html, /HTTP 529 overloaded/);
+test('renders per-provider rows for an open circuit', () => {
+    const { context } = loadModule();
+    const rows = context.providerCircuitRowsHtml(openCircuit());
+    assert.match(rows, /pcircuit-badge--open">Unavailable</);
+    assert.match(rows, /Retry in 4m 12s/);
+    assert.match(rows, /Attempts: 3/);
+    assert.match(rows, /HTTP 529 overloaded/);
     // Absolute retry time formatted via the shared timestamp helper.
-    assert.match(html, /AT:2026-07-10T12:04:12/);
+    assert.match(rows, /AT:2026-07-10T12:04:12/);
 });
 
-test('escapes untrusted provider error text', () => {
+test('escapes untrusted provider error text in rows', () => {
     const { context } = loadModule();
     const circuit = openCircuit();
     circuit.entries[0].last_error_summary = '<script>alert(1)</script>';
-    const html = context.renderProviderCircuitBannerHtml(circuit);
-    assert.doesNotMatch(html, /<script>alert/);
-    assert.match(html, /&lt;script&gt;/);
+    const rows = context.providerCircuitRowsHtml(circuit);
+    assert.doesNotMatch(rows, /<script>alert/);
+    assert.match(rows, /&lt;script&gt;/);
 });
 
 test('renders a recovering provider without a cooldown', () => {
@@ -118,78 +155,133 @@ test('renders a recovering provider without a cooldown', () => {
             },
         ],
     };
-    const html = context.renderProviderCircuitBannerHtml(circuit);
-    assert.match(html, /pcircuit-badge--recovering">Recovering</);
-    assert.match(html, /pcircuit-row--recovering/);
+    const rows = context.providerCircuitRowsHtml(circuit);
+    assert.match(rows, /pcircuit-badge--recovering">Recovering</);
+    assert.match(rows, /pcircuit-row--recovering/);
 });
 
-test('updateProviderCircuitBanner shows the container for an open circuit', () => {
-    const { context, bannerEl } = loadModule();
-    context.updateProviderCircuitBanner(openCircuit());
-    assert.strictEqual(bannerEl.style.display, 'flex');
-    assert.match(bannerEl.innerHTML, /Provider outage/);
+test('the announcement is concise and countdown-free', () => {
+    const { context } = loadModule();
+    const msg = context.providerCircuitAnnouncement(openCircuit());
+    assert.match(msg, /Provider outage in progress: anthropic unavailable\./);
+    // The volatile countdown must not be in the assertive announcement.
+    assert.doesNotMatch(msg, /4m 12s/);
+    assert.strictEqual(context.providerCircuitAnnouncement(null), '');
 });
 
-test('updateProviderCircuitBanner hides the container when healthy', () => {
-    const { context, bannerEl } = loadModule();
-    // First open, then clear.
+test('the signature is stable across countdown-only changes but tracks providers', () => {
+    const { context } = loadModule();
+    const a = openCircuit();
+    const b = openCircuit();
+    b.summary_text = 'Provider outage: anthropic unavailable — next retry in 3m 58s.';
+    b.entries[0].cooldown_remaining_label = '3m 58s';
+    // Same open providers -> same signature despite a different countdown.
+    assert.strictEqual(context.providerCircuitSignature(a), context.providerCircuitSignature(b));
+    // A different open-provider set -> a different signature.
+    const c = openCircuit();
+    c.open_providers = ['anthropic', 'openai'];
+    assert.notStrictEqual(context.providerCircuitSignature(a), context.providerCircuitSignature(c));
+    // Provider order is normalised so re-ordering does not falsely re-announce.
+    const d = openCircuit();
+    d.open_providers = ['openai', 'anthropic'];
+    assert.strictEqual(context.providerCircuitSignature(c), context.providerCircuitSignature(d));
+    // A read failure is a distinct signature.
+    assert.strictEqual(context.providerCircuitSignature(unavailableCircuit()), 'unavailable');
+});
+
+test('nothing shows for a healthy fleet', () => {
+    const { context } = loadModule();
+    assert.strictEqual(context.providerCircuitIsActive({ any_open: false, entries: [], status_unavailable: false }), false);
+    assert.strictEqual(context.providerCircuitIsActive(null), false);
+    assert.strictEqual(context.providerCircuitRowsHtml(null), '');
+});
+
+// --- DOM behaviour -------------------------------------------------------
+
+test('updateProviderCircuitBanner shows the banner and announces an open circuit', () => {
+    const { context, els } = loadModule();
     context.updateProviderCircuitBanner(openCircuit());
-    context.updateProviderCircuitBanner({ any_open: false, entries: [] });
-    assert.strictEqual(bannerEl.style.display, 'none');
-    assert.strictEqual(bannerEl.innerHTML, '');
+    assert.strictEqual(els.providerCircuitBanner.style.display, 'flex');
+    assert.match(els.providerCircuitSummary.textContent, /Provider outage: anthropic/);
+    // The assertive announcer got the concise, countdown-free message.
+    assert.match(els.providerCircuitAnnouncer.textContent, /Provider outage in progress: anthropic unavailable\./);
+    assert.strictEqual(els.providerCircuitDetails.hidden, false);
+    assert.match(els.providerCircuitList.innerHTML, /HTTP 529 overloaded/);
+});
+
+test('updateProviderCircuitBanner hides and clears the banner when healthy', () => {
+    const { context, els } = loadModule();
+    context.updateProviderCircuitBanner(openCircuit());
+    context.updateProviderCircuitBanner({ any_open: false, entries: [], status_unavailable: false });
+    assert.strictEqual(els.providerCircuitBanner.style.display, 'none');
+    assert.strictEqual(els.providerCircuitSummary.textContent, '');
+    assert.strictEqual(els.providerCircuitList.innerHTML, '');
+    assert.strictEqual(els.providerCircuitDetails.hidden, true);
+    // Announcer cleared so a *new* outage will announce again.
+    assert.strictEqual(els.providerCircuitAnnouncer.textContent, '');
+    assert.strictEqual(els.providerCircuitAnnouncer.dataset.circuitSig, '');
+});
+
+test('updateProviderCircuitBanner surfaces an unavailable read as a warning', () => {
+    const { context, els } = loadModule();
+    context.updateProviderCircuitBanner(unavailableCircuit());
+    assert.strictEqual(els.providerCircuitBanner.style.display, 'flex');
+    assert.match(els.providerCircuitSummary.textContent, /status unavailable/);
+    assert.match(els.providerCircuitAnnouncer.textContent, /status unavailable/);
+    assert.ok(els.providerCircuitBody.classList.contains('pcircuit-body--unavailable'));
+    // No per-provider rows for a failed read.
+    assert.strictEqual(els.providerCircuitDetails.hidden, true);
+});
+
+test('a countdown-only refresh does not re-announce the alert region', () => {
+    const { context, els } = loadModule();
+    context.updateProviderCircuitBanner(openCircuit());
+    const writesAfterFirst = els.providerCircuitAnnouncer.textContentWrites;
+    assert.ok(writesAfterFirst >= 1);
+
+    // Same outage, later countdown value: the visible summary updates but the
+    // assertive announcer must NOT be written again.
+    const later = openCircuit();
+    later.summary_text = 'Provider outage: anthropic unavailable — next retry in 3m 58s.';
+    later.entries[0].cooldown_remaining_label = '3m 58s';
+    context.updateProviderCircuitBanner(later);
+
+    assert.strictEqual(els.providerCircuitAnnouncer.textContentWrites, writesAfterFirst);
+    assert.match(els.providerCircuitSummary.textContent, /3m 58s/);
+
+    // A genuinely new outage state (a second provider opens) DOES re-announce.
+    const escalated = openCircuit();
+    escalated.open_providers = ['anthropic', 'openai'];
+    context.updateProviderCircuitBanner(escalated);
+    assert.strictEqual(els.providerCircuitAnnouncer.textContentWrites, writesAfterFirst + 1);
+});
+
+test('repeated refreshes do not collapse an operator-opened details panel', () => {
+    const { context, els } = loadModule();
+    context.updateProviderCircuitBanner(openCircuit());
+    assert.strictEqual(els.providerCircuitDetails.hidden, false);
+
+    // Operator expands the health panel.
+    els.providerCircuitDetails.open = true;
+
+    // Several live refreshes with ticking countdowns arrive.
+    const later = openCircuit();
+    later.entries[0].cooldown_remaining_label = '3m 58s';
+    context.updateProviderCircuitBanner(later);
+    const later2 = openCircuit();
+    later2.entries[0].cooldown_remaining_label = '3m 41s';
+    context.updateProviderCircuitBanner(later2);
+
+    // The <details> node was never replaced, so it is still open and its rows
+    // were updated in place.
+    assert.strictEqual(els.providerCircuitDetails.open, true);
+    assert.strictEqual(els.providerCircuitDetails.hidden, false);
+    assert.match(els.providerCircuitList.innerHTML, /3m 41s/);
 });
 
 test('renderProviderCircuitFromDashboardData reads the shared dashboard data', () => {
-    const { context, bannerEl } = loadModule({ providerCircuit: openCircuit() });
+    const { context, els } = loadModule({ providerCircuit: openCircuit() });
     context.renderProviderCircuitFromDashboardData();
-    assert.strictEqual(bannerEl.style.display, 'flex');
-    assert.match(bannerEl.innerHTML, /anthropic/);
-});
-
-// Issue #5980: a failed circuit read must surface as a warning banner, never
-// be hidden like a healthy fleet — a broken read cannot masquerade as "no
-// outage".
-function unavailableCircuit() {
-    return {
-        any_open: false,
-        open_count: 0,
-        open_providers: [],
-        summary_text: 'Provider circuit status unavailable — could not read circuit state.',
-        next_retry_at: null,
-        entries: [],
-        status_unavailable: true,
-    };
-}
-
-test('renders a warning banner when circuit status is unavailable', () => {
-    const { context } = loadModule();
-    const html = context.renderProviderCircuitBannerHtml(unavailableCircuit());
-    // Not hidden, even though any_open is false.
-    assert.notStrictEqual(html, '');
-    assert.match(html, /pcircuit-icon/);
-    assert.match(html, /pcircuit-body--unavailable/);
-    assert.match(html, /Provider circuit status unavailable/);
-});
-
-test('renders a default warning when unavailable circuit lacks a summary', () => {
-    const { context } = loadModule();
-    const circuit = unavailableCircuit();
-    circuit.summary_text = '';
-    const html = context.renderProviderCircuitBannerHtml(circuit);
-    assert.match(html, /Provider circuit status unavailable/);
-});
-
-test('updateProviderCircuitBanner shows the container when status is unavailable', () => {
-    const { context, bannerEl } = loadModule();
-    context.updateProviderCircuitBanner(unavailableCircuit());
-    assert.strictEqual(bannerEl.style.display, 'flex');
-    assert.match(bannerEl.innerHTML, /unavailable/);
-});
-
-test('a healthy circuit (not open, not unavailable) still renders nothing', () => {
-    const { context } = loadModule();
-    const html = context.renderProviderCircuitBannerHtml({
-        any_open: false, entries: [], status_unavailable: false,
-    });
-    assert.strictEqual(html, '');
+    assert.strictEqual(els.providerCircuitBanner.style.display, 'flex');
+    assert.match(els.providerCircuitList.innerHTML, /anthropic/);
 });
