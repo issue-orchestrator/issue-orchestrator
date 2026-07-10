@@ -44,6 +44,10 @@ class ProviderCircuitStatusContract(ContractBase):
     summary_text: str
     next_retry_at: Optional[str] = None
     entries: list[ProviderCircuitEntryContract] = Field(default_factory=list)
+    # True when the circuit state could not be read/projected. The banner shows
+    # a health warning instead of hiding, so a broken read never masquerades as
+    # "no outage" (issue #5980). Defaults to ``False`` (readable / healthy).
+    status_unavailable: bool = False
 
 
 class DashboardDataContract(ContractBase):

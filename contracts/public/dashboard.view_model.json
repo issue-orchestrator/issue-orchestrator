@@ -211,6 +211,11 @@
           "title": "Open Providers",
           "type": "array"
         },
+        "status_unavailable": {
+          "default": false,
+          "title": "Status Unavailable",
+          "type": "boolean"
+        },
         "summary_text": {
           "title": "Summary Text",
           "type": "string"

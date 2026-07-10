@@ -44,7 +44,7 @@ class ProviderCircuitStatusView(ProviderCircuitBase):
     """Top-level circuit status powering the banner + health panel."""
 
     # True when at least one provider circuit is open right now. The banner
-    # shows iff this is set.
+    # shows iff this is set (or ``status_unavailable`` is).
     any_open: bool
     open_count: int
     open_providers: tuple[str, ...]
@@ -53,6 +53,13 @@ class ProviderCircuitStatusView(ProviderCircuitBase):
     # Soonest ``open_until`` across all open circuits (ISO-8601), or ``None``.
     next_retry_at: str | None
     entries: tuple[ProviderCircuitEntryView, ...]
+    # True when the circuit state could NOT be read/projected (corrupt store,
+    # broken manager, unexpected projection bug). This is distinct from
+    # ``any_open=False`` (a genuinely healthy fleet): a read failure must never
+    # masquerade as "no outage", so the banner renders it as a health warning
+    # instead of hiding — otherwise a broken read would silently conceal a real
+    # provider outage from operators (issue #5980).
+    status_unavailable: bool = False
 
     @classmethod
     def empty(cls) -> "ProviderCircuitStatusView":
@@ -63,6 +70,27 @@ class ProviderCircuitStatusView(ProviderCircuitBase):
             summary_text="",
             next_retry_at=None,
             entries=(),
+            status_unavailable=False,
+        )
+
+    @classmethod
+    def unavailable(cls, detail: str | None = None) -> "ProviderCircuitStatusView":
+        """Explicit degraded status for a failed circuit read/projection.
+
+        Rendered as a warning banner (not hidden) so operators see that the
+        provider-circuit status is unknown rather than assuming all is well.
+        """
+        summary = "Provider circuit status unavailable — could not read circuit state."
+        if detail:
+            summary = f"{summary} ({detail})"
+        return cls(
+            any_open=False,
+            open_count=0,
+            open_providers=(),
+            summary_text=summary,
+            next_retry_at=None,
+            entries=(),
+            status_unavailable=True,
         )
 
 

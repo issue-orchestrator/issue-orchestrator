@@ -179,6 +179,13 @@ html[data-embedded="true"] body > .container > header {
     gap: 6px;
     min-width: 0;
 }
+/* Read/projection failure (status_unavailable): the status is unknown rather
+   than a confirmed outage. Keep the alert affordance but nudge the summary to
+   the warning tone so operators can tell "couldn't read" from "provider down".
+   Colour is not the only cue — the summary text itself says "unavailable". */
+.pcircuit-body--unavailable > .pcircuit-summary {
+    color: var(--warn, var(--danger));
+}
 .pcircuit-summary {
     font-weight: 700;
 }

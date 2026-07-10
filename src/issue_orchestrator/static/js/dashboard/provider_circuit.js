@@ -45,10 +45,17 @@ function renderProviderCircuitEntryRow(entry) {
 
 // Pure: returns the banner's inner HTML, or '' when nothing should show.
 function renderProviderCircuitBannerHtml(circuit) {
-    if (!circuit || !circuit.any_open) {
+    const statusUnavailable = !!(circuit && circuit.status_unavailable);
+    // A failed circuit read is NOT the same as a healthy fleet: surface it as a
+    // warning banner rather than hiding, so a broken read can't masquerade as
+    // "no outage" (issue #5980).
+    if (!circuit || (!circuit.any_open && !statusUnavailable)) {
         return '';
     }
-    const summary = escapeHtml(circuit.summary_text || 'Provider outage in progress.');
+    const defaultSummary = statusUnavailable
+        ? 'Provider circuit status unavailable — could not read circuit state.'
+        : 'Provider outage in progress.';
+    const summary = escapeHtml(circuit.summary_text || defaultSummary);
     const entries = Array.isArray(circuit.entries) ? circuit.entries : [];
     const rows = entries.map(renderProviderCircuitEntryRow).join('');
     const details = rows
@@ -57,8 +64,9 @@ function renderProviderCircuitBannerHtml(circuit) {
             + `<ul class="pcircuit-list">${rows}</ul>`
             + `</details>`
         : '';
+    const bodyClass = statusUnavailable ? 'pcircuit-body pcircuit-body--unavailable' : 'pcircuit-body';
     return `<span class="pcircuit-icon" aria-hidden="true">&#x26A0;</span>`
-        + `<div class="pcircuit-body">`
+        + `<div class="${bodyClass}">`
         + `<span class="pcircuit-summary">${summary}</span>`
         + details
         + `</div>`;

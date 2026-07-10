@@ -214,7 +214,8 @@ def test_dashboard_data_surfaces_open_circuit():
 
 def test_dashboard_data_circuit_empty_without_deps():
     # A pre-bootstrap orchestrator (no deps/manager) must not crash and must
-    # still emit a well-formed, hidden circuit payload.
+    # still emit a well-formed, hidden circuit payload — and it is the genuine
+    # healthy-empty case, NOT the read-failure warning.
     orchestrator = _orchestrator_with_manager(None)
 
     view_model = build_dashboard_view_model(
@@ -225,4 +226,64 @@ def test_dashboard_data_circuit_empty_without_deps():
     circuit = view_model.dashboard_data()["providerCircuit"]
     assert circuit["any_open"] is False
     assert circuit["entries"] == []
+    assert circuit["status_unavailable"] is False
     DashboardDataContract.model_validate(view_model.dashboard_data())
+
+
+class _BrokenStore:
+    """A circuit store whose read blows up (simulates a corrupt store)."""
+
+    def get(self, provider: str):  # pragma: no cover - not exercised by snapshot
+        raise RuntimeError("circuit store corrupt")
+
+    def list_all(self):
+        raise RuntimeError("circuit store corrupt")
+
+    def save(self, state) -> None:  # pragma: no cover - inert
+        pass
+
+    def delete(self, provider: str) -> None:  # pragma: no cover - inert
+        pass
+
+
+def test_dashboard_data_circuit_read_failure_surfaces_as_unavailable_not_healthy():
+    """A real read/projection failure must NOT be silently rendered as a
+    healthy (hidden) circuit.
+
+    Regression for issue #5980: a corrupt store / broken manager / projection
+    bug previously fell through to ``ProviderCircuitStatusView.empty()``, so an
+    outage was indistinguishable from "no outage". Now the failure surfaces as
+    an explicit ``status_unavailable`` warning the banner renders instead of
+    hiding — the operator sees the status is unknown, not that all is well.
+    """
+    manager = ProviderResilienceManager(
+        config=ProviderResilienceConfig(), store=_BrokenStore(), events=_NullEvents()
+    )
+    orchestrator = _orchestrator_with_manager(manager)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    circuit = view_model.dashboard_data()["providerCircuit"]
+    # The tell-tale: NOT the healthy empty payload.
+    assert circuit["status_unavailable"] is True
+    assert circuit["any_open"] is False
+    assert circuit["summary_text"], "read failure must carry a visible warning summary"
+    assert "unavailable" in circuit["summary_text"].lower()
+    # Still a well-formed, contract-valid payload (the dashboard stays up).
+    DashboardDataContract.model_validate(view_model.dashboard_data())
+
+
+def test_unavailable_projection_view_is_shown_not_hidden():
+    """The view-model owner marks a read failure as an explicit warning state,
+    distinct from both ``empty()`` (healthy) and an open circuit."""
+    healthy = ProviderCircuitStatusView.empty()
+    assert healthy.status_unavailable is False
+    assert healthy.any_open is False
+
+    unavailable = ProviderCircuitStatusView.unavailable("boom")
+    assert unavailable.status_unavailable is True
+    assert unavailable.any_open is False
+    assert "boom" in unavailable.summary_text

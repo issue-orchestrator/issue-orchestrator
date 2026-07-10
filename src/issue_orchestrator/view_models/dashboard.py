@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import time
 from typing import Any, Callable, assert_never
 
@@ -39,6 +40,8 @@ from .dashboard_flow import select_issues_for_tab
 from .dashboard_flow import stamp_issue_item_stale_badge_visibility
 from .rework_status import queued_rework_issue_numbers, resolve_queued_rework
 from .timestamp_values import dashboard_timestamp_source
+
+logger = logging.getLogger(__name__)
 
 QUEUE_PAGE_SIZE = 20
 
@@ -1475,21 +1478,31 @@ def build_dashboard_view_model(
 def _build_provider_circuit_status(orchestrator: Any) -> ProviderCircuitStatusView:
     """Read the circuit owner's snapshot and project it for the UI.
 
-    Best-effort inspection: a pre-bootstrap render (no ``deps``/manager) or a
-    fresh repo with no recorded outages yields the empty status, so the banner
-    and panel simply stay hidden.
+    Only the genuine *pre-bootstrap / no-manager* case yields the empty (hidden)
+    status: no ``orchestrator``, no ``deps``, or no wired
+    ``deps.provider_resilience`` manager. A fresh repo with no recorded outages
+    is also legitimately empty (the manager returns no rows).
+
+    A *real* read/projection failure once a manager exists (corrupt circuit
+    store, broken manager, unexpected projection bug) must never be silently
+    rendered as a healthy empty payload — that would hide a provider outage
+    behind a broken read. Such failures surface as an explicit ``unavailable``
+    status the banner renders as a health warning (issue #5980).
     """
     if orchestrator is None:
         return ProviderCircuitStatusView.empty()
     deps = getattr(orchestrator, "deps", None)
     if deps is None:
         return ProviderCircuitStatusView.empty()
-    try:
-        manager = deps.provider_resilience
-        statuses = manager.snapshot()
-    except Exception:
+    manager = getattr(deps, "provider_resilience", None)
+    if manager is None:
         return ProviderCircuitStatusView.empty()
-    return build_provider_circuit_status(statuses)
+    try:
+        statuses = manager.snapshot()
+        return build_provider_circuit_status(statuses)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a UI warning, not swallowed
+        logger.exception("provider circuit status read/projection failed")
+        return ProviderCircuitStatusView.unavailable(str(exc))
 
 
 def _build_recent_e2e_runs_payload(config: Any) -> RecentE2ERunsPayload:

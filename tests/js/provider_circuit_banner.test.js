@@ -145,3 +145,51 @@ test('renderProviderCircuitFromDashboardData reads the shared dashboard data', (
     assert.strictEqual(bannerEl.style.display, 'flex');
     assert.match(bannerEl.innerHTML, /anthropic/);
 });
+
+// Issue #5980: a failed circuit read must surface as a warning banner, never
+// be hidden like a healthy fleet — a broken read cannot masquerade as "no
+// outage".
+function unavailableCircuit() {
+    return {
+        any_open: false,
+        open_count: 0,
+        open_providers: [],
+        summary_text: 'Provider circuit status unavailable — could not read circuit state.',
+        next_retry_at: null,
+        entries: [],
+        status_unavailable: true,
+    };
+}
+
+test('renders a warning banner when circuit status is unavailable', () => {
+    const { context } = loadModule();
+    const html = context.renderProviderCircuitBannerHtml(unavailableCircuit());
+    // Not hidden, even though any_open is false.
+    assert.notStrictEqual(html, '');
+    assert.match(html, /pcircuit-icon/);
+    assert.match(html, /pcircuit-body--unavailable/);
+    assert.match(html, /Provider circuit status unavailable/);
+});
+
+test('renders a default warning when unavailable circuit lacks a summary', () => {
+    const { context } = loadModule();
+    const circuit = unavailableCircuit();
+    circuit.summary_text = '';
+    const html = context.renderProviderCircuitBannerHtml(circuit);
+    assert.match(html, /Provider circuit status unavailable/);
+});
+
+test('updateProviderCircuitBanner shows the container when status is unavailable', () => {
+    const { context, bannerEl } = loadModule();
+    context.updateProviderCircuitBanner(unavailableCircuit());
+    assert.strictEqual(bannerEl.style.display, 'flex');
+    assert.match(bannerEl.innerHTML, /unavailable/);
+});
+
+test('a healthy circuit (not open, not unavailable) still renders nothing', () => {
+    const { context } = loadModule();
+    const html = context.renderProviderCircuitBannerHtml({
+        any_open: false, entries: [], status_unavailable: false,
+    });
+    assert.strictEqual(html, '');
+});
