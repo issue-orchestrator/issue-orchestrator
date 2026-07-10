@@ -540,7 +540,7 @@ test('round-trip: render a linked-failure payload, extract the typed Command fro
             return Promise.resolve({
                 ok: true,
                 status: 200,
-                json: () => Promise.resolve({ runs: [] }),
+                json: () => Promise.resolve({ attempts: [] }),
             });
         },
     });

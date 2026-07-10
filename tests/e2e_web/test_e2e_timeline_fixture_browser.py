@@ -2191,7 +2191,7 @@ def test_run_modal_canonical_viewer_shows_failures_passes_and_linked_issue_plugi
         "  window.fetch = (url) => {"
         "    window.__inlineAttemptsCalls.push(String(url));"
         "    return Promise.resolve({ ok: true, status: 200, "
-        "      json: () => Promise.resolve({ runs: [] }), "
+        "      json: () => Promise.resolve({ attempts: [] }), "
         "    });"
         "  };"
         "}"
