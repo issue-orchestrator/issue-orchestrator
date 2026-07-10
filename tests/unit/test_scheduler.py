@@ -912,6 +912,24 @@ class TestSchedulerDependencyGating:
         assert blocked_issue.number == 2
         assert "waiting on: #100" in reason
 
+    def test_blocking_label_skip_detail_names_labels(self, sample_config):
+        scheduler = Scheduler(config=sample_config)
+        issue = Issue(
+            number=2,
+            title="Blocked issue",
+            labels=["blocked-cross-milestone", "publish-failed", "agent:backend"],
+            body="",
+        )
+
+        decision = scheduler.evaluate_issues([issue])[0]
+
+        assert decision.available is False
+        assert decision.reason == "blocked_label"
+        assert decision.detail == (
+            "blocking labels: blocked-cross-milestone (Cross-milestone dep), "
+            "publish-failed (Publishing failed)"
+        )
+
     def test_get_available_allows_satisfied_dependencies(
         self, sample_config, checker, events
     ):

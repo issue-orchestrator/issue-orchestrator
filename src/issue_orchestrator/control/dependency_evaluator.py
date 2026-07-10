@@ -41,6 +41,7 @@ from ..ports import EventSink, IssueResolver, make_trace_event
 from ..ports.repository_host import DependencyIssueSnapshot, RepositoryHostError
 from ..ports.stack_branch_ancestry import StackBranchAncestry
 from ..ports.stack_predecessor_facts import StackPredecessorFactsProvider
+from .dependency_error_messages import milestone_scope_error, source_missing_milestone_error
 
 logger = logging.getLogger(__name__)
 
@@ -478,7 +479,7 @@ class DependencyEvaluator:
             return Dependency(
                 issue_number=issue_number, external_id=external_id, repository=repo,
                 mode=edge.mode, state=DependencyState.CROSS_MILESTONE,
-                error="Source issue has no milestone but declares dependencies",
+                error=source_missing_milestone_error(source_issue_number, edge, self.foundation_milestone),
             )
 
         return self._check_dependency_state(
@@ -671,7 +672,8 @@ class DependencyEvaluator:
             for ref in dep_refs:
                 dep = Dependency(
                     issue_number=ref.issue_number, external_id=ref.external_id, repository=ref.repository,
-                    state=DependencyState.CROSS_MILESTONE, error="Source issue has no milestone but declares dependencies",
+                    state=DependencyState.CROSS_MILESTONE,
+                    error=source_missing_milestone_error(issue_number, ref, self.foundation_milestone),
                 )
                 result["cross_milestone"].append(dep)
                 logger.warning("Issue #%d has no milestone but declares dependency %s", issue_number, dep.display_ref)
@@ -770,11 +772,11 @@ class DependencyEvaluator:
 
     def _check_milestone_scope(self, dep_milestone: str | None, source_milestone: str) -> str | None:
         """Check if dependency is in valid milestone scope. Returns error message or None."""
-        if dep_milestone is None:
-            return f"Dependency has no milestone (source is in {source_milestone})"
-        if dep_milestone != source_milestone and dep_milestone != self.foundation_milestone:
-            return f"Dependency in {dep_milestone}, not in {source_milestone} or {self.foundation_milestone}"
-        return None
+        return milestone_scope_error(
+            dep_milestone,
+            source_milestone,
+            self.foundation_milestone,
+        )
 
     def _emit_event(self, report: DependencyReport) -> None:
         """Emit trace event for dependency evaluation."""

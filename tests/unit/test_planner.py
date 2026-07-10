@@ -2615,6 +2615,29 @@ class TestEdgeCases:
 
         assert "trace-queue-decision issue=4057 decision=skip reason=session_history" in caplog.text
 
+    def test_trace_queue_decision_logs_blocking_label_detail(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Planner traces name the blocking labels instead of only blocked_label."""
+        config = make_config(max_concurrent_sessions=3)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        issue = make_issue(
+            520,
+            title="Stack successor",
+            labels=["blocked-cross-milestone", "agent:backend"],
+        )
+        snapshot = make_snapshot(issues=[issue])
+
+        with caplog.at_level(logging.INFO):
+            planner.plan(snapshot)
+
+        assert (
+            "trace-queue-decision issue=520 decision=skip reason=blocked_label "
+            "detail=blocking labels: blocked-cross-milestone (Cross-milestone dep)"
+        ) in caplog.text
+
     def test_trace_queue_decision_logs_only_when_reason_changes(self, caplog: pytest.LogCaptureFixture):
         """Queue decision traces are emitted on change, not every tick."""
         config = make_config(max_concurrent_sessions=3)
@@ -2634,6 +2657,32 @@ class TestEdgeCases:
 
         assert first_count == 1
         assert second_count == 1
+
+    def test_trace_queue_decision_logs_when_blocking_label_detail_changes(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """A changed blocking label emits a new trace even with the same reason."""
+        config = make_config(max_concurrent_sessions=3)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        with caplog.at_level(logging.INFO):
+            planner.plan(make_snapshot(issues=[
+                make_issue(514, labels=["publish-failed"]),
+            ]))
+            planner.plan(make_snapshot(issues=[
+                make_issue(514, labels=["blocked-cross-milestone"]),
+            ]))
+
+        assert caplog.text.count(
+            "trace-queue-decision issue=514 decision=skip reason=blocked_label"
+        ) == 2
+        assert "detail=blocking labels: publish-failed (Publishing failed)" in caplog.text
+        assert (
+            "detail=blocking labels: blocked-cross-milestone "
+            "(Cross-milestone dep)"
+        ) in caplog.text
 
     def test_multiple_escalations_all_produce_actions(self):
         """Multiple discovered escalations all produce escalate actions."""

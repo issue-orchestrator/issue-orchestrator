@@ -254,6 +254,56 @@ def test_dashboard_view_model_history_and_e2e_items_match_ui_openapi() -> None:
     _validator("DashboardViewModelPayload").validate(view_model.to_dict())
 
 
+def _dashboard_data_payload(**overrides: object) -> dict[str, object]:
+    """A minimal complete ``DashboardDataPayload`` for contract validation."""
+    payload: dict[str, object] = {
+        "startupComplete": True,
+        "paused": False,
+        "e2eRunning": False,
+        "queueRefreshSeconds": 300,
+        "repo": "test/repo",
+        "repoRoot": "/tmp/repo",
+        "githubOwner": "test",
+        "githubRepo": "repo",
+        "agents": ["agent:web"],
+        "validationConfigured": False,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_dashboard_data_payload_requires_validation_configured() -> None:
+    """Issue #4109: ``validationConfigured`` is the safety flag that drives the
+    dashboard's "no validation configured" warning. It is a *required* boolean
+    on both contract layers — a missing flag must fail validation loudly, not
+    default to ``True`` (JSON schema) or ``None`` (generated Pydantic) and
+    silently suppress the warning.
+    """
+    from issue_orchestrator.contracts.ui_openapi_models import DashboardDataPayload
+    from pydantic import ValidationError
+
+    validator = _validator("DashboardDataPayload")
+
+    valid = _dashboard_data_payload()
+    validator.validate(valid)  # must not raise
+    DashboardDataPayload.model_validate(valid)
+
+    incomplete = _dashboard_data_payload()
+    del incomplete["validationConfigured"]
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(incomplete)
+    with pytest.raises(ValidationError):
+        DashboardDataPayload.model_validate(incomplete)
+
+    # A null flag is also rejected — the field is a strict boolean.
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(_dashboard_data_payload(validationConfigured=None))
+    with pytest.raises(ValidationError):
+        DashboardDataPayload.model_validate(
+            _dashboard_data_payload(validationConfigured=None)
+        )
+
+
 def test_view_model_snapshot_payload_matches_ui_openapi() -> None:
     config = _make_config()
     state = OrchestratorState(startup_status="complete")

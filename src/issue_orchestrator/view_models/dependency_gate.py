@@ -29,6 +29,7 @@ from ..domain.dependency_gates import (
     DependencyGateReport,
     DependencyGateSnapshot,
     Gate,
+    GateBlock,
     GateBlockReason,
     SuccessorEdge,
 )
@@ -75,6 +76,13 @@ def reason_phrase(reason: GateBlockReason) -> str:
     return _REASON_PHRASE.get(reason, reason.value.replace("_", " "))
 
 
+def _gate_reason_text(block: GateBlock) -> str:
+    text = f"{reason_phrase(block.reason)} for {block.dependency_ref}"
+    if block.detail:
+        text += f": {block.detail}"
+    return text
+
+
 def _classify_mode(
     report: DependencyGateReport | None,
     successors: Sequence[SuccessorEdge],
@@ -110,7 +118,7 @@ def _gate_views(report: DependencyGateReport | None) -> list[StackGateStatusView
                 gate=gate.value,
                 open=decision.is_open,
                 reason_codes=[code.value for code in codes],
-                reasons=[reason_phrase(code) for code in codes],
+                reasons=list(dict.fromkeys(_gate_reason_text(block) for block in decision.blocks)),
             )
         )
     return views

@@ -323,19 +323,25 @@ class DependencyGateReport:
                 return "No dependencies"
             return f"All {len(self.dependencies)} dependencies satisfied"
 
-        refs_by_reason: dict[GateBlockReason, list[str]] = {}
+        blocks_by_reason: dict[GateBlockReason, list[GateBlock]] = {}
         for block in self.work.blocks:
-            refs = refs_by_reason.setdefault(block.reason, [])
-            if block.dependency_ref not in refs:
-                refs.append(block.dependency_ref)
+            blocks = blocks_by_reason.setdefault(block.reason, [])
+            if not any(
+                existing.dependency_ref == block.dependency_ref
+                and existing.detail == block.detail
+                for existing in blocks
+            ):
+                blocks.append(block)
 
         parts: list[str] = []
         for reason in _LEGACY_WORK_PHRASE_ORDER:
-            refs = refs_by_reason.pop(reason, None)
-            if refs:
-                parts.append(f"{_LEGACY_WORK_PHRASE[reason]}: {', '.join(refs)}")
-        for reason, refs in refs_by_reason.items():
-            parts.append(f"{reason.value}: {', '.join(refs)}")
+            blocks = blocks_by_reason.pop(reason, None)
+            if blocks:
+                parts.append(
+                    f"{_LEGACY_WORK_PHRASE[reason]}: {_format_block_refs(blocks)}"
+                )
+        for reason, blocks in blocks_by_reason.items():
+            parts.append(f"{reason.value}: {_format_block_refs(blocks)}")
         return "Blocked - " + "; ".join(parts)
 
     def dependency_state_counts(self) -> dict[DependencyState, int]:
@@ -373,6 +379,17 @@ _LEGACY_WORK_PHRASE_ORDER: tuple[GateBlockReason, ...] = (
     GateBlockReason.DEPENDENCY_UNKNOWN,
     GateBlockReason.CROSS_MILESTONE,
 )
+
+
+def _format_block_refs(blocks: Sequence[GateBlock]) -> str:
+    formatted: list[str] = []
+    for block in blocks:
+        text = block.dependency_ref
+        if block.detail:
+            text += f" ({block.detail})"
+        if text not in formatted:
+            formatted.append(text)
+    return ", ".join(formatted)
 
 
 def _reaches_self(

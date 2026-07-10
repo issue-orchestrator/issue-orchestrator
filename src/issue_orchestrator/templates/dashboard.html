@@ -46,6 +46,15 @@
     <a href="#mainContent" class="skip-link">Skip to main content</a>
     <div class="container">
         <div id="engineRestartBanner" class="engine-restart-banner" style="display:none;" role="status" aria-live="polite"></div>
+        {% if not validation_configured %}
+        <div class="validation-warning-banner" id="validationWarningBanner" role="alert">
+            <span class="validation-warning-icon" aria-hidden="true">&#x26A0;</span>
+            <span class="validation-warning-text">
+                <strong>No validation configured</strong> &mdash; agent output is pushed without any automated checks.
+                <a href="/settings" data-embedded-settings-link>Configure a validation command</a> to verify work before it merges.
+            </span>
+        </div>
+        {% endif %}
         <header>
             <div class="header-left">
                 <h1>Issue Orchestrator</h1>
