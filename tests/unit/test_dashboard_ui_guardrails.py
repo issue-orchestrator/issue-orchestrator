@@ -3547,3 +3547,98 @@ def test_stack_status_colours_use_theme_variables_for_contrast() -> None:
     assert "var(--danger)" in blocked_body
     open_body = _last_css_rule_body(css, ".stack-gate--open .stack-gate-state")
     assert "var(--ok)" in open_body
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit-breaker outage banner + health panel (issue #5980)
+# ---------------------------------------------------------------------------
+
+def test_provider_circuit_banner_uses_a_scoped_assertive_announcer() -> None:
+    # Accessibility (issue #5980): the whole banner must NOT be the assertive
+    # live region. If it were, every countdown tick and every rebuild of the
+    # interactive <details> panel would re-announce the outage and could drop
+    # focus. The alert is a dedicated, visually hidden announcer; the banner
+    # container is a passive wrapper that only toggles visibility.
+    template = _read(DASHBOARD_TEMPLATE)
+    match = re.search(r'<div id="providerCircuitBanner"[^>]*>', template)
+    assert match, "providerCircuitBanner container not found"
+    banner_tag = match.group(0)
+    assert "display:none" in banner_tag
+    assert 'role="alert"' not in banner_tag, "the whole banner must not be an assertive alert region"
+    assert "aria-live" not in banner_tag
+
+    announcer = re.search(r'<span id="providerCircuitAnnouncer"[^>]*>', template)
+    assert announcer, "dedicated providerCircuitAnnouncer live region not found"
+    announcer_tag = announcer.group(0)
+    assert 'role="alert"' in announcer_tag
+    assert 'aria-live="assertive"' in announcer_tag
+
+    # The interactive health panel lives OUTSIDE the alert region and starts
+    # collapsed so live updates never re-announce it.
+    assert re.search(
+        r'<details id="providerCircuitDetails"[^>]*\shidden(\s|>)', template
+    ), "circuit details panel must be a native <details> that starts hidden"
+
+    # The announcer must be visually hidden so it is not a duplicate visible
+    # line -- it exists only to be announced.
+    css = _read_dashboard_css_bundle()
+    announcer_css = _last_css_rule_body(css, ".pcircuit-announcer")
+    assert "position: absolute" in announcer_css
+    assert "clip: rect(0, 0, 0, 0)" in announcer_css
+
+
+def test_provider_circuit_chunk_is_registered_and_wired() -> None:
+    # The render chunk must be bundled and invoked on both initial load and
+    # every live refresh, or the banner would never appear.
+    assert "provider_circuit.js" in DASHBOARD_JS_CHUNKS
+    bundle = _read_dashboard_js_bundle()
+    assert "function updateProviderCircuitBanner(" in bundle
+    assert "function providerCircuitRowsHtml(" in bundle
+    assert "function renderProviderCircuitEntryRow(" in bundle
+    core = _read(DASHBOARD_JS_DIR / "core.js")
+    # Wired into the live refresh path and the initial DOMContentLoaded render.
+    assert core.count("renderProviderCircuitFromDashboardData()") >= 2
+
+
+def test_provider_circuit_events_trigger_live_refresh() -> None:
+    # Outage enter/exit must refresh the view model so the banner is not stale
+    # until the next unrelated event.
+    source = _read(DASHBOARD_JS_DIR / "issue_metadata.js")
+    assert "'provider.outage_entered'" in source
+    assert "'provider.outage_exited'" in source
+
+
+def test_provider_circuit_status_is_text_not_colour_only() -> None:
+    # Each provider row carries a word status ("Unavailable"/"Recovering"), and
+    # the banner icon is decorative/aria-hidden — colour is never the only cue.
+    source = _read(DASHBOARD_JS_DIR / "provider_circuit.js")
+    body = _function_body(source, "renderProviderCircuitEntryRow")
+    assert "'Unavailable'" in body
+    assert "'Recovering'" in body
+    # The decorative icon lives in the static template skeleton, aria-hidden.
+    template = _read(DASHBOARD_TEMPLATE)
+    assert 'class="pcircuit-icon" aria-hidden="true"' in template
+
+
+def test_provider_circuit_banner_uses_theme_variables_for_contrast() -> None:
+    # Banner colours must come from shared theme variables so contrast holds in
+    # both light and dark themes (never hard-coded hex).
+    css = _read_dashboard_css_bundle()
+    banner_body = _last_css_rule_body(css, ".provider-circuit-banner")
+    assert "var(--danger)" in banner_body
+    assert "var(--bg-panel)" in banner_body
+
+
+def test_provider_circuit_error_text_wraps_to_avoid_clipping() -> None:
+    # Long provider error summaries must wrap, not clip, at narrow widths.
+    css = _read_dashboard_css_bundle()
+    error_body = _last_css_rule_body(css, ".pcircuit-error")
+    assert "word-break: break-word" in error_body
+
+
+def test_provider_circuit_summary_toggle_has_visible_focus_style() -> None:
+    css = _read_dashboard_css_bundle()
+    focus_body = _last_css_rule_body(
+        css, ".pcircuit-details > summary.pcircuit-summary-toggle:focus-visible"
+    )
+    assert "outline" in focus_body

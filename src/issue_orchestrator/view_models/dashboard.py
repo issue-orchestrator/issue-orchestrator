@@ -22,6 +22,7 @@ from .dependency_gate import (
     stack_dependency_view,
     stack_signal,
 )
+from .provider_circuit import ProviderCircuitStatusView, read_provider_circuit_status
 from .dashboard_e2e import E2E_PAGE_SIZE
 from .dashboard_e2e import build_e2e_items
 from .dashboard_e2e import build_e2e_view_model
@@ -95,6 +96,8 @@ class DashboardViewModel:
     agents: dict[str, Any]
     agent_names: list[str]
 
+    provider_circuit: ProviderCircuitStatusView
+
     def template_context(self) -> dict[str, Any]:
         return {
             "issues": self.issues,
@@ -159,6 +162,7 @@ class DashboardViewModel:
             "scope": self.scope_summary,
             "refresh": self.scope_summary.get("refresh", {}),
             "githubUsage": github_usage,
+            "providerCircuit": self.provider_circuit.model_dump(mode="json"),
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
         }
@@ -1415,7 +1419,6 @@ def build_dashboard_view_model(
         }
 
     recent_e2e_runs = _build_recent_e2e_runs_payload(config)
-
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1456,6 +1459,7 @@ def build_dashboard_view_model(
         recent_e2e_runs=recent_e2e_runs,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit=read_provider_circuit_status(orchestrator),
     )
 
 
