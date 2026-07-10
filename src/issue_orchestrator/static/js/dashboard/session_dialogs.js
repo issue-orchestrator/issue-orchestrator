@@ -22,10 +22,8 @@ async function refreshInlineSessionPrompt(issueNumber, runDir = null) {
         return;
     }
     try {
-        const params = new URLSearchParams();
-        params.set('run_dir', runDir);
-        const suffix = params.toString() ? `?${params.toString()}` : '';
-        const res = await fetch(`/api/session/prompt/${issueNumber}${suffix}`);
+        const req = uiActionContract.buildSessionPromptRequest(issueNumber, runDir);
+        const res = await fetch(req.endpoint, { method: req.method });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.error) {
             promptMeta.textContent = data.error || `Launch prompt unavailable (HTTP ${res.status})`;
@@ -48,9 +46,8 @@ async function refreshInlineSessionPrompt(issueNumber, runDir = null) {
 async function openLaunchPromptDialog(issueNumber, runDir) {
     let data = {};
     try {
-        const params = new URLSearchParams();
-        params.set('run_dir', runDir);
-        const res = await fetch(`/api/session/prompt/${issueNumber}?${params.toString()}`);
+        const req = uiActionContract.buildSessionPromptRequest(issueNumber, runDir);
+        const res = await fetch(req.endpoint, { method: req.method });
         data = await res.json().catch(() => ({}));
         if (!res.ok || data.error) {
             showToast(data.error || `Launch prompt unavailable (HTTP ${res.status})`, 'error');

@@ -18,6 +18,7 @@
         HOST_OPEN_PATH: '/api/host/open-path',
         REVEAL_WORKTREE: (issueNumber) => `/api/host/reveal-worktree/${issueNumber}`,
         REVIEW_ARTIFACT: (issueNumber) => `/api/session/review-artifact/${issueNumber}`,
+        SESSION_PROMPT: (issueNumber) => `/api/session/prompt/${issueNumber}`,
         TERMINAL_RECORDING: (issueNumber) => `/api/session/terminal-recording/${issueNumber}`,
         RETRY_PUBLISH: (issueNumber) => `/api/issues/${issueNumber}/retry-publish`,
         CLOSE_ISSUE: (issueNumber) => `/api/issues/${issueNumber}/close`,
@@ -199,6 +200,22 @@
         };
     }
 
+    function buildSessionPromptRequest(issueNumber, runDir) {
+        const normalized = normalizeIssueNumbers([issueNumber]);
+        if (normalized.length !== 1) {
+            throw new Error(`Invalid issue number for session prompt action: ${issueNumber}`);
+        }
+        if (!runDir) {
+            throw new Error('runDir is required for session prompt action');
+        }
+        const params = new URLSearchParams();
+        params.set('run_dir', String(runDir));
+        return {
+            endpoint: `${ENDPOINTS.SESSION_PROMPT(normalized[0])}?${params.toString()}`,
+            method: 'GET',
+        };
+    }
+
     function buildReviewArtifactRequest(issueNumber, runDir, artifactPath, artifactType) {
         const normalized = normalizeIssueNumbers([issueNumber]);
         if (normalized.length !== 1) {
@@ -241,5 +258,6 @@
         buildRevealWorktreeRequest,
         buildTerminalRecordingRequest,
         buildReviewArtifactRequest,
+        buildSessionPromptRequest,
     };
 });

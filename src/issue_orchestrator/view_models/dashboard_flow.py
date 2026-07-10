@@ -51,6 +51,12 @@ def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
         _s(card.get("github_aria_label")),
         labels_str,
         _s(card.get("stack_signal")),
+        # `run_dir` binds the reused card node to a specific run. A card whose
+        # other fields are unchanged but whose run directory advanced (e.g. a
+        # `rework-<issue>` slot replaced by a new run) must re-fingerprint so
+        # the stale `data-run-dir` — and the launch-prompt action that reads
+        # it — cannot survive on a reused DOM node.
+        _s(card.get("run_dir")),
     ]
     return "|".join(parts)
 

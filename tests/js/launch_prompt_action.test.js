@@ -13,6 +13,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// The action must build its request through the shared UI action contract
+// (issue #6588 F2), so exercise the real contract owner rather than a stub.
+const uiActionContract = require('../../src/issue_orchestrator/static/js/ui_action_contract.js');
+
 function extractFunction(source, signaturePrefix) {
     const start = source.indexOf(signaturePrefix);
     if (start < 0) throw new Error(`function not found: ${signaturePrefix}`);
@@ -30,6 +34,7 @@ function loadDialog(overrides = {}) {
     const calls = { fetch: [], modal: [], toast: [] };
     const context = {
         URLSearchParams,
+        uiActionContract,
         escapeHtml: (v) => String(v == null ? '' : v)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
@@ -84,4 +89,18 @@ test('openLaunchPromptDialog surfaces an error toast when the prompt is unavaila
     assert.equal(calls.toast.length, 1);
     assert.equal(calls.toast[0].sev, 'error');
     assert.match(calls.toast[0].msg, /No run-scoped prompt artifact/);
+});
+
+test('openLaunchPromptDialog surfaces an error and never fetches when run_dir is missing', async () => {
+    // The contract owner (buildSessionPromptRequest) rejects a missing run
+    // directory; the action must not fall back to an unscoped endpoint.
+    const { context, calls } = loadDialog();
+
+    await context.openLaunchPromptDialog(454, '');
+
+    assert.equal(calls.fetch.length, 0);
+    assert.equal(calls.modal.length, 0);
+    assert.equal(calls.toast.length, 1);
+    assert.equal(calls.toast[0].sev, 'error');
+    assert.match(calls.toast[0].msg, /runDir is required/);
 });
