@@ -31,36 +31,57 @@ function loadModule() {
     return context;
 }
 
+// Faithful shape of the ``/api/e2e-run-detail`` payload: the backend builds
+// ``artifacts`` with the synthetic raw-output entry first, then the collected
+// ``e2e_run_artifacts`` rows, and derives ``reports`` as a *subset* of
+// ``artifacts`` (report-class kinds). So the JUnit XML appears in BOTH arrays,
+// and the raw-output log — when a glob re-collects it — appears both as the
+// synthetic ``raw_log`` and as a ``text_artifact`` sharing ``log_path``. After
+// JSON parsing these are distinct object instances, so dedupe must key on
+// ``path``, not object identity (issue #6593 F1).
+const JUNIT_PATH = '/results/run_37/tixmeup-e2e-smoke.xml';
+const RAW_LOG_PATH = '/results/run_37/run-e2e-suite.log';
+const COMPOSE_LOG_PATH = '/results/run_37/compose-services.log';
+
 function _collectedRunData() {
     return {
-        run: { id: 37, log_path: '/results/run_37/run-e2e-suite.log' },
+        run: { id: 37, log_path: RAW_LOG_PATH },
         reports: [
-            { kind: 'junit_xml', label: 'JUnit XML: tixmeup-e2e-smoke.xml', path: '/results/run_37/tixmeup-e2e-smoke.xml' },
+            { kind: 'junit_xml', label: 'JUnit XML: tixmeup-e2e-smoke.xml', path: JUNIT_PATH },
         ],
         artifacts: [
-            { kind: 'junit_xml', label: 'JUnit XML: tixmeup-e2e-smoke.xml', path: '/results/run_37/tixmeup-e2e-smoke.xml' },
-            { kind: 'text_artifact', label: 'Text Artifact: run-e2e-suite.log', path: '/results/run_37/run-e2e-suite.log' },
-            { kind: 'text_artifact', label: 'Text Artifact: compose-services.log', path: '/results/run_37/compose-services.log' },
+            { kind: 'raw_log', label: 'Raw Output', path: RAW_LOG_PATH },
+            { kind: 'junit_xml', label: 'JUnit XML: tixmeup-e2e-smoke.xml', path: JUNIT_PATH },
+            { kind: 'text_artifact', label: 'Text Artifact: run-e2e-suite.log', path: RAW_LOG_PATH },
+            { kind: 'text_artifact', label: 'Text Artifact: compose-services.log', path: COMPOSE_LOG_PATH },
         ],
         artifact_diagnostic: { state: 'collected', collected_count: 3, configured_glob_count: 3 },
     };
 }
 
-test('renders a drill-down button per collected artifact', () => {
+test('renders exactly one drill-down button per unique artifact path', () => {
     const ctx = loadModule();
     const html = ctx._renderRunArtifactsSection(_collectedRunData());
 
     assert.match(html, /class="e2e-run-artifacts"/);
     assert.match(html, /Run artifacts/);
-    // Raw output + junit report + two extra text artifacts.
+    // Raw output + junit report + one extra text artifact — three unique files.
     assert.match(html, /Raw Output/);
     assert.match(html, /JUnit XML: tixmeup-e2e-smoke.xml/);
-    assert.match(html, /Text Artifact: run-e2e-suite.log/);
     assert.match(html, /Text Artifact: compose-services.log/);
-    // Every button carries the typed artifact-path contract, not an inline
-    // file:// onclick.
-    const buttons = [...html.matchAll(/data-artifact-path="([^"]+)"/g)];
-    assert.ok(buttons.length >= 4);
+
+    // Dedupe by path: the JUnit XML (report + artifact) and the raw-output log
+    // (raw_log synthetic + text_artifact) must each render exactly once. A
+    // regression to identity-based filtering re-inflates these counts.
+    const paths = [...html.matchAll(/data-artifact-path="([^"]+)"/g)].map((m) => m[1]);
+    assert.strictEqual(paths.length, 3);
+    assert.deepEqual([...paths].sort(), [COMPOSE_LOG_PATH, RAW_LOG_PATH, JUNIT_PATH].sort());
+    assert.strictEqual(paths.filter((p) => p === JUNIT_PATH).length, 1);
+    assert.strictEqual(paths.filter((p) => p === RAW_LOG_PATH).length, 1);
+
+    // The count chip reflects unique files, not the inflated raw array length.
+    assert.match(html, /class="e2e-run-artifacts-count">3 files</);
+
     assert.match(html, /openE2EArtifactFromButton\(this\)/);
     // "collected" state renders no diagnostic note (the buttons speak for it).
     assert.doesNotMatch(html, /e2e-artifacts-note/);

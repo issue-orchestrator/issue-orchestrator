@@ -219,27 +219,32 @@ function _runArtifactDescriptors(data) {
     const reports = Array.isArray(data && data.reports) ? data.reports : [];
     const artifacts = Array.isArray(data && data.artifacts) ? data.artifacts : [];
     const descriptors = [];
+    // Dedupe by ``path``. The backend builds ``reports`` as a subset of
+    // ``artifacts`` (and the raw-output log can also be re-collected as a
+    // config-driven artifact), so the same file arrives on multiple arrays.
+    // After the JSON round-trip those are distinct object instances, so an
+    // identity check (``reports.includes(artifact)``) never filters them —
+    // ``path`` is the only stable key across the arrays. First occurrence wins,
+    // and because we push raw-output → report-class → remaining artifacts in
+    // that order, each file keeps its most specific label/style (issue #6593).
+    const seenPaths = new Set();
+    const pushDescriptor = (path, label, cssClass) => {
+        if (!path || seenPaths.has(path)) return;
+        seenPaths.add(path);
+        descriptors.push({ path, label, cssClass });
+    };
 
     if (run.log_path) {
-        descriptors.push({ path: run.log_path, label: 'Raw Output', cssClass: 'issue-action-btn' });
+        pushDescriptor(run.log_path, 'Raw Output', 'issue-action-btn');
     }
     for (const report of reports) {
         if (!report || !report.path) continue;
-        descriptors.push({
-            path: report.path,
-            label: report.label || _humanizeSnakeCase(report.kind),
-            cssClass: 'issue-action-btn',
-        });
+        pushDescriptor(report.path, report.label || _humanizeSnakeCase(report.kind), 'issue-action-btn');
     }
     for (const artifact of artifacts) {
         if (!artifact || !artifact.path) continue;
-        if (reports.includes(artifact)) continue;
         if (artifact.kind === 'raw_log') continue;
-        descriptors.push({
-            path: artifact.path,
-            label: artifact.label || artifact.path,
-            cssClass: 'issue-action-btn subtle',
-        });
+        pushDescriptor(artifact.path, artifact.label || artifact.path, 'issue-action-btn subtle');
     }
     return descriptors;
 }
