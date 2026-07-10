@@ -630,6 +630,13 @@ def test_switch_e2e_timeline_view_command_payload_matches_openapi() -> None:
     validator.validate(valid)
     SwitchE2ETimelineViewCommandPayload.model_validate(valid)
 
+    # Every ``TimelineView`` value round-trips — including ``raw``, which
+    # the canonical command model previously omitted while the payload
+    # allowed it (issue #5976 drift).
+    for view in ("user", "ops", "debug", "raw"):
+        validator.validate({**valid, "view": view})
+        SwitchE2ETimelineViewCommandPayload.model_validate({**valid, "view": view})
+
     # ``view`` enum is strict.
     with pytest.raises(JsonSchemaValidationError):
         validator.validate({**valid, "view": "detail"})
@@ -641,6 +648,78 @@ def test_switch_e2e_timeline_view_command_payload_matches_openapi() -> None:
         validator.validate({**valid, "run_id": 0})
     with pytest.raises(ValidationError):
         SwitchE2ETimelineViewCommandPayload.model_validate({**valid, "run_id": "88"})
+
+
+def test_timeline_view_enum_is_reused_across_the_ui_openapi_contract() -> None:
+    """Issue #5976: the ``user``/``ops``/``debug``/``raw`` timeline views are
+    one reusable ``TimelineView`` schema, ``$ref``-ed by every query param
+    and payload field instead of copied inline — which is what stops the
+    wire enum drifting across routes and generated clients."""
+    import json
+
+    data = json.loads(Path("docs/api/ui-openapi.json").read_text())
+
+    timeline_view = data["components"]["schemas"]["TimelineView"]
+    assert timeline_view["enum"] == ["user", "ops", "debug", "raw"]
+
+    ref = "#/components/schemas/TimelineView"
+
+    # Every timeline ``view`` query param references the shared enum with no
+    # inline ``enum`` copy left behind.
+    view_param_paths = [
+        "/api/issue-detail/{issue_number}",
+        "/api/e2e-run/{run_id}/issue-detail/{issue_number}",
+        "/api/e2e-run-detail/{run_id}",
+        "/control/e2e/run/{run_id}/timeline",
+    ]
+    for path in view_param_paths:
+        params = data["paths"][path]["get"]["parameters"]
+        view_param = next(p for p in params if p["name"] == "view")
+        assert view_param["schema"]["$ref"] == ref, path
+        assert "enum" not in view_param["schema"], f"{path} kept an inline enum"
+
+    # The typed command payload references it too.
+    view_field = data["components"]["schemas"][
+        "SwitchE2ETimelineViewCommandPayload"
+    ]["properties"]["view"]
+    assert view_field == {"$ref": ref}
+
+
+def test_timeline_view_is_the_single_python_source_of_truth() -> None:
+    """The generated ``TimelineView`` Literal is the one Python source of
+    truth: the runtime normalizer and the canonical
+    ``SwitchE2ETimelineViewCommand`` both derive from it, so none can drift
+    (issue #5976)."""
+    from typing import get_args
+
+    from pydantic import ValidationError
+
+    from issue_orchestrator.contracts.ui_openapi_models import TimelineView
+    from issue_orchestrator.view_models.lifecycle_semantics import (
+        SwitchE2ETimelineViewCommand,
+    )
+    from issue_orchestrator.view_models.timeline_view import (
+        DEFAULT_TIMELINE_VIEW,
+        TIMELINE_VIEWS,
+        normalize_timeline_view,
+    )
+
+    views = set(get_args(TimelineView))
+    assert views == {"user", "ops", "debug", "raw"}
+    assert TIMELINE_VIEWS == views
+    assert DEFAULT_TIMELINE_VIEW in views
+
+    # Unknown values coerce to the default; known ones pass through.
+    assert normalize_timeline_view("nonsense") == DEFAULT_TIMELINE_VIEW
+    for view in views:
+        assert normalize_timeline_view(view) == view
+
+    # The canonical command accepts every wire view, including ``raw`` (the
+    # value it used to omit), and still rejects a bogus one.
+    for view in views:
+        assert SwitchE2ETimelineViewCommand(run_id=1, view=view).view == view  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        SwitchE2ETimelineViewCommand(run_id=1, view="detail")  # type: ignore[arg-type]
 
 
 def test_create_e2e_untriaged_issues_command_payload_matches_openapi() -> None:

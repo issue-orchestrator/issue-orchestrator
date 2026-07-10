@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 
+TimelineView: TypeAlias = Literal['user', 'ops', 'debug', 'raw']
+
 class AgentIdentityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -1000,7 +1002,7 @@ class SwitchE2ETimelineViewCommandPayload(BaseModel):
     kind: Literal['switch_e2e_timeline_view']
     label: str
     run_id: int = Field(..., ge=1, strict=True)
-    view: Literal['user', 'ops', 'debug', 'raw']
+    view: TimelineView
 
 class TestCaseHistoryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

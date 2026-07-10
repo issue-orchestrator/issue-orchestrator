@@ -3,6 +3,8 @@
 
 
 
+export type TimelineView = "user" | "ops" | "debug" | "raw";
+
 export interface AgentIdentityPayload {
   name: string;
   role: "coder" | "reviewer" | "rework" | "validator" | "e2e_runner" | "orchestrator";
@@ -992,7 +994,7 @@ export interface SwitchE2ETimelineViewCommandPayload {
   kind: "switch_e2e_timeline_view";
   label: string;
   run_id: number;
-  view: "user" | "ops" | "debug" | "raw";
+  view: TimelineView;
 }
 
 export interface TestCaseHistoryPayload {

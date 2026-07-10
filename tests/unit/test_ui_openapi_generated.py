@@ -65,6 +65,64 @@ def test_ui_openapi_generator_renders_const_enum_and_union_shapes() -> None:
     assert "export type UnionPayload = ConstEnumPayload | null;" in dts_types
 
 
+def test_ui_openapi_generator_renders_bare_enum_component_as_reusable_alias() -> None:
+    """A top-level ``enum`` component (e.g. ``TimelineView``) must render as
+    a reusable ``Literal``/``type`` alias, not an empty Pydantic model, and
+    ``$ref`` sites must resolve to the alias name.
+
+    The alias carries no forward references, so it is emitted *before* any
+    model that references it — that keeps the generated Pydantic module
+    importable without a deferred ``model_rebuild``.
+    """
+    components = [
+        ComponentSchema(
+            "ViewEnum",
+            {"type": "string", "enum": ["user", "ops", "debug", "raw"]},
+        ),
+        ComponentSchema(
+            "UsesEnumPayload",
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["view"],
+                "properties": {"view": {"$ref": "#/components/schemas/ViewEnum"}},
+            },
+        ),
+    ]
+
+    python_models = render_python_models(components)
+    dts_types = render_dts_types(components)
+
+    assert "ViewEnum: TypeAlias = Literal['user', 'ops', 'debug', 'raw']" in python_models
+    # No empty model was emitted for the enum component.
+    assert "class ViewEnum(BaseModel)" not in python_models
+    # The referencing field resolves to the alias name.
+    assert "view: ViewEnum" in python_models
+    # Alias precedes the model that references it.
+    assert python_models.index("ViewEnum: TypeAlias") < python_models.index(
+        "class UsesEnumPayload"
+    )
+
+    assert 'export type ViewEnum = "user" | "ops" | "debug" | "raw";' in dts_types
+    assert "export interface ViewEnum" not in dts_types
+    assert "view: ViewEnum;" in dts_types
+
+
+def test_ui_openapi_generator_rejects_mixed_enum_object_schema() -> None:
+    components = [
+        ComponentSchema(
+            "MixedEnumPayload",
+            {
+                "enum": ["a", "b"],
+                "properties": {"kind": {"const": "mixed"}},
+            },
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="must not mix enum with properties"):
+        render_python_models(components)
+
+
 def test_ui_openapi_generator_detects_nullable_schema_variants() -> None:
     assert is_optional(
         {

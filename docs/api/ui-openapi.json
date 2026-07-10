@@ -320,7 +320,7 @@
             "name": "view",
             "in": "query",
             "required": false,
-            "schema": {"type": "string", "enum": ["user", "ops", "debug", "raw"], "default": "user"}
+            "schema": {"$ref": "#/components/schemas/TimelineView", "default": "user"}
           }
         ],
         "responses": {
@@ -355,7 +355,7 @@
             "name": "view",
             "in": "query",
             "required": false,
-            "schema": {"type": "string", "enum": ["user", "ops", "debug", "raw"], "default": "user"}
+            "schema": {"$ref": "#/components/schemas/TimelineView", "default": "user"}
           }
         ],
         "responses": {
@@ -407,7 +407,7 @@
             "name": "view",
             "in": "query",
             "required": false,
-            "schema": {"type": "string", "enum": ["user", "ops", "debug", "raw"], "default": "user"}
+            "schema": {"$ref": "#/components/schemas/TimelineView", "default": "user"}
           }
         ],
         "responses": {
@@ -471,7 +471,7 @@
             "name": "view",
             "in": "query",
             "required": false,
-            "schema": {"type": "string", "enum": ["user", "ops", "debug", "raw"], "default": "user"}
+            "schema": {"$ref": "#/components/schemas/TimelineView", "default": "user"}
           }
         ],
         "responses": {
@@ -1481,6 +1481,11 @@
           "run_id": {"type": "integer", "minimum": 1}
         }
       },
+      "TimelineView": {
+        "type": "string",
+        "enum": ["user", "ops", "debug", "raw"],
+        "description": "Which timeline lens the UI renders: user (story), ops, debug, or raw events. Reused by every issue-detail / E2E-run timeline query param and payload field so the wire values cannot drift."
+      },
       "SwitchE2ETimelineViewCommandPayload": {
         "type": "object",
         "additionalProperties": false,
@@ -1489,7 +1494,7 @@
           "kind": {"const": "switch_e2e_timeline_view"},
           "label": {"type": "string"},
           "run_id": {"type": "integer", "minimum": 1},
-          "view": {"enum": ["user", "ops", "debug", "raw"]}
+          "view": {"$ref": "#/components/schemas/TimelineView"}
         }
       },
       "CreateE2EUntriagedIssuesCommandPayload": {

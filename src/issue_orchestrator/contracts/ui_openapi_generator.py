@@ -165,12 +165,22 @@ def render_python_models(components: list[ComponentSchema]) -> str:
         "\n",
     ]
 
-    alias_components: list[ComponentSchema] = []
+    union_alias_components: list[ComponentSchema] = []
+
+    # Enum aliases carry no forward references, so emit them first —
+    # every model field that ``$ref``s them resolves without a rebuild.
+    for component in components:
+        if _is_enum_alias_schema(component.schema):
+            lines.append(f"{component.name}: TypeAlias = {resolve_type(component.schema)}")
+            lines.append("")
+
     for component in components:
         name = component.name
         schema = component.schema
+        if _is_enum_alias_schema(schema):
+            continue
         if _is_union_alias_schema(schema):
-            alias_components.append(component)
+            union_alias_components.append(component)
             continue
         properties = schema.get("properties", {})
         required = set(schema.get("required", []))
@@ -206,7 +216,7 @@ def render_python_models(components: list[ComponentSchema]) -> str:
 
         lines.append("")
 
-    for component in alias_components:
+    for component in union_alias_components:
         lines.append(f"{component.name}: TypeAlias = {resolve_type(component.schema)}")
         lines.append("")
 
@@ -215,12 +225,19 @@ def render_python_models(components: list[ComponentSchema]) -> str:
 
 def render_dts_types(components: list[ComponentSchema]) -> str:
     lines: list[str] = [DTS_HEADER, "\n"]
-    alias_components: list[ComponentSchema] = []
+    union_alias_components: list[ComponentSchema] = []
+
+    for component in components:
+        if _is_enum_alias_schema(component.schema):
+            lines.append(f"export type {component.name} = {ts_type(component.schema)};\n")
+
     for component in components:
         name = component.name
         schema = component.schema
+        if _is_enum_alias_schema(schema):
+            continue
         if _is_union_alias_schema(schema):
-            alias_components.append(component)
+            union_alias_components.append(component)
             continue
         properties = schema.get("properties", {})
         required = set(schema.get("required", []))
@@ -236,7 +253,7 @@ def render_dts_types(components: list[ComponentSchema]) -> str:
             lines.append("  [key: string]: any;")
         lines.append("}\n")
 
-    for component in alias_components:
+    for component in union_alias_components:
         lines.append(f"export type {component.name} = {ts_type(component.schema)};\n")
 
     return "\n".join(lines).rstrip() + "\n"
@@ -306,6 +323,22 @@ def _is_union_alias_schema(schema: dict[str, Any]) -> bool:
     if has_union and schema.get("properties"):
         raise ValueError("component schemas must not mix oneOf/anyOf with properties")
     return has_union
+
+
+def _is_enum_alias_schema(schema: dict[str, Any]) -> bool:
+    """A top-level ``enum`` component (e.g. ``TimelineView``) renders as a
+    reusable ``Literal`` alias, not a Pydantic model.
+
+    Without this a bare-enum component would fall through to the object
+    branch and emit an empty ``class TimelineView(BaseModel): pass`` — a
+    useless model that ``$ref`` sites could not narrow against.  Enum
+    aliases carry no forward references, so they are emitted before the
+    model classes and can be referenced by any field.
+    """
+    has_enum = "enum" in schema and isinstance(schema["enum"], list)
+    if has_enum and schema.get("properties"):
+        raise ValueError("component schemas must not mix enum with properties")
+    return has_enum
 
 
 def generate_artifacts(schema_path: Path | None = None, python_out: Path | None = None, dts_out: Path | None = None) -> None:
