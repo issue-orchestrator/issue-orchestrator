@@ -55,6 +55,11 @@
             </span>
         </div>
         {% endif %}
+        <!-- Provider circuit-breaker outage banner + health panel (issue #5980).
+             Rendered by ``updateProviderCircuitBanner`` from
+             ``window.dashboardData.providerCircuit``; hidden while all providers
+             are healthy. role="alert" so the outage is announced to assistive tech. -->
+        <div id="providerCircuitBanner" class="provider-circuit-banner" style="display:none;" role="alert" aria-live="assertive"></div>
         <header>
             <div class="header-left">
                 <h1>Issue Orchestrator</h1>
