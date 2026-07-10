@@ -139,6 +139,29 @@ def test_structural_problem_surfaces_on_predecessor_edge():
     assert "cycle" in dump["blocked_reason_codes"]
 
 
+def test_cross_milestone_detail_surfaces_in_gate_reasons():
+    dep = Dependency(
+        issue_number=517,
+        mode=DependencyMode.STACK,
+        state=DependencyState.CROSS_MILESTONE,
+        error=(
+            "Issue #520 has no milestone, so Stack-after: #517 cannot be "
+            "evaluated against milestone-scoped dependencies. Fix: assign "
+            "issue #520 and #517 to the same milestone."
+        ),
+    )
+    dump = _project(build_gate_report(520, [dep]))
+    work = _gate(dump, "work")
+
+    assert work["reason_codes"] == ["cross_milestone"]
+    assert work["reasons"] == [
+        "a dependency is outside this milestone for #517: Issue #520 has no "
+        "milestone, so Stack-after: #517 cannot be evaluated against "
+        "milestone-scoped dependencies. Fix: assign issue #520 and #517 to "
+        "the same milestone."
+    ]
+
+
 def test_successor_edges_render_chain_context():
     dep = Dependency(issue_number=10, mode=DependencyMode.STACK,
                      state=DependencyState.UNSATISFIED)

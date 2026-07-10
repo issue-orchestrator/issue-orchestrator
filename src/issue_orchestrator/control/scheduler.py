@@ -305,7 +305,12 @@ class Scheduler:
         if self._lm.is_pr_pending(issue.labels):
             return IssueAvailabilityDecision(issue=issue, available=False, reason="pr_pending")
         if self._lm.is_blocking_any(issue.labels):
-            return IssueAvailabilityDecision(issue=issue, available=False, reason="blocked_label")
+            return IssueAvailabilityDecision(
+                issue=issue,
+                available=False,
+                reason="blocked_label",
+                detail=self._blocking_label_detail(issue.labels),
+            )
 
         if check_dependencies and self.dependency_evaluator and issue.body:
             report = self.dependency_evaluator.evaluate_work_gate(
@@ -325,6 +330,16 @@ class Scheduler:
             )
 
         return IssueAvailabilityDecision(issue=issue, available=True, reason="available")
+
+    def _blocking_label_detail(self, labels: Sequence[str]) -> str:
+        blocking = self._lm.get_blocking(labels)
+        if not blocking:
+            return "blocking label present"
+        described = [
+            f"{label} ({self._lm.describe(label)})"
+            for label in blocking
+        ]
+        return "blocking labels: " + ", ".join(described)
 
     def sort_by_priority(self, issues: Sequence[Issue]) -> list[Issue]:
         """Sort issues by milestone, priority tier, sequence, then issue number.
