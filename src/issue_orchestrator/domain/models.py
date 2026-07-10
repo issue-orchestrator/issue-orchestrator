@@ -14,7 +14,7 @@ from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
-from .triage_session import TriageSessionFlavor  # re-exported for callers
+from .triage_session import TriageSessionFlavor
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue as IssueProtocol

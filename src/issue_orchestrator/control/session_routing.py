@@ -8,6 +8,7 @@ SessionManager adapter calls.
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
@@ -49,9 +50,24 @@ class _ExistingTerminalRestorationRequest:
     tab_name: str = ""
 
 
+class TriageQueueOutcome(Enum):
+    """Explicit result of asking the queue owner to enqueue triage work."""
+
+    QUEUED = "queued"
+    DUPLICATE = "duplicate"
+
+
 @dataclass(frozen=True, slots=True)
-class _PendingSessionQueues:
-    """Owner for launch-routing pending queue removals."""
+class PendingSessionQueues:
+    """Owner for pending session queues: launch-routing removals + triage intake.
+
+    Triage intake is behavior-level (#6768 round 3): producers say WHICH
+    variant they are queueing (batch review vs failure investigation) and this
+    owner constructs the ``PendingTriageReview``, applies the single
+    deduplication rule (by issue number against the pending queue), and
+    returns an explicit :class:`TriageQueueOutcome`. Producers never touch the
+    dataclass or the state list.
+    """
 
     state: "OrchestratorState"
 
@@ -79,6 +95,43 @@ class _PendingSessionQueues:
             if queued.issue_number != issue_number
         ]
 
+    def queue_batch_review(self, issue_number: int, title: str) -> TriageQueueOutcome:
+        """Queue a threshold-created batch tracking issue (audits the PR manifest)."""
+        return self._queue_triage(
+            PendingTriageReview(
+                issue_number, title, flavor=TriageSessionFlavor.BATCH_REVIEW
+            )
+        )
+
+    def queue_failure_investigation(
+        self, issue_number: int, title: str
+    ) -> TriageQueueOutcome:
+        """Queue a focused investigation of one failed issue."""
+        return self._queue_triage(
+            PendingTriageReview(
+                issue_number, title, flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            )
+        )
+
+    def _queue_triage(self, item: PendingTriageReview) -> TriageQueueOutcome:
+        """Apply the one dedup rule (issue number vs pending queue) and enqueue."""
+        queue = self.state.pending_triage_reviews
+        if any(t.issue_number == item.issue_number for t in queue):
+            logger.info(
+                "[TRIAGE] Issue #%d already queued for triage; skipping %s request",
+                item.issue_number,
+                item.flavor.value,
+            )
+            return TriageQueueOutcome.DUPLICATE
+        queue.append(item)
+        logger.info(
+            "[TRIAGE] Queued %s for issue #%d: %s",
+            item.flavor.value,
+            item.issue_number,
+            item.title,
+        )
+        return TriageQueueOutcome.QUEUED
+
 
 def orchestrator_launch_review_session(
     review: PendingReview,
@@ -87,7 +140,7 @@ def orchestrator_launch_review_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a review session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_review_session(review, state.active_sessions)
     if result.success and result.session:
         pending_queues.remove_review(review.pr_number)
@@ -119,7 +172,7 @@ def orchestrator_launch_retrospective_review_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a retrospective review session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_retrospective_review_session(
         review,
         state.active_sessions,
@@ -155,7 +208,7 @@ def orchestrator_launch_rework_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a rework session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_rework_session(rework, state.active_sessions)
     if result.success and result.session:
         pending_queues.remove_rework(rework)
@@ -190,7 +243,7 @@ def orchestrator_launch_validation_retry_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a validation retry session and update retry queue tracking."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_validation_retry_session(
         retry, state.active_sessions
     )

@@ -1041,6 +1041,36 @@ class TestStartupManagerTriageRecovery:
 
         assert launched == [(100, TriageSessionFlavor.BATCH_REVIEW)]
 
+    @pytest.mark.asyncio
+    async def test_recovery_skips_already_queued_triage(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """Recovery routes through the queue owner and never double-queues."""
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+
+        existing = PendingTriageReview(
+            issue_number=100,
+            title="Batch Review: 5 PRs",
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+        )
+        sample_state.pending_triage_reviews.append(existing)
+
+        triage_issue = Issue(
+            number=100,
+            title="Batch Review: 5 PRs",
+            labels=["agent:triage"]
+        )
+        mock_repository_host.list_issues.return_value = [triage_issue]
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_triage_reviews == [existing]
+
 
 class TestStartupManagerResumePartialWork:
     """Tests for resuming partial work."""

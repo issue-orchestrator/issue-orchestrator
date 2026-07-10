@@ -40,6 +40,8 @@ from issue_orchestrator.control.session_launcher import (
 from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV
 from issue_orchestrator.control.session_review_support import build_review_existing_work
 from issue_orchestrator.control.session_routing import (
+    PendingSessionQueues,
+    TriageQueueOutcome,
     orchestrator_launch_session,
     orchestrator_launch_review_session,
     orchestrator_launch_rework_session,
@@ -2556,6 +2558,62 @@ class TestOrchestratorLaunchReworkSession:
 # =============================================================================
 # Triage Session Tests
 # =============================================================================
+
+
+class TestPendingSessionQueuesTriageIntake:
+    """Owner-level triage intake invariants (#6768 round 3).
+
+    PendingSessionQueues is the only writer of state.pending_triage_reviews:
+    it constructs the queue item for the declared variant, applies ONE dedup
+    rule (issue number vs the pending queue), and returns a typed outcome.
+    """
+
+    def test_queue_batch_review_constructs_batch_entry(self):
+        state = OrchestratorState()
+
+        outcome = PendingSessionQueues(state).queue_batch_review(7, "Triage Batch")
+
+        assert outcome is TriageQueueOutcome.QUEUED
+        (entry,) = state.pending_triage_reviews
+        assert entry.issue_number == 7
+        assert entry.title == "Triage Batch"
+        assert entry.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_queue_failure_investigation_constructs_failure_entry(self):
+        state = OrchestratorState()
+
+        outcome = PendingSessionQueues(state).queue_failure_investigation(
+            8, "Investigate: timeout"
+        )
+
+        assert outcome is TriageQueueOutcome.QUEUED
+        (entry,) = state.pending_triage_reviews
+        assert entry.issue_number == 8
+        assert entry.title == "Investigate: timeout"
+        assert entry.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+
+    def test_duplicate_issue_number_returns_duplicate_without_double_queue(self):
+        state = OrchestratorState()
+        queues = PendingSessionQueues(state)
+        assert queues.queue_batch_review(7, "Triage Batch") is TriageQueueOutcome.QUEUED
+
+        outcome = queues.queue_batch_review(7, "Triage Batch (retry)")
+
+        assert outcome is TriageQueueOutcome.DUPLICATE
+        (entry,) = state.pending_triage_reviews
+        assert entry.title == "Triage Batch"
+
+    def test_dedup_is_by_issue_number_across_variants(self):
+        """One rule: an issue already queued is never re-queued, either variant."""
+        state = OrchestratorState()
+        queues = PendingSessionQueues(state)
+        queues.queue_batch_review(7, "Triage Batch")
+
+        outcome = queues.queue_failure_investigation(7, "Investigate: timeout")
+
+        assert outcome is TriageQueueOutcome.DUPLICATE
+        (entry,) = state.pending_triage_reviews
+        assert entry.flavor is TriageSessionFlavor.BATCH_REVIEW
 
 
 class TestLaunchTriageSession:
