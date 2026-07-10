@@ -55,6 +55,25 @@ def _last_css_rule_body(source: str, selector: str) -> str:
     return bodies[-1]
 
 
+def _html_element(html: str, tag: str, element_id: str) -> tuple[dict[str, str], str]:
+    """Return ``(attributes, inner_text)`` of the first ``<tag>`` element
+    carrying ``id="element_id"``.
+
+    Attribute order is irrelevant — the id may appear anywhere in the
+    opening tag — so callers can assert on class / id / tabindex / text
+    intent without pinning the exact serialized attribute string (which a
+    formatter reorder or an added attribute would otherwise break).
+    """
+    match = re.search(
+        rf'<{tag}\b([^>]*\bid="{re.escape(element_id)}"[^>]*)>(.*?)</{tag}>',
+        html,
+        re.DOTALL,
+    )
+    assert match, f"no <{tag} id={element_id!r}>...</{tag}> element found"
+    attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', match.group(1)))
+    return attrs, match.group(2).strip()
+
+
 def _function_body(source: str, name: str) -> str:
     marker = f"function {name}("
     start = source.find(marker)
@@ -353,10 +372,29 @@ def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template(
 
 def test_issue_detail_uses_timeline_label_not_journey() -> None:
     html = _read(DASHBOARD_TEMPLATE)
-    assert '<h3 class="issue-detail-section-title visually-hidden" id="issueDetailTimelineHeading">Timeline</h3>' in html
-    assert 'aria-labelledby="issueDetailTimelineHeading"' in html
-    assert '<h3 class="issue-detail-section-title">Journey</h3>' not in html
-    assert '<details class="issue-detail-section" id="issueDetailRawEvents">' not in html
+
+    # The visually-hidden "Timeline" heading names the drawer's timeline
+    # region for assistive tech. Prove class + id + text intent while
+    # tolerating attribute reordering (the old exact-string assertion
+    # broke on any attribute shuffle even though the a11y intent held).
+    heading_attrs, heading_text = _html_element(html, "h3", "issueDetailTimelineHeading")
+    assert heading_text == "Timeline"
+    assert set(heading_attrs.get("class", "").split()) >= {
+        "issue-detail-section-title",
+        "visually-hidden",
+    }
+
+    # The timeline region is labelled by that heading and is keyboard
+    # focusable, so a keyboard user lands on it — prove the aria wiring
+    # and tabindex hold together.
+    journey_attrs, _ = _html_element(html, "div", "issueDetailJourney")
+    assert journey_attrs.get("aria-labelledby") == "issueDetailTimelineHeading"
+    assert journey_attrs.get("tabindex") == "-1"
+
+    # The legacy "Journey" heading and raw-events / focus / GitHub chrome
+    # must stay gone regardless of how their attributes were written.
+    assert ">Journey</h3>" not in html
+    assert 'id="issueDetailRawEvents"' not in html
     assert 'id="issueDetailFocusBtn"' not in html
     assert 'id="issueDetailGitHubBtn"' not in html
 

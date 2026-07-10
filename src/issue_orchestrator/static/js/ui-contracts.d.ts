@@ -3,6 +3,8 @@
 
 
 
+export type TimelineView = "user" | "ops" | "debug" | "raw";
+
 export interface AgentIdentityPayload {
   name: string;
   role: "coder" | "reviewer" | "rework" | "validator" | "e2e_runner" | "orchestrator";
@@ -237,7 +239,7 @@ export interface E2ERunDetailPayload {
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
   title: string;
-  view?: string;
+  view?: TimelineView;
 }
 
 export interface E2ERunExecutionPayload {
@@ -499,7 +501,7 @@ export interface IssueDetailPayload {
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
   title: string;
-  view?: string;
+  view?: TimelineView;
 }
 
 export interface IssueDetailSummaryPayload {
@@ -999,7 +1001,7 @@ export interface SwitchE2ETimelineViewCommandPayload {
   kind: "switch_e2e_timeline_view";
   label: string;
   run_id: number;
-  view: "user" | "ops" | "debug" | "raw";
+  view: TimelineView;
 }
 
 export interface TestCaseHistoryPayload {

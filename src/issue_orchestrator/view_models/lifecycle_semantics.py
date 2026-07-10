@@ -14,6 +14,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..contracts.ui_openapi_models import TimelineView
+
 Severity = Literal["info", "warning", "error"]
 Timestamp = str
 
@@ -235,7 +237,10 @@ class SwitchE2ETimelineViewCommand(LifecycleBase):
     kind: Literal["switch_e2e_timeline_view"] = "switch_e2e_timeline_view"
     label: str = "Switch E2E Timeline View"
     run_id: int = Field(..., ge=1, strict=True)
-    view: Literal["user", "ops", "debug"]
+    # Reuse the generated wire enum so this canonical command can never
+    # drift from ``SwitchE2ETimelineViewCommandPayload`` (it previously
+    # omitted ``"raw"`` while the payload allowed it).
+    view: TimelineView
 
 
 class CreateE2EUntriagedIssuesCommand(LifecycleBase):

@@ -22,6 +22,7 @@ from issue_orchestrator.contracts.ui_openapi_models import (
     E2ERunDetailPayload,
     E2ERunTimelinePayload,
     IssueDetailActionPayload,
+    IssueDetailPayload,
     ViewModelSnapshotPayload,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -121,6 +122,32 @@ def _validator(component: str) -> Draft202012Validator:
     data = __import__("json").loads(schema)
     resolver = RefResolver.from_schema(data)
     return Draft202012Validator(data["components"]["schemas"][component], resolver=resolver)
+
+
+def _assert_response_view_is_timeline_view_constrained(
+    payload: dict, schema_name: str, model_cls: type
+) -> None:
+    """Issue #5976: a response payload's ``view`` field echoes the rendered
+    lens and must be the shared ``TimelineView`` enum, not a free ``str`` —
+    enforced on both the JSON-schema and generated-Pydantic sides.
+
+    Without the ``$ref``, an out-of-vocabulary ``view`` (e.g. ``"detail"``)
+    would validate as a plain string on both sides and a generated client
+    could accept or propagate a value the runtime normalizer never produces.
+    """
+    from pydantic import ValidationError
+
+    validator = _validator(schema_name)
+    for view in ("user", "ops", "debug", "raw"):
+        candidate = {**payload, "view": view}
+        validator.validate(candidate)
+        model_cls.model_validate(candidate)
+
+    invalid = {**payload, "view": "detail"}
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(invalid)
+    with pytest.raises(ValidationError):
+        model_cls.model_validate(invalid)
 
 
 def _schema_error_messages(errors: list[JsonSchemaValidationError]) -> str:
@@ -630,6 +657,13 @@ def test_switch_e2e_timeline_view_command_payload_matches_openapi() -> None:
     validator.validate(valid)
     SwitchE2ETimelineViewCommandPayload.model_validate(valid)
 
+    # Every ``TimelineView`` value round-trips — including ``raw``, which
+    # the canonical command model previously omitted while the payload
+    # allowed it (issue #5976 drift).
+    for view in ("user", "ops", "debug", "raw"):
+        validator.validate({**valid, "view": view})
+        SwitchE2ETimelineViewCommandPayload.model_validate({**valid, "view": view})
+
     # ``view`` enum is strict.
     with pytest.raises(JsonSchemaValidationError):
         validator.validate({**valid, "view": "detail"})
@@ -641,6 +675,89 @@ def test_switch_e2e_timeline_view_command_payload_matches_openapi() -> None:
         validator.validate({**valid, "run_id": 0})
     with pytest.raises(ValidationError):
         SwitchE2ETimelineViewCommandPayload.model_validate({**valid, "run_id": "88"})
+
+
+def test_timeline_view_enum_is_reused_across_the_ui_openapi_contract() -> None:
+    """Issue #5976: the ``user``/``ops``/``debug``/``raw`` timeline views are
+    one reusable ``TimelineView`` schema, ``$ref``-ed by every query param
+    and payload field instead of copied inline — which is what stops the
+    wire enum drifting across routes and generated clients."""
+    import json
+
+    data = json.loads(Path("docs/api/ui-openapi.json").read_text())
+
+    timeline_view = data["components"]["schemas"]["TimelineView"]
+    assert timeline_view["enum"] == ["user", "ops", "debug", "raw"]
+
+    ref = "#/components/schemas/TimelineView"
+
+    # Every timeline ``view`` query param references the shared enum with no
+    # inline ``enum`` copy left behind.
+    view_param_paths = [
+        "/api/issue-detail/{issue_number}",
+        "/api/e2e-run/{run_id}/issue-detail/{issue_number}",
+        "/api/e2e-run-detail/{run_id}",
+        "/control/e2e/run/{run_id}/timeline",
+    ]
+    for path in view_param_paths:
+        params = data["paths"][path]["get"]["parameters"]
+        view_param = next(p for p in params if p["name"] == "view")
+        assert view_param["schema"]["$ref"] == ref, path
+        assert "enum" not in view_param["schema"], f"{path} kept an inline enum"
+
+    # The typed command payload references it too.
+    view_field = data["components"]["schemas"][
+        "SwitchE2ETimelineViewCommandPayload"
+    ]["properties"]["view"]
+    assert view_field == {"$ref": ref}
+
+    # The response payloads that echo the rendered lens back to the client
+    # reference the same shared enum (with their documented default preserved),
+    # so a generated client cannot accept or propagate an arbitrary response
+    # ``view`` value that the runtime normalizer would never produce.
+    for schema_name in ("IssueDetailPayload", "E2ERunDetailPayload"):
+        response_view = data["components"]["schemas"][schema_name]["properties"]["view"]
+        assert response_view["$ref"] == ref, schema_name
+        assert response_view["default"] == "user", schema_name
+        assert "type" not in response_view, f"{schema_name} kept an inline string type"
+        assert "enum" not in response_view, f"{schema_name} kept an inline enum"
+
+
+def test_timeline_view_is_the_single_python_source_of_truth() -> None:
+    """The generated ``TimelineView`` Literal is the one Python source of
+    truth: the runtime normalizer and the canonical
+    ``SwitchE2ETimelineViewCommand`` both derive from it, so none can drift
+    (issue #5976)."""
+    from typing import get_args
+
+    from pydantic import ValidationError
+
+    from issue_orchestrator.contracts.ui_openapi_models import TimelineView
+    from issue_orchestrator.view_models.lifecycle_semantics import (
+        SwitchE2ETimelineViewCommand,
+    )
+    from issue_orchestrator.view_models.timeline_view import (
+        DEFAULT_TIMELINE_VIEW,
+        TIMELINE_VIEWS,
+        normalize_timeline_view,
+    )
+
+    views = set(get_args(TimelineView))
+    assert views == {"user", "ops", "debug", "raw"}
+    assert TIMELINE_VIEWS == views
+    assert DEFAULT_TIMELINE_VIEW in views
+
+    # Unknown values coerce to the default; known ones pass through.
+    assert normalize_timeline_view("nonsense") == DEFAULT_TIMELINE_VIEW
+    for view in views:
+        assert normalize_timeline_view(view) == view
+
+    # The canonical command accepts every wire view, including ``raw`` (the
+    # value it used to omit), and still rejects a bogus one.
+    for view in views:
+        assert SwitchE2ETimelineViewCommand(run_id=1, view=view).view == view  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        SwitchE2ETimelineViewCommand(run_id=1, view="detail")  # type: ignore[arg-type]
 
 
 def test_create_e2e_untriaged_issues_command_payload_matches_openapi() -> None:
@@ -927,6 +1044,9 @@ def test_issue_detail_payload_matches_ui_openapi() -> None:
         cycles=[{"cycle": 1, "status": "started", "phases": ["in_progress"]}],
     )
     _validator("IssueDetailPayload").validate(payload)
+    _assert_response_view_is_timeline_view_constrained(
+        payload, "IssueDetailPayload", IssueDetailPayload
+    )
 
 
 def _journey_event(
@@ -1280,6 +1400,9 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
 
     _validator("E2ERunDetailPayload").validate(payload)
     E2ERunDetailPayload.model_validate(payload)
+    _assert_response_view_is_timeline_view_constrained(
+        payload, "E2ERunDetailPayload", E2ERunDetailPayload
+    )
 
 
 def test_issue_detail_action_payload_accepts_null_optional_url() -> None:

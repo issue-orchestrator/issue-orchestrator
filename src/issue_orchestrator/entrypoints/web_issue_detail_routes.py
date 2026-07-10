@@ -25,6 +25,7 @@ from ..view_models.dashboard import (
 )
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
 from ..view_models.rework_status import resolve_queued_rework
+from ..view_models.timeline_view import normalize_timeline_view
 from ..view_models.lifecycle_projection import (
     project_dashboard_lifecycle_container,
     project_e2e_suite_lifecycle_container_for_run,
@@ -51,7 +52,6 @@ from .web_session_context import (
 logger = logging.getLogger(__name__)
 
 web_issue_detail_router = APIRouter()
-_VALID_DETAIL_VIEWS = {"user", "ops", "debug", "raw"}
 
 
 class E2ERunDatabaseNotFoundError(FileNotFoundError):
@@ -60,11 +60,6 @@ class E2ERunDatabaseNotFoundError(FileNotFoundError):
 
 class E2ERunRecordNotFoundError(LookupError):
     """The requested E2E run does not exist in the database."""
-
-
-def _normalize_detail_view(view: str) -> str:
-    """Return a supported drawer view mode."""
-    return view if view in _VALID_DETAIL_VIEWS else "user"
 
 
 def _current_run_validation_diagnostic(
@@ -577,7 +572,7 @@ async def get_issue_detail(
         phase_toc=phase_toc,
         cycles=cycles,
         context=_build_issue_story_context(orchestrator, issue_number),
-        view=_normalize_detail_view(view),
+        view=normalize_timeline_view(view),
         raw_events=raw_events,
     )
     payload = _finalize_issue_detail_payload(
@@ -695,7 +690,7 @@ async def get_e2e_run_detail(
     if not agent_events:
         agent_events = _load_orchestrator_events_for_run(orchestrator, run_id)
 
-    matcher_view = _normalize_detail_view(view)
+    matcher_view = normalize_timeline_view(view)
     events = _attach_issue_numbers_to_test_windows(
         e2e_events,
         agent_events,
@@ -930,7 +925,7 @@ async def get_e2e_issue_detail(
         phase_toc=_build_phase_toc(events),
         cycles=_build_timeline_cycles(events),
         context=None,
-        view=_normalize_detail_view(view),
+        view=normalize_timeline_view(view),
         raw_events=raw_events,
     )
     payload = _finalize_issue_detail_payload(

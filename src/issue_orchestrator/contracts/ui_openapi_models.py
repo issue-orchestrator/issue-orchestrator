@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 
+TimelineView: TypeAlias = Literal['user', 'ops', 'debug', 'raw']
+
 class AgentIdentityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -248,7 +250,7 @@ class E2ERunDetailPayload(BaseModel):
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
     title: str
-    view: str | None = None
+    view: TimelineView | None = None
 
 class E2ERunExecutionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -509,7 +511,7 @@ class IssueDetailPayload(BaseModel):
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
     title: str
-    view: str | None = None
+    view: TimelineView | None = None
 
 class IssueDetailSummaryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1007,7 +1009,7 @@ class SwitchE2ETimelineViewCommandPayload(BaseModel):
     kind: Literal['switch_e2e_timeline_view']
     label: str
     run_id: int = Field(..., ge=1, strict=True)
-    view: Literal['user', 'ops', 'debug', 'raw']
+    view: TimelineView
 
 class TestCaseHistoryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
