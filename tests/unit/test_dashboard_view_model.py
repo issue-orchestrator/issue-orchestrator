@@ -2129,3 +2129,11 @@ def test_queue_card_embeds_producer_stack_gate_view():
     assert gates["merge"] is False
     assert "merge" in stack["blocked_gates"]
     assert stack["stack_base_branch"] == "feat/base"
+
+
+def test_normalize_status_reason_drops_none_and_blank_values():
+    # Production parity (#6749): dashboard cards must not surface an empty or
+    # missing status reason as literal text. Both a None reason and a
+    # whitespace-only reason normalize to None so the projection stays clean.
+    assert _normalize_status_reason(None) is None
+    assert _normalize_status_reason("   ") is None
