@@ -154,6 +154,26 @@ def test_process_group_owner_snapshots_the_full_process_tree(monkeypatch) -> Non
     assert snapshot == frozenset({110, 111, 113})
 
 
+def test_teardown_tolerates_recycled_pid_permission_error(monkeypatch) -> None:
+    """A captured group whose PID was recycled (EPERM) is treated as gone.
+
+    Once a killed group's leader exits, its PID/PGID can be reused by an
+    unrelated process before teardown runs. ``os.killpg`` then reports EPERM
+    instead of ESRCH, and best-effort teardown must not crash on that benign
+    PID-reuse race the way it did under heavy parallel load.
+    """
+    owner = ProcessGroupOwner(4321, protected_pgid=999)
+
+    def deny(_pgid: int, _signum: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", deny)
+
+    # None of these may raise: an unsignalable group is no longer ours to reap.
+    owner.signal(frozenset({2000, 2001}), signal.SIGTERM)
+    owner.terminate_survivors(frozenset({2000, 2001}))
+
+
 def test_crash_reaps_engine_and_isolated_agent_process_groups() -> None:
     """A hard engine crash must not leave its detached agent child alive."""
     root_script = """
