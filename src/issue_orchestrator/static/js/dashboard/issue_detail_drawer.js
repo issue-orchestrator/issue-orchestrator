@@ -176,16 +176,16 @@ async function unblockFromDrawer() {
 // Journey cycles — collapsible lifecycle groups
 // ---------------------------------------------------------------------------
 
-function filterRuns(runs, filter) {
+function filterAttempts(runs, filter) {
     if (!runs.length || filter === 'all') return runs;
     return [runs[runs.length - 1]];
 }
 
 function renderJourneyTimeline(container, data) {
-    _renderJourneyRuns(container, data.runs || [], data || {});
+    _renderJourneyAttempts(container, data.attempts || [], data || {});
 }
 
-function _collectRunIdsFromJourneyRuns(runs) {
+function _collectRunIdsFromAttempts(runs) {
     const ids = new Set();
     const add = (value) => {
         if (value !== undefined && value !== null && String(value) !== '') {
@@ -215,7 +215,7 @@ function _rawEventBelongsToSelectedRuns(evt, selectedRunIds) {
 
 function renderIssueRawTimelineEvents(data, selectedRuns) {
     const events = Array.isArray(data && data.events) ? data.events : [];
-    const selectedRunIds = _collectRunIdsFromJourneyRuns(selectedRuns || []);
+    const selectedRunIds = _collectRunIdsFromAttempts(selectedRuns || []);
     const visibleEvents = journeyFilter === 'all'
         ? events
         : events.filter((evt) => _rawEventBelongsToSelectedRuns(evt, selectedRunIds));
@@ -240,9 +240,9 @@ function renderIssueRawTimelineEvents(data, selectedRuns) {
     }</div>`;
 }
 
-function _renderJourneyRuns(container, allRuns, data) {
+function _renderJourneyAttempts(container, allRuns, data) {
     const detailData = data || issueDetailData || {};
-    const runs = filterRuns(allRuns, journeyFilter);
+    const runs = filterAttempts(allRuns, journeyFilter);
     const isLatestRun = journeyFilter === 'latest-run';
     const isAll = journeyFilter === 'all';
     const issueNum = issueDetailData ? issueDetailData.issue_number : null;
@@ -362,7 +362,7 @@ function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
     const cycleEl = document.getElementById(cycleId);
     if (!cycleEl || !issueDetailData) return;
 
-    const allRuns = filterRuns(issueDetailData.runs || [], journeyFilter);
+    const allRuns = filterAttempts(issueDetailData.attempts || [], journeyFilter);
     const runData = allRuns[runIndex];
     const cycleData = runData?.cycles?.[cycleIndex];
     if (!cycleData) return;
@@ -499,7 +499,7 @@ async function setTimelineView(view) {
 function copyJourneyTimeline() {
     if (!issueDetailData) return;
 
-    const runs = filterRuns(issueDetailData.runs || [], journeyFilter);
+    const runs = filterAttempts(issueDetailData.attempts || [], journeyFilter);
     if (runs.length === 0) {
         showToast('No timeline to copy', true);
         return;
@@ -510,7 +510,7 @@ function copyJourneyTimeline() {
     for (const run of runs) {
         const runTime = formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || '');
         const runLabelText = readHierarchicalOutcomeBadge(run.outcome).label || 'In progress';
-        text += `\n${run.run_label || `Run ${run.run_number || '?'}`} \u2014 ${runLabelText}  ${runTime}\n`;
+        text += `\n${run.attempt_label || `Run ${run.attempt_number || '?'}`} \u2014 ${runLabelText}  ${runTime}\n`;
         for (const c of (run.cycles || [])) {
             const agent = c.agent ? ` (${c.agent})` : '';
             const cycleNum = c.cycle_in_run || c.cycle || '?';

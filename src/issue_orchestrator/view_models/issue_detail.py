@@ -24,7 +24,7 @@ from .blocked_explanations import invalid_or_validation_blocked_explanation
 # test.  Journey projection (typed cycles, runs, validation badge) is built
 # by ``view_models.journey_projection`` — see the typed pipeline call in
 # ``build_issue_detail_view_model``.
-from .journey_projection import build_journey_cycles_from_events, build_journey_runs
+from .journey_projection import build_attempts, build_journey_cycles_from_events
 from .lifecycle_event_sets import (
     BLOCKED_EVENT_NAMES as _CANONICAL_BLOCKED_EVENT_NAMES,
     OUTCOME_EVENTS as _CANONICAL_OUTCOME_EVENTS,
@@ -97,8 +97,8 @@ def build_issue_detail_view_model(
         projection_context,
         issue_number=issue_number,
     )
-    typed_runs = build_journey_runs(typed_cycles)
-    runs = [run.model_dump(mode="json") for run in typed_runs]
+    typed_attempts = build_attempts(typed_cycles)
+    attempts = [attempt.model_dump(mode="json") for attempt in typed_attempts]
 
     return {
         "issue_number": issue_number,
@@ -113,8 +113,8 @@ def build_issue_detail_view_model(
         "view": view,
         "status_explanation": _build_status_explanation(context, filtered),
         "timeline_steps": timeline_steps,
-        "runs": runs,
-        "run_count": len(runs),
+        "attempts": attempts,
+        "attempt_count": len(attempts),
         "previous_runs": previous_runs,
         "previous_runs_count": len(previous_runs),
         "raw_events_count": len(raw_events if raw_events is not None else events),

@@ -556,7 +556,7 @@ def test_tech_lead_runs_chunk_is_registered_in_the_dashboard_bundle() -> None:
 def test_issue_detail_timeline_filters_are_grouped_button_controls() -> None:
     js = _read(DASHBOARD_JS)
     css = _read_dashboard_css_bundle()
-    body = _function_body(js, "_renderJourneyRuns")
+    body = _function_body(js, "_renderJourneyAttempts")
     assert 'role="radiogroup"' not in body
     assert 'role="radio"' not in body
     assert "aria-checked=" not in body
@@ -984,7 +984,7 @@ def test_journey_cycle_header_renders_validation_badge() -> None:
     """
     js = _read(DASHBOARD_JS)
     badge_body = _function_body(js, "_renderCycleValidationBadge")
-    runs_body = _function_body(js, "_renderJourneyRuns")
+    runs_body = _function_body(js, "_renderJourneyAttempts")
     cycle_summary_body = _function_body(js, "_renderIssueLifecycleCycleSummary")
 
     # The cycle header includes the badge.
@@ -2049,7 +2049,7 @@ def test_journey_renders_server_supplied_scratch_run_and_cycle_labels() -> None:
     run_body = _function_body(js, "_defaultIssueLifecycleRunLabel")
     cycle_body = _function_body(js, "_defaultIssueLifecycleCycleLabel")
     summary_body = _function_body(js, "_renderIssueLifecycleCycleSummary")
-    assert "run.run_label" in run_body
+    assert "run.attempt_label" in run_body
     assert "cycle.cycle_label" in cycle_body
     assert "escapeHtml(cycleLabel)" in summary_body
 
@@ -2057,7 +2057,7 @@ def test_journey_renders_server_supplied_scratch_run_and_cycle_labels() -> None:
 def test_journey_copy_uses_server_supplied_scratch_run_and_cycle_labels() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "copyJourneyTimeline")
-    assert "run.run_label" in body
+    assert "run.attempt_label" in body
     assert "c.cycle_label" in body
 
 
@@ -2072,13 +2072,13 @@ def test_journey_timeline_uses_native_disclosure_hierarchy() -> None:
     js = _read(DASHBOARD_JS)
     generic_src = (DASHBOARD_JS_DIR / "hierarchical_timeline.js").read_text(encoding="utf-8")
     plugin_src = (DASHBOARD_JS_DIR / "plugins" / "agent_context.js").read_text(encoding="utf-8")
-    drawer_body = _function_body(js, "_renderJourneyRuns")
+    drawer_body = _function_body(js, "_renderJourneyAttempts")
     plugin_body = _function_body(plugin_src, "renderIssueLifecycleTimeline")
     assert "renderIssueLifecycleTimeline(runs, {" in drawer_body
     assert "function renderIssueLifecycleTimeline" not in generic_src
     assert "function renderIssueLifecycleTimeline" in plugin_src
     assert "renderHierarchicalTimelineNode({" in plugin_body
-    assert "className: 'journey-run unified-timeline-node'" in plugin_body
+    assert "className: 'journey-attempt unified-timeline-node'" in plugin_body
     assert "className: 'journey-cycle unified-timeline-node'" in plugin_body
     assert "summaryClassName: 'journey-cycle-header unified-timeline-summary'" in plugin_body
     assert "caretClassName: 'journey-cycle-toggle'" in plugin_body
@@ -2145,7 +2145,7 @@ def test_toggle_journey_cycle_uses_native_details_state() -> None:
 
 def test_journey_artifact_affordance_is_semantic_button() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
+    body = _function_body(js, "_renderJourneyAttempts")
     assert '<button type="button" class="journey-cycle-artifacts-btn"' in body
     assert 'aria-label="Open artifacts for ${escapeAttr(cycleLabel)}"' in body
     assert "event.preventDefault(); event.stopPropagation(); toggleArtifactPopover" in body
@@ -2290,7 +2290,7 @@ def test_timeline_modal_delegate_handles_menu_items() -> None:
 
 def test_journey_action_delegate_handles_menu_items_and_closes_menus() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
+    body = _function_body(js, "_renderJourneyAttempts")
     handler_body = _function_body(js, "handleTimelineEventActionsClick")
     assert "bindTimelineEventActions(container)" in body
     assert ".timeline-action-btn, .timeline-menu-item" in handler_body
@@ -3294,7 +3294,7 @@ def test_toggle_journey_cycle_closes_open_timeline_menus() -> None:
 
 def test_journey_empty_state_uses_diagnostic_when_timeline_missing() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
+    body = _function_body(js, "_renderJourneyAttempts")
     assert "timelineDiagnostic" in body
     assert "expected_history_missing" in body
     assert "Timeline data missing" in body
@@ -3303,7 +3303,7 @@ def test_journey_empty_state_uses_diagnostic_when_timeline_missing() -> None:
 
 def test_journey_empty_state_falls_back_to_no_activity_when_no_diagnostic() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "_renderJourneyRuns")
+    body = _function_body(js, "_renderJourneyAttempts")
     assert "No activity recorded." in body
 
 

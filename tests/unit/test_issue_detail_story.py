@@ -507,8 +507,8 @@ def test_build_issue_detail_view_model_returns_runs() -> None:
         cycles=[],
         context=_ctx(flow_stage="in_progress", active_runtime_minutes=1, active_task_kind="code"),
     )
-    assert payload["run_count"] == 2
-    assert payload["runs"][1]["expanded"] is True
+    assert payload["attempt_count"] == 2
+    assert payload["attempts"][1]["expanded"] is True
 
 
 def test_scratch_retry_surfaces_run_and_cycle_labels() -> None:
@@ -543,9 +543,9 @@ def test_scratch_retry_surfaces_run_and_cycle_labels() -> None:
         context=_ctx(flow_stage="in_progress"),
     )
 
-    latest_run = payload["runs"][-1]
+    latest_run = payload["attempts"][-1]
     assert latest_run["reset_from_scratch"] is True
-    assert latest_run["run_label"] == "Run 1 (scratch retry)"
+    assert latest_run["attempt_label"] == "Run 1 (scratch retry)"
     assert latest_run["cycles"][0]["reset_from_scratch"] is True
     assert latest_run["cycles"][0]["cycle_label"] == "Cycle 1 (scratch)"
 
@@ -568,7 +568,7 @@ def test_latest_run_without_review_events_not_marked_completed() -> None:
         cycles=[],
         context=_ctx(flow_stage="in_progress"),
     )
-    latest = payload["runs"][-1]
+    latest = payload["attempts"][-1]
     assert "completed" not in str(latest["outcome"]).lower()
     assert "approved" not in str(latest["outcome"]).lower()
 
@@ -715,7 +715,7 @@ def test_user_story_hides_outer_coding_completion_during_review_round() -> None:
     assert "agent.coding_completed" not in story_step_events
     assert "agent.coding_completed" in ops_step_events
 
-    latest_cycle = story_payload["runs"][-1]["cycles"][0]
+    latest_cycle = story_payload["attempts"][-1]["cycles"][0]
     assert [group["label"] for group in latest_cycle["phase_groups"]] == ["Review"]
 
 
@@ -818,7 +818,7 @@ def test_user_story_collapses_initial_review_start_cluster_to_single_step() -> N
     ]
     assert payload["timeline_steps"][0]["narrative"] == "Reviewed: round 1 ok"
 
-    latest_cycle = payload["runs"][-1]["cycles"][0]
+    latest_cycle = payload["attempts"][-1]["cycles"][0]
     assert [step["event"] for step in latest_cycle["steps"]] == step_events
     assert latest_cycle["steps"][0]["narrative"] == "Reviewed: round 1 ok"
 
@@ -933,7 +933,7 @@ def test_user_story_shows_orphan_terminal_review_event_without_start() -> None:
     assert "Looks good." in step["narrative"]
     assert step.get("run_id") is None
 
-    latest_cycle = payload["runs"][-1]["cycles"][0]
+    latest_cycle = payload["attempts"][-1]["cycles"][0]
     assert [step["event"] for step in latest_cycle["steps"]] == [
         "review.approved"
     ]

@@ -771,7 +771,7 @@ class CycleValidationBadge(LifecycleBase):
 
 
 class OutcomeBadge(LifecycleBase):
-    """Typed (label, tone) for a JourneyRun / IssueCycle outcome.
+    """Typed (label, tone) for an Attempt / IssueCycle outcome.
 
     Background — reviewer blocker on PR #6333: the inline Attempts
     expander rendered unknown outcome labels as green ✓ because the UI
@@ -937,13 +937,19 @@ class IssueCycle(LifecycleBase):
         return self
 
 
-class JourneyRun(LifecycleBase):
-    """A logical-run grouping of issue cycles for the drawer view."""
+class Attempt(LifecycleBase):
+    """A logical-run grouping of issue cycles for the drawer view.
 
-    run_number: int
-    run_label: str
+    Named "Attempt" to match the user-facing vocabulary locked in #6322
+    (Test run → Test → Issue → Attempt → Cycle → Event).  The session
+    recording ``run_id`` field is a filesystem path, unrelated to this
+    journey concept, and keeps its name.
+    """
+
+    attempt_number: int
+    attempt_label: str
     outcome: OutcomeBadge
-    run_key: str = ""
+    attempt_key: str = ""
     run_id: str | None = None
     session_run_ids: tuple[str, ...] = ()
     timestamp: str = ""
@@ -1299,6 +1305,7 @@ def command_kinds(commands: tuple[TimelineCommand, ...]) -> tuple[str, ...]:
 
 __all__ = [
     "AgentIdentity",
+    "Attempt",
     "BlockedCodingAttempt",
     "CodingAttempt",
     "CodingOutputs",
@@ -1327,7 +1334,6 @@ __all__ = [
     "IssueProjectionContext",
     "JourneyPhaseGroup",
     "JourneyPhaseKey",
-    "JourneyRun",
     "JourneyStep",
     "LinkedIssueLifecycle",
     "MissingCodingEvidence",

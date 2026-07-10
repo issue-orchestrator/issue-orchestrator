@@ -52,7 +52,7 @@
     ]);
 
     function _defaultIssueLifecycleRunLabel(run, ctx) {
-        return run.run_label || `Run ${run.run_number || (ctx.runIndex + 1)}`;
+        return run.attempt_label || `Run ${run.attempt_number || (ctx.runIndex + 1)}`;
     }
 
     function _defaultIssueLifecycleCycleLabel(cycle, ctx) {
@@ -278,7 +278,7 @@
         const nodes = [];
         for (let runIndex = 0; runIndex < rows.length; runIndex++) {
             const run = rows[runIndex] || {};
-            const runId = `${baseId}-run-${runIndex}`;
+            const runId = `${baseId}-attempt-${runIndex}`;
             let runBodyHtml = '';
             const cycles = Array.isArray(run.cycles) ? run.cycles : [];
             for (let cycleIndex = 0; cycleIndex < cycles.length; cycleIndex++) {
@@ -308,7 +308,7 @@
             const runCtx = { run, runIndex, runId, totalRuns: rows.length };
             nodes.push({
                 id: runId,
-                className: 'journey-run unified-timeline-node',
+                className: 'journey-attempt unified-timeline-node',
                 summaryClassName: 'journey-cycle-header unified-timeline-summary',
                 bodyClassName: 'journey-cycle-body',
                 bodyId: `${runId}-body`,

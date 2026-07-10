@@ -55,8 +55,8 @@ test('plugin lifecycle renderer renders the shared run/cycle/event tree with act
 
     const html = ctx.renderIssueLifecycleTimeline([
         {
-            run_number: 1,
-            run_label: 'Run 1',
+            attempt_number: 1,
+            attempt_label: 'Run 1',
             outcome: { label: 'Failed', tone: 'failed' },
             expanded: true,
             cycles: [{
@@ -80,7 +80,7 @@ test('plugin lifecycle renderer renders the shared run/cycle/event tree with act
         },
     ], { baseId: 'shared' });
 
-    assert.match(html, /<details class="journey-run unified-timeline-node" id="shared-run-0" open>/);
+    assert.match(html, /<details class="journey-attempt unified-timeline-node" id="shared-attempt-0" open>/);
     assert.match(html, /<details class="journey-cycle unified-timeline-node" id="shared-cycle-0-0" open>/);
     assert.match(html, /Coding session started/);
     assert.match(html, /timeline-event-actions/);
@@ -99,7 +99,7 @@ test('plugin lifecycle renderer gives validation events an inline canonical-JUni
 
     const html = ctx.renderIssueLifecycleTimeline([
         {
-            run_number: 1,
+            attempt_number: 1,
             outcome: { label: 'Failed', tone: 'failed' },
             expanded: true,
             cycles: [{
@@ -145,7 +145,7 @@ test('plugin lifecycle renderer marks an in-round progress step with an accessib
 
     const html = ctx.renderIssueLifecycleTimeline([
         {
-            run_number: 1,
+            attempt_number: 1,
             outcome: { label: 'In progress', tone: 'in_progress' },
             expanded: true,
             cycles: [{
@@ -180,7 +180,7 @@ test('plugin lifecycle renderer omits the live badge for ordinary completed step
 
     const html = ctx.renderIssueLifecycleTimeline([
         {
-            run_number: 1,
+            attempt_number: 1,
             outcome: { label: 'Passed', tone: 'passed' },
             expanded: true,
             cycles: [{
@@ -213,7 +213,7 @@ test('plugin lifecycle renderer uses host timestamp capabilities instead of dash
 
     const html = ctx.renderIssueLifecycleTimeline([
         {
-            run_label: 'Run',
+            attempt_label: 'Run',
             outcome: { label: 'Passed', tone: 'passed' },
             timestamp: 'raw-run',
             time_label: 'run-label',

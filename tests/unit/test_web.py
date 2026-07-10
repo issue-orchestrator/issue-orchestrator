@@ -346,7 +346,7 @@ def fetch_issue_detail_payload(
 
 
 def _latest_run(payload: dict[str, Any]) -> dict[str, Any]:
-    runs = payload.get("runs")
+    runs = payload.get("attempts")
     assert isinstance(runs, list) and runs
     latest = runs[-1]
     assert isinstance(latest, dict)

@@ -36,10 +36,10 @@ function loadRenderSlice(overrides = {}) {
     const hierarchicalSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'hierarchical_timeline.js'), 'utf8');
     const pluginSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'plugins/agent_context.js'), 'utf8');
     const slice = [
-        _extractFunction(source, 'function _collectRunIdsFromJourneyRuns'),
+        _extractFunction(source, 'function _collectRunIdsFromAttempts'),
         _extractFunction(source, 'function _rawEventBelongsToSelectedRuns'),
         _extractFunction(source, 'function renderIssueRawTimelineEvents'),
-        _extractFunction(source, 'function _renderJourneyRuns'),
+        _extractFunction(source, 'function _renderJourneyAttempts'),
         _extractFunction(source, 'function toggleJourneyCycle'),
     ].join('\n');
     const listeners = [];
@@ -57,7 +57,7 @@ function loadRenderSlice(overrides = {}) {
         formatStepLabel: (value) => String(value || 'event'),
         formatStatus: (value) => String(value || ''),
         formatTimestamp: (value) => String(value || ''),
-        filterRuns: (runs) => runs,
+        filterAttempts: (runs) => runs,
         formatJourneyHeaderTimestamp: (_timestamp, label) => label || '13:05',
         formatJourneyStepTimestamp: (_timestamp, label) => label || '13:05',
         _renderCycleValidationBadge: () => '',
@@ -79,7 +79,7 @@ function loadRenderSlice(overrides = {}) {
     vm.createContext(context);
     vm.runInContext(hierarchicalSource, context, { filename: 'hierarchical_timeline.js' });
     vm.runInContext(pluginSource, context, { filename: 'plugins/agent_context.js' });
-    vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (_renderJourneyRuns slice)' });
+    vm.runInContext(slice, context, { filename: 'issue_detail_drawer.js (_renderJourneyAttempts slice)' });
     return context;
 }
 
@@ -91,16 +91,16 @@ function renderJourney(payload, overrides = {}) {
         addEventListener: (type, handler) => ctx.listeners.push({ type, handler }),
     };
     ctx.issueDetailData.summary = payload.summary || {};
-    ctx._renderJourneyRuns(container, payload.runs || []);
+    ctx._renderJourneyAttempts(container, payload.attempts || []);
     return { html: container.innerHTML, listeners: ctx.listeners };
 }
 
 test('issue detail timeline renders runs and cycles through the shared disclosure renderer', () => {
     const { html, listeners } = renderJourney({
-        runs: [
+        attempts: [
             {
-                run_number: 1,
-                run_label: 'Run 1',
+                attempt_number: 1,
+                attempt_label: 'Run 1',
                 expanded: false,
                 outcome: { label: 'Blocked', tone: 'failed' },
                 cycles: [
@@ -117,11 +117,13 @@ test('issue detail timeline renders runs and cycles through the shared disclosur
         summary: {},
     });
 
-    assert.match(html, /<details class="journey-run unified-timeline-node" id="journey-run-0">/);
+    assert.match(html, /<details class="journey-attempt unified-timeline-node" id="journey-attempt-0">/);
+    // Rename regression guard (#6335): the pre-rename ``journey-run`` class is gone.
+    assert.doesNotMatch(html, /class="journey-run\b/);
     assert.match(html, /<summary class="journey-cycle-header unified-timeline-summary">/);
     assert.match(html, /<span class="journey-cycle-toggle hierarchical-timeline-caret" aria-hidden="true"><\/span>/);
     assert.match(html, /<details class="journey-cycle unified-timeline-node" id="journey-cycle-0-0">/);
-    assert.match(html, /<div class="journey-cycle-body" id="journey-run-0-body">/);
+    assert.match(html, /<div class="journey-cycle-body" id="journey-attempt-0-body">/);
     assert.match(html, /<div class="journey-cycle-body" id="journey-cycle-0-0-body">/);
     assert.doesNotMatch(html, /data-lifecycle-command="/);
     assert.doesNotMatch(html, /sync_journey_disclosure/);
@@ -134,10 +136,10 @@ test('issue detail timeline renders runs and cycles through the shared disclosur
 
 test('cycle artifact affordance is a keyboard-reachable button', () => {
     const { html } = renderJourney({
-        runs: [
+        attempts: [
             {
-                run_number: 1,
-                run_label: 'Run 1',
+                attempt_number: 1,
+                attempt_label: 'Run 1',
                 expanded: true,
                 outcome: { label: 'In progress', tone: 'in_progress' },
                 cycles: [
@@ -182,9 +184,9 @@ test('toggleJourneyCycle delegates disclosure state to native details', () => {
 test('timeline source calls the shared issue lifecycle renderer for runs and cycles', () => {
     const source = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'issue_detail_drawer.js'), 'utf8');
     const pluginSource = fs.readFileSync(path.join(DASHBOARD_JS_DIR, 'plugins/agent_context.js'), 'utf8');
-    const body = _extractFunction(source, 'function _renderJourneyRuns');
+    const body = _extractFunction(source, 'function _renderJourneyAttempts');
     assert.ok(body.includes('renderIssueLifecycleTimeline(runs, {'));
-    assert.ok(pluginSource.includes("className: 'journey-run unified-timeline-node'"));
+    assert.ok(pluginSource.includes("className: 'journey-attempt unified-timeline-node'"));
     assert.ok(pluginSource.includes("className: 'journey-cycle unified-timeline-node'"));
 });
 
@@ -206,10 +208,10 @@ test('raw timeline view renders raw event rows instead of lifecycle runs', () =>
                 run_id: 'run-3',
             },
         ],
-        runs: [
+        attempts: [
             {
-                run_number: 3,
-                run_label: 'Run 3',
+                attempt_number: 3,
+                attempt_label: 'Run 3',
                 run_id: 'run-3',
                 cycles: [],
             },
@@ -246,5 +248,5 @@ test('raw timeline view renders raw event rows instead of lifecycle runs', () =>
     assert.match(html, /class="journey-raw-events"/);
     assert.match(html, /session.started/);
     assert.match(html, /validation.failed/);
-    assert.doesNotMatch(html, /<details class="journey-run/);
+    assert.doesNotMatch(html, /<details class="journey-attempt/);
 });

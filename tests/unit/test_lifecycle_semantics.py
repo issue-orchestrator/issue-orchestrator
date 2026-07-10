@@ -53,9 +53,9 @@ from issue_orchestrator.view_models.lifecycle_semantics import (
 
 # OutcomeBadge constructor shim for tests (PR #6333): the
 # projection layer owns tone classification, but tests construct
-# IssueCycle/JourneyRun directly with bare label strings.  This
+# IssueCycle/Attempt directly with bare label strings.  This
 # helper wraps any label in the typed shape so the assertions
-# stay focused on cycle/run shape, not tone bookkeeping.
+# stay focused on cycle/attempt shape, not tone bookkeeping.
 def _ob(label: str, tone: str = "neutral") -> OutcomeBadge:
     """Test helper: wrap a bare outcome label in an OutcomeBadge.
     Tone defaults to neutral; tests that care about tone pass it

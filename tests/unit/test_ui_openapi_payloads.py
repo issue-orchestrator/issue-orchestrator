@@ -105,9 +105,9 @@ class _OrchestratorStub:
 
 # OutcomeBadge constructor shim for tests (PR #6333): the
 # projection layer owns tone classification, but tests construct
-# IssueCycle/JourneyRun directly with bare label strings.  This
+# IssueCycle/Attempt directly with bare label strings.  This
 # helper wraps any label in the typed shape so the assertions
-# stay focused on cycle/run shape, not tone bookkeeping.
+# stay focused on cycle/attempt shape, not tone bookkeeping.
 def _ob(label: str, tone: str = "neutral") -> OutcomeBadge:
     """Test helper: wrap a bare outcome label in an OutcomeBadge.
     Tone defaults to neutral; tests that care about tone pass it
@@ -2006,10 +2006,10 @@ def _journey_event(
     }
 
 
-def test_issue_detail_runs_payload_uses_typed_journey_run_shape() -> None:
-    """``/api/issue-detail`` exposes ``runs[].cycles[]`` as typed journey
+def test_issue_detail_attempts_payload_uses_typed_attempt_shape() -> None:
+    """``/api/issue-detail`` exposes ``attempts[].cycles[]`` as typed journey
     cycles with the new ``CycleValidationBadge`` (issue #6310 AC-1).
-    The wire shape conforms to ``JourneyRunPayload`` and
+    The wire shape conforms to ``AttemptPayload`` and
     ``IssueCyclePayload``; the typed badge carries an
     ``OpenValidationDetailsCommand`` when a validation event is recorded.
     """
@@ -2053,14 +2053,14 @@ def test_issue_detail_runs_payload_uses_typed_journey_run_shape() -> None:
     )
     _validator("IssueDetailPayload").validate(payload)
 
-    runs = payload["runs"]
-    assert len(runs) == 1
-    run = runs[0]
-    # JourneyRun typed shape
-    assert run["run_number"] == 1
-    assert run["run_label"] == "Run 1"
-    assert run["reset_from_scratch"] is False
-    cycles = run["cycles"]
+    attempts = payload["attempts"]
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    # Attempt typed shape
+    assert attempt["attempt_number"] == 1
+    assert attempt["attempt_label"] == "Run 1"
+    assert attempt["reset_from_scratch"] is False
+    cycles = attempt["cycles"]
     assert len(cycles) == 1
     cycle = cycles[0]
     # IssueCycle journey-overlay fields are populated (not None) because the
@@ -2081,8 +2081,8 @@ def test_issue_detail_runs_payload_uses_typed_journey_run_shape() -> None:
     assert badge["command"]["run_dir"] == "/tmp/run-1"
 
 
-def test_issue_detail_runs_payload_rejects_arbitrary_journey_run_dicts() -> None:
-    """Untyped journey run dicts no longer satisfy ``IssueDetailPayload`` —
+def test_issue_detail_attempts_payload_rejects_arbitrary_attempt_dicts() -> None:
+    """Untyped attempt dicts no longer satisfy ``IssueDetailPayload`` —
     the public drawer field is genuinely typed (issue #6310 AC-1)."""
     payload = build_issue_detail_view_model(
         issue_number=12,
@@ -2092,16 +2092,65 @@ def test_issue_detail_runs_payload_rejects_arbitrary_journey_run_dicts() -> None
         phase_toc=[],
         cycles=[],
     )
-    # Inject a typed-violating run; validation must reject.
-    payload["runs"] = [{"not_a_journey_run": True}]
+    # Inject a typed-violating attempt; validation must reject.
+    payload["attempts"] = [{"not_an_attempt": True}]
     errors = list(_validator("IssueDetailPayload").iter_errors(payload))
-    assert errors, "untyped runs dict should fail schema validation"
+    assert errors, "untyped attempts dict should fail schema validation"
     messages = _schema_error_messages(errors)
     assert (
-        "not_a_journey_run" in messages
-        or "run_number" in messages
+        "not_an_attempt" in messages
+        or "attempt_number" in messages
         or "is a required property" in messages
     ), f"unexpected validation message: {messages}"
+
+
+def test_issue_detail_payload_exposes_attempts_not_runs() -> None:
+    """Regression guard for the JourneyRun→Attempt rename (issue #6335).
+
+    The private drawer contract exposes ``attempts`` / ``attempt_count`` and
+    the typed row is ``AttemptPayload`` with ``attempt_number`` /
+    ``attempt_label`` / ``attempt_key``.  The old ``runs`` / ``run_count`` /
+    ``JourneyRunPayload`` names must be gone so a half-completed revert fails
+    loudly instead of silently drifting.  ``run_id`` (the session-recording
+    path) is deliberately unchanged.
+    """
+    import issue_orchestrator.contracts.ui_openapi_models as models
+    from issue_orchestrator.contracts.ui_openapi_models import (
+        AttemptPayload,
+        IssueDetailPayload,
+    )
+
+    assert not hasattr(models, "JourneyRunPayload")
+
+    detail_fields = set(IssueDetailPayload.model_fields)
+    assert {"attempts", "attempt_count"} <= detail_fields
+    assert "runs" not in detail_fields
+    assert "run_count" not in detail_fields
+
+    attempt_fields = set(AttemptPayload.model_fields)
+    assert {"attempt_number", "attempt_label", "attempt_key"} <= attempt_fields
+    assert "run_id" in attempt_fields  # session-recording path, kept
+    assert not ({"run_number", "run_label", "run_key"} & attempt_fields)
+
+    # The built payload uses the new keys, never the old ones.
+    payload = build_issue_detail_view_model(
+        issue_number=6335,
+        title="Rename JourneyRun → Attempt",
+        issue_url="https://github.com/test/repo/issues/6335",
+        events=[
+            _journey_event(
+                "session.started",
+                timestamp="2026-07-10T10:00:00Z",
+                logical_run=1,
+                logical_cycle=1,
+            ),
+        ],
+        phase_toc=[],
+        cycles=[],
+    )
+    assert {"attempts", "attempt_count"} <= payload.keys()
+    assert "runs" not in payload
+    assert "run_count" not in payload
 
 
 def test_e2e_linked_issue_lifecycle_cycles_leave_journey_fields_null() -> None:
