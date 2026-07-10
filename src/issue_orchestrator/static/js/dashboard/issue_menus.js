@@ -196,6 +196,7 @@ function openCompactCardActionsMenu(event, button) {
     const status = String(button?.dataset?.status || '');
     const action = String(button?.dataset?.rowAction || '');
     const agentType = String(button?.dataset?.agent || '');
+    const runDir = String(button?.dataset?.runDir || '');
     const hasTerminal = button?.dataset?.hasTerminal === 'true';
     const orchestratorLabels = String(button?.dataset?.orchestratorLabels || '[]');
     const columnId = String(button?.closest('.kanban-column')?.dataset?.column || '').toLowerCase();
@@ -228,6 +229,7 @@ function openCompactCardActionsMenu(event, button) {
             columnId: String(columnId || ''),
             action: String(action || ''),
             agent: String(agentType || ''),
+            runDir: String(runDir || ''),
             hasTerminal: hasTerminal ? 'true' : 'false',
             orchestratorLabels,
             hasDependencies: 'false',
@@ -292,6 +294,16 @@ if (contextMenuEnabled) {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow && !menuPrompt.classList.contains('disabled')) {
+            // Active sessions carry a run_dir — prefer the run-scoped launch
+            // prompt (the actual prompt the agent was launched with, e.g. a
+            // rework session's merge-conflict instructions) over the static
+            // agent template.
+            const runDir = currentRow.dataset.runDir;
+            const issueNumber = currentRow.dataset.issue;
+            if (runDir && issueNumber) {
+                await openLaunchPromptDialog(Number(issueNumber), runDir);
+                return;
+            }
             const agentType = currentRow.dataset.agent;
             const res = await fetch(`/api/prompt/${encodeURIComponent(agentType)}`, { method: 'POST' });
             const data = await res.json();

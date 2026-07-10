@@ -1005,6 +1005,20 @@ def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     assert "renderValidationFailureActionSections" in js  # used inside the dialog
 
 
+def test_session_prompt_handlers_use_ui_action_contract() -> None:
+    # The run-scoped launch-prompt actions (issue #6588 F2) must build their
+    # request through the shared contract owner, not hardcode the endpoint, so
+    # future endpoint/query changes have a single source of truth.
+    js = _read(DASHBOARD_JS)
+    contract_js = _read(UI_ACTION_CONTRACT_JS)
+    assert "buildSessionPromptRequest" in contract_js
+    assert "SESSION_PROMPT" in contract_js
+    for fn in ("refreshInlineSessionPrompt", "openLaunchPromptDialog"):
+        body = _function_body(js, fn)
+        assert "uiActionContract.buildSessionPromptRequest" in body
+        assert "/api/session/prompt/" not in body
+
+
 def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimelineEventActions")

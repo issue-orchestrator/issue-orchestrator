@@ -30,6 +30,7 @@ from .lifecycle_event_sets import (
     OUTCOME_EVENTS as _CANONICAL_OUTCOME_EVENTS,
 )
 from .lifecycle_semantics import IssueProjectionContext
+from .rework_status import format_queued_rework_summary
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,9 @@ class IssueStoryContext:
     max_rework_cycles: int = 5
     pr_url: str | None = None
     pr_number: int | None = None
+    # Short reason an issue is queued for rework (e.g. "Merge conflict against
+    # base branch"); set only when ``flow_stage == "queued_for_rework"``.
+    rework_reason: str | None = None
 
 
 _logical_run_projector = LogicalRunProjector()
@@ -510,6 +514,17 @@ def _build_status_explanation(  # noqa: C901 — maps flow stages to status expl
             "triage": "Triage review",
         }.get(ctx.active_task_kind or "", "Session")
         return f"{kind_label} in progress ({ctx.active_runtime_minutes} min)"
+
+    # Queued for rework \u2014 a PR needs another coding pass (reviewer changes or
+    # a post-publish merge/validation problem) and the rework session has not
+    # launched yet. Surfaced before awaiting-merge so a stale pr-pending label
+    # does not mask it.
+    if ctx.flow_stage == "queued_for_rework":
+        return format_queued_rework_summary(
+            ctx.pr_number,
+            ctx.current_rework_cycle,
+            ctx.rework_reason or "Rework requested",
+        )
 
     # Awaiting merge
     if ctx.flow_stage == "awaiting_merge":

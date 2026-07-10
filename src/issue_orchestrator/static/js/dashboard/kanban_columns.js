@@ -189,6 +189,7 @@ function renderCompactCardHtml(card) {
         data-status="${escapeAttr(String(card.state_label || ''))}"
         data-row-action="${escapeAttr(String(action || ''))}"
         data-agent="${escapeAttr(String(card.agent_type || ''))}"
+        data-run-dir="${escapeAttr(String(card.run_dir || ''))}"
         data-has-terminal="${hasTerminal}"
         data-orchestrator-labels="${escapeAttr(JSON.stringify(card.orchestrator_labels || []))}"
         onclick="openCompactCardActionsMenu(event, this)"

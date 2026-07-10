@@ -1312,6 +1312,10 @@ async def get_session_prompt_content(
             "issue_number": issue_number,
             "run_dir": str(run_path),
             "prompt_path": str(prompt_path),
+            # This is the run-scoped prompt the session was actually launched
+            # with (manifest ``session_prompt_path``), not the static agent
+            # template — label it so the UI names it the launch prompt.
+            "label": "Launch prompt",
             "content": content,
         }
     )

@@ -633,12 +633,12 @@
       "value": 6
     },
     "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_issue_detail_routes.py": {
-      "detail": "10 branch site(s) mention lifecycle/control terms",
+      "detail": "13 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
       "path": "src/issue_orchestrator/entrypoints/web_issue_detail_routes.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 10
+      "value": 13
     },
     "control_policy_branch_sites:src/issue_orchestrator/entrypoints/web_operator_routes.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -1209,12 +1209,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/view_models/dashboard.py": {
-      "detail": "20 branch site(s) mention lifecycle/control terms",
+      "detail": "21 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/view_models/dashboard.py",
       "path": "src/issue_orchestrator/view_models/dashboard.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 20
+      "value": 21
     },
     "control_policy_branch_sites:src/issue_orchestrator/view_models/dashboard_e2e.py": {
       "detail": "10 branch site(s) mention lifecycle/control terms",
@@ -1433,12 +1433,12 @@
       "value": 1192
     },
     "oversized_control_hotspots:src/issue_orchestrator/entrypoints/web_session_routes.py": {
-      "detail": "1317 lines exceeds budget 800",
+      "detail": "1321 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/entrypoints/web_session_routes.py",
       "path": "src/issue_orchestrator/entrypoints/web_session_routes.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1317
+      "value": 1321
     },
     "oversized_control_hotspots:src/issue_orchestrator/execution/git_working_copy.py": {
       "detail": "847 lines exceeds budget 800",
@@ -1529,20 +1529,20 @@
       "value": 984
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/dashboard.py": {
-      "detail": "1466 lines exceeds budget 800",
+      "detail": "1482 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/view_models/dashboard.py",
       "path": "src/issue_orchestrator/view_models/dashboard.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1466
+      "value": 1482
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/issue_detail.py": {
-      "detail": "1084 lines exceeds budget 800",
+      "detail": "1099 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/view_models/issue_detail.py",
       "path": "src/issue_orchestrator/view_models/issue_detail.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1084
+      "value": 1099
     },
     "oversized_control_hotspots:src/issue_orchestrator/view_models/journey_projection.py": {
       "detail": "1062 lines exceeds budget 800",
@@ -1761,12 +1761,12 @@
       "value": 29
     },
     "ruff_complexity_noqa:src/issue_orchestrator/view_models/dashboard.py:C901:_build_queue_items": {
-      "detail": "C901 line 616: `_build_queue_items` is too complex (15 > 10)",
+      "detail": "C901 line 651: `_build_queue_items` is too complex (16 > 10)",
       "kind": "ruff_finding",
       "metric_id": "src/issue_orchestrator/view_models/dashboard.py:C901:_build_queue_items",
       "path": "src/issue_orchestrator/view_models/dashboard.py",
       "rule_id": "ruff_complexity_noqa",
-      "value": 15
+      "value": 16
     },
     "ruff_complexity_noqa:src/issue_orchestrator/view_models/issue_detail.py:C901:_blocked_explanation": {
       "detail": "C901 line 578: `_blocked_explanation` is too complex (12 > 10)",
@@ -1777,12 +1777,12 @@
       "value": 12
     },
     "ruff_complexity_noqa:src/issue_orchestrator/view_models/issue_detail.py:C901:_build_status_explanation": {
-      "detail": "C901 line 425: `_build_status_explanation` is too complex (12 > 10)",
+      "detail": "C901 line 493: `_build_status_explanation` is too complex (13 > 10)",
       "kind": "ruff_finding",
       "metric_id": "src/issue_orchestrator/view_models/issue_detail.py:C901:_build_status_explanation",
       "path": "src/issue_orchestrator/view_models/issue_detail.py",
       "rule_id": "ruff_complexity_noqa",
-      "value": 12
+      "value": 13
     },
     "ruff_complexity_noqa:src/issue_orchestrator/view_models/journey_projection.py:C901:blocked_explanation_for_event": {
       "detail": "C901 line 796: `blocked_explanation_for_event` is too complex (12 > 10)",

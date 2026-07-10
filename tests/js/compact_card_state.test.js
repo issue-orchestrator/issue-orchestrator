@@ -127,6 +127,55 @@ test('computeCompactCardFingerprint changes when the stack signal changes', () =
     assert.notEqual(before, after);
 });
 
+test('computeCompactCardFingerprint changes when run_dir changes', () => {
+    // A running card whose run directory advanced (e.g. a rework-<issue> slot
+    // reused by a new run) must re-fingerprint. Without run_dir in the
+    // fingerprint, renderCompactCards reuses the DOM node and the launch-prompt
+    // action reads a stale data-run-dir.
+    const before = compactCardState.computeCompactCardFingerprint({
+        issue_number: 202,
+        title: 'Rework run',
+        phase: 'Coding',
+        state_label: 'running',
+        show_stale_badge: false,
+        run_dir: '/runs/rework-202/run-a',
+    });
+    const after = compactCardState.computeCompactCardFingerprint({
+        issue_number: 202,
+        title: 'Rework run',
+        phase: 'Coding',
+        state_label: 'running',
+        show_stale_badge: false,
+        run_dir: '/runs/rework-202/run-b',
+    });
+    assert.notEqual(before, after);
+});
+
+test('computeCompactCardFingerprint still ignores phase_age when run_dir is held constant', () => {
+    // run_dir and phase_age volatility rules are independent: a run_dir change
+    // re-fingerprints (previous test), but a phase_age tick with an unchanged
+    // run_dir must still be a no-op so the node is reused.
+    const before = compactCardState.computeCompactCardFingerprint({
+        issue_number: 202,
+        title: 'Rework run',
+        phase: 'Coding',
+        phase_age: '2s',
+        state_label: 'running',
+        show_stale_badge: false,
+        run_dir: '/runs/rework-202/run-a',
+    });
+    const after = compactCardState.computeCompactCardFingerprint({
+        issue_number: 202,
+        title: 'Rework run',
+        phase: 'Coding',
+        phase_age: '12s',
+        state_label: 'running',
+        show_stale_badge: false,
+        run_dir: '/runs/rework-202/run-a',
+    });
+    assert.equal(before, after);
+});
+
 test('computeCompactCardFingerprint changes when stale badge visibility changes', () => {
     const before = compactCardState.computeCompactCardFingerprint({
         issue_number: 10,

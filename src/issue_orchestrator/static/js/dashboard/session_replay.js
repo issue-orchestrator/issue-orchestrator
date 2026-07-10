@@ -178,7 +178,7 @@ async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir 
             <div class="session-replay-hint">Replay restarts from the first event; Play/Pause and the scrubber move through recorded output, with long idle gaps shortened so progress stays visible. Follow live pins you to the newest output during active runs; chapters jump to round boundaries.</div>
             <div class="session-replay-prompt">
                 <details>
-                    <summary>Prompt</summary>
+                    <summary>Launch prompt</summary>
                     <div id="logPromptMeta" class="session-replay-meta"></div>
                     <pre id="logPromptPre"></pre>
                 </details>

@@ -710,3 +710,42 @@ def test_server_rendered_fingerprint_matches_js_helper_output(jinja_env):
         text=True,
     ).stdout
     assert server_fp == js_fp
+
+
+def test_first_paint_active_card_menu_carries_run_dir(jinja_env):
+    """F1 (#6732): the server template must stamp `data-run-dir` on the active
+    compact card menu button. The card fingerprint already includes run_dir, so
+    an active card present on first paint keeps its reused DOM node on the first
+    client refresh instead of being replaced by JS-rendered HTML. If the server
+    node lacks `data-run-dir`, the "View Agent Prompt" action reads an empty
+    runDir indefinitely and falls back to the static agent template instead of
+    the run-scoped launch prompt this issue fixes. Complements the JS renderer
+    test so both render paths stay in parity.
+    """
+    config = make_config()
+    config.agents = {"agent:web": make_agent_config()}
+    running_issue = Issue(number=4057, title="Running issue", labels=["agent:web", "in-progress"])
+    state = OrchestratorState(startup_status="complete", active_sessions=[make_session(running_issue)])
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="kanban",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    # The active card's run_dir is what the menu button must carry verbatim.
+    card = next(
+        c
+        for column in vm.template_context()["flow_columns"]
+        for c in column["items"]
+        if c.get("issue_number") == 4057
+    )
+    expected_run_dir = card["run_dir"]
+    assert expected_run_dir, "active session card should expose a non-empty run_dir"
+
+    soup = render_dashboard(jinja_env, vm)
+
+    running_col = soup.select_one('[data-column="running"]')
+    assert running_col is not None
+    menu_btn = running_col.select_one(".card-menu-btn")
+    assert menu_btn is not None
+    assert menu_btn.get("data-run-dir") == expected_run_dir

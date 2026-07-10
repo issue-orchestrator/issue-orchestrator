@@ -24,6 +24,7 @@ from ..view_models.dashboard import (
     stack_dependency_view,
 )
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
+from ..view_models.rework_status import resolve_queued_rework
 from ..view_models.lifecycle_projection import (
     project_dashboard_lifecycle_container,
     project_e2e_suite_lifecycle_container_for_run,
@@ -1043,11 +1044,8 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
     dependency_problem = state.dependency_problems.get(issue_number)
     dependency_summary = dependency_problem.summary if dependency_problem else None
 
-    rework_cycle = 0
-    for rework in state.pending_reworks:
-        if rework.resolve_issue_number() == issue_number:
-            rework_cycle = rework.rework_cycle
-            break
+    rework_status = resolve_queued_rework(state, issue_number)
+    rework_cycle = rework_status.rework_cycle if rework_status else 0
 
     pr_url: str | None = None
     pr_number: int | None = None
@@ -1061,6 +1059,10 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
             if entry.issue_number == issue_number and entry.pr_url:
                 pr_url = entry.pr_url
                 break
+    # A rework-queued issue may have no pending_review; carry the PR number
+    # the rework is against so the drawer can name it.
+    if pr_number is None and rework_status is not None:
+        pr_number = rework_status.pr_number
 
     return IssueStoryContext(
         flow_stage=_determine_issue_flow_stage(
@@ -1069,6 +1071,7 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
             active_task_kind,
             state,
             pr_url,
+            is_queued_for_rework=rework_status is not None,
         ),
         active_runtime_minutes=active_runtime,
         active_task_kind=active_task_kind,
@@ -1078,6 +1081,7 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
         max_rework_cycles=config.max_rework_cycles,
         pr_url=pr_url,
         pr_number=pr_number,
+        rework_reason=rework_status.reason if rework_status else None,
     )
 
 
@@ -1087,6 +1091,8 @@ def _determine_issue_flow_stage(
     active_task_kind: str | None,
     state: Any,
     pr_url: str | None,
+    *,
+    is_queued_for_rework: bool = False,
 ) -> str:
     """Determine the flow stage for an issue."""
     from ..domain.models import _base_of, _is_blocking_label
@@ -1095,6 +1101,10 @@ def _determine_issue_flow_stage(
         return "in_progress"
     if any(_is_blocking_label(label) for label in labels):
         return "blocked"
+    # Checked before awaiting_merge: a rework-queued issue may still carry a
+    # stale pr-pending label for a tick, which must not mask the rework state.
+    if is_queued_for_rework:
+        return "queued_for_rework"
     if any(_base_of(label) == "pr-pending" for label in labels):
         return "awaiting_merge"
 

@@ -8,12 +8,16 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.control.awaiting_merge_post_publish_policy import (
+    POST_PUBLISH_VALIDATION_SOURCE,
+)
 from issue_orchestrator.domain.models import (
     AgentConfig,
     DependencyProblem,
     Issue,
     OrchestratorState,
     PendingReview,
+    PendingRework,
     PendingValidationRetry,
     Session,
     SessionHistoryEntry,
@@ -616,6 +620,63 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     assert all(item["issue_number"] != 4072 for item in queued_col["items"])
     assert any(item["issue_number"] == 4072 for item in view_model.awaiting_merge_items)
     assert view_model.scope_summary["in_scope_total"] == 1
+
+
+def test_pr_pending_issue_queued_for_rework_leaves_merge_lane_with_reason():
+    # Regression (#6588): when a post-publish merge conflict queues a PR for
+    # rework, the source issue can still carry a stale pr-pending label for a
+    # tick. It must surface as "Queued for rework" (with PR number, cycle, and
+    # reason) in the queued lane — not linger in Awaiting Merge until launch.
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+
+    issue = Issue(
+        number=454,
+        title="Broken merge",
+        labels=["agent:web", "pr-pending"],
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+        pending_reworks=[
+            PendingRework(
+                issue_key=FakeIssueKey("454"),
+                agent_type="agent:web",
+                rework_cycle=1,
+                issue_number=454,
+                pr_number=469,
+                source=POST_PUBLISH_VALIDATION_SOURCE,
+                feedback=(
+                    "Merge conflict against base branch (cycle handled by "
+                    "post-publish gate, not the reviewer):\n\nPR #469 was "
+                    "approved but is no longer mergeable."
+                ),
+            )
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    awaiting_numbers = {item["issue_number"] for item in view_model.awaiting_merge_items}
+    assert 454 not in awaiting_numbers
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    card = next(item for item in queued_col["items"] if item["issue_number"] == 454)
+    assert card["state_label"] == "queued"
+    assert card["phase"] == "Rework"
+    summary = card["summary"]
+    assert "Queued for rework" in summary
+    assert "PR #469" in summary
+    assert "cycle 1" in summary
+    assert "Merge conflict against base branch" in summary
 
 
 def test_pr_closed_blocked_issue_is_blocked_not_awaiting_merge():
