@@ -80,6 +80,7 @@ from .actions import (
     CloseIssueAction,
     SetIssueStateAction,
     CreateTriageIssueAction,
+    SurfaceTriageProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
@@ -275,6 +276,8 @@ class ActionApplier:
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
             # Issue creation
             ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
+            # Triage decision proposals - event-only, no GitHub calls (ADR-0031)
+            ActionType.SURFACE_TRIAGE_PROPOSAL: self._apply_surface_triage_proposal,
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
@@ -1529,6 +1532,43 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         except Exception as e:
             logger.exception("Failed to create triage issue")
             return ActionResult.fail(action, str(e))
+
+    def _apply_surface_triage_proposal(self, action: Action) -> ActionResult:
+        """Surface a triage decision proposal as a trace event (ADR-0031).
+
+        Shadow-mode / pattern proposals emit TRIAGE_ACTION_PROPOSED; rejected
+        decision artifacts (mode == "rejected") emit TRIAGE_DECISION_REJECTED.
+        This handler makes NO GitHub calls — surfacing is the whole action.
+        """
+        assert isinstance(action, SurfaceTriageProposalAction)
+
+        event_name = (
+            EventName.TRIAGE_DECISION_REJECTED
+            if action.mode == "rejected"
+            else EventName.TRIAGE_ACTION_PROPOSED
+        )
+        self.events.publish(make_trace_event(event_name, {
+            "issue_number": action.issue_number,
+            "action_id": action.action_id,
+            "proposal_type": action.proposal_type,
+            "target_number": action.target_number,
+            "target_is_pr": action.target_is_pr,
+            "title": action.title,
+            "body_preview": action.body_preview,
+            "finding_ids": list(action.finding_ids),
+            "mode": action.mode,
+        }))
+        logger.info(
+            issue_log(action.issue_number, "Triage proposal surfaced: mode=%s type=%s action_id=%s"),
+            action.mode, action.proposal_type, action.action_id,
+        )
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            action_id=action.action_id,
+            proposal_type=action.proposal_type,
+            mode=action.mode,
+        )
 
     def _apply_cleanup_session(self, action: Action) -> ActionResult:
         """Clean up a completed session."""

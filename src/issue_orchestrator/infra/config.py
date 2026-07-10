@@ -699,15 +699,7 @@ class Config:
                 "fetch_limit": self.filtering.fetch_limit,
                 "max_to_start": self.filtering.max_to_start,
             },
-            "triage": {
-                "inherit_labels": list(self.triage.inherit_labels),
-                "explicit_labels": list(self.triage.explicit_labels),
-                "milestone_strategy": {
-                    "inherit_from_issues": self.triage.milestone_strategy.inherit_from_issues,
-                    "explicit": self.triage.milestone_strategy.explicit,
-                },
-                "priority": self.triage.priority,
-            },
+            "triage": self.triage.to_event_dict(),
             "scheduling": {
                 "default_priority_tier": self.scheduling.default_priority_tier,
             },

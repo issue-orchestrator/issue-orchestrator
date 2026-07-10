@@ -68,6 +68,9 @@ class ActionType(Enum):
     # Issue creation
     CREATE_TRIAGE_ISSUE = "create_triage_issue"
 
+    # Triage decision proposals (event-only surfacing, ADR-0031)
+    SURFACE_TRIAGE_PROPOSAL = "surface_triage_proposal"
+
     # Escalation
     ESCALATE_TO_HUMAN = "escalate_to_human"
 
@@ -276,6 +279,37 @@ class CreateTriageIssueAction(Action):
     pr_count: int = 0
     milestone: Optional[int] = None  # Milestone number to assign
     action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
+
+
+@dataclass(frozen=True)
+class SurfaceTriageProposalAction(Action):
+    """Surface a triage decision proposal without executing it (ADR-0031).
+
+    Emitted for propose-mode (shadow) authority, ``flag_pattern`` records,
+    and rejected decision artifacts. The applier only publishes a trace
+    event (``TRIAGE_ACTION_PROPOSED``, or ``TRIAGE_DECISION_REJECTED`` when
+    ``mode == "rejected"``) — it makes NO GitHub calls.
+
+    ``mode`` values:
+    - ``"shadow"`` — propose-mode authority: recorded as would-have-done.
+    - ``"pattern"`` — a ``flag_pattern`` proposal (its execution IS the record).
+    - ``"rejected"`` — the decision artifact pair failed validation;
+      ``proposal_type`` is ``"decision"`` and ``body_preview`` carries the
+      failure detail.
+    """
+
+    issue_number: int = 0  # The triage session's anchor issue
+    action_id: str = ""
+    proposal_type: str = ""
+    target_number: int = 0  # 0 = no target
+    target_is_pr: bool = False
+    title: str = ""
+    body_preview: str = ""  # Capped at 500 chars by the construction site
+    finding_ids: tuple[str, ...] = ()
+    mode: str = ""  # "shadow" | "pattern" | "rejected"
+    action_type: ActionType = field(
+        default=ActionType.SURFACE_TRIAGE_PROPOSAL, init=False
+    )
 
 
 @dataclass(frozen=True)

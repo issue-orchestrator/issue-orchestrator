@@ -104,6 +104,11 @@ _Auto-generated from settings schema._
 | `review.triage_reviewed_label` | string | `triage-reviewed` | Label added to manifest PRs after triage completes | `triage-reviewed` | Added to every PR in the triage manifest on success. |
 | `review.triage_failed_label` | string | `triage-failed` | Label added to manifest PRs when a triage session fails | `triage-failed` | Added to every PR in the triage manifest on failure. |
 | `review.triage_review_on_failure` | boolean | `True` | Queue a triage investigation when sessions fail | `true`, `false` | Disable to only triage PR batches, not failures. |
+| `triage.authority.post_comment` | string | `execute` | Execute or surface triage-proposed diagnosis comments | `execute`, `propose` | execute posts the proposed comment; propose (shadow mode) surfaces it as would-have-done. Allowed values: execute, propose. |
+| `triage.authority.create_issue` | string | `execute` | Execute or surface triage-proposed follow-up issues | `execute`, `propose` | execute files the proposed issue; propose (shadow mode) surfaces it as would-have-done. Allowed values: execute, propose. |
+| `triage.authority.flag_pattern` | string | `execute` | Record triage-flagged cross-job patterns | `execute`, `propose` | Pattern flags are recorded as events either way; this key exists for parity. Allowed values: execute, propose. |
+| `triage.authority.reset_retry` | string | `propose` | Act-level: reset-and-retry an issue from scratch | `propose` | Act-level authority is not wired yet (#6764): execute is a startup configuration error. Allowed values: execute, propose. |
+| `triage.authority.kill_hung_session` | string | `propose` | Act-level: terminate a stuck session | `propose` | Act-level authority is not wired yet (#6764): execute is a startup configuration error. Allowed values: execute, propose. |
 
 ## Merge Queue
 

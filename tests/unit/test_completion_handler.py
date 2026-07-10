@@ -2967,3 +2967,130 @@ class TestReviewOutcomeEventEmission:
 
         assert events.get_events(str(EventName.REVIEW_APPROVED)) == []
         assert events.get_events(str(EventName.REVIEW_CHANGES_REQUESTED)) == []
+
+
+# =============================================================================
+# Test: Triage decision failure transition (#6761 finding 3)
+# =============================================================================
+
+
+class TestTriageDecisionFailureTransition:
+    """A rejected/missing triage decision pair must fail the session for every
+    flavor: FAILED history via the critical-error seam plus the blocked/failed
+    labeling path for the session's own issue (ADR-0031 / #6761 finding 3)."""
+
+    TRIAGE_ERROR = (
+        "triage_decision: missing_decision: triage decision missing or empty"
+    )
+
+    def _make_triage_session(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> Session:
+        config.triage_review_agent = "agent:triage"
+        config.triage_reviewed_label = "triage-reviewed"
+        config.triage_failed_label = "triage-failed"
+        issue = make_issue(labels=["agent:triage"])
+        return create_test_session(issue, agent_config, tmp_worktree)
+
+    def _plant_assignment(self, session: Session, assignment: Any) -> None:
+        import json as _json
+
+        from issue_orchestrator.domain.triage_session import (
+            TRIAGE_ASSIGNMENT_FILENAME,
+        )
+
+        path = session.run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        assignment.write(path)
+        run_manifest_path = session.run_dir / "manifest.json"
+        run_manifest = _json.loads(run_manifest_path.read_text())
+        run_manifest["triage_assignment"] = str(path)
+        run_manifest_path.write_text(_json.dumps(run_manifest))
+
+    def test_invalid_investigation_pair_records_failed_history_and_rejection(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        from issue_orchestrator.control.actions import SurfaceTriageProposalAction
+        from issue_orchestrator.domain.triage_session import (
+            TriageAssignment,
+            TriageSessionFlavor,
+        )
+
+        session = self._make_triage_session(config, agent_config, tmp_worktree)
+        self._plant_assignment(
+            session,
+            TriageAssignment(
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                focus_issue_number=1,
+                focus_reason="Investigate: timed out",
+            ),
+        )
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[self.TRIAGE_ERROR],
+        )
+
+        assert result.history_entry.status == "failed"
+        rejections = [
+            a
+            for a in result.actions
+            if isinstance(a, SurfaceTriageProposalAction) and a.mode == "rejected"
+        ]
+        assert len(rejections) == 1
+        assert rejections[0].issue_number == session.issue.number
+        added = {a.label for a in result.actions if isinstance(a, AddLabelAction)}
+        assert "blocked-failed" in added
+        assert "publish-failed" not in added
+        removed = {a.label for a in result.actions if isinstance(a, RemoveLabelAction)}
+        assert "in-progress" in removed
+
+    def test_invalid_batch_pair_records_failed_history_and_failed_labels(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        import json as _json
+
+        from issue_orchestrator.domain.triage_manifest import (
+            PRToReview,
+            TriageManifest,
+        )
+        from issue_orchestrator.domain.triage_session import (
+            TriageAssignment,
+            TriageSessionFlavor,
+        )
+
+        session = self._make_triage_session(config, agent_config, tmp_worktree)
+        self._plant_assignment(
+            session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+        )
+        manifest = TriageManifest(
+            prs=[
+                PRToReview(
+                    number=101, title="PR 101", url="https://x/pr/101", branch="b1"
+                )
+            ]
+        )
+        manifest_path = tmp_worktree / "triage-manifest.json"
+        manifest.write(manifest_path)
+        run_manifest_path = session.run_dir / "manifest.json"
+        run_manifest = _json.loads(run_manifest_path.read_text())
+        run_manifest["triage_manifest"] = str(manifest_path)
+        run_manifest_path.write_text(_json.dumps(run_manifest))
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[self.TRIAGE_ERROR],
+        )
+
+        assert result.history_entry.status == "failed"
+        failed_labels = [
+            a
+            for a in result.actions
+            if isinstance(a, AddLabelAction) and a.label == "triage-failed"
+        ]
+        assert {a.issue_number for a in failed_labels} == {101}
+        added = {a.label for a in result.actions if isinstance(a, AddLabelAction)}
+        assert "blocked-failed" in added

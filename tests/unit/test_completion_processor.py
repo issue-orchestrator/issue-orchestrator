@@ -2725,6 +2725,116 @@ class TestTriageCompletionEffects:
         assert any("create_pr" in error for error in result.errors)
         processor._emit_publish_failed.assert_called_once()  # noqa: SLF001
 
+    # --- #6761 finding 3: pair validation in the processing path -----------
+
+    @staticmethod
+    def _plant_assignment(run_dir):
+        import json as _json
+
+        from issue_orchestrator.domain.triage_session import (
+            TRIAGE_ASSIGNMENT_FILENAME,
+            TriageAssignment,
+            TriageSessionFlavor,
+        )
+
+        TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW).write(
+            run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        )
+        manifest_path = run_dir / "manifest.json"
+        manifest = _json.loads(manifest_path.read_text())
+        manifest["triage_assignment"] = str(
+            run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        )
+        manifest_path.write_text(_json.dumps(manifest))
+
+    @staticmethod
+    def _plant_valid_pair(run_dir):
+        import json as _json
+
+        data_dir = run_dir / "triage-data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "triage-decision.json").write_text(
+            _json.dumps(
+                {
+                    "schema_version": 1,
+                    "summary": "Clean audit.",
+                    "findings": [],
+                    "proposed_actions": [],
+                }
+            )
+        )
+        (data_dir / "triage-report.md").write_text("# Report\n\nNothing found.\n")
+
+    def test_completed_triage_session_without_pair_records_critical_error(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """Missing pair -> ERROR_PREFIX_TRIAGE_DECISION processing error, so
+        the completion handler records FAILED history (#6761 finding 3)."""
+        from issue_orchestrator.control.completion_types import (
+            ERROR_PREFIX_TRIAGE_DECISION,
+        )
+
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        run_assets = make_session_run_assets(worktree)
+        self._plant_assignment(run_assets.run_dir)
+
+        result = processor.process(
+            worktree,
+            run_assets=run_assets,
+            issue_number=123,
+            issue_title="Batch Review",
+            agent_label="agent:triage",
+        )
+
+        assert result.errors
+        assert any(
+            error.startswith(f"{ERROR_PREFIX_TRIAGE_DECISION}: missing_decision")
+            for error in result.errors
+        )
+
+    def test_completed_triage_session_with_valid_pair_has_no_triage_error(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        from issue_orchestrator.control.completion_types import (
+            ERROR_PREFIX_TRIAGE_DECISION,
+        )
+
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        run_assets = make_session_run_assets(worktree)
+        self._plant_assignment(run_assets.run_dir)
+        self._plant_valid_pair(run_assets.run_dir)
+
+        result = processor.process(
+            worktree,
+            run_assets=run_assets,
+            issue_number=123,
+            issue_title="Batch Review",
+            agent_label="agent:triage",
+        )
+
+        assert not any(
+            error.startswith(ERROR_PREFIX_TRIAGE_DECISION)
+            for error in result.errors or ()
+        )
+
 
 class TestCompletionProcessorGitActions:
     """Tests for git-related actions from completion records."""

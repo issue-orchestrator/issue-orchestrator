@@ -22,9 +22,11 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/triage-assignment.json"
 - **`"flavor": "failure_investigation"`** - investigate the single issue named
   by `focus_issue_number`/`focus_reason` using local sources only (this
   worktree, orchestrator logs, session data under
-  `.issue-orchestrator/sessions/`), and report your findings via
-  `coding-done completed --implementation "Diagnosis and evidence" --problems "None"`.
-  Do NOT audit or label PRs - there is no PR manifest for this session.
+  `.issue-orchestrator/sessions/`). Your `triage-decision.json` MUST include
+  at least one `post_comment` action whose `target_number` is the
+  `focus_issue_number` - that comment IS your diagnosis channel; a decision
+  without it is rejected and the session is marked failed. Do NOT audit or
+  label PRs - there is no PR manifest for this session.
 
 Completing with no code changes is normal and succeeds - the orchestrator will
 not attempt PR-creation noise for a clean audit. If you did commit
@@ -74,6 +76,29 @@ echo "Triage data directory: $TRIAGE_DIR"
 cat "$TRIAGE_DIR/manifest.json"
 ```
 
+**If the manifest is missing or lists no PRs:** you must STILL write the
+artifact pair before completing — a bare `coding-done` is marked
+triage-failed. Write the minimal valid empty-audit pair first:
+
+```bash
+cat > "$TRIAGE_DIR/triage-decision.json" <<'JSON'
+{
+  "schema_version": 1,
+  "summary": "Empty batch: the manifest listed no PRs to audit.",
+  "findings": [],
+  "proposed_actions": []
+}
+JSON
+cat > "$TRIAGE_DIR/triage-report.md" <<'MD'
+# Triage Report
+
+Empty batch: the manifest listed no PRs. Nothing to audit.
+MD
+```
+
+Then complete with
+`coding-done completed --implementation "Triage manifest listed no PRs. Wrote empty-audit artifact pair." --problems "None"`.
+
 ### 2. For Each PR, Analyze
 
 Read the pre-fetched diff and metadata from your triage directory:
@@ -104,12 +129,79 @@ Look for:
 - Commit your changes
 
 **Important:** Do NOT use `gh pr create` or `gh issue create`. The orchestrator
-handles all GitHub operations after you complete.
+handles all GitHub operations after you complete. Anything that belongs on
+GitHub (comments, follow-up issues, escalations) goes into
+`triage-decision.json` as a proposed action (see below).
 
-### 4. Completion (Labels are Automatic)
+### 4. Required Output Artifacts (MANDATORY)
+
+Before running `coding-done`, write BOTH files into your triage-data
+directory (next to the manifest; the directory exists even when there is
+no PR manifest):
+
+- `triage-report.md` - your human-readable tech-lead report. It MUST
+  mention every finding id and action id from the decision file.
+- `triage-decision.json` - the machine-readable decision the orchestrator
+  validates and acts on.
+
+Compact `triage-decision.json` example:
+
+```json
+{
+  "schema_version": 1,
+  "summary": "One infra pattern found across the batch.",
+  "findings": [
+    {
+      "id": "T1",
+      "title": "CI runner disconnects mid-build",
+      "classification": "infra",
+      "evidence": ["pr-123-diff.txt", "orchestrator log lines 1020-1041"]
+    }
+  ],
+  "proposed_actions": [
+    {
+      "id": "A1",
+      "action_type": "post_comment",
+      "target_number": 123,
+      "target_is_pr": true,
+      "body": "Diagnosis: CI runner disconnects mid-build (see T1).",
+      "finding_ids": ["T1"]
+    },
+    {
+      "id": "A2",
+      "action_type": "create_issue",
+      "title": "Stabilize CI runner disconnects",
+      "body": "Three PRs in this batch hit the same disconnect (T1).",
+      "labels": ["bug"],
+      "finding_ids": ["T1"]
+    }
+  ]
+}
+```
+
+- Finding `classification` is one of: `infra`, `task`, `agent`, `systemic`.
+- Ids are canonical: findings are `T<n>` (`T1`, `T2`, ...) and actions are
+  `A<n>` (`A1`, `A2`, ...), no leading zeros, unique across both lists. The
+  report must mention every id as an exact token (`T10` does not cover `T1`).
+- Every finding MUST include `evidence`: at least one non-empty string
+  reference into the inputs you were given (file names, log line ranges).
+- `create_issue` labels must be plain descriptive labels. Workflow labels
+  are rejected as a contract violation: anything like `in-progress`,
+  `needs-*`, `*-reviewed`, `*-failed`, `publish-*`, `blocked*`, `agent:*`,
+  or `triage:*` corrupts orchestrator label truth.
+- Valid `action_type` values: `post_comment`, `create_issue`,
+  `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
+- Proposals are intent, not execution: the orchestrator decides what to
+  execute per its configured authority. Act-level proposals (`reset_retry`,
+  `kill_hung_session`) are recorded as would-have-done until wired (#6764).
+- A completed session missing either artifact — or violating any rule
+  above — is recorded as FAILED and marked triage-failed.
+
+### 5. Completion (Labels are Automatic)
 
 The orchestrator will automatically add `triage-reviewed` label to all PRs in the manifest
-when you complete successfully. You do NOT need to add labels yourself.
+when you complete successfully with a valid artifact pair, and will execute your
+proposed actions per its configured authority. You do NOT need to add labels yourself.
 
 Use `coding-done completed` or `coding-done blocked` to report your status.
 

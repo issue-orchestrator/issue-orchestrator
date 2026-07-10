@@ -21,6 +21,7 @@ from issue_orchestrator.control.actions import (
     EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CreateTriageIssueAction,
+    SurfaceTriageProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
@@ -1316,6 +1317,92 @@ class TestCreateTriageIssueAction:
         assert "No repository_host" in result.error
 
 
+class TestSurfaceTriageProposalAction:
+    """Tests for SURFACE_TRIAGE_PROPOSAL action (ADR-0031)."""
+
+    def _proposal(self, **overrides):
+        defaults = dict(
+            issue_number=42,
+            action_id="A1",
+            proposal_type="reset_retry",
+            target_number=17,
+            target_is_pr=False,
+            title="",
+            body_preview="Reset issue #17 from scratch",
+            finding_ids=("T1", "T2"),
+            mode="shadow",
+            reason="triage proposal A1 (reset_retry) surfaced as shadow",
+        )
+        defaults.update(overrides)
+        return SurfaceTriageProposalAction(**defaults)
+
+    def test_shadow_proposal_emits_action_proposed_with_full_payload(
+        self, applier, mock_events, mock_repository_host
+    ):
+        result = applier.apply(self._proposal())
+
+        assert result.success
+        published = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TRIAGE_ACTION_PROPOSED.value
+        ]
+        assert len(published) == 1
+        assert published[0].data == {
+            "issue_number": 42,
+            "action_id": "A1",
+            "proposal_type": "reset_retry",
+            "target_number": 17,
+            "target_is_pr": False,
+            "title": "",
+            "body_preview": "Reset issue #17 from scratch",
+            "finding_ids": ["T1", "T2"],
+            "mode": "shadow",
+        }
+        # Surfacing must never touch GitHub.
+        assert not mock_repository_host.method_calls
+
+    def test_pattern_proposal_emits_action_proposed(self, applier, mock_events):
+        result = applier.apply(
+            self._proposal(proposal_type="flag_pattern", mode="pattern", target_number=0)
+        )
+
+        assert result.success
+        names = [call.args[0].name for call in mock_events.publish.call_args_list]
+        assert EventName.TRIAGE_ACTION_PROPOSED.value in names
+        assert EventName.TRIAGE_DECISION_REJECTED.value not in names
+
+    def test_rejected_mode_emits_decision_rejected(
+        self, applier, mock_events, mock_repository_host, mock_labels
+    ):
+        result = applier.apply(
+            self._proposal(
+                action_id="",
+                proposal_type="decision",
+                target_number=0,
+                finding_ids=(),
+                mode="rejected",
+                body_preview="triage decision missing or empty: x",
+                reason="triage decision rejected (missing_decision)",
+            )
+        )
+
+        assert result.success
+        published = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TRIAGE_DECISION_REJECTED.value
+        ]
+        assert len(published) == 1
+        assert published[0].data["proposal_type"] == "decision"
+        assert published[0].data["mode"] == "rejected"
+        assert published[0].data["body_preview"] == (
+            "triage decision missing or empty: x"
+        )
+        assert not mock_repository_host.method_calls
+        assert not mock_labels.method_calls
+
+
 class TestCleanupSessionAction:
     """Tests for CLEANUP_SESSION action."""
 
@@ -2210,6 +2297,7 @@ class TestClaimGateAudit:
     # - CREATE_WORKTREE / REMOVE_WORKTREE: local filesystem only
     # - QUEUE_RETROSPECTIVE_REVIEW / QUEUE_REWORK / QUEUE_TRIAGE: local state operations
     # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
+    # - SURFACE_TRIAGE_PROPOSAL: emits a trace event only, no GitHub calls
     # - CLEANUP_SESSION: post-completion cleanup
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
     # - CREATE_PR: not implemented in action_applier
@@ -2223,6 +2311,7 @@ class TestClaimGateAudit:
         ActionType.QUEUE_REWORK,
         ActionType.QUEUE_TRIAGE,
         ActionType.CREATE_TRIAGE_ISSUE,
+        ActionType.SURFACE_TRIAGE_PROPOSAL,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,

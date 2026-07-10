@@ -75,6 +75,11 @@ from .awaiting_merge_post_publish_policy import (
 )
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
+from .triage_issue_policy import (
+    apply_triage_priority_prefix,
+    batch_review_issue_labels,
+    triage_issue_milestone,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -590,8 +595,8 @@ class Planner:
             return None
 
         title, body = self._build_triage_issue_content(facts)
-        labels = self._compute_triage_labels(facts)
-        milestone = self._compute_triage_milestone(facts)
+        labels = batch_review_issue_labels(self.config, source_labels=facts.source_labels)
+        milestone = triage_issue_milestone(self.config, facts.source_milestones)
 
         logger.info("Planner: creating triage issue for %d PRs (labels=%s, milestone=%s)", facts.pr_count, labels, milestone)
         return CreateTriageIssueAction(
@@ -621,50 +626,10 @@ class Planner:
 Review these PRs for patterns, architectural concerns, and process improvements.
 Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` after review.
 """
-        title = f"Triage Batch Review: {facts.pr_count} PRs pending"
-        priority_prefix = self._triage_priority_prefix()
-        if priority_prefix and not re.search(r"^\[P\d-\d+\]", title):
-            title = f"[{priority_prefix}-000] {title}"
+        title = apply_triage_priority_prefix(
+            self.config, f"Triage Batch Review: {facts.pr_count} PRs pending"
+        )
         return title, body
-
-    def _triage_priority_prefix(self) -> str | None:
-        """Return [P?-nnn] prefix tier from triage.priority if configured."""
-        priority = self.config.triage.priority
-        if not priority:
-            return None
-        priority = priority.strip()
-        if re.fullmatch(r"P\d", priority):
-            return priority
-        return None
-
-    def _compute_triage_labels(self, facts: "TriageFacts") -> tuple[str, ...]:
-        """Compute labels for triage issue."""
-        label_list: list[str] = []
-        if self.config.triage_review_agent:
-            label_list.append(self.config.triage_review_agent)
-        if self.config.filtering.label and self.config.filtering.label not in label_list:
-            label_list.append(self.config.filtering.label)
-        label_list.extend(self.config.triage.explicit_labels)
-        for inherit_label in self.config.triage.inherit_labels:
-            if inherit_label in facts.source_labels:
-                label_list.append(inherit_label)
-        return tuple(label_list)
-
-    def _compute_triage_milestone(self, facts: "TriageFacts") -> int | None:
-        """Compute milestone for triage issue."""
-        triage_ms = self.config.triage.milestone_strategy
-
-        if triage_ms.explicit:
-            logger.debug("Planner: explicit milestone '%s' configured but name lookup not implemented", triage_ms.explicit)
-            return None
-
-        if triage_ms.inherit_from_issues and facts.source_milestones:
-            sorted_milestones = sorted(facts.source_milestones, key=lambda m: m[0])
-            if triage_ms.inherit_from_issues == "earliest":
-                return sorted_milestones[0][0]
-            return sorted_milestones[-1][0]
-
-        return None
 
     def _plan_discovered_reworks(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan queue actions for discovered reworks from scans.

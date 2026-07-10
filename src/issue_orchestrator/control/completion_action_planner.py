@@ -2,21 +2,25 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
 
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
-from ..domain.triage_manifest import TriageManifest
-from ..domain.triage_session import TriageAssignment, TriageSessionFlavor
 from ..infra.config import Config
 from ..ports import RepositoryHost
-from .actions import Action, AddCommentAction, AddLabelAction, CloseIssueAction, RemoveLabelAction
+from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .triage_completion import (
+    generate_triage_completion_actions,
+    generate_triage_decision_failure_actions,
+    generate_triage_failure_actions,
+    has_triage_decision_errors,
+)
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
+    ERROR_PREFIX_TRIAGE_DECISION,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .invalid_record_actions import (
@@ -25,64 +29,9 @@ from .invalid_record_actions import (
 )
 from .label_manager import LabelManager
 from .reconciliation import ExpectedState, build_expected_for_mutation
-from .triage_session_policy import is_triage_session, read_triage_assignment
+from .triage_session_policy import is_triage_session
 
 logger = logging.getLogger(__name__)
-
-
-def _read_triage_manifest(session: Session) -> TriageManifest | None:
-    """Read the triage manifest recorded for the session's exact run.
-
-    The triage_manifest path is stored in the session run's manifest.json
-    during launch via ctx.update_manifest({"triage_manifest": path}). Only
-    the session's typed ``run_dir`` (``Session.run_assets`` contract) is
-    consulted: scanning historical sibling runs let a current session act on
-    a stale run's manifest and label unrelated PRs (#6768 B6).
-
-    Fail-safe: returns None when the run manifest carries no triage manifest;
-    warns and returns None on unreadable content.
-    """
-    run_manifest_path = session.run_dir / "manifest.json"
-    if not run_manifest_path.exists():
-        return None
-    try:
-        run_manifest = json.loads(run_manifest_path.read_text())
-        triage_manifest_path = run_manifest.get("triage_manifest")
-        if not triage_manifest_path:
-            return None
-        manifest_path = Path(triage_manifest_path)
-        if not manifest_path.exists():
-            logger.warning(
-                "[triage] Manifest path in run manifest doesn't exist: %s",
-                manifest_path,
-            )
-            return None
-        return TriageManifest.read(manifest_path)
-    except Exception as exc:
-        logger.warning(
-            "[triage] Failed to read manifest from %s: %s",
-            session.run_dir,
-            exc,
-            exc_info=True,
-        )
-        return None
-
-
-def _read_triage_assignment(session: Session) -> TriageAssignment | None:
-    """Read the launch-time triage assignment for the session's exact run.
-
-    The assignment lives at the fixed per-run location under the session's
-    typed ``run_dir`` and is read through the ADR-0031 policy owner — no
-    sibling-run scan, no fallback (#6768 B6). Malformed content is fail-safe:
-    warn and report no assignment rather than acting on a guess.
-    """
-    try:
-        return read_triage_assignment(session.run_dir)
-    except ValueError as exc:
-        logger.warning(
-            "[triage] Malformed triage assignment in %s: %s", session.run_dir, exc
-        )
-        return None
 
 
 def critical_processing_errors(
@@ -105,8 +54,8 @@ def critical_processing_errors(
     critical: list[str] = []
     downgraded: list[str] = []
     for error in processing_errors:
-        if error.startswith(ERROR_PREFIX_PUSH) or error.startswith(
-            ERROR_PREFIX_PUBLISH_BLOCKED
+        if error.startswith(
+            (ERROR_PREFIX_PUSH, ERROR_PREFIX_PUBLISH_BLOCKED, ERROR_PREFIX_TRIAGE_DECISION)
         ):
             critical.append(error)
             continue
@@ -252,100 +201,65 @@ class CompletionActionPlanner:
             self.config.triage_review_agent, session.issue.agent_type
         )
 
-    def _resolve_batch_review_assignment(self, session: Session) -> TriageAssignment | None:
-        """Return the batch-review assignment for a triage session, else None.
-
-        None for non-triage sessions; for assignment-less (pre-upgrade)
-        sessions (fail-safe: PRs stay watch-labeled, re-enter the next batch);
-        and for failure investigations, whose anchor IS the original failed
-        work issue — never manifest-labeled, never closed (#6768 B4/round 5).
-        """
-        if not self._is_triage_session(session):
-            return None
-        assignment = _read_triage_assignment(session)
-        if assignment is None:
-            logger.warning(
-                "[triage] No triage assignment for session %s; "
-                "skipping triage PR labels (PRs re-enter the next batch)",
-                session.terminal_id,
-            )
-            return None
-        if assignment.flavor is not TriageSessionFlavor.BATCH_REVIEW:
-            return None
-        return assignment
-
-    def _label_manifest_prs(
-        self, session: Session, label: str, reason: str, expected: ExpectedState
-    ) -> list[Action]:
-        """Label every PR in the session's triage manifest (empty when none)."""
-        triage_manifest = _read_triage_manifest(session)
-        if not triage_manifest or not triage_manifest.prs:
-            return []
-        logger.info(
-            "[triage] Adding '%s' label to %d PRs", label, len(triage_manifest.prs)
-        )
-        return [
-            AddLabelAction(
-                issue_number=pr.number, label=label, reason=reason, expected=expected
-            )
-            for pr in triage_manifest.prs
-        ]
-
     def _generate_triage_actions(
         self, session: Session, expected: ExpectedState
     ) -> list[Action]:
-        """Batch-review SUCCESS effects: reviewed labels + close the tracker.
+        """Delegate batch-success triage effects to the ADR-0031 owner module.
 
-        The open+agent-labeled tracking issue is what startup recovery
-        requeues and what ``_find_existing_triage_issue`` treats as the active
-        batch, so every terminal batch outcome must close it (#6768 round 4),
-        after the PR labels so a mid-apply crash stays re-auditable. No
-        comment: triage prompts promise the orchestrator posts none.
+        Called only from the COMPLETED-without-critical-errors branch, so
+        completed_ok is True by construction (triage decision rejections are
+        classified critical upstream and take the failure routing instead).
         """
-        if self._resolve_batch_review_assignment(session) is None:
-            return []
-        actions = self._label_manifest_prs(
+        return generate_triage_completion_actions(
+            self.config,
             session,
-            self.config.triage_reviewed_label or "triage-reviewed",
-            "Triage completed successfully",
             expected,
+            completed_ok=True,
+            labels=self._lm,
         )
-        actions.append(
-            CloseIssueAction(
-                issue_number=session.issue.number,
-                reason="Batch triage review completed - closing tracking issue",
-                expected=expected,
-            )
-        )
-        return actions
 
     def _generate_triage_failure_actions(
         self, session: Session, expected: ExpectedState
     ) -> list[Action]:
-        """Batch-review FAILURE/TIMEOUT effects (#6768 round 5).
+        """Delegate batch failure/timeout terminal effects to the owner module."""
+        return generate_triage_failure_actions(self.config, session, expected)
 
-        Manifest PRs get the operator-visible triage-failed label; the tracker
-        closes after the generic failure diagnosis and the PR labels. An open
-        failed tracker would requeue at restart with an empty manifest (its
-        PRs are now candidate-filtered as triage-failed), looping forever.
+    def _generate_completed_with_critical_actions(
+        self,
+        session: Session,
+        critical_errors: list[str],
+        diagnostic_path: Optional[str],
+        expected: ExpectedState,
+    ) -> tuple[Action, ...]:
+        """Route COMPLETED-with-critical-errors to the owning failure policy.
+
+        Rejected triage decision pairs (#6761 finding 3) go to the triage
+        owner (manifest triage-failed labels, rejection surfacing,
+        blocked-failed on the session's own issue) — publish-failure copy
+        and publish-fail counters do not apply to them.
         """
-        if self._resolve_batch_review_assignment(session) is None:
-            return []
-        actions = self._label_manifest_prs(
-            session,
-            self.config.triage_failed_label or "triage-failed",
-            "Triage session failed",
-            expected,
+        logger.info(
+            "[COMPLETION] Agent said completed but processing failed: issue=%d errors=%s",
+            session.issue.number,
+            critical_errors,
         )
-        actions.append(
-            CloseIssueAction(
-                issue_number=session.issue.number,
-                reason="Batch triage review failed - closing tracking issue "
-                "(manifest PRs carry triage-failed)",
-                expected=expected,
+        if self._is_triage_session(session) and has_triage_decision_errors(
+            critical_errors
+        ):
+            return tuple(
+                generate_triage_decision_failure_actions(
+                    self.config,
+                    session,
+                    expected,
+                    processing_errors=critical_errors,
+                    labels=self._lm,
+                )
+            )
+        return tuple(
+            self._generate_processing_failure_actions(
+                session, critical_errors, diagnostic_path, expected
             )
         )
-        return actions
 
     def generate_completion_actions(
         self,
@@ -377,15 +291,8 @@ class CompletionActionPlanner:
 
         # If agent said "completed" but critical processing failed, treat as blocked-failed.
         if status == SessionStatus.COMPLETED and critical_errors:
-            logger.info(
-                "[COMPLETION] Agent said completed but processing failed: issue=%d errors=%s",
-                session.issue.number,
-                critical_errors,
-            )
-            return tuple(
-                self._generate_processing_failure_actions(
-                    session, critical_errors, diagnostic_path, expected
-                )
+            return self._generate_completed_with_critical_actions(
+                session, critical_errors, diagnostic_path, expected
             )
 
         if status == SessionStatus.COMPLETED and review_exchange_halted:

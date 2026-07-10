@@ -620,6 +620,34 @@ class TestLaunchIssueSession:
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-1")
 
+    def test_triage_session_creates_triage_data_dir_without_manifest(
+        self, session_launcher, sample_config, tmp_path
+    ):
+        """Every triage session gets a triage-data dir for its decision
+        artifact pair (ADR-0031), even when no PR manifest exists."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+        issue = Issue(
+            number=125,
+            title="Batch Review",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+
+        result = session_launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is True
+        assert result.session is not None
+        data_dir = result.session.run_dir / "triage-data"
+        assert data_dir.is_dir()
+        # No PRs matched, so no manifest was planted — only the empty dir.
+        assert not (data_dir / "manifest.json").exists()
+
     def test_fails_when_no_agent_type(self, session_launcher):
         """Verify fails when issue has no agent type label (line 195)."""
         issue = Issue(number=123, title="No agent", labels=[], repo="test/repo")

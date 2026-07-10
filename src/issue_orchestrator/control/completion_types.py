@@ -5,6 +5,10 @@ from dataclasses import dataclass
 ERROR_PREFIX_PUSH = "push_branch"
 ERROR_PREFIX_CREATE_PR = "create_pr"
 ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
+# A COMPLETED triage session whose decision artifact pair is missing or
+# rejected. Classified critical so the session's authoritative outcome is
+# FAILED (ADR-0031 / #6761 finding 3), not a quiet success.
+ERROR_PREFIX_TRIAGE_DECISION = "triage_decision"
 REVIEW_EXCHANGE_ERROR_PREFIX = "review_exchange:"
 
 

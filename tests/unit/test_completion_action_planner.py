@@ -12,6 +12,7 @@ from issue_orchestrator.control.actions import (
     AddLabelAction,
     CloseIssueAction,
     RemoveLabelAction,
+    SurfaceTriageProposalAction,
 )
 from issue_orchestrator.control.completion_action_planner import (
     CompletionActionPlanner,
@@ -158,47 +159,86 @@ def test_review_exchange_halt_puts_issue_on_hold(tmp_path: Path) -> None:
     assert any("Review Exchange Halted" in comment for comment in comments(actions))
 
 
-def _make_triage_config() -> Config:
+def make_triage_config() -> Config:
     config = Config()
     config.triage_review_agent = "agent:triage"
     config.triage_reviewed_label = "triage-reviewed"
+    config.triage_failed_label = "triage-failed"
     return config
 
 
-def _write_triage_run(
-    session: Session,
-    *,
-    with_manifest: bool = True,
-    assignment: TriageAssignment | None = None,
-    run_dir: Path | None = None,
-) -> Path:
-    """Plant triage artifacts in a run dir (defaults to the session's own run).
+def make_triage_session(tmp_path: Path, *, terminal_id: str = "issue-1") -> Session:
+    issue = make_issue(labels=["agent:triage"])  # agent_type derives from labels
+    return make_session(tmp_path, issue=issue, terminal_id=terminal_id)
 
-    Passing ``run_dir`` writes into a different (sibling) run directory — the
-    stale-run scenario the planner must ignore (#6768 B6).
-    """
-    target = run_dir if run_dir is not None else session.run_dir
-    target.mkdir(parents=True, exist_ok=True)
-    run_manifest_path = target / "manifest.json"
-    run_manifest: dict[str, object] = (
-        json.loads(run_manifest_path.read_text()) if run_manifest_path.exists() else {}
-    )
-    if with_manifest:
-        manifest = TriageManifest(
-            prs=[
-                PRToReview(number=101, title="PR 101", url="https://example/pr/101", branch="b1"),
-                PRToReview(number=102, title="PR 102", url="https://example/pr/102", branch="b2"),
-            ]
-        )
-        manifest_path = target / "triage-manifest.json"
-        manifest.write(manifest_path)
-        run_manifest["triage_manifest"] = str(manifest_path)
-    if assignment is not None:
-        assignment_path = target / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
-        assignment.write(assignment_path)
-        run_manifest["triage_assignment"] = str(assignment_path)
+
+def plant_triage_assignment(session: Session, assignment: TriageAssignment) -> None:
+    """Write the launch-time assignment into the session's triage-data dir."""
+    assignment_path = session.run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+    assignment.write(assignment_path)
+    run_manifest_path = session.run_dir / "manifest.json"
+    run_manifest = json.loads(run_manifest_path.read_text())
+    run_manifest["triage_assignment"] = str(assignment_path)
     run_manifest_path.write_text(json.dumps(run_manifest))
-    return target
+
+
+def plant_triage_manifest(tmp_path: Path, session: Session) -> None:
+    """Write a two-PR triage manifest discoverable via the run manifest."""
+    manifest = TriageManifest(
+        prs=[
+            PRToReview(number=101, title="PR 101", url="https://example/pr/101", branch="b1"),
+            PRToReview(number=102, title="PR 102", url="https://example/pr/102", branch="b2"),
+        ]
+    )
+    manifest_path = tmp_path / "triage-manifest.json"
+    manifest.write(manifest_path)
+    run_manifest_path = session.run_dir / "manifest.json"
+    run_manifest = json.loads(run_manifest_path.read_text())
+    run_manifest["triage_manifest"] = str(manifest_path)
+    run_manifest_path.write_text(json.dumps(run_manifest))
+
+
+def plant_triage_decision_pair(
+    session: Session, *, comment_targets: tuple[int, ...] = (42,)
+) -> None:
+    """Write a valid decision + report pair into the session's triage-data dir.
+
+    ``comment_targets`` controls the post_comment proposals; failure
+    investigations must include the assignment's focus issue (#6761 F2).
+    """
+    data_dir = session.run_dir / "triage-data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    proposed_actions = [
+        {
+            "id": f"A{index}",
+            "action_type": "post_comment",
+            "target_number": target,
+            "body": f"Diagnosis for #{target}: flaky CI.",
+            "finding_ids": ["T1"],
+        }
+        for index, target in enumerate(comment_targets, start=1)
+    ]
+    (data_dir / "triage-decision.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "summary": "One systemic pattern found.",
+                "findings": [
+                    {
+                        "id": "T1",
+                        "title": "Flaky CI",
+                        "classification": "infra",
+                        "evidence": ["orchestrator log lines 10-20"],
+                    }
+                ],
+                "proposed_actions": proposed_actions,
+            }
+        )
+    )
+    action_ids = ", ".join(action["id"] for action in proposed_actions)
+    (data_dir / "triage-report.md").write_text(
+        f"# Report\n\nT1 leads to {action_ids or 'no actions'}.\n"
+    )
 
 
 def _triage_labels(actions: tuple[object, ...]) -> list[AddLabelAction]:
@@ -208,17 +248,16 @@ def _triage_labels(actions: tuple[object, ...]) -> list[AddLabelAction]:
     ]
 
 
-def _close_actions(actions: tuple[object, ...]) -> list[CloseIssueAction]:
-    return [action for action in actions if isinstance(action, CloseIssueAction)]
-
-
-def test_completed_triage_session_labels_manifest_prs(tmp_path: Path) -> None:
-    config = _make_triage_config()
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(
-        session,
-        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+def test_completed_triage_session_labels_manifest_prs_and_plans_decision(
+    tmp_path: Path,
+) -> None:
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
     )
+    plant_triage_manifest(tmp_path, session)
+    plant_triage_decision_pair(session)
 
     actions = make_planner(config).generate_completion_actions(
         session,
@@ -227,55 +266,99 @@ def test_completed_triage_session_labels_manifest_prs(tmp_path: Path) -> None:
 
     assert {action.issue_number for action in _triage_labels(actions)} == {101, 102}
     assert "in-progress" in removed_labels(actions)
+    decision_comments = [
+        action for action in actions
+        if isinstance(action, AddCommentAction) and action.number == 42
+    ]
+    assert len(decision_comments) == 1
+    assert decision_comments[0].comment.startswith("Diagnosis for #42: flaky CI.")
+    assert "ADR-0031" in decision_comments[0].comment
 
 
-def test_successful_batch_completion_closes_tracking_issue(tmp_path: Path) -> None:
-    """A finished batch must stop being the active batch anchor (#6768 r4).
-
-    The open, agent-labeled tracking issue is what startup recovery requeues
-    and what triage-fact gathering treats as the active batch; success closes
-    it, emitted AFTER the PR labels so a mid-apply crash stays re-auditable.
-    """
-    config = _make_triage_config()
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(
-        session,
-        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
-    )
-
-    actions = make_planner(config).generate_completion_actions(
-        session,
-        SessionStatus.COMPLETED,
-    )
-
-    (close,) = _close_actions(actions)
-    assert close.issue_number == session.issue.number
-    last_label_index = max(
-        i for i, a in enumerate(actions) if isinstance(a, AddLabelAction)
-    )
-    assert actions.index(close) > last_label_index
-
-
-def test_successful_batch_completion_without_manifest_still_closes(
+def test_completed_triage_session_missing_pair_fails_labels_and_surfaces_rejection(
     tmp_path: Path,
 ) -> None:
-    """A clean batch with nothing to audit still terminates its tracking issue."""
-    config = _make_triage_config()
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(
-        session,
-        with_manifest=False,
-        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
     )
+    plant_triage_manifest(tmp_path, session)
+    # No decision artifact pair written: contract violation, no grace path.
 
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
     )
 
-    assert _triage_labels(actions) == []
-    (close,) = _close_actions(actions)
-    assert close.issue_number == session.issue.number
+    failed_actions = [
+        action for action in actions
+        if isinstance(action, AddLabelAction) and action.label == "triage-failed"
+    ]
+    assert {action.issue_number for action in failed_actions} == {101, 102}
+    assert "triage-reviewed" not in added_labels(actions)
+    rejections = [
+        action for action in actions if isinstance(action, SurfaceTriageProposalAction)
+    ]
+    assert len(rejections) == 1
+    assert rejections[0].mode == "rejected"
+    assert rejections[0].proposal_type == "decision"
+    assert rejections[0].issue_number == session.issue.number
+    assert "triage-decision.json" in rejections[0].body_preview
+
+
+def test_completed_triage_investigation_session_plans_decision_without_labels(
+    tmp_path: Path,
+) -> None:
+    """Failure investigations plan decision actions but never manifest labels.
+
+    Flavor comes from the launch-time assignment (#6768 B4) — both triage
+    variants share the issue-N terminal, so the manifest planted here must
+    still not be labeled.
+    """
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session,
+        TriageAssignment(
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=1,
+            focus_reason="Investigate: timed out",
+        ),
+    )
+    plant_triage_manifest(tmp_path, session)
+    plant_triage_decision_pair(session, comment_targets=(1, 42))
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert "triage-reviewed" not in added_labels(actions)
+    assert "triage-failed" not in added_labels(actions)
+    decision_comments = [
+        action for action in actions
+        if isinstance(action, AddCommentAction) and action.number == 42
+    ]
+    assert len(decision_comments) == 1
+
+
+def test_completed_non_triage_session_is_unaffected(tmp_path: Path) -> None:
+    config = make_triage_config()
+    session = make_session(tmp_path)  # agent:test, not the triage agent
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert not any(isinstance(a, SurfaceTriageProposalAction) for a in actions)
+    assert added_labels(actions) == set()
+    assert "in-progress" in removed_labels(actions)
+
+
+def _close_actions(actions: tuple[object, ...]) -> list[CloseIssueAction]:
+    return [a for a in actions if isinstance(a, CloseIssueAction)]
 
 
 def _triage_failed_labels(actions: tuple[object, ...]) -> list[AddLabelAction]:
@@ -294,13 +377,13 @@ def test_failed_batch_labels_prs_failed_and_closes_tracking_issue(
     tracking issue closes (after the generic needs-human diagnosis and the PR
     labels) so restart recovery cannot requeue it with an empty manifest.
     """
-    config = _make_triage_config()
+    config = make_triage_config()
     config.retry.interrupted_sessions.enabled = False
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(
-        session,
-        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
     )
+    plant_triage_manifest(tmp_path, session)
 
     actions = make_planner(config).generate_completion_actions(
         session,
@@ -320,12 +403,12 @@ def test_timed_out_batch_labels_prs_failed_and_closes_tracking_issue(
     tmp_path: Path,
 ) -> None:
     """A TIMED_OUT batch gets the same terminal lifecycle as a failed one."""
-    config = _make_triage_config()
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(
-        session,
-        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
     )
+    plant_triage_manifest(tmp_path, session)
 
     actions = make_planner(config).generate_completion_actions(
         session,
@@ -346,17 +429,18 @@ def test_failure_investigation_failure_paths_preserve_source_issue(
 ) -> None:
     """Failed/timed-out investigations never touch manifest PRs or close their
     anchor — it IS the original failed work issue (#6768 r5 controls)."""
-    config = _make_triage_config()
+    config = make_triage_config()
     config.retry.interrupted_sessions.enabled = False
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
         session,
-        assignment=TriageAssignment(
+        TriageAssignment(
             flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
             focus_issue_number=1,
             focus_reason="Investigate: timed out",
         ),
     )
+    plant_triage_manifest(tmp_path, session)
 
     actions = make_planner(config).generate_completion_actions(session, status)
 
@@ -369,16 +453,17 @@ def test_failure_investigation_triage_session_never_labels_manifest_prs(
     tmp_path: Path,
 ) -> None:
     """A focused investigation must not label PRs even when a manifest exists (#6768 B4)."""
-    config = _make_triage_config()
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
         session,
-        assignment=TriageAssignment(
+        TriageAssignment(
             flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
             focus_issue_number=1,
             focus_reason="Investigate: timed out",
         ),
     )
+    plant_triage_manifest(tmp_path, session)
 
     actions = make_planner(config).generate_completion_actions(
         session,
@@ -389,39 +474,13 @@ def test_failure_investigation_triage_session_never_labels_manifest_prs(
     assert "in-progress" in removed_labels(actions)
 
 
-def test_failure_investigation_completion_preserves_source_issue(
-    tmp_path: Path,
-) -> None:
-    """An investigation's anchor IS the failed work issue: never close it and
-    never strip labels beyond the standard in-progress release (#6768 r4)."""
-    config = _make_triage_config()
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(
-        session,
-        assignment=TriageAssignment(
-            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
-            focus_issue_number=1,
-            focus_reason="Investigate: timed out",
-        ),
-    )
-
-    actions = make_planner(config).generate_completion_actions(
-        session,
-        SessionStatus.COMPLETED,
-    )
-
-    assert _close_actions(actions) == []
-    assert removed_labels(actions) == {"in-progress"}
-    assert added_labels(actions) == set()
-
-
 def test_triage_session_without_assignment_skips_labels_and_warns(
     tmp_path: Path, caplog
 ) -> None:
-    """Pre-upgrade sessions fail safe: no labels, no close; PRs re-enter the next batch."""
-    config = _make_triage_config()
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(session, assignment=None)
+    """Pre-upgrade sessions fail safe: no labels, PRs re-enter the next batch."""
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_manifest(tmp_path, session)
 
     actions = make_planner(config).generate_completion_actions(
         session,
@@ -429,7 +488,7 @@ def test_triage_session_without_assignment_skips_labels_and_warns(
     )
 
     assert _triage_labels(actions) == []
-    assert _close_actions(actions) == []
+    assert not any(isinstance(a, SurfaceTriageProposalAction) for a in actions)
     assert "in-progress" in removed_labels(actions)
     assert "No triage assignment" in caplog.text
 
@@ -437,19 +496,26 @@ def test_triage_session_without_assignment_skips_labels_and_warns(
 def test_triage_artifacts_in_sibling_run_dir_are_ignored(
     tmp_path: Path, caplog
 ) -> None:
-    """Stale artifacts from another run must not label PRs (#6768 B6).
+    """Stale artifacts from a previous run must not leak into this completion.
 
-    A batch assignment + manifest planted only in a sibling run directory
-    simulate a prior run's leftovers; the planner must consult exclusively the
-    session's typed run_dir, find no assignment there, warn, and skip labels.
+    Reads go exclusively through the session's typed run_dir (#6768 B6): a
+    sibling run carrying a batch assignment and a full manifest produces no
+    labels and no decision actions for the current session.
     """
-    config = _make_triage_config()
-    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    sibling_run_dir = session.run_dir.parent / "20260101T000000000000Z__issue-1"
-    _write_triage_run(
-        session,
-        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
-        run_dir=sibling_run_dir,
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    sibling = session.run_dir.parent / "issue-1__coding-0"
+    (sibling / "triage-data").mkdir(parents=True)
+    TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW).write(
+        sibling / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+    )
+    manifest = TriageManifest(
+        prs=[PRToReview(number=301, title="Stale", url="https://example/pr/301", branch="s1")]
+    )
+    manifest_path = sibling / "triage-manifest.json"
+    manifest.write(manifest_path)
+    (sibling / "manifest.json").write_text(
+        json.dumps({"triage_manifest": str(manifest_path)})
     )
 
     actions = make_planner(config).generate_completion_actions(
@@ -457,9 +523,285 @@ def test_triage_artifacts_in_sibling_run_dir_are_ignored(
         SessionStatus.COMPLETED,
     )
 
-    assert _triage_labels(actions) == []
-    assert "in-progress" in removed_labels(actions)
+    assert not any(isinstance(a, AddLabelAction) and a.label.startswith("triage-") for a in actions)
     assert "No triage assignment" in caplog.text
+
+
+def test_successful_batch_completion_closes_tracking_issue(tmp_path: Path) -> None:
+    """Batch success gives the tracking issue a crash-safe terminal state.
+
+    Open+agent-labeled tracking issues are what startup recovery requeues and
+    what _find_existing_triage_issue treats as the active batch (#6768 round
+    4). Close is ordered after the PR labels so a mid-apply crash leaves the
+    batch open and re-auditable. Success requires the valid decision pair.
+    """
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+    )
+    plant_triage_manifest(tmp_path, session)
+    plant_triage_decision_pair(session)
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    closes = [a for a in actions if isinstance(a, CloseIssueAction)]
+    assert [c.issue_number for c in closes] == [session.issue.number]
+    label_indexes = [
+        i for i, a in enumerate(actions)
+        if isinstance(a, AddLabelAction) and a.label == "triage-reviewed"
+    ]
+    assert label_indexes and actions.index(closes[0]) > max(label_indexes)
+
+
+def test_batch_completion_with_rejected_pair_does_not_close_tracking_issue(
+    tmp_path: Path,
+) -> None:
+    """A contract violation leaves the batch anchor open for re-audit."""
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+    )
+    plant_triage_manifest(tmp_path, session)
+    # No decision pair: rejection path.
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert not any(isinstance(a, CloseIssueAction) for a in actions)
+
+
+def test_successful_batch_without_manifest_still_closes(tmp_path: Path) -> None:
+    """An empty batch (no PRs matched) must not anchor future batches forever."""
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+    )
+    plant_triage_decision_pair(session)
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert any(isinstance(a, CloseIssueAction) for a in actions)
+
+
+def test_failure_investigation_completion_preserves_source_issue(
+    tmp_path: Path,
+) -> None:
+    """An investigation's anchor IS the failed work issue - never close it."""
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session,
+        TriageAssignment(
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=1,
+            focus_reason="Investigate: timed out",
+        ),
+    )
+    plant_triage_decision_pair(session, comment_targets=(1,))
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert not any(isinstance(a, CloseIssueAction) for a in actions)
+    assert "triage-reviewed" not in added_labels(actions)
+    assert "triage-failed" not in added_labels(actions)
+
+
+def _plant_investigation_assignment(session: Session, focus: int = 1) -> None:
+    plant_triage_assignment(
+        session,
+        TriageAssignment(
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=focus,
+            focus_reason="Investigate: timed out",
+        ),
+    )
+
+
+def _rejections(actions: tuple[object, ...]) -> list[SurfaceTriageProposalAction]:
+    return [
+        action for action in actions
+        if isinstance(action, SurfaceTriageProposalAction) and action.mode == "rejected"
+    ]
+
+
+class TestFailureInvestigationDiagnosisRequired:
+    """A failure investigation must publish its diagnosis to the originating
+    issue via a post_comment proposal (#6761 finding 2)."""
+
+    def test_empty_proposed_actions_is_contract_violation(self, tmp_path: Path) -> None:
+        config = make_triage_config()
+        session = make_triage_session(tmp_path)
+        _plant_investigation_assignment(session)
+        plant_triage_decision_pair(session, comment_targets=())
+
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+
+        [rejection] = _rejections(actions)
+        assert "originating issue #1" in rejection.body_preview
+
+    def test_wrong_target_comment_is_contract_violation(self, tmp_path: Path) -> None:
+        config = make_triage_config()
+        session = make_triage_session(tmp_path)
+        _plant_investigation_assignment(session)
+        plant_triage_decision_pair(session, comment_targets=(42,))
+
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+
+        [rejection] = _rejections(actions)
+        assert "originating issue #1" in rejection.body_preview
+
+    def test_correct_target_comment_passes(self, tmp_path: Path) -> None:
+        config = make_triage_config()
+        session = make_triage_session(tmp_path)
+        _plant_investigation_assignment(session)
+        plant_triage_decision_pair(session, comment_targets=(1,))
+
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+
+        assert _rejections(actions) == []
+        diagnosis = [
+            action for action in actions
+            if isinstance(action, AddCommentAction) and action.number == 1
+        ]
+        assert diagnosis and "Diagnosis" in diagnosis[0].comment
+
+
+def test_protected_agent_label_on_create_issue_rejects_decision(
+    tmp_path: Path,
+) -> None:
+    """Untrusted agent labels may not touch workflow truth (#6761 finding 4)."""
+    config = make_triage_config()
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+    )
+    data_dir = session.run_dir / "triage-data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "triage-decision.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "summary": "One pattern.",
+                "findings": [
+                    {
+                        "id": "T1",
+                        "title": "Flaky CI",
+                        "classification": "infra",
+                        "evidence": ["log tail"],
+                    }
+                ],
+                "proposed_actions": [
+                    {
+                        "id": "A1",
+                        "action_type": "create_issue",
+                        "title": "Follow-up",
+                        "body": "Fix it.",
+                        "labels": ["in-progress"],
+                        "finding_ids": ["T1"],
+                    }
+                ],
+            }
+        )
+    )
+    (data_dir / "triage-report.md").write_text("# Report\n\nT1 leads to A1.\n")
+
+    actions = make_planner(config).generate_completion_actions(
+        session, SessionStatus.COMPLETED
+    )
+
+    [rejection] = _rejections(actions)
+    assert "protected" in rejection.body_preview
+    assert "in-progress" in rejection.body_preview
+    assert not any(
+        isinstance(a, AddLabelAction) and a.label == "triage-reviewed" for a in actions
+    )
+
+
+class TestTriageDecisionFailureTransition:
+    """A rejected pair rides the critical-error seam: FAILED history plus the
+    blocked/failed labeling path for the session's own issue (#6761 finding 3)."""
+
+    ERROR = "triage_decision: contract_violation: finding T1 has no evidence"
+
+    def test_error_prefix_is_critical(self) -> None:
+        critical, downgraded = critical_processing_errors([self.ERROR])
+        assert critical == [self.ERROR]
+        assert downgraded == []
+
+    def test_batch_flavor_fails_manifest_and_blocks_own_issue(
+        self, tmp_path: Path
+    ) -> None:
+        config = make_triage_config()
+        session = make_triage_session(tmp_path)
+        plant_triage_assignment(
+            session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+        )
+        plant_triage_manifest(tmp_path, session)
+
+        actions = make_planner(config).generate_completion_actions(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[self.ERROR],
+        )
+
+        failed = [
+            a for a in actions
+            if isinstance(a, AddLabelAction) and a.label == "triage-failed"
+        ]
+        assert {a.issue_number for a in failed} == {101, 102}
+        assert "blocked-failed" in added_labels(actions)
+        assert "publish-failed" not in added_labels(actions)
+        assert "in-progress" in removed_labels(actions)
+        [rejection] = _rejections(actions)
+        assert rejection.issue_number == session.issue.number
+        assert "finding T1 has no evidence" in rejection.body_preview
+        assert any(
+            "Triage decision rejected" in comment for comment in comments(actions)
+        )
+        assert not any(isinstance(a, CloseIssueAction) for a in actions)
+
+    def test_investigation_flavor_blocks_own_issue_without_manifest_labels(
+        self, tmp_path: Path
+    ) -> None:
+        config = make_triage_config()
+        session = make_triage_session(tmp_path)
+        _plant_investigation_assignment(session)
+        plant_triage_manifest(tmp_path, session)
+
+        actions = make_planner(config).generate_completion_actions(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[self.ERROR],
+        )
+
+        assert "triage-failed" not in added_labels(actions)
+        assert "blocked-failed" in added_labels(actions)
+        assert "in-progress" in removed_labels(actions)
+        [rejection] = _rejections(actions)
+        assert rejection.issue_number == session.issue.number
+        assert any(
+            "Triage decision rejected" in comment for comment in comments(actions)
+        )
 
 
 def test_interrupted_retry_adds_guard_and_keeps_retry_loop_bounded(tmp_path: Path) -> None:

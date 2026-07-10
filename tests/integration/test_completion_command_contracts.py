@@ -58,7 +58,10 @@ def lm() -> LabelManager:
 _COMPLETION_CMDS = ("coding-done", "reviewer-done")
 _CONTRACT_COMMAND_TIMEOUT_SECONDS = xdist_timeout(60)
 
-_FENCED_BLOCK_RE = re.compile(r"```(?:bash)?\n(.*?)```", re.DOTALL)
+# Match any fenced block (bash, json, bare, ...) so language-tagged fences
+# keep open/close pairing intact; non-command content is filtered later by
+# the startswith(_COMPLETION_CMDS) check.
+_FENCED_BLOCK_RE = re.compile(r"```(?:[a-z]*)\n(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`]*(?:coding-done|reviewer-done)[^`]*)`")
 
 
@@ -343,6 +346,10 @@ def test_prompt_role_status_contracts(lm: LabelManager) -> None:
     assert "reviewer-done" not in triage_prompt
     assert "gh pr comment" not in triage_prompt
     assert "gh issue create" not in triage_prompt
+    # ADR-0031: triage completion requires the decision artifact pair; the
+    # prompt must name both files the orchestrator validates on completion.
+    assert "triage-decision.json" in triage_prompt
+    assert "triage-report.md" in triage_prompt
 
 
 def test_completion_record_drives_expected_review_actions(
