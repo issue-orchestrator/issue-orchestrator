@@ -58,7 +58,7 @@ agents:
   agent:goal-pilot:
     prompt: repo-specific/prompts/goal-pilot.md
     provider: codex
-    model: gpt-5-codex
+    model: gpt-5.6-sol
     ai_system: codex
     provider_args:
       approval_mode: full-auto
