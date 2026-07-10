@@ -884,7 +884,7 @@ function renderIssueDetail() {
     // was dropped in favor of cycle-scoped badges that open the validation
     // dialog for the specific cycle's run_dir.
 
-    // Journey timeline with "Last run / All" filter
+    // Journey timeline with "Latest attempt / All attempts" filter
     const journeyEl = document.getElementById('issueDetailJourney');
     renderJourneyTimeline(journeyEl, d);
 
