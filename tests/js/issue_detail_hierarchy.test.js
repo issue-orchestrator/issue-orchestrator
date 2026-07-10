@@ -100,7 +100,7 @@ test('issue detail timeline renders runs and cycles through the shared disclosur
         attempts: [
             {
                 attempt_number: 1,
-                attempt_label: 'Run 1',
+                attempt_label: 'Attempt 1',
                 expanded: false,
                 outcome: { label: 'Blocked', tone: 'failed' },
                 cycles: [
@@ -139,7 +139,7 @@ test('cycle artifact affordance is a keyboard-reachable button', () => {
         attempts: [
             {
                 attempt_number: 1,
-                attempt_label: 'Run 1',
+                attempt_label: 'Attempt 1',
                 expanded: true,
                 outcome: { label: 'In progress', tone: 'in_progress' },
                 cycles: [
@@ -211,7 +211,7 @@ test('raw timeline view renders raw event rows instead of lifecycle runs', () =>
         attempts: [
             {
                 attempt_number: 3,
-                attempt_label: 'Run 3',
+                attempt_label: 'Attempt 3',
                 run_id: 'run-3',
                 cycles: [],
             },

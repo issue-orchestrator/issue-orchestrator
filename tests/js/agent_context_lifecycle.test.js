@@ -56,7 +56,7 @@ test('plugin lifecycle renderer renders the shared run/cycle/event tree with act
     const html = ctx.renderIssueLifecycleTimeline([
         {
             attempt_number: 1,
-            attempt_label: 'Run 1',
+            attempt_label: 'Attempt 1',
             outcome: { label: 'Failed', tone: 'failed' },
             expanded: true,
             cycles: [{
@@ -86,6 +86,24 @@ test('plugin lifecycle renderer renders the shared run/cycle/event tree with act
     assert.match(html, /timeline-event-actions/);
     assert.match(html, /open_agent_log/);
     assert.match(html, /open_review_transcript/);
+});
+
+test('plugin lifecycle renderer falls back to "Attempt N" (not "Run N") when attempt_label is missing', () => {
+    // #6335 rename regression guard: the default attempt label must use the
+    // "Attempt" vocabulary, matching the generated ``attempt_label`` payloads.
+    const ctx = _loadPlugin();
+
+    const html = ctx.renderIssueLifecycleTimeline([
+        {
+            attempt_number: 2,
+            outcome: { label: 'Failed', tone: 'failed' },
+            expanded: true,
+            cycles: [],
+        },
+    ], { baseId: 'shared' });
+
+    assert.match(html, /<span class="journey-cycle-label">Attempt 2<\/span>/);
+    assert.doesNotMatch(html, /Run 2/);
 });
 
 test('plugin lifecycle renderer gives validation events an inline canonical-JUnit host and filters modal action', () => {
@@ -213,7 +231,7 @@ test('plugin lifecycle renderer uses host timestamp capabilities instead of dash
 
     const html = ctx.renderIssueLifecycleTimeline([
         {
-            attempt_label: 'Run',
+            attempt_label: 'Attempt',
             outcome: { label: 'Passed', tone: 'passed' },
             timestamp: 'raw-run',
             time_label: 'run-label',

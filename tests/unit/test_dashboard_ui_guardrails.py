@@ -561,7 +561,13 @@ def test_issue_detail_timeline_filters_are_grouped_button_controls() -> None:
     assert 'role="radio"' not in body
     assert "aria-checked=" not in body
     assert "aria-pressed=" in body
-    assert "All runs" in body
+    # #6335 rename: the attempt-grouping filters use "Attempt" vocabulary, not
+    # the old "Run" wording. Guard against the stale copy coming back.
+    assert "All attempts" in body
+    assert "Latest attempt" in body
+    assert "All runs" not in body
+    assert "Latest run" not in body
+    assert "current run" not in body
     assert "Raw events" in body
     assert ".journey-filter-group" in css
 

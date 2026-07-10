@@ -77,8 +77,9 @@ def build_issue_detail_view_model(
     today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     event_source = raw_events if view == "raw" and raw_events is not None else events
     filtered = _filter_events_by_view(event_source, view)
-    # Raw view still needs semantic runs so the frontend can scope raw events
-    # to Latest run versus All runs without rendering the lifecycle body.
+    # Raw view still needs semantic attempts so the frontend can scope raw
+    # events to Latest attempt versus All attempts without rendering the
+    # lifecycle body.
     projection_view = "debug" if view == "raw" else view
     projection_events = _filter_events_by_view(events, projection_view)
     story_events = _story_projection_events(projection_events, projection_view)
@@ -928,8 +929,8 @@ _OUTCOME_EVENTS = _CANONICAL_OUTCOME_EVENTS
 def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Filter cycles to only those from the latest lifecycle.
 
-    Mirrors the frontend ``Latest run`` intent (logical run), so backend and
-    UI share the same semantics.
+    Mirrors the frontend ``Latest attempt`` intent (logical run), so backend
+    and UI share the same semantics.
 
     Returns all cycles from max lifecycle when available; falls back to run_id
     grouping only for legacy payloads without lifecycle annotations.

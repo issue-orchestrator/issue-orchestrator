@@ -970,7 +970,7 @@ def _assert_issue_detail_dom_matches_payload(
 
     run = expected_runs[0]
     run_header = journey.locator(".journey-attempt > .journey-cycle-header").first
-    expect(run_header).to_contain_text(f"Run {run['attempt_number']}")
+    expect(run_header).to_contain_text(f"Attempt {run['attempt_number']}")
     # PR #6333: ``outcome`` is now a typed ``OutcomeBadge {label, tone}``.
     # The header displays the label; the tone drives the CSS class.
     expect(run_header).to_contain_text(run["outcome"]["label"])

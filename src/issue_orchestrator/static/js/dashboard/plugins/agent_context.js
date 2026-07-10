@@ -52,7 +52,7 @@
     ]);
 
     function _defaultIssueLifecycleRunLabel(run, ctx) {
-        return run.attempt_label || `Run ${run.attempt_number || (ctx.runIndex + 1)}`;
+        return run.attempt_label || `Attempt ${run.attempt_number || (ctx.runIndex + 1)}`;
     }
 
     function _defaultIssueLifecycleCycleLabel(cycle, ctx) {

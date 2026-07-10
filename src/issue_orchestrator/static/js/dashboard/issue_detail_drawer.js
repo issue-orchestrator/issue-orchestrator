@@ -251,8 +251,8 @@ function _renderJourneyAttempts(container, allRuns, data) {
 
     let html = `<div class="journey-filter">
         <span class="journey-filter-group">
-            <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" type="button" aria-pressed="${isLatestRun ? 'true' : 'false'}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
-            <button class="journey-filter-btn ${isAll ? 'active' : ''}" type="button" aria-pressed="${isAll ? 'true' : 'false'}" onclick="setJourneyFilter('all')">All runs</button>
+            <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" type="button" aria-pressed="${isLatestRun ? 'true' : 'false'}" onclick="setJourneyFilter('latest-run')" title="Show the current attempt (all cycles in the latest lifecycle)">Latest attempt</button>
+            <button class="journey-filter-btn ${isAll ? 'active' : ''}" type="button" aria-pressed="${isAll ? 'true' : 'false'}" onclick="setJourneyFilter('all')">All attempts</button>
         </span>
         <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
         <span class="journey-filter-separator"></span>
@@ -510,7 +510,7 @@ function copyJourneyTimeline() {
     for (const run of runs) {
         const runTime = formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || '');
         const runLabelText = readHierarchicalOutcomeBadge(run.outcome).label || 'In progress';
-        text += `\n${run.attempt_label || `Run ${run.attempt_number || '?'}`} \u2014 ${runLabelText}  ${runTime}\n`;
+        text += `\n${run.attempt_label || `Attempt ${run.attempt_number || '?'}`} \u2014 ${runLabelText}  ${runTime}\n`;
         for (const c of (run.cycles || [])) {
             const agent = c.agent ? ` (${c.agent})` : '';
             const cycleNum = c.cycle_in_run || c.cycle || '?';

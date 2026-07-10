@@ -603,9 +603,9 @@ def build_attempts(cycles: Sequence[IssueCycle]) -> tuple[Attempt, ...]:
         run_number = int(run.get("run_number") or 0)
         outcome = outcome_badge(str(run.get("outcome") or ""))
         run_label = (
-            f"Run {run_number} (scratch retry)"
+            f"Attempt {run_number} (scratch retry)"
             if reset_from_scratch
-            else f"Run {run_number}"
+            else f"Attempt {run_number}"
         )
         run_session_ids = tuple(
             str(rid) for rid in (run.get("session_run_ids") or []) if rid

@@ -545,7 +545,7 @@ def test_scratch_retry_surfaces_run_and_cycle_labels() -> None:
 
     latest_run = payload["attempts"][-1]
     assert latest_run["reset_from_scratch"] is True
-    assert latest_run["attempt_label"] == "Run 1 (scratch retry)"
+    assert latest_run["attempt_label"] == "Attempt 1 (scratch retry)"
     assert latest_run["cycles"][0]["reset_from_scratch"] is True
     assert latest_run["cycles"][0]["cycle_label"] == "Cycle 1 (scratch)"
 

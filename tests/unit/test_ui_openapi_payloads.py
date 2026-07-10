@@ -2058,7 +2058,7 @@ def test_issue_detail_attempts_payload_uses_typed_attempt_shape() -> None:
     attempt = attempts[0]
     # Attempt typed shape
     assert attempt["attempt_number"] == 1
-    assert attempt["attempt_label"] == "Run 1"
+    assert attempt["attempt_label"] == "Attempt 1"
     assert attempt["reset_from_scratch"] is False
     cycles = attempt["cycles"]
     assert len(cycles) == 1
