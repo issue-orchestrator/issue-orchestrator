@@ -61,16 +61,33 @@ class StopBudgetCheckpoint:
     remaining_seconds: float
 
 
+def process_is_alive(pid: int) -> bool:
+    """Return whether a process still accepts signal-zero probes."""
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 class InterruptibleStopBudget:
     """Own one elapsed-time budget while observing live policy updates."""
 
-    def __init__(self, policy: StopPolicy) -> None:
+    def __init__(
+        self,
+        policy: StopPolicy,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._policy = policy
-        self._started_at = time.monotonic()
+        self._clock = clock
+        self._sleeper = sleeper
+        self._started_at = clock()
 
     def checkpoint(self) -> StopBudgetCheckpoint:
         policy = self._policy.snapshot()
-        elapsed = time.monotonic() - self._started_at
+        elapsed = self._clock() - self._started_at
         remaining = max(0.0, policy.graceful_timeout_seconds - elapsed)
         if policy.abort:
             action = StopAction.ABORT
@@ -82,13 +99,17 @@ class InterruptibleStopBudget:
             action = StopAction.WAIT
         return StopBudgetCheckpoint(action=action, remaining_seconds=remaining)
 
-    def wait_for_exit(self, pid: int) -> StopAction:
+    def wait_for_exit(
+        self,
+        pid: int,
+        process_probe: Callable[[int], bool],
+    ) -> StopAction:
         """Wait until exit or the live policy interrupts the graceful budget."""
-        while process_is_alive(pid):
+        while process_probe(pid):
             checkpoint = self.checkpoint()
             if checkpoint.action is not StopAction.WAIT:
                 return checkpoint.action
-            time.sleep(min(0.1, checkpoint.remaining_seconds))
+            self._sleeper(min(0.1, checkpoint.remaining_seconds))
         return StopAction.EXITED
 
 
@@ -106,8 +127,15 @@ class InterruptibleStopController:
         terminate: Callable[[], None],
         force_stop: Callable[[], bool],
         on_stopped: Callable[[], object],
+        clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
+        process_probe: Callable[[int], bool] = process_is_alive,
     ) -> None:
-        self._budget = InterruptibleStopBudget(policy)
+        self._budget = InterruptibleStopBudget(
+            policy,
+            clock=clock,
+            sleeper=sleeper,
+        )
         self._pid = pid
         self._force_requested = force_requested
         self._force_on_timeout = force_on_timeout
@@ -115,6 +143,7 @@ class InterruptibleStopController:
         self._terminate = terminate
         self._force_stop = force_stop
         self._on_stopped = on_stopped
+        self._process_probe = process_probe
 
     def stop(self) -> bool:
         """Execute one interruptible stop using one elapsed-time budget."""
@@ -126,7 +155,7 @@ class InterruptibleStopController:
         if not self._request_graceful():
             self._terminate()
 
-        wait_result = self._budget.wait_for_exit(self._pid)
+        wait_result = self._budget.wait_for_exit(self._pid, self._process_probe)
         if wait_result is StopAction.EXITED:
             self._on_stopped()
             return True
@@ -141,15 +170,6 @@ class InterruptibleStopController:
 
 class StopAborted(RuntimeError):
     """Raised when an operator aborts the stop currently being attempted."""
-
-
-def process_is_alive(pid: int) -> bool:
-    """Return whether a process still accepts signal-zero probes."""
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 def signal_exit_poll_iterations(

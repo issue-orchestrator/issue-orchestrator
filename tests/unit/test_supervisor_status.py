@@ -24,15 +24,15 @@ def test_graceful_shutdown_default_allows_agent_runtime_cleanup() -> None:
     assert DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS == 120
 
 
-def test_stop_consumes_one_graceful_budget_across_http_and_signal_fallback(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from types import SimpleNamespace
-
-    from issue_orchestrator.infra import shutdown_timing, supervisor
+def test_stop_controller_consumes_one_budget_across_request_and_signal() -> None:
+    from issue_orchestrator.infra.shutdown_timing import (
+        InterruptibleStopController,
+        StaticStopPolicy,
+    )
 
     now = 0.0
+    terminated = False
+    forced = False
 
     def monotonic() -> float:
         return now
@@ -41,34 +41,77 @@ def test_stop_consumes_one_graceful_budget_across_http_and_signal_fallback(
         nonlocal now
         now += seconds
 
-    def request_shutdown(*args, **kwargs) -> bool:  # noqa: ANN002, ANN003, ARG001
+    def request_shutdown() -> bool:
         advance(4.0)
         return False
 
-    monkeypatch.setattr(shutdown_timing.time, "monotonic", monotonic)
-    monkeypatch.setattr(supervisor.time, "sleep", advance)
-    monkeypatch.setattr(
-        supervisor,
-        "read_lock",
-        lambda *_: SimpleNamespace(pid=4242, http_port=8080),
-    )
-    monkeypatch.setattr(supervisor.os, "kill", lambda *_: None)
-    monkeypatch.setattr(supervisor, "_request_graceful_shutdown", request_shutdown)
-    send_signal = MagicMock()
-    force_stop = MagicMock(return_value=True)
-    monkeypatch.setattr(supervisor, "_send_kill_signal", send_signal)
-    monkeypatch.setattr(supervisor, "_force_stop", force_stop)
+    def terminate() -> None:
+        nonlocal terminated
+        terminated = True
 
-    stopped = supervisor.stop(
-        tmp_path,
-        reason="test shared budget",
-        graceful_timeout_seconds=5,
+    def force_stop() -> bool:
+        nonlocal forced
+        forced = True
+        return True
+
+    controller = InterruptibleStopController(
+        StaticStopPolicy(graceful_timeout_seconds=5),
+        pid=4242,
+        force_requested=False,
+        force_on_timeout=True,
+        request_graceful=request_shutdown,
+        terminate=terminate,
+        force_stop=force_stop,
+        on_stopped=lambda: None,
+        clock=monotonic,
+        sleeper=advance,
+        process_probe=lambda _pid: True,
     )
 
-    assert stopped is True
+    assert controller.stop() is True
     assert now == pytest.approx(5.0)
-    send_signal.assert_called_once_with(4242, force=False)
-    force_stop.assert_called_once_with(tmp_path, 4242, 8080, None)
+    assert terminated is True
+    assert forced is True
+
+
+def test_stop_controller_observes_abort_during_current_wait() -> None:
+    from issue_orchestrator.infra.shutdown_timing import (
+        InterruptibleStopController,
+        StopAborted,
+        StopPolicySnapshot,
+    )
+
+    class MutablePolicy:
+        current = StopPolicySnapshot(graceful_timeout_seconds=120)
+
+        def snapshot(self) -> StopPolicySnapshot:
+            return self.current
+
+    policy = MutablePolicy()
+
+    def process_probe(_pid: int) -> bool:
+        policy.current = StopPolicySnapshot(
+            graceful_timeout_seconds=120,
+            abort=True,
+        )
+        return True
+
+    controller = InterruptibleStopController(
+        policy,
+        pid=4242,
+        force_requested=False,
+        force_on_timeout=True,
+        request_graceful=lambda: True,
+        terminate=lambda: None,
+        force_stop=lambda: True,
+        on_stopped=lambda: None,
+        clock=lambda: 0.0,
+        sleeper=lambda _seconds: None,
+        process_probe=process_probe,
+    )
+
+    with pytest.raises(StopAborted):
+        controller.stop()
 
 
 class TestSupervisorStatus:
