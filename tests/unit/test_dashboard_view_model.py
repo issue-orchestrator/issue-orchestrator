@@ -679,6 +679,81 @@ def test_pr_pending_issue_queued_for_rework_leaves_merge_lane_with_reason():
     assert "Merge conflict against base branch" in summary
 
 
+def test_queued_rework_issue_with_completed_history_pr_stays_queued_not_awaiting_merge():
+    # Regression (#6593 F3): a queued-for-rework issue can ALSO have a stale
+    # completed history row carrying the PR url. That completed+PR row set
+    # merge_pending on the history lane, so build_awaiting_merge_items pulled
+    # the issue into Awaiting Merge and lane precedence dropped it from Queued —
+    # defeating the queued-rework owner. The owner must apply to the history
+    # source too, not just the queue item.
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+
+    issue = Issue(
+        number=454,
+        title="Broken merge",
+        labels=["agent:web", "pr-pending"],
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+        pending_reworks=[
+            PendingRework(
+                issue_key=FakeIssueKey("454"),
+                agent_type="agent:web",
+                rework_cycle=1,
+                issue_number=454,
+                pr_number=469,
+                source=POST_PUBLISH_VALIDATION_SOURCE,
+                feedback=(
+                    "Merge conflict against base branch (cycle handled by "
+                    "post-publish gate, not the reviewer):\n\nPR #469 was "
+                    "approved but is no longer mergeable."
+                ),
+            )
+        ],
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=454,
+                title="Broken merge",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=12,
+                pr_url="https://github.com/test/repo/pull/469",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # The stale completed+PR history row must not surface the issue in Awaiting
+    # Merge (list or column).
+    awaiting_numbers = {item["issue_number"] for item in view_model.awaiting_merge_items}
+    assert 454 not in awaiting_numbers
+    awaiting_column = next(
+        col for col in view_model.flow_columns if col["id"] == "awaiting-merge"
+    )
+    assert all(item["issue_number"] != 454 for item in awaiting_column["items"])
+
+    # It stays in Queued with the queued-rework summary.
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    card = next(item for item in queued_col["items"] if item["issue_number"] == 454)
+    assert card["state_label"] == "queued"
+    assert card["phase"] == "Rework"
+    summary = card["summary"]
+    assert "Queued for rework" in summary
+    assert "PR #469" in summary
+    assert "cycle 1" in summary
+
+
 def test_pr_closed_blocked_issue_is_blocked_not_awaiting_merge():
     config = _make_config()
     agent_config = _make_agent_config()

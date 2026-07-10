@@ -36,7 +36,7 @@ from .dashboard_flow import build_flow_columns
 from .dashboard_flow import exclude_flow_overlaps
 from .dashboard_flow import select_issues_for_tab
 from .dashboard_flow import stamp_issue_item_stale_badge_visibility
-from .rework_status import resolve_queued_rework
+from .rework_status import queued_rework_issue_numbers, resolve_queued_rework
 from .timestamp_values import dashboard_timestamp_source
 
 QUEUE_PAGE_SIZE = 20
@@ -1272,8 +1272,8 @@ def build_dashboard_view_model(
         completed_items = history_projection.completed_items
         completed_items = _sort_by_issue_number(completed_items)
 
-        # Awaiting merge = items with PRs ready for human merge
-        awaiting_merge_items = build_awaiting_merge_items(queue_items, blocked_items, history_items)
+        # Awaiting merge = PRs ready for human merge; queued-rework issues stay owned by Queued.
+        awaiting_merge_items = build_awaiting_merge_items(queue_items, blocked_items, history_items, exclude_issue_numbers=queued_rework_issue_numbers(state))
         awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
 
         queue_items, blocked_items, awaiting_merge_items, completed_items = apply_lane_precedence(

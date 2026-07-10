@@ -13,6 +13,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.view_models.rework_status import (
     format_queued_rework_summary,
+    queued_rework_issue_numbers,
     resolve_queued_rework,
 )
 
@@ -114,6 +115,41 @@ def test_discovered_review_label_without_pr_number_reads_as_no_pr() -> None:
     assert status is not None
     assert status.pr_number is None
     assert status.summary == "Queued for rework (cycle 1): Reviewer requested changes"
+
+
+def test_queued_rework_issue_numbers_unions_pending_and_discovered() -> None:
+    state = OrchestratorState(
+        pending_reworks=[
+            PendingRework(
+                issue_key=FakeIssueKey("5"),
+                agent_type="agent:web",
+                rework_cycle=1,
+                issue_number=5,
+                pr_number=50,
+                source="review_label",
+            ),
+        ],
+        discovered_reworks=[
+            DiscoveredRework(
+                issue_number=77,
+                pr_number=88,
+                branch_name="fix",
+                agent_type="agent:web",
+                rework_cycle=1,
+                source="review_label",
+            ),
+        ],
+    )
+    # The lane-eligibility set agrees with resolve_queued_rework: every number
+    # it reports resolves to a status, and only those numbers do.
+    assert queued_rework_issue_numbers(state) == frozenset({5, 77})
+    assert resolve_queued_rework(state, 5) is not None
+    assert resolve_queued_rework(state, 77) is not None
+    assert resolve_queued_rework(state, 999) is None
+
+
+def test_queued_rework_issue_numbers_empty_without_reworks() -> None:
+    assert queued_rework_issue_numbers(OrchestratorState()) == frozenset()
 
 
 def test_format_helper_matches_status_summary() -> None:
