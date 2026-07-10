@@ -52,10 +52,8 @@ from ..domain.dependency_gates import Gate
 from .worktree_context import WorktreeContext
 from .stack_base import StackBaseDecision
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
-from ..domain.triage_manifest import TriageManifest
-from ..domain.triage_session import TRIAGE_ASSIGNMENT_FILENAME, TriageAssignment, TriageSessionFlavor
-from .triage_manifest_builder import TriageCandidatePolicy, TriageManifestBuilder
-from .triage_session_policy import is_triage_session
+from ..domain.triage_session import TriageSessionFlavor
+from .triage_session_policy import is_triage_session, prepare_triage_session_data
 from ..ports import (
     ManifestDownloader,
     EventSink,
@@ -675,89 +673,21 @@ class SessionLauncher:
         """Check if this agent type is the triage review agent."""
         return is_triage_session(self.config.triage_review_agent, agent_type)
 
-    def _prepare_triage_manifest(
-        self,
-        worktree_path: Path,
-        run_dir: Path,
-    ) -> TriageManifest | None:
-        """Build and download triage manifest for a triage session.
-
-        Creates a manifest listing PRs that need triage review, downloads
-        their diffs and metadata to the session directory.
-
-        Args:
-            worktree_path: Path to the worktree
-            run_dir: Path to the session run directory
-
-        Returns:
-            The populated manifest, or None if no PRs need triage
-        """
-        # Build manifest with PRs needing triage; eligibility comes from the
-        # shared candidate owner so the audited set matches the threshold set.
-        builder = TriageManifestBuilder(
-            repository_host=self.repository_host,
-            watch_label=self.config.triage_watch_label,
-            candidate_policy=TriageCandidatePolicy.from_config(self.config),
-        )
-
-        # Data goes in session run directory
-        data_dir = f".issue-orchestrator/sessions/{run_dir.name}/triage-data"
-        manifest = builder.build(data_dir)
-
-        if not manifest.prs:
-            logger.info("[triage] No PRs need triage review")
-            return None
-
-        # Download diffs and metadata via injected port
-        manifest = self._manifest_downloader.download(manifest, worktree_path)
-
-        # Write manifest to session directory
-        manifest_path = worktree_path / data_dir / "manifest.json"
-        manifest.write(manifest_path)
-
-        logger.info(
-            "[triage] Prepared manifest with %d PRs: %s",
-            len(manifest.prs),
-            manifest_path,
-        )
-
-        return manifest
-
     def _prepare_triage_session_data(
         self,
         issue: "IssueProtocol",
         ctx: WorktreeContext,
         triage_flavor: TriageSessionFlavor | None,
     ) -> None:
-        """Prepare per-flavor triage session inputs (ADR-0031).
-
-        BATCH_REVIEW keeps the existing PR-manifest prep; FAILURE_INVESTIGATION
-        must NOT receive the global batch manifest (auditing unrelated PRs from
-        a focused investigation was the #6768 B4 defect). Both flavors get a
-        triage-assignment.json recording what the session was asked to do, so
-        the prompt and the completion planner act on the assignment.
-        """
-        if not self._is_triage_session(issue.agent_type):
-            return
-        flavor = triage_flavor or TriageSessionFlavor.BATCH_REVIEW
-        run_dir = ctx.run.run_dir
-        if flavor is TriageSessionFlavor.BATCH_REVIEW:
-            triage_manifest = self._prepare_triage_manifest(ctx.worktree_path, run_dir)
-            if triage_manifest:
-                # Store manifest path in session for completion handling
-                ctx.update_manifest(
-                    {"triage_manifest": str(run_dir / "triage-data" / "manifest.json")}
-                )
-        focused = flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
-        assignment = TriageAssignment(
-            flavor=flavor,
-            focus_issue_number=issue.number if focused else None,
-            focus_reason=issue.title if focused else "",
+        """Delegate per-flavor triage launch preparation to the ADR-0031 owner."""
+        prepare_triage_session_data(
+            config=self.config,
+            repository_host=self.repository_host,
+            manifest_downloader=self._manifest_downloader,
+            issue=issue,
+            ctx=ctx,
+            triage_flavor=triage_flavor,
         )
-        assignment_path = run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
-        assignment.write(assignment_path)
-        ctx.update_manifest({"triage_assignment": str(assignment_path)})
-        logger.info("[triage] Wrote %s assignment: %s", flavor.value, assignment_path)
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,

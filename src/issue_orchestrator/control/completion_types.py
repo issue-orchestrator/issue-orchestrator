@@ -9,6 +9,11 @@ ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
 # rejected. Classified critical so the session's authoritative outcome is
 # FAILED (ADR-0031 / #6761 finding 3), not a quiet success.
 ERROR_PREFIX_TRIAGE_DECISION = "triage_decision"
+# A COMPLETED triage session whose orchestrator-owned launch authority is
+# missing, or whose agent-writable worktree copies (assignment / manifest)
+# no longer match it — tamper evidence. Critical like the decision prefix
+# (#6761 re-review finding 1).
+ERROR_PREFIX_TRIAGE_AUTHORITY = "triage_authority"
 REVIEW_EXCHANGE_ERROR_PREFIX = "review_exchange:"
 
 

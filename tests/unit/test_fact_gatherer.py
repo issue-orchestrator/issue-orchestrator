@@ -335,6 +335,67 @@ class TestFactGathererTriageFacts:
         assert result.pr_count == 1
         assert result.prs == ((10, "Still pending"),)
 
+    def test_triage_facts_resolve_explicit_milestone_at_creation_moment(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """triage.milestone_strategy.explicit resolves name->number through the
+        port boundary exactly when issue creation is imminent (#6761 rr F4)."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 1
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_config.triage.milestone_strategy.explicit = "M5"
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=10, url="...", title="PR 10", branch="b1", labels=[], body="", state="open"),
+        ]
+        mock_repository_host.list_issues.return_value = []
+        mock_repository_host.list_milestones.return_value = [
+            {"number": 3, "title": "M3"},
+            {"number": 5, "title": "M5"},
+        ]
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.explicit_milestone_number == 5
+        mock_repository_host.list_milestones.assert_called_once()
+
+    def test_triage_facts_skip_milestone_resolution_below_threshold(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """No API call when creation is not imminent (GitHub API discipline)."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 5
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_config.triage.milestone_strategy.explicit = "M5"
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=10, url="...", title="PR 10", branch="b1", labels=[], body="", state="open"),
+        ]
+        mock_repository_host.list_issues.return_value = []
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.explicit_milestone_number is None
+        mock_repository_host.list_milestones.assert_not_called()
+
+    def test_triage_facts_unresolvable_explicit_milestone_fails_loudly(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 1
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_config.triage.milestone_strategy.explicit = "Nope"
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=10, url="...", title="PR 10", branch="b1", labels=[], body="", state="open"),
+        ]
+        mock_repository_host.list_issues.return_value = []
+        mock_repository_host.list_milestones.return_value = [
+            {"number": 3, "title": "M3"},
+        ]
+
+        with pytest.raises(ValueError, match="does not match any"):
+            fact_gatherer.gather_triage_facts(sample_state)
+
     def test_triage_facts_detects_existing_issue(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):

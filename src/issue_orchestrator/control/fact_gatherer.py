@@ -203,6 +203,31 @@ class FactGatherer:
             prs=tuple((pr.number, pr.title) for pr in prs),
             source_labels=frozenset(all_labels),
             source_milestones=tuple(source_milestones),
+            explicit_milestone_number=self._resolve_explicit_triage_milestone(
+                pr_count=len(prs), existing_triage_issue=existing_triage_issue
+            ),
+        )
+
+    def _resolve_explicit_triage_milestone(
+        self, *, pr_count: int, existing_triage_issue: int | None
+    ) -> int | None:
+        """Resolve triage.milestone_strategy.explicit at the port boundary.
+
+        The name -> number lookup costs one API call, so it runs only when
+        issue creation is imminent (threshold met, no active batch) — the
+        exact moment the planner will consume it. An unresolvable configured
+        name raises loudly here (fail-fast: config validation cannot reach
+        GitHub, so the earliest layer that CAN know is fact gathering at
+        planning time).
+        """
+        if not self.config.triage.milestone_strategy.explicit:
+            return None
+        if pr_count < self.config.triage_review_threshold or existing_triage_issue:
+            return None
+        from .triage_issue_policy import resolve_explicit_triage_milestone
+
+        return resolve_explicit_triage_milestone(
+            self.config, self.repository_host.list_milestones
         )
 
     def _get_triage_watch_label(self) -> str | None:

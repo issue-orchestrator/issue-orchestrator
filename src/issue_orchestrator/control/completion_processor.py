@@ -891,7 +891,10 @@ class CompletionProcessor:
         if record.outcome is not CompletionOutcome.COMPLETED:
             return
         triage_error = triage_decision_processing_error(
-            self._config, run_assets.run_dir
+            self._config,
+            run_dir=run_assets.run_dir,
+            run_id=run_assets.run_id,
+            session_name=run_assets.session_name,
         )
         if triage_error is None:
             return

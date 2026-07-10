@@ -1,16 +1,22 @@
 """Triage session completion planning (ADR-0031).
 
-Single home for what happens when a triage session ends: assignment-driven
-label policy plus decision-artifact processing. Extracted from
-``completion_action_planner`` so the triage owner boundary
-(``triage_session_policy`` / ``TriageAssignment`` on the launch side, this
-module on the completion side) lives in one cohesive seam.
+Single home for what happens when a triage session ends: launch-authority
+verification, assignment-driven label policy, and decision-artifact
+processing. Extracted from ``completion_action_planner`` so the triage owner
+boundary (``triage_session_policy`` / ``TriageLaunchAuthority`` on the
+launch side, this module on the completion side) lives in one cohesive seam.
 
 Policy summary:
 
-* Only batch-review sessions label PRs (the manifest set they audited);
-  failure investigations audit one issue and never touch manifest labels
-  (#6768 B4).
+* The ONLY trusted launch scope is the orchestrator-owned
+  :class:`TriageLaunchAuthority` recorded at launch (outside the
+  agent-writable worktree). The worktree copies (triage-assignment.json,
+  manifest.json) are the agent's reading material; a missing authority
+  record, or worktree copies that no longer match it, is a critical failure
+  (#6761 re-review finding 1) — never a fail-safe success.
+* Only batch-review sessions label PRs (the authority manifest set they were
+  launched to audit); failure investigations audit one issue and never touch
+  manifest labels (#6768 B4).
 * Every COMPLETED triage session (either flavor) must produce a valid
   decision artifact pair — a missing/invalid pair is a contract violation.
   The authoritative classification runs in the completion processing path
@@ -18,15 +24,16 @@ Policy summary:
   BEFORE status recording) so the session's history outcome is FAILED, not
   a quiet success; the action planner re-reads the same validation for its
   planning effects (#6761 finding 3).
-* A failure-investigation decision must publish its diagnosis to the
-  originating issue: at least one ``post_comment`` proposal targeting
-  ``assignment.focus_issue_number``. Anything else — zero actions, or
-  comments aimed elsewhere — is a contract violation (#6761 finding 2).
+* Decision proposals may only target the session's immutable launch scope:
+  a failure investigation targets its focus issue only; a batch review
+  targets manifest PRs plus the anchor tracking issue
+  (``create_issue``/``flag_pattern`` are scope-free) — out-of-scope targets
+  are contract violations (#6761 re-review finding 2). A failure
+  investigation must additionally publish its diagnosis: >=1
+  ``post_comment`` targeting the focus issue (#6761 finding 2).
 * ``create_issue`` proposals may not carry protected workflow labels
-  (``triage_issue_policy`` owns the protected set) — contract violation
-  (#6761 finding 4).
-* No assignment (pre-upgrade session) fails safe: no labels, no decision
-  processing; watch-labeled PRs simply re-enter the next batch.
+  (``triage_issue_policy`` owns the protected set, case-insensitively) —
+  contract violation (#6761 finding 4).
 """
 
 from __future__ import annotations
@@ -38,7 +45,8 @@ from typing import TYPE_CHECKING
 
 from ..domain.models import Session
 from ..domain.triage_manifest import TriageManifest
-from ..domain.triage_session import TriageAssignment, TriageSessionFlavor
+from ..domain.triage_session import TriageLaunchAuthority, TriageSessionFlavor
+from ..infra.triage_authority_store import TriageAuthorityStore
 from .actions import (
     Action,
     AddCommentAction,
@@ -46,7 +54,10 @@ from .actions import (
     CloseIssueAction,
     RemoveLabelAction,
 )
-from .completion_types import ERROR_PREFIX_TRIAGE_DECISION
+from .completion_types import (
+    ERROR_PREFIX_TRIAGE_AUTHORITY,
+    ERROR_PREFIX_TRIAGE_DECISION,
+)
 from .label_manager import LabelManager
 from .triage_decision_actions import (
     plan_triage_decision_actions,
@@ -57,29 +68,36 @@ from .triage_decision_loader import (
     TriageDecisionLoadFailure,
     load_triage_artifact_pair_for_run,
 )
-from .triage_issue_policy import protected_triage_label_violations
+from .triage_issue_policy import (
+    protected_triage_label_violations,
+    resolve_explicit_triage_milestone,
+)
 from .triage_session_policy import is_triage_session, read_triage_assignment
 
 if TYPE_CHECKING:
     from ..domain.triage_artifacts import TriageDecision
     from ..infra.config import Config
+    from ..ports import RepositoryHost
     from .reconciliation import ExpectedState
 
 logger = logging.getLogger(__name__)
 
+# Proposal types whose target_number must fall inside the session's launch
+# scope. create_issue / flag_pattern carry no target and are scope-free.
+_SCOPED_ACTION_TYPES = frozenset(
+    ("post_comment", "escalate_to_human", "reset_retry", "kill_hung_session")
+)
 
-def read_triage_manifest(session: Session) -> TriageManifest | None:
-    """Read the batch PR manifest recorded in the session's run manifest.
 
-    The triage_manifest path is stored in ``session.run_dir / "manifest.json"``
-    during launch via ``ctx.update_manifest({"triage_manifest": path})``.
-    Reads only the session's typed ``run_dir`` — never sibling run dirs, so a
-    stale previous run in the same worktree cannot leak into this completion.
+def read_triage_manifest(run_dir: Path) -> TriageManifest | None:
+    """Read the agent-visible batch PR manifest copy for a session run.
 
-    Fail-safe: a missing run manifest, key, or manifest file yields None
-    (with a warning where content is present but unreadable).
+    UNTRUSTED: this is the worktree copy, used only to detect divergence
+    from the launch authority (tamper evidence). Completion effects never
+    key off it. Fail-safe: a missing run manifest, key, or manifest file
+    yields None (with a warning where content is present but unreadable).
     """
-    run_manifest_path = session.run_dir / "manifest.json"
+    run_manifest_path = run_dir / "manifest.json"
     if not run_manifest_path.exists():
         return None
     try:
@@ -114,43 +132,99 @@ def read_triage_manifest(session: Session) -> TriageManifest | None:
         return None
 
 
-def read_triage_assignment_for_session(session: Session) -> TriageAssignment | None:
-    """Read the launch-time triage assignment for a session's run.
+def resolve_triage_launch_authority(
+    config: "Config",
+    *,
+    run_dir: Path,
+    run_id: str,
+    session_name: str,
+) -> tuple[TriageLaunchAuthority | None, str | None]:
+    """Load the orchestrator-owned launch authority and verify worktree copies.
 
-    The assignment lives at the fixed
-    ``session.run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME`` and is
-    read through the ADR-0031 policy owner. Malformed content is fail-safe:
-    warn and report no assignment rather than acting on a guess.
+    Returns ``(authority, error_detail)``. ``error_detail`` is None only when
+    the authority record exists AND the agent-visible worktree copies still
+    mirror it. A missing record, a deleted/malformed/flipped assignment copy,
+    or a manifest whose PR set diverges from the recorded set is tamper
+    evidence (#6761 re-review finding 1) — callers must fail the session.
     """
-    try:
-        return read_triage_assignment(session.run_dir)
-    except ValueError as exc:
-        logger.warning(
-            "[triage] Malformed triage assignment in %s: %s", session.run_dir, exc
+    authority = TriageAuthorityStore.for_repo(config.repo_root).load(
+        run_id=run_id, session_name=session_name
+    )
+    if authority is None:
+        return None, (
+            "no orchestrator launch-authority record for run"
+            f" {run_id}/{session_name}; the worktree triage inputs cannot"
+            " be trusted"
         )
-        return None
+    try:
+        assignment = read_triage_assignment(run_dir)
+    except ValueError as exc:
+        return authority, f"worktree triage-assignment.json is malformed: {exc}"
+    if assignment is None:
+        return authority, (
+            "worktree triage-assignment.json is missing (deleted after launch)"
+        )
+    if not authority.matches_assignment(assignment):
+        return authority, (
+            "worktree triage-assignment.json"
+            f" (flavor={assignment.flavor.value},"
+            f" focus={assignment.focus_issue_number}) does not match the"
+            f" launch authority (flavor={authority.flavor.value},"
+            f" focus={authority.focus_issue_number})"
+        )
+    if authority.flavor is TriageSessionFlavor.BATCH_REVIEW:
+        manifest = read_triage_manifest(run_dir)
+        worktree_prs = frozenset(pr.number for pr in manifest.prs) if manifest else frozenset()
+        if worktree_prs != frozenset(authority.manifest_pr_numbers):
+            return authority, (
+                f"worktree manifest PR set {sorted(worktree_prs)} does not"
+                " match the launch authority set"
+                f" {sorted(authority.manifest_pr_numbers)}"
+            )
+    return authority, None
 
 
-def validate_decision_for_assignment(
+def validate_decision_for_authority(
     decision: "TriageDecision",
-    assignment: TriageAssignment,
+    authority: TriageLaunchAuthority,
     *,
     config: "Config",
     labels: LabelManager,
 ) -> str | None:
-    """Assignment/policy validation beyond the structural artifact contract.
+    """Authority/policy validation beyond the structural artifact contract.
 
     Returns a human-readable contract-violation detail, or None when valid.
-    Enforced here (the completion owner) rather than by prompt convention:
+    Enforced here (the completion owner) against the immutable launch
+    authority, never against the agent-writable worktree copies:
 
+    * Every targeted proposal must stay inside the launch scope — a failure
+      investigation may only address its focus issue; a batch review may
+      only address manifest PRs and the anchor tracking issue (#6761
+      re-review finding 2).
     * Failure investigations must publish their diagnosis to the originating
-      issue — >=1 ``post_comment`` targeting ``focus_issue_number`` (#6761 F2).
+      issue — >=1 ``post_comment`` targeting the focus issue (#6761 F2).
     * ``create_issue`` proposals may not carry protected workflow labels
       (#6761 F4). Checked at mapping time so the domain contract stays
       config-free.
     """
-    if assignment.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
-        focus = assignment.focus_issue_number
+    allowed = authority.allowed_targets()
+    scope_text = (
+        f"the originating issue #{authority.focus_issue_number}"
+        if authority.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        else "the audited manifest PRs and the tracking issue"
+        f" ({', '.join(f'#{n}' for n in sorted(allowed))})"
+    )
+    for action in decision.proposed_actions:
+        if action.action_type not in _SCOPED_ACTION_TYPES:
+            continue
+        if action.target_number not in allowed:
+            return (
+                f"proposed action {action.id} ({action.action_type}) targets"
+                f" #{action.target_number}, outside this session's launch"
+                f" scope: {scope_text}"
+            )
+    if authority.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
+        focus = authority.focus_issue_number
         has_focus_comment = any(
             action.action_type == "post_comment" and action.target_number == focus
             for action in decision.proposed_actions
@@ -178,12 +252,12 @@ def validate_decision_for_assignment(
 
 def load_validated_triage_pair(
     run_dir: Path,
-    assignment: TriageAssignment,
+    authority: TriageLaunchAuthority,
     *,
     config: "Config",
     labels: LabelManager,
 ) -> TriageArtifactLoadResult:
-    """Load the artifact pair and apply assignment/policy validation.
+    """Load the artifact pair and apply authority/policy validation.
 
     The ONE read both completion seams use: the processing path (authoritative
     outcome, finding 3) and the action planner (planning effects). Never raises.
@@ -191,8 +265,8 @@ def load_validated_triage_pair(
     result = load_triage_artifact_pair_for_run(run_dir)
     if not result.ok or result.decision is None:
         return result
-    detail = validate_decision_for_assignment(
-        result.decision, assignment, config=config, labels=labels
+    detail = validate_decision_for_authority(
+        result.decision, authority, config=config, labels=labels
     )
     if detail is not None:
         logger.error("Triage decision contract violation in %s: %s", run_dir, detail)
@@ -203,24 +277,30 @@ def load_validated_triage_pair(
     return result
 
 
-def triage_decision_processing_error(config: "Config", run_dir: Path) -> str | None:
-    """Authoritative pair validation for a COMPLETED triage session (#6761 F3).
+def triage_decision_processing_error(
+    config: "Config",
+    *,
+    run_dir: Path,
+    run_id: str,
+    session_name: str,
+) -> str | None:
+    """Authoritative scope + pair validation for a COMPLETED triage session.
 
     Called from the completion processing path BEFORE status recording. A
-    missing/rejected pair returns an ``ERROR_PREFIX_TRIAGE_DECISION``-tagged
-    processing error; ``critical_processing_errors`` classifies it critical so
-    history records FAILED and the failure labeling path fires. Sessions
-    without an assignment fail safe (None), matching the planner.
+    missing/tampered launch authority (#6761 re-review F1) or a
+    missing/rejected artifact pair (#6761 F3) returns a tagged processing
+    error; ``critical_processing_errors`` classifies it critical so history
+    records FAILED and the failure labeling path fires.
     """
-    try:
-        assignment = read_triage_assignment(run_dir)
-    except ValueError as exc:
-        logger.warning("[triage] Malformed triage assignment in %s: %s", run_dir, exc)
-        return None
-    if assignment is None:
-        return None
+    authority, tamper = resolve_triage_launch_authority(
+        config, run_dir=run_dir, run_id=run_id, session_name=session_name
+    )
+    if authority is None:
+        return f"{ERROR_PREFIX_TRIAGE_AUTHORITY}: missing_authority: {tamper}"
+    if tamper is not None:
+        return f"{ERROR_PREFIX_TRIAGE_AUTHORITY}: scope_tampered: {tamper}"
     result = load_validated_triage_pair(
-        run_dir, assignment, config=config, labels=LabelManager(config)
+        run_dir, authority, config=config, labels=LabelManager(config)
     )
     if result.ok:
         return None
@@ -228,10 +308,13 @@ def triage_decision_processing_error(config: "Config", run_dir: Path) -> str | N
     return f"{ERROR_PREFIX_TRIAGE_DECISION}: {failure}: {result.detail}"
 
 
+_TRIAGE_ERROR_PREFIXES = (ERROR_PREFIX_TRIAGE_DECISION, ERROR_PREFIX_TRIAGE_AUTHORITY)
+
+
 def has_triage_decision_errors(processing_errors: list[str] | None) -> bool:
-    """True when processing errors include a rejected triage decision pair."""
+    """True when processing errors include a rejected pair or tampered scope."""
     return any(
-        error.startswith(ERROR_PREFIX_TRIAGE_DECISION)
+        error.startswith(_TRIAGE_ERROR_PREFIXES)
         for error in processing_errors or ()
     )
 
@@ -239,24 +322,40 @@ def has_triage_decision_errors(processing_errors: list[str] | None) -> bool:
 def _split_triage_decision_error(processing_errors: list[str]) -> tuple[str, str]:
     """Parse (failure, detail) back out of the recorded processing error."""
     for error in processing_errors:
-        if not error.startswith(ERROR_PREFIX_TRIAGE_DECISION):
-            continue
-        remainder = error[len(ERROR_PREFIX_TRIAGE_DECISION):].lstrip(": ")
-        failure, sep, detail = remainder.partition(": ")
-        return (failure or "unknown", detail if sep else "")
+        for prefix in _TRIAGE_ERROR_PREFIXES:
+            if not error.startswith(prefix):
+                continue
+            remainder = error[len(prefix):].lstrip(": ")
+            failure, sep, detail = remainder.partition(": ")
+            return (failure or "unknown", detail if sep else "")
     return ("unknown", "")
+
+
+def _resolve_launch_authority_for_session(
+    config: "Config", session: Session
+) -> tuple[TriageLaunchAuthority | None, str | None]:
+    return resolve_triage_launch_authority(
+        config,
+        run_dir=session.run_dir,
+        run_id=session.run_assets.run_id,
+        session_name=session.run_assets.session_name,
+    )
 
 
 def _manifest_label_actions(
     config: "Config",
-    session: Session,
+    authority: TriageLaunchAuthority,
     expected: "ExpectedState",
     *,
     success: bool,
 ) -> list[Action]:
-    """Label all manifest PRs triage-reviewed (success) or triage-failed."""
-    triage_manifest = read_triage_manifest(session)
-    if not triage_manifest or not triage_manifest.prs:
+    """Label the AUTHORITY manifest PRs triage-reviewed/-failed.
+
+    The PR set comes exclusively from the launch authority record — a
+    tampered worktree manifest with substituted PR numbers never receives
+    labels (#6761 re-review finding 1).
+    """
+    if not authority.manifest_pr_numbers:
         return []
     if success:
         triage_label = config.triage_reviewed_label or "triage-reviewed"
@@ -267,16 +366,16 @@ def _manifest_label_actions(
     logger.info(
         "[triage] Adding '%s' label to %d PRs",
         triage_label,
-        len(triage_manifest.prs),
+        len(authority.manifest_pr_numbers),
     )
     return [
         AddLabelAction(
-            issue_number=pr.number,
+            issue_number=pr_number,
             label=triage_label,
             reason=reason,
             expected=expected,
         )
-        for pr in triage_manifest.prs
+        for pr_number in authority.manifest_pr_numbers
     ]
 
 
@@ -287,38 +386,54 @@ def generate_triage_completion_actions(
     *,
     completed_ok: bool,
     labels: LabelManager,
+    repository_host: "RepositoryHost | None" = None,
 ) -> list[Action]:
-    """Plan all completion effects for a triage session (see module docstring)."""
+    """Plan all completion effects for a triage session (see module docstring).
+
+    ``repository_host`` resolves ``triage.milestone_strategy.explicit`` at
+    this boundary when a decision creates issues; the planner always passes
+    it (None is tolerated only for configs without the explicit strategy —
+    ``triage_issue_milestone`` fails loudly otherwise).
+    """
     actions: list[Action] = []
 
     if not is_triage_session(config.triage_review_agent, session.issue.agent_type):
         return actions
 
-    assignment = read_triage_assignment_for_session(session)
-    if assignment is None:
-        # Fail-safe for pre-upgrade or assignment-less sessions: skip
-        # labels and decision processing so PRs stay watch-labeled and
-        # re-enter the next batch, rather than reproducing the old
-        # cross-variant mislabeling.
-        logger.warning(
-            "[triage] No triage assignment for session %s; "
-            "skipping triage completion effects (PRs re-enter the next batch)",
-            session.terminal_id,
+    authority, tamper = _resolve_launch_authority_for_session(config, session)
+    if authority is None or tamper is not None:
+        # Belt-and-braces: the processing path classifies this critical
+        # BEFORE status recording, so completions normally take the failure
+        # routing instead. Never plan success effects from untrusted scope.
+        failure = "missing_authority" if authority is None else "scope_tampered"
+        detail = tamper or "no launch authority recorded"
+        logger.error(
+            "[triage] Launch authority rejected for issue #%d (%s): %s",
+            session.issue.number,
+            failure,
+            detail,
+        )
+        actions.append(
+            plan_triage_rejection_action(
+                anchor_issue_number=session.issue.number,
+                failure=failure,
+                detail=detail,
+            )
         )
         return actions
 
     load_result = (
         load_validated_triage_pair(
-            session.run_dir, assignment, config=config, labels=labels
+            session.run_dir, authority, config=config, labels=labels
         )
         if completed_ok
         else None
     )
     succeeded = load_result is not None and load_result.ok
 
-    if assignment.flavor is TriageSessionFlavor.BATCH_REVIEW:
+    if authority.flavor is TriageSessionFlavor.BATCH_REVIEW:
         actions.extend(
-            _manifest_label_actions(config, session, expected, success=succeeded)
+            _manifest_label_actions(config, authority, expected, success=succeeded)
         )
 
     if load_result is None:
@@ -331,6 +446,9 @@ def generate_triage_completion_actions(
                 labels,
                 anchor_issue=session.issue,
                 expected=expected,
+                explicit_milestone_number=_explicit_milestone_for_decision(
+                    config, load_result.decision, repository_host
+                ),
             )
         )
     else:
@@ -352,7 +470,7 @@ def generate_triage_completion_actions(
             )
         )
 
-    if succeeded and assignment.flavor is TriageSessionFlavor.BATCH_REVIEW:
+    if succeeded and authority.flavor is TriageSessionFlavor.BATCH_REVIEW:
         # Terminal transition (#6768 round 4): the open+agent-labeled tracking
         # issue is what startup recovery requeues and what
         # _find_existing_triage_issue treats as the active batch. Ordered last
@@ -368,6 +486,32 @@ def generate_triage_completion_actions(
     return actions
 
 
+def _explicit_milestone_for_decision(
+    config: "Config",
+    decision: "TriageDecision",
+    repository_host: "RepositoryHost | None",
+) -> int | None:
+    """Resolve the explicit milestone strategy at this boundary when needed.
+
+    One ``list_milestones`` call, made only when the strategy is explicit AND
+    the decision actually creates issues (GitHub API discipline).
+    """
+    if not config.triage.milestone_strategy.explicit:
+        return None
+    if not any(
+        action.action_type == "create_issue" for action in decision.proposed_actions
+    ):
+        return None
+    if repository_host is None:
+        raise ValueError(
+            "triage.milestone_strategy.explicit requires a repository_host to"
+            " resolve the milestone name at the completion boundary"
+        )
+    return resolve_explicit_triage_milestone(
+        config, repository_host.list_milestones
+    )
+
+
 def generate_triage_decision_failure_actions(
     config: "Config",
     session: Session,
@@ -376,13 +520,13 @@ def generate_triage_decision_failure_actions(
     processing_errors: list[str],
     labels: LabelManager,
 ) -> list[Action]:
-    """Completion effects when a COMPLETED triage session's pair was rejected.
+    """Completion effects when a COMPLETED triage session was rejected.
 
-    The completion processing path recorded an ``ERROR_PREFIX_TRIAGE_DECISION``
-    error (finding 3); history is FAILED via the critical-error seam. This
-    plans the label/comment effects for every flavor:
+    The completion processing path recorded a triage authority/decision
+    error (findings 1/3); history is FAILED via the critical-error seam.
+    This plans the label/comment effects for every flavor:
 
-    * batch review — manifest PRs get the triage-failed label;
+    * batch review — the AUTHORITY manifest PRs get the triage-failed label;
     * both flavors — the rejection is surfaced as an event AND durably on the
       session's own issue (blocked-failed label + explanatory comment, the
       operator-facing escalation surface — #6761 finding 6), and the
@@ -391,10 +535,13 @@ def generate_triage_decision_failure_actions(
     """
     failure, detail = _split_triage_decision_error(processing_errors)
     actions: list[Action] = []
-    assignment = read_triage_assignment_for_session(session)
-    if assignment is not None and assignment.flavor is TriageSessionFlavor.BATCH_REVIEW:
+    authority, _tamper = _resolve_launch_authority_for_session(config, session)
+    if (
+        authority is not None
+        and authority.flavor is TriageSessionFlavor.BATCH_REVIEW
+    ):
         actions.extend(
-            _manifest_label_actions(config, session, expected, success=False)
+            _manifest_label_actions(config, authority, expected, success=False)
         )
     actions.append(
         plan_triage_rejection_action(
@@ -409,29 +556,28 @@ def generate_triage_decision_failure_actions(
             AddLabelAction(
                 issue_number=session.issue.number,
                 label=labels.blocked_failed,
-                reason=f"Triage decision artifact rejected ({failure})",
+                reason=f"Triage completion rejected ({failure})",
                 expected=expected,
             ),
             AddCommentAction(
                 number=session.issue.number,
                 comment=(
-                    "## ❌ Triage decision rejected\n\n"
-                    "The triage session completed, but its decision artifact"
-                    " pair (`triage-decision.json` + `triage-report.md`) was"
-                    f" missing or invalid (`{failure}`):\n\n"
+                    "## ❌ Triage completion rejected\n\n"
+                    "The triage session completed, but its output was"
+                    f" rejected (`{failure}`):\n\n"
                     f"> {detail_text}\n\n"
                     f"- Session: `{session.terminal_id}`\n"
                     f"- Runtime: {session.runtime_minutes:.1f} minutes\n\n"
                     f"The session is recorded as failed and `{labels.blocked_failed}`"
                     " was added. Remove the label to allow reprocessing."
                 ),
-                reason="Durable operator record of the rejected triage decision",
+                reason="Durable operator record of the rejected triage completion",
                 expected=expected,
             ),
             RemoveLabelAction(
                 issue_number=session.issue.number,
                 label=labels.in_progress,
-                reason="Triage decision rejected - releasing claim",
+                reason="Triage completion rejected - releasing claim",
                 expected=expected,
             ),
         )
@@ -446,26 +592,29 @@ def generate_triage_failure_actions(
 ) -> list[Action]:
     """Batch FAILED/TIMED_OUT terminal effects (#6768 round 5).
 
-    Manifest PRs get the operator-visible triage-failed label and the
-    tracking issue closes after the generic failure diagnosis and the PR
-    labels: an open failed tracker would be requeued at restart with an
-    empty manifest (its PRs are now candidate-filtered as triage-failed),
-    looping forever. Failure investigations and assignment-less sessions
-    produce nothing here - their anchor is the original failed work issue.
+    The AUTHORITY manifest PRs get the operator-visible triage-failed label
+    and the tracking issue closes after the generic failure diagnosis and
+    the PR labels: an open failed tracker would be requeued at restart with
+    an empty manifest (its PRs are now candidate-filtered as triage-failed),
+    looping forever. Failure investigations produce nothing here — their
+    anchor is the original failed work issue. A session without a launch
+    authority record produces nothing (the session already failed; closing
+    or labeling from untrusted worktree copies would hand the agent
+    authority).
     """
     if not is_triage_session(config.triage_review_agent, session.issue.agent_type):
         return []
-    assignment = read_triage_assignment_for_session(session)
-    if assignment is None:
+    authority, _tamper = _resolve_launch_authority_for_session(config, session)
+    if authority is None:
         logger.warning(
-            "[triage] No triage assignment for session %s; "
+            "[triage] No launch authority for session %s; "
             "skipping terminal triage effects",
             session.terminal_id,
         )
         return []
-    if assignment.flavor is not TriageSessionFlavor.BATCH_REVIEW:
+    if authority.flavor is not TriageSessionFlavor.BATCH_REVIEW:
         return []
-    actions = _manifest_label_actions(config, session, expected, success=False)
+    actions = _manifest_label_actions(config, authority, expected, success=False)
     actions.append(
         CloseIssueAction(
             issue_number=session.issue.number,

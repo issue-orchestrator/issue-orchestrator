@@ -40,7 +40,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..domain.triage_artifacts import ProposedTriageAction, TriageDecision
+from ..domain.triage_artifacts import (
+    ACT_LEVEL_TRIAGE_ACTIONS,
+    ProposedTriageAction,
+    TriageDecision,
+)
 from ..ports.issue import Issue
 from .actions import (
     Action,
@@ -100,6 +104,7 @@ def _concrete_actions(
     anchor_issue: Issue,
     expected: "ExpectedState",
     needs_human_label: str,
+    explicit_milestone_number: int | None,
 ) -> list[Action]:
     body = (action.body or "") + _provenance_footer(action)
     if action.action_type == "post_comment":
@@ -134,7 +139,11 @@ def _concrete_actions(
                     labels=labels,
                 ),
                 pr_count=0,
-                milestone=triage_issue_milestone(config, anchor_milestones),
+                milestone=triage_issue_milestone(
+                    config,
+                    anchor_milestones,
+                    explicit_milestone_number=explicit_milestone_number,
+                ),
                 reason=f"triage decision action {action.id}: create follow-up issue",
                 expected=expected,
             )
@@ -183,6 +192,7 @@ def plan_triage_decision_actions(
     *,
     anchor_issue: Issue,
     expected: "ExpectedState",
+    explicit_milestone_number: int | None = None,
 ) -> list[Action]:
     """Plan orchestrator actions for a validated triage decision."""
     authority = config.triage.authority
@@ -226,6 +236,7 @@ def plan_triage_decision_actions(
                     anchor_issue=anchor_issue,
                     expected=expected,
                     needs_human_label=labels.needs_human,
+                    explicit_milestone_number=explicit_milestone_number,
                 )
             )
         else:
@@ -268,11 +279,34 @@ def _shadow_digest_comment(
             lines.append(f"  > {item.body_preview}")
         if item.finding_ids:
             lines.append(f"  findings: {', '.join(item.finding_ids)}")
-    lines.append("")
-    lines.append(
-        "*Flip `triage.authority.<action>` to `execute` to let the"
-        " orchestrator perform these next time.*"
+    gated = sorted(
+        {
+            item.proposal_type
+            for item in shadow
+            if item.proposal_type not in ACT_LEVEL_TRIAGE_ACTIONS
+        }
     )
+    act_level = sorted(
+        {
+            item.proposal_type
+            for item in shadow
+            if item.proposal_type in ACT_LEVEL_TRIAGE_ACTIONS
+        }
+    )
+    lines.append("")
+    if gated:
+        knobs = ", ".join(f"`triage.authority.{name}`" for name in gated)
+        lines.append(
+            f"*Flip {knobs} to `execute` to let the orchestrator perform"
+            " these next time.*"
+        )
+    if act_level:
+        names = ", ".join(f"`{name}`" for name in act_level)
+        lines.append(
+            f"*{names}: orchestrator execution is not wired yet (#6764) —"
+            " startup rejects `execute` for these until it lands, so act on"
+            " them manually if warranted.*"
+        )
     return AddCommentAction(
         number=anchor_issue_number,
         comment="\n".join(lines),

@@ -1346,6 +1346,42 @@ class TestPlanTriageIssueCreation:
         assert "code-reviewed" in body
         assert "triage-reviewed" in body
 
+    def test_triage_issue_explicit_milestone_applied(self):
+        """Explicit milestone strategy reaches the created issue (#6761 rr F4).
+
+        The name->number resolution happens at the fact-gathering boundary;
+        the planner consumes the resolved number from TriageFacts.
+        """
+        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.infra.config import MilestoneStrategyConfig, TriageConfig
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=1,
+            triage_reviewed_label="triage-reviewed",
+        )
+        config.triage = TriageConfig(
+            milestone_strategy=MilestoneStrategyConfig(explicit="M5"),
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        triage_facts = TriageFacts(
+            pr_count=1,
+            threshold=1,
+            existing_triage_issue=None,
+            watch_label="code-reviewed",
+            prs=((1, "PR 1"),),
+            explicit_milestone_number=5,
+        )
+
+        plan = planner.plan(make_snapshot(triage_facts=triage_facts))
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 1
+        assert create_actions[0].milestone == 5
+
     def test_triage_issue_inherits_labels_from_source(self):
         """Planner inherits labels from source issues based on triage config."""
         from issue_orchestrator.domain.models import TriageFacts

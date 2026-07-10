@@ -15,13 +15,22 @@ workflow/protected family (orchestrator lifecycle labels, ``needs-*``,
 ``triage:*``) is rejected so a decision artifact can never corrupt label
 truth (ADR-0013). Concrete orchestrator-owned names are derived from
 config/:class:`LabelManager`, not re-hardcoded here.
+
+GitHub label names are case-insensitive, so every comparison in this module
+casefolds — an agent must not bypass protection (or defeat inheritance or
+dedup) by case-flipping a name.
+
+The module is pure policy: the explicit milestone NAME -> number resolution
+needs the repository host, so callers resolve at their boundary via
+:func:`resolve_explicit_triage_milestone` (passing the port method in) and
+hand the resolved number to :func:`triage_issue_milestone`.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable, Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Collection, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Mapping
 
 from .label_manager import LabelManager
 
@@ -46,11 +55,16 @@ _PROTECTED_LABEL_PATTERNS: tuple[re.Pattern[str], ...] = (
 def is_protected_triage_label(
     label: str, *, config: "Config", labels: LabelManager
 ) -> bool:
-    """True when an agent-proposed label would touch workflow label truth."""
-    if labels.is_ours(label) or labels.is_blocking(label):
+    """True when an agent-proposed label would touch workflow label truth.
+
+    Case-insensitive throughout: GitHub treats ``WIP`` and ``wip`` as the
+    same label.
+    """
+    if labels.is_workflow_reserved(label):
         return True
+    folded = label.casefold()
     configured = {
-        value
+        value.casefold()
         for value in (
             config.triage_review_agent,
             config.triage_watch_label,
@@ -61,7 +75,7 @@ def is_protected_triage_label(
         )
         if value
     }
-    if label in configured:
+    if folded in configured:
         return True
     return any(pattern.match(label) for pattern in _PROTECTED_LABEL_PATTERNS)
 
@@ -87,16 +101,51 @@ def apply_triage_priority_prefix(config: "Config", title: str) -> str:
     return f"[{priority}-000] {title}"
 
 
-def triage_issue_milestone(
-    config: "Config", source_milestones: Sequence[tuple[int, str]]
+def resolve_explicit_triage_milestone(
+    config: "Config",
+    list_milestones: Callable[[str], Sequence[Mapping[str, Any]]],
 ) -> int | None:
-    """Compute the milestone for a triage-created issue per config strategy."""
+    """Resolve ``triage.milestone_strategy.explicit`` to a milestone number.
+
+    ``list_milestones`` is ``RepositoryHost.list_milestones`` passed in at the
+    boundary so this module stays port-free. Returns None when the strategy is
+    not explicit. Raises ValueError when the configured name matches no
+    repository milestone — a misconfigured strategy must fail loudly, never
+    silently create unmilestoned issues.
+    """
+    name = (config.triage.milestone_strategy.explicit or "").strip()
+    if not name:
+        return None
+    for milestone in list_milestones("all"):
+        if str(milestone.get("title", "")).strip() == name:
+            return int(milestone["number"])
+    raise ValueError(
+        f"triage.milestone_strategy.explicit={name!r} does not match any"
+        " repository milestone; fix the configured name or remove the strategy"
+    )
+
+
+def triage_issue_milestone(
+    config: "Config",
+    source_milestones: Sequence[tuple[int, str]],
+    *,
+    explicit_milestone_number: int | None = None,
+) -> int | None:
+    """Compute the milestone for a triage-created issue per config strategy.
+
+    When the explicit strategy is configured the caller MUST have resolved
+    the name at its boundary (``resolve_explicit_triage_milestone``); a
+    missing resolution here is a caller bug and fails loudly.
+    """
     strategy = config.triage.milestone_strategy
     if strategy.explicit:
-        # Explicit milestone is configured by NAME; number lookup is not
-        # implemented, so the strategy intentionally yields no milestone
-        # rather than guessing (mirrors the pre-extraction planner note).
-        return None
+        if explicit_milestone_number is None:
+            raise ValueError(
+                "triage.milestone_strategy.explicit is configured but no"
+                " resolved milestone number was supplied; resolve via"
+                " resolve_explicit_triage_milestone at the boundary"
+            )
+        return explicit_milestone_number
     if strategy.inherit_from_issues and source_milestones:
         ordered = sorted(source_milestones, key=lambda m: m[0])
         if strategy.inherit_from_issues == "earliest":
@@ -152,17 +201,22 @@ def _with_configured_labels(
 ) -> tuple[str, ...]:
     composed = list(base)
     composed.extend(config.triage.explicit_labels)
+    source_folded = {label.casefold() for label in source_labels}
     composed.extend(
-        label for label in config.triage.inherit_labels if label in source_labels
+        label
+        for label in config.triage.inherit_labels
+        if label.casefold() in source_folded
     )
     return _deduped(composed)
 
 
 def _deduped(labels: Iterable[str]) -> tuple[str, ...]:
+    """Order-preserving, case-insensitive dedup (first spelling wins)."""
     seen: set[str] = set()
     result: list[str] = []
     for label in labels:
-        if label and label not in seen:
-            seen.add(label)
+        folded = label.casefold()
+        if label and folded not in seen:
+            seen.add(folded)
             result.append(label)
     return tuple(result)

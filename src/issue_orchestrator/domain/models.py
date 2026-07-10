@@ -1352,6 +1352,10 @@ class TriageFacts:
     source_labels: frozenset[str] = field(default_factory=frozenset)
     # Milestones from source issues: tuple of (number, title) for milestone inheritance
     source_milestones: tuple[tuple[int, str], ...] = field(default_factory=tuple)
+    # Resolved number for triage.milestone_strategy.explicit (name -> number
+    # resolution happens at the fact-gathering boundary; None when the
+    # strategy is not explicit or creation conditions are not met yet).
+    explicit_milestone_number: Optional[int] = None
 
 
 @dataclass(frozen=True)

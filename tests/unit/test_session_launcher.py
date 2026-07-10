@@ -647,6 +647,20 @@ class TestLaunchIssueSession:
         assert data_dir.is_dir()
         # No PRs matched, so no manifest was planted — only the empty dir.
         assert not (data_dir / "manifest.json").exists()
+        # The orchestrator-owned launch authority is recorded outside the
+        # agent-writable worktree (#6761 re-review F1).
+        from issue_orchestrator.infra.triage_authority_store import (
+            TriageAuthorityStore,
+        )
+
+        authority = TriageAuthorityStore.for_repo(sample_config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.flavor is TriageSessionFlavor.BATCH_REVIEW
+        assert authority.anchor_issue_number == 125
+        assert authority.manifest_pr_numbers == ()
 
     def test_fails_when_no_agent_type(self, session_launcher):
         """Verify fails when issue has no agent type label (line 195)."""

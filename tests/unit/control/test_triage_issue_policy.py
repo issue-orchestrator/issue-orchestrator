@@ -9,6 +9,7 @@ from issue_orchestrator.control.triage_issue_policy import (
     decision_issue_labels,
     is_protected_triage_label,
     protected_triage_label_violations,
+    resolve_explicit_triage_milestone,
     triage_issue_milestone,
 )
 from issue_orchestrator.infra.config import Config
@@ -70,6 +71,34 @@ class TestProtectedLabelSet:
         assert is_protected_triage_label("my-scope", config=config, labels=labels)
         assert is_protected_triage_label("wip", config=config, labels=labels)
 
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "In-Progress",
+            "NEEDS-HUMAN",
+            "Code-Reviewed",
+            "Triage-Failed",
+            "AGENT:Backend",
+            "Blocked:PR-Closed",
+            "PUBLISH-FAIL-COUNT-2",
+        ],
+    )
+    def test_protection_is_case_insensitive(self, label: str) -> None:
+        """GitHub label names are case-insensitive; case-flipping an owned
+        name must not bypass protection (#6761 re-review finding 3)."""
+        config = make_config()
+        assert is_protected_triage_label(
+            label, config=config, labels=LabelManager(config)
+        )
+
+    def test_mixed_case_configured_name_rejects_lowercase_agent_label(self) -> None:
+        """config.label_in_progress='WIP' must reject an agent's 'wip'."""
+        config = make_config()
+        config.label_in_progress = "WIP"
+        labels = LabelManager(config)
+        assert is_protected_triage_label("wip", config=config, labels=labels)
+        assert is_protected_triage_label("WiP", config=config, labels=labels)
+
     def test_violations_lists_offending_labels_only(self) -> None:
         config = make_config()
         violations = protected_triage_label_violations(
@@ -97,6 +126,28 @@ class TestSharedComposition:
             "needs-batch-review",
             "team:backend",
         )
+
+    def test_dedup_is_case_insensitive_first_spelling_wins(self) -> None:
+        config = make_config()
+        config.triage.explicit_labels = ["Bug"]
+        labels = decision_issue_labels(
+            config,
+            anchor_labels=[],
+            agent_labels=("bug", "docs"),
+            labels=LabelManager(config),
+        )
+        assert labels == ("Bug", "docs")
+
+    def test_inherit_match_is_case_insensitive(self) -> None:
+        config = make_config()
+        config.triage.inherit_labels = ["Team:Backend"]
+        labels = decision_issue_labels(
+            config,
+            anchor_labels=["team:backend"],
+            agent_labels=(),
+            labels=LabelManager(config),
+        )
+        assert labels == ("Team:Backend",)
 
     def test_decision_labels_never_include_the_triage_agent(self) -> None:
         """A decision-created follow-up must not loop back into triage."""
@@ -142,8 +193,47 @@ class TestSharedComposition:
         milestone = triage_issue_milestone(config, [(9, "M9"), (3, "M3")])
         assert milestone == expected
 
-    def test_explicit_milestone_name_yields_none(self) -> None:
-        """Name lookup unimplemented: explicit strategy must not guess."""
+    def test_explicit_strategy_uses_resolved_number(self) -> None:
         config = make_config()
         config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="M5")
-        assert triage_issue_milestone(config, [(9, "M9")]) is None
+        milestone = triage_issue_milestone(
+            config, [(9, "M9")], explicit_milestone_number=5
+        )
+        assert milestone == 5
+
+    def test_explicit_strategy_without_resolution_fails_loudly(self) -> None:
+        """The boundary MUST resolve the name; a silent None was the dead
+        no-op this replaces (#6761 re-review finding 4)."""
+        config = make_config()
+        config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="M5")
+        with pytest.raises(ValueError, match="resolve_explicit_triage_milestone"):
+            triage_issue_milestone(config, [(9, "M9")])
+
+
+class TestExplicitMilestoneResolution:
+    """Name -> number resolution through the RepositoryHost boundary (F4)."""
+
+    def _milestones(self, _state: str):
+        return [
+            {"number": 3, "title": "M3", "state": "open"},
+            {"number": 5, "title": "M5", "state": "closed"},
+        ]
+
+    def test_resolves_configured_name(self) -> None:
+        config = make_config()
+        config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="M5")
+        assert resolve_explicit_triage_milestone(config, self._milestones) == 5
+
+    def test_non_explicit_strategy_resolves_to_none_without_api_call(self) -> None:
+        config = make_config()
+
+        def _boom(_state: str):
+            raise AssertionError("list_milestones must not be called")
+
+        assert resolve_explicit_triage_milestone(config, _boom) is None
+
+    def test_unresolvable_name_fails_loudly(self) -> None:
+        config = make_config()
+        config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="Nope")
+        with pytest.raises(ValueError, match="does not match any"):
+            resolve_explicit_triage_milestone(config, self._milestones)

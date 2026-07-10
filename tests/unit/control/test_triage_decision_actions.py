@@ -171,6 +171,30 @@ class TestDecisionIssuePolicy:
         assert isinstance(planned, CreateTriageIssueAction)
         assert planned.milestone == 7
 
+    def test_explicit_milestone_strategy_uses_boundary_resolved_number(self) -> None:
+        """Decision-created issues honor the explicit strategy (#6761 rr F4)."""
+        config = _config()
+        config.triage.milestone_strategy.explicit = "M5"
+
+        [planned] = plan_triage_decision_actions(
+            _decision(self._issue_action()),
+            config,
+            LabelManager(config),
+            anchor_issue=_anchor(),
+            expected=EXPECTED,
+            explicit_milestone_number=5,
+        )
+
+        assert isinstance(planned, CreateTriageIssueAction)
+        assert planned.milestone == 5
+
+    def test_explicit_milestone_strategy_without_resolution_fails_loudly(self) -> None:
+        config = _config()
+        config.triage.milestone_strategy.explicit = "M5"
+
+        with pytest.raises(ValueError, match="resolve_explicit_triage_milestone"):
+            _plan(_decision(self._issue_action()), config)
+
     def test_protected_agent_labels_fail_loudly_at_planning(self) -> None:
         """Validation upstream must have rejected these; planning never
         silently forwards or filters a protected label."""
@@ -274,6 +298,39 @@ def test_shadow_proposals_plan_durable_digest_comment() -> None:
     assert digest.expected is EXPECTED
     # The digest complements the event-producing surface action.
     assert any(isinstance(a, SurfaceTriageProposalAction) for a in planned)
+
+
+def test_digest_guidance_is_action_aware() -> None:
+    """Act-level shadow records must not tell operators to flip a knob that
+    startup rejects until #6764 (#6761 re-review finding 5)."""
+    config = _config(post_comment="propose")
+    gated = ProposedTriageAction(
+        id="A1", action_type="post_comment", target_number=42, body="c"
+    )
+    act = ProposedTriageAction(
+        id="A2", action_type="reset_retry", target_number=42, body="r"
+    )
+
+    planned = _plan(_decision(gated, act), config)
+
+    [digest] = _shadow_digests(planned)
+    assert "`triage.authority.post_comment`" in digest.comment
+    assert "#6764" in digest.comment
+    assert "`reset_retry`" in digest.comment
+    # The config-flip guidance never names the act-level knobs.
+    assert "triage.authority.reset_retry" not in digest.comment
+
+
+def test_act_level_only_digest_omits_config_flip_guidance() -> None:
+    action = ProposedTriageAction(
+        id="A1", action_type="kill_hung_session", target_number=13, body="r"
+    )
+
+    planned = _plan(_decision(action))
+
+    [digest] = _shadow_digests(planned)
+    assert "#6764" in digest.comment
+    assert "Flip" not in digest.comment
 
 
 def test_execute_only_decision_plans_no_digest_comment() -> None:

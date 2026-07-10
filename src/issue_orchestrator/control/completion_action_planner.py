@@ -20,6 +20,7 @@ from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
+    ERROR_PREFIX_TRIAGE_AUTHORITY,
     ERROR_PREFIX_TRIAGE_DECISION,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
@@ -55,7 +56,12 @@ def critical_processing_errors(
     downgraded: list[str] = []
     for error in processing_errors:
         if error.startswith(
-            (ERROR_PREFIX_PUSH, ERROR_PREFIX_PUBLISH_BLOCKED, ERROR_PREFIX_TRIAGE_DECISION)
+            (
+                ERROR_PREFIX_PUSH,
+                ERROR_PREFIX_PUBLISH_BLOCKED,
+                ERROR_PREFIX_TRIAGE_DECISION,
+                ERROR_PREFIX_TRIAGE_AUTHORITY,
+            )
         ):
             critical.append(error)
             continue
@@ -216,6 +222,7 @@ class CompletionActionPlanner:
             expected,
             completed_ok=True,
             labels=self._lm,
+            repository_host=self.repository_host,
         )
 
     def _generate_triage_failure_actions(

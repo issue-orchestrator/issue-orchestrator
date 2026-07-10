@@ -167,7 +167,13 @@ Compact `triage-decision.json` example:
 - `create_issue` labels must be plain descriptive labels. Workflow labels
   are rejected as a contract violation: anything like `in-progress`,
   `needs-*`, `*-reviewed`, `*-failed`, `publish-*`, `blocked*`, `agent:*`,
-  or `triage:*` corrupts orchestrator label truth.
+  or `triage:*` corrupts orchestrator label truth (matching is
+  case-insensitive).
+- Targets are scoped to what you were launched to audit: `post_comment`,
+  `escalate_to_human`, `reset_retry`, and `kill_hung_session` may only
+  target the manifest PRs or your own tracking issue (batch review), or the
+  `focus_issue_number` (failure investigation). Any other target is
+  rejected. `create_issue` and `flag_pattern` carry no target.
 - Valid `action_type` values: `post_comment`, `create_issue`,
   `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
 - Proposals are intent, not execution: the orchestrator decides what to

@@ -2986,11 +2986,24 @@ class TestTriageDecisionFailureTransition:
     def _make_triage_session(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> Session:
+        config.repo_root = tmp_worktree  # authority store home
         config.triage_review_agent = "agent:triage"
         config.triage_reviewed_label = "triage-reviewed"
         config.triage_failed_label = "triage-failed"
         issue = make_issue(labels=["agent:triage"])
         return create_test_session(issue, agent_config, tmp_worktree)
+
+    @staticmethod
+    def _record_authority(config: Config, session: Session, authority: Any) -> None:
+        from issue_orchestrator.infra.triage_authority_store import (
+            TriageAuthorityStore,
+        )
+
+        TriageAuthorityStore.for_repo(config.repo_root).record(
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+            authority=authority,
+        )
 
     def _plant_assignment(self, session: Session, assignment: Any) -> None:
         import json as _json
@@ -3015,6 +3028,8 @@ class TestTriageDecisionFailureTransition:
             TriageSessionFlavor,
         )
 
+        from issue_orchestrator.domain.triage_session import TriageLaunchAuthority
+
         session = self._make_triage_session(config, agent_config, tmp_worktree)
         self._plant_assignment(
             session,
@@ -3022,6 +3037,15 @@ class TestTriageDecisionFailureTransition:
                 flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
                 focus_issue_number=1,
                 focus_reason="Investigate: timed out",
+            ),
+        )
+        self._record_authority(
+            config,
+            session,
+            TriageLaunchAuthority(
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                anchor_issue_number=session.issue.number,
+                focus_issue_number=1,
             ),
         )
         handler = make_handler(config)
@@ -3060,9 +3084,20 @@ class TestTriageDecisionFailureTransition:
             TriageSessionFlavor,
         )
 
+        from issue_orchestrator.domain.triage_session import TriageLaunchAuthority
+
         session = self._make_triage_session(config, agent_config, tmp_worktree)
         self._plant_assignment(
             session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+        )
+        self._record_authority(
+            config,
+            session,
+            TriageLaunchAuthority(
+                flavor=TriageSessionFlavor.BATCH_REVIEW,
+                anchor_issue_number=session.issue.number,
+                manifest_pr_numbers=(101,),
+            ),
         )
         manifest = TriageManifest(
             prs=[

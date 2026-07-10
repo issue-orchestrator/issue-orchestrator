@@ -2594,6 +2594,7 @@ class TestTriageCompletionEffects:
         prompt = tmp_path / "triage.md"
         prompt.write_text("Triage prompt")
         config = Config()
+        config.repo_root = tmp_path  # authority store home
         config.triage_review_agent = "agent:triage"
         config.agents = {
             "agent:triage": AgentConfig(prompt_path=prompt),
@@ -2624,14 +2625,21 @@ class TestTriageCompletionEffects:
             comment_body="## Implementation\n\nAudited 3 PRs.",
         )
 
-    def _process(self, processor, worktree, *, agent_label: str):
+    def _process(self, processor, worktree, *, agent_label: str, run_assets=None):
         return processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree),
+            run_assets=run_assets or make_session_run_assets(worktree),
             issue_number=123,
             issue_title="Batch Review",
             agent_label=agent_label,
         )
+
+    def _armed_run_assets(self, processor, worktree):
+        """Run assets with launch authority + valid empty-audit pair."""
+        run_assets = make_session_run_assets(worktree)
+        self._arm_authority(processor._config, run_assets)  # noqa: SLF001
+        self._plant_valid_pair(run_assets.run_dir)
+        return run_assets
 
     def test_clean_triage_audit_completes_without_publish_failure(
         self,
@@ -2649,8 +2657,11 @@ class TestTriageCompletionEffects:
         processor._emit_publish_failed = MagicMock()  # noqa: SLF001
         mock_pr_adapter.create_pr.side_effect = self.NO_COMMITS_ERROR
         worktree = worktree_with_completion(self._completed_record())
+        run_assets = self._armed_run_assets(processor, worktree)
 
-        result = self._process(processor, worktree, agent_label="agent:triage")
+        result = self._process(
+            processor, worktree, agent_label="agent:triage", run_assets=run_assets
+        )
 
         assert result.success is True
         assert not result.errors
@@ -2672,8 +2683,11 @@ class TestTriageCompletionEffects:
             tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
         )
         worktree = worktree_with_completion(self._completed_record())
+        run_assets = self._armed_run_assets(processor, worktree)
 
-        result = self._process(processor, worktree, agent_label="agent:triage")
+        result = self._process(
+            processor, worktree, agent_label="agent:triage", run_assets=run_assets
+        )
 
         assert result.success is True
         assert result.pr_url == "https://github.com/owner/repo/pull/42"
@@ -2725,18 +2739,24 @@ class TestTriageCompletionEffects:
         assert any("create_pr" in error for error in result.errors)
         processor._emit_publish_failed.assert_called_once()  # noqa: SLF001
 
-    # --- #6761 finding 3: pair validation in the processing path -----------
+    # --- #6761 finding 3 + re-review finding 1: processing-path validation --
 
     @staticmethod
-    def _plant_assignment(run_dir):
+    def _arm_authority(config, run_assets):
+        """Record launch authority + matching worktree assignment (empty batch)."""
         import json as _json
 
         from issue_orchestrator.domain.triage_session import (
             TRIAGE_ASSIGNMENT_FILENAME,
             TriageAssignment,
+            TriageLaunchAuthority,
             TriageSessionFlavor,
         )
+        from issue_orchestrator.infra.triage_authority_store import (
+            TriageAuthorityStore,
+        )
 
+        run_dir = run_assets.run_dir
         TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW).write(
             run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
         )
@@ -2746,6 +2766,14 @@ class TestTriageCompletionEffects:
             run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
         )
         manifest_path.write_text(_json.dumps(manifest))
+        TriageAuthorityStore.for_repo(config.repo_root).record(
+            run_id=run_assets.run_id,
+            session_name=run_assets.session_name,
+            authority=TriageLaunchAuthority(
+                flavor=TriageSessionFlavor.BATCH_REVIEW,
+                anchor_issue_number=123,
+            ),
+        )
 
     @staticmethod
     def _plant_valid_pair(run_dir):
@@ -2785,7 +2813,7 @@ class TestTriageCompletionEffects:
         )
         worktree = worktree_with_completion(self._completed_record())
         run_assets = make_session_run_assets(worktree)
-        self._plant_assignment(run_assets.run_dir)
+        self._arm_authority(processor._config, run_assets)  # noqa: SLF001
 
         result = processor.process(
             worktree,
@@ -2798,6 +2826,42 @@ class TestTriageCompletionEffects:
         assert result.errors
         assert any(
             error.startswith(f"{ERROR_PREFIX_TRIAGE_DECISION}: missing_decision")
+            for error in result.errors
+        )
+
+    def test_completed_triage_session_without_launch_authority_is_critical(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """No orchestrator authority record => critical failure, never a
+        fail-safe success (#6761 re-review finding 1)."""
+        from issue_orchestrator.control.completion_types import (
+            ERROR_PREFIX_TRIAGE_AUTHORITY,
+        )
+
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        run_assets = make_session_run_assets(worktree)
+        self._plant_valid_pair(run_assets.run_dir)
+
+        result = processor.process(
+            worktree,
+            run_assets=run_assets,
+            issue_number=123,
+            issue_title="Batch Review",
+            agent_label="agent:triage",
+        )
+
+        assert result.errors
+        assert any(
+            error.startswith(f"{ERROR_PREFIX_TRIAGE_AUTHORITY}: missing_authority")
             for error in result.errors
         )
 
@@ -2819,7 +2883,7 @@ class TestTriageCompletionEffects:
         )
         worktree = worktree_with_completion(self._completed_record())
         run_assets = make_session_run_assets(worktree)
-        self._plant_assignment(run_assets.run_dir)
+        self._arm_authority(processor._config, run_assets)  # noqa: SLF001
         self._plant_valid_pair(run_assets.run_dir)
 
         result = processor.process(
@@ -2830,10 +2894,7 @@ class TestTriageCompletionEffects:
             agent_label="agent:triage",
         )
 
-        assert not any(
-            error.startswith(ERROR_PREFIX_TRIAGE_DECISION)
-            for error in result.errors or ()
-        )
+        assert not result.errors
 
 
 class TestCompletionProcessorGitActions:
