@@ -39,6 +39,11 @@ function loadSessionDialogs() {
             .replace(/"/g, '&quot;').replace(/'/g, '&#39;'),
         escapeAttr: (value) => String(value == null ? '' : value)
             .replace(/&/g, '&amp;').replace(/"/g, '&quot;'),
+        // Fallback humanizer used by ``_renderLifecycleCommandButton`` only
+        // when no label is supplied; the dialog renderer always supplies one,
+        // so this is a defensive stub that never fires in these tests.
+        _humanizeSnakeCase: (s) => String(s || '')
+            .split('_').map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' '),
         formatTimestamp: (value, fallback = '') => {
             if (!value || value === '-') return fallback;
             return `local:${String(value).slice(0, 10)}`;
@@ -54,6 +59,16 @@ function loadSessionDialogs() {
         'utf8',
     );
     vm.runInContext(viewerSource, context, { filename: 'validation_viewer.js' });
+    // ``lifecycle_commands.js`` owns the shared typed-Command renderer
+    // (``_renderLifecycleCommandButton``) + dispatcher that the dialog
+    // action buttons route through (issue #6327).  Loaded before
+    // ``session_dialogs.js`` so the symbol is in scope, mirroring the
+    // production bundle order in ``dashboard_assets.py``.
+    const lifecycleSource = fs.readFileSync(
+        path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/lifecycle_commands.js'),
+        'utf8',
+    );
+    vm.runInContext(lifecycleSource, context, { filename: 'lifecycle_commands.js' });
     const source = fs.readFileSync(
         path.join(__dirname, '../../src/issue_orchestrator/static/js/dashboard/session_dialogs.js'),
         'utf8',
@@ -340,27 +355,48 @@ test('affordance: rendered button label carries the right trailing glyph for eve
     }
 });
 
-test('affordance: rendered button still dispatches to the correct handler', () => {
-    // The glyph is purely presentational; the onclick handler stays
-    // correct.  Tie the visible label to the dispatch function in
-    // the rendered onclick so neither half can drift unnoticed.
+test('affordance: rendered button carries a typed data-lifecycle-command routed through the shared dispatcher', () => {
+    // Issue #6327: dialog action buttons no longer embed a per-action
+    // inline ``onclick``.  Each carries a typed ``data-lifecycle-command``
+    // (kind == action.type) and routes through the single shared
+    // ``runLifecycleCommandFromButton`` owner — the same pipeline every
+    // other canonical-viewer affordance uses.  Extracting the Command from
+    // rendered HTML is the pattern the command-surface test relies on.
     const ctx = loadSessionDialogs();
     ctx.currentDiagnosticsRunDir = null;
-    const expectedHandlers = {
-        open_path: 'openPath(',
-        open_orchestrator_log: 'openFilteredOrchestratorLog(',
-        open_validation_failure: 'openValidationFailure(',
-        open_review_transcript: 'openReviewTranscript(',
-        open_review_feedback: 'openReviewFeedback(',
-        open_session_diagnostics: 'openSessionManifest(',
-        open_agent_log: 'openAgentLogAction(',
-        view_claude_log: 'viewClaudeLog(',
-        copy_agent_log: 'copyAgentLogAction(',
-    };
-    for (const [type, handler] of Object.entries(expectedHandlers)) {
+    // Every legacy inline handler name that must NOT leak into the markup
+    // now that dispatch goes through the typed Command.
+    const legacyHandlers = [
+        'openPath(', 'openValidationFailure(', 'openReviewTranscript(',
+        'openReviewFeedback(', 'openSessionManifest(', 'openAgentLogAction(',
+        'viewClaudeLog(', 'copyAgentLogAction(', 'openFilteredOrchestratorLog(',
+    ];
+    const types = [
+        'open_path',
+        'open_orchestrator_log',
+        'open_validation_failure',
+        'open_review_transcript',
+        'open_review_feedback',
+        'open_session_diagnostics',
+        'open_agent_log',
+        'view_claude_log',
+        'copy_agent_log',
+    ];
+    for (const type of types) {
         const action = { type, label: 'L', run_dir: '/run/x', issue_number: 1, path: '/p' };
         const html = ctx._renderDialogActionButton(action, null, 'diag-btn');
-        assert.ok(html.includes(handler),
-            `type=${type}: expected onclick to call ${handler}, got: ${html.slice(0, 240)}…`);
+        // Routes through the single shared dispatcher, not a per-action handler.
+        assert.ok(html.includes('runLifecycleCommandFromButton(this)'),
+            `type=${type}: expected shared dispatcher onclick, got: ${html.slice(0, 240)}…`);
+        for (const legacy of legacyHandlers) {
+            assert.ok(!html.includes(legacy),
+                `type=${type}: legacy inline handler ${legacy} must not appear in the migrated markup`);
+        }
+        // The typed Command names the action 1:1.
+        const match = html.match(/data-lifecycle-command="([^"]+)"/);
+        assert.ok(match, `type=${type}: expected a data-lifecycle-command payload`);
+        const command = JSON.parse(match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+        assert.strictEqual(command.kind, type,
+            `type=${type}: command kind should mirror the action type`);
     }
 });

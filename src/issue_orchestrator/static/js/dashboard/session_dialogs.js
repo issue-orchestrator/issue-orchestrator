@@ -527,67 +527,108 @@ function _affordanceGlyphForAction(action) {
         : '';
 }
 
+// Producer half of the dialog action-button Command boundary (issue
+// #6327).  Given a backend action dict (``action.type`` + fields) and the
+// resolved run dir, returns the typed ``data-lifecycle-command`` payload the
+// shared dispatcher (``runLifecycleCommand`` in ``lifecycle_commands.js``)
+// consumes — or ``null`` when a required field is missing, which the caller
+// renders as an empty string (the same "silently omit an un-openable action"
+// behavior the inline ``onclick`` renderer had).
+//
+// The command ``kind`` mirrors ``action.type`` 1:1 so a Command extracted
+// from rendered HTML names the action directly.  ``error_surface: 'inline'``
+// tells handlers that take an error surface to report failures inside the
+// open dialog rather than via a toast.
+function _dialogActionToLifecycleCommand(action, fallbackRunDir) {
+    if (!action) return null;
+    const issueNumber = action.issue_number;
+    const runDir = fallbackRunDir ? String(fallbackRunDir) : null;
+    switch (action.type) {
+        case 'open_path':
+            if (!action.path) return null;
+            return { kind: 'open_path', path: String(action.path) };
+        case 'open_validation_failure':
+            if (!runDir) return null;
+            return {
+                kind: 'open_validation_failure',
+                issue_number: issueNumber,
+                run_dir: runDir,
+                error_surface: 'inline',
+            };
+        case 'open_agent_log':
+            if (!runDir) return null;
+            return {
+                kind: 'open_agent_log',
+                issue_number: issueNumber,
+                run_dir: runDir,
+                label: 'Session Recording',
+                round_index: Number.isInteger(Number(action.round_index)) ? Number(action.round_index) : null,
+                session_role: action.session_role || null,
+                error_surface: 'inline',
+            };
+        case 'open_review_transcript':
+            if (!runDir) return null;
+            return {
+                kind: 'open_review_transcript',
+                issue_number: issueNumber,
+                run_dir: runDir,
+                round_index: Number.isInteger(Number(action.round_index)) ? Number(action.round_index) : null,
+                transcript_role: action.transcript_role || null,
+                error_surface: 'inline',
+            };
+        case 'open_review_artifact':
+            if (!runDir || !action.artifact_path || !action.artifact_type) return null;
+            return {
+                kind: 'open_review_artifact',
+                issue_number: issueNumber,
+                run_dir: runDir,
+                artifact_path: String(action.artifact_path),
+                artifact_type: String(action.artifact_type),
+                render_mode: action.render_mode ? String(action.render_mode) : null,
+            };
+        case 'copy_agent_log':
+            if (!runDir) return null;
+            return { kind: 'copy_agent_log', issue_number: issueNumber, run_dir: runDir };
+        case 'view_claude_log':
+            if (!runDir) return null;
+            return {
+                kind: 'view_claude_log',
+                issue_number: issueNumber,
+                run_dir: runDir,
+                error_surface: 'inline',
+            };
+        case 'open_orchestrator_log':
+            return {
+                kind: 'open_orchestrator_log',
+                issue_number: issueNumber,
+                run_dir: runDir,
+                error_surface: 'inline',
+            };
+        case 'open_review_feedback':
+            return { kind: 'open_review_feedback', issue_number: issueNumber };
+        case 'open_session_diagnostics':
+            return {
+                kind: 'open_session_diagnostics',
+                issue_number: issueNumber,
+                run_dir: runDir,
+            };
+        default:
+            return null;
+    }
+}
+
 function _renderDialogActionButton(action, labelOverride, cssClass) {
     if (!action) return '';
-    const baseLabel = escapeHtml(labelOverride || action.label || 'Action');
-    const label = baseLabel + _affordanceGlyphForAction(action);
     const fallbackRunDir = action.run_dir || currentDiagnosticsRunDir || null;
-    if (action.type === 'open_path') {
-        return `<button class="${cssClass}" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
-    }
-    if (action.type === 'open_validation_failure') {
-        if (!fallbackRunDir) return '';
-        return `<button class="${cssClass}" onclick="openValidationFailure(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
-    }
-    if (action.type === 'open_agent_log') {
-        if (!fallbackRunDir) return '';
-        const runDirFirstArg = `${JSON.stringify(String(fallbackRunDir))}, `;
-        const contextLiteral = JSON.stringify({
-            round_index: Number.isInteger(Number(action.round_index)) ? Number(action.round_index) : null,
-            session_role: action.session_role || null,
-        });
-        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Session Recording', 'inline', ${contextLiteral})">${label}</button>`;
-    }
-    if (action.type === 'open_review_transcript') {
-        if (!fallbackRunDir) return '';
-        const roundIndexLiteral = Number.isInteger(Number(action.round_index))
-            ? String(Number(action.round_index))
-            : 'null';
-        const roleLiteral = JSON.stringify(action.transcript_role || null);
-        return `<button class="${cssClass}" onclick="openReviewTranscript(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, { round_index: ${roundIndexLiteral}, transcript_role: ${roleLiteral} }, 'inline')">${label}</button>`;
-    }
-    if (action.type === 'open_review_artifact') {
-        if (!fallbackRunDir || !action.artifact_path || !action.artifact_type) return '';
-        const runDirLiteral = escapeAttr(JSON.stringify(String(fallbackRunDir)));
-        const pathLiteral = escapeAttr(JSON.stringify(String(action.artifact_path)));
-        const typeLiteral = escapeAttr(JSON.stringify(String(action.artifact_type)));
-        const modeLiteral = escapeAttr(JSON.stringify(String(action.render_mode || '')));
-        return `<button class="${cssClass}" onclick="openReviewArtifact(${action.issue_number}, ${runDirLiteral}, ${pathLiteral}, ${typeLiteral}, ${modeLiteral})">${label}</button>`;
-    }
-    if (action.type === 'copy_agent_log') {
-        if (!fallbackRunDir) return '';
-        return `<button class="${cssClass}" onclick="copyAgentLogAction(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))})">${label}</button>`;
-    }
-    if (action.type === 'view_claude_log') {
-        if (!fallbackRunDir) return '';
-        return `<button class="${cssClass}" onclick="viewClaudeLog(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
-    }
-    if (action.type === 'open_orchestrator_log') {
-        if (fallbackRunDir) {
-            return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
-        }
-        return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}, null, 'inline')">${label}</button>`;
-    }
-    if (action.type === 'open_review_feedback') {
-        return `<button class="${cssClass}" onclick="openReviewFeedback(${action.issue_number})">${label}</button>`;
-    }
-    if (action.type === 'open_session_diagnostics') {
-        if (fallbackRunDir) {
-            return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))})">${label}</button>`;
-        }
-        return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number})">${label}</button>`;
-    }
-    return '';
+    const command = _dialogActionToLifecycleCommand(action, fallbackRunDir);
+    if (!command) return '';
+    // Visible label = backend label + affordance glyph.  Passed unescaped as
+    // the fallback label; ``_renderLifecycleCommandButton`` escapes it once
+    // (the glyph chars are escape-safe).  The button carries the typed
+    // Command in ``data-lifecycle-command`` and dispatches through the shared
+    // ``runLifecycleCommandFromButton`` owner — no per-action inline handler.
+    const rawLabel = `${labelOverride || action.label || 'Action'}${_affordanceGlyphForAction(action)}`;
+    return _renderLifecycleCommandButton(command, rawLabel, cssClass);
 }
 
 function _renderReviewMarkdownInline(text) {
