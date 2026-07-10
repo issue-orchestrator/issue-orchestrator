@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, call, patch
 
-from issue_orchestrator.control.session_routing import launch_triage_session
+from issue_orchestrator.control.session_launch_types import LaunchResult
+from issue_orchestrator.control.session_routing import orchestrator_launch_triage_session
 from issue_orchestrator.control.startup_manager import StartupManager
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -1031,15 +1032,57 @@ class TestStartupManagerTriageRecovery:
         await startup_manager.run_startup(sample_state)
 
         (recovered,) = sample_state.pending_triage_reviews
-        launched = []
+        launcher = MagicMock()
+        launcher.launch_issue_session.return_value = LaunchResult(
+            session=None, success=False
+        )
+        launcher.session_manager.runner.discover_running_sessions.return_value = []
 
-        def track_launch(issue, *, triage_flavor=None):
-            launched.append((issue.number, triage_flavor))
-            return None
+        orchestrator_launch_triage_session(
+            recovered, sample_state, mock_config, launcher, MagicMock()
+        )
 
-        launch_triage_session(recovered, mock_config, track_launch)
+        launch_call = launcher.launch_issue_session.call_args
+        assert launch_call.args[0].number == 100
+        assert launch_call.kwargs["triage_flavor"] is TriageSessionFlavor.BATCH_REVIEW
 
-        assert launched == [(100, TriageSessionFlavor.BATCH_REVIEW)]
+    @pytest.mark.asyncio
+    async def test_recovery_ignores_closed_batch_tracking_issue(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """A COMPLETED (closed) batch tracking issue is never requeued (#6768 r4).
+
+        Successful batch completion closes the tracking issue; recovery asks
+        the host only for OPEN agent-labeled issues (the port's default state),
+        so the closed batch disappears from the recovery query.
+        """
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+
+        closed_batch = Issue(
+            number=100,
+            title="Triage Batch Review: 5 PRs pending",
+            labels=["agent:triage"],
+        )
+
+        def list_issues(labels=None, state="open", limit=100, **kwargs):
+            # Honor GitHub state filtering: the closed batch only appears in
+            # non-open queries.
+            del labels, limit, kwargs
+            return [] if state == "open" else [closed_batch]
+
+        mock_repository_host.list_issues.side_effect = list_issues
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_triage_reviews == []
+        # The recovery query must not widen to closed issues.
+        for query in mock_repository_host.list_issues.call_args_list:
+            assert query.kwargs.get("state", "open") == "open"
 
     @pytest.mark.asyncio
     async def test_recovery_skips_already_queued_triage(

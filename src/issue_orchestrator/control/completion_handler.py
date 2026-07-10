@@ -1224,11 +1224,12 @@ def get_review_machine(pr: int, issue: int, state_machines: "StateMachineManager
 def launch_triage_by_number(
     n: int,
     pending_triage_reviews: list["PendingTriageReview"],
-    active_sessions: list["Session"],
-    launch_triage_session_fn: Callable[["PendingTriageReview"], None],
+    launch_triage_session_fn: Callable[["PendingTriageReview"], Optional["Session"]],
 ) -> Optional["Session"]:
-    """Launch triage session by number - moved per method table."""
+    """Launch triage session by number - moved per method table.
+
+    Queue lifecycle (removal vs retention) is owned by the launch wrapper
+    (``orchestrator_launch_triage_session``), like the review/rework lookups.
+    """
     t = next((t for t in pending_triage_reviews if t.issue_number == n), None)
-    if t:
-        launch_triage_session_fn(t)
-    return next((s for s in active_sessions if s.issue.number == n), None)
+    return launch_triage_session_fn(t) if t else None

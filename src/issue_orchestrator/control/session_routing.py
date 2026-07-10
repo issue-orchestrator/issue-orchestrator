@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional, Protocol
+from typing import TYPE_CHECKING, Callable, Optional
 
 from ..domain.models import (
     Issue,
@@ -93,6 +93,13 @@ class PendingSessionQueues:
             queued
             for queued in self.state.pending_validation_retries
             if queued.issue_number != issue_number
+        ]
+
+    def remove_triage(self, issue_number: int) -> None:
+        self.state.pending_triage_reviews[:] = [
+            t
+            for t in self.state.pending_triage_reviews
+            if t.issue_number != issue_number
         ]
 
     def queue_batch_review(self, issue_number: int, title: str) -> TriageQueueOutcome:
@@ -267,37 +274,60 @@ def orchestrator_launch_validation_retry_session(
     return result.session if result.success else None
 
 
-class TriageSessionLaunchFn(Protocol):
-    """Issue-session launcher that accepts a triage flavor (ADR-0031)."""
-
-    def __call__(
-        self,
-        issue: Issue,
-        *,
-        triage_flavor: TriageSessionFlavor | None = None,
-    ) -> Optional[Session]: ...
-
-
-def launch_triage_session(
+def orchestrator_launch_triage_session(
     triage: PendingTriageReview,
+    state: "OrchestratorState",
     config: Config,
-    launch_session_fn: TriageSessionLaunchFn,
-) -> None:
-    """Launch a queued triage session with the flavor recorded at queue time.
+    session_launcher: SessionLauncher,
+    session_restorer: "SessionRestorer",
+) -> Optional[Session]:
+    """Launch a queued triage session and update orchestrator queues.
 
     The pending-triage queue carries BOTH variants — threshold-created batch
     tracking issues and failure investigations — and the planner launches them
     through this path before ordinary issue pickup. The producer boundary that
     queued the item declared its flavor; forward it verbatim (#6768 B5:
     hard-coding one flavor here made batch reviews skip manifest prep).
+
+    Queue lifecycle mirrors :func:`orchestrator_launch_review_session`
+    (#6768 round 4 — a launched item previously stayed queued and was
+    relaunched every tick): the item is removed through the owning
+    :class:`PendingSessionQueues` on success, on restore of an existing
+    terminal, and on permanent launch failure (labels-as-truth recovers a
+    dropped batch at startup; a dropped investigation is a best-effort audit).
+    It is retained ONLY when the launcher reports ``keep_queued`` — an
+    existing terminal that could not be restored yet — the one explicitly
+    retryable outcome.
     """
     agent = config.triage_review_agent
     if not agent or agent not in config.agents:
         raise ValueError(f"Invalid triage agent: {agent}")
-    launch_session_fn(
+    pending_queues = PendingSessionQueues(state)
+    result = session_launcher.launch_issue_session(
         Issue(triage.issue_number, triage.title, [agent]),
+        state.active_sessions,
         triage_flavor=triage.flavor,
     )
+    if result.success and result.session:
+        pending_queues.remove_triage(triage.issue_number)
+        append_unique_active_sessions(state.active_sessions, [result.session])
+    elif result.keep_queued:
+        restored = _restore_existing_terminal(
+            request=_ExistingTerminalRestorationRequest(
+                issue_number=triage.issue_number,
+                session_name=f"issue-{triage.issue_number}",
+                is_review=False,
+            ),
+            state=state,
+            session_launcher=session_launcher,
+            session_restorer=session_restorer,
+        )
+        if restored:
+            pending_queues.remove_triage(triage.issue_number)
+            return restored
+    else:
+        pending_queues.remove_triage(triage.issue_number)
+    return result.session if result.success else None
 
 
 def session_launcher_callback(

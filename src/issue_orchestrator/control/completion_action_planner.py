@@ -12,7 +12,7 @@ from ..domain.triage_manifest import TriageManifest
 from ..domain.triage_session import TriageAssignment, TriageSessionFlavor
 from ..infra.config import Config
 from ..ports import RepositoryHost
-from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .actions import Action, AddCommentAction, AddLabelAction, CloseIssueAction, RemoveLabelAction
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
@@ -269,11 +269,19 @@ class CompletionActionPlanner:
         processing_errors: Optional[list[str]],
         expected: ExpectedState,
     ) -> list[Action]:
-        """Generate label actions for triage session completion.
+        """Generate label/terminal actions for triage session completion.
 
         Only batch-review sessions label PRs (the manifest set they audited).
         Failure investigations audit one issue, never the global PR manifest,
-        so they must not touch manifest labels (#6768 B4).
+        so they must not touch manifest labels (#6768 B4) — and their anchor
+        IS the original failed work issue, so nothing here may close it.
+
+        A SUCCESSFUL batch review also closes its tracking issue (#6768
+        round 4): the open+agent-labeled issue is what startup recovery
+        requeues and what ``_find_existing_triage_issue`` treats as the
+        active batch, so leaving it open relaunches a finished batch after
+        restart AND suppresses all future batch creation. The close is
+        emitted after the PR labels so a mid-apply crash stays re-auditable.
         """
         actions: list[Action] = []
 
@@ -296,32 +304,43 @@ class CompletionActionPlanner:
             # record; decision actions arrive with ADR-0031 PR2.
             return actions
 
-        triage_manifest = _read_triage_manifest(session)
-        if not triage_manifest or not triage_manifest.prs:
-            return actions
-
-        # Determine which label to add based on success/failure.
-        if status == SessionStatus.COMPLETED and not _has_critical_errors(
+        succeeded = status == SessionStatus.COMPLETED and not _has_critical_errors(
             processing_errors
-        ):
-            triage_label = self.config.triage_reviewed_label or "triage-reviewed"
-            reason = "Triage completed successfully"
-        else:
-            triage_label = self.config.triage_failed_label or "triage-failed"
-            reason = "Triage session failed"
-
-        logger.info(
-            "[triage] Adding '%s' label to %d PRs",
-            triage_label,
-            len(triage_manifest.prs),
         )
 
-        for pr in triage_manifest.prs:
+        triage_manifest = _read_triage_manifest(session)
+        if triage_manifest and triage_manifest.prs:
+            if succeeded:
+                triage_label = self.config.triage_reviewed_label or "triage-reviewed"
+                reason = "Triage completed successfully"
+            else:
+                triage_label = self.config.triage_failed_label or "triage-failed"
+                reason = "Triage session failed"
+
+            logger.info(
+                "[triage] Adding '%s' label to %d PRs",
+                triage_label,
+                len(triage_manifest.prs),
+            )
+
+            for pr in triage_manifest.prs:
+                actions.append(
+                    AddLabelAction(
+                        issue_number=pr.number,
+                        label=triage_label,
+                        reason=reason,
+                        expected=expected,
+                    )
+                )
+
+        if succeeded:
+            # Terminal transition: the tracking issue stops being the active
+            # batch anchor. No comment: triage prompts promise the
+            # orchestrator posts none on the tracking issue.
             actions.append(
-                AddLabelAction(
-                    issue_number=pr.number,
-                    label=triage_label,
-                    reason=reason,
+                CloseIssueAction(
+                    issue_number=session.issue.number,
+                    reason="Batch triage review completed - closing tracking issue",
                     expected=expected,
                 )
             )

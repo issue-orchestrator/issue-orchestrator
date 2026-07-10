@@ -5,7 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
-from issue_orchestrator.control.actions import AddCommentAction, AddLabelAction, RemoveLabelAction
+from issue_orchestrator.control.actions import (
+    AddCommentAction,
+    AddLabelAction,
+    CloseIssueAction,
+    RemoveLabelAction,
+)
 from issue_orchestrator.control.completion_action_planner import (
     CompletionActionPlanner,
     critical_processing_errors,
@@ -201,6 +206,10 @@ def _triage_labels(actions: tuple[object, ...]) -> list[AddLabelAction]:
     ]
 
 
+def _close_actions(actions: tuple[object, ...]) -> list[CloseIssueAction]:
+    return [action for action in actions if isinstance(action, CloseIssueAction)]
+
+
 def test_completed_triage_session_labels_manifest_prs(tmp_path: Path) -> None:
     config = _make_triage_config()
     session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
@@ -216,6 +225,55 @@ def test_completed_triage_session_labels_manifest_prs(tmp_path: Path) -> None:
 
     assert {action.issue_number for action in _triage_labels(actions)} == {101, 102}
     assert "in-progress" in removed_labels(actions)
+
+
+def test_successful_batch_completion_closes_tracking_issue(tmp_path: Path) -> None:
+    """A finished batch must stop being the active batch anchor (#6768 r4).
+
+    The open, agent-labeled tracking issue is what startup recovery requeues
+    and what triage-fact gathering treats as the active batch; success closes
+    it, emitted AFTER the PR labels so a mid-apply crash stays re-auditable.
+    """
+    config = _make_triage_config()
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(
+        session,
+        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+    )
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    (close,) = _close_actions(actions)
+    assert close.issue_number == session.issue.number
+    last_label_index = max(
+        i for i, a in enumerate(actions) if isinstance(a, AddLabelAction)
+    )
+    assert actions.index(close) > last_label_index
+
+
+def test_successful_batch_completion_without_manifest_still_closes(
+    tmp_path: Path,
+) -> None:
+    """A clean batch with nothing to audit still terminates its tracking issue."""
+    config = _make_triage_config()
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(
+        session,
+        with_manifest=False,
+        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+    )
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert _triage_labels(actions) == []
+    (close,) = _close_actions(actions)
+    assert close.issue_number == session.issue.number
 
 
 def test_failure_investigation_triage_session_never_labels_manifest_prs(
@@ -242,10 +300,36 @@ def test_failure_investigation_triage_session_never_labels_manifest_prs(
     assert "in-progress" in removed_labels(actions)
 
 
+def test_failure_investigation_completion_preserves_source_issue(
+    tmp_path: Path,
+) -> None:
+    """An investigation's anchor IS the failed work issue: never close it and
+    never strip labels beyond the standard in-progress release (#6768 r4)."""
+    config = _make_triage_config()
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(
+        session,
+        assignment=TriageAssignment(
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=1,
+            focus_reason="Investigate: timed out",
+        ),
+    )
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert _close_actions(actions) == []
+    assert removed_labels(actions) == {"in-progress"}
+    assert added_labels(actions) == set()
+
+
 def test_triage_session_without_assignment_skips_labels_and_warns(
     tmp_path: Path, caplog
 ) -> None:
-    """Pre-upgrade sessions fail safe: no labels, PRs re-enter the next batch."""
+    """Pre-upgrade sessions fail safe: no labels, no close; PRs re-enter the next batch."""
     config = _make_triage_config()
     session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
     _write_triage_run(session, assignment=None)
@@ -256,6 +340,7 @@ def test_triage_session_without_assignment_skips_labels_and_warns(
     )
 
     assert _triage_labels(actions) == []
+    assert _close_actions(actions) == []
     assert "in-progress" in removed_labels(actions)
     assert "No triage assignment" in caplog.text
 

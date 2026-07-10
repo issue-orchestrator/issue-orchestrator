@@ -324,6 +324,39 @@ class TestFactGathererTriageFacts:
         assert result is not None
         assert result.existing_triage_issue == 100
 
+    def test_triage_facts_ignore_closed_batch_tracking_issue(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """A CLOSED batch tracking issue no longer suppresses batch creation (#6768 r4).
+
+        Successful batch completion closes the tracking issue; the existing-batch
+        finder queries state="open", so the closed batch stops matching and
+        existing_triage_issue clears, allowing the next threshold trigger.
+        """
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        closed_batch = Issue(
+            number=100,
+            title="Triage Batch Review: 5 PRs pending",
+            labels=["agent:triage"],
+        )
+
+        def list_issues(labels=None, state="open", limit=100, **kwargs):
+            # Honor GitHub state filtering: the closed batch only appears in
+            # non-open queries.
+            del labels, limit, kwargs
+            return [] if state == "open" else [closed_batch]
+
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues.side_effect = list_issues
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.existing_triage_issue is None
+
     def test_triage_facts_ignores_existing_issue_outside_filter_label(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
