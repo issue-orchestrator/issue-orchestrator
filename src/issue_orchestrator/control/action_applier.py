@@ -87,6 +87,7 @@ from .actions import (
     RecoverTerminalIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
+from .triage_issue_policy import resolve_triage_milestone_number
 
 logger = logging.getLogger(__name__)
 
@@ -1484,7 +1485,10 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     def _apply_create_triage_issue(self, action: Action) -> ActionResult:
         """Create a triage review issue.
 
-        Creates the GitHub issue via repository_host.
+        THE milestone resolution boundary (#6769 finding 4): the planned
+        intent's explicit name is resolved to a number here, immediately
+        before the issue is created — one API read per actual creation, and
+        an unresolvable configured name fails this action loudly.
         """
         assert isinstance(action, CreateTriageIssueAction)
 
@@ -1494,38 +1498,33 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             )
 
         try:
+            milestone = resolve_triage_milestone_number(
+                action.milestone, self.repository_host.list_milestones
+            )
             result = self.repository_host.create_issue(
                 title=action.title,
                 body=action.body,
                 labels=list(action.labels),
-                milestone=action.milestone,
+                milestone=milestone,
             )
 
             issue_number = result.get("number") if result else None
             if issue_number:
                 logger.info(
                     "[APPLIER] Created triage issue #%d for %d PRs (milestone=%s)",
-                    issue_number, action.pr_count, action.milestone
+                    issue_number, action.pr_count, milestone,
                 )
-                self._emit_issue_labels_changed(
-                    issue_number,
-                    list(action.labels),
-                    [],
-                )
+                self._emit_issue_labels_changed(issue_number, list(action.labels), [])
                 self.events.publish(make_trace_event(EventName.TRIAGE_ISSUE_CREATED, {
-                    "issue_number": issue_number,
-                    "pr_count": action.pr_count,
+                    "issue_number": issue_number, "pr_count": action.pr_count,
                 }))
                 return ActionResult.ok(
-                    action,
-                    issue_number=issue_number,
-                    pr_count=action.pr_count,
+                    action, issue_number=issue_number, pr_count=action.pr_count,
                 )
 
             logger.warning(
                 "[APPLIER] Triage issue creation returned None (title=%s labels=%s)",
-                action.title,
-                list(action.labels),
+                action.title, list(action.labels),
             )
             return ActionResult.fail(action, "Issue creation returned None")
 

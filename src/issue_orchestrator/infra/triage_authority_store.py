@@ -1,13 +1,16 @@
-"""SQLite-backed orchestrator-owned store for triage launch authority.
+"""SQLite adapter for the ``TriageAuthorityStore`` port.
 
 The agent-writable worktree carries copies of the triage assignment and PR
 manifest for the *agent* to read; the orchestrator must never treat those
 copies as authority (an agent can rewrite them mid-session — #6761 re-review
-finding 1). This store persists the :class:`TriageLaunchAuthority` recorded
+finding 1). This adapter persists the :class:`TriageLaunchAuthority` recorded
 at launch, keyed by session run identity, in the per-repo state directory —
 the same orchestrator-owned home as ``queue_cache.sqlite`` /
-``label_store.sqlite`` — so it survives restarts and is reachable from both
-the launch and completion seams via ``for_repo(config.repo_root)``.
+``label_store.sqlite`` — so it survives restarts. It is constructed ONCE at
+the composition root (``entrypoints/bootstrap.py``) and injected behind
+``ports/triage_authority.py`` into the launch and completion seams (#6769
+finding 2); the database is registered in ``infra/sqlite_registry.py`` for
+doctor checks, backups, and startup maintenance (#6769 finding 3).
 
 Why not the existing stores:
 
@@ -53,7 +56,7 @@ CREATE TABLE IF NOT EXISTS triage_launch_authority (
 """
 
 
-class TriageAuthorityStore:
+class SqliteTriageAuthorityStore:
     """Persists per-run triage launch authority across restarts."""
 
     def __init__(self, db_path: Path) -> None:
@@ -63,12 +66,11 @@ class TriageAuthorityStore:
         self.initialize()
 
     @classmethod
-    def for_repo(cls, repo_root: Path) -> "TriageAuthorityStore":
+    def for_repo(cls, repo_root: Path) -> "SqliteTriageAuthorityStore":
         """Store handle for a repository's orchestrator state directory.
 
-        Cheap to construct at each seam (launcher, completion processor,
-        completion action planner); SQLite serializes cross-connection
-        writes on the shared file.
+        Called only by the composition root (and adapter tests); control code
+        depends on the injected ``TriageAuthorityStore`` port instead.
         """
         return cls(state_dir(repo_root) / "triage_authority.sqlite")
 
@@ -141,3 +143,23 @@ class TriageAuthorityStore:
         if row is None:
             return None
         return TriageLaunchAuthority.from_dict(json.loads(row["authority"]))
+
+    def discard(self, *, run_id: str, session_name: str) -> None:
+        """Remove a run's authority row (retention owner; no-op if absent).
+
+        Called when the run reaches a terminal state — completion
+        finalization, or a launch that failed after recording — so authority
+        rows never outlive their session run (#6769 finding 3).
+        """
+        with self._transaction() as tx:
+            deleted = tx.execute(
+                "DELETE FROM triage_launch_authority "
+                "WHERE run_id = ? AND session_name = ?",
+                (run_id, session_name),
+            ).rowcount
+        if deleted:
+            logger.info(
+                "[triage] Discarded launch authority: run_id=%s session=%s",
+                run_id,
+                session_name,
+            )

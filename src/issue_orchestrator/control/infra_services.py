@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..ports.timeline_reader import TimelineReader
     from ..ports.timeline_store import TimelineStore
     from ..ports.timeline_writer import TimelineWriter
+    from ..ports.triage_authority import TriageAuthorityStore
     from .background_job_supervisor import BackgroundJobSupervisor
     from .label_manager import LabelManager
     from .provider_resilience import ProviderResilienceManager
@@ -50,6 +51,8 @@ class InfraServices:
     timeline_writer: "TimelineWriter"
     goal_pilot_store: "GoalPilotStore"
     attempt_store: "AttemptStore"
+    # Orchestrator-owned triage launch authority port (ADR-0031 / #6769 F2).
+    triage_authority: "TriageAuthorityStore"
     pair_registry: "PersistentExchangePairRegistry | None" = None
     turn_mailbox: "TurnMailbox | None" = None
     background_job_supervisor: "BackgroundJobSupervisor | None" = None

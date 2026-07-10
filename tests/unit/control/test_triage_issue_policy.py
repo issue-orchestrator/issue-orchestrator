@@ -3,14 +3,15 @@
 import pytest
 
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.actions import TriageMilestoneIntent
 from issue_orchestrator.control.triage_issue_policy import (
     apply_triage_priority_prefix,
     batch_review_issue_labels,
     decision_issue_labels,
     is_protected_triage_label,
     protected_triage_label_violations,
-    resolve_explicit_triage_milestone,
-    triage_issue_milestone,
+    resolve_triage_milestone_number,
+    triage_issue_milestone_intent,
 )
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import MilestoneStrategyConfig
@@ -190,28 +191,25 @@ class TestSharedComposition:
         config.triage.milestone_strategy = MilestoneStrategyConfig(
             inherit_from_issues=strategy
         )
-        milestone = triage_issue_milestone(config, [(9, "M9"), (3, "M3")])
-        assert milestone == expected
+        intent = triage_issue_milestone_intent(config, [(9, "M9"), (3, "M3")])
+        assert intent.inherited_number == expected
+        assert intent.explicit_name is None
 
-    def test_explicit_strategy_uses_resolved_number(self) -> None:
+    def test_explicit_strategy_yields_name_intent_not_a_lookup(self) -> None:
+        """The explicit strategy plans a NAME; resolution belongs to the
+        create-issue execution boundary, not planning (#6769 finding 4)."""
         config = make_config()
         config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="M5")
-        milestone = triage_issue_milestone(
-            config, [(9, "M9")], explicit_milestone_number=5
-        )
-        assert milestone == 5
+        intent = triage_issue_milestone_intent(config, [(9, "M9")])
+        assert intent == TriageMilestoneIntent(explicit_name="M5")
 
-    def test_explicit_strategy_without_resolution_fails_loudly(self) -> None:
-        """The boundary MUST resolve the name; a silent None was the dead
-        no-op this replaces (#6761 re-review finding 4)."""
-        config = make_config()
-        config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="M5")
-        with pytest.raises(ValueError, match="resolve_explicit_triage_milestone"):
-            triage_issue_milestone(config, [(9, "M9")])
+    def test_intent_rejects_carrying_both_shapes(self) -> None:
+        with pytest.raises(ValueError, match="name OR a number"):
+            TriageMilestoneIntent(explicit_name="M5", inherited_number=5)
 
 
 class TestExplicitMilestoneResolution:
-    """Name -> number resolution through the RepositoryHost boundary (F4)."""
+    """Name -> number resolution at the create-issue execution boundary (F4)."""
 
     def _milestones(self, _state: str):
         return [
@@ -219,21 +217,24 @@ class TestExplicitMilestoneResolution:
             {"number": 5, "title": "M5", "state": "closed"},
         ]
 
-    def test_resolves_configured_name(self) -> None:
-        config = make_config()
-        config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="M5")
-        assert resolve_explicit_triage_milestone(config, self._milestones) == 5
+    def test_resolves_planned_name(self) -> None:
+        intent = TriageMilestoneIntent(explicit_name="M5")
+        assert resolve_triage_milestone_number(intent, self._milestones) == 5
 
-    def test_non_explicit_strategy_resolves_to_none_without_api_call(self) -> None:
-        config = make_config()
-
+    def test_number_and_none_intents_resolve_without_api_call(self) -> None:
         def _boom(_state: str):
             raise AssertionError("list_milestones must not be called")
 
-        assert resolve_explicit_triage_milestone(config, _boom) is None
+        assert (
+            resolve_triage_milestone_number(
+                TriageMilestoneIntent(inherited_number=7), _boom
+            )
+            == 7
+        )
+        assert resolve_triage_milestone_number(TriageMilestoneIntent(), _boom) is None
 
     def test_unresolvable_name_fails_loudly(self) -> None:
-        config = make_config()
-        config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="Nope")
         with pytest.raises(ValueError, match="does not match any"):
-            resolve_explicit_triage_milestone(config, self._milestones)
+            resolve_triage_milestone_number(
+                TriageMilestoneIntent(explicit_name="Nope"), self._milestones
+            )

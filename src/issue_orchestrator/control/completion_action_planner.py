@@ -9,6 +9,7 @@ from typing import Any, Optional
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
 from ..infra.config import Config
 from ..ports import RepositoryHost
+from ..ports.triage_authority import TriageAuthorityStore
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .triage_completion import (
     generate_triage_completion_actions,
@@ -99,10 +100,12 @@ class CompletionActionPlanner:
         config: Config,
         repository_host: RepositoryHost,
         label_manager: LabelManager,
+        triage_authority: TriageAuthorityStore,
     ) -> None:
         self.config = config
         self.repository_host = repository_host
         self._lm = label_manager
+        self._triage_authority = triage_authority
 
     def _interrupted_retry_mode(self, session: Session) -> str | None:
         """Map session type to interrupted-retry mode."""
@@ -222,14 +225,16 @@ class CompletionActionPlanner:
             expected,
             completed_ok=True,
             labels=self._lm,
-            repository_host=self.repository_host,
+            triage_authority=self._triage_authority,
         )
 
     def _generate_triage_failure_actions(
         self, session: Session, expected: ExpectedState
     ) -> list[Action]:
         """Delegate batch failure/timeout terminal effects to the owner module."""
-        return generate_triage_failure_actions(self.config, session, expected)
+        return generate_triage_failure_actions(
+            self.config, session, expected, triage_authority=self._triage_authority
+        )
 
     def _generate_completed_with_critical_actions(
         self,
@@ -260,6 +265,7 @@ class CompletionActionPlanner:
                     expected,
                     processing_errors=critical_errors,
                     labels=self._lm,
+                    triage_authority=self._triage_authority,
                 )
             )
         return tuple(

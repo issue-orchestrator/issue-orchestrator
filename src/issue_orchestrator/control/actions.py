@@ -266,18 +266,51 @@ class QueueTriageAction(Action):
 
 
 @dataclass(frozen=True)
+class TriageMilestoneIntent:
+    """Configured milestone intent for an orchestrator-created triage issue.
+
+    Carried on :class:`CreateTriageIssueAction` so the explicit-strategy
+    name -> number resolution happens ONCE, at the create-issue execution
+    boundary (``action_applier._apply_create_triage_issue``), never at
+    planning or completion time (#6769 finding 4): a shadow-mode
+    ``create_issue`` proposal plans zero GitHub reads, and an unresolvable
+    configured name fails the creation loudly instead of the completion.
+
+    Exactly one shape at a time:
+    - ``explicit_name`` — ``triage.milestone_strategy.explicit``; the applier
+      resolves it against the repository's milestones and fails loudly when
+      it matches none.
+    - ``inherited_number`` — a number already known at planning time
+      (``inherit_from_issues``); no API read needed.
+    - neither — no milestone.
+    """
+
+    explicit_name: str | None = None
+    inherited_number: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.explicit_name is not None and self.inherited_number is not None:
+            raise ValueError(
+                "TriageMilestoneIntent carries a name OR a number, never both"
+            )
+
+
+@dataclass(frozen=True)
 class CreateTriageIssueAction(Action):
     """Create a triage review issue when PR threshold is met.
 
     The Planner produces this when triage_facts.pr_count >= threshold.
-    The orchestrator applies it by creating the GitHub issue.
+    The orchestrator applies it by creating the GitHub issue. Both creation
+    paths — the planner's batch tracking issue and decision-driven follow-up
+    issues — share this one action, so the applier is the single milestone
+    resolution boundary.
     """
 
     title: str = ""
     body: str = ""
     labels: tuple[str, ...] = field(default_factory=tuple)
     pr_count: int = 0
-    milestone: Optional[int] = None  # Milestone number to assign
+    milestone: TriageMilestoneIntent = field(default_factory=TriageMilestoneIntent)
     action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
 
 

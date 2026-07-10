@@ -30,7 +30,6 @@ from ..domain.triage_session import (
     TriageLaunchAuthority,
     TriageSessionFlavor,
 )
-from ..infra.triage_authority_store import TriageAuthorityStore
 from .completion_pr_collision import NoCommitsBetweenError
 from .triage_manifest_builder import TriageCandidatePolicy, TriageManifestBuilder
 
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
+    from ..ports.triage_authority import TriageAuthorityStore
     from .worktree_context import WorktreeContext
 
 logger = logging.getLogger(__name__)
@@ -134,6 +134,7 @@ def prepare_triage_session_data(
     config: "Config",
     repository_host: "RepositoryHost",
     manifest_downloader: "ManifestDownloader",
+    triage_authority: "TriageAuthorityStore",
     issue: "Issue",
     ctx: "WorktreeContext",
     triage_flavor: TriageSessionFlavor | None,
@@ -176,7 +177,7 @@ def prepare_triage_session_data(
     assignment_path = run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
     assignment.write(assignment_path)
     ctx.update_manifest({"triage_assignment": str(assignment_path)})
-    TriageAuthorityStore.for_repo(config.repo_root).record(
+    triage_authority.record(
         run_id=ctx.run.run_id,
         session_name=ctx.run.session_name,
         authority=TriageLaunchAuthority(

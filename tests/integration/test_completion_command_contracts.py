@@ -28,6 +28,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     create_starter_prompt,
@@ -460,6 +461,7 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager
         get_session_machine_fn=lambda _terminal: None,
         get_review_machine_fn=lambda _pr: None,
         session_output=FileSystemSessionOutput(),
+        triage_authority=InMemoryTriageAuthorityStore(),
     )
 
     for _ in range(3):

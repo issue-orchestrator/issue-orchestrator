@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .action_applier import ActionApplier
     from ..ports.claim_manager import ClaimManager
+    from ..ports.triage_authority import TriageAuthorityStore
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
 
@@ -183,6 +184,7 @@ class SessionLauncher:
         command_runner: CommandRunner,
         session_output: SessionOutput,
         manifest_downloader: ManifestDownloader,
+        triage_authority: "TriageAuthorityStore",
         session_exists_fn: Callable[[str], bool],
         create_session_fn: Callable[[str, str, Path, str | None], bool],
         get_issue_machine: Callable[["IssueProtocol"], Optional["IssueStateMachine"]],
@@ -206,6 +208,7 @@ class SessionLauncher:
         self._command_runner = command_runner
         self._session_output = session_output
         self._manifest_downloader = manifest_downloader
+        self._triage_authority = triage_authority
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -684,9 +687,22 @@ class SessionLauncher:
             config=self.config,
             repository_host=self.repository_host,
             manifest_downloader=self._manifest_downloader,
+            triage_authority=self._triage_authority,
             issue=issue,
             ctx=ctx,
             triage_flavor=triage_flavor,
+        )
+
+    def _discard_triage_authority_after_failed_launch(
+        self, issue: "IssueProtocol", ctx: WorktreeContext
+    ) -> None:
+        """Retention (#6769 F3): a launch that dies after recording its
+        triage launch authority must not leak the row — the run never starts,
+        so no completion seam will ever discard it."""
+        if not self._is_triage_session(issue.agent_type):
+            return
+        self._triage_authority.discard(
+            run_id=ctx.run.run_id, session_name=ctx.run.session_name
         )
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
@@ -903,6 +919,7 @@ class SessionLauncher:
                         issue_log(issue.number, "Failed to remove worktree after setup failure: %s"),
                         cleanup_error,
                     )
+                self._discard_triage_authority_after_failed_launch(issue, ctx)
                 self._release_claim_if_held(issue.number, claim)
                 return LaunchResult(None, False, f"Setup commands failed: {e}")
 
@@ -940,6 +957,7 @@ class SessionLauncher:
                 logger.info(issue_log(issue.number, "Cleaned up worktree after launch failure: %s"), worktree_path)
             except Exception as e:
                 logger.warning(issue_log(issue.number, "Failed to remove worktree after launch failure: %s"), e)
+            self._discard_triage_authority_after_failed_launch(issue, ctx)
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, "Failed to add in-progress label")
         label_time = time.time() - step_start
@@ -1037,6 +1055,7 @@ class SessionLauncher:
                     issue_key=issue.key.stable_id(),
                 ),
             ], context="launch_session_creation_failed")
+            self._discard_triage_authority_after_failed_launch(issue, ctx)
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, "Failed to create terminal session")
 

@@ -7,6 +7,7 @@ from issue_orchestrator.control.actions import (
     AddLabelAction,
     CreateTriageIssueAction,
     SurfaceTriageProposalAction,
+    TriageMilestoneIntent,
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
@@ -127,7 +128,7 @@ def test_create_issue_execute_maps_to_create_triage_issue() -> None:
     assert "(action A2; findings: none)" in planned.body
     assert "bug" in planned.labels
     assert planned.pr_count == 0
-    assert planned.milestone is None
+    assert planned.milestone == TriageMilestoneIntent()
     assert "triage" in planned.reason and "A2" in planned.reason
     assert planned.expected is EXPECTED
 
@@ -169,10 +170,11 @@ class TestDecisionIssuePolicy:
         [planned] = _plan(_decision(self._issue_action()), _config(), anchor)
 
         assert isinstance(planned, CreateTriageIssueAction)
-        assert planned.milestone == 7
+        assert planned.milestone == TriageMilestoneIntent(inherited_number=7)
 
-    def test_explicit_milestone_strategy_uses_boundary_resolved_number(self) -> None:
-        """Decision-created issues honor the explicit strategy (#6761 rr F4)."""
+    def test_explicit_milestone_strategy_plans_name_intent(self) -> None:
+        """Decision-created issues carry the explicit strategy as a NAME;
+        resolution happens once, in the create-issue applier (#6769 F4)."""
         config = _config()
         config.triage.milestone_strategy.explicit = "M5"
 
@@ -182,18 +184,10 @@ class TestDecisionIssuePolicy:
             LabelManager(config),
             anchor_issue=_anchor(),
             expected=EXPECTED,
-            explicit_milestone_number=5,
         )
 
         assert isinstance(planned, CreateTriageIssueAction)
-        assert planned.milestone == 5
-
-    def test_explicit_milestone_strategy_without_resolution_fails_loudly(self) -> None:
-        config = _config()
-        config.triage.milestone_strategy.explicit = "M5"
-
-        with pytest.raises(ValueError, match="resolve_explicit_triage_milestone"):
-            _plan(_decision(self._issue_action()), config)
+        assert planned.milestone == TriageMilestoneIntent(explicit_name="M5")
 
     def test_protected_agent_labels_fail_loudly_at_planning(self) -> None:
         """Validation upstream must have rejected these; planning never

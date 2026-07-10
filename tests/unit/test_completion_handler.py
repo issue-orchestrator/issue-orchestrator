@@ -146,6 +146,21 @@ def make_handler(
     default_session_output = Mock(spec=SessionOutput)
     default_session_output.find_run_dir.return_value = None
     # Use explicit None check - InMemoryEventSink with 0 events is falsy
+    # Triage-configured tests rendezvous with recorded authority through the
+    # SQLite adapter at config.repo_root (a tmp_path); everything else gets
+    # the in-memory port fake so no state files are written.
+    from issue_orchestrator.infra.triage_authority_store import (
+        SqliteTriageAuthorityStore,
+    )
+    from issue_orchestrator.ports.triage_authority import (
+        InMemoryTriageAuthorityStore,
+    )
+
+    triage_authority = (
+        SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        if config.triage_review_agent
+        else InMemoryTriageAuthorityStore()
+    )
     return CompletionHandler(
         config=config,
         events=events if events is not None else NullEventSink(),
@@ -154,6 +169,7 @@ def make_handler(
         get_session_machine_fn=lambda _terminal_id: session_machine,
         get_review_machine_fn=lambda _pr_number: review_machine,
         session_output=session_output if session_output is not None else default_session_output,
+        triage_authority=triage_authority,
     )
 
 
@@ -2996,10 +3012,10 @@ class TestTriageDecisionFailureTransition:
     @staticmethod
     def _record_authority(config: Config, session: Session, authority: Any) -> None:
         from issue_orchestrator.infra.triage_authority_store import (
-            TriageAuthorityStore,
+            SqliteTriageAuthorityStore,
         )
 
-        TriageAuthorityStore.for_repo(config.repo_root).record(
+        SqliteTriageAuthorityStore.for_repo(config.repo_root).record(
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
             authority=authority,
@@ -3129,3 +3145,105 @@ class TestTriageDecisionFailureTransition:
         assert {a.issue_number for a in failed_labels} == {101}
         added = {a.label for a in result.actions if isinstance(a, AddLabelAction)}
         assert "blocked-failed" in added
+
+
+# =============================================================================
+# Test: Triage authority retention at the completion finalization seam
+# =============================================================================
+
+
+class TestTriageAuthorityRetention:
+    """Completion finalization is a run's terminal seam: the recorded launch
+    authority row must be discarded once the completion is processed, for
+    success and failure alike (#6769 finding 3)."""
+
+    # Reuse the arm/plant helpers without inheriting (and re-collecting)
+    # the transition tests themselves.
+    _helpers = TestTriageDecisionFailureTransition()
+    _make_triage_session = _helpers._make_triage_session
+    _plant_assignment = _helpers._plant_assignment
+    _record_authority = staticmethod(
+        TestTriageDecisionFailureTransition._record_authority
+    )
+    TRIAGE_ERROR = TestTriageDecisionFailureTransition.TRIAGE_ERROR
+
+    def _load_authority(self, config: Config, session: Session) -> Any:
+        from issue_orchestrator.infra.triage_authority_store import (
+            SqliteTriageAuthorityStore,
+        )
+
+        return SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+
+    def _armed_investigation(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> Session:
+        from issue_orchestrator.domain.triage_session import (
+            TriageAssignment,
+            TriageLaunchAuthority,
+            TriageSessionFlavor,
+        )
+
+        session = self._make_triage_session(config, agent_config, tmp_worktree)
+        self._plant_assignment(
+            session,
+            TriageAssignment(
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                focus_issue_number=1,
+                focus_reason="Investigate: timed out",
+            ),
+        )
+        self._record_authority(
+            config,
+            session,
+            TriageLaunchAuthority(
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                anchor_issue_number=session.issue.number,
+                focus_issue_number=1,
+            ),
+        )
+        return session
+
+    def test_rejected_completion_discards_authority_row(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        session = self._armed_investigation(config, agent_config, tmp_worktree)
+        assert self._load_authority(config, session) is not None
+        handler = make_handler(config)
+
+        handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[self.TRIAGE_ERROR],
+        )
+
+        assert self._load_authority(config, session) is None
+
+    def test_failed_session_discards_authority_row(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        session = self._armed_investigation(config, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        handler.process_completion(session, SessionStatus.FAILED)
+
+        assert self._load_authority(config, session) is None
+
+    def test_publish_stage_failure_keeps_authority_row_for_retry(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Retry Publish re-enters CompletionProcessor.process for this same
+        run and re-validates the launch authority — a publish-stage failure
+        must NOT discard the row (PublishRecoveryService owns that terminal)."""
+        session = self._armed_investigation(config, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=["push_branch: Push failed: remote rejected"],
+        )
+
+        assert self._load_authority(config, session) is not None

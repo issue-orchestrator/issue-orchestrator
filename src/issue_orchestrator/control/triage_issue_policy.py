@@ -20,10 +20,12 @@ GitHub label names are case-insensitive, so every comparison in this module
 casefolds — an agent must not bypass protection (or defeat inheritance or
 dedup) by case-flipping a name.
 
-The module is pure policy: the explicit milestone NAME -> number resolution
-needs the repository host, so callers resolve at their boundary via
-:func:`resolve_explicit_triage_milestone` (passing the port method in) and
-hand the resolved number to :func:`triage_issue_milestone`.
+The module is pure policy: the milestone strategy becomes a typed
+:class:`TriageMilestoneIntent` at planning time (:func:`triage_issue_milestone_intent`),
+and the explicit NAME -> number resolution runs ONCE at the create-issue
+execution boundary (:func:`resolve_triage_milestone_number`, called by the
+action applier with ``RepositoryHost.list_milestones`` passed in) — never at
+planning or completion time (#6769 finding 4).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ import re
 from collections.abc import Callable, Collection, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Mapping
 
+from .actions import TriageMilestoneIntent
 from .label_manager import LabelManager
 
 if TYPE_CHECKING:
@@ -101,57 +104,51 @@ def apply_triage_priority_prefix(config: "Config", title: str) -> str:
     return f"[{priority}-000] {title}"
 
 
-def resolve_explicit_triage_milestone(
-    config: "Config",
+def resolve_triage_milestone_number(
+    intent: TriageMilestoneIntent,
     list_milestones: Callable[[str], Sequence[Mapping[str, Any]]],
 ) -> int | None:
-    """Resolve ``triage.milestone_strategy.explicit`` to a milestone number.
+    """Resolve a milestone intent to a concrete number at the execution boundary.
 
-    ``list_milestones`` is ``RepositoryHost.list_milestones`` passed in at the
-    boundary so this module stays port-free. Returns None when the strategy is
-    not explicit. Raises ValueError when the configured name matches no
-    repository milestone — a misconfigured strategy must fail loudly, never
-    silently create unmilestoned issues.
+    ``list_milestones`` is ``RepositoryHost.list_milestones`` passed in by the
+    action applier so this module stays port-free; it is consulted only for
+    an explicit name (one call, made only when an issue is actually being
+    created — GitHub API discipline). Raises ValueError when the configured
+    name matches no repository milestone — a misconfigured strategy must fail
+    the creation loudly, never silently create unmilestoned issues.
     """
-    name = (config.triage.milestone_strategy.explicit or "").strip()
-    if not name:
-        return None
+    if intent.explicit_name is None:
+        return intent.inherited_number
     for milestone in list_milestones("all"):
-        if str(milestone.get("title", "")).strip() == name:
+        if str(milestone.get("title", "")).strip() == intent.explicit_name:
             return int(milestone["number"])
     raise ValueError(
-        f"triage.milestone_strategy.explicit={name!r} does not match any"
-        " repository milestone; fix the configured name or remove the strategy"
+        f"triage.milestone_strategy.explicit={intent.explicit_name!r} does not"
+        " match any repository milestone; fix the configured name or remove"
+        " the strategy"
     )
 
 
-def triage_issue_milestone(
+def triage_issue_milestone_intent(
     config: "Config",
     source_milestones: Sequence[tuple[int, str]],
-    *,
-    explicit_milestone_number: int | None = None,
-) -> int | None:
-    """Compute the milestone for a triage-created issue per config strategy.
+) -> TriageMilestoneIntent:
+    """Compute the milestone INTENT for a triage-created issue per config.
 
-    When the explicit strategy is configured the caller MUST have resolved
-    the name at its boundary (``resolve_explicit_triage_milestone``); a
-    missing resolution here is a caller bug and fails loudly.
+    Pure planning policy: the explicit strategy yields a name for the
+    applier to resolve at creation time (#6769 finding 4); the inherit
+    strategy yields a number already known from the source issues; otherwise
+    no milestone.
     """
     strategy = config.triage.milestone_strategy
-    if strategy.explicit:
-        if explicit_milestone_number is None:
-            raise ValueError(
-                "triage.milestone_strategy.explicit is configured but no"
-                " resolved milestone number was supplied; resolve via"
-                " resolve_explicit_triage_milestone at the boundary"
-            )
-        return explicit_milestone_number
+    name = (strategy.explicit or "").strip()
+    if name:
+        return TriageMilestoneIntent(explicit_name=name)
     if strategy.inherit_from_issues and source_milestones:
         ordered = sorted(source_milestones, key=lambda m: m[0])
-        if strategy.inherit_from_issues == "earliest":
-            return ordered[0][0]
-        return ordered[-1][0]
-    return None
+        chosen = ordered[0] if strategy.inherit_from_issues == "earliest" else ordered[-1]
+        return TriageMilestoneIntent(inherited_number=chosen[0])
+    return TriageMilestoneIntent()
 
 
 def batch_review_issue_labels(

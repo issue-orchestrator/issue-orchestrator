@@ -1316,6 +1316,72 @@ class TestCreateTriageIssueAction:
         assert not result.success
         assert "No repository_host" in result.error
 
+    def test_create_triage_issue_without_milestone_makes_no_milestone_read(
+        self, applier, mock_repository_host
+    ):
+        """Empty/number intents never touch the milestones API (#6769 F4)."""
+        mock_repository_host.create_issue.return_value = {"number": 100}
+
+        result = applier.apply(
+            CreateTriageIssueAction(title="T", body="B", labels=(), pr_count=1)
+        )
+
+        assert result.success
+        mock_repository_host.list_milestones.assert_not_called()
+        assert mock_repository_host.create_issue.call_args.kwargs["milestone"] is None
+
+    def test_create_triage_issue_resolves_explicit_name_at_creation(
+        self, applier, mock_repository_host
+    ):
+        """THE resolution boundary: the planned name becomes a number here,
+        with exactly one list_milestones read (#6769 finding 4)."""
+        from issue_orchestrator.control.actions import TriageMilestoneIntent
+
+        mock_repository_host.list_milestones.return_value = [
+            {"number": 3, "title": "M3"},
+            {"number": 5, "title": "M5"},
+        ]
+        mock_repository_host.create_issue.return_value = {"number": 100}
+
+        result = applier.apply(
+            CreateTriageIssueAction(
+                title="T",
+                body="B",
+                labels=(),
+                pr_count=1,
+                milestone=TriageMilestoneIntent(explicit_name="M5"),
+            )
+        )
+
+        assert result.success
+        mock_repository_host.list_milestones.assert_called_once()
+        assert mock_repository_host.create_issue.call_args.kwargs["milestone"] == 5
+
+    def test_create_triage_issue_unresolvable_name_fails_loudly_without_creating(
+        self, applier, mock_repository_host
+    ):
+        """execute + unresolvable configured name -> loud applier failure;
+        the issue is never created (#6769 finding 4)."""
+        from issue_orchestrator.control.actions import TriageMilestoneIntent
+
+        mock_repository_host.list_milestones.return_value = [
+            {"number": 3, "title": "M3"},
+        ]
+
+        result = applier.apply(
+            CreateTriageIssueAction(
+                title="T",
+                body="B",
+                labels=(),
+                pr_count=1,
+                milestone=TriageMilestoneIntent(explicit_name="Nope"),
+            )
+        )
+
+        assert not result.success
+        assert "does not match any" in result.error
+        mock_repository_host.create_issue.assert_not_called()
+
 
 class TestSurfaceTriageProposalAction:
     """Tests for SURFACE_TRIAGE_PROPOSAL action (ADR-0031)."""

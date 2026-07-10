@@ -57,7 +57,7 @@ from .label_manager import LabelManager
 from .triage_issue_policy import (
     apply_triage_priority_prefix,
     decision_issue_labels,
-    triage_issue_milestone,
+    triage_issue_milestone_intent,
 )
 
 if TYPE_CHECKING:
@@ -104,7 +104,6 @@ def _concrete_actions(
     anchor_issue: Issue,
     expected: "ExpectedState",
     needs_human_label: str,
-    explicit_milestone_number: int | None,
 ) -> list[Action]:
     body = (action.body or "") + _provenance_footer(action)
     if action.action_type == "post_comment":
@@ -122,7 +121,9 @@ def _concrete_actions(
         # Config policy (triage: labels/priority/milestone strategy) is the
         # single triage_issue_policy owner, shared with the planner's batch
         # tracking issue; agent labels passed the protected-set contract
-        # check at decision validation time (#6761 finding 4).
+        # check at decision validation time (#6761 finding 4). The milestone
+        # travels as INTENT — name resolution happens in the applier at
+        # creation time, so planning makes zero GitHub reads (#6769 F4).
         anchor_milestones = (
             [(anchor_issue.milestone_number, anchor_issue.milestone or "")]
             if anchor_issue.milestone_number is not None
@@ -139,11 +140,7 @@ def _concrete_actions(
                     labels=labels,
                 ),
                 pr_count=0,
-                milestone=triage_issue_milestone(
-                    config,
-                    anchor_milestones,
-                    explicit_milestone_number=explicit_milestone_number,
-                ),
+                milestone=triage_issue_milestone_intent(config, anchor_milestones),
                 reason=f"triage decision action {action.id}: create follow-up issue",
                 expected=expected,
             )
@@ -192,7 +189,6 @@ def plan_triage_decision_actions(
     *,
     anchor_issue: Issue,
     expected: "ExpectedState",
-    explicit_milestone_number: int | None = None,
 ) -> list[Action]:
     """Plan orchestrator actions for a validated triage decision."""
     authority = config.triage.authority
@@ -236,7 +232,6 @@ def plan_triage_decision_actions(
                     anchor_issue=anchor_issue,
                     expected=expected,
                     needs_human_label=labels.needs_human,
-                    explicit_milestone_number=explicit_milestone_number,
                 )
             )
         else:

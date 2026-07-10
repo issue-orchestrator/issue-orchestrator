@@ -105,6 +105,9 @@ from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.triage_authority_store import (
+    SqliteTriageAuthorityStore,
+)
 from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.adapters.github.cache import GitHubCache
 from issue_orchestrator.execution.stack_predecessor_facts import (
@@ -480,6 +483,7 @@ def launcher_bundle(
         command_runner=mock_command_runner,
         session_output=FileSystemSessionOutput(),
         manifest_downloader=NullManifestDownloader(),
+        triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
         session_exists_fn=mock_session_exists,
         create_session_fn=mock_create_session,
         get_issue_machine=get_issue_machine,
@@ -649,11 +653,9 @@ class TestLaunchIssueSession:
         assert not (data_dir / "manifest.json").exists()
         # The orchestrator-owned launch authority is recorded outside the
         # agent-writable worktree (#6761 re-review F1).
-        from issue_orchestrator.infra.triage_authority_store import (
-            TriageAuthorityStore,
-        )
-
-        authority = TriageAuthorityStore.for_repo(sample_config.repo_root).load(
+        authority = SqliteTriageAuthorityStore.for_repo(
+            sample_config.repo_root
+        ).load(
             run_id=result.session.run_assets.run_id,
             session_name=result.session.run_assets.session_name,
         )
@@ -661,6 +663,41 @@ class TestLaunchIssueSession:
         assert authority.flavor is TriageSessionFlavor.BATCH_REVIEW
         assert authority.anchor_issue_number == 125
         assert authority.manifest_pr_numbers == ()
+
+    def test_failed_triage_launch_discards_recorded_authority(
+        self, launcher_bundle, sample_config, tmp_path
+    ):
+        """A launch that dies AFTER recording its authority must not leak
+        the row (#6769 F3): the run never starts, so no completion seam
+        would ever discard it."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+        issue = Issue(
+            number=125,
+            title="Batch Review",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+        # Force the terminal-session creation step (after triage prep) to fail.
+        launcher_bundle.create_session_override[0] = (
+            lambda _name, _cmd, _wd, _title: False
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is False
+        store = SqliteTriageAuthorityStore.for_repo(sample_config.repo_root)
+        conn_rows = store._get_connection().execute(  # noqa: SLF001
+            "SELECT run_id, session_name FROM triage_launch_authority"
+        ).fetchall()
+        assert conn_rows == [], "failed launch leaked an authority row"
 
     def test_fails_when_no_agent_type(self, session_launcher):
         """Verify fails when issue has no agent type label (line 195)."""
@@ -828,6 +865,7 @@ class TestLaunchIssueSession:
             command_runner=mock_command_runner,
             session_output=FileSystemSessionOutput(),
             manifest_downloader=NullManifestDownloader(),
+            triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
             create_session_fn=lambda name, cmd, wd, title: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
@@ -4604,6 +4642,7 @@ class TestStackRelaunchGate:
             command_runner=mock_command_runner,
             session_output=FileSystemSessionOutput(),
             manifest_downloader=NullManifestDownloader(),
+            triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
             create_session_fn=lambda name, cmd, wd, title: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),

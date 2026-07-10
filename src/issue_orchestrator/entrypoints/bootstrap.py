@@ -108,6 +108,7 @@ if TYPE_CHECKING:
         InMemoryPersistentExchangePairRegistry,
     )
     from ..ports.turn_mailbox import TurnMailbox
+    from ..ports.triage_authority import TriageAuthorityStore
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,7 @@ def _create_completion_components(
     pair_registry: "InMemoryPersistentExchangePairRegistry | None" = None,
     attempt_store: "AttemptStore | None" = None,
     turn_mailbox: "TurnMailbox | None" = None,
+    triage_authority: "TriageAuthorityStore | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -491,6 +493,7 @@ def _create_completion_components(
         review_exchange_canceller=_cancel_review_exchange,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
+        triage_authority=triage_authority,
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -551,6 +554,7 @@ def _build_publish_recovery(
     fresh_issue_reader: "FreshIssueReader",
     action_applier: "ActionApplier",
     config: Config,
+    triage_authority: "TriageAuthorityStore",
 ) -> "PublishRecoveryService":
     """Wire the "Retry publish" owner: durable locator store + dedicated runner.
 
@@ -576,6 +580,7 @@ def _build_publish_recovery(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         code_review_agent_configured=bool(config.code_review_agent),
+        triage_authority=triage_authority,
     )
 
 
@@ -841,6 +846,12 @@ def build_orchestrator(
         action_applier.pair_registry = pair_registry
         action_applier.background_job_supervisor = background_job_supervisor
 
+    # Orchestrator-owned triage launch authority: ONE durable store per
+    # process, injected behind the port into launcher/processor/planner
+    # (ADR-0031 / #6769 F2).
+    from ..infra.triage_authority_store import SqliteTriageAuthorityStore
+    triage_authority = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
@@ -849,6 +860,7 @@ def build_orchestrator(
         pair_registry=pair_registry,
         attempt_store=attempt_store,
         turn_mailbox=turn_mailbox,
+        triage_authority=triage_authority,
     )
     _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -891,6 +903,7 @@ def build_orchestrator(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         config=config,
+        triage_authority=triage_authority,
     )
 
     # Build infrastructure services bundle
@@ -917,6 +930,7 @@ def build_orchestrator(
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
+        triage_authority=triage_authority,
         pair_registry=pair_registry,
         turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
@@ -1147,6 +1161,8 @@ def build_orchestrator_for_testing(
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
     from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
     turn_mailbox = InMemoryTurnMailbox()
+    from ..infra.triage_authority_store import SqliteTriageAuthorityStore
+    triage_authority_for_testing = SqliteTriageAuthorityStore.for_repo(config.repo_root)
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor
@@ -1178,6 +1194,7 @@ def build_orchestrator_for_testing(
         review_exchange_canceller=_cancel_review_exchange_for_testing,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
+        triage_authority=triage_authority_for_testing,
     )
     _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -1224,6 +1241,7 @@ def build_orchestrator_for_testing(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         config=config,
+        triage_authority=triage_authority_for_testing,
     )
 
     # Queue cache store for testing (uses repo_root state dir)
@@ -1254,6 +1272,7 @@ def build_orchestrator_for_testing(
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
+        triage_authority=triage_authority_for_testing,
         pair_registry=pair_registry_for_testing,
         turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,

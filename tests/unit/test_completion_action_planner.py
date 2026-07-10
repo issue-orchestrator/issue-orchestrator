@@ -11,6 +11,7 @@ from issue_orchestrator.control.actions import (
     AddCommentAction,
     AddLabelAction,
     CloseIssueAction,
+    CreateTriageIssueAction,
     RemoveLabelAction,
     SurfaceTriageProposalAction,
 )
@@ -36,7 +37,10 @@ from issue_orchestrator.domain.triage_session import (
     TriageLaunchAuthority,
     TriageSessionFlavor,
 )
-from issue_orchestrator.infra.triage_authority_store import TriageAuthorityStore
+from issue_orchestrator.infra.triage_authority_store import (
+    SqliteTriageAuthorityStore,
+)
+from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import RepositoryHost
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -75,11 +79,30 @@ def make_session(
     )
 
 
-def make_planner(config: Config, *, issue_labels: list[str] | None = None) -> CompletionActionPlanner:
-    """Create a planner with a repository host that can answer label reads."""
+def make_planner(
+    config: Config,
+    *,
+    issue_labels: list[str] | None = None,
+    repository_host: RepositoryHost | None = None,
+) -> CompletionActionPlanner:
+    """Create a planner with a repository host that can answer label reads.
+
+    Triage-configured tests rendezvous with ``record_authority`` through the
+    SQLite adapter at ``config.repo_root`` (a tmp_path); everything else gets
+    the in-memory port fake so no state files are written.
+    """
     issue = SimpleNamespace(labels=issue_labels or [])
-    repository_host = cast(RepositoryHost, SimpleNamespace(get_issue=lambda _number: issue))
-    return CompletionActionPlanner(config, repository_host, LabelManager(config))
+    repository_host = repository_host or cast(
+        RepositoryHost, SimpleNamespace(get_issue=lambda _number: issue)
+    )
+    triage_authority = (
+        SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        if config.triage_review_agent
+        else InMemoryTriageAuthorityStore()
+    )
+    return CompletionActionPlanner(
+        config, repository_host, LabelManager(config), triage_authority
+    )
 
 
 def added_labels(actions: tuple[object, ...]) -> set[str]:
@@ -177,7 +200,7 @@ def record_authority(
     config: Config, session: Session, authority: TriageLaunchAuthority
 ) -> None:
     """Persist the orchestrator-owned launch authority for a session run."""
-    TriageAuthorityStore.for_repo(config.repo_root).record(
+    SqliteTriageAuthorityStore.for_repo(config.repo_root).record(
         run_id=session.run_assets.run_id,
         session_name=session.run_assets.session_name,
         authority=authority,
@@ -869,6 +892,7 @@ class TestLaunchScopeTamperResistance:
 
         error = triage_decision_processing_error(
             config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
             run_dir=session.run_dir,
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
@@ -898,6 +922,7 @@ class TestLaunchScopeTamperResistance:
 
         error = triage_decision_processing_error(
             config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
             run_dir=session.run_dir,
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
@@ -924,6 +949,7 @@ class TestLaunchScopeTamperResistance:
 
         error = triage_decision_processing_error(
             config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
             run_dir=session.run_dir,
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
@@ -953,6 +979,7 @@ class TestLaunchScopeTamperResistance:
 
         error = triage_decision_processing_error(
             config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
             run_dir=session.run_dir,
             run_id=session.run_assets.run_id,
             session_name=session.run_assets.session_name,
@@ -1091,3 +1118,108 @@ def test_create_pr_error_is_downgraded_when_pr_exists(caplog) -> None:
     assert critical == []
     assert downgraded == [f"{ERROR_PREFIX_CREATE_PR}: 422 already exists"]
     assert "Ignoring non-blocking create_pr processing errors" in caplog.text
+
+
+class TestMilestoneResolutionBoundary:
+    """The completion seam plans milestone INTENT only (#6769 finding 4).
+
+    Under ``create_issue: propose`` (shadow) the decision must complete with
+    ZERO GitHub reads — the reviewer reproduced a ``list_milestones`` lookup
+    failure failing the completion for an issue that would never be created.
+    Under execute, the name still travels as intent; the applier resolves it.
+    """
+
+    def _plant_pair_with_create_issue(self, session: Session) -> None:
+        data_dir = session.run_dir / "triage-data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "triage-decision.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "summary": "One systemic pattern found.",
+                    "findings": [
+                        {
+                            "id": "T1",
+                            "title": "Flaky CI",
+                            "classification": "infra",
+                            "evidence": ["orchestrator log lines 10-20"],
+                        }
+                    ],
+                    "proposed_actions": [
+                        {
+                            "id": "A1",
+                            "action_type": "post_comment",
+                            "target_number": 1,
+                            "body": "Diagnosis for #1: flaky CI.",
+                            "finding_ids": ["T1"],
+                        },
+                        {
+                            "id": "A2",
+                            "action_type": "create_issue",
+                            "title": "Stabilize CI runner",
+                            "body": "Runner disconnects mid-build.",
+                            "labels": ["bug"],
+                            "finding_ids": ["T1"],
+                        },
+                    ],
+                }
+            )
+        )
+        (data_dir / "triage-report.md").write_text(
+            "# Report\n\nFinding T1: flaky CI.\n\nProposals: A1, A2.\n"
+        )
+
+    def _completed_actions(self, config: Config, session: Session, host) -> tuple:
+        return make_planner(
+            config, repository_host=cast(RepositoryHost, host)
+        ).generate_completion_actions(session, SessionStatus.COMPLETED)
+
+    def test_shadow_create_issue_with_explicit_milestone_makes_zero_reads(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        config = make_triage_config(tmp_path)
+        config.triage.milestone_strategy.explicit = "M5"
+        config.triage.authority.create_issue = "propose"
+        session = make_triage_session(tmp_path)
+        arm_investigation_session(config, session)
+        self._plant_pair_with_create_issue(session)
+        host = MagicMock()
+
+        actions = self._completed_actions(config, session, host)
+
+        host.list_milestones.assert_not_called()
+        shadow = [
+            action
+            for action in actions
+            if isinstance(action, SurfaceTriageProposalAction)
+            and action.proposal_type == "create_issue"
+        ]
+        assert len(shadow) == 1 and shadow[0].mode == "shadow"
+        assert not any(
+            isinstance(action, CreateTriageIssueAction) for action in actions
+        )
+
+    def test_execute_create_issue_plans_name_intent_without_reads(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import MagicMock
+
+        from issue_orchestrator.control.actions import TriageMilestoneIntent
+
+        config = make_triage_config(tmp_path)
+        config.triage.milestone_strategy.explicit = "M5"
+        assert config.triage.authority.mode_for("create_issue") == "execute"
+        session = make_triage_session(tmp_path)
+        arm_investigation_session(config, session)
+        self._plant_pair_with_create_issue(session)
+        host = MagicMock()
+
+        actions = self._completed_actions(config, session, host)
+
+        host.list_milestones.assert_not_called()
+        [create] = [
+            action for action in actions if isinstance(action, CreateTriageIssueAction)
+        ]
+        assert create.milestone == TriageMilestoneIntent(explicit_name="M5")

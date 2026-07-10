@@ -78,7 +78,7 @@ from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
     apply_triage_priority_prefix,
     batch_review_issue_labels,
-    triage_issue_milestone,
+    triage_issue_milestone_intent,
 )
 
 logger = logging.getLogger(__name__)
@@ -596,11 +596,9 @@ class Planner:
 
         title, body = self._build_triage_issue_content(facts)
         labels = batch_review_issue_labels(self.config, source_labels=facts.source_labels)
-        milestone = triage_issue_milestone(
-            self.config,
-            facts.source_milestones,
-            explicit_milestone_number=facts.explicit_milestone_number,
-        )
+        # Milestone travels as INTENT; the applier resolves an explicit name
+        # at the create-issue execution boundary (#6769 finding 4).
+        milestone = triage_issue_milestone_intent(self.config, facts.source_milestones)
 
         logger.info("Planner: creating triage issue for %d PRs (labels=%s, milestone=%s)", facts.pr_count, labels, milestone)
         return CreateTriageIssueAction(

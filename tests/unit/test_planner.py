@@ -1347,13 +1347,14 @@ class TestPlanTriageIssueCreation:
         assert "triage-reviewed" in body
 
     def test_triage_issue_explicit_milestone_applied(self):
-        """Explicit milestone strategy reaches the created issue (#6761 rr F4).
+        """Explicit milestone strategy travels as a NAME intent (#6769 F4).
 
-        The name->number resolution happens at the fact-gathering boundary;
-        the planner consumes the resolved number from TriageFacts.
+        The planner plans the configured name; the create-issue applier is
+        the single name->number resolution boundary, so planning makes zero
+        milestone API reads.
         """
         from issue_orchestrator.domain.models import TriageFacts
-        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.actions import ActionType, TriageMilestoneIntent
         from issue_orchestrator.infra.config import MilestoneStrategyConfig, TriageConfig
 
         config = make_config(
@@ -1373,14 +1374,13 @@ class TestPlanTriageIssueCreation:
             existing_triage_issue=None,
             watch_label="code-reviewed",
             prs=((1, "PR 1"),),
-            explicit_milestone_number=5,
         )
 
         plan = planner.plan(make_snapshot(triage_facts=triage_facts))
 
         create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
         assert len(create_actions) == 1
-        assert create_actions[0].milestone == 5
+        assert create_actions[0].milestone == TriageMilestoneIntent(explicit_name="M5")
 
     def test_triage_issue_inherits_labels_from_source(self):
         """Planner inherits labels from source issues based on triage config."""
@@ -1460,8 +1460,10 @@ class TestPlanTriageIssueCreation:
         assert len(create_actions) == 1
         action = create_actions[0]
 
-        # Should pick highest milestone number (3 = M3)
-        assert action.milestone == 3
+        # Should pick highest milestone number (3 = M3) — known at planning
+        # time, so the intent carries the number directly.
+        assert action.milestone.inherited_number == 3
+        assert action.milestone.explicit_name is None
 
     def test_triage_issue_inherits_milestone_earliest(self):
         """Planner picks earliest milestone from source issues."""
@@ -1497,7 +1499,8 @@ class TestPlanTriageIssueCreation:
         action = create_actions[0]
 
         # Should pick lowest milestone number (1 = M1)
-        assert action.milestone == 1
+        assert action.milestone.inherited_number == 1
+        assert action.milestone.explicit_name is None
 
 
 class TestPlanDiscoveredReworks:

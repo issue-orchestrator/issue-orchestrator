@@ -19,11 +19,13 @@ Policy summary:
   manifest labels (#6768 B4).
 * Every COMPLETED triage session (either flavor) must produce a valid
   decision artifact pair — a missing/invalid pair is a contract violation.
-  The authoritative classification runs in the completion processing path
-  (``triage_decision_processing_error``, called by ``completion_processor``
-  BEFORE status recording) so the session's history outcome is FAILED, not
-  a quiet success; the action planner re-reads the same validation for its
-  planning effects (#6761 finding 3).
+  The authoritative classification runs in the completion processing path's
+  PRE-ACTION policy phase (``triage_decision_processing_error``, called by
+  ``completion_processor`` before any requested push/PR/comment executes —
+  #6769 finding 1) so a rejected completion produces zero GitHub effects and
+  the session's history outcome is FAILED, not a quiet success; the action
+  planner re-reads the same validation for its planning effects (#6761
+  finding 3).
 * Decision proposals may only target the session's immutable launch scope:
   a failure investigation targets its focus issue only; a batch review
   targets manifest PRs plus the anchor tracking issue
@@ -46,7 +48,6 @@ from typing import TYPE_CHECKING
 from ..domain.models import Session
 from ..domain.triage_manifest import TriageManifest
 from ..domain.triage_session import TriageLaunchAuthority, TriageSessionFlavor
-from ..infra.triage_authority_store import TriageAuthorityStore
 from .actions import (
     Action,
     AddCommentAction,
@@ -59,6 +60,7 @@ from .completion_types import (
     ERROR_PREFIX_TRIAGE_DECISION,
 )
 from .label_manager import LabelManager
+from .publish_recovery import is_publish_failure
 from .triage_decision_actions import (
     plan_triage_decision_actions,
     plan_triage_rejection_action,
@@ -68,16 +70,13 @@ from .triage_decision_loader import (
     TriageDecisionLoadFailure,
     load_triage_artifact_pair_for_run,
 )
-from .triage_issue_policy import (
-    protected_triage_label_violations,
-    resolve_explicit_triage_milestone,
-)
+from .triage_issue_policy import protected_triage_label_violations
 from .triage_session_policy import is_triage_session, read_triage_assignment
 
 if TYPE_CHECKING:
     from ..domain.triage_artifacts import TriageDecision
     from ..infra.config import Config
-    from ..ports import RepositoryHost
+    from ..ports.triage_authority import TriageAuthorityStore
     from .reconciliation import ExpectedState
 
 logger = logging.getLogger(__name__)
@@ -133,7 +132,7 @@ def read_triage_manifest(run_dir: Path) -> TriageManifest | None:
 
 
 def resolve_triage_launch_authority(
-    config: "Config",
+    triage_authority: "TriageAuthorityStore",
     *,
     run_dir: Path,
     run_id: str,
@@ -147,9 +146,7 @@ def resolve_triage_launch_authority(
     or a manifest whose PR set diverges from the recorded set is tamper
     evidence (#6761 re-review finding 1) — callers must fail the session.
     """
-    authority = TriageAuthorityStore.for_repo(config.repo_root).load(
-        run_id=run_id, session_name=session_name
-    )
+    authority = triage_authority.load(run_id=run_id, session_name=session_name)
     if authority is None:
         return None, (
             "no orchestrator launch-authority record for run"
@@ -280,20 +277,24 @@ def load_validated_triage_pair(
 def triage_decision_processing_error(
     config: "Config",
     *,
+    triage_authority: "TriageAuthorityStore",
     run_dir: Path,
     run_id: str,
     session_name: str,
 ) -> str | None:
     """Authoritative scope + pair validation for a COMPLETED triage session.
 
-    Called from the completion processing path BEFORE status recording. A
-    missing/tampered launch authority (#6761 re-review F1) or a
-    missing/rejected artifact pair (#6761 F3) returns a tagged processing
-    error; ``critical_processing_errors`` classifies it critical so history
-    records FAILED and the failure labeling path fires.
+    Called from the completion processing path's PRE-ACTION policy phase —
+    before the completion record is preserved and before ANY requested action
+    executes (#6769 finding 1). A missing/tampered launch authority (#6761
+    re-review F1) or a missing/rejected artifact pair (#6761 F3) returns a
+    tagged processing error; the processor rejects the completion outright
+    (zero push/PR/comment calls) and ``critical_processing_errors``
+    classifies the error critical so history records FAILED and the failure
+    labeling path fires.
     """
     authority, tamper = resolve_triage_launch_authority(
-        config, run_dir=run_dir, run_id=run_id, session_name=session_name
+        triage_authority, run_dir=run_dir, run_id=run_id, session_name=session_name
     )
     if authority is None:
         return f"{ERROR_PREFIX_TRIAGE_AUTHORITY}: missing_authority: {tamper}"
@@ -332,11 +333,43 @@ def _split_triage_decision_error(processing_errors: list[str]) -> tuple[str, str
 
 
 def _resolve_launch_authority_for_session(
-    config: "Config", session: Session
+    triage_authority: "TriageAuthorityStore", session: Session
 ) -> tuple[TriageLaunchAuthority | None, str | None]:
     return resolve_triage_launch_authority(
-        config,
+        triage_authority,
         run_dir=session.run_dir,
+        run_id=session.run_assets.run_id,
+        session_name=session.run_assets.session_name,
+    )
+
+
+def discard_triage_authority_after_completion(
+    config: "Config",
+    triage_authority: "TriageAuthorityStore",
+    session: Session,
+    *,
+    processing_errors: list[str] | None,
+) -> None:
+    """Retention owner (#6769 F3): drop the run's authority row at the end.
+
+    Called from completion finalization for every terminal status. The row
+    is keyed by run identity, so a relaunch (new run) records a fresh row at
+    launch, and a completed/failed/rejected run leaves nothing behind. Runs
+    AFTER completion actions are planned — every authority read happens
+    during planning.
+
+    Exception: a publish-stage failure (push/create_pr/publish_blocked)
+    records Retry-Publish locators, and the retry re-enters
+    ``CompletionProcessor.process`` for this same run — which re-validates
+    the launch authority. The row is retained then;
+    ``PublishRecoveryService`` discards it at the retry's own terminal
+    (success finalization or issue abandonment).
+    """
+    if not is_triage_session(config.triage_review_agent, session.issue.agent_type):
+        return
+    if is_publish_failure(processing_errors):
+        return
+    triage_authority.discard(
         run_id=session.run_assets.run_id,
         session_name=session.run_assets.session_name,
     )
@@ -386,21 +419,23 @@ def generate_triage_completion_actions(
     *,
     completed_ok: bool,
     labels: LabelManager,
-    repository_host: "RepositoryHost | None" = None,
+    triage_authority: "TriageAuthorityStore",
 ) -> list[Action]:
     """Plan all completion effects for a triage session (see module docstring).
 
-    ``repository_host`` resolves ``triage.milestone_strategy.explicit`` at
-    this boundary when a decision creates issues; the planner always passes
-    it (None is tolerated only for configs without the explicit strategy —
-    ``triage_issue_milestone`` fails loudly otherwise).
+    Pure planning — no GitHub reads. ``triage.milestone_strategy.explicit``
+    travels as intent on :class:`CreateTriageIssueAction` and is resolved at
+    the create-issue execution boundary (#6769 finding 4), so a shadow-mode
+    ``create_issue`` proposal plans zero API calls.
     """
     actions: list[Action] = []
 
     if not is_triage_session(config.triage_review_agent, session.issue.agent_type):
         return actions
 
-    authority, tamper = _resolve_launch_authority_for_session(config, session)
+    authority, tamper = _resolve_launch_authority_for_session(
+        triage_authority, session
+    )
     if authority is None or tamper is not None:
         # Belt-and-braces: the processing path classifies this critical
         # BEFORE status recording, so completions normally take the failure
@@ -446,9 +481,6 @@ def generate_triage_completion_actions(
                 labels,
                 anchor_issue=session.issue,
                 expected=expected,
-                explicit_milestone_number=_explicit_milestone_for_decision(
-                    config, load_result.decision, repository_host
-                ),
             )
         )
     else:
@@ -486,32 +518,6 @@ def generate_triage_completion_actions(
     return actions
 
 
-def _explicit_milestone_for_decision(
-    config: "Config",
-    decision: "TriageDecision",
-    repository_host: "RepositoryHost | None",
-) -> int | None:
-    """Resolve the explicit milestone strategy at this boundary when needed.
-
-    One ``list_milestones`` call, made only when the strategy is explicit AND
-    the decision actually creates issues (GitHub API discipline).
-    """
-    if not config.triage.milestone_strategy.explicit:
-        return None
-    if not any(
-        action.action_type == "create_issue" for action in decision.proposed_actions
-    ):
-        return None
-    if repository_host is None:
-        raise ValueError(
-            "triage.milestone_strategy.explicit requires a repository_host to"
-            " resolve the milestone name at the completion boundary"
-        )
-    return resolve_explicit_triage_milestone(
-        config, repository_host.list_milestones
-    )
-
-
 def generate_triage_decision_failure_actions(
     config: "Config",
     session: Session,
@@ -519,6 +525,7 @@ def generate_triage_decision_failure_actions(
     *,
     processing_errors: list[str],
     labels: LabelManager,
+    triage_authority: "TriageAuthorityStore",
 ) -> list[Action]:
     """Completion effects when a COMPLETED triage session was rejected.
 
@@ -535,7 +542,9 @@ def generate_triage_decision_failure_actions(
     """
     failure, detail = _split_triage_decision_error(processing_errors)
     actions: list[Action] = []
-    authority, _tamper = _resolve_launch_authority_for_session(config, session)
+    authority, _tamper = _resolve_launch_authority_for_session(
+        triage_authority, session
+    )
     if (
         authority is not None
         and authority.flavor is TriageSessionFlavor.BATCH_REVIEW
@@ -589,6 +598,8 @@ def generate_triage_failure_actions(
     config: "Config",
     session: Session,
     expected: "ExpectedState",
+    *,
+    triage_authority: "TriageAuthorityStore",
 ) -> list[Action]:
     """Batch FAILED/TIMED_OUT terminal effects (#6768 round 5).
 
@@ -604,7 +615,9 @@ def generate_triage_failure_actions(
     """
     if not is_triage_session(config.triage_review_agent, session.issue.agent_type):
         return []
-    authority, _tamper = _resolve_launch_authority_for_session(config, session)
+    authority, _tamper = _resolve_launch_authority_for_session(
+        triage_authority, session
+    )
     if authority is None:
         logger.warning(
             "[triage] No launch authority for session %s; "
