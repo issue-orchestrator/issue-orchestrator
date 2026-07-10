@@ -44,6 +44,7 @@ from ..domain.models import (
     PendingValidationRetry,
     SessionHistoryEntry,
     Session,
+    TriageSessionFlavor,
     ORCHESTRATOR_PR_MARKER,
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
@@ -705,11 +706,10 @@ class StartupManager:
                 print(f"  triage issue #{triage_issue.number}: Already queued")
                 continue
 
+            # Flavor-safe as BATCH_REVIEW: only threshold-created batch tracking
+            # issues carry the triage agent label (#6768 B5).
             state.pending_triage_reviews.append(
-                PendingTriageReview(
-                    issue_number=triage_issue.number,
-                    title=triage_issue.title,
-                )
+                PendingTriageReview(triage_issue.number, triage_issue.title, flavor=TriageSessionFlavor.BATCH_REVIEW)
             )
             print(f"  triage issue #{triage_issue.number}: Queued ({triage_issue.title})")
 

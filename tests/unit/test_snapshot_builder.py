@@ -185,8 +185,13 @@ class TestIdleStateCalculation:
     def test_not_idle_when_pending_triage_reviews_exist(self, builder, mock_repository_host):
         """Having pending triage reviews means not idle."""
         from issue_orchestrator.domain.models import PendingTriageReview
+        from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 
-        triage = PendingTriageReview(issue_number=999, title="Triage review")
+        triage = PendingTriageReview(
+            issue_number=999,
+            title="Triage review",
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+        )
         state = OrchestratorState(pending_triage_reviews=[triage])
 
         snapshot = builder.build_snapshot(state=state, snapshot_id=1, last_tick_id=None)

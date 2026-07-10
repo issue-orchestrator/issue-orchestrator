@@ -75,6 +75,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports import TraceEvent
@@ -1873,10 +1874,31 @@ class TestUpdateStateAfterAction:
         # noqa: SLF001 - Testing state mutation behavior of private method
         support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
-        # Should have added to pending_triage_reviews
+        # Should have added to pending_triage_reviews as a batch review:
+        # threshold-created tracking issues audit the PR manifest (#6768 B5).
         assert len(support_with_state.state.pending_triage_reviews) == 1
         triage = support_with_state.state.pending_triage_reviews[0]
         assert triage.issue_number == 999
+        assert triage.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_queue_triage_adds_failure_investigation(self, support_with_state):
+        """QUEUE_TRIAGE queues a failure investigation, not a batch review (#6768 B5)."""
+        from issue_orchestrator.control.actions import QueueTriageAction
+
+        action = QueueTriageAction(
+            issue_number=42,
+            title="Investigate: Test issue (failed)",
+            reason="Session failed with status 'failed'",
+        )
+        result = MagicMock(success=True, details={})
+
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert len(support_with_state.state.pending_triage_reviews) == 1
+        triage = support_with_state.state.pending_triage_reviews[0]
+        assert triage.issue_number == 42
+        assert triage.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
 
 
 # =============================================================================

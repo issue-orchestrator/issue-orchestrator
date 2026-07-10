@@ -47,6 +47,7 @@ from issue_orchestrator.domain.models import (
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -205,7 +206,9 @@ class TestProviderResilienceLabels:
             rework_cycle=1,
             issue_number=2,
         )
-        pending_triage = PendingTriageReview(issue_number=3, title="Triage 3")
+        pending_triage = PendingTriageReview(
+            issue_number=3, title="Triage 3", flavor=TriageSessionFlavor.BATCH_REVIEW
+        )
 
         snapshot = make_snapshot(
             issues=[issue1, issue2, issue3],
@@ -2038,6 +2041,7 @@ class TestPlanDiscoveredFailures:
         pending_triage = PendingTriageReview(
             issue_number=42,
             title="Already queued",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
         )
 
         snapshot = make_snapshot(
@@ -2272,7 +2276,11 @@ class TestActionPriority:
         snapshot = make_snapshot(
             pending_reworks=[pending_rework],
             pending_triage=[
-                PendingTriageReview(issue_number=2, title="Investigate failure"),
+                PendingTriageReview(
+                    issue_number=2,
+                    title="Investigate failure",
+                    flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                ),
             ],
         )
 
@@ -3013,7 +3021,9 @@ class TestSnapshotFromState:
         rework = PendingRework(issue_key=FakeIssueKey(name="2"), agent_type="agent:dev", rework_cycle=1)
         state.pending_reworks = [rework]
 
-        triage = PendingTriageReview(issue_number=3, title="Triage")
+        triage = PendingTriageReview(
+            issue_number=3, title="Triage", flavor=TriageSessionFlavor.BATCH_REVIEW
+        )
         state.pending_triage_reviews = [triage]
         validation_retry = PendingValidationRetry(
             issue_number=4,
@@ -3177,7 +3187,11 @@ class TestMultiplePendingTypesInteraction:
             branch_name="issue-100",
             _issue_number=100,
         )
-        pending_triage = PendingTriageReview(issue_number=101, title="Investigate")
+        pending_triage = PendingTriageReview(
+            issue_number=101,
+            title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        )
 
         snapshot = make_snapshot(
             issues=[make_issue(100), make_issue(1), make_issue(2)],
@@ -3235,7 +3249,11 @@ class TestMultiplePendingTypesInteraction:
             agent_type="agent:dev",
             rework_cycle=1,
         )
-        pending_triage = PendingTriageReview(issue_number=3, title="Investigate")
+        pending_triage = PendingTriageReview(
+            issue_number=3,
+            title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        )
 
         planner = Planner(
             config=config,

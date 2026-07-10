@@ -18,6 +18,7 @@ from issue_orchestrator.control.workflows.triage_workflow import (
 )
 from issue_orchestrator.domain.models import PendingReview, PendingRework, PendingTriageReview
 from issue_orchestrator.domain.issue_key import FakeIssueKey
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.ports import NullEventSink, TraceEvent
 
 
@@ -57,11 +58,16 @@ def make_pending_rework(issue_number: int, pr_number: int = None, rework_cycle: 
     )
 
 
-def make_pending_triage(issue_number: int, title: str = "Test") -> PendingTriageReview:
-    """Create a PendingTriageReview for testing."""
+def make_pending_triage(
+    issue_number: int,
+    title: str = "Test",
+    flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW,
+) -> PendingTriageReview:
+    """Create a PendingTriageReview for testing (workflow logic is flavor-agnostic)."""
     return PendingTriageReview(
         issue_number=issue_number,
         title=title,
+        flavor=flavor,
     )
 
 

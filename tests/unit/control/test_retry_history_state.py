@@ -27,6 +27,7 @@ from issue_orchestrator.domain.models import (
     SessionHistoryEntry,
     TaskKind,
 )
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 
 
 def _history_entry(issue_number: int) -> SessionHistoryEntry:
@@ -294,8 +295,16 @@ def _seeded_state_for_contract(target: int, other: int) -> OrchestratorState:
             ),
         ],
         pending_triage_reviews=[
-            PendingTriageReview(issue_number=target, title=f"Triage {target}"),
-            PendingTriageReview(issue_number=other, title=f"Triage {other}"),
+            PendingTriageReview(
+                issue_number=target,
+                title=f"Triage {target}",
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            ),
+            PendingTriageReview(
+                issue_number=other,
+                title=f"Triage {other}",
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            ),
         ],
         pending_validation_retries=[
             PendingValidationRetry(

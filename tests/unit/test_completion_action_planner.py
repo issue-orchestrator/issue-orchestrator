@@ -159,15 +159,23 @@ def _make_triage_config() -> Config:
 
 
 def _write_triage_run(
-    tmp_path: Path,
+    session: Session,
     *,
     with_manifest: bool = True,
     assignment: TriageAssignment | None = None,
+    run_dir: Path | None = None,
 ) -> Path:
-    """Write a session run dir with optional triage manifest and assignment."""
-    run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
-    run_dir.mkdir(parents=True)
-    run_manifest: dict[str, str] = {}
+    """Plant triage artifacts in a run dir (defaults to the session's own run).
+
+    Passing ``run_dir`` writes into a different (sibling) run directory — the
+    stale-run scenario the planner must ignore (#6768 B6).
+    """
+    target = run_dir if run_dir is not None else session.run_dir
+    target.mkdir(parents=True, exist_ok=True)
+    run_manifest_path = target / "manifest.json"
+    run_manifest: dict[str, object] = (
+        json.loads(run_manifest_path.read_text()) if run_manifest_path.exists() else {}
+    )
     if with_manifest:
         manifest = TriageManifest(
             prs=[
@@ -175,15 +183,15 @@ def _write_triage_run(
                 PRToReview(number=102, title="PR 102", url="https://example/pr/102", branch="b2"),
             ]
         )
-        manifest_path = tmp_path / "triage-manifest.json"
+        manifest_path = target / "triage-manifest.json"
         manifest.write(manifest_path)
         run_manifest["triage_manifest"] = str(manifest_path)
     if assignment is not None:
-        assignment_path = run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        assignment_path = target / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
         assignment.write(assignment_path)
         run_manifest["triage_assignment"] = str(assignment_path)
-    (run_dir / "manifest.json").write_text(json.dumps(run_manifest))
-    return run_dir
+    run_manifest_path.write_text(json.dumps(run_manifest))
+    return target
 
 
 def _triage_labels(actions: tuple[object, ...]) -> list[AddLabelAction]:
@@ -197,7 +205,7 @@ def test_completed_triage_session_labels_manifest_prs(tmp_path: Path) -> None:
     config = _make_triage_config()
     session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
     _write_triage_run(
-        tmp_path,
+        session,
         assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
     )
 
@@ -217,7 +225,7 @@ def test_failure_investigation_triage_session_never_labels_manifest_prs(
     config = _make_triage_config()
     session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
     _write_triage_run(
-        tmp_path,
+        session,
         assignment=TriageAssignment(
             flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
             focus_issue_number=1,
@@ -240,7 +248,35 @@ def test_triage_session_without_assignment_skips_labels_and_warns(
     """Pre-upgrade sessions fail safe: no labels, PRs re-enter the next batch."""
     config = _make_triage_config()
     session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
-    _write_triage_run(tmp_path, assignment=None)
+    _write_triage_run(session, assignment=None)
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert _triage_labels(actions) == []
+    assert "in-progress" in removed_labels(actions)
+    assert "No triage assignment" in caplog.text
+
+
+def test_triage_artifacts_in_sibling_run_dir_are_ignored(
+    tmp_path: Path, caplog
+) -> None:
+    """Stale artifacts from another run must not label PRs (#6768 B6).
+
+    A batch assignment + manifest planted only in a sibling run directory
+    simulate a prior run's leftovers; the planner must consult exclusively the
+    session's typed run_dir, find no assignment there, warn, and skip labels.
+    """
+    config = _make_triage_config()
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    sibling_run_dir = session.run_dir.parent / "20260101T000000000000Z__issue-1"
+    _write_triage_run(
+        session,
+        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+        run_dir=sibling_run_dir,
+    )
 
     actions = make_planner(config).generate_completion_actions(
         session,

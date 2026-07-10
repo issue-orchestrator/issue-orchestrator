@@ -14,6 +14,7 @@ from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
+from .triage_session import TriageSessionFlavor  # re-exported for callers
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue as IssueProtocol
@@ -1507,13 +1508,21 @@ class PendingRework:
 
 @dataclass
 class PendingTriageReview:
-    """A triage batch review issue queued for processing.
+    """A triage session queued for processing (ADR-0031).
 
     Triage reviews are treated as reviews (not work items) so they get
     processed with priority, alongside pending_reviews and pending_reworks.
+
+    The queue holds BOTH triage variants: threshold-created batch tracking
+    issues (audit the PR manifest) and failure investigations (diagnose one
+    failed issue). ``flavor`` is required so every producer boundary declares
+    which variant it is queueing; the launch path forwards it verbatim
+    (#6768 B5 — collapsing both to one flavor made batch reviews skip
+    manifest prep and audit nothing).
     """
     issue_number: int  # The triage review GitHub issue number
     title: str  # Issue title (for display)
+    flavor: TriageSessionFlavor  # Which triage variant this queue entry launches as
 
 
 @dataclass

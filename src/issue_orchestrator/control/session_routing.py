@@ -230,17 +230,20 @@ def launch_triage_session(
     config: Config,
     launch_session_fn: TriageSessionLaunchFn,
 ) -> None:
-    """Launch a failure-investigation triage session.
+    """Launch a queued triage session with the flavor recorded at queue time.
 
-    This is the only failure-investigation entry point: batch triage sessions
-    arrive through normal issue pickup and default to the batch flavor.
+    The pending-triage queue carries BOTH variants — threshold-created batch
+    tracking issues and failure investigations — and the planner launches them
+    through this path before ordinary issue pickup. The producer boundary that
+    queued the item declared its flavor; forward it verbatim (#6768 B5:
+    hard-coding one flavor here made batch reviews skip manifest prep).
     """
     agent = config.triage_review_agent
     if not agent or agent not in config.agents:
         raise ValueError(f"Invalid triage agent: {agent}")
     launch_session_fn(
         Issue(triage.issue_number, triage.title, [agent]),
-        triage_flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        triage_flavor=triage.flavor,
     )
 
 

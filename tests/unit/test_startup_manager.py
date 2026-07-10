@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, call, patch
 
+from issue_orchestrator.control.session_routing import launch_triage_session
 from issue_orchestrator.control.startup_manager import StartupManager
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -22,6 +23,7 @@ from issue_orchestrator.domain.models import (
     PendingTriageReview,
     ORCHESTRATOR_PR_MARKER,
 )
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 
 
 class _FakeLabelSet:
@@ -999,6 +1001,45 @@ class TestStartupManagerTriageRecovery:
 
         assert len(sample_state.pending_triage_reviews) == 1
         assert sample_state.pending_triage_reviews[0].issue_number == 100
+        # Recovery restores agent-labeled batch tracking issues; the queue
+        # entry must say so or the launch runs it as a failure investigation
+        # that skips manifest prep and audits nothing (#6768 B5).
+        assert (
+            sample_state.pending_triage_reviews[0].flavor
+            is TriageSessionFlavor.BATCH_REVIEW
+        )
+
+    @pytest.mark.asyncio
+    async def test_recovered_triage_launches_with_batch_flavor(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """Startup-recovery -> launch boundary keeps the batch flavor (#6768 B5)."""
+        mock_config.agents = {"agent:triage": MagicMock()}
+        mock_config.triage_review_agent = "agent:triage"
+
+        triage_issue = Issue(
+            number=100,
+            title="Batch Review: 5 PRs",
+            labels=["agent:triage"]
+        )
+        mock_repository_host.list_issues.return_value = [triage_issue]
+
+        await startup_manager.run_startup(sample_state)
+
+        (recovered,) = sample_state.pending_triage_reviews
+        launched = []
+
+        def track_launch(issue, *, triage_flavor=None):
+            launched.append((issue.number, triage_flavor))
+            return None
+
+        launch_triage_session(recovered, mock_config, track_launch)
+
+        assert launched == [(100, TriageSessionFlavor.BATCH_REVIEW)]
 
 
 class TestStartupManagerResumePartialWork:

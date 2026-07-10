@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,76 +30,59 @@ from .triage_session_policy import is_triage_session, read_triage_assignment
 logger = logging.getLogger(__name__)
 
 
-def _iter_session_run_dirs(session: Session) -> Iterator[Path]:
-    """Yield run directories under the session worktree's sessions dir."""
-    if not session.worktree_path:
-        return
-    sessions_dir = Path(session.worktree_path) / ".issue-orchestrator" / "sessions"
-    if not sessions_dir.exists():
-        return
-    for run_dir in sessions_dir.iterdir():
-        if run_dir.is_dir():
-            yield run_dir
-
-
 def _read_triage_manifest(session: Session) -> TriageManifest | None:
-    """Read triage manifest from session if it exists.
+    """Read the triage manifest recorded for the session's exact run.
 
-    The triage_manifest path is stored in the session's run manifest.json
-    during launch via ctx.update_manifest({"triage_manifest": path}).
+    The triage_manifest path is stored in the session run's manifest.json
+    during launch via ctx.update_manifest({"triage_manifest": path}). Only
+    the session's typed ``run_dir`` (``Session.run_assets`` contract) is
+    consulted: scanning historical sibling runs let a current session act on
+    a stale run's manifest and label unrelated PRs (#6768 B6).
 
-    Returns None if:
-    - Session has no worktree path
-    - No run directory with triage_manifest path exists
-    - Manifest file doesn't exist or can't be parsed
+    Fail-safe: returns None when the run manifest carries no triage manifest;
+    warns and returns None on unreadable content.
     """
-    # Find the run directory that has a triage_manifest entry in its manifest.json.
-    for run_dir in _iter_session_run_dirs(session):
-        run_manifest_path = run_dir / "manifest.json"
-        if not run_manifest_path.exists():
-            continue
-
-        try:
-            run_manifest = json.loads(run_manifest_path.read_text())
-            triage_manifest_path = run_manifest.get("triage_manifest")
-            if triage_manifest_path:
-                manifest_path = Path(triage_manifest_path)
-                if manifest_path.exists():
-                    return TriageManifest.read(manifest_path)
-                logger.warning(
-                    "[triage] Manifest path in run manifest doesn't exist: %s",
-                    manifest_path,
-                )
-        except Exception as exc:
+    run_manifest_path = session.run_dir / "manifest.json"
+    if not run_manifest_path.exists():
+        return None
+    try:
+        run_manifest = json.loads(run_manifest_path.read_text())
+        triage_manifest_path = run_manifest.get("triage_manifest")
+        if not triage_manifest_path:
+            return None
+        manifest_path = Path(triage_manifest_path)
+        if not manifest_path.exists():
             logger.warning(
-                "[triage] Failed to read manifest from %s: %s",
-                run_dir,
-                exc,
-                exc_info=True,
+                "[triage] Manifest path in run manifest doesn't exist: %s",
+                manifest_path,
             )
-
-    return None
+            return None
+        return TriageManifest.read(manifest_path)
+    except Exception as exc:
+        logger.warning(
+            "[triage] Failed to read manifest from %s: %s",
+            session.run_dir,
+            exc,
+            exc_info=True,
+        )
+        return None
 
 
 def _read_triage_assignment(session: Session) -> TriageAssignment | None:
-    """Read the launch-time triage assignment for a session's run.
+    """Read the launch-time triage assignment for the session's exact run.
 
-    Uses the same run-dir discovery as :func:`_read_triage_manifest`; the
-    assignment itself is read through the ADR-0031 policy owner. Malformed
-    content is fail-safe: warn and report no assignment rather than acting on
-    a guess.
+    The assignment lives at the fixed per-run location under the session's
+    typed ``run_dir`` and is read through the ADR-0031 policy owner — no
+    sibling-run scan, no fallback (#6768 B6). Malformed content is fail-safe:
+    warn and report no assignment rather than acting on a guess.
     """
-    for run_dir in _iter_session_run_dirs(session):
-        try:
-            assignment = read_triage_assignment(run_dir)
-        except ValueError as exc:
-            logger.warning(
-                "[triage] Malformed triage assignment in %s: %s", run_dir, exc
-            )
-            return None
-        if assignment is not None:
-            return assignment
-    return None
+    try:
+        return read_triage_assignment(session.run_dir)
+    except ValueError as exc:
+        logger.warning(
+            "[triage] Malformed triage assignment in %s: %s", session.run_dir, exc
+        )
+        return None
 
 
 def critical_processing_errors(
