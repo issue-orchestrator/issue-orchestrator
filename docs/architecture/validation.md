@@ -22,7 +22,7 @@ validation:
     timeout_seconds: 300
   publish:
     # Authoritative local PR/pre-push gate.
-    cmd: "./scripts/validate-pr-suite.sh"
+    cmd: "make validate-pr-raw"
     timeout_seconds: 1800
     dirty_check: tracked
 
@@ -43,11 +43,12 @@ Keep quick and publish commands configured separately so active review loops can
 stay responsive while push/publish actions still run the deeper repository gate.
 
 If the user-facing gate command itself calls the cache-aware pre-push wrapper,
-configure `validation.publish.cmd` to a private non-recursive suite command
-instead. For example, this repository exposes `make validate-pr` as the
-cache-aware entry point and configures `validation.publish.cmd` to an internal
-`_validate-pr` target guarded by an environment variable so the wrapper can seed
-and reuse the cache without re-entering itself.
+configure `validation.publish.cmd` to the underlying raw command instead. For
+example, this repository exposes `make validate-pr` as the cache-aware entry
+point and configures `validation.publish.cmd: make validate-pr-raw`, a public
+non-recursive target that runs the same required suite without re-entering
+`scripts/verify-pr.sh`, so the wrapper can seed and reuse the cache without
+re-entering itself.
 
 The old single-command shape (`validation.cmd`,
 `validation.timeout_seconds`, and `validation.pre_push_dirty_check`) is rejected

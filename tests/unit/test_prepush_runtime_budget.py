@@ -8,7 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "repo-specific" / "scripts" / "check_prepush_runtime_budget.py"
-PUBLISH_COMMAND = "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
+PUBLISH_COMMAND = "make validate-pr-raw"
 
 
 def write_config(

@@ -90,7 +90,7 @@ validation:
     cmd: make validate-quick
     timeout_seconds: 600
   publish:
-    cmd: "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
+    cmd: make validate-pr-raw
     # Codespaces still uses the same repo-local PR validation slice, which can
     # exceed 300s before any authenticated publish happens.
     timeout_seconds: 1800
