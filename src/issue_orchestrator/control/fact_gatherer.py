@@ -206,10 +206,10 @@ class FactGatherer:
         )
 
     def _get_triage_watch_label(self) -> str | None:
-        """Get the label to watch for triage review."""
+        """Get the label to watch for triage review (None = trigger disabled)."""
         if not self.config.triage_review_agent or self.config.triage_review_threshold <= 0:
             return None
-        return self.config.triage_review_label or self.config.code_reviewed_label
+        return self.config.triage_watch_label
 
     def _fetch_triage_prs(self, watch_label: str) -> list[Any]:
         """Fetch PRs ready for triage review."""

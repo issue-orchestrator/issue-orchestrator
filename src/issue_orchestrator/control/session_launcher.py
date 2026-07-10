@@ -53,7 +53,9 @@ from .worktree_context import WorktreeContext
 from .stack_base import StackBaseDecision
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
 from ..domain.triage_manifest import TriageManifest
+from ..domain.triage_session import TRIAGE_ASSIGNMENT_FILENAME, TriageAssignment, TriageSessionFlavor
 from .triage_manifest_builder import TriageManifestBuilder
+from .triage_session_policy import is_triage_session
 from ..ports import (
     ManifestDownloader,
     EventSink,
@@ -671,10 +673,7 @@ class SessionLauncher:
 
     def _is_triage_session(self, agent_type: str | None) -> bool:
         """Check if this agent type is the triage review agent."""
-        return bool(
-            self.config.triage_review_agent
-            and agent_type == self.config.triage_review_agent
-        )
+        return is_triage_session(self.config.triage_review_agent, agent_type)
 
     def _prepare_triage_manifest(
         self,
@@ -696,7 +695,7 @@ class SessionLauncher:
         # Build manifest with PRs needing triage
         builder = TriageManifestBuilder(
             repository_host=self.repository_host,
-            code_reviewed_label=self.config.code_reviewed_label or "code-reviewed",
+            watch_label=self.config.triage_watch_label,
             triage_reviewed_label=self.config.triage_reviewed_label or "triage-reviewed",
             triage_failed_label=self.config.triage_failed_label or "triage-failed",
         )
@@ -724,10 +723,48 @@ class SessionLauncher:
 
         return manifest
 
+    def _prepare_triage_session_data(
+        self,
+        issue: "IssueProtocol",
+        ctx: WorktreeContext,
+        triage_flavor: TriageSessionFlavor | None,
+    ) -> None:
+        """Prepare per-flavor triage session inputs (ADR-0031).
+
+        BATCH_REVIEW keeps the existing PR-manifest prep; FAILURE_INVESTIGATION
+        must NOT receive the global batch manifest (auditing unrelated PRs from
+        a focused investigation was the #6768 B4 defect). Both flavors get a
+        triage-assignment.json recording what the session was asked to do, so
+        the prompt and the completion planner act on the assignment.
+        """
+        if not self._is_triage_session(issue.agent_type):
+            return
+        flavor = triage_flavor or TriageSessionFlavor.BATCH_REVIEW
+        run_dir = ctx.run.run_dir
+        if flavor is TriageSessionFlavor.BATCH_REVIEW:
+            triage_manifest = self._prepare_triage_manifest(ctx.worktree_path, run_dir)
+            if triage_manifest:
+                # Store manifest path in session for completion handling
+                ctx.update_manifest(
+                    {"triage_manifest": str(run_dir / "triage-data" / "manifest.json")}
+                )
+        focused = flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        assignment = TriageAssignment(
+            flavor=flavor,
+            focus_issue_number=issue.number if focused else None,
+            focus_reason=issue.title if focused else "",
+        )
+        assignment_path = run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        assignment.write(assignment_path)
+        ctx.update_manifest({"triage_assignment": str(assignment_path)})
+        logger.info("[triage] Wrote %s assignment: %s", flavor.value, assignment_path)
+
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
         issue: "IssueProtocol",
         active_sessions: list[Session],
+        *,
+        triage_flavor: TriageSessionFlavor | None = None,
     ) -> LaunchResult:
         """Launch a session for an issue.
 
@@ -740,6 +777,8 @@ class SessionLauncher:
         Args:
             issue: The issue to work on
             active_sessions: Current active sessions (for conflict detection)
+            triage_flavor: For triage-agent sessions, which triage variant this
+                launch is (defaults to batch review when unset; ADR-0031)
 
         Returns:
             LaunchResult with session if successful
@@ -881,13 +920,8 @@ class SessionLauncher:
                 "review_cache_boundary_started_at": run.started_at,
             })
 
-        # For triage sessions, prepare manifest with PRs to review
-        triage_manifest: TriageManifest | None = None
-        if self._is_triage_session(issue.agent_type):
-            triage_manifest = self._prepare_triage_manifest(worktree_path, run.run_dir)
-            if triage_manifest:
-                # Store manifest path in session for completion handling
-                ctx.update_manifest({"triage_manifest": str(run.run_dir / "triage-data" / "manifest.json")})
+        # For triage sessions, prepare flavor-scoped inputs (manifest/assignment)
+        self._prepare_triage_session_data(issue, ctx, triage_flavor)
 
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",

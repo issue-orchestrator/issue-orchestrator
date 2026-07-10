@@ -1464,6 +1464,20 @@ agents:
         assert config.triage_review_threshold == 0
         assert config.triage_review_on_failure is True
 
+    def test_triage_watch_label_single_owner(self):
+        """triage_watch_label is the one derivation every consumer must share.
+
+        Fact gathering, manifest building, and prompt generation all key PR
+        selection off this property; drift between them lets the threshold
+        trigger on one PR set while the session audits another (#6768 B3).
+        """
+        config = Config()
+        assert config.triage_watch_label == "code-reviewed"
+        config.code_reviewed_label = "my-reviewed"
+        assert config.triage_watch_label == "my-reviewed"
+        config.triage_review_label = "audit-me"
+        assert config.triage_watch_label == "audit-me"
+
     def test_goal_pilot_defaults(self):
         """Goal Pilot defaults to disabled with journeys-only approvals."""
         config = Config()

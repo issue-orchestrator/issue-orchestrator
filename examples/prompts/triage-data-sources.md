@@ -16,7 +16,7 @@ The primary input. The orchestrator writes it into your session directory:
 
 | Source | Access | What It Tells You |
 |--------|--------|-------------------|
-| Manifest | `cat .issue-orchestrator/sessions/*/triage-data/manifest.json` | Which PRs to review, with local file names |
+| Manifest | `cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/manifest.json"` | Which PRs to review, with local file names |
 | PR metadata | `cat .../triage-data/pr-{N}-meta.json` | Title, body, branch, author |
 | PR diff | `cat .../triage-data/pr-{N}-diff.txt` | Actual code changes |
 

@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from ..infra.config_value_rules import resolve_triage_watch_label
 from .setup_wizard_prompts import (
     build_code_review_prompt_text,
     build_starter_prompt_text,
@@ -348,6 +349,9 @@ def write_missing_setup_prompts(
     code_reviewed_label = review_config.get("code_reviewed_label", "code-reviewed")
     triage_review_agent = review_config.get("triage_review_agent")
     triage_reviewed_label = review_config.get("triage_reviewed_label", "triage-reviewed")
+    triage_watch_label = resolve_triage_watch_label(
+        review_config.get("triage_review_label"), code_reviewed_label
+    )
 
     created_paths: list[Path] = []
     for agent_name, agent_config in (config.get("agents", {}) or {}).items():
@@ -381,7 +385,7 @@ def write_missing_setup_prompts(
         elif is_triage_review_agent:
             create_triage_review_prompt(
                 prompt_path,
-                code_reviewed_label,
+                triage_watch_label,
                 triage_reviewed_label,
                 file_collector=file_collector,
                 agent_name=agent_name,

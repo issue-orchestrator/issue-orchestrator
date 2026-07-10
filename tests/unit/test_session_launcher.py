@@ -77,6 +77,7 @@ from issue_orchestrator.domain.models import (
     SessionKey,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
 from issue_orchestrator.domain.state_machines.review_machine import ReviewStateMachine, ReviewState
@@ -136,6 +137,8 @@ class MockRepositoryHost:
         self.add_label_calls: list[tuple[int, str]] = []
         self.remove_label_calls: list[tuple[int, str]] = []
         self.search_pr_refs_calls: list[int] = []
+        self.prs_with_label: list[PRInfo] = []
+        self.get_prs_with_label_calls: list[tuple[str, str]] = []
 
     def add_label(self, issue_number: int, label: str) -> None:
         self.add_label_calls.append((issue_number, label))
@@ -147,6 +150,10 @@ class MockRepositoryHost:
 
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
+
+    def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
+        self.get_prs_with_label_calls.append((label, state))
+        return list(self.prs_with_label)
 
     def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
         self.search_pr_refs_calls.append(issue_number)
@@ -2563,21 +2570,144 @@ class TestLaunchTriageSession:
         with pytest.raises(ValueError, match="Invalid triage agent"):
             launch_triage_session(triage, sample_config, lambda issue: None)
 
-    def test_calls_launch_fn_with_issue(self, sample_config):
-        """Verify launch function is called with correct issue."""
+    def test_calls_launch_fn_with_issue_and_failure_flavor(self, sample_config):
+        """Verify launch function gets the issue and the failure-investigation flavor."""
         sample_config.triage_review_agent = "agent:web"
         triage = PendingTriageReview(issue_number=789, title="Triage batch")
-        launched_issues = []
+        launched = []
 
-        def track_launch(issue):
-            launched_issues.append(issue)
+        def track_launch(issue, *, triage_flavor=None):
+            launched.append((issue, triage_flavor))
             return None
 
         launch_triage_session(triage, sample_config, track_launch)
 
-        assert len(launched_issues) == 1
-        assert launched_issues[0].number == 789
-        assert "agent:web" in launched_issues[0].labels
+        assert len(launched) == 1
+        issue, flavor = launched[0]
+        assert issue.number == 789
+        assert "agent:web" in issue.labels
+        assert flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+
+
+class TestLaunchTriageIssueSessionFlavors:
+    """Launch-side triage flavor regressions (#6768 B4 / ADR-0031).
+
+    Both triage variants launch through launch_issue_session; the flavor must
+    decide whether the global batch PR manifest is prepared, and the
+    assignment file must always record what the session was asked to do.
+    """
+
+    @staticmethod
+    def _enable_triage_agent(config, tmp_path: Path) -> None:
+        prompt_path = tmp_path / "triage-prompt.md"
+        prompt_path.write_text("Triage prompt")
+        config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        config.triage_review_agent = "agent:triage"
+
+    @staticmethod
+    def _started_run_dir(mock_events) -> Path:
+        started = next(
+            e for e in mock_events.events if str(e.name) == "session.started"
+        )
+        return Path(started.data["run_dir"])
+
+    @staticmethod
+    def _triage_pr(number: int) -> PRInfo:
+        return PRInfo(
+            number=number,
+            title=f"PR {number}",
+            url=f"https://example/pr/{number}",
+            branch=f"branch-{number}",
+            body="",
+            state="open",
+            labels=["code-reviewed"],
+        )
+
+    def test_default_flavor_prepares_manifest_and_batch_assignment(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        issue = Issue(
+            number=901, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        assert mock_repo_host.get_prs_with_label_calls == [
+            (config.triage_watch_label, "all")
+        ]
+        run_dir = self._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["triage_manifest"] == str(
+            run_dir / "triage-data" / "manifest.json"
+        )
+        assert (run_dir / "triage-data" / "manifest.json").exists()
+        assignment_path = run_dir / "triage-data" / "triage-assignment.json"
+        assert run_manifest["triage_assignment"] == str(assignment_path)
+        assignment = json.loads(assignment_path.read_text())
+        assert assignment["flavor"] == "batch_review"
+        assert assignment["focus_issue_number"] is None
+
+    def test_failure_investigation_skips_manifest_and_records_focus(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        issue = Issue(
+            number=902,
+            title="Investigate: session timed out",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue,
+            active_sessions=[],
+            triage_flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        )
+
+        assert result.success is True
+        # The global batch PR manifest must NOT be built or queried.
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = self._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        assert not (run_dir / "triage-data" / "manifest.json").exists()
+        assignment_path = run_dir / "triage-data" / "triage-assignment.json"
+        assert run_manifest["triage_assignment"] == str(assignment_path)
+        assignment = json.loads(assignment_path.read_text())
+        assert assignment["flavor"] == "failure_investigation"
+        assert assignment["focus_issue_number"] == 902
+        assert assignment["focus_reason"] == "Investigate: session timed out"
+
+    def test_non_triage_session_gets_neither_manifest_nor_assignment(
+        self, launcher_bundle, sample_issue, mock_repo_host, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            sample_issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = self._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        assert "triage_assignment" not in run_manifest
+        assert not (run_dir / "triage-data").exists()
 
 
 # =============================================================================

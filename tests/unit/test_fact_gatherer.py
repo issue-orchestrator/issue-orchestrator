@@ -262,18 +262,27 @@ class TestFactGathererTriageFacts:
 
         assert result is None
 
-    def test_triage_facts_returns_none_when_no_watch_label(
-        self, fact_gatherer, sample_state, mock_config
+    def test_triage_facts_uses_default_watch_label_when_none_configured(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test returns None when no watch label configured."""
+        """With agent+threshold set, the watch label falls back to the default.
+
+        The single watch-label owner (Config.triage_watch_label, #6768 B3)
+        returns "code-reviewed" when neither label is configured — the same
+        default the manifest builder always applied — instead of silently
+        disabling the trigger while the manifest side stayed armed.
+        """
         mock_config.triage_review_agent = "agent:triage"
         mock_config.triage_review_threshold = 5
         mock_config.triage_review_label = None
         mock_config.code_reviewed_label = None
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues.return_value = []
 
         result = fact_gatherer.gather_triage_facts(sample_state)
 
-        assert result is None
+        assert result is not None
+        assert result.watch_label == "code-reviewed"
 
     def test_triage_facts_counts_prs_with_label(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host

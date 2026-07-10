@@ -78,7 +78,7 @@ from .config_sections import (
     parse_filtering_config,
     parse_milestone_order,
 )
-from .config_value_rules import validate_review_nit_policy
+from .config_value_rules import resolve_triage_watch_label, validate_review_nit_policy
 from .validation_config_loader import (
     load_validation_config as load_validation_config,
     load_validation_config_from_file as load_validation_config_from_file,
@@ -265,6 +265,19 @@ class Config:
     triage_failed_label: str = "triage-failed"  # Label when triage fails (matches load_review_section default)
     triage_review_threshold: int = 0  # Trigger triage review after N PRs (0 = manual only)
     triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
+
+    @property
+    def triage_watch_label(self) -> str:
+        """The single owned label that selects PRs for triage batch review.
+
+        Fact gathering (threshold trigger), manifest building (session
+        inputs), and prompt generation must all use this one derivation so
+        the PR set that trips the threshold is exactly the set the triage
+        session audits and labels.
+        """
+        return resolve_triage_watch_label(
+            self.triage_review_label, self.code_reviewed_label
+        )
 
     # Rework cycle limit (when reviewer requests changes)
     max_rework_cycles: int = 5  # Max times to re-queue work agent before escalating to needs-human

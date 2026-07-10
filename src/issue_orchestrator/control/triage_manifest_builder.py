@@ -1,7 +1,10 @@
 """Triage manifest builder - creates manifests for triage sessions.
 
-Queries GitHub to find PRs that need triage (have code-reviewed label
-but not triage-reviewed or triage-failed labels).
+Queries GitHub to find PRs that need triage (carry the triage watch label
+but not triage-reviewed or triage-failed labels). The watch label must come
+from ``Config.triage_watch_label`` — the single owner shared with the
+threshold trigger — so the PR set that trips the threshold is exactly the
+set the session audits.
 """
 
 import logging
@@ -19,12 +22,12 @@ class TriageManifestBuilder:
     def __init__(
         self,
         repository_host: RepositoryHost,
-        code_reviewed_label: str = "code-reviewed",
+        watch_label: str = "code-reviewed",
         triage_reviewed_label: str = "triage-reviewed",
         triage_failed_label: str = "triage-failed",
     ):
         self._host = repository_host
-        self._code_reviewed_label = code_reviewed_label
+        self._watch_label = watch_label
         self._triage_reviewed_label = triage_reviewed_label
         self._triage_failed_label = triage_failed_label
 
@@ -37,11 +40,10 @@ class TriageManifestBuilder:
         Returns:
             TriageManifest with PRs to review (data not yet downloaded)
         """
-        # Find PRs with code-reviewed label
-        prs = self._host.get_prs_with_label(self._code_reviewed_label, state="all")
+        prs = self._host.get_prs_with_label(self._watch_label, state="all")
         logger.info(
             "[triage] Found %d PRs with '%s' label",
-            len(prs), self._code_reviewed_label
+            len(prs), self._watch_label
         )
 
         # Filter out already-triaged PRs

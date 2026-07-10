@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Optional
 
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
 from ..domain.triage_manifest import TriageManifest
+from ..domain.triage_session import TriageAssignment, TriageSessionFlavor
 from ..infra.config import Config
 from ..ports import RepositoryHost
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
@@ -24,8 +26,21 @@ from .invalid_record_actions import (
 )
 from .label_manager import LabelManager
 from .reconciliation import ExpectedState, build_expected_for_mutation
+from .triage_session_policy import is_triage_session, read_triage_assignment
 
 logger = logging.getLogger(__name__)
+
+
+def _iter_session_run_dirs(session: Session) -> Iterator[Path]:
+    """Yield run directories under the session worktree's sessions dir."""
+    if not session.worktree_path:
+        return
+    sessions_dir = Path(session.worktree_path) / ".issue-orchestrator" / "sessions"
+    if not sessions_dir.exists():
+        return
+    for run_dir in sessions_dir.iterdir():
+        if run_dir.is_dir():
+            yield run_dir
 
 
 def _read_triage_manifest(session: Session) -> TriageManifest | None:
@@ -39,19 +54,8 @@ def _read_triage_manifest(session: Session) -> TriageManifest | None:
     - No run directory with triage_manifest path exists
     - Manifest file doesn't exist or can't be parsed
     """
-    if not session.worktree_path:
-        return None
-
-    worktree = Path(session.worktree_path)
-    sessions_dir = worktree / ".issue-orchestrator" / "sessions"
-    if not sessions_dir.exists():
-        return None
-
     # Find the run directory that has a triage_manifest entry in its manifest.json.
-    for run_dir in sessions_dir.iterdir():
-        if not run_dir.is_dir():
-            continue
-
+    for run_dir in _iter_session_run_dirs(session):
         run_manifest_path = run_dir / "manifest.json"
         if not run_manifest_path.exists():
             continue
@@ -75,6 +79,27 @@ def _read_triage_manifest(session: Session) -> TriageManifest | None:
                 exc_info=True,
             )
 
+    return None
+
+
+def _read_triage_assignment(session: Session) -> TriageAssignment | None:
+    """Read the launch-time triage assignment for a session's run.
+
+    Uses the same run-dir discovery as :func:`_read_triage_manifest`; the
+    assignment itself is read through the ADR-0031 policy owner. Malformed
+    content is fail-safe: warn and report no assignment rather than acting on
+    a guess.
+    """
+    for run_dir in _iter_session_run_dirs(session):
+        try:
+            assignment = read_triage_assignment(run_dir)
+        except ValueError as exc:
+            logger.warning(
+                "[triage] Malformed triage assignment in %s: %s", run_dir, exc
+            )
+            return None
+        if assignment is not None:
+            return assignment
     return None
 
 
@@ -251,9 +276,9 @@ class CompletionActionPlanner:
 
     def _is_triage_session(self, session: Session) -> bool:
         """Check if this session is a triage review session."""
-        if not self.config.triage_review_agent:
-            return False
-        return session.issue.agent_type == self.config.triage_review_agent
+        return is_triage_session(
+            self.config.triage_review_agent, session.issue.agent_type
+        )
 
     def _generate_triage_actions(
         self,
@@ -264,12 +289,29 @@ class CompletionActionPlanner:
     ) -> list[Action]:
         """Generate label actions for triage session completion.
 
-        Adds triage-reviewed or triage-failed labels to all PRs in the manifest.
+        Only batch-review sessions label PRs (the manifest set they audited).
+        Failure investigations audit one issue, never the global PR manifest,
+        so they must not touch manifest labels (#6768 B4).
         """
         actions: list[Action] = []
-        session_kind = session.terminal_id.split("-", 1)[0]
 
-        if session_kind != "issue" or not self._is_triage_session(session):
+        if not self._is_triage_session(session):
+            return actions
+
+        assignment = _read_triage_assignment(session)
+        if assignment is None:
+            # Fail-safe for pre-upgrade or assignment-less sessions: skip the
+            # labels so PRs stay watch-labeled and re-enter the next batch,
+            # rather than reproducing the old cross-variant mislabeling.
+            logger.warning(
+                "[triage] No triage assignment for session %s; "
+                "skipping triage PR labels (PRs re-enter the next batch)",
+                session.terminal_id,
+            )
+            return actions
+        if assignment.flavor is not TriageSessionFlavor.BATCH_REVIEW:
+            # Failure investigation: findings flow through the completion
+            # record; decision actions arrive with ADR-0031 PR2.
             return actions
 
         triage_manifest = _read_triage_manifest(session)

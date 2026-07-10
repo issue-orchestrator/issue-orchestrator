@@ -19,6 +19,11 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.triage_manifest import PRToReview, TriageManifest
+from issue_orchestrator.domain.triage_session import (
+    TRIAGE_ASSIGNMENT_FILENAME,
+    TriageAssignment,
+    TriageSessionFlavor,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import RepositoryHost
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -146,35 +151,105 @@ def test_review_exchange_halt_puts_issue_on_hold(tmp_path: Path) -> None:
     assert any("Review Exchange Halted" in comment for comment in comments(actions))
 
 
-def test_completed_triage_session_labels_manifest_prs(tmp_path: Path) -> None:
+def _make_triage_config() -> Config:
     config = Config()
     config.triage_review_agent = "agent:triage"
     config.triage_reviewed_label = "triage-reviewed"
-    issue = make_issue(labels=["agent:triage"])
-    session = make_session(tmp_path, issue=issue)
-    manifest = TriageManifest(
-        prs=[
-            PRToReview(number=101, title="PR 101", url="https://example/pr/101", branch="b1"),
-            PRToReview(number=102, title="PR 102", url="https://example/pr/102", branch="b2"),
-        ]
-    )
-    manifest_path = tmp_path / "triage-manifest.json"
-    manifest.write(manifest_path)
+    return config
+
+
+def _write_triage_run(
+    tmp_path: Path,
+    *,
+    with_manifest: bool = True,
+    assignment: TriageAssignment | None = None,
+) -> Path:
+    """Write a session run dir with optional triage manifest and assignment."""
     run_dir = tmp_path / ".issue-orchestrator" / "sessions" / "run-1"
     run_dir.mkdir(parents=True)
-    (run_dir / "manifest.json").write_text(json.dumps({"triage_manifest": str(manifest_path)}))
+    run_manifest: dict[str, str] = {}
+    if with_manifest:
+        manifest = TriageManifest(
+            prs=[
+                PRToReview(number=101, title="PR 101", url="https://example/pr/101", branch="b1"),
+                PRToReview(number=102, title="PR 102", url="https://example/pr/102", branch="b2"),
+            ]
+        )
+        manifest_path = tmp_path / "triage-manifest.json"
+        manifest.write(manifest_path)
+        run_manifest["triage_manifest"] = str(manifest_path)
+    if assignment is not None:
+        assignment_path = run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        assignment.write(assignment_path)
+        run_manifest["triage_assignment"] = str(assignment_path)
+    (run_dir / "manifest.json").write_text(json.dumps(run_manifest))
+    return run_dir
+
+
+def _triage_labels(actions: tuple[object, ...]) -> list[AddLabelAction]:
+    return [
+        action for action in actions
+        if isinstance(action, AddLabelAction) and action.label == "triage-reviewed"
+    ]
+
+
+def test_completed_triage_session_labels_manifest_prs(tmp_path: Path) -> None:
+    config = _make_triage_config()
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(
+        tmp_path,
+        assignment=TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW),
+    )
 
     actions = make_planner(config).generate_completion_actions(
         session,
         SessionStatus.COMPLETED,
     )
 
-    triage_actions = [
-        action for action in actions
-        if isinstance(action, AddLabelAction) and action.label == "triage-reviewed"
-    ]
-    assert {action.issue_number for action in triage_actions} == {101, 102}
+    assert {action.issue_number for action in _triage_labels(actions)} == {101, 102}
     assert "in-progress" in removed_labels(actions)
+
+
+def test_failure_investigation_triage_session_never_labels_manifest_prs(
+    tmp_path: Path,
+) -> None:
+    """A focused investigation must not label PRs even when a manifest exists (#6768 B4)."""
+    config = _make_triage_config()
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(
+        tmp_path,
+        assignment=TriageAssignment(
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=1,
+            focus_reason="Investigate: timed out",
+        ),
+    )
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert _triage_labels(actions) == []
+    assert "in-progress" in removed_labels(actions)
+
+
+def test_triage_session_without_assignment_skips_labels_and_warns(
+    tmp_path: Path, caplog
+) -> None:
+    """Pre-upgrade sessions fail safe: no labels, PRs re-enter the next batch."""
+    config = _make_triage_config()
+    session = make_session(tmp_path, issue=make_issue(labels=["agent:triage"]))
+    _write_triage_run(tmp_path, assignment=None)
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert _triage_labels(actions) == []
+    assert "in-progress" in removed_labels(actions)
+    assert "No triage assignment" in caplog.text
 
 
 def test_interrupted_retry_adds_guard_and_keeps_retry_loop_bounded(tmp_path: Path) -> None:

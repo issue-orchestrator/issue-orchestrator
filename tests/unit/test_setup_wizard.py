@@ -210,6 +210,56 @@ class TestCreateTriageReviewPrompt:
         assert "my-review-label" in content
         assert "my-reviewed-label" in content
 
+    def test_uses_injected_run_dir_not_run_scans(self, tmp_path):
+        """Guardrail: prompts must use the active run contract, never scan runs.
+
+        Every managed session gets ISSUE_ORCHESTRATOR_RUN_DIR; wildcard
+        scans over sessions/* with head -1 can pick a stale run whenever the
+        worktree holds more than one (#6768 B2). Covers the generated prompt
+        and the packaged example prompts.
+        """
+        import re
+
+        prompt_path = tmp_path / "triage.md"
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        sources = {"generated prompt": prompt_path.read_text()}
+
+        repo_root = Path(__file__).resolve().parents[2]
+        for example in ("triage-review.md", "triage-data-sources.md"):
+            sources[example] = (repo_root / "examples" / "prompts" / example).read_text()
+
+        forbidden = re.compile(r"sessions/\*|head -1|ls -d")
+        for name, text in sources.items():
+            assert "ISSUE_ORCHESTRATOR_RUN_DIR" in text, f"{name} must use the run contract"
+            match = forbidden.search(text)
+            assert match is None, f"{name} contains run-scan discovery: {match.group(0)!r}"
+
+    def test_includes_flavor_assignment_contract(self, tmp_path):
+        """Prompts must lead with the assignment contract (ADR-0031).
+
+        Both triage flavors share one launch path; the prompt must direct the
+        agent to read triage-assignment.json and behave per flavor, including
+        never auditing PRs during a failure investigation. Covers the
+        generated prompt and the packaged/dogfood prompt variants.
+        """
+        prompt_path = tmp_path / "triage.md"
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        sources = {"generated prompt": prompt_path.read_text()}
+
+        repo_root = Path(__file__).resolve().parents[2]
+        for variant in (
+            repo_root / "examples" / "prompts" / "triage-review.md",
+            repo_root / "repo-specific" / "prompts" / "triage.md",
+        ):
+            sources[str(variant.relative_to(repo_root))] = variant.read_text()
+
+        for name, text in sources.items():
+            assert "triage-assignment.json" in text, f"{name} missing assignment file"
+            assert "Your Assignment" in text, f"{name} missing assignment section"
+            assert "batch_review" in text, f"{name} missing batch flavor"
+            assert "failure_investigation" in text, f"{name} missing failure flavor"
+            assert "focus_issue_number" in text, f"{name} missing focus contract"
+
     def test_substitutes_label_variables(self, tmp_path):
         """Test that label placeholders are substituted with actual values."""
         prompt_path = tmp_path / "triage.md"

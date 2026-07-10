@@ -19,6 +19,27 @@ environments.
 - Add or remove labels
 - Create issues or PRs
 
+## Your Assignment
+
+Start by reading your assignment - it says which kind of triage session this is:
+
+```bash
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/triage-assignment.json"
+```
+
+- **`"flavor": "batch_review"`** - audit the manifest PRs (the Review Process
+  below).
+- **`"flavor": "failure_investigation"`** - investigate the single issue named
+  by `focus_issue_number`/`focus_reason` using local sources only (this
+  worktree, orchestrator logs, session data under
+  `.issue-orchestrator/sessions/`), and report your findings via
+  `coding-done completed --implementation "Diagnosis and evidence" --problems "None"`.
+  Do NOT audit or label PRs - there is no PR manifest for this session.
+
+Completing with no code changes is normal and succeeds - the orchestrator will
+not attempt PR-creation noise for a clean audit. If you did commit
+improvements, they are pushed and PR'd automatically after you complete.
+
 ## Review Process
 
 ### 1. Read the Manifest
@@ -34,7 +55,8 @@ The orchestrator writes PR data into your session directory:
 ```
 
 ```bash
-TRIAGE_DIR=$(ls -d .issue-orchestrator/sessions/*/triage-data 2>/dev/null | head -1)
+TRIAGE_DIR="$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data"
+[ -d "$TRIAGE_DIR" ] || { echo "FATAL: $TRIAGE_DIR missing - report via coding-done blocked"; }
 cat "$TRIAGE_DIR/manifest.json"
 ```
 

@@ -9,7 +9,7 @@ SessionManager adapter calls.
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
 from ..domain.models import (
     Issue,
@@ -20,6 +20,7 @@ from ..domain.models import (
     PendingValidationRetry,
     Session,
 )
+from ..domain.triage_session import TriageSessionFlavor
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
@@ -213,16 +214,34 @@ def orchestrator_launch_validation_retry_session(
     return result.session if result.success else None
 
 
+class TriageSessionLaunchFn(Protocol):
+    """Issue-session launcher that accepts a triage flavor (ADR-0031)."""
+
+    def __call__(
+        self,
+        issue: Issue,
+        *,
+        triage_flavor: TriageSessionFlavor | None = None,
+    ) -> Optional[Session]: ...
+
+
 def launch_triage_session(
     triage: PendingTriageReview,
     config: Config,
-    launch_session_fn: Callable[[Issue], Optional[Session]],
+    launch_session_fn: TriageSessionLaunchFn,
 ) -> None:
-    """Launch a triage review session."""
+    """Launch a failure-investigation triage session.
+
+    This is the only failure-investigation entry point: batch triage sessions
+    arrive through normal issue pickup and default to the batch flavor.
+    """
     agent = config.triage_review_agent
     if not agent or agent not in config.agents:
         raise ValueError(f"Invalid triage agent: {agent}")
-    launch_session_fn(Issue(triage.issue_number, triage.title, [agent]))
+    launch_session_fn(
+        Issue(triage.issue_number, triage.title, [agent]),
+        triage_flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+    )
 
 
 def session_launcher_callback(
@@ -333,9 +352,13 @@ def orchestrator_launch_session(
     state: "OrchestratorState",
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer | None" = None,
+    *,
+    triage_flavor: TriageSessionFlavor | None = None,
 ) -> Optional[Session]:
     """Launch an issue session and update active-session tracking."""
-    result = session_launcher.launch_issue_session(issue, state.active_sessions)
+    result = session_launcher.launch_issue_session(
+        issue, state.active_sessions, triage_flavor=triage_flavor
+    )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued and session_restorer is not None:

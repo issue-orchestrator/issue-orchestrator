@@ -150,7 +150,7 @@ class TestTriageManifestBuilder:
         host = MockRepositoryHost(prs=prs)
         builder = TriageManifestBuilder(
             host,
-            code_reviewed_label="my-reviewed",
+            watch_label="my-reviewed",
             triage_reviewed_label="my-triaged",
             triage_failed_label="my-failed",
         )

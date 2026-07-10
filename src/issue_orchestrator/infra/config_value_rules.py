@@ -14,6 +14,19 @@ from typing import Any
 VALID_NIT_POLICIES = frozenset({"ignore", "surface", "address"})
 
 
+def resolve_triage_watch_label(
+    triage_review_label: str | None, code_reviewed_label: str | None
+) -> str:
+    """Single owner for the label that selects PRs for triage batch review.
+
+    Every consumer of the triage watch set (threshold fact gathering,
+    manifest building, setup-wizard prompt generation) must derive the label
+    through this function; deriving it locally is how the threshold trigger
+    and the audited PR set drift apart.
+    """
+    return triage_review_label or code_reviewed_label or "code-reviewed"
+
+
 def normalize_optional_mapping(value: Any) -> Any:
     """Normalize a YAML mapping value at load time.
 
