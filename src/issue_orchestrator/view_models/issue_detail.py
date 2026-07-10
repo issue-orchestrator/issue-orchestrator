@@ -21,7 +21,7 @@ from .blocked_explanations import invalid_or_validation_blocked_explanation
 # Canonical event-set ownership lives in ``view_models.lifecycle_event_sets``
 # (issue #6310 AC-4).  Issue_detail aliases ``OUTCOME_EVENTS`` and
 # ``BLOCKED_EVENT_NAMES`` for blocked-detail derivation and the AC-4 guard
-# test.  Journey projection (typed cycles, runs, validation badge) is built
+# test.  Journey projection (typed cycles, attempts, validation badge) is built
 # by ``view_models.journey_projection`` — see the typed pipeline call in
 # ``build_issue_detail_view_model``.
 from .journey_projection import build_attempts, build_journey_cycles_from_events
@@ -86,7 +86,7 @@ def build_issue_detail_view_model(
     timeline_steps = _build_journey_steps(story_events, today)
     previous_runs = _build_previous_cycles(cycles, today)
 
-    # Typed projection pipeline (issue #6310): journey cycles + runs are
+    # Typed projection pipeline (issue #6310): journey cycles + attempts are
     # now built by ``lifecycle_projection`` as typed models, including the
     # typed ``CycleValidationBadge`` (AC-2).  The drawer payload comes
     # from ``.model_dump(mode="json")`` — same wire field names, but the
