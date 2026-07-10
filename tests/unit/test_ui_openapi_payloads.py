@@ -22,6 +22,7 @@ from issue_orchestrator.contracts.ui_openapi_models import (
     E2ERunDetailPayload,
     E2ERunTimelinePayload,
     IssueDetailActionPayload,
+    IssueDetailPayload,
     ViewModelSnapshotPayload,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -121,6 +122,32 @@ def _validator(component: str) -> Draft202012Validator:
     data = __import__("json").loads(schema)
     resolver = RefResolver.from_schema(data)
     return Draft202012Validator(data["components"]["schemas"][component], resolver=resolver)
+
+
+def _assert_response_view_is_timeline_view_constrained(
+    payload: dict, schema_name: str, model_cls: type
+) -> None:
+    """Issue #5976: a response payload's ``view`` field echoes the rendered
+    lens and must be the shared ``TimelineView`` enum, not a free ``str`` —
+    enforced on both the JSON-schema and generated-Pydantic sides.
+
+    Without the ``$ref``, an out-of-vocabulary ``view`` (e.g. ``"detail"``)
+    would validate as a plain string on both sides and a generated client
+    could accept or propagate a value the runtime normalizer never produces.
+    """
+    from pydantic import ValidationError
+
+    validator = _validator(schema_name)
+    for view in ("user", "ops", "debug", "raw"):
+        candidate = {**payload, "view": view}
+        validator.validate(candidate)
+        model_cls.model_validate(candidate)
+
+    invalid = {**payload, "view": "detail"}
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(invalid)
+    with pytest.raises(ValidationError):
+        model_cls.model_validate(invalid)
 
 
 def _schema_error_messages(errors: list[JsonSchemaValidationError]) -> str:
@@ -684,6 +711,17 @@ def test_timeline_view_enum_is_reused_across_the_ui_openapi_contract() -> None:
     ]["properties"]["view"]
     assert view_field == {"$ref": ref}
 
+    # The response payloads that echo the rendered lens back to the client
+    # reference the same shared enum (with their documented default preserved),
+    # so a generated client cannot accept or propagate an arbitrary response
+    # ``view`` value that the runtime normalizer would never produce.
+    for schema_name in ("IssueDetailPayload", "E2ERunDetailPayload"):
+        response_view = data["components"]["schemas"][schema_name]["properties"]["view"]
+        assert response_view["$ref"] == ref, schema_name
+        assert response_view["default"] == "user", schema_name
+        assert "type" not in response_view, f"{schema_name} kept an inline string type"
+        assert "enum" not in response_view, f"{schema_name} kept an inline enum"
+
 
 def test_timeline_view_is_the_single_python_source_of_truth() -> None:
     """The generated ``TimelineView`` Literal is the one Python source of
@@ -1006,6 +1044,9 @@ def test_issue_detail_payload_matches_ui_openapi() -> None:
         cycles=[{"cycle": 1, "status": "started", "phases": ["in_progress"]}],
     )
     _validator("IssueDetailPayload").validate(payload)
+    _assert_response_view_is_timeline_view_constrained(
+        payload, "IssueDetailPayload", IssueDetailPayload
+    )
 
 
 def _journey_event(
@@ -1354,6 +1395,9 @@ def test_e2e_run_detail_payload_matches_ui_openapi() -> None:
 
     _validator("E2ERunDetailPayload").validate(payload)
     E2ERunDetailPayload.model_validate(payload)
+    _assert_response_view_is_timeline_view_constrained(
+        payload, "E2ERunDetailPayload", E2ERunDetailPayload
+    )
 
 
 def test_issue_detail_action_payload_accepts_null_optional_url() -> None:

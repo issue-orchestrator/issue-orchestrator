@@ -909,7 +909,7 @@
               {"type": "null"}
             ]
           },
-          "view": {"type": "string", "default": "user"}
+          "view": {"$ref": "#/components/schemas/TimelineView", "default": "user"}
         }
       },
       "E2ERunDetailPayload": {
@@ -970,7 +970,7 @@
           },
           "issue_affordances": {"type": "array", "items": {"$ref": "#/components/schemas/E2EIssueAffordancePayload"}},
           "lifecycle": {"$ref": "#/components/schemas/LifecycleTimelineContainerPayload"},
-          "view": {"type": "string", "default": "user"}
+          "view": {"$ref": "#/components/schemas/TimelineView", "default": "user"}
         }
       },
       "E2ERunExecutionPayload": {

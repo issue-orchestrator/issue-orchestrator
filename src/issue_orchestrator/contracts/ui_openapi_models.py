@@ -243,7 +243,7 @@ class E2ERunDetailPayload(BaseModel):
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
     title: str
-    view: str | None = None
+    view: TimelineView | None = None
 
 class E2ERunExecutionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -504,7 +504,7 @@ class IssueDetailPayload(BaseModel):
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
     title: str
-    view: str | None = None
+    view: TimelineView | None = None
 
 class IssueDetailSummaryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

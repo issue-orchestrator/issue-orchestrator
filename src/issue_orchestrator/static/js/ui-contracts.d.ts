@@ -232,7 +232,7 @@ export interface E2ERunDetailPayload {
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
   title: string;
-  view?: string;
+  view?: TimelineView;
 }
 
 export interface E2ERunExecutionPayload {
@@ -494,7 +494,7 @@ export interface IssueDetailPayload {
   summary: IssueDetailSummaryPayload;
   timeline_steps: Record<string, any>[];
   title: string;
-  view?: string;
+  view?: TimelineView;
 }
 
 export interface IssueDetailSummaryPayload {
