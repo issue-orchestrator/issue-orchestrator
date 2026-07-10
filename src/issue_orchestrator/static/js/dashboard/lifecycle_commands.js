@@ -57,46 +57,32 @@ function runLifecycleCommandFromToggle(detailsEl) {
     runLifecycleCommand(command, detailsEl);
 }
 
-// Single owner for the dialog action-button Command family (issue #6327).
+// Single owner for the dialog-only action-button Command family (issue #6327).
 //
-// The validation / diagnostics / drawer dialogs render their action buttons
-// through the same ``data-lifecycle-command`` pipeline as every other
-// affordance.  ``session_dialogs.js`` builds these payloads from the backend
-// ``action.type`` dict via ``_dialogActionToLifecycleCommand`` and sets
-// ``error_surface: 'inline'`` so a failed fetch reports inside the open dialog
-// instead of via a toast.  Each entry wires a Command ``kind`` to the same
-// handler the inline ``onclick`` used to call directly and returns ``true`` on
+// The validation / diagnostics dialogs render their action buttons through the
+// same ``data-lifecycle-command`` pipeline as every other affordance.  The
+// backend dialog view models (``view_models/dialog_commands.py``) emit these
+// typed ``DialogActionCommand`` payloads directly, so ``session_dialogs.js``
+// renders the provided command without reconstructing one from a loose
+// ``action.type`` dict.  Kinds that already have a canonical timeline command
+// (``open_session_recording``, ``open_review_feedback``) are handled by the
+// branch chain above and reused here rather than duplicated; this table owns
+// only the dialog-specific kinds with no timeline counterpart.
+//
+// Each entry wires a Command ``kind`` to its handler and returns ``true`` on
 // dispatch (``false`` when a required field is absent — an unreachable path
-// from real buttons, which are omitted entirely when their run context is
-// missing).  Handlers are referenced lazily at click time, so load order
+// from real buttons, which the backend omits entirely when their run context
+// is missing).  Handlers are referenced lazily at click time, so load order
 // between this module and the handler modules only needs to settle before the
-// user clicks.
+// user clicks.  ``error_surface`` (default ``toast``) lets the dialog report a
+// failed fetch inside the open dialog instead of via a page toast.
 const _DIALOG_ACTION_COMMAND_DISPATCH = {
     open_path: (command) => {
         if (!command.path) return false;
         openPath(command.path);
         return true;
     },
-    open_validation_failure: (command) => {
-        if (!command.issue_number || !command.run_dir) return false;
-        openValidationFailure(command.issue_number, command.run_dir, command.error_surface || 'toast');
-        return true;
-    },
-    open_agent_log: (command) => {
-        if (!command.issue_number || !command.run_dir) return false;
-        openAgentLogAction(
-            command.issue_number,
-            command.run_dir,
-            command.label || 'Session Recording',
-            command.error_surface || 'toast',
-            {
-                round_index: command.round_index ?? null,
-                session_role: command.session_role || null,
-            },
-        );
-        return true;
-    },
-    copy_agent_log: (command) => {
+    copy_session_recording: (command) => {
         if (!command.issue_number || !command.run_dir) return false;
         copyAgentLogAction(command.issue_number, command.run_dir);
         return true;
@@ -109,11 +95,6 @@ const _DIALOG_ACTION_COMMAND_DISPATCH = {
     open_orchestrator_log: (command) => {
         if (!command.issue_number) return false;
         openFilteredOrchestratorLog(command.issue_number, command.run_dir || null, command.error_surface || 'toast');
-        return true;
-    },
-    open_review_feedback: (command) => {
-        if (!command.issue_number) return false;
-        openReviewFeedback(command.issue_number);
         return true;
     },
     open_session_diagnostics: (command) => {
@@ -136,7 +117,10 @@ function runLifecycleCommand(command, triggerEl = null) {
     }
     if (kind === 'open_session_recording' && command.issue_number && command.run_dir) {
         const label = command.label ? String(command.label) : 'Session Recording';
-        openAgentLogAction(command.issue_number, command.run_dir, label, 'toast', {
+        // ``error_surface`` lets the emitter pick where load failures show:
+        // timeline chips leave it unset (default ``toast``); dialog action
+        // buttons set ``inline`` so the error renders inside the open dialog.
+        openAgentLogAction(command.issue_number, command.run_dir, label, command.error_surface || 'toast', {
             round_index: command.round_index || null,
             session_role: command.session_role || null,
         });
@@ -175,6 +159,13 @@ function runLifecycleCommand(command, triggerEl = null) {
     }
     if (kind === 'open_completion_record' && command.path) {
         openPath(command.path);
+        return;
+    }
+    // ``open_review_feedback`` is a canonical ``TimelineCommand`` (emitted by
+    // review/changes-requested cycles); it lives here with the other typed
+    // command branches rather than the dialog-action table.
+    if (kind === 'open_review_feedback' && command.issue_number) {
+        openReviewFeedback(command.issue_number);
         return;
     }
     // ``open_e2e_run`` is the typed "navigate the user to run #N"

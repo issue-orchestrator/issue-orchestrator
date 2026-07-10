@@ -177,6 +177,13 @@ class ConfigDialogPayload(BaseModel):
     config_text: str
     title: str
 
+class CopySessionRecordingCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_number: int
+    kind: Literal['copy_session_recording']
+    label: str
+    run_dir: str
+
 class CreateE2EUntriagedIssuesCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['create_e2e_untriaged_issues']
@@ -320,6 +327,11 @@ class DependencyProblemPayload(BaseModel):
 class DependencyProblemsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     problems: dict[str, DependencyProblemPayload]
+
+class DialogActionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command: DialogActionCommandPayload
+    group: Literal['validation_artifacts', 'session_evidence', 'diagnostics']
 
 class DialogRowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -947,6 +959,20 @@ class OpenIssueTimelineCommandPayload(BaseModel):
     label: str
     scope_kind: Literal['dashboard', 'e2e_run']
 
+class OpenOrchestratorLogCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    error_surface: Literal['toast', 'inline']
+    issue_number: int
+    kind: Literal['open_orchestrator_log']
+    label: str
+    run_dir: str | None = None
+
+class OpenPathCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal['open_path']
+    label: str
+    path: str
+
 class OpenReviewArtifactCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact_path: str
@@ -964,8 +990,16 @@ class OpenReviewFeedbackCommandPayload(BaseModel):
     kind: Literal['open_review_feedback']
     label: str
 
+class OpenSessionDiagnosticsCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    issue_number: int
+    kind: Literal['open_session_diagnostics']
+    label: str
+    run_dir: str | None = None
+
 class OpenSessionRecordingCommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    error_surface: Literal['toast', 'inline'] | None = None
     issue_number: int
     kind: Literal['open_session_recording']
     label: str
@@ -1525,14 +1559,6 @@ class RunningE2ETestExecutionPayload(BaseModel):
     nodeid: str
     started_at: str
 
-class SessionDiagnosticsActionPayload(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    group: Literal['validation_artifacts', 'session_evidence', 'diagnostics'] | None = None
-    issue_number: int | None = None
-    label: str
-    path: str | None = None
-    type: str
-
 class SessionDiagnosticsAnalysisPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     detail: str | None = None
@@ -1541,7 +1567,7 @@ class SessionDiagnosticsAnalysisPayload(BaseModel):
 
 class SessionDiagnosticsDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    actions: list[SessionDiagnosticsActionPayload]
+    actions: list[DialogActionPayload]
     analysis: SessionDiagnosticsAnalysisPayload | None = None
     follow_up_issues: list[SessionDiagnosticsFollowUpIssuePayload] | None = None
     rows: list[DialogRowPayload]
@@ -1849,7 +1875,7 @@ class ValidationFailedPayload(BaseModel):
 
 class ValidationFailureActionSectionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    actions: list[SessionDiagnosticsActionPayload]
+    actions: list[DialogActionPayload]
     title: str
 
 class ValidationFailureDialogPayload(BaseModel):
@@ -1880,6 +1906,14 @@ class ValidationPassedPayload(BaseModel):
     details_command: OpenValidationDetailsCommandPayload
     kind: Literal['passed']
     record_path: str
+
+class ViewClaudeLogCommandPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    error_surface: Literal['toast', 'inline']
+    issue_number: int
+    kind: Literal['view_claude_log']
+    label: str
+    run_dir: str
 
 class ViewModelSnapshotPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1915,6 +1949,8 @@ class WorktreeAuditResponsePayload(BaseModel):
 CodingAttemptPayload: TypeAlias = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload
 
 ControlCenterRecoveryRowsPayload: TypeAlias = RecoveryAvailablePayload | RecoveryEmptyPayload | RecoveryUnavailablePayload
+
+DialogActionCommandPayload: TypeAlias = OpenPathCommandPayload | OpenSessionRecordingCommandPayload | CopySessionRecordingCommandPayload | ViewClaudeLogCommandPayload | OpenOrchestratorLogCommandPayload | OpenSessionDiagnosticsCommandPayload
 
 E2EFailureEvidencePayload: TypeAlias = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload
 

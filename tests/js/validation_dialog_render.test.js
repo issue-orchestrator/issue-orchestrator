@@ -252,151 +252,94 @@ test('failed run with junit_cases: viewer renders per-case triage cards', () => 
     assert.match(html, /test_a/);
 });
 
-test('runDir falls back to first action-section run_dir when caller passes null', () => {
-    // openValidationFailure passes runDir=null when the timeline action
-    // didn't carry one; the renderer must extract a run_dir from the
-    // payload's action sections so the modal's "Open ..." buttons work.
-    const payload = {
-        ..._FAILED_PAYLOAD,
-        action_sections: [{
-            title: 'Validation Artifacts',
-            actions: [{ type: 'open_path', label: 'Open Validation Record', path: '/tmp/r1/validation-record.json', group: 'validation_artifacts', run_dir: '/run/r1' }],
-        }],
-    };
-    const { runDir } = renderValidationDialog(payload, 4242, null);
-    assert.strictEqual(runDir, '/run/r1');
-});
-
-test('runDir from caller takes precedence over payload', () => {
-    // When the timeline action carried a run_dir, that's the authoritative
-    // scope (the dialog might be opened on a different run than the latest).
-    const payload = {
-        ..._FAILED_PAYLOAD,
-        action_sections: [{
-            title: 'Validation Artifacts',
-            actions: [{ type: 'open_path', label: 'X', path: '/y', group: 'validation_artifacts', run_dir: '/run/payload-suggests' }],
-        }],
-    };
-    const { runDir } = renderValidationDialog(payload, 4242, '/run/caller-knows-best');
-    assert.strictEqual(runDir, '/run/caller-knows-best');
-});
-
-// ── Affordance-glyph convention (issue #6322 / PR #6325) ──────────────────
+// ── Affordance-glyph convention (issue #6322 / PR #6325 / #6327) ──────────
 //
-// Every supported action.type maps to exactly one glyph
-// (or to none, for local actions).  The convention is:
+// Every dialog command kind maps to exactly one glyph (or to none, for local
+// actions).  The convention is:
 //   ``↗`` — external viewer (opens an OS app, file, or page outside
 //           the current scroll context)
 //   ``⧉`` — modal viewer (opens ``#modalOverlay`` on this page)
 //   (none) — local action (does the thing in place, no UI change)
 //
-// Reviewer blocker on round 1 of #6325: several modal-opening
-// actions were tagged ``↗``.  These tests pin every supported
-// action's glyph against the handler's actual behavior so future
-// drift fails the test, not the user.
+// Issue #6327 re-keyed the glyph off the typed ``command.kind`` (the backend
+// emits the typed command; the JS no longer translates ``action.type``).
 
-test('affordance: every supported action.type maps to the right glyph', () => {
+test('affordance: every dialog command kind maps to the right glyph', () => {
     const ctx = loadSessionDialogs();
     // External viewers: handler opens an OS app or external page.
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_path' }), ' ↗');
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_orchestrator_log' }), ' ↗');
+    assert.strictEqual(ctx._affordanceGlyphForCommand({ kind: 'open_path' }), ' ↗');
+    assert.strictEqual(ctx._affordanceGlyphForCommand({ kind: 'open_orchestrator_log' }), ' ↗');
     // Modal viewers: handler opens ``#modalOverlay``.
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_validation_failure' }), ' ⧉');
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_review_transcript' }), ' ⧉');
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_review_feedback' }), ' ⧉');
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_session_diagnostics' }), ' ⧉');
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'open_agent_log' }), ' ⧉');
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'view_claude_log' }), ' ⧉');
+    assert.strictEqual(ctx._affordanceGlyphForCommand({ kind: 'open_session_recording' }), ' ⧉');
+    assert.strictEqual(ctx._affordanceGlyphForCommand({ kind: 'open_session_diagnostics' }), ' ⧉');
+    assert.strictEqual(ctx._affordanceGlyphForCommand({ kind: 'view_claude_log' }), ' ⧉');
     // Local actions: no glyph.
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'copy_agent_log' }), '');
-    // Unknown action types default to no glyph (intentional — better
-    // a missing affordance than a wrong one for actions we don't
-    // know how to characterize).
-    assert.strictEqual(ctx._affordanceGlyphForAction({ type: 'made_up_action' }), '');
-    assert.strictEqual(ctx._affordanceGlyphForAction({}), '');
-    assert.strictEqual(ctx._affordanceGlyphForAction(null), '');
+    assert.strictEqual(ctx._affordanceGlyphForCommand({ kind: 'copy_session_recording' }), '');
+    // Unknown kinds default to no glyph (intentional — better a missing
+    // affordance than a wrong one for kinds we don't know how to characterize).
+    assert.strictEqual(ctx._affordanceGlyphForCommand({ kind: 'made_up_action' }), '');
+    assert.strictEqual(ctx._affordanceGlyphForCommand({}), '');
+    assert.strictEqual(ctx._affordanceGlyphForCommand(null), '');
 });
 
-test('affordance: rendered button label carries the right trailing glyph for every action', () => {
-    // End-to-end through the renderer: ``_renderDialogActionButton``
-    // appends the glyph to whatever backend label the action came
-    // with.  The handler hookup is unchanged — we're asserting the
-    // visible label suffix matches the convention.
+test('affordance: rendered button label carries the right trailing glyph for every command', () => {
+    // End-to-end through the renderer: ``_renderDialogActionButton`` appends
+    // the glyph to the command's label.  The action is ``{ command, group }``
+    // — exactly what the backend view models emit.
     const ctx = loadSessionDialogs();
-    // The renderer falls back to the module-level
-    // ``currentDiagnosticsRunDir`` when ``action.run_dir`` is missing.
-    // Force it to null so we exercise the fall-through honestly.
-    ctx.currentDiagnosticsRunDir = null;
     const cases = [
-        // [type, runDir, expectedSuffix, extraFields]
-        ['open_path', null, ' ↗', { path: '/tmp/some.log' }],
-        ['open_orchestrator_log', '/run/x', ' ↗', { issue_number: 42 }],
-        ['open_validation_failure', '/run/x', ' ⧉', { issue_number: 42 }],
-        ['open_review_transcript', '/run/x', ' ⧉', { issue_number: 42, round_index: 0, transcript_role: 'coder' }],
-        ['open_review_feedback', '/run/x', ' ⧉', { issue_number: 42 }],
-        ['open_session_diagnostics', '/run/x', ' ⧉', { issue_number: 42 }],
-        ['open_agent_log', '/run/x', ' ⧉', { issue_number: 42 }],
-        ['view_claude_log', '/run/x', ' ⧉', { issue_number: 42 }],
-        ['copy_agent_log', '/run/x', '', { issue_number: 42 }],
+        // [command, expectedSuffix]
+        [{ kind: 'open_path', label: 'TheLabel', path: '/tmp/some.log' }, ' ↗'],
+        [{ kind: 'open_orchestrator_log', label: 'TheLabel', issue_number: 42, run_dir: '/run/x', error_surface: 'inline' }, ' ↗'],
+        [{ kind: 'open_session_recording', label: 'TheLabel', issue_number: 42, run_dir: '/run/x', error_surface: 'inline' }, ' ⧉'],
+        [{ kind: 'open_session_diagnostics', label: 'TheLabel', issue_number: 42, run_dir: '/run/x' }, ' ⧉'],
+        [{ kind: 'view_claude_log', label: 'TheLabel', issue_number: 42, run_dir: '/run/x', error_surface: 'inline' }, ' ⧉'],
+        [{ kind: 'copy_session_recording', label: 'TheLabel', issue_number: 42, run_dir: '/run/x' }, ''],
     ];
-    for (const [type, runDir, suffix, extras] of cases) {
-        const action = { type, label: 'TheLabel', run_dir: runDir, ...extras };
-        const html = ctx._renderDialogActionButton(action, null, 'diag-btn');
-        // Some actions return '' when run_dir is missing (e.g. open_agent_log).
-        // Our cases above provide run_dir where needed.
-        assert.notStrictEqual(html, '',
-            `expected non-empty HTML for type=${type}; got empty (probably a missing required field)`);
+    for (const [command, suffix] of cases) {
+        const html = ctx._renderDialogActionButton({ command, group: 'session_evidence' }, null, 'diag-btn');
+        assert.notStrictEqual(html, '', `expected non-empty HTML for kind=${command.kind}`);
         // Strip the dispatch wrapper to just look at the visible button text.
         const visibleLabel = html.match(/>([^<]+)<\/button>/);
         assert.ok(visibleLabel, `could not find visible label in: ${html.slice(0, 200)}…`);
         const expected = `TheLabel${suffix}`;
         assert.strictEqual(visibleLabel[1], expected,
-            `type=${type}: expected button label ${JSON.stringify(expected)}, got ${JSON.stringify(visibleLabel[1])}`);
+            `kind=${command.kind}: expected button label ${JSON.stringify(expected)}, got ${JSON.stringify(visibleLabel[1])}`);
     }
 });
 
-test('affordance: rendered button carries a typed data-lifecycle-command routed through the shared dispatcher', () => {
-    // Issue #6327: dialog action buttons no longer embed a per-action
-    // inline ``onclick``.  Each carries a typed ``data-lifecycle-command``
-    // (kind == action.type) and routes through the single shared
-    // ``runLifecycleCommandFromButton`` owner — the same pipeline every
-    // other canonical-viewer affordance uses.  Extracting the Command from
-    // rendered HTML is the pattern the command-surface test relies on.
+test('affordance: rendered button carries the backend command routed through the shared dispatcher', () => {
+    // Issue #6327: dialog action buttons carry the typed
+    // ``data-lifecycle-command`` the backend produced and route through the
+    // single shared ``runLifecycleCommandFromButton`` owner — no per-action
+    // inline ``onclick`` handler name leaks into the markup.
     const ctx = loadSessionDialogs();
-    ctx.currentDiagnosticsRunDir = null;
-    // Every legacy inline handler name that must NOT leak into the markup
-    // now that dispatch goes through the typed Command.
     const legacyHandlers = [
         'openPath(', 'openValidationFailure(', 'openReviewTranscript(',
         'openReviewFeedback(', 'openSessionManifest(', 'openAgentLogAction(',
         'viewClaudeLog(', 'copyAgentLogAction(', 'openFilteredOrchestratorLog(',
     ];
-    const types = [
-        'open_path',
-        'open_orchestrator_log',
-        'open_validation_failure',
-        'open_review_transcript',
-        'open_review_feedback',
-        'open_session_diagnostics',
-        'open_agent_log',
-        'view_claude_log',
-        'copy_agent_log',
+    const commands = [
+        { kind: 'open_path', label: 'L', path: '/p' },
+        { kind: 'open_orchestrator_log', label: 'L', issue_number: 1, run_dir: '/run/x', error_surface: 'inline' },
+        { kind: 'open_session_recording', label: 'L', issue_number: 1, run_dir: '/run/x', error_surface: 'inline' },
+        { kind: 'open_session_diagnostics', label: 'L', issue_number: 1, run_dir: '/run/x' },
+        { kind: 'view_claude_log', label: 'L', issue_number: 1, run_dir: '/run/x', error_surface: 'inline' },
+        { kind: 'copy_session_recording', label: 'L', issue_number: 1, run_dir: '/run/x' },
     ];
-    for (const type of types) {
-        const action = { type, label: 'L', run_dir: '/run/x', issue_number: 1, path: '/p' };
-        const html = ctx._renderDialogActionButton(action, null, 'diag-btn');
-        // Routes through the single shared dispatcher, not a per-action handler.
+    for (const command of commands) {
+        const html = ctx._renderDialogActionButton({ command, group: 'session_evidence' }, null, 'diag-btn');
         assert.ok(html.includes('runLifecycleCommandFromButton(this)'),
-            `type=${type}: expected shared dispatcher onclick, got: ${html.slice(0, 240)}…`);
+            `kind=${command.kind}: expected shared dispatcher onclick, got: ${html.slice(0, 240)}…`);
         for (const legacy of legacyHandlers) {
             assert.ok(!html.includes(legacy),
-                `type=${type}: legacy inline handler ${legacy} must not appear in the migrated markup`);
+                `kind=${command.kind}: legacy inline handler ${legacy} must not appear in the migrated markup`);
         }
-        // The typed Command names the action 1:1.
+        // The rendered button carries the backend command verbatim.
         const match = html.match(/data-lifecycle-command="([^"]+)"/);
-        assert.ok(match, `type=${type}: expected a data-lifecycle-command payload`);
-        const command = JSON.parse(match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
-        assert.strictEqual(command.kind, type,
-            `type=${type}: command kind should mirror the action type`);
+        assert.ok(match, `kind=${command.kind}: expected a data-lifecycle-command payload`);
+        const decoded = JSON.parse(match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+        assert.deepStrictEqual(decoded, command,
+            `kind=${command.kind}: rendered command must equal the backend command`);
     }
 });

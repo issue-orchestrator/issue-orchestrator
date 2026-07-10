@@ -1593,22 +1593,24 @@ def test_session_diagnostics_dialog_integration_exposes_existing_paths_and_run_s
         actions = payload.get("actions")
         assert isinstance(actions, list) and actions
 
+        # Issue #6327: each action carries a typed command under "command".
         path_actions = [
             action for action in actions
-            if action.get("type") == "open_path" and action.get("label") in {"Open Session Dir", "Open Validation", "Open Diagnostic"}
+            if action["command"].get("kind") == "open_path"
+            and action["command"].get("label") in {"Open Session Dir", "Open Validation", "Open Diagnostic"}
         ]
         assert path_actions, "Expected diagnostics path actions"
         for action in path_actions:
-            path_value = action.get("path")
+            path_value = action["command"].get("path")
             assert isinstance(path_value, str) and path_value
             assert Path(path_value).exists(), f"Expected action path to exist: {path_value}"
 
         run_scoped_actions = [
             action for action in actions
-            if action.get("type") in {"open_agent_log", "open_orchestrator_log", "view_claude_log"}
+            if action["command"].get("kind") in {"open_session_recording", "open_orchestrator_log", "view_claude_log"}
         ]
         assert run_scoped_actions
-        assert all(action.get("run_dir") == run_dir for action in run_scoped_actions)
+        assert all(action["command"].get("run_dir") == run_dir for action in run_scoped_actions)
     finally:
         web.set_orchestrator(None)
 

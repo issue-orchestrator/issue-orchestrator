@@ -94,6 +94,11 @@ class OpenSessionRecordingCommand(LifecycleBase):
     run_dir: str
     session_role: str | None = None
     round_index: int | None = None
+    # Where a load failure surfaces. Timeline chips leave this unset (the
+    # dispatcher defaults to a toast); dialog action buttons set ``inline`` so
+    # the error renders inside the open dialog. Optional so the timeline wire
+    # shape is unchanged for existing emitters (issue #6327).
+    error_surface: Literal["toast", "inline"] | None = None
 
 
 class OpenValidationDetailsCommand(LifecycleBase):

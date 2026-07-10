@@ -429,20 +429,20 @@ def test_validation_failure_dialog_renders_results_and_artifacts(
                 {
                   "title": "Validation Artifacts",
                   "actions": [
-                    {"type": "open_path", "label": "Open Validation Record", "path": "/tmp/validation-record.json"},
-                    {"type": "open_path", "label": "Open Validation Output", "path": "/tmp/validation-output.log"}
+                    {"command": {"kind": "open_path", "label": "Open Validation Record", "path": "/tmp/validation-record.json"}, "group": "validation_artifacts"},
+                    {"command": {"kind": "open_path", "label": "Open Validation Output", "path": "/tmp/validation-output.log"}, "group": "validation_artifacts"}
                   ]
                 },
                 {
                   "title": "Session Evidence",
                   "actions": [
-                    {"type": "open_agent_log", "label": "View Session Recording", "issue_number": 408, "run_dir": "/tmp/run-408"}
+                    {"command": {"kind": "open_session_recording", "label": "View Session Recording", "issue_number": 408, "run_dir": "/tmp/run-408", "session_role": null, "round_index": null, "error_surface": "inline"}, "group": "session_evidence"}
                   ]
                 },
                 {
                   "title": "Diagnostics",
                   "actions": [
-                    {"type": "open_session_diagnostics", "label": "Full Diagnostics", "issue_number": 408, "run_dir": "/tmp/run-408"}
+                    {"command": {"kind": "open_session_diagnostics", "label": "Full Diagnostics", "issue_number": 408, "run_dir": "/tmp/run-408"}, "group": "diagnostics"}
                   ]
                 }
               ]
@@ -484,6 +484,7 @@ def test_validation_failure_dialog_renders_results_and_artifacts(
     command = json.loads(command_json)
     assert command == {
         "kind": "open_session_diagnostics",
+        "label": "Full Diagnostics",
         "issue_number": 408,
         "run_dir": "/tmp/run-408",
     }

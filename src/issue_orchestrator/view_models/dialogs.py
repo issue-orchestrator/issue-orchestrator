@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, get_args
+from typing import Any, Literal
 
 from ..domain.artifact_contracts import (
     ValidationFailed,
@@ -12,6 +12,16 @@ from ..domain.artifact_contracts import (
     ValidationPassed,
     ValidationRetry,
     validation_outcome_from_manifest_fields,
+)
+from .dialog_commands import (
+    CopySessionRecordingCommand,
+    DialogAction,
+    OpenOrchestratorLogCommand,
+    OpenPathCommand,
+    OpenSessionDiagnosticsCommand,
+    OpenSessionRecordingCommand,
+    SessionActionGroup,
+    ViewClaudeLogCommand,
 )
 
 @dataclass(frozen=True)
@@ -289,41 +299,23 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
     return rows
 
 
-def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[dict[str, Any]]:
-    actions: list[dict[str, Any]] = []
+def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[DialogAction]:
+    """Produce the dialog action buttons as typed commands (issue #6327).
+
+    Each entry is a ``DialogAction`` carrying a typed ``DialogActionCommand``
+    the frontend renders directly into ``data-lifecycle-command`` — no loose
+    ``action.type`` dictionary reconstructed in JS.
+    """
+    actions: list[DialogAction] = []
     _append_open_path(actions, "Open Session Dir", ctx.run_dir, group="diagnostics")
     _append_open_path(actions, "Open Session Settings", ctx.session_settings_path, group="diagnostics")
-    _append_run_scoped_action(
-        actions,
-        ctx,
-        action_type="open_agent_log",
-        label="View Session Recording",
-        group="session_evidence",
-    )
-    _append_run_scoped_action(
-        actions,
-        ctx,
-        action_type="copy_agent_log",
-        label="Copy Session Recording",
-        group="session_evidence",
-    )
+    _append_session_recording(actions, ctx, group="session_evidence")
+    _append_copy_recording(actions, ctx, group="session_evidence")
     if ctx.claude_log_path:
-        _append_run_scoped_action(
-            actions,
-            ctx,
-            action_type="view_claude_log",
-            label="View Claude Log",
-            group="session_evidence",
-        )
+        _append_claude_log(actions, ctx, group="session_evidence")
         _append_open_path(actions, "Open Claude Log File", ctx.claude_log_path, group="session_evidence")
     _append_open_path(actions, "Open Claude Log Dir", ctx.claude_log_dir, group="session_evidence")
-    _append_run_scoped_action(
-        actions,
-        ctx,
-        action_type="open_orchestrator_log",
-        label="Open Orchestrator Log",
-        group="session_evidence",
-    )
+    _append_orchestrator_log(actions, ctx, group="session_evidence")
     _append_open_path(actions, "Open Full Log", ctx.orchestrator_log, group="session_evidence")
     _append_open_path(actions, "Open Diagnostic", ctx.diagnostic_path, group="diagnostics")
     _append_open_path(actions, "Open Run Audit", ctx.run_audit_path, group="diagnostics")
@@ -333,18 +325,15 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     return actions
 
 
-SessionActionGroup = Literal["validation_artifacts", "session_evidence", "diagnostics"]
-
 _SESSION_DIAGNOSTIC_SECTION_TITLES: tuple[tuple[SessionActionGroup, str], ...] = (
     ("validation_artifacts", "Validation Artifacts"),
     ("session_evidence", "Session Evidence"),
     ("diagnostics", "Diagnostics"),
 )
-_SESSION_DIAGNOSTIC_ACTION_GROUPS: frozenset[str] = frozenset(get_args(SessionActionGroup))
 
 
 def _append_open_path(
-    actions: list[dict[str, Any]],
+    actions: list[DialogAction],
     label: str,
     path: str,
     *,
@@ -352,40 +341,92 @@ def _append_open_path(
 ) -> None:
     if not path:
         return
-    payload: dict[str, Any] = {
-        "type": "open_path",
-        "label": label,
-        "path": path,
-        "group": _validated_session_action_group(group),
-    }
-    actions.append(payload)
+    actions.append(DialogAction(command=OpenPathCommand(label=label, path=path), group=group))
 
 
-def _append_run_scoped_action(
-    actions: list[dict[str, Any]],
+def _append_session_recording(
+    actions: list[DialogAction],
     ctx: SessionDiagnosticsContext,
     *,
-    action_type: str,
-    label: str,
     group: SessionActionGroup,
 ) -> None:
     if not ctx.run_dir:
         return
-    payload: dict[str, Any] = {
-        "type": action_type,
-        "label": label,
-        "issue_number": ctx.issue_number,
-        "run_dir": ctx.run_dir,
-        "group": _validated_session_action_group(group),
-    }
-    actions.append(payload)
+    actions.append(
+        DialogAction(
+            command=OpenSessionRecordingCommand(
+                label="View Session Recording",
+                issue_number=ctx.issue_number,
+                run_dir=ctx.run_dir,
+                error_surface="inline",
+            ),
+            group=group,
+        )
+    )
 
 
-def _validated_session_action_group(group: str) -> str:
-    if group not in _SESSION_DIAGNOSTIC_ACTION_GROUPS:
-        allowed = ", ".join(sorted(_SESSION_DIAGNOSTIC_ACTION_GROUPS))
-        raise ValueError(f"Unknown session diagnostics action group {group!r}; expected one of: {allowed}")
-    return group
+def _append_copy_recording(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsContext,
+    *,
+    group: SessionActionGroup,
+) -> None:
+    if not ctx.run_dir:
+        return
+    actions.append(
+        DialogAction(
+            command=CopySessionRecordingCommand(issue_number=ctx.issue_number, run_dir=ctx.run_dir),
+            group=group,
+        )
+    )
+
+
+def _append_claude_log(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsContext,
+    *,
+    group: SessionActionGroup,
+) -> None:
+    if not ctx.run_dir:
+        return
+    actions.append(
+        DialogAction(
+            command=ViewClaudeLogCommand(issue_number=ctx.issue_number, run_dir=ctx.run_dir),
+            group=group,
+        )
+    )
+
+
+def _append_orchestrator_log(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsContext,
+    *,
+    group: SessionActionGroup,
+) -> None:
+    if not ctx.run_dir:
+        return
+    actions.append(
+        DialogAction(
+            command=OpenOrchestratorLogCommand(issue_number=ctx.issue_number, run_dir=ctx.run_dir),
+            group=group,
+        )
+    )
+
+
+def _append_session_diagnostics(
+    actions: list[DialogAction],
+    ctx: SessionDiagnosticsContext,
+    *,
+    group: SessionActionGroup,
+) -> None:
+    if not ctx.run_dir:
+        return
+    actions.append(
+        DialogAction(
+            command=OpenSessionDiagnosticsCommand(issue_number=ctx.issue_number, run_dir=ctx.run_dir),
+            group=group,
+        )
+    )
 
 
 def _format_extra_provider_args(raw: Any) -> str:
@@ -505,7 +546,7 @@ def build_session_diagnostics_dialog(
     return {
         "title": f"Session Diagnostics #{issue_number}",
         "rows": [row.to_dict() for row in rows],
-        "actions": actions,
+        "actions": [action.model_dump() for action in actions],
         "analysis": analysis.to_dict() if analysis else None,
         "follow_up_issues": follow_up_issues,
     }
@@ -541,13 +582,7 @@ def build_validation_failure_dialog(
         if isinstance(item, dict) and item.get("case_id")
     ]
     actions = _build_session_diagnostics_actions(ctx)
-    _append_run_scoped_action(
-        actions,
-        ctx,
-        action_type="open_session_diagnostics",
-        label="Full Diagnostics",
-        group="diagnostics",
-    )
+    _append_session_diagnostics(actions, ctx, group="diagnostics")
     summary_rows = _build_validation_failure_summary_rows(
         validation, failed_tests, status,
     )
@@ -626,25 +661,23 @@ def _build_validation_failure_summary_rows(
 
 
 def _build_validation_failure_action_sections(
-    actions: list[dict[str, Any]],
+    actions: list[DialogAction],
 ) -> list[dict[str, Any]]:
-    grouped_actions: dict[str, list[dict[str, Any]]] = {
+    # ``DialogAction.group`` is a ``Literal`` so an out-of-range group is
+    # rejected at construction time — the grouping here only has to bucket by
+    # the known sections and preserve their canonical order/titles.
+    grouped_actions: dict[str, list[DialogAction]] = {
         group: [] for group, _title in _SESSION_DIAGNOSTIC_SECTION_TITLES
     }
-
     for action in actions:
-        group = action.get("group")
-        if not isinstance(group, str):
-            raise ValueError(f"Validation failure action {action.get('label')!r} is missing a group")
-        if group not in grouped_actions:
-            allowed = ", ".join(sorted(grouped_actions))
-            raise ValueError(f"Unknown validation failure action group {group!r}; expected one of: {allowed}")
-        grouped_actions[group].append(action)
+        grouped_actions[action.group].append(action)
 
     sections: list[dict[str, Any]] = []
     for group, title in _SESSION_DIAGNOSTIC_SECTION_TITLES:
         if grouped_actions[group]:
-            sections.append({"title": title, "actions": grouped_actions[group]})
+            sections.append(
+                {"title": title, "actions": [action.model_dump() for action in grouped_actions[group]]}
+            )
     return sections
 
 

@@ -835,7 +835,11 @@ class TestHistoryEndpoints:
                 "Diagnostics",
             ]
             diagnostics_actions = payload["action_sections"][-1]["actions"]
-            assert any(action.get("type") == "open_session_diagnostics" for action in diagnostics_actions)
+            # Issue #6327: each action carries a typed command under "command".
+            assert any(
+                action["command"].get("kind") == "open_session_diagnostics"
+                for action in diagnostics_actions
+            )
             assert "actions" not in payload
         finally:
             set_orchestrator(None)

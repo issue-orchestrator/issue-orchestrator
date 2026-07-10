@@ -142,6 +142,13 @@ export interface ConfigDialogPayload {
   title: string;
 }
 
+export interface CopySessionRecordingCommandPayload {
+  issue_number: number;
+  kind: "copy_session_recording";
+  label: string;
+  run_dir: string;
+}
+
 export interface CreateE2EUntriagedIssuesCommandPayload {
   kind: "create_e2e_untriaged_issues";
   label: string;
@@ -285,6 +292,11 @@ export interface DependencyProblemPayload {
 
 export interface DependencyProblemsPayload {
   problems: Record<string, DependencyProblemPayload>;
+}
+
+export interface DialogActionPayload {
+  command: DialogActionCommandPayload;
+  group: "validation_artifacts" | "session_evidence" | "diagnostics";
 }
 
 export interface DialogRowPayload {
@@ -866,6 +878,20 @@ export interface OpenIssueTimelineCommandPayload {
   scope_kind: "dashboard" | "e2e_run";
 }
 
+export interface OpenOrchestratorLogCommandPayload {
+  error_surface: "toast" | "inline";
+  issue_number: number;
+  kind: "open_orchestrator_log";
+  label: string;
+  run_dir?: string | null;
+}
+
+export interface OpenPathCommandPayload {
+  kind: "open_path";
+  label: string;
+  path: string;
+}
+
 export interface OpenReviewArtifactCommandPayload {
   artifact_path: string;
   artifact_type: "review_report" | "review_decision" | "tech_lead_report" | "tech_lead_decision";
@@ -883,7 +909,15 @@ export interface OpenReviewFeedbackCommandPayload {
   label: string;
 }
 
+export interface OpenSessionDiagnosticsCommandPayload {
+  issue_number: number;
+  kind: "open_session_diagnostics";
+  label: string;
+  run_dir?: string | null;
+}
+
 export interface OpenSessionRecordingCommandPayload {
+  error_surface?: "toast" | "inline" | null;
   issue_number: number;
   kind: "open_session_recording";
   label: string;
@@ -1416,15 +1450,6 @@ export interface RunningE2ETestExecutionPayload {
   started_at: string;
 }
 
-export interface SessionDiagnosticsActionPayload {
-  group?: "validation_artifacts" | "session_evidence" | "diagnostics" | null;
-  issue_number?: number | null;
-  label: string;
-  path?: string | null;
-  type: string;
-  [key: string]: any;
-}
-
 export interface SessionDiagnosticsAnalysisPayload {
   detail?: string | null;
   headline: string;
@@ -1432,7 +1457,7 @@ export interface SessionDiagnosticsAnalysisPayload {
 }
 
 export interface SessionDiagnosticsDialogPayload {
-  actions: SessionDiagnosticsActionPayload[];
+  actions: DialogActionPayload[];
   analysis?: SessionDiagnosticsAnalysisPayload | null;
   follow_up_issues?: SessionDiagnosticsFollowUpIssuePayload[];
   rows: DialogRowPayload[];
@@ -1712,7 +1737,7 @@ export interface ValidationFailedPayload {
 }
 
 export interface ValidationFailureActionSectionPayload {
-  actions: SessionDiagnosticsActionPayload[];
+  actions: DialogActionPayload[];
   title: string;
 }
 
@@ -1743,6 +1768,14 @@ export interface ValidationPassedPayload {
   details_command: OpenValidationDetailsCommandPayload;
   kind: "passed";
   record_path: string;
+}
+
+export interface ViewClaudeLogCommandPayload {
+  error_surface: "toast" | "inline";
+  issue_number: number;
+  kind: "view_claude_log";
+  label: string;
+  run_dir: string;
 }
 
 export interface ViewModelSnapshotPayload {
@@ -1779,6 +1812,8 @@ export interface WorktreeAuditResponsePayload {
 export type CodingAttemptPayload = RunningCodingAttemptPayload | CompletedCodingAttemptPayload | PublishFailedCodingAttemptPayload | BlockedCodingAttemptPayload | FailedCodingAttemptPayload | MissingCodingEvidencePayload;
 
 export type ControlCenterRecoveryRowsPayload = RecoveryAvailablePayload | RecoveryEmptyPayload | RecoveryUnavailablePayload;
+
+export type DialogActionCommandPayload = OpenPathCommandPayload | OpenSessionRecordingCommandPayload | CopySessionRecordingCommandPayload | ViewClaudeLogCommandPayload | OpenOrchestratorLogCommandPayload | OpenSessionDiagnosticsCommandPayload;
 
 export type E2EFailureEvidencePayload = E2EFailureDetailsAvailablePayload | E2EFailureDetailsMissingPayload;
 

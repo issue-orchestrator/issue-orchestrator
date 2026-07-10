@@ -58,7 +58,6 @@ const issueRefreshInFlight = new Set();
 const issueRefreshLastAttempt = new Map();
 let flowRefreshObserver = null;
 let networkSyncTimer = null;
-let currentDiagnosticsRunDir = null;
 const flowRefreshPrefsModal = document.getElementById('flowRefreshPrefsModal');
 const FLOW_REFRESH_OVERRIDE_KEY = 'issue-orchestrator.flow-refresh.override.v1';
 const NETWORK_SYNC_OVERRIDE_KEY = 'issue-orchestrator.network-sync.override.v1';
