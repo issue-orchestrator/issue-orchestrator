@@ -184,6 +184,14 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
     def shutdown_all(self, *, reason: str) -> None:
         with self._lock:
             keys = list(self._cache.keys())
+            logger.info(
+                "[exchange-pair-registry] shutdown_all reason=%s "
+                "logical_pairs=%d logical_agents=%d issue_keys=%s",
+                reason,
+                len(keys),
+                len(keys) * 2,
+                ",".join(str(key) for key in keys) if keys else "none",
+            )
             for issue_key in keys:
                 pair = self._cache.pop(issue_key)
                 self._tear_down(pair, reason=reason)
@@ -207,12 +215,13 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
             reviewer_pid,
             self._clock() - pair.created_at,
         )
+        exit_codes: dict[str, int | None] = {}
         for session_label, session in (
             ("reviewer", pair.reviewer_session),
             ("coder", pair.coder_session),
         ):
             try:
-                close_persistent_session(session)
+                exit_codes[session_label] = close_persistent_session(session)
             except (OSError, RuntimeError, TimeoutError, ValueError):
                 logger.exception(
                     "[exchange-pair-registry] %s session close raised "
@@ -222,6 +231,18 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
                     session.proc.pid,
                     reason,
                 )
+                exit_codes[session_label] = None
+
+        logger.info(
+            "[exchange-pair-registry] released issue_key=%s reason=%s "
+            "coder_pid=%d coder_exit=%s reviewer_pid=%d reviewer_exit=%s",
+            pair.issue_key,
+            reason,
+            coder_pid,
+            exit_codes.get("coder"),
+            reviewer_pid,
+            exit_codes.get("reviewer"),
+        )
 
         if self._on_release is not None:
             try:

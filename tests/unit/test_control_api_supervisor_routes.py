@@ -124,6 +124,25 @@ class TestSupervisorStop:
         # When no lock exists, the orchestrator is already stopped - goal achieved
         assert data["status"] == "stopped"
 
+    def test_stop_uses_cleanup_safe_graceful_timeout_by_default(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_supervisor: MagicMock,
+    ) -> None:
+        mock_supervisor.status.return_value = SupervisorStatus(state="running")
+        mock_supervisor.stop_all_instances.return_value = 1
+
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            json={"repo_root": str(tmp_path), "reason": "test graceful default"},
+        )
+
+        assert response.status_code == 200
+        assert mock_supervisor.stop_all_instances.call_args.kwargs[
+            "graceful_timeout_seconds"
+        ] == 120
+
     def test_stop_rejects_missing_reason(
         self, supervisor_client: TestClient, tmp_path: Path
     ) -> None:

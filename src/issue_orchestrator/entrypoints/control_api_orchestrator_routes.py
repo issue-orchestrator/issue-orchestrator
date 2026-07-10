@@ -30,7 +30,7 @@ from ..infra.repo_guardrails import (
     RepoGuardrailsInstallResult,
     setup_repo_guardrails,
 )
-from ..infra.supervisor import MultiInstanceStatus, SupervisorOps
+from ..infra.supervisor import DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS, MultiInstanceStatus, SupervisorOps
 from .control_api_orchestrator_support import (
     ControlApiOrchestratorDependency,
 )
@@ -345,7 +345,7 @@ async def control_stop(
     force_if_timeout = bool(body.get("force_if_timeout", True))
     graceful_timeout_seconds = deps.coerce_graceful_timeout_seconds(
         body.get("graceful_timeout_seconds"),
-        2,
+        DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
     )
     port_override = body.get("port")
     if port_override is not None and (not isinstance(port_override, int) or port_override < 1 or port_override > 65535):
