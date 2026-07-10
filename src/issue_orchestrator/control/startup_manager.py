@@ -40,7 +40,6 @@ from ..domain.models import (
     OrchestratorState,
     PendingRetrospectiveReview,
     PendingReview,
-    PendingTriageReview,
     PendingValidationRetry,
     SessionHistoryEntry,
     Session,
@@ -48,6 +47,7 @@ from ..domain.models import (
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
+from .session_routing import PendingSessionQueues, TriageQueueOutcome
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
@@ -701,16 +701,14 @@ class StartupManager:
                 print(f"  triage issue #{triage_issue.number}: Already running")
                 continue
 
-            if any(r.issue_number == triage_issue.number for r in state.pending_triage_reviews):
+            # Flavor-safe as BATCH_REVIEW: only threshold-created batch tracking
+            # issues carry the triage agent label (#6768 B5).
+            outcome = PendingSessionQueues(state).queue_batch_review(
+                triage_issue.number, triage_issue.title
+            )
+            if outcome is TriageQueueOutcome.DUPLICATE:
                 print(f"  triage issue #{triage_issue.number}: Already queued")
                 continue
-
-            state.pending_triage_reviews.append(
-                PendingTriageReview(
-                    issue_number=triage_issue.number,
-                    title=triage_issue.title,
-                )
-            )
             print(f"  triage issue #{triage_issue.number}: Queued ({triage_issue.title})")
 
         if state.pending_triage_reviews:

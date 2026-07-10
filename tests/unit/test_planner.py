@@ -47,6 +47,7 @@ from issue_orchestrator.domain.models import (
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 from tests.unit.session_run_helpers import make_session_run_assets
@@ -205,7 +206,9 @@ class TestProviderResilienceLabels:
             rework_cycle=1,
             issue_number=2,
         )
-        pending_triage = PendingTriageReview(issue_number=3, title="Triage 3")
+        pending_triage = PendingTriageReview(
+            issue_number=3, title="Triage 3", flavor=TriageSessionFlavor.BATCH_REVIEW
+        )
 
         snapshot = make_snapshot(
             issues=[issue1, issue2, issue3],
@@ -1186,6 +1189,51 @@ class TestPlanTriageIssueCreation:
         assert action.pr_count == 3
         assert "agent:triage" in action.labels
 
+    def test_completed_closed_batch_does_not_retrigger_empty_batch(self):
+        """Reviewer repro (#6768 r5): after a successful batch (PRs carry
+        triage-reviewed, tracker closed) re-gathering + planning against the
+        same PR observations must not create an empty successor batch.
+
+        Facts come from the REAL FactGatherer so the shared candidate
+        predicate (fact side == manifest side) is what this exercises.
+        """
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.fact_gatherer import FactGatherer
+        from issue_orchestrator.domain.models import OrchestratorState
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=2,
+            triage_reviewed_label="triage-reviewed",
+        )
+        host = MagicMock()
+        host.get_prs_with_label.return_value = [
+            PRInfo(number=1, url="...", title="PR 1", branch="b1",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+            PRInfo(number=2, url="...", title="PR 2", branch="b2",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+        ]
+        # The completed batch's tracking issue is CLOSED: open-state queries
+        # (the finder's contract) no longer return it.
+        host.list_issues.return_value = []
+
+        facts = FactGatherer(config=config, repository_host=host).gather_triage_facts(
+            OrchestratorState()
+        )
+        assert facts is not None
+        assert facts.pr_count == 0
+        assert facts.existing_triage_issue is None
+
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        create_actions = [
+            a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE
+        ]
+        assert create_actions == []
+
     def test_no_triage_issue_below_threshold(self):
         """Planner produces no CreateTriageIssueAction when below threshold."""
         from issue_orchestrator.domain.models import TriageFacts
@@ -2038,6 +2086,7 @@ class TestPlanDiscoveredFailures:
         pending_triage = PendingTriageReview(
             issue_number=42,
             title="Already queued",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
         )
 
         snapshot = make_snapshot(
@@ -2272,7 +2321,11 @@ class TestActionPriority:
         snapshot = make_snapshot(
             pending_reworks=[pending_rework],
             pending_triage=[
-                PendingTriageReview(issue_number=2, title="Investigate failure"),
+                PendingTriageReview(
+                    issue_number=2,
+                    title="Investigate failure",
+                    flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                ),
             ],
         )
 
@@ -3013,7 +3066,9 @@ class TestSnapshotFromState:
         rework = PendingRework(issue_key=FakeIssueKey(name="2"), agent_type="agent:dev", rework_cycle=1)
         state.pending_reworks = [rework]
 
-        triage = PendingTriageReview(issue_number=3, title="Triage")
+        triage = PendingTriageReview(
+            issue_number=3, title="Triage", flavor=TriageSessionFlavor.BATCH_REVIEW
+        )
         state.pending_triage_reviews = [triage]
         validation_retry = PendingValidationRetry(
             issue_number=4,
@@ -3177,7 +3232,11 @@ class TestMultiplePendingTypesInteraction:
             branch_name="issue-100",
             _issue_number=100,
         )
-        pending_triage = PendingTriageReview(issue_number=101, title="Investigate")
+        pending_triage = PendingTriageReview(
+            issue_number=101,
+            title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        )
 
         snapshot = make_snapshot(
             issues=[make_issue(100), make_issue(1), make_issue(2)],
@@ -3235,7 +3294,11 @@ class TestMultiplePendingTypesInteraction:
             agent_type="agent:dev",
             rework_cycle=1,
         )
-        pending_triage = PendingTriageReview(issue_number=3, title="Investigate")
+        pending_triage = PendingTriageReview(
+            issue_number=3,
+            title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        )
 
         planner = Planner(
             config=config,

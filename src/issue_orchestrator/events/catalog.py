@@ -193,7 +193,6 @@ class EventName(str, Enum):
     TRIAGE_ISSUE_CREATED = "triage.issue_created"
     TRIAGE_SKIPPED = "triage.skipped"
     TRIAGE_LAUNCHING = "triage.launching"
-    TRIAGE_BATCH_TRIGGERED = "triage.batch_triggered"
 
     # =========================================================================
     # Cleanup operations

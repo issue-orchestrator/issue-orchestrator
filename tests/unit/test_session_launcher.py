@@ -40,11 +40,13 @@ from issue_orchestrator.control.session_launcher import (
 from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV
 from issue_orchestrator.control.session_review_support import build_review_existing_work
 from issue_orchestrator.control.session_routing import (
+    PendingSessionQueues,
+    TriageQueueOutcome,
     orchestrator_launch_session,
     orchestrator_launch_review_session,
     orchestrator_launch_rework_session,
+    orchestrator_launch_triage_session,
     orchestrator_launch_validation_retry_session,
-    launch_triage_session,
     session_launcher_callback,
     restore_running_sessions,
     parse_session_ref,
@@ -53,8 +55,16 @@ from issue_orchestrator.control.session_routing import (
     kill_session,
     get_session_machine,
 )
-from issue_orchestrator.control.actions import ActionResult, AddLabelAction, RemoveLabelAction
+from issue_orchestrator.control.workflows.triage_workflow import TriageWorkflow
+from issue_orchestrator.control.actions import (
+    ActionResult,
+    AddLabelAction,
+    CreateTriageIssueAction,
+    QueueTriageAction,
+    RemoveLabelAction,
+)
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.orchestrator_support import OrchestratorSupport
 from issue_orchestrator.control.retrospective_review_completion import (
     retrospective_review_completion_actions,
 )
@@ -77,6 +87,7 @@ from issue_orchestrator.domain.models import (
     SessionKey,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
 from issue_orchestrator.domain.state_machines.review_machine import ReviewStateMachine, ReviewState
@@ -136,6 +147,8 @@ class MockRepositoryHost:
         self.add_label_calls: list[tuple[int, str]] = []
         self.remove_label_calls: list[tuple[int, str]] = []
         self.search_pr_refs_calls: list[int] = []
+        self.prs_with_label: list[PRInfo] = []
+        self.get_prs_with_label_calls: list[tuple[str, str]] = []
 
     def add_label(self, issue_number: int, label: str) -> None:
         self.add_label_calls.append((issue_number, label))
@@ -147,6 +160,10 @@ class MockRepositoryHost:
 
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
+
+    def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
+        self.get_prs_with_label_calls.append((label, state))
+        return list(self.prs_with_label)
 
     def search_pr_refs_for_issue(self, issue_number: int) -> list[PRRef]:
         self.search_pr_refs_calls.append(issue_number)
@@ -2544,40 +2561,464 @@ class TestOrchestratorLaunchReworkSession:
 # =============================================================================
 
 
-class TestLaunchTriageSession:
-    """Tests for launch_triage_session function (lines 1055-1058)."""
+class TestPendingSessionQueuesTriageIntake:
+    """Owner-level triage intake invariants (#6768 round 3).
+
+    PendingSessionQueues is the only writer of state.pending_triage_reviews:
+    it constructs the queue item for the declared variant, applies ONE dedup
+    rule (issue number vs the pending queue), and returns a typed outcome.
+    """
+
+    def test_queue_batch_review_constructs_batch_entry(self):
+        state = OrchestratorState()
+
+        outcome = PendingSessionQueues(state).queue_batch_review(7, "Triage Batch")
+
+        assert outcome is TriageQueueOutcome.QUEUED
+        (entry,) = state.pending_triage_reviews
+        assert entry.issue_number == 7
+        assert entry.title == "Triage Batch"
+        assert entry.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_queue_failure_investigation_constructs_failure_entry(self):
+        state = OrchestratorState()
+
+        outcome = PendingSessionQueues(state).queue_failure_investigation(
+            8, "Investigate: timeout"
+        )
+
+        assert outcome is TriageQueueOutcome.QUEUED
+        (entry,) = state.pending_triage_reviews
+        assert entry.issue_number == 8
+        assert entry.title == "Investigate: timeout"
+        assert entry.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+
+    def test_duplicate_issue_number_returns_duplicate_without_double_queue(self):
+        state = OrchestratorState()
+        queues = PendingSessionQueues(state)
+        assert queues.queue_batch_review(7, "Triage Batch") is TriageQueueOutcome.QUEUED
+
+        outcome = queues.queue_batch_review(7, "Triage Batch (retry)")
+
+        assert outcome is TriageQueueOutcome.DUPLICATE
+        (entry,) = state.pending_triage_reviews
+        assert entry.title == "Triage Batch"
+
+    def test_dedup_is_by_issue_number_across_variants(self):
+        """One rule: an issue already queued is never re-queued, either variant."""
+        state = OrchestratorState()
+        queues = PendingSessionQueues(state)
+        queues.queue_batch_review(7, "Triage Batch")
+
+        outcome = queues.queue_failure_investigation(7, "Investigate: timeout")
+
+        assert outcome is TriageQueueOutcome.DUPLICATE
+        (entry,) = state.pending_triage_reviews
+        assert entry.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_remove_triage_removes_only_matching_issue(self):
+        """remove_triage completes the owner lifecycle (#6768 round 4)."""
+        state = OrchestratorState()
+        queues = PendingSessionQueues(state)
+        queues.queue_batch_review(7, "Triage Batch")
+        queues.queue_failure_investigation(8, "Investigate: timeout")
+
+        queues.remove_triage(7)
+
+        (entry,) = state.pending_triage_reviews
+        assert entry.issue_number == 8
+
+        queues.remove_triage(999)  # unknown issue: no-op
+        assert len(state.pending_triage_reviews) == 1
+
+
+def _make_queued_triage(
+    issue_number: int = 789,
+    flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW,
+) -> PendingTriageReview:
+    return PendingTriageReview(
+        issue_number=issue_number, title="Triage batch", flavor=flavor
+    )
+
+
+def _stub_triage_launcher(result: LaunchResult) -> MagicMock:
+    """SessionLauncher stub for triage wrapper tests (no restorable terminals)."""
+    launcher = MagicMock()
+    launcher.launch_issue_session.return_value = result
+    launcher.session_manager.runner.discover_running_sessions.return_value = []
+    return launcher
+
+
+class TestOrchestratorLaunchTriageSession:
+    """Tests for orchestrator_launch_triage_session (queue lifecycle owner)."""
 
     def test_raises_when_no_triage_agent(self, sample_config):
         """Verify raises ValueError when no triage agent configured."""
         sample_config.triage_review_agent = None
-        triage = PendingTriageReview(issue_number=789, title="Triage batch")
 
         with pytest.raises(ValueError, match="Invalid triage agent"):
-            launch_triage_session(triage, sample_config, lambda issue: None)
+            orchestrator_launch_triage_session(
+                _make_queued_triage(),
+                OrchestratorState(),
+                sample_config,
+                MagicMock(),
+                MagicMock(),
+            )
 
     def test_raises_when_triage_agent_not_in_config(self, sample_config):
         """Verify raises ValueError when triage agent not configured."""
         sample_config.triage_review_agent = "agent:missing"
-        triage = PendingTriageReview(issue_number=789, title="Triage batch")
 
         with pytest.raises(ValueError, match="Invalid triage agent"):
-            launch_triage_session(triage, sample_config, lambda issue: None)
+            orchestrator_launch_triage_session(
+                _make_queued_triage(),
+                OrchestratorState(),
+                sample_config,
+                MagicMock(),
+                MagicMock(),
+            )
 
-    def test_calls_launch_fn_with_issue(self, sample_config):
-        """Verify launch function is called with correct issue."""
+    @pytest.mark.parametrize(
+        "flavor",
+        [TriageSessionFlavor.BATCH_REVIEW, TriageSessionFlavor.FAILURE_INVESTIGATION],
+    )
+    def test_launches_with_queue_items_own_flavor(self, sample_config, flavor):
+        """The queue item's flavor travels to the launch verbatim (#6768 B5).
+
+        The queue holds both variants; hard-coding either one here collapses
+        the other (batch reviews launched as failure investigations skip
+        manifest prep and audit nothing).
+        """
         sample_config.triage_review_agent = "agent:web"
-        triage = PendingTriageReview(issue_number=789, title="Triage batch")
-        launched_issues = []
+        launcher = _stub_triage_launcher(LaunchResult(session=None, success=False))
 
-        def track_launch(issue):
-            launched_issues.append(issue)
-            return None
+        orchestrator_launch_triage_session(
+            _make_queued_triage(flavor=flavor),
+            OrchestratorState(),
+            sample_config,
+            launcher,
+            MagicMock(),
+        )
 
-        launch_triage_session(triage, sample_config, track_launch)
+        call = launcher.launch_issue_session.call_args
+        issue = call.args[0]
+        assert issue.number == 789
+        assert "agent:web" in issue.labels
+        assert call.kwargs["triage_flavor"] is flavor
 
-        assert len(launched_issues) == 1
-        assert launched_issues[0].number == 789
-        assert "agent:web" in launched_issues[0].labels
+    def test_successful_launch_removes_item_from_queue(self, sample_config, tmp_path):
+        """Reviewer scenario: a launched item must not stay queued (#6768 r4)."""
+        sample_config.triage_review_agent = "agent:web"
+        state = OrchestratorState()
+        PendingSessionQueues(state).queue_batch_review(789, "Triage batch")
+        session = Session(
+            key=SessionKey(issue=FakeIssueKey("789"), task=TaskKind.CODE),
+            issue=Issue(number=789, title="Triage batch", labels=["agent:web"]),
+            agent_config=AgentConfig(prompt_path=tmp_path / "p.md", timeout_minutes=45),
+            terminal_id="issue-789",
+            worktree_path=tmp_path,
+            branch_name="789-triage",
+            run_assets=make_session_run_assets(tmp_path, session_name="issue-789"),
+        )
+        launcher = _stub_triage_launcher(LaunchResult(session=session, success=True))
+
+        result = orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0], state, sample_config, launcher, MagicMock()
+        )
+
+        assert result is session
+        assert state.pending_triage_reviews == []
+        assert state.active_sessions == [session]
+
+    def test_keep_queued_launch_retains_item_for_retry(self, sample_config):
+        """keep_queued (existing terminal, not yet restorable) is the ONLY retention case."""
+        sample_config.triage_review_agent = "agent:web"
+        state = OrchestratorState()
+        PendingSessionQueues(state).queue_batch_review(789, "Triage batch")
+        launcher = _stub_triage_launcher(
+            LaunchResult(session=None, success=False, keep_queued=True)
+        )
+
+        result = orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0], state, sample_config, launcher, MagicMock()
+        )
+
+        assert result is None
+        assert len(state.pending_triage_reviews) == 1
+
+    def test_permanent_launch_failure_drops_item(self, sample_config):
+        """Non-retryable failure drops the item instead of relaunch-looping.
+
+        Labels-as-truth recovers a dropped batch at startup; a dropped failure
+        investigation is a best-effort audit (mirrors the review consumer).
+        """
+        sample_config.triage_review_agent = "agent:web"
+        state = OrchestratorState()
+        PendingSessionQueues(state).queue_failure_investigation(789, "Investigate")
+        launcher = _stub_triage_launcher(LaunchResult(session=None, success=False))
+
+        result = orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0], state, sample_config, launcher, MagicMock()
+        )
+
+        assert result is None
+        assert state.pending_triage_reviews == []
+
+
+class TestLaunchTriageIssueSessionFlavors:
+    """Launch-side triage flavor regressions (#6768 B4 / ADR-0031).
+
+    Both triage variants launch through launch_issue_session; the flavor must
+    decide whether the global batch PR manifest is prepared, and the
+    assignment file must always record what the session was asked to do.
+    """
+
+    @staticmethod
+    def _enable_triage_agent(config, tmp_path: Path) -> None:
+        prompt_path = tmp_path / "triage-prompt.md"
+        prompt_path.write_text("Triage prompt")
+        config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        config.triage_review_agent = "agent:triage"
+
+    @staticmethod
+    def _started_run_dir(mock_events) -> Path:
+        started = next(
+            e for e in mock_events.events if str(e.name) == "session.started"
+        )
+        return Path(started.data["run_dir"])
+
+    @staticmethod
+    def _triage_pr(number: int) -> PRInfo:
+        return PRInfo(
+            number=number,
+            title=f"PR {number}",
+            url=f"https://example/pr/{number}",
+            branch=f"branch-{number}",
+            body="",
+            state="open",
+            labels=["code-reviewed"],
+        )
+
+    def test_default_flavor_prepares_manifest_and_batch_assignment(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        issue = Issue(
+            number=901, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        assert mock_repo_host.get_prs_with_label_calls == [
+            (config.triage_watch_label, "all")
+        ]
+        run_dir = self._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["triage_manifest"] == str(
+            run_dir / "triage-data" / "manifest.json"
+        )
+        assert (run_dir / "triage-data" / "manifest.json").exists()
+        assignment_path = run_dir / "triage-data" / "triage-assignment.json"
+        assert run_manifest["triage_assignment"] == str(assignment_path)
+        assignment = json.loads(assignment_path.read_text())
+        assert assignment["flavor"] == "batch_review"
+        assert assignment["focus_issue_number"] is None
+
+    def test_failure_investigation_skips_manifest_and_records_focus(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        issue = Issue(
+            number=902,
+            title="Investigate: session timed out",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue,
+            active_sessions=[],
+            triage_flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        )
+
+        assert result.success is True
+        # The global batch PR manifest must NOT be built or queried.
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = self._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        assert not (run_dir / "triage-data" / "manifest.json").exists()
+        assignment_path = run_dir / "triage-data" / "triage-assignment.json"
+        assert run_manifest["triage_assignment"] == str(assignment_path)
+        assignment = json.loads(assignment_path.read_text())
+        assert assignment["flavor"] == "failure_investigation"
+        assert assignment["focus_issue_number"] == 902
+        assert assignment["focus_reason"] == "Investigate: session timed out"
+
+    def test_non_triage_session_gets_neither_manifest_nor_assignment(
+        self, launcher_bundle, sample_issue, mock_repo_host, mock_events, tmp_path
+    ):
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            sample_issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = self._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        assert "triage_assignment" not in run_manifest
+        assert not (run_dir / "triage-data").exists()
+
+
+class TestTriageProducerToLaunchBoundary:
+    """The flavor set at the producer boundary must survive queue -> launch (#6768 B5).
+
+    The pending-triage queue carries both variants; these tests drive the real
+    producer handlers into the queue and the queued item through
+    orchestrator_launch_triage_session into the real SessionLauncher, asserting
+    the launch behaves per the producer's flavor (manifest prep + written
+    assignment) and empties the queue (#6768 round 4).
+    """
+
+    @staticmethod
+    def _support_for(state: OrchestratorState) -> OrchestratorSupport:
+        """Minimal OrchestratorSupport; the queue handlers only touch state."""
+        return OrchestratorSupport(
+            config=MagicMock(),
+            events=MockEventSink(),
+            repository_host=MagicMock(),
+            state=state,
+            event_context=MagicMock(),
+            session_manager=MagicMock(),
+            action_applier=MagicMock(),
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=MagicMock(),
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=MagicMock(),
+            kill_session=MagicMock(),
+        )
+
+    @staticmethod
+    def _launch(queued, state, launcher_bundle):
+        session = orchestrator_launch_triage_session(
+            queued,
+            state,
+            launcher_bundle.launcher.config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+        assert session is not None
+        return session
+
+    def test_threshold_batch_issue_launches_as_batch_review(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """_handle_create_triage_issue -> queue -> launch prepares the manifest."""
+        config = launcher_bundle.launcher.config
+        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [
+            TestLaunchTriageIssueSessionFlavors._triage_pr(555)
+        ]
+        state = OrchestratorState()
+        support = self._support_for(state)
+
+        support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
+            CreateTriageIssueAction(
+                title="Triage Batch Review: 5 PRs pending",
+                body="Review these PRs",
+                labels=("agent:triage",),
+                pr_count=5,
+            ),
+            MagicMock(success=True, details={"issue_number": 903}),
+        )
+        (queued,) = state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+        session = self._launch(queued, state, launcher_bundle)
+
+        # A launched item leaves the queue and cannot be relaunched next tick.
+        assert state.pending_triage_reviews == []
+        assert state.active_sessions == [session]
+        decision = TriageWorkflow(config, NullEventSink()).should_launch_triage(
+            state.pending_triage_reviews, len(state.active_sessions), paused=False
+        )
+        assert decision.should_launch is False
+        assert decision.triage_to_launch == ()
+
+        # Batch review must prepare the PR manifest...
+        assert mock_repo_host.get_prs_with_label_calls == [
+            (config.triage_watch_label, "all")
+        ]
+        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["triage_manifest"] == str(
+            run_dir / "triage-data" / "manifest.json"
+        )
+        # ...and record a batch assignment for the completion planner.
+        assignment = json.loads(
+            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+        )
+        assert assignment["flavor"] == "batch_review"
+        assert assignment["focus_issue_number"] is None
+
+    def test_failure_investigation_launches_as_failure_flavor(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """_handle_queue_triage -> queue -> launch skips the manifest query."""
+        config = launcher_bundle.launcher.config
+        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [
+            TestLaunchTriageIssueSessionFlavors._triage_pr(555)
+        ]
+        state = OrchestratorState()
+        support = self._support_for(state)
+
+        support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
+            QueueTriageAction(
+                issue_number=904,
+                title="Investigate: Test issue (timed_out)",
+                reason="Session failed with status 'timed_out'",
+            ),
+            MagicMock(success=True, details={}),
+        )
+        (queued,) = state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+
+        session = self._launch(queued, state, launcher_bundle)
+
+        # A launched item leaves the queue and cannot be relaunched next tick.
+        assert state.pending_triage_reviews == []
+        assert state.active_sessions == [session]
+
+        # Failure investigation must NOT query or build the batch PR manifest...
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        # ...and its assignment records the focused investigation.
+        assignment = json.loads(
+            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+        )
+        assert assignment["flavor"] == "failure_investigation"
+        assert assignment["focus_issue_number"] == 904
 
 
 # =============================================================================

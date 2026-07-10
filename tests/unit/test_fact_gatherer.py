@@ -262,18 +262,27 @@ class TestFactGathererTriageFacts:
 
         assert result is None
 
-    def test_triage_facts_returns_none_when_no_watch_label(
-        self, fact_gatherer, sample_state, mock_config
+    def test_triage_facts_uses_default_watch_label_when_none_configured(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test returns None when no watch label configured."""
+        """With agent+threshold set, the watch label falls back to the default.
+
+        The single watch-label owner (Config.triage_watch_label, #6768 B3)
+        returns "code-reviewed" when neither label is configured — the same
+        default the manifest builder always applied — instead of silently
+        disabling the trigger while the manifest side stayed armed.
+        """
         mock_config.triage_review_agent = "agent:triage"
         mock_config.triage_review_threshold = 5
         mock_config.triage_review_label = None
         mock_config.code_reviewed_label = None
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues.return_value = []
 
         result = fact_gatherer.gather_triage_facts(sample_state)
 
-        assert result is None
+        assert result is not None
+        assert result.watch_label == "code-reviewed"
 
     def test_triage_facts_counts_prs_with_label(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
@@ -297,6 +306,35 @@ class TestFactGathererTriageFacts:
         assert result.threshold == 2
         assert result.watch_label == "code-reviewed"
 
+    def test_triage_facts_exclude_terminally_triaged_prs(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Terminally-triaged PRs never count toward the threshold (#6768 r5).
+
+        Fact gathering shares the manifest builder's candidate predicate;
+        counting triage-reviewed/triage-failed PRs that the manifest then
+        filters out is what created endless empty-batch tracking issues.
+        """
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=10, url="...", title="Still pending", branch="b1",
+                   labels=["code-reviewed"], body="", state="open"),
+            PRInfo(number=11, url="...", title="Audited", branch="b2",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+            PRInfo(number=12, url="...", title="Audit failed", branch="b3",
+                   labels=["code-reviewed", "triage-failed"], body="", state="open"),
+        ]
+        mock_repository_host.list_issues.return_value = []
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.pr_count == 1
+        assert result.prs == ((10, "Still pending"),)
+
     def test_triage_facts_detects_existing_issue(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
@@ -314,6 +352,39 @@ class TestFactGathererTriageFacts:
 
         assert result is not None
         assert result.existing_triage_issue == 100
+
+    def test_triage_facts_ignore_closed_batch_tracking_issue(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """A CLOSED batch tracking issue no longer suppresses batch creation (#6768 r4).
+
+        Successful batch completion closes the tracking issue; the existing-batch
+        finder queries state="open", so the closed batch stops matching and
+        existing_triage_issue clears, allowing the next threshold trigger.
+        """
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        closed_batch = Issue(
+            number=100,
+            title="Triage Batch Review: 5 PRs pending",
+            labels=["agent:triage"],
+        )
+
+        def list_issues(labels=None, state="open", limit=100, **kwargs):
+            # Honor GitHub state filtering: the closed batch only appears in
+            # non-open queries.
+            del labels, limit, kwargs
+            return [] if state == "open" else [closed_batch]
+
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues.side_effect = list_issues
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.existing_triage_issue is None
 
     def test_triage_facts_ignores_existing_issue_outside_filter_label(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host

@@ -502,7 +502,6 @@ def _status_for_event(event_name: str, data: dict[str, Any] | None = None) -> st
         "rework.launching",
         "triage.issue_created",
         "triage.launching",
-        "triage.batch_triggered",
         "validation.started",
         "provider.transient_error",
         "provider.outage_entered",

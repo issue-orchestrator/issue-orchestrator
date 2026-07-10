@@ -106,6 +106,7 @@ from .review_exchange_pr_comment import (
     build_review_exchange_pr_comment_body,
 )
 from .test_skip_guard import scan_added_test_skip_guards
+from .triage_session_policy import is_benign_triage_no_commits, is_triage_session, shape_requested_actions_for_triage
 from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
@@ -620,6 +621,11 @@ class CompletionProcessor:
             completion_path
         )
 
+    def _is_triage_session(self, agent_label: str | None) -> bool:
+        """Triage identity via the ADR-0031 owner (config-declared triage agent)."""
+        triage_agent = self._config.triage_review_agent if self._config else None
+        return is_triage_session(triage_agent, agent_label)
+
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
     ) -> WorktreeValidationResult:
@@ -1020,6 +1026,21 @@ class CompletionProcessor:
         if error_result:
             return error_result
         assert record is not None  # Guaranteed if error_result is None
+
+        if agent_label is None:
+            agent_label, agent_error = self._resolve_agent_label_from_completion_path(
+                completion_path
+            )
+            if agent_error:
+                return ProcessingResult(
+                    success=False, message=agent_error, errors=[agent_error]
+                )
+        # Triage prompts promise no orchestrator comments (ADR-0031); the
+        # record is untrusted intent, so shape it once at the door.
+        if self._is_triage_session(agent_label):
+            record.requested_actions = list(
+                shape_requested_actions_for_triage(tuple(record.requested_actions))
+            )
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
             issue_number=issue_number,
@@ -1065,17 +1086,6 @@ class CompletionProcessor:
             record.outcome.value,
             [a.value for a in record.requested_actions],
         )
-
-        if agent_label is None:
-            agent_label, agent_error = self._resolve_agent_label_from_completion_path(
-                completion_path
-            )
-            if agent_error:
-                return ProcessingResult(
-                    success=False,
-                    message=agent_error,
-                    errors=[agent_error],
-                )
 
         preserved_completion_path = preserve_completion_record(
             session_output=self.session_output,
@@ -1915,6 +1925,11 @@ class CompletionProcessor:
                 exchange_result=exchange_result,
             )
         except Exception as e:
+            # A clean triage audit has nothing to publish; that is success,
+            # not publish-failure (ADR-0031 / #6768 B1).
+            if self._is_triage_session(agent_label) and is_benign_triage_no_commits(action, e):
+                logger.info("[triage] clean audit, nothing to publish: issue=#%d", issue_number)
+                return self._ActionResult(branch=branch)
             logger.exception(
                 "Exception executing action %s for #%d: %s",
                 action.value,

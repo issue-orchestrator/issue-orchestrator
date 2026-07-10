@@ -65,12 +65,12 @@
       "value": 1
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_processor.py": {
-      "detail": "21 branch site(s) mention lifecycle/control terms",
+      "detail": "22 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/completion_processor.py",
       "path": "src/issue_orchestrator/control/completion_processor.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 21
+      "value": 22
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/completion_record_validation.py": {
       "detail": "3 branch site(s) mention lifecycle/control terms",
@@ -351,14 +351,6 @@
       "path": "src/issue_orchestrator/control/startup_manager.py",
       "rule_id": "control_policy_branch_sites",
       "value": 14
-    },
-    "control_policy_branch_sites:src/issue_orchestrator/control/triage_manifest_builder.py": {
-      "detail": "2 branch site(s) mention lifecycle/control terms",
-      "kind": "control_policy_branch_sites",
-      "metric_id": "src/issue_orchestrator/control/triage_manifest_builder.py",
-      "path": "src/issue_orchestrator/control/triage_manifest_builder.py",
-      "rule_id": "control_policy_branch_sites",
-      "value": 2
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/validation.py": {
       "detail": "6 branch site(s) mention lifecycle/control terms",
@@ -1297,12 +1289,12 @@
       "value": 1235
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_processor.py": {
-      "detail": "2696 lines exceeds budget 800",
+      "detail": "2710 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/completion_processor.py",
       "path": "src/issue_orchestrator/control/completion_processor.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2696
+      "value": 2710
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/completion_review_exchange.py": {
       "detail": "1506 lines exceeds budget 800",
@@ -1337,12 +1329,12 @@
       "value": 1910
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/session_launcher.py": {
-      "detail": "2203 lines exceeds budget 800",
+      "detail": "2237 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/control/session_launcher.py",
       "path": "src/issue_orchestrator/control/session_launcher.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 2203
+      "value": 2237
     },
     "oversized_control_hotspots:src/issue_orchestrator/control/startup_manager.py": {
       "detail": "990 lines exceeds budget 800",
@@ -1481,12 +1473,12 @@
       "value": 1641
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config.py": {
-      "detail": "1488 lines exceeds budget 800",
+      "detail": "1498 lines exceeds budget 800",
       "kind": "file_line_budget",
       "metric_id": "src/issue_orchestrator/infra/config.py",
       "path": "src/issue_orchestrator/infra/config.py",
       "rule_id": "oversized_control_hotspots",
-      "value": 1488
+      "value": 1498
     },
     "oversized_control_hotspots:src/issue_orchestrator/infra/config_sections.py": {
       "detail": "900 lines exceeds budget 800",
@@ -2520,14 +2512,6 @@
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/orchestrator_support.py:issue-orchestrator.direct-runtime-state-mutation:b15f88fa5d65": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 386: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/orchestrator_support.py:issue-orchestrator.direct-runtime-state-mutation:b15f88fa5d65",
-      "path": "src/issue_orchestrator/control/orchestrator_support.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
     "semgrep_owner_boundaries:src/issue_orchestrator/control/orchestrator_support.py:issue-orchestrator.direct-runtime-state-mutation:d429e9f02145": {
       "detail": "issue-orchestrator.direct-runtime-state-mutation line 439: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
@@ -2540,14 +2524,6 @@
       "detail": "issue-orchestrator.direct-runtime-state-mutation line 399: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/orchestrator_support.py:issue-orchestrator.direct-runtime-state-mutation:e5b5bafbf831",
-      "path": "src/issue_orchestrator/control/orchestrator_support.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/orchestrator_support.py:issue-orchestrator.direct-runtime-state-mutation:f669e38fc14d": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 456: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/orchestrator_support.py:issue-orchestrator.direct-runtime-state-mutation:f669e38fc14d",
       "path": "src/issue_orchestrator/control/orchestrator_support.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
@@ -2685,14 +2661,6 @@
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_routing.py:issue-orchestrator.direct-runtime-state-mutation:eca07738a16c",
       "path": "src/issue_orchestrator/control/session_routing.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/startup_manager.py:issue-orchestrator.direct-runtime-state-mutation:952b5ee86d95": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 612: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/startup_manager.py:issue-orchestrator.direct-runtime-state-mutation:952b5ee86d95",
-      "path": "src/issue_orchestrator/control/startup_manager.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1
     },

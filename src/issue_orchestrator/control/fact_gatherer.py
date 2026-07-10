@@ -206,17 +206,24 @@ class FactGatherer:
         )
 
     def _get_triage_watch_label(self) -> str | None:
-        """Get the label to watch for triage review."""
+        """Get the label to watch for triage review (None = trigger disabled)."""
         if not self.config.triage_review_agent or self.config.triage_review_threshold <= 0:
             return None
-        return self.config.triage_review_label or self.config.code_reviewed_label
+        return self.config.triage_watch_label
 
     def _fetch_triage_prs(self, watch_label: str) -> list[Any]:
-        """Fetch PRs ready for triage review."""
+        """Fetch PRs that are current triage batch candidates.
+
+        Eligibility comes from the shared :class:`TriageCandidatePolicy` — the
+        same predicate the manifest builder applies — so terminally-triaged
+        PRs never count toward the threshold that the manifest then filters
+        out (#6768 round 5: that divergence created empty-batch loops).
+        """
+        from .triage_manifest_builder import TriageCandidatePolicy
+
+        policy = TriageCandidatePolicy.from_config(self.config)
         prs = self.repository_host.get_prs_with_label(watch_label, state="all")
-        if self.config.filtering.label:
-            prs = [pr for pr in prs if self.config.filtering.label in _pr_labels(pr)]
-        return prs
+        return [pr for pr in prs if policy.is_candidate(_pr_labels(pr))]
 
     def _find_existing_triage_issue(self) -> int | None:
         """Find existing triage review issue if any."""

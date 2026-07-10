@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Optional, cast
 if TYPE_CHECKING:
     from ..control.planner_types import Plan
     from ..control.session_manager import SessionRef, SessionType
+    from ..domain.triage_session import TriageSessionFlavor
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun
 
@@ -46,7 +47,7 @@ from ..control.session_routing import (
     orchestrator_launch_retrospective_review_session as _launch_retrospective_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
     orchestrator_launch_validation_retry_session as _launch_validation_retry_session,
-    launch_triage_session as _launch_triage_session,
+    orchestrator_launch_triage_session as _launch_triage_session,
     session_launcher_callback as _session_launcher_callback,
     restore_running_sessions as _restore_running_sessions,
     parse_session_ref as _parse_session_ref,
@@ -264,7 +265,7 @@ class Orchestrator:
         if retry is None:
             return None
         return _launch_validation_retry_session(retry, self.state, self._session_launcher, self.deps.session_restorer)
-    def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self.state.active_sessions, self._launch_triage_session)
+    def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self._launch_triage_session)
 
     def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]: return _gw_get_issue_machine(issue, self.deps.state_machine_manager)
     def _get_session_machine(self, name: str, n: int, timeout: int) -> Optional[SessionStateMachine]: return _sl_get_session_machine(name, n, timeout, self.deps.state_machine_manager)
@@ -373,13 +374,8 @@ class Orchestrator:
                 sessions_root,
             )
 
-    def launch_session(self, issue: Issue) -> Optional[Session]:
-        return _launch_session(
-            issue,
-            self.state,
-            self._session_launcher,
-            self.deps.session_restorer,
-        )
+    def launch_session(self, issue: Issue, *, triage_flavor: "TriageSessionFlavor | None" = None) -> Optional[Session]:
+        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, triage_flavor=triage_flavor)
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output, publish_recovery=self.deps.publish_recovery)
 
     def tick(self) -> bool:
@@ -1034,7 +1030,7 @@ class Orchestrator:
     def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.deps.events, self.deps.repository_host, self.deps.fact_gatherer, self.deps.pr_scanner, self.deps.label_sync, self._event_context, self.deps.label_manager, self.scheduler.dependency_evaluator)
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]: return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
-    def _launch_triage_session(self, triage: PendingTriageReview) -> None: _launch_triage_session(triage, self.config, self.launch_session)
+    def _launch_triage_session(self, triage: PendingTriageReview) -> Optional[Session]: return _launch_triage_session(triage, self.state, self.config, self._session_launcher, self.deps.session_restorer)
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)
     def _recover_orphaned_cleanups(self) -> None: self._plan_applier.recover_orphaned_cleanups()
     def scan_needs_code_review_prs(self) -> None: self._github_workflow.scan_needs_code_review_prs(self.state)

@@ -997,6 +997,54 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.triage_review_threshold",
         },
     )
+    triage_review_label: Optional[str] = Field(
+        None,
+        title="Triage Review Label",
+        description="Label marking PRs that await triage review (optional)",
+        json_schema_extra={
+            "doc_examples": ["needs-triage-review"],
+            "doc_notes": "Falls back to code_reviewed_label when not set.",
+            "section": "Triage Review",
+            "config_attr": "triage_review_label",
+            "yaml_path": "review.triage_review_label",
+        },
+    )
+    triage_reviewed_label: str = Field(
+        "triage-reviewed",
+        title="Triage Reviewed Label",
+        description="Label added to manifest PRs after triage completes",
+        json_schema_extra={
+            "doc_examples": ["triage-reviewed"],
+            "doc_notes": "Added to every PR in the triage manifest on success.",
+            "section": "Triage Review",
+            "config_attr": "triage_reviewed_label",
+            "yaml_path": "review.triage_reviewed_label",
+        },
+    )
+    triage_failed_label: str = Field(
+        "triage-failed",
+        title="Triage Failed Label",
+        description="Label added to manifest PRs when a triage session fails",
+        json_schema_extra={
+            "doc_examples": ["triage-failed"],
+            "doc_notes": "Added to every PR in the triage manifest on failure.",
+            "section": "Triage Review",
+            "config_attr": "triage_failed_label",
+            "yaml_path": "review.triage_failed_label",
+        },
+    )
+    triage_review_on_failure: bool = Field(
+        True,
+        title="Triage on Session Failure",
+        description="Queue a triage investigation when sessions fail",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Disable to only triage PR batches, not failures.",
+            "section": "Triage Review",
+            "config_attr": "triage_review_on_failure",
+            "yaml_path": "review.triage_review_on_failure",
+        },
+    )
 
 
 class GoalPilotSettings(BaseModel):

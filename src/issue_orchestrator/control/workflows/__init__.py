@@ -8,7 +8,7 @@ Each workflow is a tickable module that:
 Workflows:
 - ReviewWorkflow: Handles code review lifecycle
 - ReworkWorkflow: Handles rework cycle after review rejection
-- TriageWorkflow: Handles failure investigation and batch triage
+- TriageWorkflow: Decides when pending triage reviews launch
 
 Architecture principle: workflows contain POLICY (what should happen),
 not MECHANICS (how to do it). Mechanics live in execution adapters.

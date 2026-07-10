@@ -49,8 +49,9 @@ from .transition_log import log_transition
 from ..domain.models import (
     BLOCKED_HISTORY_STATUSES,
     PendingRetrospectiveReview,
-    PendingReview, PendingRework, PendingTriageReview,
+    PendingReview, PendingRework,
 )
+from .session_routing import PendingSessionQueues
 
 logger = logging.getLogger(__name__)
 
@@ -389,7 +390,7 @@ class OrchestratorSupport:
         a = cast(CreateTriageIssueAction, action)
         num = result.details.get("issue_number")
         if num:
-            self.state.pending_triage_reviews.append(PendingTriageReview(num, a.title))
+            PendingSessionQueues(self.state).queue_batch_review(num, a.title)
             logger.info("Created triage #%d", num)
 
     def _handle_cleanup_session(self, action: "Action", result: "ActionResult") -> None:
@@ -458,8 +459,7 @@ class OrchestratorSupport:
     def _handle_queue_triage(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueTriageAction
         a = cast(QueueTriageAction, action)
-        if not any(t.issue_number == a.issue_number for t in self.state.pending_triage_reviews):
-            self.state.pending_triage_reviews.append(PendingTriageReview(a.issue_number, a.title))
+        PendingSessionQueues(self.state).queue_failure_investigation(a.issue_number, a.title)
 
     def update_queue_cache(self) -> None:
         from .queue_projection import QueueProjection

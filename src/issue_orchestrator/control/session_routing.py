@@ -8,6 +8,7 @@ SessionManager adapter calls.
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
@@ -20,6 +21,7 @@ from ..domain.models import (
     PendingValidationRetry,
     Session,
 )
+from ..domain.triage_session import TriageSessionFlavor
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
@@ -48,9 +50,24 @@ class _ExistingTerminalRestorationRequest:
     tab_name: str = ""
 
 
+class TriageQueueOutcome(Enum):
+    """Explicit result of asking the queue owner to enqueue triage work."""
+
+    QUEUED = "queued"
+    DUPLICATE = "duplicate"
+
+
 @dataclass(frozen=True, slots=True)
-class _PendingSessionQueues:
-    """Owner for launch-routing pending queue removals."""
+class PendingSessionQueues:
+    """Owner for pending session queues: launch-routing removals + triage intake.
+
+    Triage intake is behavior-level (#6768 round 3): producers say WHICH
+    variant they are queueing (batch review vs failure investigation) and this
+    owner constructs the ``PendingTriageReview``, applies the single
+    deduplication rule (by issue number against the pending queue), and
+    returns an explicit :class:`TriageQueueOutcome`. Producers never touch the
+    dataclass or the state list.
+    """
 
     state: "OrchestratorState"
 
@@ -78,6 +95,50 @@ class _PendingSessionQueues:
             if queued.issue_number != issue_number
         ]
 
+    def remove_triage(self, issue_number: int) -> None:
+        self.state.pending_triage_reviews[:] = [
+            t
+            for t in self.state.pending_triage_reviews
+            if t.issue_number != issue_number
+        ]
+
+    def queue_batch_review(self, issue_number: int, title: str) -> TriageQueueOutcome:
+        """Queue a threshold-created batch tracking issue (audits the PR manifest)."""
+        return self._queue_triage(
+            PendingTriageReview(
+                issue_number, title, flavor=TriageSessionFlavor.BATCH_REVIEW
+            )
+        )
+
+    def queue_failure_investigation(
+        self, issue_number: int, title: str
+    ) -> TriageQueueOutcome:
+        """Queue a focused investigation of one failed issue."""
+        return self._queue_triage(
+            PendingTriageReview(
+                issue_number, title, flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+            )
+        )
+
+    def _queue_triage(self, item: PendingTriageReview) -> TriageQueueOutcome:
+        """Apply the one dedup rule (issue number vs pending queue) and enqueue."""
+        queue = self.state.pending_triage_reviews
+        if any(t.issue_number == item.issue_number for t in queue):
+            logger.info(
+                "[TRIAGE] Issue #%d already queued for triage; skipping %s request",
+                item.issue_number,
+                item.flavor.value,
+            )
+            return TriageQueueOutcome.DUPLICATE
+        queue.append(item)
+        logger.info(
+            "[TRIAGE] Queued %s for issue #%d: %s",
+            item.flavor.value,
+            item.issue_number,
+            item.title,
+        )
+        return TriageQueueOutcome.QUEUED
+
 
 def orchestrator_launch_review_session(
     review: PendingReview,
@@ -86,7 +147,7 @@ def orchestrator_launch_review_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a review session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_review_session(review, state.active_sessions)
     if result.success and result.session:
         pending_queues.remove_review(review.pr_number)
@@ -118,7 +179,7 @@ def orchestrator_launch_retrospective_review_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a retrospective review session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_retrospective_review_session(
         review,
         state.active_sessions,
@@ -154,7 +215,7 @@ def orchestrator_launch_rework_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a rework session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_rework_session(rework, state.active_sessions)
     if result.success and result.session:
         pending_queues.remove_rework(rework)
@@ -189,7 +250,7 @@ def orchestrator_launch_validation_retry_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a validation retry session and update retry queue tracking."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_validation_retry_session(
         retry, state.active_sessions
     )
@@ -213,16 +274,60 @@ def orchestrator_launch_validation_retry_session(
     return result.session if result.success else None
 
 
-def launch_triage_session(
+def orchestrator_launch_triage_session(
     triage: PendingTriageReview,
+    state: "OrchestratorState",
     config: Config,
-    launch_session_fn: Callable[[Issue], Optional[Session]],
-) -> None:
-    """Launch a triage review session."""
+    session_launcher: SessionLauncher,
+    session_restorer: "SessionRestorer",
+) -> Optional[Session]:
+    """Launch a queued triage session and update orchestrator queues.
+
+    The pending-triage queue carries BOTH variants — threshold-created batch
+    tracking issues and failure investigations — and the planner launches them
+    through this path before ordinary issue pickup. The producer boundary that
+    queued the item declared its flavor; forward it verbatim (#6768 B5:
+    hard-coding one flavor here made batch reviews skip manifest prep).
+
+    Queue lifecycle mirrors :func:`orchestrator_launch_review_session`
+    (#6768 round 4 — a launched item previously stayed queued and was
+    relaunched every tick): the item is removed through the owning
+    :class:`PendingSessionQueues` on success, on restore of an existing
+    terminal, and on permanent launch failure (labels-as-truth recovers a
+    dropped batch at startup; a dropped investigation is a best-effort audit).
+    It is retained ONLY when the launcher reports ``keep_queued`` — an
+    existing terminal that could not be restored yet — the one explicitly
+    retryable outcome.
+    """
     agent = config.triage_review_agent
     if not agent or agent not in config.agents:
         raise ValueError(f"Invalid triage agent: {agent}")
-    launch_session_fn(Issue(triage.issue_number, triage.title, [agent]))
+    pending_queues = PendingSessionQueues(state)
+    result = session_launcher.launch_issue_session(
+        Issue(triage.issue_number, triage.title, [agent]),
+        state.active_sessions,
+        triage_flavor=triage.flavor,
+    )
+    if result.success and result.session:
+        pending_queues.remove_triage(triage.issue_number)
+        append_unique_active_sessions(state.active_sessions, [result.session])
+    elif result.keep_queued:
+        restored = _restore_existing_terminal(
+            request=_ExistingTerminalRestorationRequest(
+                issue_number=triage.issue_number,
+                session_name=f"issue-{triage.issue_number}",
+                is_review=False,
+            ),
+            state=state,
+            session_launcher=session_launcher,
+            session_restorer=session_restorer,
+        )
+        if restored:
+            pending_queues.remove_triage(triage.issue_number)
+            return restored
+    else:
+        pending_queues.remove_triage(triage.issue_number)
+    return result.session if result.success else None
 
 
 def session_launcher_callback(
@@ -333,9 +438,13 @@ def orchestrator_launch_session(
     state: "OrchestratorState",
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer | None" = None,
+    *,
+    triage_flavor: TriageSessionFlavor | None = None,
 ) -> Optional[Session]:
     """Launch an issue session and update active-session tracking."""
-    result = session_launcher.launch_issue_session(issue, state.active_sessions)
+    result = session_launcher.launch_issue_session(
+        issue, state.active_sessions, triage_flavor=triage_flavor
+    )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued and session_restorer is not None:

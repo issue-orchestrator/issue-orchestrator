@@ -2571,6 +2571,161 @@ class TestCompletionProcessorPRActions:
         )
 
 
+class TestTriageCompletionEffects:
+    """Triage completion effects (#6768 B1 / ADR-0031).
+
+    Triage prompts promise the orchestrator posts no comments; a clean audit
+    (zero commits) must complete as success rather than publish-failure.
+    Non-triage sessions keep the pre-existing behavior on both counts.
+    """
+
+    NO_COMMITS_ERROR = RuntimeError(
+        "Validation Failed: No commits between main and issue-123"
+    )
+
+    def _make_processor(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+    ) -> CompletionProcessor:
+        prompt = tmp_path / "triage.md"
+        prompt.write_text("Triage prompt")
+        config = Config()
+        config.triage_review_agent = "agent:triage"
+        config.agents = {
+            "agent:triage": AgentConfig(prompt_path=prompt),
+            "agent:coder": AgentConfig(prompt_path=prompt),
+        }
+        mock_git_adapter.default_branch.return_value = "main"
+        return CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={},
+            config=config,
+        )
+
+    @staticmethod
+    def _completed_record() -> CompletionRecord:
+        return make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+                RequestedAction.POST_COMMENT,
+            ],
+            summary="Audited PRs",
+            implementation="Audited 3 PRs, no concerns",
+            comment_body="## Implementation\n\nAudited 3 PRs.",
+        )
+
+    def _process(self, processor, worktree, *, agent_label: str):
+        return processor.process(
+            worktree,
+            run_assets=make_session_run_assets(worktree),
+            issue_number=123,
+            issue_title="Batch Review",
+            agent_label=agent_label,
+        )
+
+    def test_clean_triage_audit_completes_without_publish_failure(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """No-change audit: NoCommitsBetweenError is success, no labels/comment."""
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        processor._emit_publish_failed = MagicMock()  # noqa: SLF001
+        mock_pr_adapter.create_pr.side_effect = self.NO_COMMITS_ERROR
+        worktree = worktree_with_completion(self._completed_record())
+
+        result = self._process(processor, worktree, agent_label="agent:triage")
+
+        assert result.success is True
+        assert not result.errors
+        processor._emit_publish_failed.assert_not_called()  # noqa: SLF001
+        # No comment: neither the requested one nor a failure diagnostic.
+        mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_changed_triage_audit_publishes_pr_but_posts_no_comment(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """Changed audit: PR is created, but the completion comment is dropped."""
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+
+        result = self._process(processor, worktree, agent_label="agent:triage")
+
+        assert result.success is True
+        assert result.pr_url == "https://github.com/owner/repo/pull/42"
+        mock_pr_adapter.create_pr.assert_called_once()
+        mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_non_triage_completion_still_posts_comment(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """Control: a non-triage session's requested comment still posts."""
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+
+        result = self._process(processor, worktree, agent_label="agent:coder")
+
+        assert result.success is True
+        mock_pr_adapter.add_comment.assert_called_once_with(
+            123, "## Implementation\n\nAudited 3 PRs."
+        )
+
+    def test_non_triage_no_commits_is_still_a_publish_failure(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """Control: NoCommitsBetweenError stays critical for non-triage sessions."""
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        processor._emit_publish_failed = MagicMock()  # noqa: SLF001
+        mock_pr_adapter.create_pr.side_effect = self.NO_COMMITS_ERROR
+        worktree = worktree_with_completion(self._completed_record())
+
+        result = self._process(processor, worktree, agent_label="agent:coder")
+
+        assert result.success is False
+        assert any("create_pr" in error for error in result.errors)
+        processor._emit_publish_failed.assert_called_once()  # noqa: SLF001
+
+
 class TestCompletionProcessorGitActions:
     """Tests for git-related actions from completion records."""
 
