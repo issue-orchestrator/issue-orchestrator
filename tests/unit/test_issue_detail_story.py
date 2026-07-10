@@ -154,6 +154,32 @@ def test_status_explanation_running_review() -> None:
     assert _build_status_explanation(ctx, []) == "Code review in progress (7 min)"
 
 
+def test_status_explanation_queued_for_rework_names_pr_cycle_reason() -> None:
+    # Regression (#6588): a rework-queued issue explains itself with the PR
+    # number, cycle, and reason before the rework session launches.
+    ctx = _ctx(
+        flow_stage="queued_for_rework",
+        pr_number=469,
+        current_rework_cycle=1,
+        rework_reason="Merge conflict against base branch",
+    )
+    assert _build_status_explanation(ctx, []) == (
+        "Queued for rework — PR #469 (cycle 1): Merge conflict against base branch"
+    )
+
+
+def test_status_explanation_queued_for_rework_without_pr_falls_back() -> None:
+    ctx = _ctx(
+        flow_stage="queued_for_rework",
+        pr_number=None,
+        current_rework_cycle=2,
+        rework_reason=None,
+    )
+    assert _build_status_explanation(ctx, []) == (
+        "Queued for rework (cycle 2): Rework requested"
+    )
+
+
 def test_status_explanation_prefers_active_review_exchange_substate() -> None:
     ctx = _ctx(flow_stage="in_progress", active_runtime_minutes=31, active_task_kind="code")
     events = [

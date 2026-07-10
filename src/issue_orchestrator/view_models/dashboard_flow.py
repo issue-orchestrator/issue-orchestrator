@@ -104,6 +104,9 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         "github_aria_label": github_aria_label,
         "focus_hint": "Focus issue",
         "github_hint": github_title,
+        # Present only for running sessions; lets the compact-card prompt
+        # action open the run-scoped launch prompt.
+        "run_dir": item.get("run_dir", ""),
         "last_refreshed_label": item.get("last_refreshed_label", "unknown"),
         "is_stale": bool(item.get("is_stale", False)),
         "show_stale_badge": bool(item["show_stale_badge"]),

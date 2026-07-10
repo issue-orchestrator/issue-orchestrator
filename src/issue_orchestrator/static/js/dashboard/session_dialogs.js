@@ -17,7 +17,7 @@ async function refreshInlineSessionPrompt(issueNumber, runDir = null) {
     const promptPre = document.getElementById('logPromptPre');
     if (!promptMeta || !promptPre) return;
     if (!runDir) {
-        promptMeta.textContent = 'Prompt unavailable (missing run context).';
+        promptMeta.textContent = 'Launch prompt unavailable (missing run context).';
         promptPre.textContent = '';
         return;
     }
@@ -28,16 +28,44 @@ async function refreshInlineSessionPrompt(issueNumber, runDir = null) {
         const res = await fetch(`/api/session/prompt/${issueNumber}${suffix}`);
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.error) {
-            promptMeta.textContent = data.error || `Prompt unavailable (HTTP ${res.status})`;
+            promptMeta.textContent = data.error || `Launch prompt unavailable (HTTP ${res.status})`;
             promptPre.textContent = '';
             return;
         }
-        promptMeta.textContent = data.prompt_path ? `Prompt: ${data.prompt_path}` : 'Prompt';
+        const label = data.label || 'Launch prompt';
+        promptMeta.textContent = data.prompt_path ? `${label}: ${data.prompt_path}` : label;
         promptPre.textContent = data.content || '';
     } catch (err) {
-        promptMeta.textContent = `Prompt unavailable: ${err instanceof Error ? err.message : String(err)}`;
+        promptMeta.textContent = `Launch prompt unavailable: ${err instanceof Error ? err.message : String(err)}`;
         promptPre.textContent = '';
     }
+}
+
+// Context-menu "View Agent Prompt" for an active session opens the run-scoped
+// launch prompt (the prompt the agent was actually launched with) in a modal,
+// labelled as the launch prompt. Falls back handled by the caller when no
+// run_dir is available (non-active rows use the static agent template).
+async function openLaunchPromptDialog(issueNumber, runDir) {
+    let data = {};
+    try {
+        const params = new URLSearchParams();
+        params.set('run_dir', runDir);
+        const res = await fetch(`/api/session/prompt/${issueNumber}?${params.toString()}`);
+        data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            showToast(data.error || `Launch prompt unavailable (HTTP ${res.status})`, 'error');
+            return;
+        }
+    } catch (err) {
+        showToast(`Launch prompt unavailable: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        return;
+    }
+    const label = data.label || 'Launch prompt';
+    const pathLine = data.prompt_path
+        ? `<div class="session-replay-meta">${escapeHtml(`${label}: ${data.prompt_path}`)}</div>`
+        : '';
+    const html = `<div class="diag-modal">${pathLine}<pre class="launch-prompt-content">${escapeHtml(data.content || '')}</pre></div>`;
+    openModal(`Launch Prompt #${issueNumber}`, html);
 }
 
 async function openSessionManifest(issueNumber, runDir = null) {
