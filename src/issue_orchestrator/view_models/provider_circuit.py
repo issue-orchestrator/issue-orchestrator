@@ -9,11 +9,14 @@ remains" are decided by the manager; this module only formats them.
 
 from __future__ import annotations
 
-from typing import Sequence
+import logging
+from typing import Any, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
 from ..ports.provider_resilience import ProviderCircuitStatus
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderCircuitBase(BaseModel):
@@ -179,3 +182,26 @@ def build_provider_circuit_status(
         next_retry_at=next_retry,
         entries=ordered,
     )
+
+
+def read_provider_circuit_status(orchestrator: Any) -> ProviderCircuitStatusView:
+    """Read the circuit owner and project its snapshot for the dashboard.
+
+    Missing pre-bootstrap dependencies are the one healthy-empty case. Once a
+    provider-resilience manager exists, a read or projection failure becomes an
+    explicit unavailable payload so a broken store cannot masquerade as a
+    healthy provider fleet.
+    """
+    if orchestrator is None:
+        return ProviderCircuitStatusView.empty()
+    deps = getattr(orchestrator, "deps", None)
+    if deps is None:
+        return ProviderCircuitStatusView.empty()
+    manager = getattr(deps, "provider_resilience", None)
+    if manager is None:
+        return ProviderCircuitStatusView.empty()
+    try:
+        return build_provider_circuit_status(manager.snapshot())
+    except Exception as exc:  # noqa: BLE001 - failure is rendered as an explicit warning
+        logger.exception("provider circuit status read/projection failed")
+        return ProviderCircuitStatusView.unavailable(str(exc))
