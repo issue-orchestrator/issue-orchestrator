@@ -248,6 +248,7 @@
                                                 data-status="{{ card.state_label | default('', true) | e }}"
                                                 data-row-action="{{ 'focus' if card.state_label == 'running' else 'open' }}"
                                                 data-agent="{{ card.agent_type | default('', true) | e }}"
+                                                data-run-dir="{{ card.run_dir | default('', true) | e }}"
                                                 data-has-terminal="{{ 'true' if card.state_label == 'running' else 'false' }}"
                                                 data-orchestrator-labels='{{ card.orchestrator_labels | tojson }}'
                                                 onclick="openCompactCardActionsMenu(event, this)"
