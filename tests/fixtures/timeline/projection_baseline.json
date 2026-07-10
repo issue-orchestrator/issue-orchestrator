@@ -923,12 +923,6 @@
     "status": "completed",
     "step": "transition.rejected"
   },
-  "triage.batch_triggered": {
-    "level": "detail",
-    "phase": "system",
-    "status": "started",
-    "step": "triage.batch_triggered"
-  },
   "triage.issue_created": {
     "level": "detail",
     "phase": "system",

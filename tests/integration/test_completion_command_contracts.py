@@ -33,7 +33,7 @@ from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     create_starter_prompt,
     create_triage_review_prompt,
 )
-from issue_orchestrator.entrypoints.setup_wizard_common import (
+from issue_orchestrator.entrypoints.setup_wizard_prompts import (
     build_code_review_prompt_text,
     build_starter_prompt_text,
     build_triage_review_prompt_text,
@@ -335,7 +335,14 @@ def test_prompt_role_status_contracts(lm: LabelManager) -> None:
 
     assert {"blocked", "needs_human"} <= work_statuses
     assert review_statuses == {"approved", "changes_requested"}
-    assert triage_statuses == {"approved"}
+    # Triage sessions run on the coding-done contract: the orchestrator labels
+    # manifest PRs on COMPLETED and publishes any committed worktree changes.
+    # reviewer-done would skip push_branch/create_pr and mis-target review
+    # labels at the triage tracking issue.
+    assert triage_statuses == {"completed", "blocked"}
+    assert "reviewer-done" not in triage_prompt
+    assert "gh pr comment" not in triage_prompt
+    assert "gh issue create" not in triage_prompt
 
 
 def test_completion_record_drives_expected_review_actions(

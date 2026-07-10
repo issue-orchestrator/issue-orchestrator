@@ -165,8 +165,8 @@ manifest to label.
 ### 5. Sequencing and scope boundaries
 
 Hygiene precedes construction: the dead batch-trigger engine and its
-false-confidence tests are deleted, the duplicate `TRIAGE_LAUNCHING` event is
-removed, the missing triage keys join the settings schema, and the three
+false-confidence tests are deleted, the never-emitted `TRIAGE_BATCH_TRIGGERED`
+event is removed, the missing triage keys join the settings schema, and the three
 prompt variants collapse to one manifest-based contract (#6760). The decision
 artifact and authority filter land next (#6761), then the board snapshot
 (#6762), then the periodic trigger (#6763). Act-level executor wiring

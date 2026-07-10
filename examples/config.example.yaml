@@ -90,6 +90,8 @@ agents:
     ai_system: "claude-code"
 
   "agent:triage":
+    # Starter content: examples/prompts/triage-review.md (manifest-based;
+    # reads local triage-data files, completes via coding-done, never calls gh)
     prompt: ".prompts/triage-review.md"
     model: "sonnet"
     timeout_minutes: 30

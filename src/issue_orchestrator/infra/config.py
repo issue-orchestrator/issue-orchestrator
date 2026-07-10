@@ -261,8 +261,8 @@ class Config:
     # Triage/batch review workflow (optional) - pattern review across multiple PRs
     triage_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:triage")
     triage_review_label: Optional[str] = None  # Label for PRs awaiting triage review (uses code_reviewed_label if not set)
-    triage_reviewed_label: Optional[str] = None  # Label after triage review (e.g., "triage-reviewed")
-    triage_failed_label: Optional[str] = None  # Label when triage fails (e.g., "triage-failed")
+    triage_reviewed_label: str = "triage-reviewed"  # Label after triage review (matches load_review_section default)
+    triage_failed_label: str = "triage-failed"  # Label when triage fails (matches load_review_section default)
     triage_review_threshold: int = 0  # Trigger triage review after N PRs (0 = manual only)
     triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
 
