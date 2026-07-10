@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import glob
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, cast
@@ -70,6 +72,66 @@ class E2ERunArtifactRecord:
     kind: str
     label: str
     path: str
+
+
+class E2EArtifactCollectionState(str, Enum):
+    """Why a run does (or does not) expose config-driven artifacts.
+
+    Read-side counterpart to :func:`discover_report_artifacts`. When the
+    dashboard shows no extra artifacts for a run, the operator needs to know
+    which of three situations they are in — this enum names them so the UI can
+    render an accurate hint instead of leaving the absence unexplained.
+    """
+
+    #: One or more config-driven artifacts (JUnit XML + ``artifact_paths``
+    #: matches) were collected and are exposed. The original defect this issue
+    #: fixed — "artifacts collected but hidden by the UI" — resolves to this
+    #: state once the records are actually rendered.
+    COLLECTED = "collected"
+    #: The repo configured artifact/JUnit globs, but none matched files for
+    #: this run (a real collection gap the operator should investigate).
+    GLOBS_MATCHED_NOTHING = "globs_matched_nothing"
+    #: The repo's E2E runner configured no artifact/JUnit globs at all, so
+    #: there is nothing to collect beyond the always-captured raw output log.
+    NOT_CONFIGURED = "not_configured"
+
+
+@dataclass(frozen=True)
+class E2EArtifactDiagnostic:
+    """Typed classification of a run's artifact-collection outcome."""
+
+    state: E2EArtifactCollectionState
+    collected_count: int
+    configured_glob_count: int
+
+
+def classify_e2e_artifact_collection(
+    *,
+    configured_globs: Sequence[str],
+    collected_count: int,
+) -> E2EArtifactDiagnostic:
+    """Classify why a run exposes (or lacks) config-driven artifacts.
+
+    Args:
+        configured_globs: The repo's configured artifact/JUnit globs
+            (``e2e.artifact_paths`` + ``e2e.junit_xml_paths``). Blank entries
+            are ignored so trailing-newline YAML lists do not read as configured.
+        collected_count: Count of config-driven artifacts persisted for the run
+            (the ``e2e_run_artifacts`` rows — excludes the synthetic raw-output
+            log, which is always present regardless of config).
+    """
+    globs = [glob_pattern for glob_pattern in configured_globs if glob_pattern.strip()]
+    if collected_count > 0:
+        state = E2EArtifactCollectionState.COLLECTED
+    elif globs:
+        state = E2EArtifactCollectionState.GLOBS_MATCHED_NOTHING
+    else:
+        state = E2EArtifactCollectionState.NOT_CONFIGURED
+    return E2EArtifactDiagnostic(
+        state=state,
+        collected_count=collected_count,
+        configured_glob_count=len(globs),
+    )
 
 
 def discover_report_artifacts(

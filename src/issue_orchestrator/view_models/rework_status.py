@@ -90,6 +90,31 @@ def resolve_queued_rework(
     return None
 
 
+def queued_rework_issue_numbers(state: "OrchestratorState") -> frozenset[int]:
+    """Return the set of issue numbers currently queued for rework.
+
+    This is the lane-eligibility companion to :func:`resolve_queued_rework`:
+    the card projection calls ``resolve_queued_rework`` per issue to build the
+    "Queued for rework …" summary, while the lane projections need only the
+    *set* of queued-rework issues to keep them owned by the Queued lane. Both
+    read the same ``pending_reworks`` / ``discovered_reworks`` collections, so
+    an issue queued for rework cannot be classified one way for the card and
+    another way for lane ownership.
+
+    Without this single owner, a queued-rework issue that also has a stale
+    completed history row (with a PR) would leak into Awaiting Merge and lane
+    precedence would drop it from Queued.
+    """
+    numbers: set[int] = set()
+    for rework in state.pending_reworks:
+        number = rework.resolve_issue_number()
+        if number is not None:
+            numbers.add(number)
+    for discovered in state.discovered_reworks:
+        numbers.add(discovered.issue_number)
+    return frozenset(numbers)
+
+
 def _status_from(
     issue_number: int,
     pr_number: int | None,

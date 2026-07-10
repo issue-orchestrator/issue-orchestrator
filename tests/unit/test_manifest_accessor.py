@@ -336,3 +336,105 @@ def test_get_validation_record_raises_when_missing(tmp_path: Path) -> None:
 
     with pytest.raises(ArtifactNotFoundError):
         accessor.get_validation_record()
+
+
+def _write_manifest_prompt_path(run_dir: Path, session_prompt_path: str) -> None:
+    """Set ``session_prompt_path`` in the run's manifest for prompt tests."""
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "session_name": "issue-123",
+                "run_id": run_dir.name.split("__", 1)[0],
+                "run_dir": str(run_dir),
+                "session_prompt_path": session_prompt_path,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_get_session_prompt_prefers_manifest_path(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    launch = run_dir / "session-prompt.txt"
+    launch.write_text("launch prompt\n", encoding="utf-8")
+    _write_manifest_prompt_path(run_dir, str(launch))
+
+    artifact = accessor.get_session_prompt()
+    assert artifact.descriptor.artifact_type == "session_prompt"
+    assert artifact.path == launch
+
+
+def test_get_session_prompt_falls_back_to_session_prompt_txt(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    prompt = run_dir / "session-prompt.txt"
+    prompt.write_text("fallback prompt\n", encoding="utf-8")
+
+    artifact = accessor.get_session_prompt()
+    assert artifact.path == prompt
+
+
+def test_get_session_prompt_falls_back_to_retry_prompt(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    retry = run_dir / "retry-prompt.md"
+    retry.write_text("retry prompt\n", encoding="utf-8")
+
+    artifact = accessor.get_session_prompt()
+    assert artifact.path == retry
+
+
+def test_get_session_prompt_falls_back_to_review_exchange_prompt(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    coder_prompt = run_dir / "review-exchange" / "round-001" / "coder-prompt.txt"
+    coder_prompt.parent.mkdir(parents=True, exist_ok=True)
+    coder_prompt.write_text("exchange coder prompt\n", encoding="utf-8")
+
+    artifact = accessor.get_session_prompt()
+    assert artifact.path == coder_prompt
+
+
+def test_get_session_prompt_skips_empty_candidate(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    (run_dir / "session-prompt.txt").write_text("", encoding="utf-8")
+    retry = run_dir / "retry-prompt.md"
+    retry.write_text("retry prompt\n", encoding="utf-8")
+
+    artifact = accessor.get_session_prompt()
+    assert artifact.path == retry
+
+
+def test_get_session_prompt_rejects_absolute_outside_manifest_path(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    outside = tmp_path / "outside" / "secret.txt"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("TOP SECRET\n", encoding="utf-8")
+    _write_manifest_prompt_path(run_dir, str(outside))
+
+    # The only candidate escapes run_dir and there is no in-run fallback, so
+    # the absolute out-of-run file is never returned.
+    with pytest.raises(ArtifactNotFoundError):
+        accessor.get_session_prompt()
+
+
+def test_get_session_prompt_rejects_relative_escape_manifest_path(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    outside = run_dir.parent / "outside.txt"
+    outside.write_text("ESCAPED\n", encoding="utf-8")
+    _write_manifest_prompt_path(run_dir, "../outside.txt")
+
+    with pytest.raises(ArtifactNotFoundError):
+        accessor.get_session_prompt()
+
+
+def test_get_session_prompt_skips_escape_and_serves_in_run_fallback(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("SHOULD NOT SERVE\n", encoding="utf-8")
+    _write_manifest_prompt_path(run_dir, str(outside))
+    fallback = run_dir / "session-prompt.txt"
+    fallback.write_text("in-run fallback\n", encoding="utf-8")
+
+    # A stale/malformed manifest that escapes run_dir is skipped, not fatal:
+    # the run's own contained prompt is served and the escape content stays out.
+    artifact = accessor.get_session_prompt()
+    assert artifact.path == fallback
+    assert artifact.path.read_text(encoding="utf-8") == "in-run fallback\n"

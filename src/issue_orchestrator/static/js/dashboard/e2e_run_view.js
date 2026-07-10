@@ -219,27 +219,31 @@ function _runArtifactDescriptors(data) {
     const reports = Array.isArray(data && data.reports) ? data.reports : [];
     const artifacts = Array.isArray(data && data.artifacts) ? data.artifacts : [];
     const descriptors = [];
+    // Dedupe by ``path``. The backend builds ``reports`` as a subset of
+    // ``artifacts`` (and the raw-output log can also be re-collected as a
+    // config-driven artifact), so the same file arrives on multiple arrays.
+    // After the JSON round-trip those are distinct object instances, so an
+    // identity check (``reports.includes(artifact)``) never filters them —
+    // ``path`` is the only stable key across the arrays. First occurrence wins,
+    // and because we push raw-output → report-class → remaining artifacts in
+    // that order, each file keeps its most specific label/style (issue #6593).
+    const seenPaths = new Set();
+    const pushDescriptor = (path, label, cssClass) => {
+        if (!path || seenPaths.has(path)) return;
+        seenPaths.add(path);
+        descriptors.push({ path, label, cssClass });
+    };
 
     if (run.log_path) {
-        descriptors.push({ path: run.log_path, label: 'Raw Output', cssClass: 'issue-action-btn' });
+        pushDescriptor(run.log_path, 'Raw Output', 'issue-action-btn');
     }
     for (const report of reports) {
         if (!report || !report.path) continue;
-        descriptors.push({
-            path: report.path,
-            label: report.label || _humanizeSnakeCase(report.kind),
-            cssClass: 'issue-action-btn',
-        });
+        pushDescriptor(report.path, report.label || _humanizeSnakeCase(report.kind), 'issue-action-btn');
     }
     for (const artifact of artifacts) {
         if (!artifact || !artifact.path) continue;
-        if (reports.includes(artifact)) continue;
-        if (artifact.kind === 'raw_log') continue;
-        descriptors.push({
-            path: artifact.path,
-            label: artifact.label || artifact.path,
-            cssClass: 'issue-action-btn subtle',
-        });
+        pushDescriptor(artifact.path, artifact.label || artifact.path, 'issue-action-btn subtle');
     }
     return descriptors;
 }
@@ -252,6 +256,76 @@ function _renderArtifactDescriptorButtons(artifacts) {
 
 function _renderRunArtifactButtons(data) {
     return _renderArtifactDescriptorButtons(_runArtifactDescriptors(data));
+}
+
+// Normalize the run-detail payload's ``artifact_diagnostic`` into a plain
+// ``{state, collected_count, configured_glob_count}`` object, or ``null`` when
+// the field is absent (slimmer JS-vm payloads).  The backend classifies which
+// of three situations produced the run's artifact set; the UI only renders the
+// resulting hint (policy stays below the UI, per static/CLAUDE.md).
+function _artifactDiagnostic(data) {
+    const raw = data && data.artifact_diagnostic;
+    if (!raw || typeof raw !== 'object') return null;
+    const state = String(raw.state || '');
+    if (state !== 'collected' && state !== 'globs_matched_nothing' && state !== 'not_configured') {
+        return null;
+    }
+    return {
+        state,
+        collected_count: Number.isInteger(raw.collected_count) ? raw.collected_count : 0,
+        configured_glob_count: Number.isInteger(raw.configured_glob_count) ? raw.configured_glob_count : 0,
+    };
+}
+
+// Human-facing explanation for the two "no config-driven artifacts" states.
+// ``collected`` needs no note — the artifact buttons speak for themselves — so
+// this returns '' for it (and for a missing/unknown diagnostic).
+function _renderArtifactDiagnosticNote(diagnostic) {
+    if (!diagnostic) return '';
+    if (diagnostic.state === 'not_configured') {
+        return `<p class="e2e-artifacts-note e2e-artifacts-note-info">`
+            + `No artifact globs are configured for this repo's E2E runner. `
+            + `Set <code>e2e.artifact_paths</code> / <code>e2e.junit_xml_paths</code> to collect logs, summaries, and reports.`
+            + `</p>`;
+    }
+    if (diagnostic.state === 'globs_matched_nothing') {
+        const plural = diagnostic.configured_glob_count === 1 ? 'glob is' : 'globs are';
+        return `<p class="e2e-artifacts-note e2e-artifacts-note-warn">`
+            + `${diagnostic.configured_glob_count} artifact ${plural} configured, but none matched files in this run. `
+            + `Check the E2E runner's <code>artifact_paths</code> / <code>junit_xml_paths</code> patterns.`
+            + `</p>`;
+    }
+    return '';
+}
+
+// First-class "Run artifacts" section.  Issue #6593: collected
+// ``e2e_run_artifacts`` records were reachable only inside the collapsed
+// "Diagnostics" disclosure, so an operator staring at a failed testcase could
+// not discover the raw E2E output log, container logs, summaries, or generated
+// JUnit XML.  This section renders those drill-downs prominently — adjacent to
+// the failure panel (mounted right above the canonical viewer body) — and,
+// when no config-driven artifacts were collected, explains why via the typed
+// backend diagnostic.  The raw-output log is always present, so the section
+// never renders empty.
+function _renderRunArtifactsSection(data) {
+    const descriptors = _runArtifactDescriptors(data);
+    const buttons = _renderArtifactDescriptorButtons(descriptors);
+    const note = _renderArtifactDiagnosticNote(_artifactDiagnostic(data));
+    if (!buttons && !note) return '';
+    const count = descriptors.length;
+    const countChip = count > 0
+        ? `<span class="e2e-run-artifacts-count">${count} file${count === 1 ? '' : 's'}</span>`
+        : '';
+    return `
+        <section class="e2e-run-artifacts" aria-label="Run artifacts">
+            <div class="e2e-run-artifacts-head">
+                <span class="e2e-run-artifacts-title">Run artifacts</span>
+                ${countChip}
+            </div>
+            ${note}
+            ${buttons ? `<div class="e2e-action-row e2e-run-artifacts-buttons">${buttons}</div>` : ''}
+        </section>
+    `;
 }
 
 // Legacy helpers removed in Phase C (PR #6319 Blocker 2):
@@ -299,6 +373,7 @@ function renderE2EResultsPanel(data) {
         <div class="e2e-canonical-panel">
             ${_renderRunSummaryChips(data, canonical)}
             ${untrackedCount > 0 ? _renderUntrackedFailuresBanner(untrackedCount, runId) : ''}
+            ${_renderRunArtifactsSection(data)}
             <div class="e2e-canonical-body">${viewerHtml}</div>
             ${renderRunDetailsDisclosure(data, runId)}
         </div>
@@ -375,13 +450,11 @@ function _untrackedFailureCount(data) {
 function renderRunDetailsDisclosure(data, runId) {
     const run = data && data.run ? data.run : {};
     const command = _formatRunCommand(run);
-    const artifacts = _runArtifactDescriptors(data);
-    const buttons = _renderArtifactDescriptorButtons(artifacts);
     const numericRunId = Number(runId || (run && run.id) || 0);
-    const artifactCount = artifacts.length;
-    const artifactChip = artifactCount > 0
-        ? `<span class="rdd-summary-chip">${artifactCount} artifact${artifactCount === 1 ? '' : 's'}</span>`
-        : '';
+    // Run artifacts moved to the first-class ``_renderRunArtifactsSection``
+    // above the failure panel (issue #6593), so this diagnostics disclosure no
+    // longer duplicates the artifact buttons — it carries runner metadata,
+    // command, and the timeline diagnostics only.
 
     // Each view button carries a typed ``SwitchE2ETimelineViewCommand``;
     // the dispatcher routes through ``resolveRowCommandContext`` so
@@ -408,11 +481,10 @@ function renderRunDetailsDisclosure(data, runId) {
             <summary>
                 <span class="rdd-summary-main">
                     <span class="rdd-summary-title">Diagnostics</span>
-                    <span class="rdd-summary-hint">runner · command · artifacts · timeline</span>
+                    <span class="rdd-summary-hint">runner · command · timeline</span>
                 </span>
                 <span class="rdd-summary-chips" aria-hidden="true">
                     <span class="rdd-summary-chip">${escapeHtml(_formatRunnerLabel(run))}</span>
-                    ${artifactChip}
                     <span class="rdd-summary-chip">Timeline</span>
                 </span>
             </summary>
@@ -426,7 +498,6 @@ function renderRunDetailsDisclosure(data, runId) {
                     ${run.branch ? `<div class="rdd-row"><span class="rdd-label">Branch</span><span class="rdd-value"><code>${escapeHtml(run.branch)}</code></span></div>` : ''}
                     <div class="rdd-row rdd-command-row"><span class="rdd-label">Command</span><span class="rdd-value">${command ? `<code class="e2e-run-command">${escapeHtml(command)}</code>` : 'Unavailable'}</span></div>
                 </div>
-                ${buttons ? `<div class="rdd-artifacts"><div class="rdd-section-title">Artifacts</div><div class="e2e-action-row">${buttons}</div></div>` : ''}
                 <div class="rdd-timeline">
                     <div class="rdd-section-title">Timeline diagnostics</div>
                     <div class="e2e-timeline-view-switcher">

@@ -76,10 +76,7 @@ class ProcessGroupOwner:
         """Signal each captured logical process group once."""
         self._reject_protected_group(snapshot)
         for pgid in sorted(snapshot):
-            try:
-                os.killpg(pgid, signum)
-            except ProcessLookupError:
-                continue
+            self._signal_owned_group(pgid, signum)
 
     def terminate_survivors(self, snapshot: ProcessGroupSnapshot) -> None:
         """Terminate agent groups that survived the engine's own cleanup."""
@@ -107,15 +104,25 @@ class ProcessGroupOwner:
                 f"root_pid={self._root_pid} pgid={self._protected_pgid}"
             )
 
+    @classmethod
+    def _living_groups(cls, groups: ProcessGroupSnapshot) -> ProcessGroupSnapshot:
+        return frozenset(
+            pgid for pgid in groups if cls._signal_owned_group(pgid, 0)
+        )
+
     @staticmethod
-    def _living_groups(groups: ProcessGroupSnapshot) -> ProcessGroupSnapshot:
-        living: set[int] = set()
-        for pgid in groups:
-            try:
-                os.killpg(pgid, 0)
-            except ProcessLookupError:
-                continue
-            except PermissionError:
-                pass
-            living.add(pgid)
-        return frozenset(living)
+    def _signal_owned_group(pgid: int, signum: int) -> bool:
+        """Signal one captured group; report whether it is still ours to reap.
+
+        A captured group can stop being ours between snapshot and teardown:
+        once its leader dies the PID/PGID may be recycled by an unrelated
+        process. ``ProcessLookupError`` (the group is empty) and
+        ``PermissionError`` (the PGID now leads a process we do not own) both
+        mean the group we captured is gone, so teardown treats them alike
+        instead of crashing on a benign PID-reuse race under heavy load.
+        """
+        try:
+            os.killpg(pgid, signum)
+        except (ProcessLookupError, PermissionError):
+            return False
+        return True

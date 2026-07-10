@@ -282,12 +282,20 @@ def build_awaiting_merge_items(
     queue_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
     history_items: list[dict[str, Any]],
+    *,
+    exclude_issue_numbers: frozenset[int] = frozenset(),
 ) -> list[dict[str, Any]]:
-    """Items with PRs ready to merge, drawn from all lifecycle stages."""
+    """Items with PRs ready to merge, drawn from all lifecycle stages.
+
+    ``exclude_issue_numbers`` are owned by another lane (e.g. issues queued for
+    rework belong to the Queued lane) and are dropped here — across *every*
+    source, not just one — so a stale ``merge_pending`` signal on any single
+    source cannot pull them into Awaiting Merge.
+    """
     return _dedupe_awaiting_merge_items([
         item
         for item in queue_items + blocked_items + history_items
-        if item.get("merge_pending")
+        if item.get("merge_pending") and _issue_number(item) not in exclude_issue_numbers
     ])
 
 

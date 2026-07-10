@@ -8,6 +8,9 @@ import threading
 import time
 from typing import Any, Literal
 
+from ..contracts.ui_openapi_models import E2EArtifactDiagnosticPayload
+from ..infra.config_models import E2EConfig
+from ..infra.e2e_reports import classify_e2e_artifact_collection
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
 from .lifecycle_semantics import (
     E2ERunResultCounts,
@@ -23,6 +26,33 @@ from .dashboard_flow import stamp_issue_item_stale_badge_visibility
 # site agree at type-check time.  PR #6333 round-3 (lifecycle
 # tone-table typing) established this pattern.
 _OutcomeTone = Literal["passed", "failed", "error", "in_progress", "neutral"]
+
+
+def build_e2e_artifact_diagnostic(
+    e2e_config: E2EConfig,
+    *,
+    collected_count: int,
+) -> E2EArtifactDiagnosticPayload:
+    """Project a run's artifact-collection outcome for the run-detail UI (#6593).
+
+    The dashboard renders collected artifacts as first-class drill-downs; when a
+    run exposes none, this diagnostic tells the operator whether the repo
+    configured no artifact globs, whether configured globs matched nothing, or
+    whether artifacts were collected. ``collected_count`` is the count of
+    persisted ``e2e_run_artifacts`` rows (config-driven artifacts), not the
+    always-present raw-output log.
+    """
+    diagnostic = classify_e2e_artifact_collection(
+        configured_globs=[*e2e_config.artifact_paths, *e2e_config.junit_xml_paths],
+        collected_count=collected_count,
+    )
+    return E2EArtifactDiagnosticPayload.model_validate(
+        {
+            "state": diagnostic.state.value,
+            "collected_count": diagnostic.collected_count,
+            "configured_glob_count": diagnostic.configured_glob_count,
+        }
+    )
 
 
 def _open_run_command_payload(run_id: int, *, expand_run_details: bool = False) -> dict[str, Any]:

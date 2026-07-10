@@ -921,6 +921,7 @@
           "results_by_category",
           "artifacts",
           "reports",
+          "artifact_diagnostic",
           "issue_number",
           "title",
           "issue_url",
@@ -946,6 +947,7 @@
           "results_by_category": {"$ref": "#/components/schemas/E2ERunResultCategoriesPayload"},
           "artifacts": {"type": "array", "items": {"$ref": "#/components/schemas/TestRunArtifactPayload"}},
           "reports": {"type": "array", "items": {"$ref": "#/components/schemas/TestRunArtifactPayload"}},
+          "artifact_diagnostic": {"$ref": "#/components/schemas/E2EArtifactDiagnosticPayload"},
           "issue_number": {"type": ["integer", "string"]},
           "e2e_run_id": {"type": ["integer", "null"]},
           "title": {"type": "string"},
@@ -1023,6 +1025,16 @@
           "kind": {"type": "string"},
           "label": {"type": "string"},
           "path": {"type": "string"}
+        }
+      },
+      "E2EArtifactDiagnosticPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["state", "collected_count", "configured_glob_count"],
+        "properties": {
+          "state": {"type": "string", "enum": ["collected", "globs_matched_nothing", "not_configured"]},
+          "collected_count": {"type": "integer"},
+          "configured_glob_count": {"type": "integer"}
         }
       },
       "TestCaseIssueLinkPayload": {

@@ -161,7 +161,10 @@ test('renderRunDetailsDisclosure: diagnostics row carries typed switch_e2e_timel
     const html = ctx.renderRunDetailsDisclosure(data, 88);
     assert.ok(html.includes('Diagnostics'));
     assert.ok(!html.includes('Run details &amp; artifacts'));
-    assert.ok(html.includes('1 artifact'));
+    // Issue #6593: artifacts moved to the first-class run-artifacts section;
+    // the diagnostics disclosure no longer carries an artifact chip or buttons.
+    assert.ok(!html.includes('artifact'));
+    assert.ok(!html.includes('data-artifact-path'));
     // Three view buttons; each carries the typed Command with its
     // own ``view``.
     const matches = [...html.matchAll(/data-lifecycle-command="([^"]+)"/g)];

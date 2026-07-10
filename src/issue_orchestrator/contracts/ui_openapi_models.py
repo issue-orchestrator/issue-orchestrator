@@ -198,6 +198,12 @@ class DoctorDialogPayload(BaseModel):
     overall: str
     title: str
 
+class E2EArtifactDiagnosticPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    collected_count: int
+    configured_glob_count: int
+    state: Literal['collected', 'globs_matched_nothing', 'not_configured']
+
 class E2EFailureDetailsAvailablePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['available']
@@ -218,6 +224,7 @@ class E2EIssueAffordancePayload(BaseModel):
 class E2ERunDetailPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[IssueDetailActionPayload]
+    artifact_diagnostic: E2EArtifactDiagnosticPayload
     artifacts: list[TestRunArtifactPayload]
     blocked_detail: IssueDetailBlockedDetailPayload | None
     cycles: list[E2ETimelineCyclePayload]
