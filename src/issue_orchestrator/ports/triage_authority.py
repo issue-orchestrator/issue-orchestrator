@@ -22,13 +22,24 @@ if TYPE_CHECKING:
     from ..domain.triage_session import TriageLaunchAuthority
 
 
+class TriageAuthorityConflictError(RuntimeError):
+    """A different launch authority already exists for this session run."""
+
+
 class TriageAuthorityStore(Protocol):
     """Durable per-run storage for triage launch authority."""
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TriageLaunchAuthority"
     ) -> None:
-        """Persist the launch authority for one session run (idempotent)."""
+        """Persist the launch authority for one session run (create-once).
+
+        Recording an identical payload for an existing key is a no-op;
+        recording a DIFFERENT payload for an existing key must raise
+        :class:`TriageAuthorityConflictError` — the record constrains the
+        session's mutation scope, so it must never silently change or
+        expand after launch (#6769 round 4).
+        """
         ...
 
     def load(
@@ -51,6 +62,14 @@ class InMemoryTriageAuthorityStore:
     def record(
         self, *, run_id: str, session_name: str, authority: "TriageLaunchAuthority"
     ) -> None:
+        existing = self._rows.get((run_id, session_name))
+        if existing is not None:
+            if existing == authority:
+                return
+            raise TriageAuthorityConflictError(
+                f"launch authority already recorded for run_id={run_id!r} "
+                f"session={session_name!r} with a different payload"
+            )
         self._rows[(run_id, session_name)] = authority
 
     def load(

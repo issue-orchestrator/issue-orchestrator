@@ -2883,6 +2883,43 @@ class TestLaunchTriageIssueSessionFlavors:
             labels=["code-reviewed"],
         )
 
+    def test_exception_after_authority_record_discards_row(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path, monkeypatch
+    ):
+        """The launch-lifecycle guard owns retention on EVERY exit (#6769 r4).
+
+        A raise anywhere after the authority record (here: prompt rendering)
+        must discard the durable row even though no failure branch and no
+        completion seam ever runs — otherwise it leaks forever and a later
+        run with the same identity hits the create-once conflict.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        issue = Issue(
+            number=903, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+        monkeypatch.setattr(
+            AgentConfig,
+            "render_initial_prompt",
+            lambda self, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        with pytest.raises(RuntimeError, match="boom"):
+            launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        # The record DID happen before the raise (the agent-visible copy
+        # exists), and the guard discarded the durable row on the way out.
+        assignment_files = list(Path(str(tmp_path)).rglob("triage-assignment.json"))
+        assert assignment_files, "authority was never recorded - test lost its premise"
+        store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        for path in assignment_files:
+            run_dir_name = path.parent.parent.name
+            run_id = run_dir_name.split("__")[0]
+            assert (
+                store.load(run_id=run_id, session_name="issue-903") is None
+            ), f"authority row leaked for run {run_dir_name}"
+
     def test_default_flavor_prepares_manifest_and_batch_assignment(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
     ):

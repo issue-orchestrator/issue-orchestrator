@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Iterator
 
 from ..domain.triage_session import TriageLaunchAuthority
+from ..ports.triage_authority import TriageAuthorityConflictError
 from .repo_identity import state_dir
 from .sqlite_connection import open_sqlite
 
@@ -100,18 +101,34 @@ class SqliteTriageAuthorityStore:
     def record(
         self, *, run_id: str, session_name: str, authority: TriageLaunchAuthority
     ) -> None:
-        """Persist the launch authority for one session run (idempotent)."""
+        """Persist the launch authority for one session run (create-once).
+
+        Identical payload for an existing key: no-op. Different payload:
+        :class:`TriageAuthorityConflictError` — the scope must never
+        silently change after launch (#6769 round 4).
+        """
+        payload = json.dumps(authority.to_dict(), sort_keys=True)
         with self._transaction() as tx:
+            row = tx.execute(
+                "SELECT authority FROM triage_launch_authority "
+                "WHERE run_id = ? AND session_name = ?",
+                (run_id, session_name),
+            ).fetchone()
+            if row is not None:
+                if json.dumps(json.loads(row[0]), sort_keys=True) == payload:
+                    return
+                raise TriageAuthorityConflictError(
+                    f"launch authority already recorded for run_id={run_id!r} "
+                    f"session={session_name!r} with a different payload"
+                )
             tx.execute(
                 "INSERT INTO triage_launch_authority "
                 "(run_id, session_name, authority, recorded_at) "
-                "VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(run_id, session_name) DO UPDATE SET "
-                "authority=excluded.authority, recorded_at=excluded.recorded_at",
+                "VALUES (?, ?, ?, ?)",
                 (
                     run_id,
                     session_name,
-                    json.dumps(authority.to_dict()),
+                    payload,
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )

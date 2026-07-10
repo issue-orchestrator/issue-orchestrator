@@ -9,6 +9,10 @@ from issue_orchestrator.domain.triage_session import (
     TriageSessionFlavor,
 )
 from issue_orchestrator.infra.repo_identity import state_dir
+from issue_orchestrator.ports.triage_authority import (
+    InMemoryTriageAuthorityStore,
+    TriageAuthorityConflictError,
+)
 from issue_orchestrator.infra.triage_authority_store import (
     SqliteTriageAuthorityStore,
 )
@@ -34,15 +38,38 @@ def test_round_trip_keyed_by_run_identity(tmp_path: Path) -> None:
     assert store.load(run_id="r1", session_name="issue-8") is None
 
 
-def test_record_is_idempotent_and_last_write_wins(tmp_path: Path) -> None:
-    store = SqliteTriageAuthorityStore.for_repo(tmp_path)
+@pytest.mark.parametrize("make_store", [
+    lambda tmp_path: SqliteTriageAuthorityStore.for_repo(tmp_path),
+    lambda _tmp_path: InMemoryTriageAuthorityStore(),
+])
+def test_record_identical_payload_is_noop(tmp_path: Path, make_store) -> None:
+    """Create-once: re-recording the same payload is silently accepted."""
+    store = make_store(tmp_path)
     store.record(run_id="r1", session_name="issue-7", authority=_batch((1,)))
-    store.record(run_id="r1", session_name="issue-7", authority=_batch((2, 3)))
+    store.record(run_id="r1", session_name="issue-7", authority=_batch((1,)))
 
     loaded = store.load(run_id="r1", session_name="issue-7")
 
     assert loaded is not None
-    assert loaded.manifest_pr_numbers == (2, 3)
+    assert loaded.manifest_pr_numbers == (1,)
+
+
+@pytest.mark.parametrize("make_store", [
+    lambda tmp_path: SqliteTriageAuthorityStore.for_repo(tmp_path),
+    lambda _tmp_path: InMemoryTriageAuthorityStore(),
+])
+def test_record_conflicting_payload_fails_loudly(tmp_path: Path, make_store) -> None:
+    """The authority constrains mutation scope: it must never silently
+    change or expand for an existing (run_id, session_name) (#6769 r4)."""
+    store = make_store(tmp_path)
+    store.record(run_id="r1", session_name="issue-7", authority=_batch((1,)))
+
+    with pytest.raises(TriageAuthorityConflictError):
+        store.record(run_id="r1", session_name="issue-7", authority=_batch((2, 3)))
+
+    loaded = store.load(run_id="r1", session_name="issue-7")
+    assert loaded is not None
+    assert loaded.manifest_pr_numbers == (1,)
 
 
 def test_store_lives_in_orchestrator_state_dir(tmp_path: Path) -> None:
