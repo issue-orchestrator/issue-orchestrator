@@ -17,6 +17,7 @@ from typing import Literal, Protocol
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..infra.shutdown_timing import StopAborted
 from ..infra.supervisor import DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS, SupervisorOps
 from . import control_api_shutdown_state as shutdown_state
 from .control_api_shutdown_support import ControlApiShutdownDependency
@@ -194,23 +195,32 @@ def _process_shutdown_repo(*, operation_id: str, repo_path: str, supervisor: Sup
     if not path.exists():
         return "skipped"
 
-    runtime = shutdown_state.resolve_shutdown_runtime(operation_id=operation_id, repo_path=repo_path)
-    if runtime is None:
+    stop_policy = shutdown_state.begin_shutdown_repo_stop(
+        operation_id=operation_id,
+        repo_path=repo_path,
+    )
+    if stop_policy is None:
         return "aborted"
-    timeout_seconds, force_now = runtime
+    initial_policy = stop_policy.snapshot()
+    if initial_policy.abort:
+        return "aborted"
 
     status_info = supervisor.status(path)
     if status_info.state != "running":
         return "skipped"
     logger.info("Stopping orchestrator for %s before shutdown", repo_path)
-    stopped_count = supervisor.stop_all_instances(
-        path,
-        force=force_now,
-        reason="control-center global shutdown",
-        actor="control-center.global-shutdown",
-        graceful_timeout_seconds=timeout_seconds,
-        force_if_graceful_fails=True,
-    )
+    try:
+        stopped_count = supervisor.stop_all_instances(
+            path,
+            force=initial_policy.force,
+            reason="control-center global shutdown",
+            actor="control-center.global-shutdown",
+            graceful_timeout_seconds=initial_policy.graceful_timeout_seconds,
+            force_if_graceful_fails=True,
+            stop_policy=stop_policy,
+        )
+    except StopAborted:
+        return "aborted"
     return "stopped" if stopped_count > 0 else "failed"
 
 

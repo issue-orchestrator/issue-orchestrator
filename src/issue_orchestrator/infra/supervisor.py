@@ -17,6 +17,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
@@ -30,7 +31,9 @@ from .repo_lock import (
     read_lock,
     release_lock,
 )
-from .shutdown_timing import DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS, signal_exit_poll_iterations
+from . import shutdown_timing
+
+DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS = shutdown_timing.DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 _EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
@@ -321,28 +324,14 @@ def _is_port_in_use(port: int) -> bool:
         return False
 
 
-def _try_graceful_shutdown(
+def _request_graceful_shutdown(
     port: int,
-    pid: int,
     *,
     reason: str,
     actor: str = "supervisor",
-    timeout: float = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
 ) -> bool:
-    """Try to shut down orchestrator via HTTP API.
-
-    This provides a clean shutdown with proper UI feedback (shows "Stopping...").
-
-    The HTTP endpoint requires a non-empty ``reason`` (so each
-    shutdown is traceable in the orchestrator log). ``reason`` is
-    the calling-site's "why" — the supervisor does not invent one,
-    callers thread it down. ``actor`` is the source identifier
-    used for log-aggregation grouping.
-
-    Returns True if the process exited, False if we need to use signals.
-    """
+    """Request HTTP shutdown once; the shared stop budget owns all waiting."""
     import json as _json
-    import time
     import urllib.request
     import urllib.error
 
@@ -352,7 +341,7 @@ def _try_graceful_shutdown(
         # logging a 400 in the target's log just to fall through to
         # signal kill. Surface the bug at the call site.
         raise ValueError(
-            "_try_graceful_shutdown requires a non-empty reason; "
+            "_request_graceful_shutdown requires a non-empty reason; "
             "the /api/shutdown contract rejects unreasoned shutdowns",
         )
     body = _json.dumps({"reason": reason, "actor": actor}).encode("utf-8")
@@ -369,16 +358,7 @@ def _try_graceful_shutdown(
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=2.0) as resp:
-            if resp.status == 200:
-                logger.debug("Shutdown request accepted, waiting for process to exit")
-                start = time.time()
-                while time.time() - start < timeout:
-                    try:
-                        os.kill(pid, 0)
-                        time.sleep(0.1)
-                    except OSError:
-                        logger.info("Orchestrator exited cleanly via HTTP shutdown")
-                        return True
+            return resp.status == 200
     except (urllib.error.URLError, OSError) as e:
         logger.debug("HTTP shutdown failed: %s, will use signals", e)
     except Exception as e:  # noqa: BLE001 — fall through to signal kill
@@ -439,9 +419,8 @@ def stop_by_port(
     return False
 
 
-def _wait_for_process_exit(pid: int, timeout_iterations: int) -> bool:
-    """Wait for process to exit. Returns True if exited."""
-    import time
+def _wait_for_process_exit_after_force(pid: int, timeout_iterations: int) -> bool:
+    """Wait a short fixed interval after SIGKILL delivery."""
     for _ in range(timeout_iterations):
         try:
             os.kill(pid, 0)
@@ -474,6 +453,7 @@ def stop(
     actor: str = "supervisor.stop",
     graceful_timeout_seconds: float = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
     force_if_graceful_fails: bool = True,
+    stop_policy: shutdown_timing.StopPolicy | None = None,
 ) -> bool:
     """Stop the orchestrator; ``reason`` records the caller's intent."""
     if not reason or not reason.strip():
@@ -491,51 +471,58 @@ def stop(
 
     pid, port = info.pid, info.http_port
 
-    # Check if process is alive
-    try:
-        os.kill(pid, 0)
-    except OSError:
+    if not shutdown_timing.process_is_alive(pid):
         release_lock(repo_root, pid, instance_id)
         logger.info("Cleaned up stale lock for %s (pid %d not running)", repo_root, pid)
         return True
 
-    if not force and port and _try_graceful_shutdown(
-        port, pid,
-        reason=reason,
-        actor=actor,
-        timeout=graceful_timeout_seconds,
-    ):
-        release_lock(repo_root, pid, instance_id)
-        return True
+    controller = shutdown_timing.InterruptibleStopController(
+        stop_policy
+        or shutdown_timing.StaticStopPolicy(
+            graceful_timeout_seconds=graceful_timeout_seconds,
+            force=force,
+        ),
+        pid=pid,
+        force_requested=force,
+        force_on_timeout=force_if_graceful_fails,
+        request_graceful=lambda: bool(
+            port
+            and _request_graceful_shutdown(port, reason=reason, actor=actor)
+        ),
+        terminate=lambda: _send_kill_signal(pid, force=False),
+        force_stop=lambda: _force_stop(repo_root, pid, port, instance_id),
+        on_stopped=lambda: release_lock(repo_root, pid, instance_id),
+    )
+    stopped = controller.stop()
+    logger.info("Orchestrator stop attempt completed pid=%d stopped=%s", pid, stopped)
+    return stopped
 
+
+def _force_stop(
+    repo_root: Path,
+    pid: int,
+    port: int | None,
+    instance_id: str | None,
+) -> bool:
+    """Force one engine down and verify the process is gone."""
     stopped = _kill_with_signal_then_port(
         repo_root=repo_root,
         pid=pid,
         port=port,
         instance_id=instance_id,
-        force=force,
-        grace_seconds=graceful_timeout_seconds,
+        force=True,
+        grace_seconds=0,
     )
     if stopped:
         return True
-
-    if not force and force_if_graceful_fails:
-        logger.warning("Orchestrator did not stop gracefully, forcing with SIGKILL")
-        return stop(
-            repo_root,
-            force=True,
-            instance_id=instance_id,
-            reason=f"{reason} (escalated to SIGKILL after graceful timeout)",
-            actor=actor,
-            graceful_timeout_seconds=graceful_timeout_seconds,
-            force_if_graceful_fails=force_if_graceful_fails,
-        )
-
-    if _force_kill_by_port_last_resort(repo_root=repo_root, pid=pid, port=port, instance_id=instance_id):
+    if _force_kill_by_port_last_resort(
+        repo_root=repo_root,
+        pid=pid,
+        port=port,
+        instance_id=instance_id,
+    ):
         return True
-
-    logger.error("Failed to stop orchestrator pid %d", pid)
-    release_lock(repo_root, pid, instance_id)  # Clean up lock anyway
+    logger.error("Failed to force stop orchestrator pid %d", pid)
     return False
 
 
@@ -550,7 +537,13 @@ def _kill_with_signal_then_port(
 ) -> bool:
     """Send signal, wait for exit; if still alive, try port kill."""
     _send_kill_signal(pid, force)
-    if _wait_for_process_exit(pid, signal_exit_poll_iterations(force=force, grace_seconds=grace_seconds)):
+    if _wait_for_process_exit_after_force(
+        pid,
+        shutdown_timing.signal_exit_poll_iterations(
+            force=force,
+            grace_seconds=grace_seconds,
+        ),
+    ):
         release_lock(repo_root, pid, instance_id)
         logger.info("Orchestrator stopped (pid %d)", pid)
         return True
@@ -558,7 +551,7 @@ def _kill_with_signal_then_port(
     if port:
         logger.warning("Process group kill failed, trying to kill by port %d", port)
         _kill_by_port(port, use_sigkill=force)
-        if _wait_for_process_exit(pid, 20):
+        if _wait_for_process_exit_after_force(pid, 20):
             release_lock(repo_root, pid, instance_id)
             logger.info("Orchestrator stopped via port kill (pid %d)", pid)
             return True
@@ -709,6 +702,7 @@ def stop_all_instances(
     actor: str = "supervisor.stop_all_instances",
     graceful_timeout_seconds: float = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
     force_if_graceful_fails: bool = True,
+    stop_policy: shutdown_timing.StopPolicy | None = None,
 ) -> int:
     """Stop all orchestrator instances for a repository.
 
@@ -732,7 +726,6 @@ def stop_all_instances(
 
     repo_root = normalize_repo_root(repo_root)
 
-    # First, try to stop the single-instance orchestrator (legacy lock)
     stopped_count = 0
     if stop(
         repo_root,
@@ -742,10 +735,10 @@ def stop_all_instances(
         actor=actor,
         graceful_timeout_seconds=graceful_timeout_seconds,
         force_if_graceful_fails=force_if_graceful_fails,
+        stop_policy=stop_policy,
     ):
         stopped_count += 1
 
-    # Then, stop all multi-instance orchestrators
     active_locks = list_instance_locks(repo_root)
     for lock_info in active_locks:
         if stop(
@@ -756,6 +749,7 @@ def stop_all_instances(
             actor=actor,
             graceful_timeout_seconds=graceful_timeout_seconds,
             force_if_graceful_fails=force_if_graceful_fails,
+            stop_policy=stop_policy,
         ):
             stopped_count += 1
 
@@ -837,6 +831,7 @@ class SupervisorOps(Protocol):
         actor: str = "supervisor.stop",
         graceful_timeout_seconds: float = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
         force_if_graceful_fails: bool = True,
+        stop_policy: shutdown_timing.StopPolicy | None = None,
     ) -> bool: ...
 
     def stop_by_port(
@@ -871,6 +866,7 @@ class SupervisorOps(Protocol):
         actor: str = "supervisor.stop_all_instances",
         graceful_timeout_seconds: float = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
         force_if_graceful_fails: bool = True,
+        stop_policy: shutdown_timing.StopPolicy | None = None,
     ) -> int: ...
 
     def status_all_instances(
@@ -913,6 +909,7 @@ class DefaultSupervisorOps:
         actor: str = "supervisor.stop",
         graceful_timeout_seconds: float = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
         force_if_graceful_fails: bool = True,
+        stop_policy: shutdown_timing.StopPolicy | None = None,
     ) -> bool:
         return stop(
             repo_root,
@@ -922,6 +919,7 @@ class DefaultSupervisorOps:
             actor=actor,
             graceful_timeout_seconds=graceful_timeout_seconds,
             force_if_graceful_fails=force_if_graceful_fails,
+            stop_policy=stop_policy,
         )
 
     def stop_by_port(
@@ -966,6 +964,7 @@ class DefaultSupervisorOps:
         actor: str = "supervisor.stop_all_instances",
         graceful_timeout_seconds: float = DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
         force_if_graceful_fails: bool = True,
+        stop_policy: shutdown_timing.StopPolicy | None = None,
     ) -> int:
         return stop_all_instances(
             repo_root,
@@ -974,6 +973,7 @@ class DefaultSupervisorOps:
             actor=actor,
             graceful_timeout_seconds=graceful_timeout_seconds,
             force_if_graceful_fails=force_if_graceful_fails,
+            stop_policy=stop_policy,
         )
 
     def status_all_instances(

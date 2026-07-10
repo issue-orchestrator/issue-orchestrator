@@ -24,29 +24,51 @@ def test_graceful_shutdown_default_allows_agent_runtime_cleanup() -> None:
     assert DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS == 120
 
 
-def test_signal_fallback_honors_the_graceful_timeout(tmp_path: Path) -> None:
-    from issue_orchestrator.infra import supervisor
+def test_stop_consumes_one_graceful_budget_across_http_and_signal_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
 
-    with (
-        patch.object(supervisor, "_send_kill_signal") as send_signal,
-        patch.object(
-            supervisor, "_wait_for_process_exit", return_value=True
-        ) as wait_for_exit,
-        patch.object(supervisor, "release_lock") as release_lock,
-    ):
-        stopped = supervisor._kill_with_signal_then_port(  # noqa: SLF001
-            repo_root=tmp_path,
-            pid=4242,
-            port=None,
-            instance_id=None,
-            force=False,
-            grace_seconds=17,
-        )
+    from issue_orchestrator.infra import shutdown_timing, supervisor
+
+    now = 0.0
+
+    def monotonic() -> float:
+        return now
+
+    def advance(seconds: float) -> None:
+        nonlocal now
+        now += seconds
+
+    def request_shutdown(*args, **kwargs) -> bool:  # noqa: ANN002, ANN003, ARG001
+        advance(4.0)
+        return False
+
+    monkeypatch.setattr(shutdown_timing.time, "monotonic", monotonic)
+    monkeypatch.setattr(supervisor.time, "sleep", advance)
+    monkeypatch.setattr(
+        supervisor,
+        "read_lock",
+        lambda *_: SimpleNamespace(pid=4242, http_port=8080),
+    )
+    monkeypatch.setattr(supervisor.os, "kill", lambda *_: None)
+    monkeypatch.setattr(supervisor, "_request_graceful_shutdown", request_shutdown)
+    send_signal = MagicMock()
+    force_stop = MagicMock(return_value=True)
+    monkeypatch.setattr(supervisor, "_send_kill_signal", send_signal)
+    monkeypatch.setattr(supervisor, "_force_stop", force_stop)
+
+    stopped = supervisor.stop(
+        tmp_path,
+        reason="test shared budget",
+        graceful_timeout_seconds=5,
+    )
 
     assert stopped is True
-    send_signal.assert_called_once_with(4242, False)
-    wait_for_exit.assert_called_once_with(4242, 170)
-    release_lock.assert_called_once_with(tmp_path, 4242, None)
+    assert now == pytest.approx(5.0)
+    send_signal.assert_called_once_with(4242, force=False)
+    force_stop.assert_called_once_with(tmp_path, 4242, 8080, None)
 
 
 class TestSupervisorStatus:

@@ -8,7 +8,10 @@ import threading
 import time
 from typing import Any, Literal, TypedDict
 
-from ..infra.supervisor import DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS
+from ..infra.shutdown_timing import (
+    DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
+    StopPolicySnapshot,
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,37 @@ class ShutdownPolicyUpdate:
 
     graceful_timeout_seconds: int
     force_orchestrators: bool
+
+
+@dataclass(frozen=True)
+class GlobalShutdownStopPolicy:
+    """Live policy owner bound to one global shutdown operation."""
+
+    operation_id: str
+
+    def snapshot(self) -> StopPolicySnapshot:
+        """Read force, abort, and timeout changes under the operation lock."""
+        with _shutdown_ops_lock:
+            op = _global_shutdown_operation
+            if (
+                not op
+                or op.get("operation_id") != self.operation_id
+                or op.get("state") != "in_progress"
+            ):
+                return StopPolicySnapshot(
+                    graceful_timeout_seconds=DEFAULT_ENGINE_GRACEFUL_TIMEOUT_SECONDS,
+                    abort=True,
+                )
+            return StopPolicySnapshot(
+                graceful_timeout_seconds=coerce_graceful_timeout_seconds(
+                    op.get("graceful_timeout_seconds")
+                ),
+                force=bool(
+                    op.get("force_orchestrators")
+                    or op.get("force_now_requested")
+                ),
+                abort=bool(op.get("abort_requested")),
+            )
 
 
 class GlobalShutdownOperation(TypedDict):
@@ -174,8 +208,10 @@ def set_shutdown_total_repos(*, operation_id: str, total_repos: int) -> None:
             op["total_repos"] = total_repos
 
 
-def resolve_shutdown_runtime(*, operation_id: str, repo_path: str) -> tuple[int, bool] | None:
-    """Resolve timeout and force policy for the current repository stop attempt."""
+def begin_shutdown_repo_stop(
+    *, operation_id: str, repo_path: str
+) -> GlobalShutdownStopPolicy | None:
+    """Bind the live global operation policy to the current repository stop."""
     with _shutdown_ops_lock:
         op = _global_shutdown_operation
         if not op or op.get("operation_id") != operation_id:
@@ -183,9 +219,7 @@ def resolve_shutdown_runtime(*, operation_id: str, repo_path: str) -> tuple[int,
         if op.get("abort_requested"):
             return None
         op["current_repo"] = repo_path
-        timeout_seconds = coerce_graceful_timeout_seconds(op.get("graceful_timeout_seconds"))
-        force_now = bool(op.get("force_orchestrators") or op.get("force_now_requested"))
-    return timeout_seconds, force_now
+    return GlobalShutdownStopPolicy(operation_id=operation_id)
 
 
 def increment_shutdown_completed_repos(*, operation_id: str) -> None:
