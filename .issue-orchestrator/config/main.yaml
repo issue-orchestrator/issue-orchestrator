@@ -50,7 +50,7 @@ agents:
     prompt: repo-specific/prompts/reviewer.md
     provider: "codex"
     ai_system: "codex"
-    model: "gpt-5.5"
+    model: "gpt-5.6-sol"
     timeout_minutes: 45
     provider_args:
       approval_mode: "full-auto"
@@ -70,7 +70,7 @@ agents:
   agent:goal-pilot:
     prompt: repo-specific/prompts/goal-pilot.md
     provider: codex
-    model: gpt-5-codex
+    model: gpt-5.6-sol
     ai_system: codex
     provider_args:
       approval_mode: full-auto
@@ -111,7 +111,7 @@ validation:
     cmd: make validate-quick
     timeout_seconds: 600
   publish:
-    cmd: "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
+    cmd: make validate-pr-raw
     # This repo's local publish gate runs the full PR validation slice
     # (unit/integration/web/vscode) and routinely exceeds 300s on busy machines,
     # even without any live agent work in the loop.

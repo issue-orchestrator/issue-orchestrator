@@ -75,7 +75,7 @@ pytest tests/e2e/ -v               # E2E tests (requires gh auth)
 
 1. Run `make validate-pr` before pushing for the required local publish gate; it is cache-aware and seeds the pre-push validation record
 2. CI mirrors `make validate-pr` by splitting the fast validate job and the agent-backed simulated/integration slices across separate required jobs
-3. Do not run `_validate-pr` directly; it is the internal uncached suite command used by the cache-aware gate
+3. Use `make validate-pr-raw` when you intentionally need to force the full uncached local suite at the same HEAD
 4. Tests must pass. If tests fail, fix them — don't defer.
 5. [CONTRIBUTING.md](../../CONTRIBUTING.md) covers running tests from forks
 

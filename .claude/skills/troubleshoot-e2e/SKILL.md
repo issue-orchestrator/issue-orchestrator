@@ -65,7 +65,7 @@ The `validate` workflow path-filters Python-impacting changes, then runs two job
 | `validate-fast` | `make validate` | Typecheck, architecture lint, complexity lint, unit tests, simulated core, integration core, web tests, then VS Code tests sequentially |
 | `validate-agent` | `make test-simulated-agent` and `make test-integration-agent` | Agent-backed simulated and integration slices that require real agent CLIs |
 
-Local PR guardrails use `make validate-pr`, the cache-aware wrapper that runs the required PR suite through the internal `_validate-pr` target.
+Local PR guardrails use `make validate-pr`, the cache-aware wrapper that runs the required PR suite through the raw `make validate-pr-raw` target.
 
 | Target | What It Runs | Test Type |
 |--------|-------------|-----------|
