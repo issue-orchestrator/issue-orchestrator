@@ -117,12 +117,16 @@ class TestReviewWorkflowValidator:
         review_exchange_max_no_progress=2,
         review_exchange_require_validation=True,
         agents=None,
+        health_review_interval_minutes=0,
     ):
         """Create a mock config with review settings."""
         config = MagicMock()
         config.review_enabled = review_enabled
         config.code_review_agent = code_review_agent
         config.triage_review_agent = triage_review_agent
+        # Concrete int so the cross-field health-review invariant (#6776) is
+        # exercised deterministically (a bare MagicMock compares > 0 truthy).
+        config.triage.health_review.interval_minutes = health_review_interval_minutes
         config.review_exchange_mode = review_exchange_mode
         config.review_exchange_probe_schedule = review_exchange_probe_schedule
         config.review_exchange_probe_interval_days = review_exchange_probe_interval_days
@@ -209,6 +213,33 @@ class TestReviewWorkflowValidator:
         assert any(
             "triage.health_review.interval_minutes" in e for e in errors
         ), errors
+
+    def test_positive_health_review_interval_without_agent_error(self):
+        """Cross-field invariant (#6776): a positive interval with no triage
+        agent is a startup config error, not a silent disable."""
+        config = self._make_config(
+            triage_review_agent=None, health_review_interval_minutes=60
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert any("no triage agent is configured" in e for e in errors), errors
+
+    def test_zero_interval_without_agent_ok(self):
+        """0 + no agent is the documented disabled state — no invariant error."""
+        config = self._make_config(
+            triage_review_agent=None, health_review_interval_minutes=0
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert not any("no triage agent is configured" in e for e in errors), errors
+
+    def test_positive_interval_with_agent_ok(self):
+        """Positive interval + configured agent is the valid enabled pair."""
+        config = self._make_config(
+            triage_review_agent="agent:triage",
+            agents={"agent:triage": MagicMock()},
+            health_review_interval_minutes=60,
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert not any("no triage agent is configured" in e for e in errors), errors
 
 
 class TestTemplateValidator:

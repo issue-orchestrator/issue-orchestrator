@@ -17,6 +17,7 @@ class ReviewWorkflowValidator(ConfigValidator):
     - Triage review agent must exist in agents (if set)
     - Triage authority modes are valid; act-level 'execute' rejected (#6764)
     - Triage health-review interval is non-negative (0 = disabled, #6763)
+    - A positive health-review interval requires a triage agent (#6776)
     """
 
     def validate(self, config: "Config") -> list[str]:
@@ -30,6 +31,7 @@ class ReviewWorkflowValidator(ConfigValidator):
         # Periodic health review (ADR-0031 §4): a negative interval is a
         # startup configuration error, never silently treated as disabled.
         errors.extend(config.triage.health_review.startup_errors())
+        self._validate_health_review_requires_agent(config, errors)
 
         exchange_mode = config.review_exchange_mode
         self._validate_exchange_mode(exchange_mode, config, errors)
@@ -60,6 +62,22 @@ class ReviewWorkflowValidator(ConfigValidator):
             errors.append(
                 f"triage_review_agent '{config.triage_review_agent}' not found in agents. "
                 f"Available: {list(config.agents.keys())}"
+            )
+
+    def _validate_health_review_requires_agent(
+        self, config: "Config", errors: list[str]
+    ) -> None:
+        # Cross-field invariant (#6776): a positive health-review interval with
+        # no triage agent is silently disabled at runtime
+        # (health_review_interval_minutes() returns 0). Reject the pair so the
+        # misconfiguration fails loudly rather than degrading; 0/absent is the
+        # documented disable value and a positive interval needs an agent.
+        interval = config.triage.health_review.interval_minutes
+        if interval > 0 and not config.triage_review_agent:
+            errors.append(
+                f"triage.health_review.interval_minutes is {interval} but no "
+                "triage agent is configured. Set review.triage_review_agent, or "
+                "use 0 to disable the periodic health review."
             )
 
     def _validate_exchange_mode(
