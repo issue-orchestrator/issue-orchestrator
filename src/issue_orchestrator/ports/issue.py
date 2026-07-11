@@ -95,6 +95,16 @@ class Issue(Protocol):
         ...
 
     @property
+    def updated_at(self) -> str | None:
+        """ISO-8601 last-update timestamp from the backing store, if known."""
+        ...
+
+    @property
+    def comment_count(self) -> int:
+        """Number of comments present in this issue snapshot."""
+        ...
+
+    @property
     def agent_type(self) -> str | None:
         """Agent type label (e.g., 'agent:developer'), if any."""
         ...

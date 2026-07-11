@@ -85,6 +85,10 @@ MAX_TITLE_CHARS = 300
 MAX_SUMMARY_CHARS = 5_000
 MAX_EVIDENCE_REFS = 20
 MAX_LABELS_PER_ACTION = 10
+# The pattern signature is a dedup KEY (the case-file ledger keys on it,
+# #6781) and lands in an issue title, so it is bounded tighter than bodies.
+MAX_PATTERN_SIGNATURE_CHARS = 200
+MAX_AREA_CHARS = 50
 
 
 @dataclass(frozen=True)
@@ -148,7 +152,12 @@ class ProposedTriageAction:
       the comment surface).
     * ``create_issue`` — ``title`` + ``body`` (+ optional ``labels``).
     * ``escalate_to_human`` — ``target_number`` + ``body`` (the reason).
-    * ``flag_pattern`` — ``body`` describing the cross-job pattern.
+    * ``flag_pattern`` — ``body`` describing the cross-job pattern PLUS a
+      REQUIRED ``pattern_signature``: a short stable slug keying the durable
+      case-file ledger (#6781) — the same signature always names the same
+      pattern, so repeated observations accrue as evidence comments on one
+      case-file issue. Optional ``area`` names the component/seam the
+      pattern clusters on (it becomes the case file's ``area:*`` tag).
     * ``reset_retry`` / ``kill_hung_session`` — ``target_number`` + ``body``
       (the rationale); act-level, shadow-mode only until #6764.
     """
@@ -161,6 +170,8 @@ class ProposedTriageAction:
     body: str | None = None
     labels: tuple[str, ...] = ()
     finding_ids: tuple[str, ...] = ()
+    pattern_signature: str | None = None
+    area: str | None = None
 
     @classmethod
     def from_mapping(cls, data: Any, *, index: int) -> "ProposedTriageAction":
@@ -195,12 +206,20 @@ class ProposedTriageAction:
                     f"proposed action {action_id} label {label!r} contains"
                     " disallowed characters"
                 )
-        body = _optional_str(data.get("body"))
-        if body is not None:
-            body = _bounded(body, MAX_ACTION_BODY_CHARS, f"proposed action {action_id} body")
-        title = _optional_str(data.get("title"))
-        if title is not None:
-            title = _bounded(title, MAX_TITLE_CHARS, f"proposed action {action_id} title")
+        body = _optional_bounded_str(
+            data.get("body"), MAX_ACTION_BODY_CHARS, f"proposed action {action_id} body"
+        )
+        title = _optional_bounded_str(
+            data.get("title"), MAX_TITLE_CHARS, f"proposed action {action_id} title"
+        )
+        signature = _optional_bounded_str(
+            data.get("pattern_signature"),
+            MAX_PATTERN_SIGNATURE_CHARS,
+            f"proposed action {action_id} pattern_signature",
+        )
+        area = _optional_bounded_str(
+            data.get("area"), MAX_AREA_CHARS, f"proposed action {action_id} area"
+        )
         action = cls(
             id=action_id,
             action_type=action_type,
@@ -210,6 +229,8 @@ class ProposedTriageAction:
             body=body,
             labels=labels,
             finding_ids=_string_tuple(data.get("finding_ids")),
+            pattern_signature=signature,
+            area=area,
         )
         action.validate()
         return action
@@ -221,6 +242,24 @@ class ProposedTriageAction:
     def validate(self) -> None:
         context = f"proposed action {self.id} ({self.action_type})"
         _validate_action_id(self.id)
+        # pattern_signature/area must be meaningful whenever present —
+        # direct construction bypasses from_mapping's normalization, and the
+        # area lands in an `area:*` label, so it obeys label constraints.
+        if self.pattern_signature is not None:
+            _require(
+                bool(self.pattern_signature.strip())
+                and len(self.pattern_signature) <= MAX_PATTERN_SIGNATURE_CHARS,
+                f"{context} pattern_signature must be non-empty and at most"
+                f" {MAX_PATTERN_SIGNATURE_CHARS} characters when present",
+            )
+        if self.area is not None:
+            _require(
+                bool(self.area.strip())
+                and len(self.area) <= MAX_AREA_CHARS
+                and _LABEL_ALLOWED(self.area),
+                f"{context} area must be a non-empty label-safe string"
+                f" of at most {MAX_AREA_CHARS} characters when present",
+            )
         if self.action_type == "post_comment":
             _require(self.target_number is not None, f"{context} requires target_number")
             _require(bool(self.body), f"{context} requires body")
@@ -232,6 +271,13 @@ class ProposedTriageAction:
             _require(bool(self.body), f"{context} requires body")
         elif self.action_type == "flag_pattern":
             _require(bool(self.body), f"{context} requires body")
+            # Contract change (#6781): the signature keys the durable
+            # case-file ledger — a flag_pattern without one cannot accrue.
+            _require(
+                self.pattern_signature is not None,
+                f"{context} requires pattern_signature (the case-file"
+                " ledger key, #6781)",
+            )
         elif self.action_type in ACT_LEVEL_TRIAGE_ACTIONS:
             _require(self.target_number is not None, f"{context} requires target_number")
             _require(bool(self.body), f"{context} requires body (rationale)")
@@ -253,6 +299,10 @@ class ProposedTriageAction:
             payload["labels"] = list(self.labels)
         if self.finding_ids:
             payload["finding_ids"] = list(self.finding_ids)
+        if self.pattern_signature:
+            payload["pattern_signature"] = self.pattern_signature
+        if self.area:
+            payload["area"] = self.area
         return payload
 
 
@@ -493,3 +543,9 @@ def _optional_str(value: Any) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _optional_bounded_str(value: Any, limit: int, context: str) -> str | None:
+    """Normalize an optional agent-authored string, enforcing its bound."""
+    normalized = _optional_str(value)
+    return _bounded(normalized, limit, context) if normalized is not None else None

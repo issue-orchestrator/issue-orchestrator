@@ -343,8 +343,12 @@ def recover_pending_triage_anchors(
     leaked/terminal ledger rows are NOT discarded here — the first control
     tick's fact gatherer surfaces them as cleanup candidates and the planner's
     confirm-and-discard action self-heals them.
+    Pattern case files (#6781) share the label too and are pure evidence
+    ledgers. The same ``split_triage_case_file_issues`` owner the fact gatherer
+    uses excludes them here before anchor recovery.
     """
     from .session_routing import TriageQueueOutcome
+    from .triage_case_files import split_triage_case_file_issues
     from .triage_proposals import reconcile_triage_proposals
 
     assert config.triage_review_agent is not None  # caller-gated
@@ -359,10 +363,16 @@ def recover_pending_triage_anchors(
         else {}
     )
     reconciled = reconcile_triage_proposals(issues, ops=ops)
-    anchors = reconciled.anchor_candidate_issues
-    skipped = len(issues) - len(anchors)
-    if skipped:
-        print(f"  Skipped {skipped} gated triage proposal issue(s) (#6778)")
+    proposal_skipped = len(issues) - len(reconciled.anchor_candidate_issues)
+    anchors, case_files = split_triage_case_file_issues(
+        reconciled.anchor_candidate_issues
+    )
+    if proposal_skipped:
+        print(
+            f"  Skipped {proposal_skipped} gated triage proposal issue(s) (#6778)"
+        )
+    if case_files:
+        print(f"  Skipped {len(case_files)} pattern case file(s) (#6781)")
     for issue in anchors:
         if session_exists(f"issue-{issue.number}"):
             print(f"  triage issue #{issue.number}: Already running")

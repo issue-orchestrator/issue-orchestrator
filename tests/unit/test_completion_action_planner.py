@@ -11,6 +11,7 @@ from issue_orchestrator.control.actions import (
     AddCommentAction,
     AddLabelAction,
     CloseIssueAction,
+    CreateTriageCaseFileIssueAction,
     CreateTriageIssueAction,
     RemoveLabelAction,
     ResetRetryIssueAction,
@@ -34,6 +35,7 @@ from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.triage_manifest import PRToReview, TriageManifest
 from issue_orchestrator.domain.triage_session import (
     TRIAGE_ASSIGNMENT_FILENAME,
+    TRIAGE_OBSERVATION_LABEL,
     TriageAssignment,
     TriageLaunchAuthority,
     TriageSessionFlavor,
@@ -713,6 +715,76 @@ def test_health_review_decision_targeting_other_issue_is_rejected(
     assert not any(
         isinstance(a, AddCommentAction) and a.number == 999 for a in actions
     )
+
+
+def _plant_flag_pattern_decision(
+    session: Session, *, signature: str = "db-timeout", area: str = "db"
+) -> None:
+    """Plant a health-review decision whose only action is a flag_pattern
+    (scope-free board-wide finding, #6781)."""
+    data_dir = session.run_dir / "triage-data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "triage-decision.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "summary": "Recurring cross-job pattern found.",
+                "findings": [
+                    {
+                        "id": "T1",
+                        "title": "DB pool exhausted",
+                        "classification": "infra",
+                        "evidence": ["orchestrator log lines 10-20"],
+                    }
+                ],
+                "proposed_actions": [
+                    {
+                        "id": "A1",
+                        "action_type": "flag_pattern",
+                        "body": "Three sessions hit the same DB pool timeout.",
+                        "pattern_signature": signature,
+                        "area": area,
+                        "finding_ids": ["T1"],
+                    }
+                ],
+            }
+        )
+    )
+    (data_dir / "triage-report.md").write_text("# Report\n\nT1 leads to A1.\n")
+
+
+def test_health_review_flag_pattern_is_scope_free_and_opens_case_file(
+    tmp_path: Path,
+) -> None:
+    """A health decision's flag_pattern carries no target: it passes scope
+    validation and plans a durable case file for a first-seen signature
+    (#6781 acceptance)."""
+    config = make_triage_config(tmp_path)
+    session = make_triage_session(tmp_path)
+    arm_health_review_session(config, session)
+    _plant_flag_pattern_decision(session)
+
+    # Scope-free: no out-of-scope error even though it is not the anchor.
+    error = triage_decision_processing_error(
+        config,
+        triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+        run_dir=session.run_dir,
+        run_id=session.run_assets.run_id,
+        session_name=session.run_assets.session_name,
+    )
+    assert error is None
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    [case_file] = [
+        a for a in actions if isinstance(a, CreateTriageCaseFileIssueAction)
+    ]
+    assert case_file.pattern_signature == "db-timeout"
+    assert case_file.area == "db"
+    assert TRIAGE_OBSERVATION_LABEL in case_file.labels
 
 
 @pytest.mark.parametrize("status", [SessionStatus.FAILED, SessionStatus.TIMED_OUT])

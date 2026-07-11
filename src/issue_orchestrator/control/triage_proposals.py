@@ -10,14 +10,12 @@ the whole gated lifecycle:
   ``kill_hung_session`` until its direct tier ships) into a
   :class:`CreateTriageProposalIssueAction` carrying the typed
   :class:`StoredTriageOp`. The issue body is human documentation ONLY.
-* **Creation boundary** — :func:`apply_create_triage_issue` is the applier's
-  create-issue executor for BOTH plain triage issues (batch anchors, health
-  anchors, decision follow-ups) and gated proposals. Proposal creations
-  additionally record the op create-once in the orchestrator-owned authority
-  store and link the new issue from the triage session's anchor (replacing
-  the shadow digest entry for that proposal). Execution later consumes only
-  the stored op, so editing the issue body after creation has zero effect
-  (the tamper boundary).
+* **Creation boundary** —
+  :func:`triage_issue_creation.apply_create_triage_issue` is the shared
+  create-issue executor. Proposal creations record the op create-once in the
+  orchestrator-owned authority store and link the issue from the triage
+  session's anchor. Execution later consumes only the stored op, so editing
+  the issue body after creation has zero effect (the tamper boundary).
 * **Ledger dedup** — one open proposal per (op, target):
   :func:`build_op_ledger` projects the store's rows; a duplicate proposal
   plans an :class:`AddCommentAction` on the existing proposal issue instead
@@ -61,25 +59,21 @@ from ..domain.triage_session import (
     StoredTriageOp,
     is_proposed_triage_gate,
 )
-from ..events import EventName
-from ..ports import make_trace_event
 from .actions import (
     Action,
     ActionResult,
-    CreateTriageIssueAction,
     CreateTriageProposalIssueAction,
     DiscardTerminalTriageProposalOpsAction,
     KillHungSessionAction,
     ResetRetryIssueAction,
 )
 from .reconciliation import build_expected_for_mutation
-from .triage_issue_policy import resolve_triage_milestone_number
 from .triage_reset_retry import STALE_DOWNGRADE_MODE
 
 if TYPE_CHECKING:
     from ..domain.triage_artifacts import ProposedTriageAction
     from ..infra.config import Config
-    from ..ports import EventSink, RepositoryHost
+    from ..ports import RepositoryHost
     from ..ports.issue import Issue
     from ..ports.triage_authority import TriageAuthorityStore
     from .reconciliation import ExpectedState
@@ -490,140 +484,6 @@ def plan_approved_triage_op_executions(
             op.target_issue_number,
         )
     return actions
-
-
-def _proposal_gate_provisioning_error(
-    repository_host: "RepositoryHost",
-) -> str | None:
-    """Reason the gate is unusable, or None when the repo has it (#6779 R3).
-
-    Case-insensitive (GitHub folds label names). A read failure is itself a
-    blocking reason: creating a proposal we cannot prove is gated is exactly
-    the orphan this guard prevents.
-    """
-    try:
-        existing = {
-            name.casefold()
-            for entry in repository_host.list_labels()
-            if isinstance(entry, dict)
-            and isinstance((name := entry.get("name")), str)
-        }
-    except Exception as exc:  # read failure => cannot prove the gate exists
-        return (
-            f"could not verify the {PROPOSED_TRIAGE_LABEL!r} gate label is"
-            f" provisioned; refusing to create an ungated proposal: {exc}"
-        )
-    gate_present = PROPOSED_TRIAGE_LABEL.casefold() in existing
-    if not gate_present:
-        return (
-            f"the {PROPOSED_TRIAGE_LABEL!r} gate label is not provisioned in"
-            " this repository; run `issue-orchestrator init` to create it."
-            " Refusing to create an ungated triage proposal (#6779 R3)"
-        )
-    return None
-
-
-def _proposal_link_comment(action: CreateTriageProposalIssueAction, issue_number: int) -> str:
-    op = action.op
-    return (
-        "## 🗳️ Triage proposal filed as a gated issue\n\n"
-        f"Proposal {op.source_action_id} (`{op.op_type}` for"
-        f" #{op.target_issue_number}) was filed as #{issue_number}. It is"
-        f" inert until someone removes its `{PROPOSED_TRIAGE_LABEL}` label"
-        " (per-instance approval, ADR-0031 §2)."
-    )
-
-
-def apply_create_triage_issue(
-    action: CreateTriageIssueAction,
-    *,
-    repository_host: "RepositoryHost",
-    events: "EventSink",
-    ops: "TriageAuthorityStore | None",
-    emit_labels_changed: Callable[[int, list[str], list[str]], None],
-) -> ActionResult:
-    """Create a triage issue; the applier's single create-issue executor.
-
-    THE milestone resolution boundary (#6769 finding 4): the planned intent's
-    explicit name is resolved to a number here, immediately before the issue
-    is created — one API read per actual creation, and an unresolvable
-    configured name fails this action loudly.
-
-    Gated proposals (#6778) additionally record the :class:`StoredTriageOp`
-    create-once (keyed by the NEW issue number) and link the proposal from
-    the session's anchor issue. Recording runs BEFORE the anchor link so a
-    mid-apply crash can never leave an announced proposal without its
-    executable payload; a proposal issue without a recorded op is simply
-    inert (the gate label still blocks pickup, and approval finds no op).
-    """
-    is_proposal = isinstance(action, CreateTriageProposalIssueAction)
-    if is_proposal and ops is None:
-        return ActionResult.fail(
-            action,
-            "gated triage proposal requested but no TriageAuthorityStore is"
-            " wired into this applier",
-        )
-    if is_proposal:
-        # Verify the gate exists BEFORE creating the issue (#6779 R3): GitHub
-        # silently drops an unknown label, so creating first would leave an
-        # ungated proposal — triage/filter labels but no blocking gate, hence
-        # schedulable as ordinary work. Fail before creation so no orphan lands.
-        gate_error = _proposal_gate_provisioning_error(repository_host)
-        if gate_error is not None:
-            logger.error("[APPLIER] %s", gate_error)
-            return ActionResult.fail(action, gate_error)
-    try:
-        milestone = resolve_triage_milestone_number(
-            action.milestone, repository_host.list_milestones
-        )
-        result = repository_host.create_issue(
-            title=action.title,
-            body=action.body,
-            labels=list(action.labels),
-            milestone=milestone,
-        )
-    except Exception as e:
-        logger.exception("Failed to create triage issue")
-        return ActionResult.fail(action, str(e))
-
-    issue_number = result.get("number") if result else None
-    if not issue_number:
-        logger.warning(
-            "[APPLIER] Triage issue creation returned None (title=%s labels=%s)",
-            action.title,
-            list(action.labels),
-        )
-        return ActionResult.fail(action, "Issue creation returned None")
-
-    logger.info(
-        "[APPLIER] Created triage issue #%d for %d PRs (milestone=%s)",
-        issue_number,
-        action.pr_count,
-        milestone,
-    )
-    emit_labels_changed(issue_number, list(action.labels), [])
-    events.publish(make_trace_event(EventName.TRIAGE_ISSUE_CREATED, {
-        "issue_number": issue_number, "pr_count": action.pr_count,
-    }))
-    if is_proposal:
-        assert isinstance(action, CreateTriageProposalIssueAction)
-        assert ops is not None
-        try:
-            ops.record_op(issue_number=issue_number, op=action.op)
-            repository_host.add_comment(
-                action.anchor_issue_number,
-                _proposal_link_comment(action, issue_number),
-            )
-        except Exception as e:
-            logger.exception(
-                "Failed to finalize gated triage proposal #%d", issue_number
-            )
-            return ActionResult.fail(
-                action, str(e), issue_number=issue_number
-            )
-    return ActionResult.ok(
-        action, issue_number=issue_number, pr_count=action.pr_count,
-    )
 
 
 def _terminal_outcome_comment(

@@ -32,6 +32,8 @@ class GitHubIssue:
         milestone_number: Milestone number
         milestone_due_on: Milestone due date (ISO string)
         created_at: Issue creation timestamp (ISO string)
+        updated_at: Issue last-update timestamp (ISO string)
+        comment_count: Number of issue comments
     """
 
     number: int
@@ -44,6 +46,8 @@ class GitHubIssue:
     milestone_number: int | None = None
     milestone_due_on: str | None = None
     created_at: str | None = None
+    updated_at: str | None = None
+    comment_count: int = 0
 
     # -------------------------------------------------------------------------
     # Identity (IssueKey)

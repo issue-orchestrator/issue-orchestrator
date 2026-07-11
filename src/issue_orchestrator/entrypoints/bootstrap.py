@@ -83,7 +83,7 @@ from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
 from .bootstrap_triage import (
     create_board_snapshot_builder,
-    create_triage_authority_store,
+    create_triage_composition,
     wire_triage_act_executors,
 )
 from ..infra.repo_identity import state_dir
@@ -792,14 +792,10 @@ def build_orchestrator(
         reconcile=True,
     ) if github else None
 
-    triage_authority = create_triage_authority_store(config)
-
-    # Create fact gatherer (read-only snapshot creation; the authority store
-    # lets its anchor scan classify approved gated proposals, #6778)
-    fact_gatherer = FactGatherer(
-        config=config, repository_host=github,
-        events=events, triage_authority=triage_authority,
-    ) if github else None
+    triage = create_triage_composition(config, github, events)
+    triage_authority = triage.authority
+    triage_board_publisher = triage.board_publisher
+    fact_gatherer = triage.fact_gatherer
 
     # Create PR scanner and session restorer
     pr_scanner = (
@@ -959,7 +955,9 @@ def build_orchestrator(
         # on a dedicated runner so a slow publish never blocks the heartbeat.
         completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
-        board_snapshot_builder=create_board_snapshot_builder(config, timeline_store),
+        board_snapshot_builder=create_board_snapshot_builder(
+            config, timeline_store, triage_board_publisher
+        ),
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
@@ -1111,15 +1109,11 @@ def build_orchestrator_for_testing(
             reconcile=False,  # Disable for testing by default
         )
 
-    triage_authority_for_testing = create_triage_authority_store(config)
-
-    # Create default fact gatherer
-    if fact_gatherer is None:
-        fact_gatherer = FactGatherer(
-            config=config,
-            repository_host=github,
-            events=events, triage_authority=triage_authority_for_testing,
-        )
+    triage = create_triage_composition(config, github, events, fact_gatherer)
+    triage_authority_for_testing = triage.authority
+    triage_board_publisher_for_testing = triage.board_publisher
+    fact_gatherer = triage.fact_gatherer
+    assert fact_gatherer is not None
 
     # Create HealthGate for testing
     health_gate = HealthGate(
@@ -1300,11 +1294,12 @@ def build_orchestrator_for_testing(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,
-        # Tests default to synchronous (one-tick) completion; the background
-        # dispatcher is exercised explicitly where async behavior is under test.
+        # Tests default to synchronous; async dispatch is exercised explicitly.
         completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
-        board_snapshot_builder=create_board_snapshot_builder(config, timeline_store),
+        board_snapshot_builder=create_board_snapshot_builder(
+            config, timeline_store, triage_board_publisher_for_testing
+        ),
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,

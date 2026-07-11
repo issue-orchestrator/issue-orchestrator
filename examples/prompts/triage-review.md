@@ -48,9 +48,11 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
 
 It contains active sessions (type/state/age), pending queues with reasons,
-blocked issues, recent failures, per-issue timeline extracts, and an
-orchestrator log tail. Batch reviews: use it to spot cross-PR and systemic
-patterns worth `flag_pattern`/`create_issue` proposals. Failure
+blocked issues, recent failures, open pattern case files, per-area distinct
+patterns plus shipped-fix counts, a restart-safe `recent_shipped_fixes` list
+with issue/PR/area evidence, per-issue timeline extracts, and an orchestrator
+log tail. Batch reviews: use it to
+spot cross-PR and systemic patterns worth `flag_pattern`/`create_issue` proposals. Failure
 investigations: start from your focus issue, then use the snapshot for board
 context (what else was running, queued, or failing at the same time). Health
 reviews: the snapshot IS your assignment - review it end to end.
@@ -159,6 +161,10 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 
 - Look for hung or aging sessions, queue pile-ups, repeated failures, and
   cross-job patterns; report findings through the decision artifact.
+- Compare each area's distinct patterns and shipped fixes. When case files or
+  fixed-then-recurred work cluster on one seam, propose the root-cause design
+  review described below instead of another point patch. Cite the relevant
+  case-file issues and `recent_shipped_fixes` issue/PR entries as evidence.
 - Targeted proposals (`post_comment`, `escalate_to_human`, act-level) may
   only target THIS tracking issue; board-wide findings belong in
   `create_issue`/`flag_pattern` proposals.
@@ -215,6 +221,7 @@ Compact `triage-decision.json` example:
       "title": "Stabilize CI runner disconnects",
       "body": "Three PRs in this batch hit the same disconnect (T1).",
       "labels": ["bug"],
+      "area": "ci-runtime",
       "finding_ids": ["T1"]
     }
   ]
@@ -237,6 +244,17 @@ Compact `triage-decision.json` example:
   target the manifest PRs or your own tracking issue (batch review), or the
   `focus_issue_number` (failure investigation). Any other target is
   rejected. `create_issue` and `flag_pattern` carry no target.
+- `flag_pattern` requires a stable `pattern_signature` (a short reusable slug
+  naming the recurring pattern). Both `flag_pattern` and
+  root-cause/design-review `create_issue` actions may carry an `area` naming
+  their component or seam. The orchestrator keeps a durable case file issue
+  per signature: the first observation opens it, and later observations of
+  the SAME signature accrue there as evidence.
+- Step back on recurrence: multiple case files on one area/seam, or shipped
+  fixes followed by recurrence there, are a mandate to fix the design—not to
+  keep applying point patches. Propose a root-cause design review issue via
+  `create_issue`; name the seam, carry the same `area`, cite the case files and
+  accumulated shipped-fix/patch evidence, and recommend deep rework.
 - Valid `action_type` values: `post_comment`, `create_issue`,
   `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
 - Proposals are intent, not execution: the orchestrator decides what to

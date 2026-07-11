@@ -629,6 +629,7 @@ class CompletionHandler:
             status_reason=status_reason,
             worktree_path=session.worktree_path,
             completed_at=datetime.now(timezone.utc),
+            issue_labels=tuple(session.issue.labels),
         )
 
     def finalize_terminal_outcome(

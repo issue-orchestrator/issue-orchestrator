@@ -196,3 +196,34 @@ def test_act_level_wiring_state_is_synchronized(variant: str) -> None:
     assert "recorded as would-have-done until its" not in text, (
         f"{variant} still claims kill_hung_session is shadow-only"
     )
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_step_back_mandate_synchronized(variant: str) -> None:
+    """#6781 amendment: every prompt variant must teach the durable case-file
+    contract (flag_pattern needs a stable signature) AND the step-back
+    mandate — a recurring same-signature pattern escalates to a deeper
+    root-cause design-review issue, not another observation."""
+    text = PROMPT_VARIANTS[variant]
+    assert "pattern_signature" in text, (
+        f"{variant} does not document the required flag_pattern signature"
+    )
+    assert "case file" in text, (
+        f"{variant} does not document the durable case file"
+    )
+    assert "Step back on recurrence" in text, (
+        f"{variant} does not teach the step-back mandate"
+    )
+    assert "root-cause design review" in text, (
+        f"{variant} does not name the root-cause design-review escalation"
+    )
+    assert "mandate to" in text, (
+        f"{variant} does not frame recurrence as a root-cause mandate"
+    )
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_restart_safe_shipped_fix_evidence_is_synchronized(variant: str) -> None:
+    text = PROMPT_VARIANTS[variant]
+    assert "recent_shipped_fixes" in text
+    assert "issue/PR" in text

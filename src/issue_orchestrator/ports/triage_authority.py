@@ -3,10 +3,9 @@
 The agent-writable worktree carries copies of the triage assignment and PR
 manifest for the *agent* to read; the orchestrator must never treat those
 copies as authority (#6761 re-review F1). This port is the behavior seam the
-control plane uses instead: the launch side records the immutable
-:class:`TriageLaunchAuthority` for a session run, the completion side loads
-it back as the only trusted scope, and terminal seams discard the row so
-authority never outlives its run (#6769 F3).
+control plane uses instead: it owns trusted launch scope plus the durable
+proposal, pattern, and shipped-fix ledgers that triage policy consults across
+process restarts.
 
 Constructed once at the composition root (``entrypoints/bootstrap.py``) and
 injected into the session launcher, the completion processor, and the
@@ -16,10 +15,15 @@ implementation lives in ``infra/triage_authority_store.py``.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from ..domain.triage_session import StoredTriageOp, TriageLaunchAuthority
+    from ..domain.triage_session import (
+        StoredTriageOp,
+        TriageLaunchAuthority,
+        TriageShippedFixSummary,
+    )
 
 
 class TriageAuthorityConflictError(RuntimeError):
@@ -30,8 +34,16 @@ class TriageOpConflictError(RuntimeError):
     """A different stored op already exists for this proposal issue."""
 
 
+class TriagePatternConflictError(RuntimeError):
+    """A different case-file issue already exists for this pattern signature."""
+
+
+class TriageShippedFixConflictError(RuntimeError):
+    """Different shipped-fix evidence already exists for an issue."""
+
+
 class TriageAuthorityStore(Protocol):
-    """Durable per-run storage for triage launch authority."""
+    """Durable trusted scope and operational ledgers for triage."""
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TriageLaunchAuthority"
@@ -87,6 +99,47 @@ class TriageAuthorityStore(Protocol):
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
         ...
 
+    # -- Pattern case files (#6781) -----------------------------------------
+    #
+    # The durable flag_pattern ledger: one case-file issue per pattern
+    # signature. Recorded create-once when the case-file issue is created;
+    # subsequent flag_pattern proposals with the same signature look it up
+    # and plan an evidence comment on the existing issue instead of a second
+    # one. Rows are never discarded by the orchestrator — the case file IS
+    # the accumulating artifact (graduation happens on GitHub).
+
+    def record_pattern(self, *, signature: str, issue_number: int) -> None:
+        """Persist the case-file issue for one signature (create-once).
+
+        Recording the same issue for an existing signature is a no-op;
+        recording a DIFFERENT issue must raise
+        :class:`TriagePatternConflictError` — the signature keys exactly one
+        evidence trail, which must never silently move.
+        """
+        ...
+
+    def lookup_pattern(self, *, signature: str) -> int | None:
+        """Return the case-file issue for a signature, or None when absent."""
+        ...
+
+    def list_patterns(self) -> tuple[tuple[str, int], ...]:
+        """All (signature, case_file_issue_number) rows — the pattern ledger."""
+        ...
+
+    # -- Shipped-fix operational memory (#6781 amendment) -----------------
+
+    def record_shipped_fix(
+        self, *, issue_number: int, title: str, pr_url: str, area: str
+    ) -> None:
+        """Record an area-tagged fix at merge time (create-once by issue)."""
+        ...
+
+    def list_recent_shipped_fixes(
+        self, *, limit: int
+    ) -> tuple["TriageShippedFixSummary", ...]:
+        """Newest persisted fixes, bounded for the agent-read board snapshot."""
+        ...
+
 
 class InMemoryTriageAuthorityStore:
     """In-memory store for tests."""
@@ -94,6 +147,8 @@ class InMemoryTriageAuthorityStore:
     def __init__(self) -> None:
         self._rows: dict[tuple[str, str], "TriageLaunchAuthority"] = {}
         self._ops: dict[int, "StoredTriageOp"] = {}
+        self._patterns: dict[str, int] = {}
+        self._shipped_fixes: dict[int, "TriageShippedFixSummary"] = {}
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TriageLaunchAuthority"
@@ -135,3 +190,57 @@ class InMemoryTriageAuthorityStore:
 
     def list_ops(self) -> tuple[tuple[int, "StoredTriageOp"], ...]:
         return tuple(sorted(self._ops.items()))
+
+    def record_pattern(self, *, signature: str, issue_number: int) -> None:
+        existing = self._patterns.get(signature)
+        if existing is not None:
+            if existing == issue_number:
+                return
+            raise TriagePatternConflictError(
+                f"pattern signature {signature!r} is already recorded for"
+                f" case-file issue #{existing}"
+            )
+        self._patterns[signature] = issue_number
+
+    def lookup_pattern(self, *, signature: str) -> int | None:
+        return self._patterns.get(signature)
+
+    def list_patterns(self) -> tuple[tuple[str, int], ...]:
+        return tuple(sorted(self._patterns.items()))
+
+    def record_shipped_fix(
+        self, *, issue_number: int, title: str, pr_url: str, area: str
+    ) -> None:
+        from ..domain.triage_session import TriageShippedFixSummary
+
+        existing = self._shipped_fixes.get(issue_number)
+        if existing is not None:
+            # Titles are human metadata and may be edited between a durable
+            # write and a crash-retry. PR + area are the evidence identity;
+            # retain the original title rather than blocking reconciliation.
+            if existing.pr_url == pr_url and existing.area == area:
+                return
+            raise TriageShippedFixConflictError(
+                f"different shipped-fix evidence is already recorded for"
+                f" issue #{issue_number}"
+            )
+        self._shipped_fixes[issue_number] = TriageShippedFixSummary(
+            issue_number=issue_number,
+            title=title,
+            pr_url=pr_url,
+            area=area,
+            merged_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def list_recent_shipped_fixes(
+        self, *, limit: int
+    ) -> tuple["TriageShippedFixSummary", ...]:
+        if limit <= 0:
+            raise ValueError("shipped-fix limit must be positive")
+        return tuple(
+            sorted(
+                self._shipped_fixes.values(),
+                key=lambda item: (item.merged_at, item.issue_number),
+                reverse=True,
+            )[:limit]
+        )

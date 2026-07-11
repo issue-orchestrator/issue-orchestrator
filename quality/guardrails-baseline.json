@@ -136,6 +136,14 @@
       "rule_id": "control_policy_branch_sites",
       "value": 4
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/history_reconciliation.py": {
+      "detail": "3 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/history_reconciliation.py",
+      "path": "src/issue_orchestrator/control/history_reconciliation.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 3
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/issue_fetch_resilience.py": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",

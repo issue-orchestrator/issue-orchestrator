@@ -14,7 +14,7 @@ from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
-from .triage_session import ApprovedTriageOp, TriageSessionFlavor
+from .triage_session import ApprovedTriageOp, TriageCaseFileSummary, TriageSessionFlavor
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue as IssueProtocol
@@ -723,6 +723,8 @@ class Issue:
     milestone_number: Optional[int] = None
     milestone_due_on: Optional[str] = None  # ISO date string
     created_at: Optional[str] = None  # ISO timestamp string
+    updated_at: Optional[str] = None  # ISO timestamp string
+    comment_count: int = 0
 
     @property
     def key(self) -> IssueKey:
@@ -1212,6 +1214,7 @@ class SessionHistoryEntry:
     status_reason: Optional[str] = None  # Human-readable explanation of status
     worktree_path: Optional[Path] = None
     completed_at: Optional[datetime] = None  # When the session completed (for sequence visibility)
+    issue_labels: tuple[str, ...] = ()  # Snapshot retained for area/seam facts
 
 
 @dataclass
@@ -1370,6 +1373,10 @@ class TriageFacts:
     # a fresh targeted read before discarding. Surfacing these as a fact keeps
     # fact gathering read-only (#6779 R10).
     absent_proposal_op_candidates: tuple[int, ...] = field(default_factory=tuple)
+    # Open pattern case files (#6781): observation-labeled issues classified
+    # from the SAME anchor scan. Projected into the board snapshot so health
+    # reviews mine accumulated evidence, and into the triage board file.
+    open_case_files: tuple["TriageCaseFileSummary", ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -1724,7 +1731,6 @@ class OrchestratorState:
     # health_review_trigger owner on successful anchor creation, hydrated at
     # startup from the queue-cache meta store so restarts do not double-fire.
     last_health_review_at: float = 0.0
-
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
 

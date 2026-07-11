@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import MutableSequence
+from collections.abc import Callable, MutableSequence
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
@@ -96,8 +96,15 @@ class SessionHistoryOwner:
         pr_url: str,
         status: AwaitingMergeTerminalStatus,
         status_reason: str,
+        before_transition: Callable[[SessionHistoryEntry], None] | None = None,
     ) -> HistoryReconciliationResult:
-        """Mark the latest matching awaiting-merge history entry terminal."""
+        """Mark the latest matching awaiting-merge history entry terminal.
+
+        ``before_transition`` lets a durable owner record facts derived from
+        the reconcilable entry before this process-local projection becomes
+        terminal. An exception leaves the entry unchanged so reconciliation
+        can retry without losing the durable fact.
+        """
         entry = self._find_latest_matching_entry(issue_number, pr_url)
         if entry is None:
             # Likely cause: pr_url string mismatch (trailing slash, scheme, etc.)
@@ -134,6 +141,8 @@ class SessionHistoryOwner:
             )
 
         previous_status = entry.status
+        if before_transition is not None:
+            before_transition(entry)
         entry.status = status
         entry.status_reason = status_reason
         logger.info(

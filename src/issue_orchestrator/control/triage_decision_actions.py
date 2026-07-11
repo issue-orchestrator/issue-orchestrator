@@ -13,8 +13,12 @@ emits the orchestrator's action vocabulary:
   scheduling. The gate label is orchestrator-attached by the
   ``triage_issue_policy`` owner and rejected by the agent-label allowlist.
 - ``flag_pattern`` with ``execute`` authority -> surfaced with
-  ``mode="pattern"``: recording the pattern IS the execution. Under
-  ``propose`` authority it is a shadow record like any other proposal.
+  ``mode="pattern"`` PLUS the durable case-file ledger (#6781): a signature
+  absent from the pattern ledger plans a
+  :class:`~.actions.CreateTriageCaseFileIssueAction` (the applier records
+  the signature -> issue row create-once); a known signature plans an
+  evidence ``AddCommentAction`` on the existing case file. Under
+  ``propose`` authority it stays a shadow record like any other proposal.
 - ``reset_retry`` with ``execute`` authority -> a typed
   :class:`ResetRetryIssueAction`; the applier's owner re-validates the
   proposal's preconditions at execution time and downgrades stale proposals
@@ -58,7 +62,7 @@ is stopped and no other labels are touched.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Callable, Mapping
 
 from ..domain.triage_artifacts import (
@@ -70,11 +74,16 @@ from .actions import (
     Action,
     AddCommentAction,
     AddLabelAction,
+    CreateTriageCaseFileIssueAction,
     CreateTriageIssueAction,
     ResetRetryIssueAction,
     SurfaceTriageProposalAction,
 )
 from .label_manager import LabelManager
+from .triage_case_files import (
+    build_case_file_evidence_comment,
+    build_case_file_issue_action,
+)
 from .triage_issue_policy import (
     apply_triage_priority_prefix,
     decision_issue_labels,
@@ -87,6 +96,7 @@ from .triage_proposals import (
 )
 
 if TYPE_CHECKING:
+    from ..domain.triage_artifacts import TriageFinding
     from ..infra.config import Config
     from .reconciliation import ExpectedState
 
@@ -175,6 +185,7 @@ def _concrete_actions(
                     # execute-authority create_issue too — both need an agent.
                     destination_agent=triage_follow_up_agent_label(config),
                     gate=gate_issue,
+                    area=action.area,
                 ),
                 pr_count=0,
                 milestone=triage_issue_milestone_intent(config, anchor_milestones),
@@ -230,8 +241,10 @@ def plan_triage_decision_actions(
     anchor_issue: Issue,
     expected: "ExpectedState",
     op_ledger: Mapping[tuple[str, int], int],
+    pattern_ledger: Mapping[str, int],
     source_run_id: str,
     source_session_name: str,
+    observed_at: str,
     active_session_run_id: Callable[[int], str | None],
 ) -> list[Action]:
     """Plan orchestrator actions for a validated triage decision.
@@ -240,8 +253,12 @@ def plan_triage_decision_actions(
     recorded gated-proposal op to its proposal issue number (the authority
     store's rows, projected by ``triage_proposals.build_op_ledger``): one
     open proposal per (op, target) — re-proposals comment on the existing
-    issue. ``source_run_id``/``source_session_name`` are the proposing
-    session's identity, recorded on each :class:`StoredTriageOp`.
+    issue. ``pattern_ledger`` maps every recorded flag_pattern signature to
+    its case-file issue number (``triage_case_files.build_pattern_ledger``,
+    #6781): one case file per signature — repeat observations comment
+    evidence onto the existing issue. ``source_run_id``/
+    ``source_session_name`` are the proposing session's identity, recorded
+    on each :class:`StoredTriageOp` and in each case-file observation.
     ``active_session_run_id`` resolves the target issue's live session run id
     so a ``kill_hung_session`` proposal binds approval to that exact
     generation (#6779 R1).
@@ -252,8 +269,11 @@ def plan_triage_decision_actions(
         anchor_issue=anchor_issue,
         expected=expected,
         op_ledger=op_ledger,
+        pattern_ledger=pattern_ledger,
+        findings={finding.id: finding for finding in decision.findings},
         source_run_id=source_run_id,
         source_session_name=source_session_name,
+        observed_at=observed_at,
         active_session_run_id=active_session_run_id,
     )
     for proposed in decision.proposed_actions:
@@ -278,12 +298,16 @@ class _DecisionActionPlanner:
     anchor_issue: Issue
     expected: "ExpectedState"
     op_ledger: Mapping[tuple[str, int], int]
+    pattern_ledger: Mapping[str, int]
+    findings: Mapping[str, "TriageFinding"]
     source_run_id: str
     source_session_name: str
+    observed_at: str
     active_session_run_id: Callable[[int], str | None]
     actions: list[Action] = field(default_factory=list)
     shadow: list[SurfaceTriageProposalAction] = field(default_factory=list)
     _planned_ops: set[tuple[str, int]] = field(default_factory=set)
+    _planned_patterns: dict[str, int] = field(default_factory=dict)
 
     @property
     def _anchor_number(self) -> int:
@@ -305,18 +329,81 @@ class _DecisionActionPlanner:
         self.actions.append(surfaced)
 
     def _plan_flag_pattern(self, proposed: ProposedTriageAction) -> None:
-        # Authority-aware (#6761 finding 5): execute records the pattern
-        # (mode="pattern" IS the execution); propose is shadow mode.
-        if self.config.triage.authority.mode_for("flag_pattern") == "execute":
+        # Authority-aware (#6761 finding 5): execute records the pattern —
+        # the trace event (mode="pattern") plus the durable case-file
+        # ledger (#6781). Propose stays a shadow record (unchanged).
+        if self.config.triage.authority.mode_for("flag_pattern") != "execute":
+            self._surface_shadow(proposed)
+            return
+        self.actions.append(
+            _surface(
+                proposed,
+                anchor_issue_number=self._anchor_number,
+                mode="pattern",
+            )
+        )
+        self._plan_pattern_case_file(proposed)
+
+    def _plan_pattern_case_file(self, proposed: ProposedTriageAction) -> None:
+        """Durable flag_pattern execution (#6781): create or append."""
+        signature = proposed.pattern_signature
+        assert signature is not None  # enforced by validate()
+        existing = self.pattern_ledger.get(signature)
+        if existing is not None:
             self.actions.append(
-                _surface(
-                    proposed,
-                    anchor_issue_number=self._anchor_number,
-                    mode="pattern",
+                AddCommentAction(
+                    number=existing,
+                    comment=build_case_file_evidence_comment(
+                        proposed,
+                        anchor_issue_number=self._anchor_number,
+                        findings=self.findings,
+                        source_run_id=self.source_run_id,
+                        source_session_name=self.source_session_name,
+                        observed_at=self.observed_at,
+                    ),
+                    is_pr=False,
+                    reason=(
+                        f"triage decision action {proposed.id}: pattern"
+                        f" {signature!r} observed again; appending evidence"
+                        f" to case file #{existing} (#6781)"
+                    ),
+                    expected=self.expected,
                 )
             )
-        else:
-            self._surface_shadow(proposed)
+            return
+        comment = build_case_file_evidence_comment(
+            proposed,
+            anchor_issue_number=self._anchor_number,
+            findings=self.findings,
+            source_run_id=self.source_run_id,
+            source_session_name=self.source_session_name,
+            observed_at=self.observed_at,
+        )
+        planned_index = self._planned_patterns.get(signature)
+        if planned_index is not None:
+            creation = self.actions[planned_index]
+            assert isinstance(creation, CreateTriageCaseFileIssueAction)
+            self.actions[planned_index] = replace(
+                creation,
+                additional_observation_comments=(
+                    *creation.additional_observation_comments,
+                    comment,
+                ),
+            )
+            return
+        self._planned_patterns[signature] = len(self.actions)
+        self.actions.append(
+            build_case_file_issue_action(
+                proposed,
+                config=self.config,
+                anchor_issue_number=self._anchor_number,
+                findings=self.findings,
+                source_run_id=self.source_run_id,
+                source_session_name=self.source_session_name,
+                observed_at=self.observed_at,
+                expected=self.expected,
+            )
+        )
 
     def _plan_gated_op(self, proposed: ProposedTriageAction) -> None:
         """Gated proposal issue for an act-level intent (#6778)."""

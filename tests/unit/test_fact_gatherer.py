@@ -523,7 +523,12 @@ class _LabelFilteringTracker:
 
     def list_issues(self, labels=None, state="open", limit=100, **kwargs):
         self.calls.append(
-            {"labels": list(labels or []), "state": state, "limit": limit}
+            {
+                "labels": list(labels or []),
+                "state": state,
+                "limit": limit,
+                **kwargs,
+            }
         )
         wanted = {label.casefold() for label in (labels or [])}
         matched = [
@@ -569,9 +574,10 @@ class TestFactGathererHealthReviewFacts:
         assert result.prs == ()
         assert result.threshold == 0
         # No PR fetch when batch is disabled — health review costs only the
-        # single anchor scan.
+        # single exhaustive anchor/case-file scan.
         mock_repository_host.get_prs_with_label.assert_not_called()
         mock_repository_host.list_issues.assert_called_once()
+        assert mock_repository_host.list_issues.call_args.kwargs["exhaustive"] is True
 
     def test_not_due_within_interval(
         self, fact_gatherer, sample_state, mock_config
@@ -759,11 +765,17 @@ class TestFactGathererHealthReviewFacts:
         assert result is not None
         assert result.health_review_due is True
         assert result.existing_health_review_issue == 200
-        # The dedup lookup was marker-scoped (exhaustive), never the broad
-        # unbounded-position triage-agent page.
-        assert any(
-            HEALTH_REVIEW_MARKER_LABEL in call["labels"] for call in tracker.calls
-        )
+        # The due health review uses the shared exhaustive triage-agent scan,
+        # which both finds the anchor beyond the first page and supplies open
+        # case files to the health-review snapshot (#6781).
+        assert tracker.calls == [
+            {
+                "labels": ["agent:triage"],
+                "state": "open",
+                "limit": 2000,
+                "exhaustive": True,
+            }
+        ]
 
 
 class TestFactGathererCleanupFacts:
@@ -1191,7 +1203,6 @@ class TestGatedProposalScanClassification:
         assert facts is not None
         assert facts.approved_triage_ops == ()
         assert facts.existing_triage_issue is None
-
     def _gatherer_batch_disabled(self, mock_config, mock_repository_host, ops):
         """Threshold=0 (batch trigger OFF) but a triage agent + wired ledger.
 
@@ -1257,3 +1268,86 @@ class TestGatedProposalScanClassification:
 
         assert gatherer.gather_triage_facts(sample_state) is None
         mock_repository_host.list_issues.assert_not_called()
+
+
+class TestCaseFileScanClassification:
+    """The ONE anchor scan also classifies open pattern case files (#6781)."""
+
+    def _gatherer(self, mock_config, mock_repository_host, *, board_publisher=None):
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 5
+        mock_config.code_reviewed_label = "code-reviewed"
+        return FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            triage_authority=InMemoryTriageAuthorityStore(),
+            board_publisher=board_publisher,
+        )
+
+    def test_case_file_classified_into_snapshot_and_never_anchor(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        from issue_orchestrator.domain.triage_session import TRIAGE_OBSERVATION_LABEL
+
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=800,
+                # A title that LOOKS like an anchor must not fool the split.
+                title="Triage Batch Review: recurring db timeout",
+                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL, "area:db"],
+            ),
+            Issue(
+                number=7,
+                title="Triage Batch Review: 3 PRs pending",
+                labels=["triage-agent"],
+            ),
+        ]
+        gatherer = self._gatherer(mock_config, mock_repository_host)
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        [case_file] = facts.open_case_files
+        assert case_file.issue_number == 800
+        assert case_file.area == "db"
+        # The observation-labeled issue is NEVER an anchor; #7 still is.
+        assert facts.existing_triage_issue == 7
+        # Still just one issue scan for anchors + proposals + case files.
+        assert mock_repository_host.list_issues.call_count == 1
+
+    def test_board_publisher_receives_facts_and_health_review_timestamp(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        from issue_orchestrator.domain.triage_session import TRIAGE_OBSERVATION_LABEL
+
+        class _RecordingPublisher:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def publish(self, facts, *, last_health_review_at) -> None:
+                self.calls.append((facts, last_health_review_at))
+
+        publisher = _RecordingPublisher()
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=800,
+                title="Pattern case file: db-timeout",
+                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL],
+            ),
+        ]
+        gatherer = self._gatherer(
+            mock_config, mock_repository_host, board_publisher=publisher
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        # Fire-and-forget projection sink got the gathered facts + state.
+        assert len(publisher.calls) == 1
+        published_facts, last_health_review_at = publisher.calls[0]
+        assert published_facts is facts
+        assert last_health_review_at == sample_state.last_health_review_at
+        assert len(published_facts.open_case_files) == 1

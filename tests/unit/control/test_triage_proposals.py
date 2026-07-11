@@ -1,6 +1,6 @@
 """Tests for gated triage proposal issues (#6778, amends ADR-0031 §2)."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -8,6 +8,7 @@ from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import (
     ActionResult,
     AddCommentAction,
+    CreateTriageCaseFileIssueAction,
     CreateTriageProposalIssueAction,
     DiscardTerminalTriageProposalOpsAction,
     KillHungSessionAction,
@@ -15,12 +16,12 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.reconciliation import build_expected_for_mutation
+from issue_orchestrator.control.triage_issue_creation import apply_create_triage_issue
 from issue_orchestrator.control.triage_kill_session import (
     KillSessionRunOutcome,
     TriageKillSessionExecutor,
 )
 from issue_orchestrator.control.triage_proposals import (
-    apply_create_triage_issue,
     apply_discard_terminal_triage_proposal_ops,
     build_op_ledger,
     build_triage_proposal_issue_action,
@@ -36,6 +37,7 @@ from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.domain.triage_artifacts import ProposedTriageAction
 from issue_orchestrator.domain.triage_session import (
     PROPOSED_TRIAGE_LABEL,
+    TRIAGE_OBSERVATION_LABEL,
     ApprovedTriageOp,
     StoredTriageOp,
 )
@@ -371,6 +373,7 @@ def test_apply_proposal_creation_records_op_and_links_anchor() -> None:
         repository_host=host,
         events=MagicMock(),
         ops=ops,
+        add_comment=host.add_comment,
         emit_labels_changed=lambda *_: None,
     )
 
@@ -395,6 +398,7 @@ def test_apply_proposal_creation_fails_when_gate_not_provisioned() -> None:
         repository_host=host,
         events=MagicMock(),
         ops=ops,
+        add_comment=host.add_comment,
         emit_labels_changed=lambda *_: None,
     )
 
@@ -405,16 +409,105 @@ def test_apply_proposal_creation_fails_when_gate_not_provisioned() -> None:
 
 
 def test_apply_proposal_creation_without_store_fails_loudly() -> None:
+    host = _host()
     result = apply_create_triage_issue(
         _proposal_action(),
-        repository_host=_host(),
+        repository_host=host,
         events=MagicMock(),
         ops=None,
+        add_comment=host.add_comment,
         emit_labels_changed=lambda *_: None,
     )
 
     assert not result.success
     assert "TriageAuthorityStore" in (result.error or "")
+
+
+def _case_file_action(
+    signature: str = "sig-x", *, additional_comments: tuple[str, ...] = ()
+) -> CreateTriageCaseFileIssueAction:
+    return CreateTriageCaseFileIssueAction(
+        title=f"Pattern case file: {signature}",
+        body="documentation only",
+        labels=("triage-agent", TRIAGE_OBSERVATION_LABEL),
+        pr_count=0,
+        pattern_signature=signature,
+        dedup_comment="first observation",
+        additional_observation_comments=additional_comments,
+    )
+
+
+def test_apply_case_file_creation_records_pattern_ledger() -> None:
+    """The applier's create-issue owner records the (signature -> issue) ledger
+    row create-once when it creates a case file (#6781)."""
+    host = _host(600)
+    ops = InMemoryTriageAuthorityStore()
+
+    result = apply_create_triage_issue(
+        _case_file_action("db-timeout"),
+        repository_host=host,
+        events=MagicMock(),
+        ops=ops,
+        add_comment=host.add_comment,
+        emit_labels_changed=lambda *_: None,
+    )
+
+    assert result.success
+    host.create_issue.assert_called_once()
+    assert ops.lookup_pattern(signature="db-timeout") == 600
+    # Case files do not record ops and post no anchor-link comment.
+    assert ops.list_ops() == ()
+    host.add_comment.assert_not_called()
+
+
+def test_apply_case_file_creation_without_store_fails_loudly() -> None:
+    host = _host()
+    result = apply_create_triage_issue(
+        _case_file_action(),
+        repository_host=host,
+        events=MagicMock(),
+        ops=None,
+        add_comment=host.add_comment,
+        emit_labels_changed=lambda *_: None,
+    )
+
+    assert not result.success
+    assert "TriageAuthorityStore" in (result.error or "")
+
+
+def test_apply_case_file_creation_posts_same_decision_observations() -> None:
+    host = _host(600)
+    ops = InMemoryTriageAuthorityStore()
+    result = apply_create_triage_issue(
+        _case_file_action("db-timeout", additional_comments=("second observation",)),
+        repository_host=host,
+        events=MagicMock(),
+        ops=ops,
+        add_comment=host.add_comment,
+        emit_labels_changed=lambda *_: None,
+    )
+    assert result.success
+    host.add_comment.assert_called_once_with(600, "second observation")
+
+
+def test_apply_case_file_rechecks_ledger_and_comments_inflight_duplicate() -> None:
+    host = _host(601)
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_pattern(signature="db-timeout", issue_number=600)
+    result = apply_create_triage_issue(
+        _case_file_action("db-timeout", additional_comments=("follow-up",)),
+        repository_host=host,
+        events=MagicMock(),
+        ops=ops,
+        add_comment=host.add_comment,
+        emit_labels_changed=lambda *_: None,
+    )
+    assert result.success
+    assert result.details["deduplicated"] is True
+    host.create_issue.assert_not_called()
+    assert host.add_comment.call_args_list == [
+        call(600, "first observation"), call(600, "follow-up")
+    ]
 
 
 def test_apply_plain_triage_issue_records_no_op() -> None:
@@ -428,6 +521,7 @@ def test_apply_plain_triage_issue_records_no_op() -> None:
         repository_host=host,
         events=MagicMock(),
         ops=ops,
+        add_comment=host.add_comment,
         emit_labels_changed=lambda *_: None,
     )
 
@@ -451,6 +545,7 @@ def test_body_tamper_has_zero_effect_on_execution() -> None:
         repository_host=host,
         events=MagicMock(),
         ops=ops,
+        add_comment=host.add_comment,
         emit_labels_changed=lambda *_: None,
     )
 
@@ -886,8 +981,10 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
         anchor_issue=anchor,
         expected=EXPECTED,
         op_ledger=build_op_ledger(ops.list_ops()),
+        pattern_ledger={},
         source_run_id="run-1",
         source_session_name="issue-99",
+        observed_at="2026-07-11T00:00:00+00:00",
         active_session_run_id=lambda _n: None,
     )
     [creation] = [
@@ -907,8 +1004,10 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
         anchor_issue=anchor,
         expected=EXPECTED,
         op_ledger=build_op_ledger(ops.list_ops()),
+        pattern_ledger={},
         source_run_id="run-2",
         source_session_name="issue-99",
+        observed_at="2026-07-11T01:00:00+00:00",
         active_session_run_id=lambda _n: None,
     )
     [dedup_comment] = [a for a in replanned if isinstance(a, AddCommentAction)]

@@ -1,5 +1,6 @@
 """Contract tests for the SQLite triage launch-authority adapter (#6761 rr F1)."""
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from issue_orchestrator.ports.triage_authority import (
     InMemoryTriageAuthorityStore,
     TriageAuthorityConflictError,
     TriageOpConflictError,
+    TriagePatternConflictError,
+    TriageShippedFixConflictError,
 )
 from issue_orchestrator.infra.triage_authority_store import (
     SqliteTriageAuthorityStore,
@@ -289,3 +292,208 @@ def test_stored_op_rejects_blank_source_identity() -> None:
 def test_stored_op_dict_round_trip() -> None:
     op = _op(42, op_type="kill_hung_session", rationale="hung 90m")
     assert StoredTriageOp.from_dict(op.to_dict()) == op
+
+
+# --- Pattern case-file ledger (#6781) ------------------------------------
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_pattern_round_trip(tmp_path: Path, make_store) -> None:
+    store = make_store(tmp_path)
+    store.record_pattern(signature="db-timeout", issue_number=600)
+
+    assert store.lookup_pattern(signature="db-timeout") == 600
+    assert store.lookup_pattern(signature="absent") is None
+    assert store.list_patterns() == (("db-timeout", 600),)
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_record_pattern_identical_issue_is_noop(tmp_path: Path, make_store) -> None:
+    """Create-once: re-recording the SAME case-file issue for a signature is
+    silently accepted — the case file IS the accumulating artifact (#6781)."""
+    store = make_store(tmp_path)
+    store.record_pattern(signature="db-timeout", issue_number=600)
+    store.record_pattern(signature="db-timeout", issue_number=600)
+
+    assert store.lookup_pattern(signature="db-timeout") == 600
+    assert store.list_patterns() == (("db-timeout", 600),)
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_record_pattern_conflicting_issue_fails_loudly(
+    tmp_path: Path, make_store
+) -> None:
+    """A signature keys exactly one evidence trail; it must never silently
+    move to a different case-file issue (#6781)."""
+    store = make_store(tmp_path)
+    store.record_pattern(signature="db-timeout", issue_number=600)
+
+    with pytest.raises(TriagePatternConflictError):
+        store.record_pattern(signature="db-timeout", issue_number=601)
+
+    assert store.lookup_pattern(signature="db-timeout") == 600
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_list_patterns_is_signature_sorted(tmp_path: Path, make_store) -> None:
+    store = make_store(tmp_path)
+    store.record_pattern(signature="zeta", issue_number=3)
+    store.record_pattern(signature="alpha", issue_number=1)
+    store.record_pattern(signature="mu", issue_number=2)
+
+    assert store.list_patterns() == (("alpha", 1), ("mu", 2), ("zeta", 3))
+
+
+def test_pattern_survives_reopen(tmp_path: Path) -> None:
+    """The evidence-trail ledger outlives the recording process (#6781)."""
+    SqliteTriageAuthorityStore.for_repo(tmp_path).record_pattern(
+        signature="db-timeout", issue_number=600
+    )
+
+    reopened = SqliteTriageAuthorityStore.for_repo(tmp_path)
+
+    assert reopened.lookup_pattern(signature="db-timeout") == 600
+
+
+def test_pattern_methods_satisfy_the_port() -> None:
+    from issue_orchestrator.ports.triage_authority import (
+        TriageAuthorityStore as TriageAuthorityStorePort,
+    )
+
+    for method in ("record_pattern", "lookup_pattern", "list_patterns"):
+        assert callable(getattr(SqliteTriageAuthorityStore, method))
+        assert callable(getattr(InMemoryTriageAuthorityStore, method))
+        assert callable(getattr(TriageAuthorityStorePort, method))
+
+
+# --- Shipped-fix operational memory (#6781 amendment) -------------------
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_shipped_fix_round_trip_is_newest_first_and_bounded(
+    tmp_path: Path, make_store
+) -> None:
+    store = make_store(tmp_path)
+    store.record_shipped_fix(
+        issue_number=600,
+        title="Repair DB seam",
+        pr_url="https://github.com/o/r/pull/700",
+        area="db",
+    )
+    store.record_shipped_fix(
+        issue_number=601,
+        title="Repair queue seam",
+        pr_url="https://github.com/o/r/pull/701",
+        area="queue",
+    )
+
+    [newest] = store.list_recent_shipped_fixes(limit=1)
+
+    assert newest.issue_number == 601
+    assert newest.title == "Repair queue seam"
+    assert newest.pr_url == "https://github.com/o/r/pull/701"
+    assert newest.area == "queue"
+    assert newest.merged_at
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_record_shipped_fix_identical_evidence_is_noop(
+    tmp_path: Path, make_store
+) -> None:
+    store = make_store(tmp_path)
+    store.record_shipped_fix(
+        issue_number=600,
+        title="Repair DB seam",
+        pr_url="https://github.com/o/r/pull/700",
+        area="db",
+    )
+    [original] = store.list_recent_shipped_fixes(limit=10)
+
+    store.record_shipped_fix(
+        issue_number=600,
+        title="Renamed DB seam",
+        pr_url="https://github.com/o/r/pull/700",
+        area="db",
+    )
+
+    # Mutable issue titles are not evidence identity; the first observed title
+    # remains in the durable fact without blocking a crash-retry.
+    assert store.list_recent_shipped_fixes(limit=10) == (original,)
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_record_shipped_fix_conflicting_evidence_fails_loudly(
+    tmp_path: Path, make_store
+) -> None:
+    store = make_store(tmp_path)
+    store.record_shipped_fix(
+        issue_number=600,
+        title="Repair DB seam",
+        pr_url="https://github.com/o/r/pull/700",
+        area="db",
+    )
+
+    with pytest.raises(TriageShippedFixConflictError):
+        store.record_shipped_fix(
+            issue_number=600,
+            title="Repair DB seam",
+            pr_url="https://github.com/o/r/pull/700",
+            area="queue",
+        )
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_list_recent_shipped_fixes_rejects_nonpositive_limit(
+    tmp_path: Path, make_store
+) -> None:
+    store = make_store(tmp_path)
+
+    with pytest.raises(ValueError, match="positive"):
+        store.list_recent_shipped_fixes(limit=0)
+
+
+def test_shipped_fix_survives_reopen(tmp_path: Path) -> None:
+    SqliteTriageAuthorityStore.for_repo(tmp_path).record_shipped_fix(
+        issue_number=600,
+        title="Repair DB seam",
+        pr_url="https://github.com/o/r/pull/700",
+        area="db",
+    )
+
+    reopened = SqliteTriageAuthorityStore.for_repo(tmp_path)
+
+    [fix] = reopened.list_recent_shipped_fixes(limit=10)
+    assert (fix.issue_number, fix.area) == (600, "db")
+
+
+def test_existing_authority_database_adds_shipped_fix_ledger(tmp_path: Path) -> None:
+    """Opening a pre-feature database applies the additive CREATE TABLE."""
+    db_path = state_dir(tmp_path) / "triage_authority.sqlite"
+    db_path.parent.mkdir(parents=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "CREATE TABLE triage_patterns ("
+            "signature TEXT PRIMARY KEY, issue_number INTEGER NOT NULL, "
+            "recorded_at TEXT NOT NULL)"
+        )
+
+    store = SqliteTriageAuthorityStore.for_repo(tmp_path)
+    store.record_shipped_fix(
+        issue_number=600,
+        title="Repair DB seam",
+        pr_url="https://github.com/o/r/pull/700",
+        area="db",
+    )
+
+    assert store.list_recent_shipped_fixes(limit=10)[0].issue_number == 600
+
+
+def test_shipped_fix_methods_satisfy_the_port() -> None:
+    from issue_orchestrator.ports.triage_authority import (
+        TriageAuthorityStore as TriageAuthorityStorePort,
+    )
+
+    for method in ("record_shipped_fix", "list_recent_shipped_fixes"):
+        assert callable(getattr(SqliteTriageAuthorityStore, method))
+        assert callable(getattr(InMemoryTriageAuthorityStore, method))
+        assert callable(getattr(TriageAuthorityStorePort, method))

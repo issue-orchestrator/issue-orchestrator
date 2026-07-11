@@ -6,8 +6,11 @@ making it a pure read-only component that:
 2. Fetches external data via ports (RepositoryHost)
 3. Returns immutable facts for the Planner
 
-The FactGatherer has NO side effects - it only gathers information.
-All mutations happen in the orchestrator based on Plan execution.
+The FactGatherer makes NO decisions and plans no mutations - all state
+transitions happen in the orchestrator based on Plan execution. Its only
+outputs besides the snapshot are fire-and-forget observation sinks: trace
+events (EventSink) and the triage board projection (TriageBoardPublisher,
+#6781), both projections of what was observed, never policy.
 
 Usage:
     gatherer = FactGatherer(
@@ -30,7 +33,6 @@ from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 from .health_review_trigger import (
     classify_triage_anchor_issues,
-    discover_open_health_review_anchor,
     discover_open_triage_anchor_issues,
     health_review_due,
     health_review_interval_minutes,
@@ -44,8 +46,13 @@ if TYPE_CHECKING:
         TriageFacts,
         CleanupFacts,
     )
-    from ..domain.triage_session import ApprovedTriageOp, StoredTriageOp
+    from ..domain.triage_session import (
+        ApprovedTriageOp,
+        StoredTriageOp,
+        TriageCaseFileSummary,
+    )
     from .planner_types import OrchestratorSnapshot
+    from .triage_board import TriageBoardPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +79,11 @@ class FactGatherer:
     # tests need not wire it; without it the anchor scan classifies no
     # approved ops (gate-labeled proposals are still excluded from anchors).
     triage_authority: Optional["TriageAuthorityStore"] = None
+    # Fire-and-forget projection sink for triage facts (#6781): like the
+    # event sink, it observes gathered facts (retaining the latest case-file
+    # projection + refreshing the triage board file) and makes no decisions.
+    # Optional so unrelated tests need not wire it.
+    board_publisher: Optional["TriageBoardPublisher"] = None
 
     def fetch_issues(
         self,
@@ -220,9 +232,9 @@ class FactGatherer:
         review is due); the exhaustive triage-agent scan runs only when the
         batch trigger is armed OR the local op ledger has proposals to
         reconcile (an empty ledger has nothing to approve or clean up, so no
-        scan is worth making); and the marker-scoped health-anchor dedup lookup
-        runs only while a creation decision is actually pending and the scan did
-        not already find the anchor. Observation only: milestone ASSEMBLY policy
+        scan is worth making). A due health review also uses that exhaustive scan
+        so its snapshot includes open case files while still deduplicating its
+        anchor. Observation only: milestone ASSEMBLY policy
         (strategy choice, explicit name -> number resolution) belongs to
         planning and the create-issue applier boundary (#6769 round 3) — no
         milestone API reads happen here.
@@ -256,36 +268,30 @@ class FactGatherer:
         existing_health_review_issue: Optional[int] = None
         approved_ops: tuple["ApprovedTriageOp", ...] = ()
         absent_op_candidates: tuple[int, ...] = ()
-        if batch_armed or ops:
+        case_files: tuple["TriageCaseFileSummary", ...] = ()
+        if batch_armed or ops or due:
             # The ONE exhaustive open triage-agent scan classifies batch +
             # health anchors, open proposals, approved ops, and absent-ledger
             # cleanup candidates in a single reconcile (#6778/#6779 R2/R4/R12).
             # It runs when the batch trigger is armed OR the ledger has ops to
             # reconcile — decoupling proposal advancement from the batch
-            # threshold. The marker-scoped dedup below covers the health anchor
-            # when this scan did not (or could not) run.
+            # threshold. A due health review also needs this scan so its board
+            # snapshot includes every open pattern case file (#6781).
             (
                 batch_anchor,
                 existing_health_review_issue,
                 approved_ops,
                 absent_op_candidates,
+                case_files,
             ) = self._classify_triage_anchor_scan(ops)
             # Batch anchor classification stays gated on batch_armed: a batch
             # anchor is meaningless while the batch trigger is off.
             if batch_armed:
                 existing_triage_issue = batch_anchor
-        if due and existing_health_review_issue is None:
-            # Marker-scoped, exhaustive dedup lookup (crash-safe): an older
-            # anchor can never fall off the first page of the broader
-            # triage-agent scan (#6763 finding 4).
-            existing_health_review_issue = discover_open_health_review_anchor(
-                self.repository_host, self.config
-            )
-
         prs = self._fetch_triage_prs(watch_label) if batch_armed else []
         all_labels, source_milestones = self._collect_pr_metadata(prs)
 
-        return TriageFacts(
+        facts = TriageFacts(
             pr_count=len(prs),
             threshold=self.config.triage_review_threshold,
             existing_triage_issue=existing_triage_issue,
@@ -297,7 +303,13 @@ class FactGatherer:
             existing_health_review_issue=existing_health_review_issue,
             approved_triage_ops=approved_ops,
             absent_proposal_op_candidates=absent_op_candidates,
+            open_case_files=case_files,
         )
+        if self.board_publisher is not None:
+            self.board_publisher.publish(
+                facts, last_health_review_at=state.last_health_review_at
+            )
+        return facts
 
     def _get_triage_watch_label(self) -> str | None:
         """Get the label to watch for triage review (None = trigger disabled)."""
@@ -322,7 +334,13 @@ class FactGatherer:
     def _classify_triage_anchor_scan(
         self,
         ops: Mapping[int, "StoredTriageOp"],
-    ) -> tuple[int | None, int | None, tuple["ApprovedTriageOp", ...], tuple[int, ...]]:
+    ) -> tuple[
+        int | None,
+        int | None,
+        tuple["ApprovedTriageOp", ...],
+        tuple[int, ...],
+        tuple["TriageCaseFileSummary", ...],
+    ]:
         """Classify the ONE shared, exhaustive open triage-agent scan.
 
         The scoped/exhaustive anchor-discovery owner backs both this path and
@@ -342,19 +360,31 @@ class FactGatherer:
         CLASSIFIES ledger rows absent from the scan as terminal-cleanup
         CANDIDATES; the numbers are returned as a fact for the planner to turn
         into a confirm-and-discard action, never mutated here.
+        Observation-labeled issues are pattern case files (#6781), summarized
+        for the board snapshot and excluded before anchor classification.
         """
+        from .triage_case_files import split_triage_case_file_issues
         from .triage_proposals import reconcile_triage_proposals
 
         if not self.config.triage_review_agent:
-            return None, None, (), ()
+            return None, None, (), (), ()
         existing = discover_open_triage_anchor_issues(
             self.repository_host, self.config
         )
         reconciled = reconcile_triage_proposals(existing, ops=ops)
-        batch, health = classify_triage_anchor_issues(
-            reconciled.anchor_candidate_issues, self.config.filtering.label
+        remaining, case_files = split_triage_case_file_issues(
+            reconciled.anchor_candidate_issues
         )
-        return batch, health, reconciled.approved, reconciled.absent_op_issue_numbers
+        batch, health = classify_triage_anchor_issues(
+            remaining, self.config.filtering.label
+        )
+        return (
+            batch,
+            health,
+            reconciled.approved,
+            reconciled.absent_op_issue_numbers,
+            case_files,
+        )
 
     def _collect_pr_metadata(self, prs: list[Any]) -> tuple[set[str], list[tuple[int, str]]]:
         """Collect labels and milestones from PRs and their linked issues."""

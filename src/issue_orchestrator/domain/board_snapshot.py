@@ -26,7 +26,7 @@ from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
-BOARD_SNAPSHOT_SCHEMA_VERSION = 1
+BOARD_SNAPSHOT_SCHEMA_VERSION = 2
 
 # Canonical snapshot filename inside a session's triage-data directory,
 # next to TRIAGE_ASSIGNMENT_FILENAME (domain/triage_session.py).
@@ -87,6 +87,28 @@ class BoardTimelineExtractDict(TypedDict):
     records: list[dict[str, Any]]
 
 
+class BoardCaseFileDict(TypedDict):
+    issue_number: int
+    title: str
+    comment_count: int
+    updated_at: str
+    area: str
+
+
+class BoardAreaSignalDict(TypedDict):
+    area: str
+    distinct_patterns: int
+    shipped_fixes: int
+
+
+class BoardShippedFixDict(TypedDict):
+    issue_number: int
+    title: str
+    pr_url: str
+    area: str
+    merged_at: str
+
+
 class BoardSnapshotDict(TypedDict):
     """Serialized form of BoardSnapshot."""
 
@@ -97,6 +119,9 @@ class BoardSnapshotDict(TypedDict):
     queues: list[BoardQueueEntryDict]
     blocked_issues: list[BoardBlockedIssueDict]
     recent_failures: list[BoardFailureDict]
+    case_files: list[BoardCaseFileDict]
+    area_signals: list[BoardAreaSignalDict]
+    recent_shipped_fixes: list[BoardShippedFixDict]
     timeline: list[BoardTimelineExtractDict]
     log_tail: list[str]
 
@@ -178,6 +203,34 @@ class BoardTimelineExtract:
 
 
 @dataclass
+class BoardCaseFile:
+    """An open signature-keyed pattern evidence ledger (#6781)."""
+    issue_number: int
+    title: str
+    comment_count: int
+    updated_at: str
+    area: str
+
+
+@dataclass
+class BoardAreaSignal:
+    """Step-back evidence for one component/seam (#6781 amendment)."""
+    area: str
+    distinct_patterns: int
+    shipped_fixes: int
+
+
+@dataclass
+class BoardShippedFix:
+    """Restart-safe patch evidence for an area-tagged merged issue."""
+    issue_number: int
+    title: str
+    pr_url: str
+    area: str
+    merged_at: str
+
+
+@dataclass
 class BoardSnapshot:
     """Point-in-time bundle of orchestrator-state facts for an agent session.
 
@@ -194,6 +247,9 @@ class BoardSnapshot:
     queues: list[BoardQueueEntry] = field(default_factory=list)
     blocked_issues: list[BoardBlockedIssue] = field(default_factory=list)
     recent_failures: list[BoardFailure] = field(default_factory=list)
+    case_files: list[BoardCaseFile] = field(default_factory=list)
+    area_signals: list[BoardAreaSignal] = field(default_factory=list)
+    recent_shipped_fixes: list[BoardShippedFix] = field(default_factory=list)
     timeline: list[BoardTimelineExtract] = field(default_factory=list)
     log_tail: list[str] = field(default_factory=list)
 
@@ -244,6 +300,34 @@ class BoardSnapshot:
                     "artifact_hints": list(f.artifact_hints),
                 }
                 for f in self.recent_failures
+            ],
+            "case_files": [
+                {
+                    "issue_number": item.issue_number,
+                    "title": item.title,
+                    "comment_count": item.comment_count,
+                    "updated_at": item.updated_at,
+                    "area": item.area,
+                }
+                for item in self.case_files
+            ],
+            "area_signals": [
+                {
+                    "area": item.area,
+                    "distinct_patterns": item.distinct_patterns,
+                    "shipped_fixes": item.shipped_fixes,
+                }
+                for item in self.area_signals
+            ],
+            "recent_shipped_fixes": [
+                {
+                    "issue_number": item.issue_number,
+                    "title": item.title,
+                    "pr_url": item.pr_url,
+                    "area": item.area,
+                    "merged_at": item.merged_at,
+                }
+                for item in self.recent_shipped_fixes
             ],
             "timeline": [
                 {
@@ -315,6 +399,34 @@ class BoardSnapshot:
                 )
                 for f in data["recent_failures"]
             ],
+            case_files=[
+                BoardCaseFile(
+                    issue_number=item["issue_number"],
+                    title=item["title"],
+                    comment_count=item["comment_count"],
+                    updated_at=item["updated_at"],
+                    area=item["area"],
+                )
+                for item in data["case_files"]
+            ],
+            area_signals=[
+                BoardAreaSignal(
+                    area=item["area"],
+                    distinct_patterns=item["distinct_patterns"],
+                    shipped_fixes=item["shipped_fixes"],
+                )
+                for item in data["area_signals"]
+            ],
+            recent_shipped_fixes=[
+                BoardShippedFix(
+                    issue_number=item["issue_number"],
+                    title=item["title"],
+                    pr_url=item["pr_url"],
+                    area=item["area"],
+                    merged_at=item["merged_at"],
+                )
+                for item in data["recent_shipped_fixes"]
+            ],
             timeline=[
                 BoardTimelineExtract(
                     issue_number=t["issue_number"],
@@ -328,7 +440,7 @@ class BoardSnapshot:
     def write(self, path: Path) -> None:
         """Write the snapshot to ``path`` as JSON, creating parent dirs."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2))
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         logger.info(
             "[board] Snapshot written: %s (%d sessions, %d queue entries)",
             path,
@@ -339,5 +451,5 @@ class BoardSnapshot:
     @classmethod
     def read(cls, path: Path) -> "BoardSnapshot":
         """Read a snapshot from ``path``. Fails fast on unreadable payloads."""
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         return cls.from_dict(data)

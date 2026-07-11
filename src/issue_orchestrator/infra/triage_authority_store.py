@@ -39,8 +39,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from ..domain.triage_session import StoredTriageOp, TriageLaunchAuthority
-from ..ports.triage_authority import TriageAuthorityConflictError, TriageOpConflictError
+from ..domain.triage_session import (
+    StoredTriageOp,
+    TriageLaunchAuthority,
+    TriageShippedFixSummary,
+)
+from ..ports.triage_authority import (
+    TriageAuthorityConflictError,
+    TriageOpConflictError,
+    TriagePatternConflictError,
+    TriageShippedFixConflictError,
+)
 from .repo_identity import state_dir
 from .sqlite_connection import open_sqlite
 
@@ -58,6 +67,18 @@ CREATE TABLE IF NOT EXISTS triage_proposal_ops (
     issue_number INTEGER PRIMARY KEY,
     op TEXT NOT NULL,
     recorded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS triage_patterns (
+    signature TEXT PRIMARY KEY,
+    issue_number INTEGER NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS triage_shipped_fixes (
+    issue_number INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    pr_url TEXT NOT NULL,
+    area TEXT NOT NULL,
+    merged_at TEXT NOT NULL
 );
 """
 
@@ -254,5 +275,124 @@ class SqliteTriageAuthorityStore:
         ).fetchall()
         return tuple(
             (int(row["issue_number"]), StoredTriageOp.from_dict(json.loads(row["op"])))
+            for row in rows
+        )
+
+    # -- Pattern case files (#6781) -----------------------------------------
+
+    def record_pattern(self, *, signature: str, issue_number: int) -> None:
+        """Persist a signature's case-file issue (create-once).
+
+        Same issue for an existing signature: no-op. Different issue:
+        :class:`TriagePatternConflictError` — a signature keys exactly one
+        evidence trail, which must never silently move.
+        """
+        with self._transaction() as tx:
+            row = tx.execute(
+                "SELECT issue_number FROM triage_patterns WHERE signature = ?",
+                (signature,),
+            ).fetchone()
+            if row is not None:
+                if int(row[0]) == issue_number:
+                    return
+                raise TriagePatternConflictError(
+                    f"pattern signature {signature!r} is already recorded for"
+                    f" case-file issue #{int(row[0])}"
+                )
+            tx.execute(
+                "INSERT INTO triage_patterns (signature, issue_number,"
+                " recorded_at) VALUES (?, ?, ?)",
+                (
+                    signature,
+                    issue_number,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        logger.info(
+            "[triage] Recorded pattern case file: signature=%r issue=#%d",
+            signature,
+            issue_number,
+        )
+
+    def lookup_pattern(self, *, signature: str) -> int | None:
+        """Return the case-file issue for a signature, or None when absent."""
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT issue_number FROM triage_patterns WHERE signature = ?",
+            (signature,),
+        ).fetchone()
+        return int(row["issue_number"]) if row is not None else None
+
+    def list_patterns(self) -> tuple[tuple[str, int], ...]:
+        """All (signature, case_file_issue_number) rows — the pattern ledger."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT signature, issue_number FROM triage_patterns ORDER BY signature",
+        ).fetchall()
+        return tuple(
+            (str(row["signature"]), int(row["issue_number"])) for row in rows
+        )
+
+    # -- Shipped-fix operational memory (#6781 amendment) -----------------
+
+    def record_shipped_fix(
+        self, *, issue_number: int, title: str, pr_url: str, area: str
+    ) -> None:
+        """Persist an area-tagged merged fix (create-once by issue)."""
+        with self._transaction() as tx:
+            row = tx.execute(
+                "SELECT pr_url, area FROM triage_shipped_fixes "
+                "WHERE issue_number = ?",
+                (issue_number,),
+            ).fetchone()
+            if row is not None:
+                if (
+                    str(row["pr_url"]) == pr_url
+                    and str(row["area"]) == area
+                ):
+                    return
+                raise TriageShippedFixConflictError(
+                    f"different shipped-fix evidence is already recorded for"
+                    f" issue #{issue_number}"
+                )
+            tx.execute(
+                "INSERT INTO triage_shipped_fixes "
+                "(issue_number, title, pr_url, area, merged_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    issue_number,
+                    title,
+                    pr_url,
+                    area,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        logger.info(
+            "[triage] Recorded shipped fix: issue=#%d area=%r pr=%s",
+            issue_number,
+            area,
+            pr_url,
+        )
+
+    def list_recent_shipped_fixes(
+        self, *, limit: int
+    ) -> tuple[TriageShippedFixSummary, ...]:
+        """Return the newest durable shipped-fix facts."""
+        if limit <= 0:
+            raise ValueError("shipped-fix limit must be positive")
+        rows = self._get_connection().execute(
+            "SELECT issue_number, title, pr_url, area, merged_at "
+            "FROM triage_shipped_fixes "
+            "ORDER BY merged_at DESC, issue_number DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return tuple(
+            TriageShippedFixSummary(
+                issue_number=int(row["issue_number"]),
+                title=str(row["title"]),
+                pr_url=str(row["pr_url"]),
+                area=str(row["area"]),
+                merged_at=str(row["merged_at"]),
+            )
             for row in rows
         )

@@ -7,9 +7,24 @@ import pytest
 
 from issue_orchestrator.domain.triage_session import (
     TRIAGE_ASSIGNMENT_FILENAME,
+    TRIAGE_OBSERVATION_LABEL,
     TriageAssignment,
     TriageSessionFlavor,
+    require_case_file_observation_label,
 )
+
+
+class TestCaseFileObservationLabelInvariant:
+    """The domain owns the pattern case-file label invariant (#6781)."""
+
+    def test_accepts_labels_carrying_the_observation_label(self) -> None:
+        require_case_file_observation_label(
+            ("agent:triage", TRIAGE_OBSERVATION_LABEL, "area:db")
+        )  # does not raise
+
+    def test_rejects_labels_missing_the_observation_label(self) -> None:
+        with pytest.raises(ValueError, match="observation label"):
+            require_case_file_observation_label(("agent:triage", "area:db"))
 
 
 class TestTriageAssignmentRoundTrip:

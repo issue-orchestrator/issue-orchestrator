@@ -12,10 +12,13 @@ import pytest
 
 from issue_orchestrator.domain.board_snapshot import (
     BOARD_SNAPSHOT_SCHEMA_VERSION,
+    BoardAreaSignal,
     BoardBlockedIssue,
+    BoardCaseFile,
     BoardFailure,
     BoardQueueEntry,
     BoardSessionInfo,
+    BoardShippedFix,
     BoardSnapshot,
     BoardTimelineExtract,
 )
@@ -60,6 +63,27 @@ def _sample_snapshot() -> BoardSnapshot:
                 failure_reason="timed_out",
                 artifact_hints=[".issue-orchestrator/sessions/r1/terminal-recording.jsonl"],
             ),
+        ],
+        case_files=[
+            BoardCaseFile(
+                issue_number=700,
+                title="Pattern case file: db-timeout",
+                comment_count=3,
+                updated_at="2026-07-10T11:45:00+00:00",
+                area="db",
+            )
+        ],
+        area_signals=[
+            BoardAreaSignal(area="db", distinct_patterns=1, shipped_fixes=2)
+        ],
+        recent_shipped_fixes=[
+            BoardShippedFix(
+                issue_number=699,
+                title="Repair DB retry seam",
+                pr_url="https://github.com/o/r/pull/699",
+                area="db",
+                merged_at="2026-07-09T12:00:00+00:00",
+            )
         ],
         timeline=[
             BoardTimelineExtract(

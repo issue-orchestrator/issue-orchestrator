@@ -367,6 +367,8 @@ class GitHubAdapter:
                 milestone_number=(item.get("milestone") or {}).get("number"),
                 milestone_due_on=(item.get("milestone") or {}).get("due_on"),
                 created_at=item.get("created_at"),
+                updated_at=item.get("updated_at"),
+                comment_count=int(item.get("comments", 0)),
             )
             for item in raw_issues
             if isinstance(item, dict)
@@ -515,6 +517,9 @@ class GitHubAdapter:
                     milestone=milestone_obj.get("title"),
                     milestone_number=milestone_obj.get("number"),
                     milestone_due_on=milestone_obj.get("due_on"),
+                    created_at=output.get("created_at"),
+                    updated_at=output.get("updated_at"),
+                    comment_count=int(output.get("comments", 0)),
                 )
             return None
         except GitHubHttpError as e:

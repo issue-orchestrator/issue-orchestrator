@@ -73,6 +73,9 @@ class ActionType(Enum):
     # Gated act-level proposal issue: create + record the stored op (#6778)
     CREATE_TRIAGE_PROPOSAL_ISSUE = "create_triage_proposal_issue"
 
+    # Pattern case-file issue: create + record the pattern ledger row (#6781)
+    CREATE_TRIAGE_CASE_FILE_ISSUE = "create_triage_case_file_issue"
+
     # Triage decision proposals (event-only surfacing, ADR-0031)
     SURFACE_TRIAGE_PROPOSAL = "surface_triage_proposal"
 
@@ -101,6 +104,18 @@ class ActionType(Enum):
 
     # Terminal recovery (shed transient labels, then finalize history)
     RECOVER_TERMINAL_ISSUE = "recover_terminal_issue"
+
+
+# These actions deliberately share one apply-time owner: all create a
+# triage-authored issue, while proposal and case-file variants additionally
+# finalize their respective authority-ledger record.
+TRIAGE_ISSUE_CREATION_ACTION_TYPES: frozenset[ActionType] = frozenset(
+    {
+        ActionType.CREATE_TRIAGE_ISSUE,
+        ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE,
+        ActionType.CREATE_TRIAGE_CASE_FILE_ISSUE,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -376,6 +391,47 @@ class CreateTriageProposalIssueAction(CreateTriageIssueAction):
                 "CreateTriageProposalIssueAction requires a positive"
                 " anchor_issue_number"
             )
+
+
+@dataclass(frozen=True)
+class CreateTriageCaseFileIssueAction(CreateTriageIssueAction):
+    """Create a pattern CASE-FILE issue for a flag_pattern proposal (#6781).
+
+    A ``CreateTriageIssueAction`` that additionally carries the pattern
+    signature (the durable ledger key) and optional area. The applier
+    creates the issue AND records the (signature -> issue) ledger row
+    create-once in the orchestrator-owned authority store; later
+    flag_pattern proposals with the same signature comment evidence onto
+    the recorded issue instead of filing a second one. The issue body is
+    human documentation only — dedup consults the ledger, never the body
+    (tamper boundary).
+    """
+
+    pattern_signature: str = ""
+    area: str | None = None
+    dedup_comment: str = ""
+    additional_observation_comments: tuple[str, ...] = ()
+    action_type: ActionType = field(
+        default=ActionType.CREATE_TRIAGE_CASE_FILE_ISSUE, init=False
+    )
+
+    def __post_init__(self) -> None:
+        from ..domain.triage_session import require_case_file_observation_label
+
+        # Self-validating type: an empty signature could never accrue
+        # evidence. The observation-label invariant is delegated to its
+        # domain owner (an unlabeled case file would be schedulable work).
+        if not self.pattern_signature.strip():
+            raise ValueError(
+                "CreateTriageCaseFileIssueAction requires a non-empty"
+                " pattern_signature (the ledger key)"
+            )
+        if not self.dedup_comment.strip():
+            raise ValueError(
+                "CreateTriageCaseFileIssueAction requires a non-empty"
+                " dedup_comment for apply-time ledger reconciliation"
+            )
+        require_case_file_observation_label(self.labels)
 
 
 @dataclass(frozen=True)
