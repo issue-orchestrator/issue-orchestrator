@@ -1643,6 +1643,24 @@ class TestUpdateStateAfterAction:
             kill_session=Mock(),
         )
 
+    @staticmethod
+    def _apply_via_plan(support, actions, **details) -> None:
+        """Drive the producer boundary through the public ``apply_plan`` seam.
+
+        The action applier is faked at its port boundary (``apply`` returns a
+        successful ``ActionResult`` carrying ``details``, the shape the real
+        applier produces), so ``apply_plan`` runs the real success-handling
+        path — including the post-apply state update that queues triage work.
+        This keeps coverage on the public planner/action-owner command path
+        rather than reaching into the private ``_update_state_after_action``.
+        """
+        from issue_orchestrator.control.planner_types import Plan
+
+        support.action_applier.apply.side_effect = lambda action: ActionResult.ok(
+            action, **details
+        )
+        support.apply_plan(Plan(actions=tuple(actions), skipped=()), MagicMock())
+
     def test_queue_review_adds_to_pending_reviews(self, support_with_state, mock_repository_host):
         """QUEUE_REVIEW action adds PendingReview to state."""
         from issue_orchestrator.control.actions import QueueReviewAction
@@ -1966,9 +1984,8 @@ class TestUpdateStateAfterAction:
             labels=("agent:triage",),
             pr_count=5,
         )
-        result = MagicMock(success=True, details={"issue_number": 999})
 
-        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+        self._apply_via_plan(support_with_state, [action], issue_number=999)
 
         assert support_with_state.state.last_health_review_at == 0.0
         store.save_last_health_review_at.assert_not_called()
@@ -1994,10 +2011,9 @@ class TestUpdateStateAfterAction:
             labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
             pr_count=0,
         )
-        result = MagicMock(success=True, details={"issue_number": 1000})
 
         before = time.time()
-        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+        self._apply_via_plan(support_with_state, [action], issue_number=1000)
 
         stamped = support_with_state.state.last_health_review_at
         assert stamped >= before
@@ -2026,10 +2042,9 @@ class TestUpdateStateAfterAction:
             labels=(HEALTH_REVIEW_MARKER_LABEL,),
             pr_count=0,
         )
-        result = MagicMock(success=True, details={"issue_number": 1001})
 
         with caplog.at_level("WARNING"):
-            support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+            self._apply_via_plan(support_with_state, [action], issue_number=1001)
 
         assert support_with_state.state.last_health_review_at > 0.0
         assert len(support_with_state.state.pending_triage_reviews) == 1

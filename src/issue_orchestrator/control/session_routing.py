@@ -30,6 +30,7 @@ from ..ports.session_runner import DiscoveredSession
 from .active_sessions import append_unique_active_sessions
 from .session_launcher import SessionLauncher
 from .session_manager import SessionManager, SessionRef
+from .triage_needs_human_reconcile import clear_stale_needs_human_on_launch
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -400,7 +401,7 @@ def orchestrator_launch_triage_session(
         triage_flavor=triage.flavor,
     )
     if result.success and result.session:
-        _clear_stale_needs_human_on_launch(triage, session_launcher)
+        clear_stale_needs_human_on_launch(triage, state, session_launcher)
         pending_queues.remove_triage(triage.issue_number)
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
@@ -415,7 +416,7 @@ def orchestrator_launch_triage_session(
             session_restorer=session_restorer,
         )
         if restored:
-            _clear_stale_needs_human_on_launch(triage, session_launcher)
+            clear_stale_needs_human_on_launch(triage, state, session_launcher)
             pending_queues.remove_triage(triage.issue_number)
             return restored
     elif result.retry_queued:
@@ -497,21 +498,6 @@ def _commit_or_retain_dropped_triage(
         triage.issue_number,
         triage.flavor.value,
     )
-
-
-def _clear_stale_needs_human_on_launch(
-    triage: PendingTriageReview, session_launcher: SessionLauncher
-) -> None:
-    """Clear a needs-human label an incomplete escalation left behind (#6771 r5).
-
-    A prior tick may have exhausted launch retries and applied the needs-human
-    source-of-truth label but failed to commit the escalation (comment failed).
-    If prep then recovers and the investigation launches, that label is stale
-    and contradicts the running work, so the successful-launch path clears it
-    through the launcher's owning action boundary."""
-    if triage.needs_human_escalation_incomplete:
-        session_launcher.clear_needs_human_label(triage.issue_number)
-        triage.needs_human_escalation_incomplete = False
 
 
 def session_launcher_callback(
