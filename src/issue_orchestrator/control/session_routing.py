@@ -126,12 +126,8 @@ class PendingSessionQueues:
         )
 
     def queue_health_review(self, issue_number: int, title: str) -> TriageQueueOutcome:
-        """Queue an interval-created health-review anchor (walks the board snapshot).
-
-        No failure context: like batch reviews, health reviews are
-        orchestrator-created (ADR-0031 §4) — ``PendingTriageReview.__post_init__``
-        rejects one that arrives with a triggering failure.
-        """
+        """Queue an interval-created health-review anchor (ADR-0031 §4); like a
+        batch review it carries no failure context (``__post_init__`` rejects one)."""
         return self._queue_triage(
             PendingTriageReview(
                 issue_number, title, flavor=TriageSessionFlavor.HEALTH_REVIEW
