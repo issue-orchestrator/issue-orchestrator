@@ -58,6 +58,20 @@ class TriageQueueOutcome(Enum):
     DUPLICATE = "duplicate"
 
 
+# Bound on retryable launch failures per queued triage item. Three attempts
+# ride out a transient SQLite/log/filesystem blip without relaunch-looping a
+# genuinely broken input forever; after the third failure the item is dropped
+# and the drop is surfaced loudly (fail-fast-but-not-silent).
+TRIAGE_LAUNCH_RETRY_LIMIT = 3
+
+
+class TriageRetentionOutcome(Enum):
+    """Explicit result of retaining a queued triage item after a retryable failure."""
+
+    RETAINED = "retained"
+    EXHAUSTED = "exhausted"
+
+
 @dataclass(frozen=True, slots=True)
 class PendingSessionQueues:
     """Owner for pending session queues: launch-routing removals + triage intake.
@@ -112,16 +126,16 @@ class PendingSessionQueues:
         )
 
     def queue_failure_investigation(
-        self, issue_number: int, title: str, *, failure: DiscoveredFailure | None
+        self, issue_number: int, title: str, *, failure: DiscoveredFailure
     ) -> TriageQueueOutcome:
         """Queue a focused investigation of one failed issue.
 
-        ``failure`` is effectively required: the queue item is the only
+        ``failure`` is required (non-optional): the queue item is the only
         carrier of the typed triggering-failure context once the per-tick
         ``discovered_failures`` buffer is cleared after planning (the
-        launch-time board snapshot reads it from here). It is keyword-only
-        with no default so producers must state it; ``None`` fails fast in
-        ``PendingTriageReview.__post_init__``.
+        launch-time board snapshot reads it from here).
+        ``PendingTriageReview.__post_init__`` stays as defense-in-depth
+        against untyped callers passing ``None`` anyway.
         """
         return self._queue_triage(
             PendingTriageReview(
@@ -131,6 +145,48 @@ class PendingSessionQueues:
                 failure=failure,
             )
         )
+
+    def retain_triage_for_retry(self, issue_number: int) -> TriageRetentionOutcome:
+        """Bounded retention of a queued triage item after a retryable launch failure.
+
+        Failure investigations have no labels-as-truth recovery: the queued
+        item is the ONLY durable record of the investigation (the per-tick
+        ``discovered_failures`` buffer is cleared after planning), so a
+        transient required-input prep failure must retain it for retry, not
+        delete it. Retention is bounded by ``TRIAGE_LAUNCH_RETRY_LIMIT``:
+        once exhausted the item is removed and ``EXHAUSTED`` is returned —
+        the caller must surface the drop loudly (durable error + event).
+
+        Asking to retain an item that is not queued is an invariant violation
+        upstream (the launch path holds the item it just failed to launch);
+        fail fast rather than silently absorbing it.
+        """
+        item = next(
+            (
+                t
+                for t in self.state.pending_triage_reviews
+                if t.issue_number == issue_number
+            ),
+            None,
+        )
+        if item is None:
+            raise ValueError(
+                f"Cannot retain triage item for issue #{issue_number} after a "
+                "retryable launch failure: no such item is queued"
+            )
+        item.retryable_launch_failures += 1
+        if item.retryable_launch_failures >= TRIAGE_LAUNCH_RETRY_LIMIT:
+            self.remove_triage(issue_number)
+            return TriageRetentionOutcome.EXHAUSTED
+        logger.warning(
+            "[TRIAGE] Retaining %s for issue #%d after retryable launch failure "
+            "%d/%d",
+            item.flavor.value,
+            issue_number,
+            item.retryable_launch_failures,
+            TRIAGE_LAUNCH_RETRY_LIMIT,
+        )
+        return TriageRetentionOutcome.RETAINED
 
     def _queue_triage(self, item: PendingTriageReview) -> TriageQueueOutcome:
         """Apply the one dedup rule (issue number vs pending queue) and enqueue."""
@@ -307,9 +363,16 @@ def orchestrator_launch_triage_session(
     :class:`PendingSessionQueues` on success, on restore of an existing
     terminal, and on permanent launch failure (labels-as-truth recovers a
     dropped batch at startup; a dropped investigation is a best-effort audit).
-    It is retained ONLY when the launcher reports ``keep_queued`` — an
-    existing terminal that could not be restored yet — the one explicitly
-    retryable outcome.
+    It is retained in exactly two cases:
+
+    - ``keep_queued`` — an existing terminal that could not be restored yet;
+    - ``retry_queued`` — required-input prep failed transiently BEFORE the
+      session started. For failure investigations the queued item is the only
+      record of the investigation (no labels-as-truth recovery), so one
+      transient SQLite/log/filesystem error must not delete it. Retention is
+      bounded by the queue owner (``retain_triage_for_retry``); on exhaustion
+      the item is dropped with a durable error and an ``ISSUE_NEEDS_HUMAN``
+      event so the drop is loud, never silent.
     """
     agent = config.triage_review_agent
     if not agent or agent not in config.agents:
@@ -337,6 +400,31 @@ def orchestrator_launch_triage_session(
         if restored:
             pending_queues.remove_triage(triage.issue_number)
             return restored
+    elif result.retry_queued:
+        outcome = pending_queues.retain_triage_for_retry(triage.issue_number)
+        if outcome is TriageRetentionOutcome.EXHAUSTED:
+            logger.error(
+                "[TRIAGE] Dropping %s for issue #%d after %d retryable launch "
+                "failures: %s",
+                triage.flavor.value,
+                triage.issue_number,
+                TRIAGE_LAUNCH_RETRY_LIMIT,
+                result.reason,
+            )
+            session_launcher.events.publish(
+                make_trace_event(
+                    EventName.ISSUE_NEEDS_HUMAN,
+                    {
+                        "issue_number": triage.issue_number,
+                        "issue_title": triage.title,
+                        "reason": (
+                            f"triage launch failed {TRIAGE_LAUNCH_RETRY_LIMIT} "
+                            f"times on required-input preparation; dropping "
+                            f"queued {triage.flavor.value}: {result.reason}"
+                        ),
+                    },
+                )
+            )
     else:
         pending_queues.remove_triage(triage.issue_number)
     return result.session if result.success else None

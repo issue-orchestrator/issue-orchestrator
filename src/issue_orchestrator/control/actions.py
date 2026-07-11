@@ -261,8 +261,11 @@ class QueueReworkAction(Action):
 class QueueTriageAction(Action):
     """Queue an issue for triage review (failure investigation).
 
-    ``failure`` carries the typed triggering-failure context across the
-    plan/apply boundary: the planner reads it from the per-tick
+    ``failure`` is a REQUIRED keyword field, not optional: this action serves
+    only failure investigations (batch/health anchors ride
+    :class:`CreateTriageIssueAction`), and every investigation exists because
+    a failure was discovered. It carries the typed triggering-failure context
+    across the plan/apply boundary: the planner reads it from the per-tick
     ``discovered_failures`` buffer (cleared after planning), and the applier
     stores it on the queue item so the launch-time board snapshot — built on
     a later tick — still contains the investigation's own triggering failure.
@@ -270,7 +273,7 @@ class QueueTriageAction(Action):
 
     issue_number: int = 0
     title: str = ""
-    failure: Optional[DiscoveredFailure] = None
+    failure: DiscoveredFailure = field(kw_only=True)
     action_type: ActionType = field(default=ActionType.QUEUE_TRIAGE, init=False)
 
 

@@ -132,9 +132,10 @@ class BoardSnapshotBuilder:
                     issue_number=failure.issue_number,
                     issue_title=failure.issue_title,
                     failure_reason=failure.failure_reason,
-                    # DiscoveredFailure carries no artifact paths; hints stay
-                    # empty until a richer failure source populates them.
-                    artifact_hints=[],
+                    # Projected verbatim from the discovery seam: the hints
+                    # were gathered at completion time from paths that existed
+                    # on disk (never invented, never discarded here).
+                    artifact_hints=list(failure.artifact_hints),
                 )
                 for failure in list(failures)[:MAX_LIST_ENTRIES]
             ],

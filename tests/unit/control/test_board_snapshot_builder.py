@@ -321,7 +321,13 @@ class TestQueuesBlockedAndFailures:
     def test_failures_taken_from_explicit_parameter(self) -> None:
         failures = [
             DiscoveredFailure(
-                issue_number=206, issue_title="Failed thing", failure_reason="timed_out"
+                issue_number=206,
+                issue_title="Failed thing",
+                failure_reason="timed_out",
+                artifact_hints=(
+                    "/runs/issue-206/failure-diagnostic.md",
+                    "/runs/issue-206/analysis.json",
+                ),
             ),
         ]
 
@@ -332,7 +338,24 @@ class TestQueuesBlockedAndFailures:
         assert failure.issue_number == 206
         assert failure.issue_title == "Failed thing"
         assert failure.failure_reason == "timed_out"
-        assert failure.artifact_hints == []
+        # #6762: hints gathered at the discovery seam are projected verbatim
+        # — never invented, never discarded.
+        assert failure.artifact_hints == [
+            "/runs/issue-206/failure-diagnostic.md",
+            "/runs/issue-206/analysis.json",
+        ]
+
+    def test_failure_without_hints_projects_empty_hints(self) -> None:
+        """A failure source with no artifacts yields empty hints, not fabricated ones."""
+        failures = [
+            DiscoveredFailure(
+                issue_number=207, issue_title="No artifacts", failure_reason="failed"
+            ),
+        ]
+
+        snapshot = _make_builder().build(OrchestratorState(), failures=failures)
+
+        assert snapshot.recent_failures[0].artifact_hints == []
 
     def test_queues_capped_at_max_entries(self) -> None:
         state = OrchestratorState(priority_queue=list(range(MAX_LIST_ENTRIES + 50)))
@@ -500,7 +523,10 @@ class TestStateBoardSnapshotProvider:
         """
         state = OrchestratorState()
         failure = DiscoveredFailure(
-            issue_number=904, issue_title="Broken thing", failure_reason="timed_out"
+            issue_number=904,
+            issue_title="Broken thing",
+            failure_reason="timed_out",
+            artifact_hints=("/runs/issue-904/failure-diagnostic.md",),
         )
         # Tick N: producer queues the investigation with its failure context.
         PendingSessionQueues(state).queue_failure_investigation(
@@ -513,9 +539,16 @@ class TestStateBoardSnapshotProvider:
         snapshot = provider.snapshot(904)
 
         assert [
-            (f.issue_number, f.issue_title, f.failure_reason)
+            (f.issue_number, f.issue_title, f.failure_reason, f.artifact_hints)
             for f in snapshot.recent_failures
-        ] == [(904, "Broken thing", "timed_out")]
+        ] == [
+            (
+                904,
+                "Broken thing",
+                "timed_out",
+                ["/runs/issue-904/failure-diagnostic.md"],
+            )
+        ]
         # The triggering failure also drives a timeline extract for the issue.
         assert [t.issue_number for t in snapshot.timeline] == [904]
 

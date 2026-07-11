@@ -1448,10 +1448,18 @@ class DiscoveredFailure:
 
     This is a "fact" - the Planner will decide whether to queue a triage review.
     Immutable to be safely included in OrchestratorSnapshot.
+
+    ``artifact_hints`` are absolute paths to on-disk artifacts a failure
+    investigation should start from (failure diagnostic, session run
+    manifest/analysis, attached agent log). Populated at the discovery seam
+    (``handle_session_completion``) with only paths that EXIST at completion
+    time — downstream consumers (plan -> queue -> board snapshot) project
+    them verbatim and must never invent or discard them.
     """
     issue_number: int
     issue_title: str
     failure_reason: str  # "failed" or "timed_out"
+    artifact_hints: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1532,6 +1540,12 @@ class PendingTriageReview:
     title: str  # Issue title (for display)
     flavor: TriageSessionFlavor  # Which triage variant this queue entry launches as
     failure: DiscoveredFailure | None = None  # Triggering failure (FAILURE_INVESTIGATION only)
+    # Retryable launch failures consumed so far (owner-tracked by
+    # PendingSessionQueues.retain_triage_for_retry; bounded — see
+    # TRIAGE_LAUNCH_RETRY_LIMIT). For failure investigations this queue item
+    # is the ONLY durable record of the investigation, so transient prep
+    # failures retain it instead of dropping it.
+    retryable_launch_failures: int = 0
 
     def __post_init__(self) -> None:
         if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION and self.failure is None:
@@ -1716,6 +1730,15 @@ class OrchestratorState:
             return False
         self.pending_reworks.extend([rework])
         return True
+
+    def record_discovered_failure(self, failure: DiscoveredFailure) -> None:
+        """Record a session-failure fact for the Planner (owner boundary).
+
+        ``discovered_failures`` is a per-tick fact buffer; producers record
+        through this owner method rather than mutating the collection.
+        """
+
+        self.discovered_failures.extend([failure])
 
 
 @dataclass

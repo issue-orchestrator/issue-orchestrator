@@ -1909,18 +1909,20 @@ class TestUpdateStateAfterAction:
         assert triage.failure is failure
 
     def test_queue_triage_without_failure_context_fails_fast(self, support_with_state):
-        """A QUEUE_TRIAGE action lacking failure context is a producer bug."""
+        """A QUEUE_TRIAGE action lacking failure context is a producer bug.
+
+        ``QueueTriageAction.failure`` is a required keyword field, so the
+        contract is enforced at action CONSTRUCTION — an investigation cannot
+        even be described without its triggering failure.
+        """
         from issue_orchestrator.control.actions import QueueTriageAction
 
-        action = QueueTriageAction(
-            issue_number=42,
-            title="Investigate: Test issue (failed)",
-            reason="Session failed with status 'failed'",
-        )
-        result = MagicMock(success=True, details={})
-
-        with pytest.raises(ValueError, match="DiscoveredFailure"):
-            support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+        with pytest.raises(TypeError, match="failure"):
+            QueueTriageAction(
+                issue_number=42,
+                title="Investigate: Test issue (failed)",
+                reason="Session failed with status 'failed'",
+            )
 
         assert support_with_state.state.pending_triage_reviews == []
 
