@@ -29,6 +29,8 @@ from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
 from .health_review_trigger import (
     classify_triage_anchor_issues,
+    discover_open_health_review_anchor,
+    discover_open_triage_anchor_issues,
     health_review_due,
     health_review_interval_minutes,
 )
@@ -196,13 +198,17 @@ class FactGatherer:
         The batch fields are gated by ``triage_review_threshold`` (via the
         watch label) and the health-review fields by
         ``triage.health_review.interval_minutes`` — either feature alone
-        produces facts; neither produces None. Both anchor kinds are
-        classified from the SAME open-issue scan (no extra GitHub call), and
-        batch-only work (the PR fetch) is skipped entirely when the batch
-        trigger is disabled. Observation only: milestone ASSEMBLY policy
-        (strategy choice, explicit name -> number resolution) belongs to
-        planning and the create-issue applier boundary (#6769 round 3) —
-        no milestone API reads happen here.
+        produces facts; neither produces None. GitHub API discipline shapes
+        every read here: due-ness is pure interval math computed FIRST, so a
+        health-only configuration that is not yet due makes ZERO GitHub calls
+        (no anchor fact can affect planning until the review is due); the
+        batch anchor scan runs only when the batch trigger is armed; and the
+        marker-scoped health-anchor dedup lookup runs only while a creation
+        decision is actually pending and the batch scan did not already find
+        the anchor. Observation only: milestone ASSEMBLY policy (strategy
+        choice, explicit name -> number resolution) belongs to planning and
+        the create-issue applier boundary (#6769 round 3) — no milestone API
+        reads happen here.
         """
         from ..domain.models import TriageFacts
 
@@ -212,9 +218,24 @@ class FactGatherer:
         if not batch_armed and not health_armed:
             return None
 
-        existing_triage_issue, existing_health_review_issue = (
-            self._find_existing_triage_anchor_issues()
+        due = health_review_due(
+            self.config, state, time.time() if now is None else now
         )
+
+        existing_triage_issue: Optional[int] = None
+        existing_health_review_issue: Optional[int] = None
+        if batch_armed:
+            existing_triage_issue, existing_health_review_issue = (
+                self._find_existing_triage_anchor_issues()
+            )
+        if due and existing_health_review_issue is None:
+            # Marker-scoped, exhaustive dedup lookup (crash-safe): an older
+            # anchor can never fall off the first page of the broader
+            # triage-agent scan (#6763 finding 4).
+            existing_health_review_issue = discover_open_health_review_anchor(
+                self.repository_host, self.config
+            )
+
         prs = self._fetch_triage_prs(watch_label) if batch_armed else []
         all_labels, source_milestones = self._collect_pr_metadata(prs)
 
@@ -226,9 +247,7 @@ class FactGatherer:
             prs=tuple((pr.number, pr.title) for pr in prs),
             source_labels=frozenset(all_labels),
             source_milestones=tuple(source_milestones),
-            health_review_due=health_review_due(
-                self.config, state, time.time() if now is None else now
-            ),
+            health_review_due=due,
             existing_health_review_issue=existing_health_review_issue,
         )
 
@@ -253,14 +272,13 @@ class FactGatherer:
         return [pr for pr in prs if policy.is_candidate(_pr_labels(pr))]
 
     def _find_existing_triage_anchor_issues(self) -> tuple[int | None, int | None]:
-        """Find existing open (batch, health-review) anchor issues in one scan."""
-        triage_agent = self.config.triage_review_agent
-        if not triage_agent:
-            return None, None
-        existing = self.repository_host.list_issues(
-            labels=[triage_agent],
-            state="open",
-            limit=10,
+        """Find existing open (batch, health-review) anchor issues in one scan.
+
+        Uses the shared scoped/exhaustive anchor-discovery owner so this path
+        and startup recovery apply ONE eligibility rule (#6763 finding 7).
+        """
+        existing = discover_open_triage_anchor_issues(
+            self.repository_host, self.config
         )
         return classify_triage_anchor_issues(existing, self.config.filtering.label)
 

@@ -82,36 +82,12 @@ class TriageWorkflow:
         if not pending_triage:
             return TriageDecision.skip("No pending triage reviews")
 
-        # Check if paused
-        if paused:
-            self.events.publish(
-                make_trace_event(
-                    EventName.TRIAGE_SKIPPED,
-                    {"reason": "orchestrator_paused"},
-                )
-            )
-            return TriageDecision.skip("Orchestrator paused")
-
-        # Check capacity
-        max_sessions = self.config.max_concurrent_sessions
-        available = max_sessions - active_session_count
-
-        if available <= 0:
-            self.events.publish(
-                make_trace_event(
-                    EventName.TRIAGE_SKIPPED,
-                    {
-                        "reason": "no_capacity",
-                        "active": active_session_count,
-                        "max": max_sessions,
-                    },
-                )
-            )
-            return TriageDecision.skip(
-                f"No capacity (active={active_session_count}, max={max_sessions})"
-            )
+        gate_skip = self._gate_skip_reason(active_session_count, paused)
+        if gate_skip:
+            return TriageDecision.skip(gate_skip)
 
         # Determine which triage reviews to launch
+        available = self.config.max_concurrent_sessions - active_session_count
         triage_to_launch = list(pending_triage)[:available]
 
         self.events.publish(
@@ -126,3 +102,53 @@ class TriageWorkflow:
         )
 
         return TriageDecision.launch(triage_to_launch, available)
+
+    def should_create_health_review(
+        self,
+        active_session_count: int,
+        paused: bool,
+    ) -> bool:
+        """Gate the periodic health-review anchor creation (ADR-0031 §4).
+
+        Same owned paused/capacity gate as launch decisions: when the
+        orchestrator is paused or at capacity the anchor is NOT created —
+        due-ness persists, so creation retries once the gate opens — and
+        TRIAGE_SKIPPED is emitted with the proper reason (#6763).
+        """
+        if not self.is_configured():
+            return False
+        return self._gate_skip_reason(active_session_count, paused) is None
+
+    def _gate_skip_reason(
+        self,
+        active_session_count: int,
+        paused: bool,
+    ) -> str | None:
+        """Owned paused/capacity gate shared by launch and creation decisions.
+
+        Emits TRIAGE_SKIPPED with the rejection reason; returns None when
+        triage work may proceed.
+        """
+        if paused:
+            self.events.publish(
+                make_trace_event(
+                    EventName.TRIAGE_SKIPPED,
+                    {"reason": "orchestrator_paused"},
+                )
+            )
+            return "Orchestrator paused"
+
+        max_sessions = self.config.max_concurrent_sessions
+        if max_sessions - active_session_count <= 0:
+            self.events.publish(
+                make_trace_event(
+                    EventName.TRIAGE_SKIPPED,
+                    {
+                        "reason": "no_capacity",
+                        "active": active_session_count,
+                        "max": max_sessions,
+                    },
+                )
+            )
+            return f"No capacity (active={active_session_count}, max={max_sessions})"
+        return None

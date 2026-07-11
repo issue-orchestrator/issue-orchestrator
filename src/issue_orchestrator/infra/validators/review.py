@@ -16,6 +16,7 @@ class ReviewWorkflowValidator(ConfigValidator):
     - Default reviewer must exist in agents
     - Triage review agent must exist in agents (if set)
     - Triage authority modes are valid; act-level 'execute' rejected (#6764)
+    - Triage health-review interval is non-negative (0 = disabled, #6763)
     """
 
     def validate(self, config: "Config") -> list[str]:
@@ -26,6 +27,9 @@ class ReviewWorkflowValidator(ConfigValidator):
         # Graduated triage authority (ADR-0031): act-level 'execute' is a
         # startup configuration error until its executor is wired (#6764).
         errors.extend(config.triage.authority.startup_errors())
+        # Periodic health review (ADR-0031 §4): a negative interval is a
+        # startup configuration error, never silently treated as disabled.
+        errors.extend(config.triage.health_review.startup_errors())
 
         exchange_mode = config.review_exchange_mode
         self._validate_exchange_mode(exchange_mode, config, errors)

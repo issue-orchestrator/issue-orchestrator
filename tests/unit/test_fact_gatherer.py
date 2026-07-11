@@ -508,6 +508,36 @@ class TestFactGathererTriageFacts:
         assert "priority:high" in result.source_labels
 
 
+class _LabelFilteringTracker:
+    """RepositoryHost fake honoring GitHub's server-side label AND-filter.
+
+    Returns only issues that carry EVERY requested label, then applies the
+    page ``limit`` — exactly the behavior that lets an older anchor fall off a
+    too-small first page of the broad triage-agent scan (#6763 finding 4). It
+    records each query so tests can prove the dedup lookup is marker-scoped.
+    """
+
+    def __init__(self, issues):
+        self._issues = list(issues)
+        self.calls: list[dict] = []
+
+    def list_issues(self, labels=None, state="open", limit=100, **kwargs):
+        self.calls.append(
+            {"labels": list(labels or []), "state": state, "limit": limit}
+        )
+        wanted = {label.casefold() for label in (labels or [])}
+        matched = [
+            issue
+            for issue in self._issues
+            if issue.state == state or state == "all"
+            if wanted <= {label.casefold() for label in issue.labels}
+        ]
+        return matched[:limit]
+
+    def get_prs_with_label(self, *args, **kwargs):
+        return []
+
+
 class TestFactGathererHealthReviewFacts:
     """Health-review trigger facts (ADR-0031 §4).
 
@@ -678,6 +708,62 @@ class TestFactGathererHealthReviewFacts:
 
         assert result is not None
         assert result.existing_health_review_issue is None
+
+    def test_not_due_health_only_makes_zero_list_issues_calls(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """GitHub API discipline: due-ness is computed FIRST, so a health-only
+        config that is not yet due makes ZERO GitHub calls — no anchor fact can
+        affect planning before the review is due (#6763 finding 3)."""
+        self._arm_health_review(mock_config, interval_minutes=60)
+        sample_state.last_health_review_at = 1_000.0
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 1800)
+
+        assert result is not None
+        assert result.health_review_due is False
+        assert result.existing_health_review_issue is None
+        mock_repository_host.list_issues.assert_not_called()
+        mock_repository_host.get_prs_with_label.assert_not_called()
+
+    def test_marker_anchor_beyond_first_page_is_deduped(
+        self, sample_state, mock_config
+    ):
+        """Crash-safe dedup must be exhaustive: a marker anchor sitting BEYOND
+        the first ten triage-agent items is still found, so no duplicate anchor
+        is created (#6763 finding 4).
+
+        The fake honors GitHub's label AND-filter plus page limit, so a broad
+        ``[triage_agent]``/limit=10 scan would strand the anchor at position
+        11; the marker-scoped lookup finds it regardless of position.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        crowd = [
+            Issue(number=n, title=f"Batch {n}", labels=["agent:triage"])
+            for n in range(1, 12)
+        ]
+        anchor = Issue(
+            number=200,
+            title="Health Review — walk the floor",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+        )
+        tracker = _LabelFilteringTracker([*crowd, anchor])
+        gatherer = FactGatherer(config=mock_config, repository_host=tracker)
+
+        result = gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is True
+        assert result.existing_health_review_issue == 200
+        # The dedup lookup was marker-scoped (exhaustive), never the broad
+        # unbounded-position triage-agent page.
+        assert any(
+            HEALTH_REVIEW_MARKER_LABEL in call["labels"] for call in tracker.calls
+        )
 
 
 class TestFactGathererCleanupFacts:
