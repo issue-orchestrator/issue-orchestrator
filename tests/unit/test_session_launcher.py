@@ -2854,6 +2854,19 @@ class TestLaunchTriageIssueSessionFlavors:
     """
 
     @staticmethod
+    def _run_identities(tmp_path: Path) -> list[tuple[str, str]]:
+        """(run_id, session_name) for every session run under tmp_path.
+
+        Read from each run's manifest.json - the same typed identities the
+        launcher records with - never parsed from directory names.
+        """
+        identities = []
+        for manifest in Path(str(tmp_path)).rglob(".issue-orchestrator/sessions/*/manifest.json"):
+            data = json.loads(manifest.read_text())
+            identities.append((data["run_id"], data["session_name"]))
+        return identities
+
+    @staticmethod
     def _enable_triage_agent(config, tmp_path: Path) -> None:
         prompt_path = tmp_path / "triage-prompt.md"
         prompt_path.write_text("Triage prompt")
@@ -2912,13 +2925,48 @@ class TestLaunchTriageIssueSessionFlavors:
         # exists), and the guard discarded the durable row on the way out.
         assignment_files = list(Path(str(tmp_path)).rglob("triage-assignment.json"))
         assert assignment_files, "authority was never recorded - test lost its premise"
+        identities = self._run_identities(tmp_path)
+        assert identities, "no run manifest found - cannot verify by typed identity"
         store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
-        for path in assignment_files:
-            run_dir_name = path.parent.parent.name
-            run_id = run_dir_name.split("__")[0]
+        for run_id, session_name in identities:
             assert (
-                store.load(run_id=run_id, session_name="issue-903") is None
-            ), f"authority row leaked for run {run_dir_name}"
+                store.load(run_id=run_id, session_name=session_name) is None
+            ), f"authority row leaked for run {run_id} ({session_name})"
+
+    def test_post_start_failure_retains_authority_for_live_session(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path, monkeypatch
+    ):
+        """Once the terminal is RUNNING, bookkeeping failures keep authority.
+
+        _create_session() returning True is the irreversible external
+        boundary (#6769 round 5): the agent process is live and will write a
+        completion, so discarding the row here would reject that completion
+        as missing_authority with no recovery. The guard's success marker
+        must sit at the boundary, not after the post-start bookkeeping.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        issue = Issue(
+            number=907, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+        store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        monkeypatch.setattr(
+            type(launcher_bundle.launcher),
+            "_trigger_issue_session_state_transitions",
+            lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("post-start boom")),
+        )
+
+        with pytest.raises(RuntimeError, match="post-start boom"):
+            launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        identities = self._run_identities(tmp_path)
+        assert identities, "authority was never recorded - test lost its premise"
+        retained = [
+            store.load(run_id=run_id, session_name=session_name)
+            for run_id, session_name in identities
+        ]
+        assert any(a is not None for a in retained), "authority row was discarded for a LIVE session"
 
     def test_default_flavor_prepares_manifest_and_batch_assignment(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path

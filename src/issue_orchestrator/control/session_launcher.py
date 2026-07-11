@@ -1062,6 +1062,12 @@ class SessionLauncher:
                 self._release_claim_if_held(issue.number, claim)
                 return LaunchResult(None, False, "Failed to create terminal session")
 
+            # The terminal is now RUNNING - the irreversible external boundary
+            # (#6769 round 5). Post-start bookkeeping failures must NOT discard
+            # the authority of a live session: its completion would be rejected
+            # as missing_authority with no way to restore the trusted scope.
+            launch_reached_active = True
+
             log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
 
             # Create session object with domain identity
@@ -1109,7 +1115,6 @@ class SessionLauncher:
             # State machine transitions
             self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
 
-            launch_reached_active = True
             return LaunchResult(session, True)
         finally:
             if not launch_reached_active:
