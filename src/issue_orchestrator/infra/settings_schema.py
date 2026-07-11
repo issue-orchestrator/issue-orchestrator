@@ -16,7 +16,7 @@ from typing import Any, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
-from .config_models import MERGE_QUEUE_PROVIDERS
+from .config_models import MERGE_QUEUE_PROVIDERS, TRIAGE_AUTHORITY_MODES
 
 from .settings_schema_support import (
     CONFIG_VALUE_TYPE_PATH,
@@ -1045,6 +1045,108 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.triage_review_on_failure",
         },
     )
+    # Graduated triage authority (ADR-0031). Each key is constrained to
+    # TRIAGE_AUTHORITY_MODES — the same set YAML loading validates against —
+    # exposed as an `enum` select plus a POST-time validator (a Literal type
+    # is deliberately avoided; see merge_queue.provider for the rationale).
+    # escalate_to_human is intentionally absent: it is the non-configurable
+    # floor and always executes.
+    triage_authority_post_comment: str = Field(
+        "execute",
+        title="Triage Authority: Post Comment",
+        description="Execute or surface triage-proposed diagnosis comments",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["execute", "propose"],
+            "doc_notes": (
+                "execute posts the proposed comment; propose (shadow mode) "
+                "surfaces it as would-have-done. Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.post_comment",
+            "yaml_path": "triage.authority.post_comment",
+        },
+    )
+    triage_authority_create_issue: str = Field(
+        "execute",
+        title="Triage Authority: Create Issue",
+        description="Execute or surface triage-proposed follow-up issues",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["execute", "propose"],
+            "doc_notes": (
+                "execute files the proposed issue; propose (shadow mode) "
+                "surfaces it as would-have-done. Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.create_issue",
+            "yaml_path": "triage.authority.create_issue",
+        },
+    )
+    triage_authority_flag_pattern: str = Field(
+        "execute",
+        title="Triage Authority: Flag Pattern",
+        description="Record triage-flagged cross-job patterns",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["execute", "propose"],
+            "doc_notes": (
+                "Pattern flags are recorded as events either way; this key "
+                "exists for parity. Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.flag_pattern",
+            "yaml_path": "triage.authority.flag_pattern",
+        },
+    )
+    triage_authority_reset_retry: str = Field(
+        "propose",
+        title="Triage Authority: Reset & Retry",
+        description="Act-level: reset-and-retry an issue from scratch",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["propose"],
+            "doc_notes": (
+                "Act-level authority is not wired yet (#6764): execute is a "
+                "startup configuration error. Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.reset_retry",
+            "yaml_path": "triage.authority.reset_retry",
+        },
+    )
+    triage_authority_kill_hung_session: str = Field(
+        "propose",
+        title="Triage Authority: Kill Hung Session",
+        description="Act-level: terminate a stuck session",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["propose"],
+            "doc_notes": (
+                "Act-level authority is not wired yet (#6764): execute is a "
+                "startup configuration error. Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.kill_hung_session",
+            "yaml_path": "triage.authority.kill_hung_session",
+        },
+    )
+
+    @field_validator(
+        "triage_authority_post_comment",
+        "triage_authority_create_issue",
+        "triage_authority_flag_pattern",
+        "triage_authority_reset_retry",
+        "triage_authority_kill_hung_session",
+    )
+    @classmethod
+    def _validate_triage_authority_mode(cls, value: str) -> str:
+        if value not in TRIAGE_AUTHORITY_MODES:
+            raise ValueError(
+                f"triage authority mode must be one of"
+                f" {list(TRIAGE_AUTHORITY_MODES)}, got {value!r}"
+            )
+        return value
 
 
 class GoalPilotSettings(BaseModel):

@@ -184,7 +184,14 @@ class FactGatherer:
         self,
         state: "OrchestratorState",
     ) -> Optional["TriageFacts"]:
-        """Gather facts for triage review trigger decision."""
+        """Gather facts for triage review trigger decision.
+
+        Observation only: threshold/existing-issue counting and source
+        label/milestone collection. Milestone ASSEMBLY policy (which
+        strategy applies, explicit name -> number resolution) belongs to
+        planning and the create-issue applier boundary (#6769 finding 4) —
+        no milestone API reads happen here.
+        """
         from ..domain.models import TriageFacts
 
         watch_label = self._get_triage_watch_label()

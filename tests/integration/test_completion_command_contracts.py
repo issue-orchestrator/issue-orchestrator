@@ -28,6 +28,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     create_starter_prompt,
@@ -58,7 +59,10 @@ def lm() -> LabelManager:
 _COMPLETION_CMDS = ("coding-done", "reviewer-done")
 _CONTRACT_COMMAND_TIMEOUT_SECONDS = xdist_timeout(60)
 
-_FENCED_BLOCK_RE = re.compile(r"```(?:bash)?\n(.*?)```", re.DOTALL)
+# Match any fenced block (bash, json, bare, ...) so language-tagged fences
+# keep open/close pairing intact; non-command content is filtered later by
+# the startswith(_COMPLETION_CMDS) check.
+_FENCED_BLOCK_RE = re.compile(r"```(?:[a-z]*)\n(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`]*(?:coding-done|reviewer-done)[^`]*)`")
 
 
@@ -343,6 +347,10 @@ def test_prompt_role_status_contracts(lm: LabelManager) -> None:
     assert "reviewer-done" not in triage_prompt
     assert "gh pr comment" not in triage_prompt
     assert "gh issue create" not in triage_prompt
+    # ADR-0031: triage completion requires the decision artifact pair; the
+    # prompt must name both files the orchestrator validates on completion.
+    assert "triage-decision.json" in triage_prompt
+    assert "triage-report.md" in triage_prompt
 
 
 def test_completion_record_drives_expected_review_actions(
@@ -453,6 +461,7 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager
         get_session_machine_fn=lambda _terminal: None,
         get_review_machine_fn=lambda _pr: None,
         session_output=FileSystemSessionOutput(),
+        triage_authority=InMemoryTriageAuthorityStore(),
     )
 
     for _ in range(3):

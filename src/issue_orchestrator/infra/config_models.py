@@ -230,12 +230,105 @@ class MilestoneStrategyConfig:
     explicit: Optional[str] = None  # Explicit milestone name
 
 
+TRIAGE_AUTHORITY_MODES = ("execute", "propose")
+
+# Action types whose authority mode is configurable. escalate_to_human is
+# deliberately absent: it is the non-configurable floor and always executes.
+TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS = (
+    "post_comment",
+    "create_issue",
+    "flag_pattern",
+    "reset_retry",
+    "kill_hung_session",
+)
+
+
+@dataclass
+class TriageAuthorityConfig:
+    """Per-action-type authority modes for triage decision proposals (ADR-0031).
+
+    ``execute`` — the orchestrator performs the proposed action.
+    ``propose`` — shadow mode: the proposal is surfaced as would-have-done.
+
+    ``escalate_to_human`` is intentionally not a field: it is the
+    non-configurable floor and always executes. Act-level actions
+    (``reset_retry``, ``kill_hung_session``) default to ``propose`` and are
+    rejected at startup if set to ``execute`` until their executors are
+    wired (#6764) — see ``Config.validate``.
+    """
+
+    post_comment: str = "execute"
+    create_issue: str = "execute"
+    flag_pattern: str = "execute"
+    reset_retry: str = "propose"
+    kill_hung_session: str = "propose"
+
+    @classmethod
+    def from_mapping(cls, data: dict) -> "TriageAuthorityConfig":
+        """Parse the ``triage.authority`` YAML section, validating modes."""
+        defaults = cls()
+        values: dict[str, str] = {}
+        for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
+            value = data.get(key, getattr(defaults, key))
+            if value not in TRIAGE_AUTHORITY_MODES:
+                raise ValueError(
+                    f"triage.authority.{key} must be one of"
+                    f" {list(TRIAGE_AUTHORITY_MODES)}, got {value!r}"
+                )
+            values[key] = value
+        return cls(**values)
+
+    def mode_for(self, action_type: str) -> str:
+        """Return the authority mode for a proposed triage action type.
+
+        ``escalate_to_human`` ALWAYS returns ``execute`` — routing to a
+        human is the fail-safe floor and cannot be configured away.
+        Unknown action types raise: authority for an unrecognized action
+        must never be silently guessed.
+        """
+        if action_type == "escalate_to_human":
+            return "execute"
+        if action_type not in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
+            raise ValueError(f"unknown triage action type: {action_type!r}")
+        return getattr(self, action_type)
+
+    def to_event_dict(self) -> dict:
+        """All five graduated-authority modes, for config event payloads."""
+        return {
+            key: getattr(self, key) for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS
+        }
+
+    def startup_errors(self) -> list[str]:
+        """Startup configuration errors for this authority block (ADR-0031).
+
+        Act-level actions mutate orchestrator runtime state and have no
+        wired executor yet; ``execute`` on them must be a startup
+        configuration error, never a silent no-op (#6764).
+        """
+        errors: list[str] = []
+        for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
+            mode = getattr(self, key)
+            if mode not in TRIAGE_AUTHORITY_MODES:
+                errors.append(
+                    f"triage.authority.{key} must be one of"
+                    f" {list(TRIAGE_AUTHORITY_MODES)}, got {mode!r}"
+                )
+        for key in ("reset_retry", "kill_hung_session"):
+            if getattr(self, key) == "execute":
+                errors.append(
+                    f"triage.authority.{key}: act-level triage authority"
+                    " 'execute' is not wired yet (#6764); use 'propose'"
+                )
+        return errors
+
+
 @dataclass
 class TriageConfig:
     """Triage issue configuration.
 
     Controls how labels and milestones are assigned to orchestrator-created
-    triage issues.
+    triage issues, and which triage decision proposals the orchestrator
+    executes versus surfaces (ADR-0031).
     """
 
     # Labels to inherit from source issues (if any source issue has the label)
@@ -249,6 +342,22 @@ class TriageConfig:
 
     # Optional explicit priority label
     priority: Optional[str] = None
+
+    # Per-action-type graduated authority for triage decision proposals
+    authority: TriageAuthorityConfig = field(default_factory=TriageAuthorityConfig)
+
+    def to_event_dict(self) -> dict:
+        """Serialized ``triage`` section for config event payloads."""
+        return {
+            "inherit_labels": list(self.inherit_labels),
+            "explicit_labels": list(self.explicit_labels),
+            "milestone_strategy": {
+                "inherit_from_issues": self.milestone_strategy.inherit_from_issues,
+                "explicit": self.milestone_strategy.explicit,
+            },
+            "priority": self.priority,
+            "authority": self.authority.to_event_dict(),
+        }
 
 
 @dataclass

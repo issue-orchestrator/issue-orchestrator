@@ -90,6 +90,10 @@ _EXPORTS = {
     "ReviewArtifactContent": (".review_artifact_reader", "ReviewArtifactContent"),
     "ReviewArtifactReadCommand": (".review_artifact_reader", "ReviewArtifactReadCommand"),
     "ReviewArtifactReader": (".review_artifact_reader", "ReviewArtifactReader"),
+    "TriageAuthorityStore": (".triage_authority", "TriageAuthorityStore"),
+    "InMemoryTriageAuthorityStore": (
+        ".triage_authority", "InMemoryTriageAuthorityStore",
+    ),
 }
 
 __all__ = (
@@ -165,6 +169,8 @@ __all__ = (
     "ReviewArtifactContent",
     "ReviewArtifactReadCommand",
     "ReviewArtifactReader",
+    "TriageAuthorityStore",
+    "InMemoryTriageAuthorityStore",
 )
 
 

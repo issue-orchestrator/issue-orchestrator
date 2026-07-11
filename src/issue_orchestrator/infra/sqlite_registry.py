@@ -83,4 +83,16 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
             backup=True,
             enforce_pragmas=True,
         ),
+        # Orchestrator-owned triage launch authority (ADR-0031 / #6769 F3).
+        # Backed up and pragma-enforced like the other state stores: losing
+        # it mid-run turns every in-flight triage completion into a
+        # missing-authority rejection.
+        SQLiteDatabase(
+            key="triage_authority",
+            label="Triage Authority",
+            path_fn=lambda cfg: _state_db(cfg, "triage_authority.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
     ]

@@ -335,6 +335,28 @@ class TestFactGathererTriageFacts:
         assert result.pr_count == 1
         assert result.prs == ((10, "Still pending"),)
 
+    def test_triage_facts_never_read_milestones(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Fact gathering is observation only (#6769 finding 4): even with
+        the explicit strategy configured and creation imminent, milestone
+        name->number resolution belongs to the create-issue applier — the
+        gatherer must make zero list_milestones calls."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 1
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_config.triage.milestone_strategy.explicit = "M5"
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=10, url="...", title="PR 10", branch="b1", labels=[], body="", state="open"),
+        ]
+        mock_repository_host.list_issues.return_value = []
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.pr_count == 1
+        mock_repository_host.list_milestones.assert_not_called()
+
     def test_triage_facts_detects_existing_issue(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):

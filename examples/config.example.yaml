@@ -348,6 +348,18 @@ triage:
     inherit_from_issues: true
     explicit: null
   priority: null
+  # Graduated authority for triage decision proposals (ADR-0031).
+  # execute = orchestrator performs the proposed action;
+  # propose = shadow mode - recorded as would-have-done, nothing executed.
+  # escalate_to_human is not configurable: it always executes (the floor).
+  # Act-level actions (reset_retry, kill_hung_session) must stay "propose"
+  # until their executors are wired (#6764) - "execute" fails at startup.
+  # authority:
+  #   post_comment: "execute"       # execute | propose
+  #   create_issue: "execute"       # execute | propose
+  #   flag_pattern: "execute"       # execute | propose
+  #   reset_retry: "propose"        # propose only until #6764
+  #   kill_hung_session: "propose"  # propose only until #6764
 
 scheduling:
   default_priority_tier: 1

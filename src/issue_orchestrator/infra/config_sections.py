@@ -34,6 +34,7 @@ from .config_models import (
     SessionInteractionsConfig,
     SqliteBackupConfig,
     TimelineConfig,
+    TriageAuthorityConfig,
     TriageConfig,
     PublishValidationConfig,
     ValidationCommandConfig,
@@ -247,6 +248,7 @@ def parse_triage_config(data: dict) -> TriageConfig:
         explicit_labels=list(explicit_labels),
         milestone_strategy=milestone_strategy,
         priority=data.get("priority"),
+        authority=TriageAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
     )
 
 
