@@ -1,9 +1,10 @@
 """Triage session flavor, assignment, and launch authority (ADR-0031).
 
-Two triage variants share one launch path: batch PR review (audit the
-orchestrator-prepared PR manifest) and failure investigation (diagnose one
-failed issue). The :class:`TriageAssignment` written at launch tells the
-*agent* which variant its session is (both variants run in ``issue-{N}``
+Three triage variants share one launch path: batch PR review (audit the
+orchestrator-prepared PR manifest), failure investigation (diagnose one
+failed issue), and the periodic health review (walk the board snapshot,
+ADR-0031 §4). The :class:`TriageAssignment` written at launch tells the
+*agent* which variant its session is (all variants run in ``issue-{N}``
 terminals).
 
 Trust boundary: the assignment file and the PR manifest live inside the
@@ -23,6 +24,13 @@ from pathlib import Path
 
 TRIAGE_ASSIGNMENT_FILENAME = "triage-assignment.json"
 
+# Marker label carried by health-review anchor issues (ADR-0031 §4).
+# Labels are crash-safe truth (ADR-0013): the marker is both how the launcher
+# derives the HEALTH_REVIEW flavor and how the fact gatherer deduplicates an
+# already-open health-review anchor. Single owner — the planner, launcher,
+# fact gatherer, and startup recovery all import it from here.
+HEALTH_REVIEW_MARKER_LABEL = "triage:health-review"
+
 _SCHEMA_VERSION = 1
 
 
@@ -31,6 +39,7 @@ class TriageSessionFlavor(str, Enum):
 
     BATCH_REVIEW = "batch_review"
     FAILURE_INVESTIGATION = "failure_investigation"
+    HEALTH_REVIEW = "health_review"
 
 
 @dataclass(frozen=True)
@@ -38,8 +47,8 @@ class TriageAssignment:
     """Launch-time record of a triage session's assignment.
 
     ``focus_issue_number``/``focus_reason`` name the single issue a
-    failure-investigation session must diagnose; batch reviews carry neither
-    (their scope is the PR manifest).
+    failure-investigation session must diagnose; batch and health reviews
+    carry neither (their scope is the PR manifest / the board snapshot).
     """
 
     flavor: TriageSessionFlavor
@@ -147,18 +156,29 @@ class TriageLaunchAuthority:
                 "TriageLaunchAuthority with flavor=failure_investigation requires "
                 "focus_issue_number"
             )
+        if self.flavor is TriageSessionFlavor.HEALTH_REVIEW and (
+            self.focus_issue_number is not None or self.manifest_pr_numbers
+        ):
+            raise ValueError(
+                "TriageLaunchAuthority with flavor=health_review carries no "
+                "focus issue or manifest PRs; its scope is the anchor issue only "
+                "(ADR-0031 §4)"
+            )
 
     def allowed_targets(self) -> frozenset[int]:
         """Issue/PR numbers a decision from this session may target.
 
-        Failure investigations may only address their focus issue; batch
-        reviews may address the audited manifest PRs plus the anchor
-        tracking issue. ``create_issue``/``flag_pattern`` proposals carry no
-        target and are scope-free by construction.
+        Failure investigations may only address their focus issue; health
+        reviews may only address their anchor issue (the report's home,
+        ADR-0031 §4); batch reviews may address the audited manifest PRs
+        plus the anchor tracking issue. ``create_issue``/``flag_pattern``
+        proposals carry no target and are scope-free by construction.
         """
         if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
             assert self.focus_issue_number is not None  # __post_init__
             return frozenset((self.focus_issue_number,))
+        if self.flavor is TriageSessionFlavor.HEALTH_REVIEW:
+            return frozenset((self.anchor_issue_number,))
         return frozenset((*self.manifest_pr_numbers, self.anchor_issue_number))
 
     def matches_assignment(self, assignment: TriageAssignment) -> bool:

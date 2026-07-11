@@ -360,6 +360,13 @@ triage:
   #   flag_pattern: "execute"       # execute | propose
   #   reset_retry: "propose"        # propose only until #6764
   #   kill_hung_session: "propose"  # propose only until #6764
+  # Periodic health review (ADR-0031 §4): every N minutes the orchestrator
+  # files a "Health Review" anchor issue for the triage agent to walk the
+  # board snapshot (hung/aging sessions, queue pile-ups, repeated failures).
+  # Requires review.triage_review_agent. 0 = disabled (default). The anchor
+  # is closed automatically when the review lands with a valid decision pair.
+  # health_review:
+  #   interval_minutes: 240
 
 scheduling:
   default_priority_tier: 1

@@ -103,6 +103,35 @@ class QueueCacheStore:
             return None
         return row["value"]
 
+    def load_last_health_review_at(self) -> float:
+        """Load the epoch timestamp of the last health-review anchor creation.
+
+        Returns 0.0 when no health review has ever fired (ADR-0031 §4).
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_health_review_at'"
+        ).fetchone()
+        if row is None:
+            return 0.0
+        return float(row["value"])
+
+    def save_last_health_review_at(self, value: float) -> None:
+        """Persist the last health-review anchor creation timestamp.
+
+        Durable marker so an orchestrator restart does not re-fire the
+        periodic health review before the configured interval elapses
+        (ADR-0031 §4). Stored in the same ``meta`` key/value table as the
+        delta watermark; ``clear()`` wipes it along with the rest of the
+        cache (worst case: one early health review after a cache reset).
+        """
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES ('last_health_review_at', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (repr(value),),
+            )
+
     def save_snapshot(
         self,
         issues: Sequence["Issue"],

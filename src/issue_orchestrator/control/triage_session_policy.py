@@ -26,6 +26,7 @@ from ..domain.models import RequestedAction
 from ..domain.triage_manifest import TriageManifest
 from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME
 from ..domain.triage_session import (
+    HEALTH_REVIEW_MARKER_LABEL,
     TRIAGE_ASSIGNMENT_FILENAME,
     TriageAssignment,
     TriageLaunchAuthority,
@@ -145,17 +146,29 @@ def prepare_triage_session_data(
     """Prepare per-flavor triage session inputs (ADR-0031).
 
     BATCH_REVIEW keeps the existing PR-manifest prep; FAILURE_INVESTIGATION
-    must NOT receive the global batch manifest (auditing unrelated PRs from
-    a focused investigation was the #6768 B4 defect). Both flavors get a
-    triage-assignment.json copy for the AGENT to read, and — the trusted
-    half — an orchestrator-owned :class:`TriageLaunchAuthority` record
-    persisted outside the agent-writable worktree, keyed by this run's
-    identity, which completion reads as the only scope authority
-    (#6761 re-review F1).
+    and HEALTH_REVIEW must NOT receive the global batch manifest (auditing
+    unrelated PRs from a focused investigation was the #6768 B4 defect; a
+    health review walks the board snapshot, not a PR batch). Every flavor
+    gets a triage-assignment.json copy for the AGENT to read, and — the
+    trusted half — an orchestrator-owned :class:`TriageLaunchAuthority`
+    record persisted outside the agent-writable worktree, keyed by this
+    run's identity, which completion reads as the only scope authority
+    (#6761 re-review F1). Health reviews record an anchor-only scope: no
+    focus issue, empty manifest set, board-wide snapshot.
+
+    Flavor resolution: an explicit ``triage_flavor`` wins (the pending-queue
+    launch path forwards the producer-declared flavor); otherwise the
+    ADR-0031 §4 marker label on the anchor issue selects HEALTH_REVIEW
+    (labels are the crash-safe truth a restart recovers from); otherwise
+    BATCH_REVIEW.
     """
     if not is_triage_session(config.triage_review_agent, issue.agent_type):
         return
-    flavor = triage_flavor or TriageSessionFlavor.BATCH_REVIEW
+    flavor = triage_flavor or (
+        TriageSessionFlavor.HEALTH_REVIEW
+        if HEALTH_REVIEW_MARKER_LABEL in issue.labels
+        else TriageSessionFlavor.BATCH_REVIEW
+    )
     run_dir = ctx.run.run_dir
     triage_manifest = None
     if flavor is TriageSessionFlavor.BATCH_REVIEW:

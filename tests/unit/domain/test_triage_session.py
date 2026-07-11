@@ -38,6 +38,18 @@ class TestTriageAssignmentRoundTrip:
         assert loaded.focus_issue_number == 4321
         assert loaded.focus_reason == "Investigate: session timed out"
 
+    def test_health_review_round_trips_through_file(self, tmp_path: Path) -> None:
+        """Health reviews carry no focus fields — like batch (ADR-0031 §4)."""
+        assignment = TriageAssignment(flavor=TriageSessionFlavor.HEALTH_REVIEW)
+        path = tmp_path / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+
+        assignment.write(path)
+        loaded = TriageAssignment.read(path)
+
+        assert loaded == assignment
+        assert loaded.focus_issue_number is None
+        assert loaded.focus_reason == ""
+
     def test_write_creates_parent_directories(self, tmp_path: Path) -> None:
         path = tmp_path / "deep" / "nested" / TRIAGE_ASSIGNMENT_FILENAME
 
@@ -64,7 +76,7 @@ class TestTriageAssignmentValidation:
     def test_unknown_flavor_fails_loudly(self) -> None:
         with pytest.raises(ValueError, match="Unknown triage assignment flavor"):
             TriageAssignment.from_dict(
-                {"schema_version": 1, "flavor": "health_review"}
+                {"schema_version": 1, "flavor": "board_walkthrough"}
             )
 
     def test_missing_flavor_fails_loudly(self) -> None:

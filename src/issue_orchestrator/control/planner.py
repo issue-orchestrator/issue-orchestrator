@@ -73,6 +73,7 @@ from .awaiting_merge_post_publish_policy import (
     build_post_publish_validation_comment,
     POST_PUBLISH_VALIDATION_SOURCE,
 )
+from .health_review_trigger import plan_health_review_issue_creation
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
@@ -229,6 +230,14 @@ class Planner:
         triage_create_action = self._plan_triage_issue_creation(snapshot)
         if triage_create_action:
             actions.append(triage_create_action)
+
+        # 1f2. Create the periodic health-review anchor issue when due
+        # (ADR-0031 §4; policy lives in health_review_trigger).
+        health_review_action = plan_health_review_issue_creation(
+            snapshot.triage_facts, snapshot.pending_triage, self.config
+        )
+        if health_review_action:
+            actions.append(health_review_action)
 
         # 1g. Process cleanups for reviewed PRs
         cleanup_actions = self._plan_cleanups(snapshot)
@@ -608,6 +617,10 @@ class Planner:
 
     def _should_create_triage_issue(self, facts: "TriageFacts") -> bool:
         """Check if triage issue should be created."""
+        if facts.threshold <= 0:
+            # Batch trigger disabled; facts may exist for the health review
+            # alone (ADR-0031 §4), which plans its own anchor creation.
+            return False
         if facts.pr_count < facts.threshold:
             logger.debug("Planner: triage threshold not met (%d/%d)", facts.pr_count, facts.threshold)
             return False

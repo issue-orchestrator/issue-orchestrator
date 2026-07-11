@@ -3088,6 +3088,30 @@ triage:
         with pytest.raises(ValueError, match="unknown triage action type"):
             config.triage.authority.mode_for("push_code")
 
+    def test_triage_health_review_default_disabled(self):
+        """Health review defaults to disabled (interval 0, ADR-0031 §4)."""
+        config = Config()
+
+        assert config.triage.health_review.interval_minutes == 0
+
+    def test_triage_health_review_from_yaml(self, tmp_path):
+        """triage.health_review.interval_minutes parses as an int."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  health_review:
+    interval_minutes: 240
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.health_review.interval_minutes == 240
+
 
 
 
