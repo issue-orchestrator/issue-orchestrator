@@ -15,6 +15,7 @@ import os
 import shlex
 import pytest
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, cast
 from unittest.mock import MagicMock, patch
@@ -70,6 +71,7 @@ from issue_orchestrator.control.retrospective_review_completion import (
 )
 from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import (
+    DiscoveredFailure,
     Issue,
     ORCHESTRATOR_PR_MARKER,
     Session,
@@ -87,6 +89,7 @@ from issue_orchestrator.domain.models import (
     SessionKey,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
+from issue_orchestrator.domain.board_snapshot import BoardSnapshot
 from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
@@ -98,7 +101,13 @@ from issue_orchestrator.ports import (
     NullEventSink,
     TraceEvent,
     CommandResult,
+    NullBoardSnapshotProvider,
     NullManifestDownloader,
+)
+from issue_orchestrator.ports.board_snapshot_provider import BoardSnapshotProvider
+from issue_orchestrator.control.board_snapshot_builder import (
+    BoardSnapshotBuilder,
+    StateBoardSnapshotProvider,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
@@ -402,6 +411,27 @@ def sample_agent_config(tmp_path):
     )
 
 
+class RecordingBoardSnapshotProvider:
+    """Fake BoardSnapshotProvider: records focus issues, optionally raises.
+
+    ``error`` is a public attribute so tests flip the provider into failure
+    mode through the object they injected, never through launcher internals.
+    """
+
+    def __init__(self, error: Exception | None = None):
+        self.calls: list[int | None] = []
+        self.error = error
+
+    def snapshot(self, focus_issue: int | None) -> BoardSnapshot:
+        self.calls.append(focus_issue)
+        if self.error is not None:
+            raise self.error
+        return BoardSnapshot(
+            generated_at="2026-07-10T00:00:00",
+            orchestrator_paused=False,
+        )
+
+
 @dataclass
 class LauncherTestBundle:
     """Bundle of launcher and tracking objects for tests."""
@@ -416,21 +446,29 @@ class LauncherTestBundle:
     create_session_override: list = field(default_factory=lambda: [None])
     # Injected mocks for test assertions
     action_applier: MagicMock = field(default_factory=MagicMock)
+    board_snapshot_provider: BoardSnapshotProvider = field(
+        default_factory=RecordingBoardSnapshotProvider
+    )
 
 
-@pytest.fixture
-def launcher_bundle(
+def _build_launcher_bundle(
     sample_config,
     mock_events,
     mock_repo_host,
     mock_worktree_manager,
     mock_working_copy,
     mock_command_runner,
+    *,
+    board_snapshot_provider: BoardSnapshotProvider | None = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
-    Returns a bundle with the launcher and tracking objects for test assertions.
+    ``board_snapshot_provider`` is constructor-injected (it is a REQUIRED
+    launcher dependency); defaults to a fresh RecordingBoardSnapshotProvider
+    exposed on the bundle for assertions.
     """
+    if board_snapshot_provider is None:
+        board_snapshot_provider = RecordingBoardSnapshotProvider()
     session_exists_calls = []
     create_session_calls = []
     session_exists_override = [None]  # List so tests can replace the callable
@@ -490,6 +528,7 @@ def launcher_bundle(
         get_session_machine=get_session_machine,
         get_review_machine=get_review_machine,
         remove_session_machine=remove_session_machine,
+        board_snapshot_provider=board_snapshot_provider,
     )
 
     bundle = LauncherTestBundle(
@@ -502,8 +541,29 @@ def launcher_bundle(
         session_exists_override=session_exists_override,
         create_session_override=create_session_override,
         action_applier=mock_action_applier,
+        board_snapshot_provider=board_snapshot_provider,
     )
     return bundle
+
+
+@pytest.fixture
+def launcher_bundle(
+    sample_config,
+    mock_events,
+    mock_repo_host,
+    mock_worktree_manager,
+    mock_working_copy,
+    mock_command_runner,
+) -> LauncherTestBundle:
+    """Create a SessionLauncher bundle with default mock dependencies."""
+    return _build_launcher_bundle(
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+    )
 
 
 @pytest.fixture
@@ -875,6 +935,7 @@ class TestLaunchIssueSession:
             get_review_machine=lambda pr, issue: ReviewStateMachine(pr, issue),
             refresh_issue_fn=refresh_issue,
             dependency_evaluator=_Evaluator(),
+            board_snapshot_provider=NullBoardSnapshotProvider(),
         )
 
         result = launcher.launch_issue_session(sample_issue, active_sessions=[])
@@ -2662,9 +2723,12 @@ class TestPendingSessionQueuesTriageIntake:
 
     def test_queue_failure_investigation_constructs_failure_entry(self):
         state = OrchestratorState()
+        failure = DiscoveredFailure(
+            issue_number=8, issue_title="Timeout victim", failure_reason="timed_out"
+        )
 
         outcome = PendingSessionQueues(state).queue_failure_investigation(
-            8, "Investigate: timeout"
+            8, "Investigate: timeout", failure=failure
         )
 
         assert outcome is TriageQueueOutcome.QUEUED
@@ -2672,6 +2736,32 @@ class TestPendingSessionQueuesTriageIntake:
         assert entry.issue_number == 8
         assert entry.title == "Investigate: timeout"
         assert entry.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        # The typed triggering failure rides the queue item so the launch-time
+        # board snapshot still has it after discovered_failures is cleared.
+        assert entry.failure is failure
+
+    def test_failure_investigation_without_failure_context_fails_fast(self):
+        """The queue item is the only carrier of the triggering failure; a
+        failure investigation without it would launch with an empty
+        recent_failures section (the P1 defect this guards against)."""
+        with pytest.raises(ValueError, match="failure"):
+            PendingTriageReview(
+                issue_number=8,
+                title="Investigate: timeout",
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            )
+
+    def test_batch_review_with_failure_context_fails_fast(self):
+        """Batch reviews are threshold-created; failure context is a producer bug."""
+        with pytest.raises(ValueError, match="batch"):
+            PendingTriageReview(
+                issue_number=7,
+                title="Triage Batch",
+                flavor=TriageSessionFlavor.BATCH_REVIEW,
+                failure=DiscoveredFailure(
+                    issue_number=7, issue_title="x", failure_reason="failed"
+                ),
+            )
 
     def test_duplicate_issue_number_returns_duplicate_without_double_queue(self):
         state = OrchestratorState()
@@ -2690,7 +2780,13 @@ class TestPendingSessionQueuesTriageIntake:
         queues = PendingSessionQueues(state)
         queues.queue_batch_review(7, "Triage Batch")
 
-        outcome = queues.queue_failure_investigation(7, "Investigate: timeout")
+        outcome = queues.queue_failure_investigation(
+            7,
+            "Investigate: timeout",
+            failure=DiscoveredFailure(
+                issue_number=7, issue_title="x", failure_reason="timed_out"
+            ),
+        )
 
         assert outcome is TriageQueueOutcome.DUPLICATE
         (entry,) = state.pending_triage_reviews
@@ -2701,7 +2797,13 @@ class TestPendingSessionQueuesTriageIntake:
         state = OrchestratorState()
         queues = PendingSessionQueues(state)
         queues.queue_batch_review(7, "Triage Batch")
-        queues.queue_failure_investigation(8, "Investigate: timeout")
+        queues.queue_failure_investigation(
+            8,
+            "Investigate: timeout",
+            failure=DiscoveredFailure(
+                issue_number=8, issue_title="x", failure_reason="timed_out"
+            ),
+        )
 
         queues.remove_triage(7)
 
@@ -2716,8 +2818,17 @@ def _make_queued_triage(
     issue_number: int = 789,
     flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW,
 ) -> PendingTriageReview:
+    failure = (
+        DiscoveredFailure(
+            issue_number=issue_number,
+            issue_title="Triage batch",
+            failure_reason="failed",
+        )
+        if flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        else None
+    )
     return PendingTriageReview(
-        issue_number=issue_number, title="Triage batch", flavor=flavor
+        issue_number=issue_number, title="Triage batch", flavor=flavor, failure=failure
     )
 
 
@@ -2834,7 +2945,13 @@ class TestOrchestratorLaunchTriageSession:
         """
         sample_config.triage_review_agent = "agent:web"
         state = OrchestratorState()
-        PendingSessionQueues(state).queue_failure_investigation(789, "Investigate")
+        PendingSessionQueues(state).queue_failure_investigation(
+            789,
+            "Investigate",
+            failure=DiscoveredFailure(
+                issue_number=789, issue_title="x", failure_reason="failed"
+            ),
+        )
         launcher = _stub_triage_launcher(LaunchResult(session=None, success=False))
 
         result = orchestrator_launch_triage_session(
@@ -3050,6 +3167,112 @@ class TestLaunchTriageIssueSessionFlavors:
         assert "triage_assignment" not in run_manifest
         assert not (run_dir / "triage-data").exists()
 
+    def test_batch_flavor_writes_board_snapshot_with_manifest_entry(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """Batch reviews get board-snapshot.json plus a run-manifest entry.
+
+        Board data is local orchestrator state (ADR-0031 §3): the launch must
+        make no repository-host calls beyond the pre-existing batch manifest
+        fetch — no new call types.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        provider = launcher_bundle.board_snapshot_provider
+        issue = Issue(
+            number=901, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        # Batch reviews take the whole-board view: no focus issue.
+        assert provider.calls == [None]
+        run_dir = self._started_run_dir(mock_events)
+        snapshot_path = run_dir / "triage-data" / "board-snapshot.json"
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["board_snapshot"] == str(snapshot_path)
+        # The written file must parse back through the typed reader.
+        snapshot = BoardSnapshot.read(snapshot_path)
+        assert snapshot.orchestrator_paused is False
+        # No new repository-host call types: only the batch manifest fetch.
+        assert mock_repo_host.get_prs_with_label_calls == [
+            (config.triage_watch_label, "all")
+        ]
+        assert mock_repo_host.add_label_calls == []
+        assert mock_repo_host.remove_label_calls == []
+        assert mock_repo_host.search_pr_refs_calls == []
+
+    def test_failure_flavor_board_snapshot_scoped_to_focus_issue(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """Failure investigations get a snapshot scoped to the failed issue."""
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        provider = launcher_bundle.board_snapshot_provider
+        issue = Issue(
+            number=902,
+            title="Investigate: session timed out",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue,
+            active_sessions=[],
+            triage_flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        )
+
+        assert result.success is True
+        assert provider.calls == [902]
+        run_dir = self._started_run_dir(mock_events)
+        snapshot_path = run_dir / "triage-data" / "board-snapshot.json"
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["board_snapshot"] == str(snapshot_path)
+        assert BoardSnapshot.read(snapshot_path).schema_version == 1
+        # Still no PR manifest — and no GitHub reads at all for this flavor.
+        assert "triage_manifest" not in run_manifest
+        assert mock_repo_host.get_prs_with_label_calls == []
+
+    def test_board_snapshot_failure_fails_launch_loudly(
+        self, launcher_bundle, mock_repo_host, mock_worktree_manager, mock_events, tmp_path
+    ):
+        """board-snapshot.json is required input; a build failure fails the launch.
+
+        The triage prompt calls the snapshot authoritative, so a DB/log bug
+        must never silently launch a session missing its input (fail-fast).
+        The failure follows the established launch seam: SESSION_START_FAILED,
+        worktree cleanup, and a failed LaunchResult.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+        issue = Issue(
+            number=903, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is False
+        assert "Triage session data preparation failed" in result.reason
+        assert "boom" in result.reason
+        # The launch failed loudly through the established seam.
+        failed_events = [
+            e for e in mock_events.events
+            if str(e.name) == str(EventName.SESSION_START_FAILED)
+        ]
+        assert len(failed_events) == 1
+        assert failed_events[0].data["reason"] == "triage_session_data_failed"
+        # No session started, and the worktree was cleaned up.
+        assert not any(str(e.name) == "session.started" for e in mock_events.events)
+        assert mock_worktree_manager.remove_calls, "worktree must be cleaned up"
+
 
 class TestTriageProducerToLaunchBoundary:
     """The flavor set at the producer boundary must survive queue -> launch (#6768 B5).
@@ -3145,28 +3368,71 @@ class TestTriageProducerToLaunchBoundary:
         assert assignment["focus_issue_number"] is None
 
     def test_failure_investigation_launches_as_failure_flavor(
-        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        tmp_path,
     ):
-        """_handle_queue_triage -> queue -> launch skips the manifest query."""
+        """_handle_queue_triage -> queue -> launch skips the manifest query.
+
+        Also the P1 producer-to-snapshot regression: the failure is discovered
+        on tick N (queued via QueueTriageAction), the per-tick
+        discovered_failures buffer is cleared after planning, and the launch
+        happens on tick N+1 — the written board snapshot must still contain
+        the investigation's own triggering failure. Uses the REAL
+        StateBoardSnapshotProvider over the same state, constructor-injected.
+        """
+        state = OrchestratorState()
+        provider = StateBoardSnapshotProvider(
+            BoardSnapshotBuilder(
+                timeline_reader=lambda issue, limit: [],
+                log_tail_provider=lambda lines: [],
+                clock=lambda: datetime(2026, 7, 10, 12, 0, 0),
+            ),
+            lambda: state,
+        )
+        launcher_bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+            board_snapshot_provider=provider,
+        )
         config = launcher_bundle.launcher.config
         TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
         mock_repo_host.prs_with_label = [
             TestLaunchTriageIssueSessionFlavors._triage_pr(555)
         ]
-        state = OrchestratorState()
         support = self._support_for(state)
 
+        # Tick N: the planner threads the typed failure through the action.
         support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
             QueueTriageAction(
                 issue_number=904,
                 title="Investigate: Test issue (timed_out)",
+                failure=DiscoveredFailure(
+                    issue_number=904,
+                    issue_title="Test issue",
+                    failure_reason="timed_out",
+                ),
                 reason="Session failed with status 'timed_out'",
             ),
             MagicMock(success=True, details={}),
         )
         (queued,) = state.pending_triage_reviews
         assert queued.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        assert queued.failure is not None
 
+        # Tick boundary: the orchestrator clears the per-tick fact buffer.
+        state.discovered_failures.clear()
+
+        # Tick N+1: launch consumes the queue item.
         session = self._launch(queued, state, launcher_bundle)
 
         # A launched item leaves the queue and cannot be relaunched next tick.
@@ -3184,6 +3450,29 @@ class TestTriageProducerToLaunchBoundary:
         )
         assert assignment["flavor"] == "failure_investigation"
         assert assignment["focus_issue_number"] == 904
+
+        # The written snapshot preserves the triggering failure across the
+        # queue boundary even though the live buffer was cleared.
+        snapshot = BoardSnapshot.read(run_dir / "triage-data" / "board-snapshot.json")
+        assert [
+            (f.issue_number, f.failure_reason) for f in snapshot.recent_failures
+        ] == [(904, "timed_out")]
+
+    def test_queue_triage_action_without_failure_context_fails_fast(self):
+        """The producer boundary rejects failure investigations lacking context."""
+        state = OrchestratorState()
+        support = self._support_for(state)
+
+        with pytest.raises(ValueError, match="DiscoveredFailure"):
+            support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
+                QueueTriageAction(
+                    issue_number=904,
+                    title="Investigate: Test issue (timed_out)",
+                    reason="Session failed with status 'timed_out'",
+                ),
+                MagicMock(success=True, details={}),
+            )
+        assert state.pending_triage_reviews == []
 
 
 # =============================================================================
@@ -4737,6 +5026,7 @@ class TestStackRelaunchGate:
             get_review_machine=lambda pr, issue: ReviewStateMachine(pr, issue),
             refresh_issue_fn=refresh_issue,
             dependency_evaluator=self._CannedWorkEvaluator(report_fn),
+            board_snapshot_provider=NullBoardSnapshotProvider(),
         )
 
     @pytest.fixture

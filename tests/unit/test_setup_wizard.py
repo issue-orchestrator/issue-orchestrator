@@ -260,6 +260,30 @@ class TestCreateTriageReviewPrompt:
             assert "failure_investigation" in text, f"{name} missing failure flavor"
             assert "focus_issue_number" in text, f"{name} missing focus contract"
 
+    def test_includes_board_snapshot_contract(self, tmp_path):
+        """All triage prompt sources must document the board snapshot file.
+
+        The ADR-0031 §3 observation surface only pays off if agents are told
+        it exists: the generated prompt, both packaged/dogfood prompt
+        variants, and the data-sources contract must all name
+        board-snapshot.json (the data-sources doc lists it alongside the
+        manifest as a primary local source).
+        """
+        prompt_path = tmp_path / "triage.md"
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        sources = {"generated prompt": prompt_path.read_text()}
+
+        repo_root = Path(__file__).resolve().parents[2]
+        for variant in (
+            repo_root / "examples" / "prompts" / "triage-review.md",
+            repo_root / "examples" / "prompts" / "triage-data-sources.md",
+            repo_root / "repo-specific" / "prompts" / "triage.md",
+        ):
+            sources[str(variant.relative_to(repo_root))] = variant.read_text()
+
+        for name, text in sources.items():
+            assert "board-snapshot.json" in text, f"{name} missing board snapshot"
+
     def test_substitutes_label_variables(self, tmp_path):
         """Test that label placeholders are substituted with actual values."""
         prompt_path = tmp_path / "triage.md"

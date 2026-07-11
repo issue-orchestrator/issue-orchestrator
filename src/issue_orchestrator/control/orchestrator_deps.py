@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from .claim_gate import ClaimGate
     from .lease_renewer import LeaseRenewer
     from .provider_resilience import ProviderResilienceManager
+    from .board_snapshot_builder import BoardSnapshotBuilder
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,9 @@ class OrchestratorDeps:
     # the background impl keeps that work off the tick thread.
     completion_dispatcher: "CompletionDispatcher"
     health_gate: "HealthGate"
+    # Board-snapshot fact assembly (ADR-0031 §3); the orchestrator binds it to
+    # live state when wiring the session launcher's snapshot provider.
+    board_snapshot_builder: "BoardSnapshotBuilder"
 
     # IO adapters
     worktree_manager: "WorktreeManager"

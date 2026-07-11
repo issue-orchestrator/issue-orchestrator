@@ -41,6 +41,7 @@ from issue_orchestrator.domain.models import (
     AgentConfig,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredFailure,
     DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
 )
@@ -2048,6 +2049,11 @@ class TestPlanDiscoveredFailures:
         action = triage_actions[0]
         assert action.issue_number == 42
         assert "failed" in action.title
+        # The typed failure context must ride the action across the plan/apply
+        # boundary; discovered_failures is cleared after planning, so this is
+        # the only path by which the launch-time board snapshot can contain
+        # the investigation's own triggering failure.
+        assert action.failure is discovered
 
     def test_no_triage_action_when_disabled(self):
         """Planner produces no triage actions when triage_review_on_failure is disabled."""
@@ -2126,6 +2132,9 @@ class TestPlanDiscoveredFailures:
             issue_number=42,
             title="Already queued",
             flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=42, issue_title="Already queued", failure_reason="failed"
+            ),
         )
 
         snapshot = make_snapshot(
@@ -2364,6 +2373,11 @@ class TestActionPriority:
                     issue_number=2,
                     title="Investigate failure",
                     flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                    failure=DiscoveredFailure(
+                        issue_number=2,
+                        issue_title="Investigate failure",
+                        failure_reason="failed",
+                    ),
                 ),
             ],
         )
@@ -3275,6 +3289,9 @@ class TestMultiplePendingTypesInteraction:
             issue_number=101,
             title="Investigate",
             flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=101, issue_title="Investigate", failure_reason="failed"
+            ),
         )
 
         snapshot = make_snapshot(
@@ -3337,6 +3354,9 @@ class TestMultiplePendingTypesInteraction:
             issue_number=3,
             title="Investigate",
             flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=3, issue_title="Investigate", failure_reason="failed"
+            ),
         )
 
         planner = Planner(

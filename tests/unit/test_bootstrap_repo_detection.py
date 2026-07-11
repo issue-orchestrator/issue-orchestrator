@@ -346,6 +346,33 @@ class TestBuildOrchestratorForTesting:
             assert orch.config is minimal_config
             assert orch.deps.repository_host is mock_github
 
+    def test_build_orchestrator_constructs_launcher_with_board_snapshot_provider(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """The session launcher must be constructible with all required
+        dependencies — including the board snapshot provider (ADR-0031 §3),
+        which is a REQUIRED constructor argument (triage prompts treat
+        board-snapshot.json as authoritative input, so there is no silent
+        skip path).
+
+        Verified through the public launch surface: ``launch_session``
+        materializes the lazily-built launcher, so a bootstrap wiring lapse
+        (e.g. a missing required constructor argument) raises here instead
+        of on the first real triage launch. The agent-less issue makes the
+        launch fail cleanly at preconditions without touching git/network.
+        """
+        from issue_orchestrator.domain.models import Issue
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+            )
+
+        result = orch.launch_session(Issue(number=1, title="No agent", labels=[]))
+
+        assert result is None  # precondition failure, not a wiring TypeError
+
     def test_build_orchestrator_wires_pair_registry_for_shutdown(
         self, minimal_config: Config, mock_github: MagicMock
     ) -> None:

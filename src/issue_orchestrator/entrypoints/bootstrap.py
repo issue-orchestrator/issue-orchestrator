@@ -30,7 +30,7 @@ from ..ports.issue_tracker import IssueTracker
 from ..ports.provider_resilience import InMemoryProviderCircuitStore
 from ..ports.session_runner import SessionRunner, NullSessionRunner
 from ..ports.timeline_reader import NullTimelineReader
-from ..ports.timeline_store import NullTimelineStore
+from ..ports.timeline_store import NullTimelineStore, TimelineStore
 from ..ports.timeline_writer import NullTimelineWriter
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..control.provider_resilience import ProviderResilienceManager
@@ -81,6 +81,7 @@ from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
+from .bootstrap_triage import create_board_snapshot_builder, create_triage_authority_store
 from ..infra.repo_identity import state_dir
 from ..infra.secret_env import (
     configure_extra_forbidden_env_vars,
@@ -846,11 +847,7 @@ def build_orchestrator(
         action_applier.pair_registry = pair_registry
         action_applier.background_job_supervisor = background_job_supervisor
 
-    # Orchestrator-owned triage launch authority: ONE durable store per
-    # process, injected behind the port into launcher/processor/planner
-    # (ADR-0031 / #6769 F2).
-    from ..infra.triage_authority_store import SqliteTriageAuthorityStore
-    triage_authority = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+    triage_authority = create_triage_authority_store(config)
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
@@ -965,6 +962,7 @@ def build_orchestrator(
         # on a dedicated runner so a slow publish never blocks the heartbeat.
         completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
+        board_snapshot_builder=create_board_snapshot_builder(config, timeline_store),
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
@@ -1223,6 +1221,7 @@ def build_orchestrator_for_testing(
     event_hub = EventHub()
     timeline_reader = NullTimelineReader()
     timeline_writer = NullTimelineWriter()
+    timeline_store: TimelineStore = NullTimelineStore()
 
     # Create claim components for testing (NullClaimManager by default).
     lease_config = LeaseConfig()
@@ -1268,7 +1267,7 @@ def build_orchestrator_for_testing(
         queue_cache_store=queue_cache_store,
         provider_resilience=provider_resilience,
         timeline_reader=timeline_reader,
-        timeline_store=NullTimelineStore(),
+        timeline_store=timeline_store,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
@@ -1305,6 +1304,7 @@ def build_orchestrator_for_testing(
         # dispatcher is exercised explicitly where async behavior is under test.
         completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
+        board_snapshot_builder=create_board_snapshot_builder(config, timeline_store),
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,

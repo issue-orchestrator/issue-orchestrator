@@ -23,6 +23,19 @@ The primary input. The orchestrator writes it into your session directory:
 The manifest is the definitive list of PRs in scope. Review exactly those PRs -
 no more, no less. On success the orchestrator labels exactly these PRs.
 
+### Board Snapshot (Authoritative)
+
+Written at launch for both triage flavors - a point-in-time snapshot of
+orchestrator state, not live state:
+
+| Source | Access | What It Tells You |
+|--------|--------|-------------------|
+| Board snapshot | `cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"` | Active sessions (type/state/age), pending queues with reasons, blocked issues, recent failures, per-issue timeline extracts, orchestrator log tail |
+
+Batch reviews use it to spot cross-PR and systemic patterns worth
+`flag_pattern`/`create_issue` proposals; failure investigations start from
+their focus issue and use it for board context.
+
 ### Orchestrator Configuration (Authoritative)
 
 | Source | Access | What It Tells You |

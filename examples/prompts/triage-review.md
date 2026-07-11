@@ -38,6 +38,21 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/triage-assignment.json"
   without it is rejected and the session is marked failed. Do NOT audit or
   label PRs - there is no PR manifest for this session.
 
+### Board snapshot
+
+Both flavors also receive a snapshot of orchestrator state, taken at launch:
+
+```bash
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
+```
+
+It contains active sessions (type/state/age), pending queues with reasons,
+blocked issues, recent failures, per-issue timeline extracts, and an
+orchestrator log tail. Batch reviews: use it to spot cross-PR and systemic
+patterns worth `flag_pattern`/`create_issue` proposals. Failure
+investigations: start from your focus issue, then use the snapshot for board
+context (what else was running, queued, or failing at the same time).
+
 Completing with no code changes is normal and succeeds - the orchestrator will
 not attempt PR-creation noise for a clean audit. If you did commit
 improvements, they are pushed and PR'd automatically after you complete.

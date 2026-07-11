@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from ..domain.models import RequestedAction
 from ..domain.triage_manifest import TriageManifest
+from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME
 from ..domain.triage_session import (
     TRIAGE_ASSIGNMENT_FILENAME,
     TriageAssignment,
@@ -34,6 +35,7 @@ from .completion_pr_collision import NoCommitsBetweenError
 from .triage_manifest_builder import TriageCandidatePolicy, TriageManifestBuilder
 
 if TYPE_CHECKING:
+    from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..infra.config import Config
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
@@ -135,6 +137,7 @@ def prepare_triage_session_data(
     repository_host: "RepositoryHost",
     manifest_downloader: "ManifestDownloader",
     triage_authority: "TriageAuthorityStore",
+    board_snapshot_provider: "BoardSnapshotProvider",
     issue: "Issue",
     ctx: "WorktreeContext",
     triage_flavor: TriageSessionFlavor | None,
@@ -190,3 +193,31 @@ def prepare_triage_session_data(
         ),
     )
     logger.info("[triage] Wrote %s assignment: %s", flavor.value, assignment_path)
+    _write_board_snapshot(
+        ctx,
+        run_dir,
+        board_snapshot_provider,
+        focus_issue=issue.number if focused else None,
+    )
+
+
+def _write_board_snapshot(
+    ctx: "WorktreeContext",
+    run_dir: Path,
+    provider: "BoardSnapshotProvider",
+    *,
+    focus_issue: int | None,
+) -> None:
+    """Write the ADR-0031 §3 board snapshot into the triage-data directory.
+
+    The triage prompt treats board-snapshot.json as authoritative required
+    input, so build/write failures propagate and fail the launch loudly
+    (fail-fast: a DB/log bug must not silently launch a session missing its
+    input — the launcher converts the exception into a failed LaunchResult).
+    The run-manifest entry is recorded only after a successful write so it
+    never points at a missing file.
+    """
+    snapshot_path = run_dir / "triage-data" / BOARD_SNAPSHOT_FILENAME
+    snapshot = provider.snapshot(focus_issue)
+    snapshot.write(snapshot_path)
+    ctx.update_manifest({"board_snapshot": str(snapshot_path)})

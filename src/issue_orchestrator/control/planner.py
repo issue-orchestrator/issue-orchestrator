@@ -854,6 +854,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             actions.append(QueueTriageAction(
                 issue_number=failure.issue_number,
                 title=f"Investigate: {failure.issue_title} ({failure.failure_reason})",
+                # Preserve the typed failure context across the queue boundary:
+                # discovered_failures is cleared after planning, but the queued
+                # investigation launches on a later tick and its board snapshot
+                # must still contain its own triggering failure.
+                failure=failure,
                 reason=f"Session failed with status '{failure.failure_reason}'",
             ))
             logger.info("Planner: queuing triage for failed issue #%d (%s)",
