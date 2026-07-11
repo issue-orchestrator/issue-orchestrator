@@ -189,7 +189,8 @@ class TestValidation:
             ReviewSettings(triage_health_review_interval_minutes=-5)
 
     def test_health_review_interval_accepts_zero_and_positive(self):
-        """0 disables; any non-negative value is accepted (boundary at 0)."""
+        """0 disables; a positive value is accepted when a triage agent is set
+        (a positive value alone is a cross-field error — see below)."""
         assert (
             ReviewSettings(
                 triage_health_review_interval_minutes=0
@@ -198,9 +199,30 @@ class TestValidation:
         )
         assert (
             ReviewSettings(
-                triage_health_review_interval_minutes=240
+                triage_health_review_interval_minutes=240,
+                triage_agent="agent:triage",
             ).triage_health_review_interval_minutes
             == 240
+        )
+
+    def test_positive_health_review_interval_without_agent_rejected(self):
+        """Cross-field invariant (#6776): a positive interval with no triage
+        agent must be rejected at the settings/POST boundary, never silently
+        disabled at runtime."""
+        with pytest.raises(ValidationError, match="no triage agent is configured"):
+            ReviewSettings(triage_health_review_interval_minutes=60)
+        with pytest.raises(ValidationError, match="no triage agent is configured"):
+            ReviewSettings(
+                triage_health_review_interval_minutes=60, triage_agent=""
+            )
+
+    def test_zero_interval_without_agent_is_valid(self):
+        """0 + no agent is the documented disabled state and must validate."""
+        assert (
+            ReviewSettings(
+                triage_health_review_interval_minutes=0
+            ).triage_health_review_interval_minutes
+            == 0
         )
 
     def test_web_port_min(self):
