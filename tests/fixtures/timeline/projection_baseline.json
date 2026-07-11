@@ -923,6 +923,18 @@
     "status": "completed",
     "step": "transition.rejected"
   },
+  "triage.action_proposed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "triage.action_proposed"
+  },
+  "triage.decision_rejected": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "triage.decision_rejected"
+  },
   "triage.issue_created": {
     "level": "detail",
     "phase": "system",

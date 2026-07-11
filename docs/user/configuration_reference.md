@@ -51,7 +51,7 @@ _Auto-generated from settings schema._
 |-------|------|---------|-------------|----------|-------|
 | `validation.quick.cmd` | string (optional) | `None` | Fast command run by coding-done and review exchange loops | `./scripts/validate-fast.sh`, `make test-fast` | Keep this fast enough for agent/reviewer back-and-forth. Put repo-specific policy checks such as banned test skips here. |
 | `validation.quick.timeout_seconds` | integer | `300` | Timeout for quick validation | `120`, `300`, `600` | Lower values keep review loops responsive. |
-| `validation.publish.cmd` | string (optional) | `None` | Authoritative command run before push/publish | `./scripts/validate-pr.sh`, `make validate-pr-raw` | This should match the repo's authoritative local PR/pre-push gate. If make validate-pr wraps the cache-aware verify hook, configure the underlying raw command instead. |
+| `validation.publish.cmd` | string (optional) | `None` | Authoritative command run before push/publish | `./scripts/validate-pr.sh`, `./scripts/validate-pr-suite.sh` | This should match the repo's authoritative local PR/pre-push gate. If make validate-pr wraps the cache-aware verify hook, configure a private non-recursive suite command instead. |
 | `validation.publish.timeout_seconds` | integer | `1800` | Timeout for publish validation | `600`, `1800`, `3600` | Allow enough time for the deeper publish gate. |
 | `validation.publish.dirty_check` | string | `tracked` | Dirty-tree policy enforced before push actions | `tracked`, `unstaged`, `all`, `off` | Use tracked for normal agent worktrees. Use off only when another guard owns dirty-tree safety. |
 | `validation.junit_xml_paths` | string | `` | Relative JUnit XML files or globs emitted by validation commands | `test-results.xml`, `build/test-results/test/*.xml` | When set, failed validations render a structured test-results view in the dashboard. |
@@ -104,6 +104,11 @@ _Auto-generated from settings schema._
 | `review.triage_reviewed_label` | string | `triage-reviewed` | Label added to manifest PRs after triage completes | `triage-reviewed` | Added to every PR in the triage manifest on success. |
 | `review.triage_failed_label` | string | `triage-failed` | Label added to manifest PRs when a triage session fails | `triage-failed` | Added to every PR in the triage manifest on failure. |
 | `review.triage_review_on_failure` | boolean | `True` | Queue a triage investigation when sessions fail | `true`, `false` | Disable to only triage PR batches, not failures. |
+| `triage.authority.post_comment` | string | `execute` | Execute or surface triage-proposed diagnosis comments | `execute`, `propose` | execute posts the proposed comment; propose (shadow mode) surfaces it as would-have-done. Allowed values: execute, propose. |
+| `triage.authority.create_issue` | string | `execute` | Execute or surface triage-proposed follow-up issues | `execute`, `propose` | execute files the proposed issue; propose (shadow mode) surfaces it as would-have-done. Allowed values: execute, propose. |
+| `triage.authority.flag_pattern` | string | `execute` | Record triage-flagged cross-job patterns | `execute`, `propose` | Pattern flags are recorded as events either way; this key exists for parity. Allowed values: execute, propose. |
+| `triage.authority.reset_retry` | string | `propose` | Act-level: reset-and-retry an issue from scratch | `propose` | Act-level authority is not wired yet (#6764): execute is a startup configuration error. Allowed values: execute, propose. |
+| `triage.authority.kill_hung_session` | string | `propose` | Act-level: terminate a stuck session | `propose` | Act-level authority is not wired yet (#6764): execute is a startup configuration error. Allowed values: execute, propose. |
 
 ## Merge Queue
 

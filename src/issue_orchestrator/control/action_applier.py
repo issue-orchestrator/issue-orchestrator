@@ -80,12 +80,14 @@ from .actions import (
     CloseIssueAction,
     SetIssueStateAction,
     CreateTriageIssueAction,
+    SurfaceTriageProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
     RecoverTerminalIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
+from .triage_issue_policy import resolve_triage_milestone_number
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +277,8 @@ class ActionApplier:
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
             # Issue creation
             ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
+            # Triage decision proposals - event-only, no GitHub calls (ADR-0031)
+            ActionType.SURFACE_TRIAGE_PROPOSAL: self._apply_surface_triage_proposal,
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
@@ -1481,7 +1485,10 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     def _apply_create_triage_issue(self, action: Action) -> ActionResult:
         """Create a triage review issue.
 
-        Creates the GitHub issue via repository_host.
+        THE milestone resolution boundary (#6769 finding 4): the planned
+        intent's explicit name is resolved to a number here, immediately
+        before the issue is created — one API read per actual creation, and
+        an unresolvable configured name fails this action loudly.
         """
         assert isinstance(action, CreateTriageIssueAction)
 
@@ -1491,44 +1498,76 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             )
 
         try:
+            milestone = resolve_triage_milestone_number(
+                action.milestone, self.repository_host.list_milestones
+            )
             result = self.repository_host.create_issue(
                 title=action.title,
                 body=action.body,
                 labels=list(action.labels),
-                milestone=action.milestone,
+                milestone=milestone,
             )
 
             issue_number = result.get("number") if result else None
             if issue_number:
                 logger.info(
                     "[APPLIER] Created triage issue #%d for %d PRs (milestone=%s)",
-                    issue_number, action.pr_count, action.milestone
+                    issue_number, action.pr_count, milestone,
                 )
-                self._emit_issue_labels_changed(
-                    issue_number,
-                    list(action.labels),
-                    [],
-                )
+                self._emit_issue_labels_changed(issue_number, list(action.labels), [])
                 self.events.publish(make_trace_event(EventName.TRIAGE_ISSUE_CREATED, {
-                    "issue_number": issue_number,
-                    "pr_count": action.pr_count,
+                    "issue_number": issue_number, "pr_count": action.pr_count,
                 }))
                 return ActionResult.ok(
-                    action,
-                    issue_number=issue_number,
-                    pr_count=action.pr_count,
+                    action, issue_number=issue_number, pr_count=action.pr_count,
                 )
 
             logger.warning(
                 "[APPLIER] Triage issue creation returned None (title=%s labels=%s)",
-                action.title,
-                list(action.labels),
+                action.title, list(action.labels),
             )
             return ActionResult.fail(action, "Issue creation returned None")
 
         except Exception as e:
             logger.exception("Failed to create triage issue")
             return ActionResult.fail(action, str(e))
+
+    def _apply_surface_triage_proposal(self, action: Action) -> ActionResult:
+        """Surface a triage decision proposal as a trace event (ADR-0031).
+
+        Shadow-mode / pattern proposals emit TRIAGE_ACTION_PROPOSED; rejected
+        decision artifacts (mode == "rejected") emit TRIAGE_DECISION_REJECTED.
+        This handler makes NO GitHub calls — surfacing is the whole action.
+        """
+        assert isinstance(action, SurfaceTriageProposalAction)
+
+        event_name = (
+            EventName.TRIAGE_DECISION_REJECTED
+            if action.mode == "rejected"
+            else EventName.TRIAGE_ACTION_PROPOSED
+        )
+        self.events.publish(make_trace_event(event_name, {
+            "issue_number": action.issue_number,
+            "action_id": action.action_id,
+            "proposal_type": action.proposal_type,
+            "target_number": action.target_number,
+            "target_is_pr": action.target_is_pr,
+            "title": action.title,
+            "body_preview": action.body_preview,
+            "finding_ids": list(action.finding_ids),
+            "mode": action.mode,
+        }))
+        logger.info(
+            issue_log(action.issue_number, "Triage proposal surfaced: mode=%s type=%s action_id=%s"),
+            action.mode, action.proposal_type, action.action_id,
+        )
+        return ActionResult.ok(
+            action,
+            issue_number=action.issue_number,
+            action_id=action.action_id,
+            proposal_type=action.proposal_type,
+            mode=action.mode,
+        )
 
     def _apply_cleanup_session(self, action: Action) -> ActionResult:
         """Clean up a completed session."""

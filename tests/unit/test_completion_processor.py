@@ -2594,12 +2594,17 @@ class TestTriageCompletionEffects:
         prompt = tmp_path / "triage.md"
         prompt.write_text("Triage prompt")
         config = Config()
+        config.repo_root = tmp_path  # authority store home
         config.triage_review_agent = "agent:triage"
         config.agents = {
             "agent:triage": AgentConfig(prompt_path=prompt),
             "agent:coder": AgentConfig(prompt_path=prompt),
         }
         mock_git_adapter.default_branch.return_value = "main"
+        from issue_orchestrator.infra.triage_authority_store import (
+            SqliteTriageAuthorityStore,
+        )
+
         return CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -2608,6 +2613,7 @@ class TestTriageCompletionEffects:
             event_bus=event_bus,
             label_config={},
             config=config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(tmp_path),
         )
 
     @staticmethod
@@ -2624,14 +2630,21 @@ class TestTriageCompletionEffects:
             comment_body="## Implementation\n\nAudited 3 PRs.",
         )
 
-    def _process(self, processor, worktree, *, agent_label: str):
+    def _process(self, processor, worktree, *, agent_label: str, run_assets=None):
         return processor.process(
             worktree,
-            run_assets=make_session_run_assets(worktree),
+            run_assets=run_assets or make_session_run_assets(worktree),
             issue_number=123,
             issue_title="Batch Review",
             agent_label=agent_label,
         )
+
+    def _armed_run_assets(self, processor, worktree):
+        """Run assets with launch authority + valid empty-audit pair."""
+        run_assets = make_session_run_assets(worktree)
+        self._arm_authority(processor, run_assets)
+        self._plant_valid_pair(run_assets.run_dir)
+        return run_assets
 
     def test_clean_triage_audit_completes_without_publish_failure(
         self,
@@ -2649,8 +2662,11 @@ class TestTriageCompletionEffects:
         processor._emit_publish_failed = MagicMock()  # noqa: SLF001
         mock_pr_adapter.create_pr.side_effect = self.NO_COMMITS_ERROR
         worktree = worktree_with_completion(self._completed_record())
+        run_assets = self._armed_run_assets(processor, worktree)
 
-        result = self._process(processor, worktree, agent_label="agent:triage")
+        result = self._process(
+            processor, worktree, agent_label="agent:triage", run_assets=run_assets
+        )
 
         assert result.success is True
         assert not result.errors
@@ -2672,8 +2688,11 @@ class TestTriageCompletionEffects:
             tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
         )
         worktree = worktree_with_completion(self._completed_record())
+        run_assets = self._armed_run_assets(processor, worktree)
 
-        result = self._process(processor, worktree, agent_label="agent:triage")
+        result = self._process(
+            processor, worktree, agent_label="agent:triage", run_assets=run_assets
+        )
 
         assert result.success is True
         assert result.pr_url == "https://github.com/owner/repo/pull/42"
@@ -2724,6 +2743,219 @@ class TestTriageCompletionEffects:
         assert result.success is False
         assert any("create_pr" in error for error in result.errors)
         processor._emit_publish_failed.assert_called_once()  # noqa: SLF001
+
+    # --- #6761 finding 3 + re-review finding 1: processing-path validation --
+
+    @staticmethod
+    def _arm_authority(processor, run_assets):
+        """Record launch authority + matching worktree assignment (empty batch)."""
+        import json as _json
+
+        from issue_orchestrator.domain.triage_session import (
+            TRIAGE_ASSIGNMENT_FILENAME,
+            TriageAssignment,
+            TriageLaunchAuthority,
+            TriageSessionFlavor,
+        )
+
+        run_dir = run_assets.run_dir
+        TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW).write(
+            run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        )
+        manifest_path = run_dir / "manifest.json"
+        manifest = _json.loads(manifest_path.read_text())
+        manifest["triage_assignment"] = str(
+            run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
+        )
+        manifest_path.write_text(_json.dumps(manifest))
+        processor._triage_authority.record(  # noqa: SLF001
+            run_id=run_assets.run_id,
+            session_name=run_assets.session_name,
+            authority=TriageLaunchAuthority(
+                flavor=TriageSessionFlavor.BATCH_REVIEW,
+                anchor_issue_number=123,
+            ),
+        )
+
+    @staticmethod
+    def _plant_valid_pair(run_dir):
+        import json as _json
+
+        data_dir = run_dir / "triage-data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "triage-decision.json").write_text(
+            _json.dumps(
+                {
+                    "schema_version": 1,
+                    "summary": "Clean audit.",
+                    "findings": [],
+                    "proposed_actions": [],
+                }
+            )
+        )
+        (data_dir / "triage-report.md").write_text("# Report\n\nNothing found.\n")
+
+    def test_completed_triage_session_without_pair_records_critical_error(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """Missing/invalid pair rejects the completion in the PRE-ACTION
+        phase (#6769 finding 1): failed result, tagged critical error, and
+        ZERO push/PR/comment calls — the agent's requested publish never
+        executes."""
+        from issue_orchestrator.control.completion_types import (
+            ERROR_PREFIX_TRIAGE_DECISION,
+        )
+
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        run_assets = make_session_run_assets(worktree)
+        self._arm_authority(processor, run_assets)
+
+        result = processor.process(
+            worktree,
+            run_assets=run_assets,
+            issue_number=123,
+            issue_title="Batch Review",
+            agent_label="agent:triage",
+        )
+
+        assert result.success is False
+        assert any(
+            error.startswith(f"{ERROR_PREFIX_TRIAGE_DECISION}: missing_decision")
+            for error in result.errors
+        )
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_completed_triage_session_without_launch_authority_is_critical(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """No orchestrator authority record => the completion is rejected
+        BEFORE any requested action executes (#6769 finding 1): the reviewer
+        reproduced a success=True result with one real push and one real PR
+        creation; both must now be zero."""
+        from issue_orchestrator.control.completion_types import (
+            ERROR_PREFIX_TRIAGE_AUTHORITY,
+        )
+
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        run_assets = make_session_run_assets(worktree)
+        self._plant_valid_pair(run_assets.run_dir)
+
+        result = processor.process(
+            worktree,
+            run_assets=run_assets,
+            issue_number=123,
+            issue_title="Batch Review",
+            agent_label="agent:triage",
+        )
+
+        assert result.success is False
+        assert any(
+            error.startswith(f"{ERROR_PREFIX_TRIAGE_AUTHORITY}: missing_authority")
+            for error in result.errors
+        )
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_tampered_assignment_rejects_before_any_action(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        """A worktree assignment copy that no longer mirrors the recorded
+        launch authority is tamper evidence (#6761 rr F1): rejected in the
+        pre-action phase with zero push/PR/comment calls (#6769 finding 1)."""
+        from issue_orchestrator.control.completion_types import (
+            ERROR_PREFIX_TRIAGE_AUTHORITY,
+        )
+        from issue_orchestrator.domain.triage_session import (
+            TRIAGE_ASSIGNMENT_FILENAME,
+            TriageAssignment,
+            TriageSessionFlavor,
+        )
+
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        run_assets = self._armed_run_assets(processor, worktree)
+        # Agent flips its copy from batch review to a focused investigation.
+        TriageAssignment(
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            focus_issue_number=999,
+        ).write(run_assets.run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME)
+
+        result = processor.process(
+            worktree,
+            run_assets=run_assets,
+            issue_number=123,
+            issue_title="Batch Review",
+            agent_label="agent:triage",
+        )
+
+        assert result.success is False
+        assert any(
+            error.startswith(f"{ERROR_PREFIX_TRIAGE_AUTHORITY}: scope_tampered")
+            for error in result.errors
+        )
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        mock_pr_adapter.add_comment.assert_not_called()
+
+    def test_completed_triage_session_with_valid_pair_has_no_triage_error(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ):
+        from issue_orchestrator.control.completion_types import (
+            ERROR_PREFIX_TRIAGE_DECISION,
+        )
+
+        processor = self._make_processor(
+            tmp_path, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus
+        )
+        worktree = worktree_with_completion(self._completed_record())
+        run_assets = make_session_run_assets(worktree)
+        self._arm_authority(processor, run_assets)
+        self._plant_valid_pair(run_assets.run_dir)
+
+        result = processor.process(
+            worktree,
+            run_assets=run_assets,
+            issue_number=123,
+            issue_title="Batch Review",
+            agent_label="agent:triage",
+        )
+
+        assert not result.errors
 
 
 class TestCompletionProcessorGitActions:

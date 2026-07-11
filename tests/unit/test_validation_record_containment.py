@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from issue_orchestrator.control.completion_processor import (
-    _contain_validation_record_path,
+from issue_orchestrator.control.validation_record_containment import (
+    contain_validation_record_path as _contain_validation_record_path,
 )
 from issue_orchestrator.domain.session_run import ValidationArtifactPaths
 
@@ -146,8 +146,8 @@ def test_handles_resolved_worktree_symlink(tmp_path: Path) -> None:
 
 def _walk_open(worktree: Path, rel: str) -> int | None:
     """Shorthand for the opener under test."""
-    from issue_orchestrator.control.completion_processor import (
-        _open_contained_validation_record,
+    from issue_orchestrator.control.validation_record_containment import (
+        open_contained_validation_record as _open_contained_validation_record,
     )
 
     return _open_contained_validation_record(rel, worktree)
@@ -289,7 +289,7 @@ def test_walk_open_refuses_directory_as_final(tmp_path: Path) -> None:
 
 
 def test_walk_open_refuses_oversize(tmp_path: Path) -> None:
-    from issue_orchestrator.control.completion_processor import (
+    from issue_orchestrator.control.validation_record_containment import (
         _VALIDATION_RECORD_MAX_BYTES,
     )
 
@@ -301,7 +301,7 @@ def test_walk_open_refuses_oversize(tmp_path: Path) -> None:
 
 
 def test_copy_from_fd_streams_bytes(tmp_path: Path) -> None:
-    from issue_orchestrator.control.completion_processor import _copy_from_fd
+    from issue_orchestrator.control.validation_record_containment import copy_from_fd as _copy_from_fd
 
     src = tmp_path / "src.bin"
     src.write_bytes(b"payload")

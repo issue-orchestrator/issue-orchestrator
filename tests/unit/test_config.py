@@ -2996,6 +2996,7 @@ triage: {}
         config = Config()
         config.triage.inherit_labels.append("test-label")
         config.triage.explicit_labels.append("explicit-label")
+        config.triage.authority.post_comment = "propose"
 
         result = config.to_event_dict()
 
@@ -3003,6 +3004,89 @@ triage: {}
         assert result["triage"]["inherit_labels"] == ["test-label"]
         assert result["triage"]["explicit_labels"] == ["explicit-label"]
         assert result["triage"]["milestone_strategy"]["inherit_from_issues"] == "latest"
+        # All five graduated-authority modes are operator-visible (#6761 F7).
+        assert result["triage"]["authority"] == {
+            "post_comment": "propose",
+            "create_issue": "execute",
+            "flag_pattern": "execute",
+            "reset_retry": "propose",
+            "kill_hung_session": "propose",
+        }
+
+    def test_triage_authority_defaults(self):
+        """Authority defaults: GitHub-write actions execute, act-level propose."""
+        config = Config()
+
+        assert config.triage.authority.post_comment == "execute"
+        assert config.triage.authority.create_issue == "execute"
+        assert config.triage.authority.flag_pattern == "execute"
+        assert config.triage.authority.reset_retry == "propose"
+        assert config.triage.authority.kill_hung_session == "propose"
+        assert config.validate() == [] or not any(
+            "triage.authority" in e for e in config.validate()
+        )
+
+    def test_triage_authority_from_yaml(self, tmp_path):
+        """triage.authority.<key> parses per-action-type modes."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  authority:
+    post_comment: propose
+    create_issue: propose
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.authority.post_comment == "propose"
+        assert config.triage.authority.create_issue == "propose"
+        # Unset keys keep defaults
+        assert config.triage.authority.flag_pattern == "execute"
+        assert config.triage.authority.reset_retry == "propose"
+
+    def test_triage_authority_bad_value_rejected_at_load(self, tmp_path):
+        """A mode outside execute|propose fails config parsing loudly."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  authority:
+    post_comment: yolo
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ValueError, match="triage.authority.post_comment"):
+            Config.load(config_file)
+
+    @pytest.mark.parametrize("key", ["reset_retry", "kill_hung_session"])
+    def test_triage_authority_act_level_execute_is_startup_error(self, key):
+        """Act-level 'execute' must fail startup validation, never no-op."""
+        config = Config()
+        setattr(config.triage.authority, key, "execute")
+
+        errors = config.validate()
+
+        assert any(
+            f"triage.authority.{key}" in e and "#6764" in e for e in errors
+        ), errors
+
+    def test_triage_authority_mode_for_floor_and_unknown(self):
+        """escalate_to_human always executes; unknown action types raise."""
+        config = Config()
+        config.triage.authority.post_comment = "propose"
+
+        assert config.triage.authority.mode_for("escalate_to_human") == "execute"
+        assert config.triage.authority.mode_for("post_comment") == "propose"
+        with pytest.raises(ValueError, match="unknown triage action type"):
+            config.triage.authority.mode_for("push_code")
 
 
 

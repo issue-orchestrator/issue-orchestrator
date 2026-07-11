@@ -217,7 +217,7 @@ class Orchestrator:
             lambda issue: self.deps.state_machine_manager.issue_machines.get(issue.number),
             lambda s: self.deps.state_machine_manager.session_machines.get(s),
             lambda n: self.deps.state_machine_manager.review_machines.get(n),
-            self.deps.session_output,
+            self.deps.session_output, self.deps.triage_authority,
             remove_session_machine_fn=self.deps.state_machine_manager.remove_session_machine,
             label_manager=self.deps.label_manager,
         )
@@ -227,7 +227,7 @@ class Orchestrator:
         return SessionLauncher(
             self.config, self.deps.events, self.deps.repository_host, self.deps.action_applier, self.deps.session_manager,
             self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner, self.deps.session_output,
-            self.deps.manifest_downloader,
+            self.deps.manifest_downloader, self.deps.triage_authority,
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, self.scheduler.dependency_evaluator,

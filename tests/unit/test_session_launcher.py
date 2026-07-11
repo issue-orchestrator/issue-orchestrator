@@ -105,6 +105,9 @@ from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
 from issue_orchestrator.ports.repository_host import DependencyIssueSnapshot
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.triage_authority_store import (
+    SqliteTriageAuthorityStore,
+)
 from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.adapters.github.cache import GitHubCache
 from issue_orchestrator.execution.stack_predecessor_facts import (
@@ -480,6 +483,7 @@ def launcher_bundle(
         command_runner=mock_command_runner,
         session_output=FileSystemSessionOutput(),
         manifest_downloader=NullManifestDownloader(),
+        triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
         session_exists_fn=mock_session_exists,
         create_session_fn=mock_create_session,
         get_issue_machine=get_issue_machine,
@@ -619,6 +623,81 @@ class TestLaunchIssueSession:
         assert result.session.key.task == TaskKind.CODE
         assert result.session.run_dir is not None
         assert result.session.run_dir.name.endswith("__coding-1")
+
+    def test_triage_session_creates_triage_data_dir_without_manifest(
+        self, session_launcher, sample_config, tmp_path
+    ):
+        """Every triage session gets a triage-data dir for its decision
+        artifact pair (ADR-0031), even when no PR manifest exists."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+        issue = Issue(
+            number=125,
+            title="Batch Review",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+
+        result = session_launcher.launch_issue_session(issue, active_sessions=[])
+
+        assert result.success is True
+        assert result.session is not None
+        data_dir = result.session.run_dir / "triage-data"
+        assert data_dir.is_dir()
+        # No PRs matched, so no manifest was planted — only the empty dir.
+        assert not (data_dir / "manifest.json").exists()
+        # The orchestrator-owned launch authority is recorded outside the
+        # agent-writable worktree (#6761 re-review F1).
+        authority = SqliteTriageAuthorityStore.for_repo(
+            sample_config.repo_root
+        ).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.flavor is TriageSessionFlavor.BATCH_REVIEW
+        assert authority.anchor_issue_number == 125
+        assert authority.manifest_pr_numbers == ()
+
+    def test_failed_triage_launch_discards_recorded_authority(
+        self, launcher_bundle, sample_config, tmp_path
+    ):
+        """A launch that dies AFTER recording its authority must not leak
+        the row (#6769 F3): the run never starts, so no completion seam
+        would ever discard it."""
+        prompt_path = tmp_path / "prompt.md"
+        sample_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt_path,
+            model="sonnet",
+            timeout_minutes=45,
+        )
+        sample_config.triage_review_agent = "agent:triage"
+        issue = Issue(
+            number=125,
+            title="Batch Review",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+        # Force the terminal-session creation step (after triage prep) to fail.
+        launcher_bundle.create_session_override[0] = (
+            lambda _name, _cmd, _wd, _title: False
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is False
+        store = SqliteTriageAuthorityStore.for_repo(sample_config.repo_root)
+        conn_rows = store._get_connection().execute(  # noqa: SLF001
+            "SELECT run_id, session_name FROM triage_launch_authority"
+        ).fetchall()
+        assert conn_rows == [], "failed launch leaked an authority row"
 
     def test_fails_when_no_agent_type(self, session_launcher):
         """Verify fails when issue has no agent type label (line 195)."""
@@ -786,6 +865,7 @@ class TestLaunchIssueSession:
             command_runner=mock_command_runner,
             session_output=FileSystemSessionOutput(),
             manifest_downloader=NullManifestDownloader(),
+            triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
             create_session_fn=lambda name, cmd, wd, title: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
@@ -2774,6 +2854,19 @@ class TestLaunchTriageIssueSessionFlavors:
     """
 
     @staticmethod
+    def _run_identities(tmp_path: Path) -> list[tuple[str, str]]:
+        """(run_id, session_name) for every session run under tmp_path.
+
+        Read from each run's manifest.json - the same typed identities the
+        launcher records with - never parsed from directory names.
+        """
+        identities = []
+        for manifest in Path(str(tmp_path)).rglob(".issue-orchestrator/sessions/*/manifest.json"):
+            data = json.loads(manifest.read_text())
+            identities.append((data["run_id"], data["session_name"]))
+        return identities
+
+    @staticmethod
     def _enable_triage_agent(config, tmp_path: Path) -> None:
         prompt_path = tmp_path / "triage-prompt.md"
         prompt_path.write_text("Triage prompt")
@@ -2802,6 +2895,78 @@ class TestLaunchTriageIssueSessionFlavors:
             state="open",
             labels=["code-reviewed"],
         )
+
+    def test_exception_after_authority_record_discards_row(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path, monkeypatch
+    ):
+        """The launch-lifecycle guard owns retention on EVERY exit (#6769 r4).
+
+        A raise anywhere after the authority record (here: prompt rendering)
+        must discard the durable row even though no failure branch and no
+        completion seam ever runs — otherwise it leaks forever and a later
+        run with the same identity hits the create-once conflict.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        issue = Issue(
+            number=903, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+        monkeypatch.setattr(
+            AgentConfig,
+            "render_initial_prompt",
+            lambda self, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        with pytest.raises(RuntimeError, match="boom"):
+            launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        # The record DID happen before the raise (the agent-visible copy
+        # exists), and the guard discarded the durable row on the way out.
+        assignment_files = list(Path(str(tmp_path)).rglob("triage-assignment.json"))
+        assert assignment_files, "authority was never recorded - test lost its premise"
+        identities = self._run_identities(tmp_path)
+        assert identities, "no run manifest found - cannot verify by typed identity"
+        store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        for run_id, session_name in identities:
+            assert (
+                store.load(run_id=run_id, session_name=session_name) is None
+            ), f"authority row leaked for run {run_id} ({session_name})"
+
+    def test_post_start_failure_retains_authority_for_live_session(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path, monkeypatch
+    ):
+        """Once the terminal is RUNNING, bookkeeping failures keep authority.
+
+        _create_session() returning True is the irreversible external
+        boundary (#6769 round 5): the agent process is live and will write a
+        completion, so discarding the row here would reject that completion
+        as missing_authority with no recovery. The guard's success marker
+        must sit at the boundary, not after the post-start bookkeeping.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        issue = Issue(
+            number=907, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+        store = SqliteTriageAuthorityStore.for_repo(config.repo_root)
+        monkeypatch.setattr(
+            type(launcher_bundle.launcher),
+            "_trigger_issue_session_state_transitions",
+            lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("post-start boom")),
+        )
+
+        with pytest.raises(RuntimeError, match="post-start boom"):
+            launcher_bundle.launcher.launch_issue_session(issue, active_sessions=[])
+
+        identities = self._run_identities(tmp_path)
+        assert identities, "authority was never recorded - test lost its premise"
+        retained = [
+            store.load(run_id=run_id, session_name=session_name)
+            for run_id, session_name in identities
+        ]
+        assert any(a is not None for a in retained), "authority row was discarded for a LIVE session"
 
     def test_default_flavor_prepares_manifest_and_batch_assignment(
         self, launcher_bundle, mock_repo_host, mock_events, tmp_path
@@ -4562,6 +4727,7 @@ class TestStackRelaunchGate:
             command_runner=mock_command_runner,
             session_output=FileSystemSessionOutput(),
             manifest_downloader=NullManifestDownloader(),
+            triage_authority=SqliteTriageAuthorityStore.for_repo(sample_config.repo_root),
             session_exists_fn=lambda name: False,
             create_session_fn=lambda name, cmd, wd, title: True,
             get_issue_machine=lambda issue: IssueStateMachine(issue),
