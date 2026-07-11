@@ -1155,6 +1155,77 @@ class TestStartupManagerTriageRecovery:
 
         assert sample_state.pending_triage_reviews == [existing]
 
+    @pytest.mark.asyncio
+    async def test_recovery_ignores_anchor_outside_filter_scope(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """Startup and fact gathering share ONE eligibility rule: a run-scoped
+        restart must NOT queue another run's anchor (#6763 finding 7).
+
+        The out-of-scope anchor carries the triage agent label but not the
+        active ``filtering.label``; the shared scoped discovery owner drops it.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.filtering.label = "io:e2e:run-1"
+
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+        ]
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_triage_reviews == []
+
+    @pytest.mark.asyncio
+    async def test_recovery_discovers_more_than_twenty_anchors(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """The old startup scan capped at limit=20 and could strand an older
+        anchor; the shared exhaustive owner recovers all of them (#6763 f7)."""
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+
+        anchors = [
+            Issue(number=n, title=f"Batch Review {n}", labels=["agent:triage"])
+            for n in range(1, 26)
+        ]
+
+        def list_issues(labels=None, state="open", limit=100, **kwargs):
+            # Honor GitHub's page limit so a regression back to limit=20 would
+            # strand the tail — exactly the bug this guards.
+            del labels, state, kwargs
+            return anchors[:limit]
+
+        mock_repository_host.list_issues.side_effect = list_issues
+
+        await startup_manager.run_startup(sample_state)
+
+        assert {item.issue_number for item in sample_state.pending_triage_reviews} == {
+            n for n in range(1, 26)
+        }
+        # The discovery query asked for a page large enough to hold them all.
+        assert any(
+            call.kwargs.get("limit", 0) >= 25
+            for call in mock_repository_host.list_issues.call_args_list
+        )
+
 
 class TestStartupManagerResumePartialWork:
     """Tests for resuming partial work."""

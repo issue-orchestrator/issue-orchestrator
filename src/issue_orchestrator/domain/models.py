@@ -722,6 +722,7 @@ class Issue:
     body: Optional[str] = None
     milestone_number: Optional[int] = None
     milestone_due_on: Optional[str] = None  # ISO date string
+    created_at: Optional[str] = None  # ISO timestamp string
 
     @property
     def key(self) -> IssueKey:

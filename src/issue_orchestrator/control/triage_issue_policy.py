@@ -34,6 +34,7 @@ import re
 from collections.abc import Callable, Collection, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Mapping
 
+from ..domain.triage_session import HEALTH_REVIEW_MARKER_LABEL
 from .actions import TriageMilestoneIntent
 from .label_manager import LabelManager
 
@@ -161,6 +162,27 @@ def batch_review_issue_labels(
     if config.filtering.label:
         base.append(config.filtering.label)
     return _with_configured_labels(config, base, source_labels=source_labels)
+
+
+def health_review_issue_labels(config: "Config") -> tuple[str, ...]:
+    """Labels for the periodic health-review anchor issue (ADR-0031 §4).
+
+    Same configured policy batch anchors get — agent label, filtering scope
+    label, ``triage.explicit_labels`` — plus the health marker label, which
+    is crash-safe truth: the launcher derives the HEALTH_REVIEW flavor from
+    it and the fact gatherer deduplicates open anchors by it. Health anchors
+    have no source PRs, so ``triage.inherit_labels`` has nothing to inherit.
+    """
+    base = [
+        value
+        for value in (
+            config.triage_review_agent,
+            config.filtering.label,
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+        if value
+    ]
+    return _with_configured_labels(config, base, source_labels=())
 
 
 def decision_issue_labels(

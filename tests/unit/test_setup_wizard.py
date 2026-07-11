@@ -308,7 +308,7 @@ class TestCreateTriageReviewPrompt:
 
         content = prompt_path.read_text()
 
-        assert "Review Process" in content
+        assert "Batch Review Flow" in content
         assert "Document Your Findings" in content
         assert "Patterns observed" in content
         assert "Audit Principles" in content

@@ -193,6 +193,23 @@ class TestReviewWorkflowValidator:
         assert len(errors) == 1
         assert "triage_review_agent" in errors[0]
 
+    def test_negative_health_review_interval_error(self):
+        """The validator surfaces the health-review interval invariant so a
+        negative value fails startup, not silently disables (#6763 finding 8)."""
+        from issue_orchestrator.infra.config_models import (
+            TriageHealthReviewConfig,
+        )
+
+        config = self._make_config()
+        config.triage.authority.startup_errors.return_value = []
+        config.triage.health_review = TriageHealthReviewConfig(interval_minutes=-5)
+
+        errors = ReviewWorkflowValidator().validate(config)
+
+        assert any(
+            "triage.health_review.interval_minutes" in e for e in errors
+        ), errors
+
 
 class TestTemplateValidator:
     """Tests for TemplateValidator."""

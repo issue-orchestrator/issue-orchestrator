@@ -47,7 +47,11 @@ from ..domain.models import (
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
-from .health_review_trigger import queue_recovered_triage_anchor
+from .health_review_trigger import (
+    discover_open_triage_anchor_issues,
+    hydrate_last_health_review_at,
+    queue_recovered_triage_anchor,
+)
 from .session_routing import TriageQueueOutcome
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
@@ -690,15 +694,11 @@ class StartupManager:
 
         # Caller ensures triage_review_agent is set before calling this method
         assert self.config.triage_review_agent is not None
-        triage_issues = self.repository_host.list_issues(
-            labels=[self.config.triage_review_agent],
-            limit=20,
-        )
+        # Shared scoped/exhaustive anchor discovery (#6763 finding 7).
+        triage_issues = discover_open_triage_anchor_issues(self.repository_host, self.config)
 
         for triage_issue in triage_issues:
-            session_name = f"issue-{triage_issue.number}"
-
-            if self._session_exists(session_name):
+            if self._session_exists(f"issue-{triage_issue.number}"):
                 print(f"  triage issue #{triage_issue.number}: Already running")
                 continue
 
@@ -827,6 +827,8 @@ class StartupManager:
         Either way, persist the result back to SQLite for the next restart.
         """
         store = self._queue_cache_store
+        # Reconcile health-review last-fired from anchor truth (#6763 finding 6).
+        hydrate_last_health_review_at(self.config, state, store, self.repository_host)
         if store is None:
             # No persistent store configured — fall back to full scan. Guard the
             # fetch so a transient repository blip degrades-and-continues rather
@@ -842,7 +844,6 @@ class StartupManager:
         state.startup_message = "Restoring queue cache..."
         cached_issues = store.load_issues(self.config.repo or "")
         cached_watermark = store.load_watermark()
-        state.last_health_review_at = store.load_last_health_review_at()
         queue_cache = QueueCache(self.config, state, store)
 
         try:

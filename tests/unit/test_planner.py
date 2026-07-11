@@ -50,7 +50,9 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.control.workflows import TriageWorkflow
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -1512,10 +1514,18 @@ class TestPlanHealthReviewIssueCreation:
     """
 
     @staticmethod
-    def _make_planner(interval_minutes: int = 60):
+    def _make_planner(interval_minutes: int = 60, events=None):
         config = make_config(triage_review_agent="agent:triage")
         config.triage.health_review.interval_minutes = interval_minutes
-        return Planner(config=config, scheduler=Scheduler(config)), config
+        # The periodic trigger routes through the owned paused/capacity gate
+        # (TriageWorkflow), so the planner MUST carry that workflow — the same
+        # owner that emits TRIAGE_SKIPPED (#6763 finding 2).
+        events = events if events is not None else InMemoryEventSink()
+        workflow = TriageWorkflow(config=config, events=events)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config), triage_workflow=workflow
+        )
+        return planner, config
 
     @staticmethod
     def _health_facts(**kwargs):
@@ -1617,6 +1627,61 @@ class TestPlanHealthReviewIssueCreation:
         plan = planner.plan(make_snapshot(triage_facts=facts))
 
         assert self._create_actions(plan) == []
+
+    @staticmethod
+    def _triage_skipped(events: InMemoryEventSink):
+        return [e for e in events.events if e.name == "triage.skipped"]
+
+    def test_paused_skips_creation_and_emits_triage_skipped(self):
+        """A due health review, while paused, files NO anchor and is observably
+        skipped through the owned gate (not silently dropped, #6763 finding 2).
+
+        ``Planner.plan()`` early-returns an empty plan when paused; the health
+        gate must still run so TRIAGE_SKIPPED carries the paused reason.
+        """
+        events = InMemoryEventSink()
+        planner, _ = self._make_planner(events=events)
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), paused=True)
+        )
+
+        assert self._create_actions(plan) == []
+        skipped = self._triage_skipped(events)
+        assert [e.data["reason"] for e in skipped] == ["orchestrator_paused"]
+
+    def test_at_capacity_skips_creation_and_emits_triage_skipped(self):
+        """At capacity the anchor is NOT filed and TRIAGE_SKIPPED carries the
+        capacity reason — the phase-1 create must route through the gate, not
+        fire before it (#6763 finding 2)."""
+        events = InMemoryEventSink()
+        planner, config = self._make_planner(events=events)
+        config.max_concurrent_sessions = 2
+        active = [make_session(make_issue(1)), make_session(make_issue(2))]
+
+        plan = planner.plan(
+            make_snapshot(
+                triage_facts=self._health_facts(), active_sessions=active
+            )
+        )
+
+        assert self._create_actions(plan) == []
+        skipped = self._triage_skipped(events)
+        assert len(skipped) == 1
+        assert skipped[0].data["reason"] == "no_capacity"
+        assert skipped[0].data["active"] == 2
+        assert skipped[0].data["max"] == 2
+
+    def test_open_gate_still_creates_and_emits_no_skip(self):
+        """Belt and braces: with the gate open the anchor is filed and NO
+        spurious TRIAGE_SKIPPED is emitted (the happy path stays clean)."""
+        events = InMemoryEventSink()
+        planner, _ = self._make_planner(events=events)
+
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        assert len(self._create_actions(plan)) == 1
+        assert self._triage_skipped(events) == []
 
 
 class TestPlanDiscoveredReworks:
