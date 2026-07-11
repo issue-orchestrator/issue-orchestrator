@@ -164,6 +164,7 @@ def _queue_rework_after_retrospective_changes(
 
 
 def _failure_artifact_hints(
+    worktree_path: Path,
     run_dir: Path,
     diagnostic_path: str | None,
     claude_log_path: Path | None,
@@ -175,6 +176,15 @@ def _failure_artifact_hints(
     and carried on :class:`DiscoveredFailure` through plan -> queue -> board
     snapshot. Only paths that EXIST are included: a hint pointing a triage
     agent at a file that was never written is worse than no hint.
+
+    Path provenance is preserved here (#6771 round 3): the production
+    failure writer (``write_failure_diagnostic``) reports the diagnostic as
+    a WORKTREE-RELATIVE path (``.issue-orchestrator/sessions/<run>/<file>``)
+    while ``SessionOutput.write_diagnostic`` reports an absolute one, so
+    relative candidates are resolved against the failed session's worktree
+    before the existence check. Hints are stored ABSOLUTE: the queued
+    investigation launches ticks later from a different working directory,
+    so a relative hint would be unreadable by every downstream consumer.
     """
     from ..domain.run_manifest import MANIFEST_FILENAME
     from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
@@ -189,7 +199,10 @@ def _failure_artifact_hints(
         run_dir / name
         for name in (MANIFEST_FILENAME, ANALYSIS_FILENAME, TERMINAL_RECORDING_FILENAME)
     )
-    return tuple(str(path) for path in candidates if path.exists())
+    resolved = (
+        path if path.is_absolute() else worktree_path / path for path in candidates
+    )
+    return tuple(str(path) for path in resolved if path.exists())
 
 
 def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
@@ -405,7 +418,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             session.issue.title,
             status.value,
             artifact_hints=_failure_artifact_hints(
-                run_dir, diagnostic_path, claude_log_path
+                session.worktree_path, run_dir, diagnostic_path, claude_log_path
             ),
         ))
         # Track failed issues to prevent immediate retry (cleared on cache refresh)

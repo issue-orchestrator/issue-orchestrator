@@ -2253,6 +2253,42 @@ class TestPlanCleanups:
         cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
         assert len(cleanup_actions) == 0
 
+    def test_immediate_cleanup_held_for_failure_investigation(self):
+        """Held immediate cleanups are skipped; unheld ones still plan (#6771 r3).
+
+        A failed session's ImmediateCleanup lands in the same pass as its
+        DiscoveredFailure, but the investigation launches a tick later —
+        removing the worktree first deletes the artifact hints the
+        investigation was queued to read. The Planner must apply NO removal
+        for issues in CleanupFacts.held_issue_numbers while planning every
+        other immediate cleanup normally.
+        """
+        from issue_orchestrator.domain.models import CleanupFacts, ImmediateCleanup
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(triage_review_agent="agent:triage")
+        planner = Planner(config=config, scheduler=Scheduler(config))
+
+        cleanup_facts = CleanupFacts(
+            pending_cleanups=(),
+            reviewed_pr_numbers=frozenset(),
+            close_tabs=True,
+            remove_worktrees=True,
+            immediate_cleanups=(
+                ImmediateCleanup(42, "issue-42", "/tmp/worktree-42", "failed"),
+                ImmediateCleanup(7, "issue-7", "/tmp/worktree-7", "completed"),
+            ),
+            held_issue_numbers=frozenset({42}),
+        )
+
+        plan = planner.plan(make_snapshot(cleanup_facts=cleanup_facts))
+
+        cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
+        assert [a.issue_number for a in cleanup_actions] == [7], (
+            "the held failed-session worktree must not be cleaned up while "
+            "its failure investigation still references it"
+        )
+
     def test_cleanup_respects_close_tabs_setting(self):
         """Planner respects the close_tabs setting from CleanupFacts."""
         from issue_orchestrator.domain.models import CleanupFacts
@@ -2284,6 +2320,123 @@ class TestPlanCleanups:
 # =============================================================================
 # BEHAVIOR-CENTRIC TESTS: Priority and Action Ordering
 # =============================================================================
+
+class TestFailureInvestigationCleanupLifecycle:
+    """End-to-end lifecycle of the failure-investigation cleanup hold (#6771 r3).
+
+    Drives the real FactGatherer + Planner + end-of-tick clear across ticks:
+    failure discovery -> same-tick plan applies NO removal for the held
+    worktree -> investigation queued/launched with readable hints -> after
+    the investigation completes the deferred cleanup proceeds with removal.
+    """
+
+    def test_hold_spans_discovery_to_investigation_completion(self, tmp_path):
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.fact_gatherer import (
+            FactGatherer,
+            clear_discovered_facts,
+        )
+        from issue_orchestrator.control.session_routing import PendingSessionQueues
+        from issue_orchestrator.domain.models import (
+            ImmediateCleanup,
+            OrchestratorState,
+        )
+
+        config = make_config(triage_review_agent="agent:triage")
+        config.triage_review_on_failure = True
+        config.cleanup.with_triage.remove_worktrees = True
+        config.cleanup.with_triage.close_ai_session_tabs = True
+
+        gatherer = FactGatherer(config=config, repository_host=MagicMock())
+        planner = Planner(config=config, scheduler=Scheduler(config))
+
+        worktree = tmp_path / "worktree-42"
+        hint = (
+            worktree / ".issue-orchestrator" / "sessions" / "run__issue-42"
+            / "failure-diagnostic.json"
+        )
+        hint.parent.mkdir(parents=True)
+        hint.write_text("{}")
+
+        state = OrchestratorState()
+        failure = DiscoveredFailure(
+            issue_number=42,
+            issue_title="Broken thing",
+            failure_reason="failed",
+            artifact_hints=(str(hint),),
+        )
+        state.record_discovered_failure(failure)
+        state.immediate_cleanups.extend(
+            [ImmediateCleanup(42, "issue-42", str(worktree), "failed")]
+        )
+
+        def plan_tick():
+            facts = gatherer.gather_cleanup_facts(state)
+            snapshot = make_snapshot(
+                active_sessions=list(state.active_sessions),
+                pending_triage=list(state.pending_triage_reviews),
+                discovered_failures=tuple(state.discovered_failures),
+                cleanup_facts=facts,
+            )
+            return planner.plan(snapshot)
+
+        def cleanup_actions(plan):
+            return [
+                a for a in plan.actions
+                if a.action_type == ActionType.CLEANUP_SESSION
+            ]
+
+        # Tick 1 — discovery: triage is queued AND no removal is applied for
+        # the held worktree even though remove_worktrees is configured true.
+        plan = plan_tick()
+        queue_actions = [
+            a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE
+        ]
+        assert len(queue_actions) == 1
+        assert cleanup_actions(plan) == []
+        # The post-apply seam queues the investigation, then the tick clear.
+        PendingSessionQueues(state).queue_failure_investigation(
+            42, "Investigate: Broken thing (failed)", failure=failure
+        )
+        clear_discovered_facts(state, config)
+        assert [c.issue_number for c in state.immediate_cleanups] == [42], (
+            "the held cleanup must survive the end-of-tick fact clear"
+        )
+        assert state.discovered_failures == []
+
+        # Tick 2 — investigation queued: still held; queued hints readable.
+        plan = plan_tick()
+        assert cleanup_actions(plan) == []
+        queued = state.pending_triage_reviews[0]
+        assert queued.failure is not None
+        assert all(Path(h).exists() for h in queued.failure.artifact_hints), (
+            "the investigation must launch with readable artifact hints"
+        )
+        clear_discovered_facts(state, config)
+        assert [c.issue_number for c in state.immediate_cleanups] == [42]
+
+        # Tick 3 — investigation active: launch consumed the queue item and
+        # registered the triage session; the hold follows the session.
+        PendingSessionQueues(state).remove_triage(42)
+        state.active_sessions.append(
+            make_session(make_issue(42, labels=["agent:triage"]))
+        )
+        plan = plan_tick()
+        assert cleanup_actions(plan) == []
+        clear_discovered_facts(state, config)
+        assert [c.issue_number for c in state.immediate_cleanups] == [42]
+
+        # Tick 4 — investigation completed: the hold releases by
+        # re-evaluation and the deferred cleanup proceeds with removal.
+        state.active_sessions.clear()
+        plan = plan_tick()
+        assert [
+            (a.issue_number, a.worktree_path, a.remove_worktrees)
+            for a in cleanup_actions(plan)
+        ] == [(42, str(worktree), True)]
+        clear_discovered_facts(state, config)
+        assert state.immediate_cleanups == []
+
 
 class TestActionPriority:
     """Tests for action priority: Reviews > Reworks > Triage > Issues.

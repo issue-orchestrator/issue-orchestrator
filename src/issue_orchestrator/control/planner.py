@@ -900,8 +900,19 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 logger.info("Planner: deferred cleanup for issue #%d (PR #%d reviewed)",
                            issue_number, pr_number)
 
-        # 2. Immediate cleanups - ready to execute now
+        # 2. Immediate cleanups - ready to execute now, EXCEPT run assets a
+        # pending/active failure investigation still references (#6771 round
+        # 3): cleaning those up before the investigation launches deletes the
+        # artifact hints it was queued to read. Held entries survive the
+        # end-of-tick fact clear and are re-planned once the hold releases.
         for cleanup in facts.immediate_cleanups:
+            if cleanup.issue_number in facts.held_issue_numbers:
+                logger.info(
+                    "Planner: holding cleanup for issue #%d — a failure "
+                    "investigation still references its run assets",
+                    cleanup.issue_number,
+                )
+                continue
             actions.append(CleanupSessionAction(
                 issue_number=cleanup.issue_number,
                 pr_number=0,  # No PR for immediate cleanups

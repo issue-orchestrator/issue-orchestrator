@@ -292,6 +292,30 @@ class SessionLauncher:
                 )
         return all_ok
 
+    def escalate_issue_needs_human(
+        self,
+        *,
+        issue_number: int,
+        reason: str,
+        comment: str,
+        context: str,
+        event_data: dict[str, object],
+    ) -> None:
+        """Durable needs-human escalation through the owning action boundary.
+
+        Single owner for "this work needs a human": the configured
+        needs-human label plus an explanatory comment are applied via the
+        ActionApplier, then the ``ISSUE_NEEDS_HUMAN`` trace event is
+        published. Label and comment come first so the escalation is durable
+        on the issue even if the process dies immediately after — the event
+        is fire-and-forget while labels are the source of truth.
+        """
+        self._apply_actions([
+            AddLabelAction(issue_number=issue_number, label=self._lm.needs_human, reason=reason),
+            AddCommentAction(number=issue_number, comment=comment, reason=reason),
+        ], context=context)
+        self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, dict(event_data)))
+
     def _interrupted_retry_guard_label(self, mode: str) -> str:
         retry_cfg = self.config.retry.interrupted_sessions
         if mode == "coding":
@@ -852,27 +876,17 @@ class SessionLauncher:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
             write_worktree_diagnostic(ctx.error)
-            needs_human_label = self._lm.needs_human
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=issue.number,
-                    label=needs_human_label,
-                    reason="worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=issue.number,
-                    comment=build_worktree_error_comment(ctx.error),
-                    reason="worktree preparation failed",
-                ),
-            ], context="worktree_prepare_issue")
-            self.events.publish(make_trace_event(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
+            self.escalate_issue_needs_human(
+                issue_number=issue.number,
+                reason="worktree preparation failed",
+                comment=build_worktree_error_comment(ctx.error),
+                context="worktree_prepare_issue",
+                event_data={
                     "issue_number": issue.number,
                     "issue_title": issue.title,
                     "reason": str(ctx.error),
                 },
-            ))
+            )
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
@@ -1600,27 +1614,17 @@ class SessionLauncher:
             log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), ctx.error)
             write_worktree_diagnostic(ctx.error)
-            needs_human_label = self._lm.needs_human
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=review.issue_number,
-                    label=needs_human_label,
-                    reason="worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=review.issue_number,
-                    comment=build_worktree_error_comment(ctx.error),
-                    reason="worktree preparation failed",
-                ),
-            ], context="worktree_prepare_review")
-            self.events.publish(make_trace_event(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
+            self.escalate_issue_needs_human(
+                issue_number=review.issue_number,
+                reason="worktree preparation failed",
+                comment=build_worktree_error_comment(ctx.error),
+                context="worktree_prepare_review",
+                event_data={
                     "issue_number": review.issue_number,
                     "pr_number": review.pr_number,
                     "reason": str(ctx.error),
                 },
-            ))
+            )
             return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
         # Extract values from context
@@ -1885,26 +1889,17 @@ class SessionLauncher:
                 ctx.error,
             )
             write_worktree_diagnostic(ctx.error)
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=review.issue_number,
-                    label=self._lm.needs_human,
-                    reason="retrospective review worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=review.issue_number,
-                    comment=build_worktree_error_comment(ctx.error),
-                    reason="retrospective review worktree preparation failed",
-                ),
-            ], context="worktree_prepare_retrospective_review")
-            self.events.publish(make_trace_event(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
+            self.escalate_issue_needs_human(
+                issue_number=review.issue_number,
+                reason="retrospective review worktree preparation failed",
+                comment=build_worktree_error_comment(ctx.error),
+                context="worktree_prepare_retrospective_review",
+                event_data={
                     "issue_number": review.issue_number,
                     "reason": str(ctx.error),
                     "task": TaskKind.RETROSPECTIVE_REVIEW.value,
                 },
-            ))
+            )
             return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
         worktree_path = ctx.worktree_path
