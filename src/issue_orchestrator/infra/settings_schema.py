@@ -1131,6 +1131,22 @@ class ReviewSettings(BaseModel):
             "yaml_path": "triage.authority.kill_hung_session",
         },
     )
+    triage_health_review_interval_minutes: int = Field(
+        0,
+        title="Health Review Interval (minutes)",
+        description="Create a periodic health-review issue every N minutes (0 = disabled)",
+        json_schema_extra={
+            "doc_examples": ["0", "240"],
+            "doc_notes": (
+                "ADR-0031 §4: when the interval elapses the orchestrator files "
+                "a health-review anchor issue for the triage agent to walk the "
+                "board snapshot. Requires a configured triage agent. 0 disables."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.health_review.interval_minutes",
+            "yaml_path": "triage.health_review.interval_minutes",
+        },
+    )
 
     @field_validator(
         "triage_authority_post_comment",

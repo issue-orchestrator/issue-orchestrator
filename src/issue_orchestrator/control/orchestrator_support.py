@@ -375,10 +375,10 @@ class OrchestratorSupport:
 
     def _handle_create_triage_issue(self, action: "Action", result: "ActionResult") -> None:
         from .actions import CreateTriageIssueAction
-        a = cast(CreateTriageIssueAction, action)
+        from .health_review_trigger import intake_created_triage_anchor
         num = result.details.get("issue_number")
         if num:
-            PendingSessionQueues(self.state).queue_batch_review(num, a.title)
+            intake_created_triage_anchor(cast(CreateTriageIssueAction, action), num, self.state, self.queue_cache_store)
             logger.info("Created triage #%d", num)
 
     def _handle_cleanup_session(self, action: "Action", result: "ActionResult") -> None:

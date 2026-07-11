@@ -19,6 +19,7 @@ Usage:
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -26,6 +27,11 @@ from ..infra.config import Config
 from ..events import EventName
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
+from .health_review_trigger import (
+    classify_triage_anchor_issues,
+    health_review_due,
+    health_review_interval_minutes,
+)
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -183,33 +189,47 @@ class FactGatherer:
     def gather_triage_facts(
         self,
         state: "OrchestratorState",
+        now: float | None = None,
     ) -> Optional["TriageFacts"]:
-        """Gather facts for triage review trigger decision.
+        """Gather facts for the triage batch and health-review triggers.
 
-        Observation only: threshold/existing-issue counting and source
-        label/milestone collection. Milestone ASSEMBLY policy (which
-        strategy applies, explicit name -> number resolution) belongs to
-        planning and the create-issue applier boundary (#6769 finding 4) —
+        The batch fields are gated by ``triage_review_threshold`` (via the
+        watch label) and the health-review fields by
+        ``triage.health_review.interval_minutes`` — either feature alone
+        produces facts; neither produces None. Both anchor kinds are
+        classified from the SAME open-issue scan (no extra GitHub call), and
+        batch-only work (the PR fetch) is skipped entirely when the batch
+        trigger is disabled. Observation only: milestone ASSEMBLY policy
+        (strategy choice, explicit name -> number resolution) belongs to
+        planning and the create-issue applier boundary (#6769 round 3) —
         no milestone API reads happen here.
         """
         from ..domain.models import TriageFacts
 
         watch_label = self._get_triage_watch_label()
-        if not watch_label:
+        batch_armed = bool(watch_label)
+        health_armed = health_review_interval_minutes(self.config) > 0
+        if not batch_armed and not health_armed:
             return None
 
-        prs = self._fetch_triage_prs(watch_label)
-        existing_triage_issue = self._find_existing_triage_issue()
+        existing_triage_issue, existing_health_review_issue = (
+            self._find_existing_triage_anchor_issues()
+        )
+        prs = self._fetch_triage_prs(watch_label) if batch_armed else []
         all_labels, source_milestones = self._collect_pr_metadata(prs)
 
         return TriageFacts(
             pr_count=len(prs),
             threshold=self.config.triage_review_threshold,
             existing_triage_issue=existing_triage_issue,
-            watch_label=watch_label,
+            watch_label=watch_label or "",
             prs=tuple((pr.number, pr.title) for pr in prs),
             source_labels=frozenset(all_labels),
             source_milestones=tuple(source_milestones),
+            health_review_due=health_review_due(
+                self.config, state, time.time() if now is None else now
+            ),
+            existing_health_review_issue=existing_health_review_issue,
         )
 
     def _get_triage_watch_label(self) -> str | None:
@@ -232,23 +252,17 @@ class FactGatherer:
         prs = self.repository_host.get_prs_with_label(watch_label, state="all")
         return [pr for pr in prs if policy.is_candidate(_pr_labels(pr))]
 
-    def _find_existing_triage_issue(self) -> int | None:
-        """Find existing triage review issue if any."""
+    def _find_existing_triage_anchor_issues(self) -> tuple[int | None, int | None]:
+        """Find existing open (batch, health-review) anchor issues in one scan."""
         triage_agent = self.config.triage_review_agent
         if not triage_agent:
-            return None
+            return None, None
         existing = self.repository_host.list_issues(
             labels=[triage_agent],
             state="open",
             limit=10,
         )
-        filter_label = self.config.filtering.label
-        for issue in existing:
-            if filter_label and filter_label not in issue.labels:
-                continue
-            if "Batch Review" in issue.title or "Triage Review" in issue.title:
-                return issue.number
-        return None
+        return classify_triage_anchor_issues(existing, self.config.filtering.label)
 
     def _collect_pr_metadata(self, prs: list[Any]) -> tuple[set[str], list[tuple[int, str]]]:
         """Collect labels and milestones from PRs and their linked issues."""

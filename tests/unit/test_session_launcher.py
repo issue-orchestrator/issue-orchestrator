@@ -3281,6 +3281,160 @@ class TestLaunchTriageIssueSessionFlavors:
         assert "triage_manifest" not in run_manifest
         assert mock_repo_host.get_prs_with_label_calls == []
 
+    @staticmethod
+    def _launch(queued, state, launcher_bundle):
+        session = orchestrator_launch_triage_session(
+            queued,
+            state,
+            launcher_bundle.launcher.config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+        assert session is not None
+        return session
+
+
+    @staticmethod
+    def _support_for(state: OrchestratorState) -> OrchestratorSupport:
+        """Minimal OrchestratorSupport; the queue handlers only touch state."""
+        return OrchestratorSupport(
+            config=MagicMock(),
+            events=MockEventSink(),
+            repository_host=MagicMock(),
+            state=state,
+            event_context=MagicMock(),
+            session_manager=MagicMock(),
+            action_applier=MagicMock(),
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=MagicMock(),
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=MagicMock(),
+            kill_session=MagicMock(),
+        )
+
+    def test_marker_label_derives_health_review_flavor(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """The ADR-0031 §4 marker label alone selects HEALTH_REVIEW.
+
+        No explicit ``triage_flavor``: startup recovery relaunches the anchor
+        from its labels (crash-safe truth), so the marker must derive the
+        flavor — no PR manifest query or build, a board-wide snapshot, and an
+        anchor-only authority record (no focus issue, empty manifest set).
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+        from issue_orchestrator.infra.triage_authority_store import (
+            SqliteTriageAuthorityStore as TriageAuthorityStore,
+        )
+
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        provider = launcher_bundle.board_snapshot_provider
+        issue = Issue(
+            number=905,
+            title="Health Review — walk the floor",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        # The global batch PR manifest must NOT be built or queried.
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = self._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        assert not (run_dir / "triage-data" / "manifest.json").exists()
+        # Board-wide snapshot: no focus issue.
+        assert provider.calls == [None]
+        assert run_manifest["board_snapshot"] == str(
+            run_dir / "triage-data" / "board-snapshot.json"
+        )
+        # The agent-readable assignment records the health flavor, no focus.
+        assignment = json.loads(
+            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+        )
+        assert assignment["flavor"] == "health_review"
+        assert assignment["focus_issue_number"] is None
+        assert assignment["focus_reason"] == ""
+        # The trusted authority record: anchor-only scope (#6761 rr F1).
+        authority = TriageAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert authority.anchor_issue_number == 905
+        assert authority.focus_issue_number is None
+        assert authority.manifest_pr_numbers == ()
+        assert authority.allowed_targets() == frozenset({905})
+
+
+    def test_health_review_anchor_launches_as_health_flavor(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """Marker-labeled creation -> typed intake -> queue -> launch (ADR-0031 §4).
+
+        The producer boundary derives HEALTH_REVIEW from the marker label on
+        the creation action; the queued flavor must survive to launch — no
+        batch manifest query, a board-wide snapshot, a health assignment —
+        and the launched item must leave the queue.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        config = launcher_bundle.launcher.config
+        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [
+            TestLaunchTriageIssueSessionFlavors._triage_pr(555)
+        ]
+        state = OrchestratorState()
+        support = self._support_for(state)
+
+        support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
+            CreateTriageIssueAction(
+                title="Health Review — walk the floor",
+                body="Walk the floor",
+                labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+                pr_count=0,
+            ),
+            MagicMock(success=True, details={"issue_number": 905}),
+        )
+        (queued,) = state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert queued.failure is None
+        # The intake stamped the interval marker (dedup for the next tick).
+        assert state.last_health_review_at > 0.0
+
+        session = self._launch(queued, state, launcher_bundle)
+
+        # A launched item leaves the queue and cannot be relaunched next tick.
+        assert state.pending_triage_reviews == []
+        assert state.active_sessions == [session]
+        # Health review must NOT query or build the batch PR manifest...
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        # ...its assignment records the health flavor with no focus...
+        assignment = json.loads(
+            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+        )
+        assert assignment["flavor"] == "health_review"
+        assert assignment["focus_issue_number"] is None
+        # ...and the snapshot is board-wide (no focus issue).
+        assert launcher_bundle.board_snapshot_provider.calls == [None]
+
+
     def test_board_snapshot_failure_retains_queued_investigation_until_bounded_drop(
         self, launcher_bundle, mock_worktree_manager, mock_events, tmp_path
     ):

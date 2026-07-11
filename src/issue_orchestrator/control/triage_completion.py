@@ -15,9 +15,9 @@ Policy summary:
   record, or worktree copies that no longer match it, is a critical failure
   (#6761 re-review finding 1) — never a fail-safe success.
 * Only batch-review sessions label PRs (the authority manifest set they were
-  launched to audit); failure investigations audit one issue and never touch
-  manifest labels (#6768 B4).
-* Every COMPLETED triage session (either flavor) must produce a valid
+  launched to audit); failure investigations and health reviews never touch
+  manifest labels (#6768 B4 / ADR-0031 §4).
+* Every COMPLETED triage session (any flavor) must produce a valid
   decision artifact pair — a missing/invalid pair is a contract violation.
   The authoritative classification runs in the completion processing path's
   PRE-ACTION policy phase (``triage_decision_processing_error``, called by
@@ -27,12 +27,20 @@ Policy summary:
   planner re-reads the same validation for its planning effects (#6761
   finding 3).
 * Decision proposals may only target the session's immutable launch scope:
-  a failure investigation targets its focus issue only; a batch review
-  targets manifest PRs plus the anchor tracking issue
-  (``create_issue``/``flag_pattern`` are scope-free) — out-of-scope targets
-  are contract violations (#6761 re-review finding 2). A failure
-  investigation must additionally publish its diagnosis: >=1
-  ``post_comment`` targeting the focus issue (#6761 finding 2).
+  a failure investigation targets its focus issue only; a health review
+  targets its anchor issue only (the report's home, ADR-0031 §4); a batch
+  review targets manifest PRs plus the anchor tracking issue
+  (``create_issue``/``flag_pattern`` are scope-free — that is where a health
+  review's board-wide findings land) — out-of-scope targets are contract
+  violations (#6761 re-review finding 2). A failure investigation must
+  additionally publish its diagnosis: >=1 ``post_comment`` targeting the
+  focus issue (#6761 finding 2).
+* Health reviews close their anchor issue on success: the anchor is a
+  walk-the-floor log entry, closed when the review lands. A rejected or
+  missing pair leaves the anchor open for operator visibility; a
+  FAILED/TIMED_OUT health session closes it through the terminal-failure
+  path (like batch, no manifest labels) so the next interval re-fires
+  instead of deduping against a dead anchor.
 * ``create_issue`` proposals may not carry protected workflow labels
   (``triage_issue_policy`` owns the protected set, case-insensitively) —
   contract violation (#6761 finding 4).
@@ -181,6 +189,24 @@ def resolve_triage_launch_authority(
     return authority, None
 
 
+def _launch_scope_description(
+    authority: TriageLaunchAuthority, allowed: frozenset[int]
+) -> str:
+    """Human-readable launch scope for out-of-scope violation messages."""
+    if authority.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
+        return f"the originating issue #{authority.focus_issue_number}"
+    if authority.flavor is TriageSessionFlavor.HEALTH_REVIEW:
+        return (
+            f"the health-review anchor issue #{authority.anchor_issue_number}"
+            " (board-wide findings belong in create_issue/flag_pattern"
+            " proposals)"
+        )
+    return (
+        "the audited manifest PRs and the tracking issue"
+        f" ({', '.join(f'#{n}' for n in sorted(allowed))})"
+    )
+
+
 def validate_decision_for_authority(
     decision: "TriageDecision",
     authority: TriageLaunchAuthority,
@@ -205,12 +231,7 @@ def validate_decision_for_authority(
       config-free.
     """
     allowed = authority.allowed_targets()
-    scope_text = (
-        f"the originating issue #{authority.focus_issue_number}"
-        if authority.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
-        else "the audited manifest PRs and the tracking issue"
-        f" ({', '.join(f'#{n}' for n in sorted(allowed))})"
-    )
+    scope_text = _launch_scope_description(authority, allowed)
     for action in decision.proposed_actions:
         if action.action_type not in _SCOPED_ACTION_TYPES:
             continue
@@ -505,13 +526,27 @@ def generate_triage_completion_actions(
     if succeeded and authority.flavor is TriageSessionFlavor.BATCH_REVIEW:
         # Terminal transition (#6768 round 4): the open+agent-labeled tracking
         # issue is what startup recovery requeues and what
-        # _find_existing_triage_issue treats as the active batch. Ordered last
-        # so a mid-apply crash leaves the batch open and re-auditable. No
-        # comment: triage prompts promise the orchestrator posts none here.
+        # _find_existing_triage_anchor_issues treats as the active batch.
+        # Ordered last so a mid-apply crash leaves the batch open and
+        # re-auditable. No comment: triage prompts promise the orchestrator
+        # posts none here.
         actions.append(
             CloseIssueAction(
                 issue_number=session.issue.number,
                 reason="Batch triage review completed - closing tracking issue",
+                expected=expected,
+            )
+        )
+    if succeeded and authority.flavor is TriageSessionFlavor.HEALTH_REVIEW:
+        # The anchor issue is a walk-the-floor log entry (ADR-0031 §4): a
+        # landed review closes it (same terminal ordering rationale as batch;
+        # no manifest labels exist for this flavor). Rejected/missing pairs
+        # take the rejection surface instead and leave the anchor open.
+        actions.append(
+            CloseIssueAction(
+                issue_number=session.issue.number,
+                reason="Health review completed with a valid decision pair"
+                " - closing anchor issue",
                 expected=expected,
             )
         )
@@ -601,17 +636,19 @@ def generate_triage_failure_actions(
     *,
     triage_authority: "TriageAuthorityStore",
 ) -> list[Action]:
-    """Batch FAILED/TIMED_OUT terminal effects (#6768 round 5).
+    """Batch/health FAILED/TIMED_OUT terminal effects (#6768 round 5, ADR-0031 §4).
 
-    The AUTHORITY manifest PRs get the operator-visible triage-failed label
-    and the tracking issue closes after the generic failure diagnosis and
-    the PR labels: an open failed tracker would be requeued at restart with
-    an empty manifest (its PRs are now candidate-filtered as triage-failed),
-    looping forever. Failure investigations produce nothing here — their
-    anchor is the original failed work issue. A session without a launch
-    authority record produces nothing (the session already failed; closing
-    or labeling from untrusted worktree copies would hand the agent
-    authority).
+    Batch: the AUTHORITY manifest PRs get the operator-visible triage-failed
+    label and the tracking issue closes after the generic failure diagnosis
+    and the PR labels: an open failed tracker would be requeued at restart
+    with an empty manifest (its PRs are now candidate-filtered as
+    triage-failed), looping forever. Health reviews close their anchor the
+    same way — an open dead anchor would both be requeued at restart and
+    dedupe the next interval's trigger — but have no manifest to label.
+    Failure investigations produce nothing here — their anchor is the
+    original failed work issue. A session without a launch authority record
+    produces nothing (the session already failed; closing or labeling from
+    untrusted worktree copies would hand the agent authority).
     """
     if not is_triage_session(config.triage_review_agent, session.issue.agent_type):
         return []
@@ -625,8 +662,17 @@ def generate_triage_failure_actions(
             session.terminal_id,
         )
         return []
-    if authority.flavor is not TriageSessionFlavor.BATCH_REVIEW:
+    if authority.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
         return []
+    if authority.flavor is TriageSessionFlavor.HEALTH_REVIEW:
+        return [
+            CloseIssueAction(
+                issue_number=session.issue.number,
+                reason="Health review session failed - closing anchor issue "
+                "(the next interval re-fires a fresh review)",
+                expected=expected,
+            )
+        ]
     actions = _manifest_label_actions(config, authority, expected, success=False)
     actions.append(
         CloseIssueAction(

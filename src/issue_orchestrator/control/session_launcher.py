@@ -932,7 +932,9 @@ class SessionLauncher:
             return self._fail_launch_for_triage_prep(
                 issue, ctx, session_name, worktree_path, claim, e
             )
-        # Launch-authority guard (#6769 r4): discard on every pre-start exit; single owner.
+        # Launch-authority lifecycle guard (#6769 r4): the row is discarded
+        # on EVERY exit unless the session reaches ACTIVE — single owner,
+        # no branch-local cleanup.
         launch_reached_active = False
         try:
 
@@ -1122,9 +1124,7 @@ class SessionLauncher:
                 ], context="launch_session_creation_failed")
                 self._release_claim_if_held(issue.number, claim)
                 return LaunchResult(None, False, "Failed to create terminal session")
-
-            # Terminal RUNNING = irreversible (#6769 r5): keep a live session's authority.
-            launch_reached_active = True
+            launch_reached_active = True  # terminal RUNNING = irreversible (#6769 r5)
 
             log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
 

@@ -109,6 +109,7 @@ _Auto-generated from settings schema._
 | `triage.authority.flag_pattern` | string | `execute` | Record triage-flagged cross-job patterns | `execute`, `propose` | Pattern flags are recorded as events either way; this key exists for parity. Allowed values: execute, propose. |
 | `triage.authority.reset_retry` | string | `propose` | Act-level: reset-and-retry an issue from scratch | `propose` | Act-level authority is not wired yet (#6764): execute is a startup configuration error. Allowed values: execute, propose. |
 | `triage.authority.kill_hung_session` | string | `propose` | Act-level: terminate a stuck session | `propose` | Act-level authority is not wired yet (#6764): execute is a startup configuration error. Allowed values: execute, propose. |
+| `triage.health_review.interval_minutes` | integer | `0` | Create a periodic health-review issue every N minutes (0 = disabled) | `0`, `240` | ADR-0031 §4: when the interval elapses the orchestrator files a health-review anchor issue for the triage agent to walk the board snapshot. Requires a configured triage agent. 0 disables. |
 
 ## Merge Queue
 
