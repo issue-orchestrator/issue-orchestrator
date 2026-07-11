@@ -717,9 +717,9 @@ class SessionLauncher:
         self, issue: "IssueProtocol", ctx: WorktreeContext, session_name: str,
         worktree_path: Path, claim: ClaimAcquisitionResult, error: Exception,
     ) -> LaunchResult:
-        """Fail the launch when required triage inputs cannot be prepared;
-        discards the authority row prep may have recorded before raising
-        (the post-prep lifecycle guard never runs for this exit)."""
+        """Fail the launch when required triage inputs cannot be prepared; the
+        result is retry-queued (transient inputs; queue owner bounds retries) and
+        prep's authority row is discarded (post-prep guard never runs here)."""
         log_transition("issue", issue.number, "LAUNCHING", "FAILED", "triage session data preparation failed")
         logger.error(issue_log(issue.number, "FAILED: triage session data preparation failed: %s"), error)
         self.events.publish(make_trace_event(
@@ -741,7 +741,7 @@ class SessionLauncher:
             )
         self._discard_triage_authority_after_failed_launch(issue, ctx)
         self._release_claim_if_held(issue.number, claim)
-        return LaunchResult(None, False, f"Triage session data preparation failed: {error}")
+        return LaunchResult(None, False, f"Triage session data preparation failed: {error}", retry_queued=True)
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,

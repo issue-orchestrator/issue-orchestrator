@@ -14,6 +14,11 @@ class LaunchResult:
     success: bool
     reason: str = ""
     keep_queued: bool = False  # Terminal already running; keep pending item queued.
+    # Launch failed before the session started on a transient required-input
+    # error (e.g. triage prep could not read the DB/log/filesystem). The
+    # pending item should be RETAINED for retry — bounded by the queue owner
+    # (PendingSessionQueues.retain_triage_for_retry), never retried forever.
+    retry_queued: bool = False
 
 
 @dataclass

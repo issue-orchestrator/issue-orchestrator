@@ -346,22 +346,62 @@ class TestBuildOrchestratorForTesting:
             assert orch.config is minimal_config
             assert orch.deps.repository_host is mock_github
 
-    def test_build_orchestrator_constructs_launcher_with_board_snapshot_provider(
-        self, minimal_config: Config, mock_github: MagicMock
+    def test_build_orchestrator_writes_real_board_snapshot_on_triage_launch(
+        self, minimal_config: Config, mock_github: MagicMock, tmp_path
     ) -> None:
-        """The session launcher must be constructible with all required
-        dependencies — including the board snapshot provider (ADR-0031 §3),
-        which is a REQUIRED constructor argument (triage prompts treat
-        board-snapshot.json as authoritative input, so there is no silent
-        skip path).
+        """Bootstrap must wire the REAL board snapshot provider (ADR-0031 §3).
 
-        Verified through the public launch surface: ``launch_session``
-        materializes the lazily-built launcher, so a bootstrap wiring lapse
-        (e.g. a missing required constructor argument) raises here instead
-        of on the first real triage launch. The agent-less issue makes the
-        launch fail cleanly at preconditions without touching git/network.
+        Merely constructing the launcher cannot distinguish the real
+        ``StateBoardSnapshotProvider`` from a Null one, so this drives a
+        public triage launch end-to-end through the bootstrapped
+        orchestrator: a triage agent is configured, ``launch_session`` runs
+        the real worktree + triage-prep path (``prepare_triage_session_data``),
+        and the board-snapshot.json the agent treats as authoritative input
+        must be written and non-trivially populated. The terminal-creation
+        boundary is the default ``NullSessionRunner`` — a public bootstrap
+        seam that reports successful session creation without a terminal.
         """
-        from issue_orchestrator.domain.models import Issue
+        import json
+        import subprocess
+        from pathlib import Path
+
+        from issue_orchestrator.domain.board_snapshot import BoardSnapshot
+        from issue_orchestrator.domain.models import AgentConfig, Issue
+
+        # A real git repo: the bootstrapped GitWorktreeManager is not a mock.
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        subprocess.run(
+            ["git", "init", "--initial-branch=main"], cwd=repo_root, check=True,
+            capture_output=True,
+        )
+        (repo_root / "README.md").write_text("seed\n")
+        subprocess.run(["git", "add", "."], cwd=repo_root, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git", "-c", "user.email=test@example.com", "-c", "user.name=Test",
+                "commit", "-m", "seed",
+            ],
+            cwd=repo_root, check=True, capture_output=True,
+        )
+        # Worktree creation fetches origin/<base>; a self-remote satisfies it
+        # without any network.
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(repo_root)],
+            cwd=repo_root, check=True, capture_output=True,
+        )
+        minimal_config.repo_root = repo_root
+        minimal_config.worktree_base = tmp_path / "worktrees"
+
+        prompt = tmp_path / "triage-prompt.md"
+        prompt.write_text("Triage prompt")
+        minimal_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt, model="sonnet", timeout_minutes=45,
+        )
+        minimal_config.triage_review_agent = "agent:triage"
+        # Bounded GitHub seams: no PRs to audit, no fresh issue to re-read.
+        mock_github.get_prs_with_label.return_value = []
+        mock_github.get_issue.return_value = None
 
         with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             orch = build_orchestrator_for_testing(
@@ -369,9 +409,30 @@ class TestBuildOrchestratorForTesting:
                 github=mock_github,
             )
 
-        result = orch.launch_session(Issue(number=1, title="No agent", labels=[]))
+        session = orch.launch_session(
+            Issue(
+                number=41,
+                title="Triage Batch Review",
+                labels=["agent:triage"],
+                repo="test/repo",
+                body="No dependencies.",
+            )
+        )
 
-        assert result is None  # precondition failure, not a wiring TypeError
+        assert session is not None, "triage launch must succeed end-to-end"
+        snapshot_path = (
+            Path(session.run_assets.run_dir) / "triage-data" / "board-snapshot.json"
+        )
+        assert snapshot_path.exists(), (
+            "prepare_triage_session_data must write the authoritative "
+            "board-snapshot.json through the bootstrap-wired provider"
+        )
+        # Non-trivially populated and readable through the typed contract.
+        data = json.loads(snapshot_path.read_text())
+        assert data["generated_at"], "real provider stamps a real clock"
+        snapshot = BoardSnapshot.read(snapshot_path)
+        assert snapshot.schema_version == 1
+        assert snapshot.orchestrator_paused is False
 
     def test_build_orchestrator_wires_pair_registry_for_shutdown(
         self, minimal_config: Config, mock_github: MagicMock

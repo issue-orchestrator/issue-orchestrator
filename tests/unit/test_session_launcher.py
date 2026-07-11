@@ -41,8 +41,10 @@ from issue_orchestrator.control.session_launcher import (
 from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV
 from issue_orchestrator.control.session_review_support import build_review_existing_work
 from issue_orchestrator.control.session_routing import (
+    TRIAGE_LAUNCH_RETRY_LIMIT,
     PendingSessionQueues,
     TriageQueueOutcome,
+    TriageRetentionOutcome,
     orchestrator_launch_session,
     orchestrator_launch_review_session,
     orchestrator_launch_rework_session,
@@ -2792,6 +2794,37 @@ class TestPendingSessionQueuesTriageIntake:
         (entry,) = state.pending_triage_reviews
         assert entry.flavor is TriageSessionFlavor.BATCH_REVIEW
 
+    def test_retain_triage_for_retry_is_bounded_by_the_owner(self):
+        """Retryable launch failures retain the item; the owner bounds retries.
+
+        The queued investigation is the only durable record of the
+        investigation, so retention is the default — but bounded: the item is
+        dropped (EXHAUSTED) on the TRIAGE_LAUNCH_RETRY_LIMIT-th failure so a
+        genuinely broken input cannot relaunch-loop forever.
+        """
+        state = OrchestratorState()
+        queues = PendingSessionQueues(state)
+        queues.queue_failure_investigation(
+            8,
+            "Investigate: timeout",
+            failure=DiscoveredFailure(
+                issue_number=8, issue_title="x", failure_reason="timed_out"
+            ),
+        )
+
+        for attempt in range(1, TRIAGE_LAUNCH_RETRY_LIMIT):
+            assert queues.retain_triage_for_retry(8) is TriageRetentionOutcome.RETAINED
+            (entry,) = state.pending_triage_reviews
+            assert entry.retryable_launch_failures == attempt
+
+        assert queues.retain_triage_for_retry(8) is TriageRetentionOutcome.EXHAUSTED
+        assert state.pending_triage_reviews == []
+
+    def test_retain_triage_for_retry_for_unqueued_issue_fails_fast(self):
+        """Retaining an item that is not queued is an upstream invariant bug."""
+        with pytest.raises(ValueError, match="no such item is queued"):
+            PendingSessionQueues(OrchestratorState()).retain_triage_for_retry(999)
+
     def test_remove_triage_removes_only_matching_issue(self):
         """remove_triage completes the owner lifecycle (#6768 round 4)."""
         state = OrchestratorState()
@@ -2922,7 +2955,11 @@ class TestOrchestratorLaunchTriageSession:
         assert state.active_sessions == [session]
 
     def test_keep_queued_launch_retains_item_for_retry(self, sample_config):
-        """keep_queued (existing terminal, not yet restorable) is the ONLY retention case."""
+        """keep_queued (existing terminal, not yet restorable) retains the item.
+
+        (The other retention case is ``retry_queued`` — a transient
+        required-input prep failure — covered by the bounded-retention tests.)
+        """
         sample_config.triage_review_agent = "agent:web"
         state = OrchestratorState()
         PendingSessionQueues(state).queue_batch_review(789, "Triage batch")
@@ -3237,41 +3274,79 @@ class TestLaunchTriageIssueSessionFlavors:
         assert "triage_manifest" not in run_manifest
         assert mock_repo_host.get_prs_with_label_calls == []
 
-    def test_board_snapshot_failure_fails_launch_loudly(
-        self, launcher_bundle, mock_repo_host, mock_worktree_manager, mock_events, tmp_path
+    def test_board_snapshot_failure_retains_queued_investigation_until_bounded_drop(
+        self, launcher_bundle, mock_worktree_manager, mock_events, tmp_path
     ):
-        """board-snapshot.json is required input; a build failure fails the launch.
+        """Required-input prep failure must not destroy the only investigation record.
 
-        The triage prompt calls the snapshot authoritative, so a DB/log bug
-        must never silently launch a session missing its input (fail-fast).
-        The failure follows the established launch seam: SESSION_START_FAILED,
-        worktree cleanup, and a failed LaunchResult.
+        board-snapshot.json is required input, so a DB/log bug still fails the
+        launch loudly through the established seam (SESSION_START_FAILED,
+        worktree cleanup, no session). But the QUEUED orchestration path must
+        RETAIN the pending item: for failure investigations the per-tick
+        discovered_failures buffer is already cleared and there is no
+        labels-as-truth recovery, so one transient SQLite/log/filesystem
+        error must not delete the investigation forever. Retention is
+        bounded: after TRIAGE_LAUNCH_RETRY_LIMIT retryable failures the queue
+        owner drops the item and the drop surfaces via a durable error and an
+        ISSUE_NEEDS_HUMAN event (loud, never silent).
         """
         config = launcher_bundle.launcher.config
         self._enable_triage_agent(config, tmp_path)
-        mock_repo_host.prs_with_label = [self._triage_pr(555)]
         launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
-        issue = Issue(
-            number=903, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        state = OrchestratorState()
+        PendingSessionQueues(state).queue_failure_investigation(
+            903,
+            "Investigate: Broken thing (failed)",
+            failure=DiscoveredFailure(
+                issue_number=903, issue_title="Broken thing", failure_reason="failed"
+            ),
         )
 
-        result = launcher_bundle.launcher.launch_issue_session(
-            issue, active_sessions=[]
-        )
+        # Transient failures below the bound: the investigation stays queued.
+        for attempt in range(1, TRIAGE_LAUNCH_RETRY_LIMIT):
+            session = orchestrator_launch_triage_session(
+                state.pending_triage_reviews[0],
+                state,
+                config,
+                launcher_bundle.launcher,
+                MagicMock(),
+            )
+            assert session is None
+            assert len(state.pending_triage_reviews) == 1, (
+                "a retryable prep failure must retain the queued investigation"
+            )
+            assert (
+                state.pending_triage_reviews[0].retryable_launch_failures == attempt
+            )
 
-        assert result.success is False
-        assert "Triage session data preparation failed" in result.reason
-        assert "boom" in result.reason
-        # The launch failed loudly through the established seam.
+        # Each attempt failed loudly through the established launch seam.
         failed_events = [
             e for e in mock_events.events
             if str(e.name) == str(EventName.SESSION_START_FAILED)
         ]
-        assert len(failed_events) == 1
+        assert len(failed_events) == TRIAGE_LAUNCH_RETRY_LIMIT - 1
         assert failed_events[0].data["reason"] == "triage_session_data_failed"
-        # No session started, and the worktree was cleaned up.
         assert not any(str(e.name) == "session.started" for e in mock_events.events)
         assert mock_worktree_manager.remove_calls, "worktree must be cleaned up"
+
+        # The final failure exhausts the bounded policy: dropped AND surfaced.
+        session = orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+        assert session is None
+        assert state.pending_triage_reviews == []
+        needs_human = [
+            e for e in mock_events.events
+            if str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN)
+        ]
+        assert len(needs_human) == 1
+        assert needs_human[0].data["issue_number"] == 903
+        assert "failure_investigation" in needs_human[0].data["reason"]
+        assert "boom" in needs_human[0].data["reason"]
 
 
 class TestTriageProducerToLaunchBoundary:
@@ -3285,16 +3360,30 @@ class TestTriageProducerToLaunchBoundary:
     """
 
     @staticmethod
-    def _support_for(state: OrchestratorState) -> OrchestratorSupport:
-        """Minimal OrchestratorSupport; the queue handlers only touch state."""
-        return OrchestratorSupport(
+    def _apply_actions(state: OrchestratorState, actions, **details) -> None:
+        """Drive the producer boundary through the public ``apply_plan`` seam.
+
+        The action applier is faked at its port boundary (``apply`` returns a
+        successful ``ActionResult`` carrying ``details``, the shape the real
+        applier produces), so ``apply_plan`` runs the real success-handling
+        path — including the post-apply state update that queues triage work.
+        """
+        from issue_orchestrator.control.planner_types import Plan
+
+        applier = MagicMock()
+        applier.apply.side_effect = lambda action: ActionResult.ok(
+            action, **details
+        )
+        event_context = MagicMock()
+        event_context.enrich.side_effect = lambda data: data
+        support = OrchestratorSupport(
             config=MagicMock(),
             events=MockEventSink(),
             repository_host=MagicMock(),
             state=state,
-            event_context=MagicMock(),
+            event_context=event_context,
             session_manager=MagicMock(),
-            action_applier=MagicMock(),
+            action_applier=applier,
             fact_gatherer=MagicMock(),
             planner=MagicMock(),
             worktree_manager=MagicMock(),
@@ -3302,6 +3391,9 @@ class TestTriageProducerToLaunchBoundary:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+        )
+        support.apply_plan(
+            Plan(actions=tuple(actions), skipped=()), MagicMock()
         )
 
     @staticmethod
@@ -3326,16 +3418,18 @@ class TestTriageProducerToLaunchBoundary:
             TestLaunchTriageIssueSessionFlavors._triage_pr(555)
         ]
         state = OrchestratorState()
-        support = self._support_for(state)
 
-        support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
-            CreateTriageIssueAction(
-                title="Triage Batch Review: 5 PRs pending",
-                body="Review these PRs",
-                labels=("agent:triage",),
-                pr_count=5,
-            ),
-            MagicMock(success=True, details={"issue_number": 903}),
+        self._apply_actions(
+            state,
+            [
+                CreateTriageIssueAction(
+                    title="Triage Batch Review: 5 PRs pending",
+                    body="Review these PRs",
+                    labels=("agent:triage",),
+                    pr_count=5,
+                )
+            ],
+            issue_number=903,
         )
         (queued,) = state.pending_triage_reviews
         assert queued.flavor is TriageSessionFlavor.BATCH_REVIEW
@@ -3409,21 +3503,25 @@ class TestTriageProducerToLaunchBoundary:
         mock_repo_host.prs_with_label = [
             TestLaunchTriageIssueSessionFlavors._triage_pr(555)
         ]
-        support = self._support_for(state)
+        diagnostic = tmp_path / "failure-diagnostic.md"
+        diagnostic.write_text("what went wrong")
 
         # Tick N: the planner threads the typed failure through the action.
-        support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
-            QueueTriageAction(
-                issue_number=904,
-                title="Investigate: Test issue (timed_out)",
-                failure=DiscoveredFailure(
+        self._apply_actions(
+            state,
+            [
+                QueueTriageAction(
                     issue_number=904,
-                    issue_title="Test issue",
-                    failure_reason="timed_out",
-                ),
-                reason="Session failed with status 'timed_out'",
-            ),
-            MagicMock(success=True, details={}),
+                    title="Investigate: Test issue (timed_out)",
+                    failure=DiscoveredFailure(
+                        issue_number=904,
+                        issue_title="Test issue",
+                        failure_reason="timed_out",
+                        artifact_hints=(str(diagnostic),),
+                    ),
+                    reason="Session failed with status 'timed_out'",
+                )
+            ],
         )
         (queued,) = state.pending_triage_reviews
         assert queued.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
@@ -3451,28 +3549,30 @@ class TestTriageProducerToLaunchBoundary:
         assert assignment["flavor"] == "failure_investigation"
         assert assignment["focus_issue_number"] == 904
 
-        # The written snapshot preserves the triggering failure across the
-        # queue boundary even though the live buffer was cleared.
+        # The written snapshot preserves the triggering failure — including
+        # its real artifact hints — across the queue boundary even though the
+        # live buffer was cleared (#6762: hints must reach the agent, not be
+        # dropped at the projection).
         snapshot = BoardSnapshot.read(run_dir / "triage-data" / "board-snapshot.json")
         assert [
-            (f.issue_number, f.failure_reason) for f in snapshot.recent_failures
-        ] == [(904, "timed_out")]
+            (f.issue_number, f.failure_reason, f.artifact_hints)
+            for f in snapshot.recent_failures
+        ] == [(904, "timed_out", [str(diagnostic)])]
 
     def test_queue_triage_action_without_failure_context_fails_fast(self):
-        """The producer boundary rejects failure investigations lacking context."""
-        state = OrchestratorState()
-        support = self._support_for(state)
+        """The action boundary rejects failure investigations lacking context.
 
-        with pytest.raises(ValueError, match="DiscoveredFailure"):
-            support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
-                QueueTriageAction(
-                    issue_number=904,
-                    title="Investigate: Test issue (timed_out)",
-                    reason="Session failed with status 'timed_out'",
-                ),
-                MagicMock(success=True, details={}),
+        ``QueueTriageAction.failure`` is a required keyword field: an
+        investigation cannot even be DESCRIBED without its triggering failure
+        (``PendingTriageReview.__post_init__`` remains as defense-in-depth
+        for untyped callers reaching the queue owner directly).
+        """
+        with pytest.raises(TypeError, match="failure"):
+            QueueTriageAction(
+                issue_number=904,
+                title="Investigate: Test issue (timed_out)",
+                reason="Session failed with status 'timed_out'",
             )
-        assert state.pending_triage_reviews == []
 
 
 # =============================================================================
@@ -4314,6 +4414,14 @@ class TestHandleSessionCompletion:
         config = MagicMock()
         config.cleanup.without_triage.close_ai_session_tabs = True
         config.code_review_agent = None
+        run_dir = Path(session.run_assets.run_dir)
+        diagnostic = tmp_path / "worktree" / "failure-diagnostic.md"
+        diagnostic.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic.write_text("what went wrong")
+        claude_log = run_dir / "claude.jsonl"
+        claude_log.write_text("{}\n")
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.attach_claude_log.return_value = claude_log
 
         handle_session_completion(
             session=session,
@@ -4325,11 +4433,23 @@ class TestHandleSessionCompletion:
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
-            session_output=MagicMock(spec=SessionOutput),
+            session_output=session_output,
+            diagnostic_path=str(diagnostic),
         )
 
         assert len(state.discovered_failures) == 1
-        assert state.discovered_failures[0].issue_number == 123
+        failure = state.discovered_failures[0]
+        assert failure.issue_number == 123
+        # #6762: the discovery seam gathers REAL artifact hints — the failure
+        # diagnostic, the attached agent log, and the run-dir artifacts that
+        # exist on disk (manifest + analysis + terminal recording).
+        assert failure.artifact_hints == (
+            str(diagnostic),
+            str(claude_log),
+            str(run_dir / "manifest.json"),
+            str(run_dir / "analysis.json"),
+            str(run_dir / "terminal-recording.jsonl"),
+        )
 
     def test_timed_out_session_kills_terminal_before_actions(
         self,
