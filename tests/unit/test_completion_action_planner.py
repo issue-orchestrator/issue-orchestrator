@@ -13,6 +13,7 @@ from issue_orchestrator.control.actions import (
     CloseIssueAction,
     CreateTriageIssueAction,
     RemoveLabelAction,
+    ResetRetryIssueAction,
     SurfaceTriageProposalAction,
 )
 from issue_orchestrator.control.completion_action_planner import (
@@ -1074,6 +1075,120 @@ class TestDecisionTargetScope:
 
         [rejection] = _rejections(actions)
         assert "outside this session's launch scope" in rejection.body_preview
+
+
+class TestResetRetryExecutionPipeline:
+    """Execute-authority reset_retry proposals flow from the decision
+    artifact through planning into the reset owner (#6764 first slice)."""
+
+    def _armed_investigation(
+        self, tmp_path: Path, *, authority_mode: str
+    ) -> tuple[Config, Session]:
+        config = make_triage_config(tmp_path)
+        config.triage.authority.reset_retry = authority_mode
+        session = make_triage_session(tmp_path)
+        arm_investigation_session(config, session)
+        _plant_decision_with_actions(
+            session,
+            [
+                {
+                    "id": "A1",
+                    "action_type": "post_comment",
+                    "target_number": 1,
+                    "body": "Diagnosis.",
+                    "finding_ids": ["T1"],
+                },
+                {
+                    "id": "A2",
+                    "action_type": "reset_retry",
+                    "target_number": 1,  # the focus issue
+                    "body": "Scratch reset: worktree unrecoverable.",
+                    "finding_ids": ["T1"],
+                },
+            ],
+        )
+        return config, session
+
+    def test_execute_authority_plans_typed_reset_action(self, tmp_path: Path) -> None:
+        config, session = self._armed_investigation(tmp_path, authority_mode="execute")
+
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+
+        assert _rejections(actions) == []
+        [reset] = [a for a in actions if isinstance(a, ResetRetryIssueAction)]
+        assert reset.issue_number == 1
+        assert reset.anchor_issue_number == 1
+        assert reset.proposal_id == "A2"
+        assert reset.finding_ids == ("T1",)
+        # No shadow surface for the executed proposal.
+        surfaced = [
+            a for a in actions
+            if isinstance(a, SurfaceTriageProposalAction)
+            and a.proposal_type == "reset_retry"
+        ]
+        assert surfaced == []
+
+    def test_propose_authority_still_surfaces_shadow(self, tmp_path: Path) -> None:
+        config, session = self._armed_investigation(tmp_path, authority_mode="propose")
+
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+
+        assert not any(isinstance(a, ResetRetryIssueAction) for a in actions)
+        [surfaced] = [
+            a for a in actions
+            if isinstance(a, SurfaceTriageProposalAction)
+            and a.proposal_type == "reset_retry"
+        ]
+        assert surfaced.mode == "shadow"
+
+    def test_full_pipeline_invokes_reset_owner(self, tmp_path: Path) -> None:
+        """Completed investigation + execute authority -> the reset owner is
+        invoked through planner -> applier with the target's fresh labels."""
+        from unittest.mock import MagicMock
+
+        from issue_orchestrator.control.action_applier import ActionApplier
+        from issue_orchestrator.control.triage_reset_retry import (
+            ResetRetryRunOutcome,
+            TriageResetRetryExecutor,
+        )
+        from issue_orchestrator.domain.models import Issue as DomainIssue
+
+        config, session = self._armed_investigation(tmp_path, authority_mode="execute")
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+
+        run_reset = MagicMock(
+            return_value=ResetRetryRunOutcome(success=True, details={"queued_now": True})
+        )
+        executor = TriageResetRetryExecutor(
+            events=MagicMock(),
+            label_manager=LabelManager(config),
+            read_issue=lambda number: DomainIssue(
+                number=number,
+                title="Focus issue",
+                labels=["agent:test", "blocked-failed"],
+                repo="owner/repo",
+            ),
+            has_active_session=lambda _number: False,
+            run_reset=run_reset,
+        )
+        applier = ActionApplier(
+            labels=MagicMock(),
+            sessions=MagicMock(),
+            events=MagicMock(),
+            repository_host=MagicMock(),
+        )
+        applier.triage_reset_retry = executor
+
+        results = applier.apply_all(list(actions))
+
+        run_reset.assert_called_once_with(1, ["agent:test", "blocked-failed"])
+        assert all(r.result_type is not None for r in results)
 
 
 class TestLaunchScopeTamperResistance:

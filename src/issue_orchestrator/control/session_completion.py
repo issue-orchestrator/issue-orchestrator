@@ -342,6 +342,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     run_session_analysis(run_dir)
 
     # Apply completion actions (from CompletionHandler policy)
+    applied_results = []
     if result.actions:
         logger.info(
             "[COMPLETION] Applying %d actions for issue #%d status=%s: %s",
@@ -350,7 +351,8 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             status.value,
             [type(a).__name__ for a in result.actions],
         )
-        action_applier.apply_all(list(result.actions))
+        # `or []` tolerates test doubles whose apply_all returns None.
+        applied_results = action_applier.apply_all(list(result.actions)) or []
     else:
         logger.warning(
             "[COMPLETION] No actions generated for issue #%d status=%s",
@@ -430,6 +432,24 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
 
         # Surface AI session logs for debugging
         surface_failure_context(session, status)
+
+    # A successful triage reset_retry action (#6764) made its target issue
+    # retryable mid-apply, but the history append above re-keys the issue as
+    # "already ran" — which would silently re-block the relaunch the reset
+    # exists to trigger. Re-clear the planner/queue gates last, via their
+    # owner, exactly like the dashboard reset (which runs after completion).
+    from .retry_history_state import RetryHistoryState
+    from .triage_reset_retry import preserve_reset_retry_eligibility
+
+    cleared = preserve_reset_retry_eligibility(
+        applied_results,
+        make_retryable=RetryHistoryState(state).make_retryable,
+    )
+    if cleared:
+        logger.info(
+            "[COMPLETION] Preserved reset_retry eligibility after history append: %s",
+            cleared,
+        )
 
 
 def process_active_sessions(

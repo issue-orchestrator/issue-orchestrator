@@ -9,7 +9,12 @@ emits the orchestrator's action vocabulary:
 - ``flag_pattern`` with ``execute`` authority -> surfaced with
   ``mode="pattern"``: recording the pattern IS the execution. Under
   ``propose`` authority it is a shadow record like any other proposal.
-- Act-level proposals (``reset_retry``, ``kill_hung_session``) -> always
+- ``reset_retry`` with ``execute`` authority -> a typed
+  :class:`ResetRetryIssueAction`; the applier's owner re-validates the
+  proposal's preconditions at execution time and downgrades stale proposals
+  to a surfaced record (#6764, ADR-0031 §2). Under ``propose`` authority it
+  stays a shadow record.
+- Still-unwired act-level proposals (``kill_hung_session``) -> always
   surfaced (``mode="shadow"``); config validation guarantees their authority
   is ``propose`` until the executors are wired (#6764).
 
@@ -41,7 +46,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..domain.triage_artifacts import (
-    ACT_LEVEL_TRIAGE_ACTIONS,
+    UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS,
     ProposedTriageAction,
     TriageDecision,
 )
@@ -51,6 +56,7 @@ from .actions import (
     AddCommentAction,
     AddLabelAction,
     CreateTriageIssueAction,
+    ResetRetryIssueAction,
     SurfaceTriageProposalAction,
 )
 from .label_manager import LabelManager
@@ -219,8 +225,31 @@ def plan_triage_decision_actions(
                 _surface_shadow(proposed)
             continue
         if proposed.is_act_level:
-            # Config validation guarantees act-level authority is "propose"
-            # until #6764; surface unconditionally rather than trusting it.
+            # reset_retry is wired (#6764, first slice): execute authority
+            # plans the typed action whose applier re-validates the
+            # preconditions at execution time. Unwired act-level intents
+            # (kill_hung_session) surface unconditionally — config validation
+            # guarantees their authority is "propose", but never trust it.
+            if (
+                proposed.action_type == "reset_retry"
+                and authority.mode_for("reset_retry") == "execute"
+            ):
+                assert proposed.target_number is not None  # enforced by validate()
+                actions.append(
+                    ResetRetryIssueAction(
+                        issue_number=proposed.target_number,
+                        rationale=proposed.body or "",
+                        proposal_id=proposed.id,
+                        finding_ids=proposed.finding_ids,
+                        anchor_issue_number=anchor_issue_number,
+                        reason=(
+                            f"triage decision action {proposed.id}:"
+                            " reset and retry from scratch"
+                        ),
+                        expected=expected,
+                    )
+                )
+                continue
             _surface_shadow(proposed)
             continue
         if authority.mode_for(proposed.action_type) == "execute":
@@ -274,18 +303,22 @@ def _shadow_digest_comment(
             lines.append(f"  > {item.body_preview}")
         if item.finding_ids:
             lines.append(f"  findings: {', '.join(item.finding_ids)}")
+    # Wired proposal types (including act-level reset_retry, #6764 first
+    # slice) get the config-flip guidance; only the still-unwired act-level
+    # intents keep the "not wired" note so operators are never told to flip
+    # a knob that startup rejects (#6761 re-review finding 5).
     gated = sorted(
         {
             item.proposal_type
             for item in shadow
-            if item.proposal_type not in ACT_LEVEL_TRIAGE_ACTIONS
+            if item.proposal_type not in UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS
         }
     )
-    act_level = sorted(
+    unwired = sorted(
         {
             item.proposal_type
             for item in shadow
-            if item.proposal_type in ACT_LEVEL_TRIAGE_ACTIONS
+            if item.proposal_type in UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS
         }
     )
     lines.append("")
@@ -295,8 +328,8 @@ def _shadow_digest_comment(
             f"*Flip {knobs} to `execute` to let the orchestrator perform"
             " these next time.*"
         )
-    if act_level:
-        names = ", ".join(f"`{name}`" for name in act_level)
+    if unwired:
+        names = ", ".join(f"`{name}`" for name in unwired)
         lines.append(
             f"*{names}: orchestrator execution is not wired yet (#6764) —"
             " startup rejects `execute` for these until it lands, so act on"

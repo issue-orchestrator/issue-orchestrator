@@ -59,12 +59,14 @@ VALID_TRIAGE_ACTION_TYPES: frozenset[str] = frozenset(
 )
 _VALID_CLASSIFICATIONS = frozenset(("infra", "task", "agent", "systemic"))
 
-# Act-level intents mutate orchestrator runtime state. They are declared in the
-# vocabulary now but have no wired executor yet (#6764); config validation must
-# reject authority "execute" for them until then.
+# Act-level intents mutate orchestrator runtime state. reset_retry is wired to
+# the reset+retry-from-scratch owner (#6764, first slice) and may be granted
+# "execute"; the UNWIRED subset has no executor yet — config validation must
+# reject authority "execute" for those until they are wired, never no-op.
 ACT_LEVEL_TRIAGE_ACTIONS: frozenset[str] = frozenset(
     ("reset_retry", "kill_hung_session")
 )
+UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS: frozenset[str] = frozenset(("kill_hung_session",))
 
 # Canonical id forms (see module docstring). Leading zeros are rejected so
 # every id has exactly one canonical spelling; the forms are disjoint, which

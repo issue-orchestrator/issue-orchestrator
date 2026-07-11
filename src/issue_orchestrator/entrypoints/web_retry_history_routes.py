@@ -326,6 +326,7 @@ def reset_and_retry_issue(  # noqa: PLR0913
     reset_issue_fn: Callable[..., "ResetResult"],
     current_labels: Sequence[str] | None = None,
     extra_pending_labels: Sequence[str] = (),
+    source: str = "web.reset-retry",
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     # AddLabelAction is lazy for the same reason as RemoveLabelAction above.
     from ..control.actions import AddLabelAction
@@ -441,6 +442,7 @@ def reset_and_retry_issue(  # noqa: PLR0913
             pending_label=pending_label,
             pending_labels_to_add=pending_labels_to_add,
             events=deps.events,
+            source=source,
         )
         success = _make_reset_success(
             issue_number,
@@ -653,6 +655,7 @@ def _emit_reset_retry_unblocked(
     pending_label: str,
     pending_labels_to_add: list[str],
     events: Any,
+    source: str,
 ) -> None:
     events.publish(
         make_trace_event(
@@ -660,7 +663,7 @@ def _emit_reset_retry_unblocked(
             {
                 "issue_number": issue_number,
                 "reason": "reset_retry_requested",
-                "source": "web.reset-retry",
+                "source": source,
                 "pending_label": pending_label,
                 "pending_labels": pending_labels_to_add,
                 "from_scratch": from_scratch,

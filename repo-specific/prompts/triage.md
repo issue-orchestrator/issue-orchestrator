@@ -262,8 +262,11 @@ Compact `triage-decision.json` example:
 - Valid `action_type` values: `post_comment`, `create_issue`,
   `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
 - Proposals are intent, not execution: the orchestrator decides what to
-  execute per its configured authority. Act-level proposals (`reset_retry`,
-  `kill_hung_session`) are recorded as would-have-done until wired (#6764).
+  execute per its configured authority. `reset_retry` executes only under
+  `triage.authority.reset_retry: execute`, and the orchestrator re-checks
+  the target's state at execution time — stale proposals are recorded, not
+  executed. `kill_hung_session` is recorded as would-have-done until its
+  executor is wired (#6764).
 - A completed session missing either artifact — or violating any rule
   above — is recorded as FAILED and marked triage-failed.
 

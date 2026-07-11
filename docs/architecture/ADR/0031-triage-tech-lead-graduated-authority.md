@@ -94,8 +94,8 @@ was given) and **typed proposed actions**:
 | `create_issue` | File a follow-up issue (labels, milestone per `triage:` config) | `execute` |
 | `escalate_to_human` | Route to the needs-human surface | `execute` (floor: cannot be disabled) |
 | `flag_pattern` | Record a cross-job pattern (event + report) | `execute` |
-| `reset_retry` | Reset-and-retry an issue from scratch | `propose` |
-| `kill_hung_session` | Terminate a stuck session | `propose` |
+| `reset_retry` | Reset-and-retry an issue from scratch (executor wired — #6764 first slice) | `propose` |
+| `kill_hung_session` | Terminate a stuck session (executor not wired yet — #6764) | `propose` |
 
 The orchestrator parses the decision on session completion, applies the
 authority filter (§2), executes allowed actions through the existing
@@ -130,6 +130,8 @@ Semantics:
 - Fail-safe: anything that mutates orchestrator runtime state defaults to
   `propose`. Setting `execute` on an action type whose executor is not yet
   wired (§5) is a **startup configuration error**, never a silent no-op.
+  (`reset_retry` is wired — the #6764 first slice — so `execute` on it is
+  honored; `kill_hung_session` remains startup-rejected.)
 - Execution-time re-validation: act-level proposals are executed only if their
   recorded preconditions still hold (the board may have moved since the agent
   wrote the decision); otherwise they downgrade to surfaced proposals with an

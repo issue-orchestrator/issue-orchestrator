@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..domain.triage_artifacts import UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS
+
 
 @dataclass
 class CleanupWithTriage:
@@ -252,9 +254,12 @@ class TriageAuthorityConfig:
 
     ``escalate_to_human`` is intentionally not a field: it is the
     non-configurable floor and always executes. Act-level actions
-    (``reset_retry``, ``kill_hung_session``) default to ``propose`` and are
-    rejected at startup if set to ``execute`` until their executors are
-    wired (#6764) — see ``Config.validate``.
+    (``reset_retry``, ``kill_hung_session``) default to ``propose``.
+    ``reset_retry: execute`` is honored — it is wired to the
+    reset+retry-from-scratch owner with execution-time re-validation
+    (#6764, first slice). Still-unwired act-level actions
+    (``kill_hung_session``) are rejected at startup if set to ``execute``
+    until their executors land — see ``Config.validate``.
     """
 
     post_comment: str = "execute"
@@ -301,9 +306,10 @@ class TriageAuthorityConfig:
     def startup_errors(self) -> list[str]:
         """Startup configuration errors for this authority block (ADR-0031).
 
-        Act-level actions mutate orchestrator runtime state and have no
-        wired executor yet; ``execute`` on them must be a startup
-        configuration error, never a silent no-op (#6764).
+        ``execute`` on an act-level action whose executor is not wired yet
+        must be a startup configuration error, never a silent no-op (#6764).
+        ``reset_retry`` is wired (first slice) and no longer rejected;
+        the unwired set lives in ``UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS``.
         """
         errors: list[str] = []
         for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
@@ -313,7 +319,7 @@ class TriageAuthorityConfig:
                     f"triage.authority.{key} must be one of"
                     f" {list(TRIAGE_AUTHORITY_MODES)}, got {mode!r}"
                 )
-        for key in ("reset_retry", "kill_hung_session"):
+        for key in sorted(UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS):
             if getattr(self, key) == "execute":
                 errors.append(
                     f"triage.authority.{key}: act-level triage authority"

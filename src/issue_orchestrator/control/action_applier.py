@@ -51,6 +51,7 @@ if TYPE_CHECKING:
         PersistentExchangePairRegistry,
     )
     from .session_history import SessionHistoryOwner
+    from .triage_reset_retry import TriageResetRetryExecutor
 from .reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,
@@ -85,9 +86,11 @@ from .actions import (
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
     RecoverTerminalIssueAction,
+    ResetRetryIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
 from .triage_issue_policy import resolve_triage_milestone_number
+from .triage_reset_retry import apply_surface_triage_proposal
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +205,11 @@ class ActionApplier:
     on_worktree_removed: Optional[Callable[[str], int]] = None
     # Owner for controlled in-memory history mutations.
     history_owner: Optional["SessionHistoryOwner"] = None
+    # Execution-time owner for triage reset_retry proposals (#6764). Wired
+    # post-construction by the composition root (its production runner
+    # closes over live orchestrator state); unwired means execute-authority
+    # reset proposals fail loudly instead of silently no-oping.
+    triage_reset_retry: Optional["TriageResetRetryExecutor"] = None
     _active_label_mutation_stats: _LabelMutationStats | None = field(
         default=None, init=False, repr=False
     )
@@ -279,6 +287,8 @@ class ActionApplier:
             ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
             # Triage decision proposals - event-only, no GitHub calls (ADR-0031)
             ActionType.SURFACE_TRIAGE_PROPOSAL: self._apply_surface_triage_proposal,
+            # Act-level triage execution via the reset owner (#6764)
+            ActionType.RESET_RETRY_ISSUE: self._apply_reset_retry_issue,
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
@@ -1535,39 +1545,30 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     def _apply_surface_triage_proposal(self, action: Action) -> ActionResult:
         """Surface a triage decision proposal as a trace event (ADR-0031).
 
-        Shadow-mode / pattern proposals emit TRIAGE_ACTION_PROPOSED; rejected
-        decision artifacts (mode == "rejected") emit TRIAGE_DECISION_REJECTED.
-        This handler makes NO GitHub calls — surfacing is the whole action.
+        Event choice and payload are owned by ``triage_reset_retry`` (shared
+        with the stale-downgrade surface); NO GitHub calls are made.
         """
         assert isinstance(action, SurfaceTriageProposalAction)
+        return apply_surface_triage_proposal(action, self.events)
 
-        event_name = (
-            EventName.TRIAGE_DECISION_REJECTED
-            if action.mode == "rejected"
-            else EventName.TRIAGE_ACTION_PROPOSED
-        )
-        self.events.publish(make_trace_event(event_name, {
-            "issue_number": action.issue_number,
-            "action_id": action.action_id,
-            "proposal_type": action.proposal_type,
-            "target_number": action.target_number,
-            "target_is_pr": action.target_is_pr,
-            "title": action.title,
-            "body_preview": action.body_preview,
-            "finding_ids": list(action.finding_ids),
-            "mode": action.mode,
-        }))
-        logger.info(
-            issue_log(action.issue_number, "Triage proposal surfaced: mode=%s type=%s action_id=%s"),
-            action.mode, action.proposal_type, action.action_id,
-        )
-        return ActionResult.ok(
-            action,
-            issue_number=action.issue_number,
-            action_id=action.action_id,
-            proposal_type=action.proposal_type,
-            mode=action.mode,
-        )
+    def _apply_reset_retry_issue(self, action: Action) -> ActionResult:
+        """Execute a triage reset_retry proposal via the injected owner (#6764).
+
+        Enforces the reconciliation pause gate first (raises
+        ReconciliationRequired) — a paused issue must never be scratch-reset
+        from an agent proposal. Precondition re-validation, stale downgrade,
+        and the reset itself are owned by TriageResetRetryExecutor.
+        """
+        assert isinstance(action, ResetRetryIssueAction)
+        self._require_expected(action, action.issue_number)
+        executor = self.triage_reset_retry
+        if executor is None:
+            return ActionResult.fail(
+                action,
+                "triage reset_retry execution requested but no"
+                " TriageResetRetryExecutor is wired into this applier",
+            )
+        return executor.apply(action)
 
     def _apply_cleanup_session(self, action: Action) -> ActionResult:
         """Clean up a completed session."""

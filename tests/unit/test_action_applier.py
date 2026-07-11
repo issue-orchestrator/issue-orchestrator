@@ -2364,6 +2364,10 @@ class TestClaimGateAudit:
     # - QUEUE_RETROSPECTIVE_REVIEW / QUEUE_REWORK / QUEUE_TRIAGE: local state operations
     # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
     # - SURFACE_TRIAGE_PROPOSAL: emits a trace event only, no GitHub calls
+    # - RESET_RETRY_ISSUE: owner command (#6764) - every GitHub write it
+    #   triggers is delegated to the reset owner, which routes label/PR
+    #   mutations back through this applier's claim-verified handlers
+    #   (AddLabel/RemoveLabel/SupersedePR), same as the dashboard reset.
     # - CLEANUP_SESSION: post-completion cleanup
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
     # - CREATE_PR: not implemented in action_applier
@@ -2378,6 +2382,7 @@ class TestClaimGateAudit:
         ActionType.QUEUE_TRIAGE,
         ActionType.CREATE_TRIAGE_ISSUE,
         ActionType.SURFACE_TRIAGE_PROPOSAL,
+        ActionType.RESET_RETRY_ISSUE,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,

@@ -82,6 +82,7 @@ from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
 from .bootstrap_triage import create_board_snapshot_builder, create_triage_authority_store
+from .triage_reset_retry_wiring import build_triage_reset_retry_executor
 from ..infra.repo_identity import state_dir
 from ..infra.secret_env import (
     configure_extra_forbidden_env_vars,
@@ -837,16 +838,6 @@ def build_orchestrator(
     from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
     turn_mailbox = InMemoryTurnMailbox()
 
-    # Wire the registry into action_applier so ``_apply_escalate``
-    # and ``_apply_reconcile_history_entry`` can release the pair at
-    # their lifecycle boundaries (escalation, await-merge terminal).
-    # The shared supervisor completes the cancellation contract for
-    # STOP_SESSION: release the subprocess pair, then mark matching
-    # review-exchange jobs terminal so the main tick stops polling them.
-    if action_applier is not None:
-        action_applier.pair_registry = pair_registry
-        action_applier.background_job_supervisor = background_job_supervisor
-
     triage_authority = create_triage_authority_store(config)
 
     # Create completion components
@@ -908,11 +899,15 @@ def build_orchestrator(
     from ..execution.label_store import LabelStore
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire post-construction collaborators into action_applier: label_store for
-    # write-through persistence, and publish_recovery so its issue terminal
-    # boundaries abandon publish retries via the shared runtime terminator
-    # (post-construction because PublishRecoveryService depends on this applier).
+    # Wire post-construction collaborators into action_applier: the pair
+    # registry + shared supervisor so escalation / history-reconcile /
+    # STOP_SESSION boundaries terminate hidden review-exchange runtime,
+    # label_store for write-through persistence, and publish_recovery so
+    # issue terminal boundaries abandon publish retries (post-construction
+    # because PublishRecoveryService depends on this applier).
     if action_applier is not None:
+        action_applier.pair_registry = pair_registry
+        action_applier.background_job_supervisor = background_job_supervisor
         action_applier.label_store = label_store
         action_applier.publish_recovery = publish_recovery
 
@@ -969,7 +964,11 @@ def build_orchestrator(
         services=infra_services,
     )
 
-    return Orchestrator(config=config, deps=deps)
+    orchestrator = Orchestrator(config=config, deps=deps)
+    # Post-construction (#6764): the executor's runner closes over live
+    # orchestrator state, so it can only be wired once the orchestrator exists.
+    action_applier.triage_reset_retry = build_triage_reset_retry_executor(orchestrator)
+    return orchestrator
 
 
 def _check_github_token_scopes(config: Config, github: GitHubAdapter) -> None:
