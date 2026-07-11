@@ -15,6 +15,7 @@ class ReviewWorkflowValidator(ConfigValidator):
     - If reviews enabled, default reviewer must be set
     - Default reviewer must exist in agents
     - Triage review agent must exist in agents (if set)
+    - Triage authority modes are valid; act-level 'execute' rejected (#6764)
     """
 
     def validate(self, config: "Config") -> list[str]:
@@ -22,6 +23,9 @@ class ReviewWorkflowValidator(ConfigValidator):
 
         self._validate_review_defaults(config, errors)
         self._validate_triage_agent(config, errors)
+        # Graduated triage authority (ADR-0031): act-level 'execute' is a
+        # startup configuration error until its executor is wired (#6764).
+        errors.extend(config.triage.authority.startup_errors())
 
         exchange_mode = config.review_exchange_mode
         self._validate_exchange_mode(exchange_mode, config, errors)

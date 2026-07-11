@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .action_applier import ActionApplier
     from ..ports.claim_manager import ClaimManager
+    from ..ports.triage_authority import TriageAuthorityStore
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
 
@@ -52,10 +53,8 @@ from ..domain.dependency_gates import Gate
 from .worktree_context import WorktreeContext
 from .stack_base import StackBaseDecision
 from ..infra.validation_state import DEFAULT_RETRY_TEMPLATE
-from ..domain.triage_manifest import TriageManifest
-from ..domain.triage_session import TRIAGE_ASSIGNMENT_FILENAME, TriageAssignment, TriageSessionFlavor
-from .triage_manifest_builder import TriageCandidatePolicy, TriageManifestBuilder
-from .triage_session_policy import is_triage_session
+from ..domain.triage_session import TriageSessionFlavor
+from .triage_session_policy import is_triage_session, prepare_triage_session_data
 from ..ports import (
     ManifestDownloader,
     EventSink,
@@ -185,6 +184,7 @@ class SessionLauncher:
         command_runner: CommandRunner,
         session_output: SessionOutput,
         manifest_downloader: ManifestDownloader,
+        triage_authority: "TriageAuthorityStore",
         session_exists_fn: Callable[[str], bool],
         create_session_fn: Callable[[str, str, Path, str | None], bool],
         get_issue_machine: Callable[["IssueProtocol"], Optional["IssueStateMachine"]],
@@ -208,6 +208,7 @@ class SessionLauncher:
         self._command_runner = command_runner
         self._session_output = session_output
         self._manifest_downloader = manifest_downloader
+        self._triage_authority = triage_authority
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -675,89 +676,34 @@ class SessionLauncher:
         """Check if this agent type is the triage review agent."""
         return is_triage_session(self.config.triage_review_agent, agent_type)
 
-    def _prepare_triage_manifest(
-        self,
-        worktree_path: Path,
-        run_dir: Path,
-    ) -> TriageManifest | None:
-        """Build and download triage manifest for a triage session.
-
-        Creates a manifest listing PRs that need triage review, downloads
-        their diffs and metadata to the session directory.
-
-        Args:
-            worktree_path: Path to the worktree
-            run_dir: Path to the session run directory
-
-        Returns:
-            The populated manifest, or None if no PRs need triage
-        """
-        # Build manifest with PRs needing triage; eligibility comes from the
-        # shared candidate owner so the audited set matches the threshold set.
-        builder = TriageManifestBuilder(
-            repository_host=self.repository_host,
-            watch_label=self.config.triage_watch_label,
-            candidate_policy=TriageCandidatePolicy.from_config(self.config),
-        )
-
-        # Data goes in session run directory
-        data_dir = f".issue-orchestrator/sessions/{run_dir.name}/triage-data"
-        manifest = builder.build(data_dir)
-
-        if not manifest.prs:
-            logger.info("[triage] No PRs need triage review")
-            return None
-
-        # Download diffs and metadata via injected port
-        manifest = self._manifest_downloader.download(manifest, worktree_path)
-
-        # Write manifest to session directory
-        manifest_path = worktree_path / data_dir / "manifest.json"
-        manifest.write(manifest_path)
-
-        logger.info(
-            "[triage] Prepared manifest with %d PRs: %s",
-            len(manifest.prs),
-            manifest_path,
-        )
-
-        return manifest
-
     def _prepare_triage_session_data(
         self,
         issue: "IssueProtocol",
         ctx: WorktreeContext,
         triage_flavor: TriageSessionFlavor | None,
     ) -> None:
-        """Prepare per-flavor triage session inputs (ADR-0031).
+        """Delegate per-flavor triage launch preparation to the ADR-0031 owner."""
+        prepare_triage_session_data(
+            config=self.config,
+            repository_host=self.repository_host,
+            manifest_downloader=self._manifest_downloader,
+            triage_authority=self._triage_authority,
+            issue=issue,
+            ctx=ctx,
+            triage_flavor=triage_flavor,
+        )
 
-        BATCH_REVIEW keeps the existing PR-manifest prep; FAILURE_INVESTIGATION
-        must NOT receive the global batch manifest (auditing unrelated PRs from
-        a focused investigation was the #6768 B4 defect). Both flavors get a
-        triage-assignment.json recording what the session was asked to do, so
-        the prompt and the completion planner act on the assignment.
-        """
+    def _discard_triage_authority_after_failed_launch(
+        self, issue: "IssueProtocol", ctx: WorktreeContext
+    ) -> None:
+        """Retention (#6769 F3): a launch that dies after recording its
+        triage launch authority must not leak the row — the run never starts,
+        so no completion seam will ever discard it."""
         if not self._is_triage_session(issue.agent_type):
             return
-        flavor = triage_flavor or TriageSessionFlavor.BATCH_REVIEW
-        run_dir = ctx.run.run_dir
-        if flavor is TriageSessionFlavor.BATCH_REVIEW:
-            triage_manifest = self._prepare_triage_manifest(ctx.worktree_path, run_dir)
-            if triage_manifest:
-                # Store manifest path in session for completion handling
-                ctx.update_manifest(
-                    {"triage_manifest": str(run_dir / "triage-data" / "manifest.json")}
-                )
-        focused = flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
-        assignment = TriageAssignment(
-            flavor=flavor,
-            focus_issue_number=issue.number if focused else None,
-            focus_reason=issue.title if focused else "",
+        self._triage_authority.discard(
+            run_id=ctx.run.run_id, session_name=ctx.run.session_name
         )
-        assignment_path = run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
-        assignment.write(assignment_path)
-        ctx.update_manifest({"triage_assignment": str(assignment_path)})
-        logger.info("[triage] Wrote %s assignment: %s", flavor.value, assignment_path)
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
@@ -922,242 +868,257 @@ class SessionLauncher:
 
         # For triage sessions, prepare flavor-scoped inputs (manifest/assignment)
         self._prepare_triage_session_data(issue, ctx, triage_flavor)
+        # Launch-authority lifecycle guard (#6769 round 4): once recorded,
+        # the authority row is discarded on EVERY exit - returned failure or
+        # exception - unless the session actually reaches ACTIVE. Single
+        # owner; individual failure branches carry no cleanup of their own.
+        launch_reached_active = False
+        try:
 
-        logger.info(
-            "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
-            run.run_id,
-            session_name,
-            issue.number,
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
-        )
-        logger.info(
-            "[launch] Issue session paths: issue=%s worktree=%s branch=%s",
-            issue.number,
-            worktree_path,
-            branch_name,
-        )
-        logger.info(
-            "[launch] Claude project dir: session=%s path=%s exists=%s",
-            session_name,
-            claude_project_dir,
-            claude_project_dir.exists(),
-        )
+            logger.info(
+                "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
+                run.run_id,
+                session_name,
+                issue.number,
+                extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+            )
+            logger.info(
+                "[launch] Issue session paths: issue=%s worktree=%s branch=%s",
+                issue.number,
+                worktree_path,
+                branch_name,
+            )
+            logger.info(
+                "[launch] Claude project dir: session=%s path=%s exists=%s",
+                session_name,
+                claude_project_dir,
+                claude_project_dir.exists(),
+            )
 
-        worktree_time = time.time() - step_start
-        logger.info(
-            issue_log(issue.number, "Worktree ready: path=%s branch=%s rebase_status=%s time=%.1fs"),
-            worktree_path, branch_name, "CONFLICT" if worktree_info.rebase_failed else "ok", worktree_time
-        )
+            worktree_time = time.time() - step_start
+            logger.info(
+                issue_log(issue.number, "Worktree ready: path=%s branch=%s rebase_status=%s time=%.1fs"),
+                worktree_path, branch_name, "CONFLICT" if worktree_info.rebase_failed else "ok", worktree_time
+            )
 
-        # Run setup commands
-        if self.config.setup_worktree:
-            try:
-                self._run_setup_commands(worktree_path)
-            except Exception as e:
-                log_transition("issue", issue.number, "LAUNCHING", "FAILED", "setup commands failed")
-                logger.error(issue_log(issue.number, "FAILED: setup commands failed: %s"), e)
+            # Run setup commands
+            if self.config.setup_worktree:
+                try:
+                    self._run_setup_commands(worktree_path)
+                except Exception as e:
+                    log_transition("issue", issue.number, "LAUNCHING", "FAILED", "setup commands failed")
+                    logger.error(issue_log(issue.number, "FAILED: setup commands failed: %s"), e)
+                    self.events.publish(make_trace_event(
+                        EventName.SESSION_START_FAILED,
+                        {
+                            "issue_number": issue.number,
+                            "session_name": session_name,
+                            "reason": "setup_commands_failed",
+                            "error": str(e),
+                        },
+                    ))
+                    try:
+                        self._worktree_manager.remove(worktree_path)
+                        logger.info(issue_log(issue.number, "Cleaned up worktree after setup failure: %s"), worktree_path)
+                    except Exception as cleanup_error:
+                        logger.warning(
+                            issue_log(issue.number, "Failed to remove worktree after setup failure: %s"),
+                            cleanup_error,
+                        )
+                    self._release_claim_if_held(issue.number, claim)
+                    return LaunchResult(None, False, f"Setup commands failed: {e}")
+
+            # New coding attempt starts now; clear interrupted retry guard.
+            self._clear_launch_retry_guards(
+                issue_number=issue.number,
+                mode="coding",
+                suffix="coding",
+            )
+
+            # Add in-progress label
+            step_start = time.time()
+            in_progress_label = self._lm.in_progress
+            label_ok = self._apply_actions([
+                AddLabelAction(
+                    issue_number=issue.number,
+                    label=in_progress_label,
+                    reason="session launched",
+                    issue_key=issue.key.stable_id(),
+                ),
+            ], context="launch_in_progress_label")
+            if not label_ok:
+                log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
+                logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
                 self.events.publish(make_trace_event(
                     EventName.SESSION_START_FAILED,
                     {
                         "issue_number": issue.number,
                         "session_name": session_name,
-                        "reason": "setup_commands_failed",
-                        "error": str(e),
+                        "reason": "in_progress_label_failed",
                     },
                 ))
                 try:
                     self._worktree_manager.remove(worktree_path)
-                    logger.info(issue_log(issue.number, "Cleaned up worktree after setup failure: %s"), worktree_path)
-                except Exception as cleanup_error:
-                    logger.warning(
-                        issue_log(issue.number, "Failed to remove worktree after setup failure: %s"),
-                        cleanup_error,
-                    )
+                    logger.info(issue_log(issue.number, "Cleaned up worktree after launch failure: %s"), worktree_path)
+                except Exception as e:
+                    logger.warning(issue_log(issue.number, "Failed to remove worktree after launch failure: %s"), e)
                 self._release_claim_if_held(issue.number, claim)
-                return LaunchResult(None, False, f"Setup commands failed: {e}")
+                return LaunchResult(None, False, "Failed to add in-progress label")
+            label_time = time.time() - step_start
+            logger.info("[launch] Label added in %.1fs", label_time)
 
-        # New coding attempt starts now; clear interrupted retry guard.
-        self._clear_launch_retry_guards(
-            issue_number=issue.number,
-            mode="coding",
-            suffix="coding",
-        )
-
-        # Add in-progress label
-        step_start = time.time()
-        in_progress_label = self._lm.in_progress
-        label_ok = self._apply_actions([
-            AddLabelAction(
-                issue_number=issue.number,
-                label=in_progress_label,
-                reason="session launched",
-                issue_key=issue.key.stable_id(),
-            ),
-        ], context="launch_in_progress_label")
-        if not label_ok:
-            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
-            logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
-            self.events.publish(make_trace_event(
-                EventName.SESSION_START_FAILED,
-                {
-                    "issue_number": issue.number,
-                    "session_name": session_name,
-                    "reason": "in_progress_label_failed",
-                },
-            ))
-            try:
-                self._worktree_manager.remove(worktree_path)
-                logger.info(issue_log(issue.number, "Cleaned up worktree after launch failure: %s"), worktree_path)
-            except Exception as e:
-                logger.warning(issue_log(issue.number, "Failed to remove worktree after launch failure: %s"), e)
-            self._release_claim_if_held(issue.number, claim)
-            return LaunchResult(None, False, "Failed to add in-progress label")
-        label_time = time.time() - step_start
-        logger.info("[launch] Label added in %.1fs", label_time)
-
-        # Check for existing work and rebase status
-        existing_work = detect_existing_work(
-            worktree_path,
-            self._working_copy,
-            seed_ref=self.config.worktree_seed_ref,
-        )
-        if existing_work:
-            logger.info("[launch] Found existing work - agent will evaluate before starting fresh")
-
-        # Add merge conflict warning if rebase failed
-        if worktree_info.rebase_failed:
-            conflict_warning = (
-                "WARNING: This branch could not be rebased onto main due to merge conflicts. "
-                "The code is out of date. You should resolve the conflicts by running: "
-                "git fetch origin main && git rebase origin/main. "
-                "If conflicts occur, resolve them and continue with: git rebase --continue. "
-                "This is critical to ensure tests pass with the latest code."
+            # Check for existing work and rebase status
+            existing_work = detect_existing_work(
+                worktree_path,
+                self._working_copy,
+                seed_ref=self.config.worktree_seed_ref,
             )
             if existing_work:
-                existing_work = f"{existing_work}\n\n{conflict_warning}"
-            else:
-                existing_work = conflict_warning
-            logger.warning("[launch] Rebase failed - agent will need to resolve merge conflicts")
+                logger.info("[launch] Found existing work - agent will evaluate before starting fresh")
 
-        # Build command
-        rendered_prompt = agent_config.render_initial_prompt(
-            issue_number=issue.number,
-            issue_title=issue.title,
-            worktree=worktree_path,
-            existing_work=existing_work,
-        )
-        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
-        base_command = agent_config.get_command_for_prompt(
-            rendered_prompt,
-            issue_number=issue.number,
-            issue_title=issue.title,
-            worktree=worktree_path,
-            task_kind=TaskKind.CODE.value,
-            extra_provider_args=extra_args,
-        )
-        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
-        completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
-        self._session_output.update_manifest(
-            run.run_dir,
-            {
+            # Add merge conflict warning if rebase failed
+            if worktree_info.rebase_failed:
+                conflict_warning = (
+                    "WARNING: This branch could not be rebased onto main due to merge conflicts. "
+                    "The code is out of date. You should resolve the conflicts by running: "
+                    "git fetch origin main && git rebase origin/main. "
+                    "If conflicts occur, resolve them and continue with: git rebase --continue. "
+                    "This is critical to ensure tests pass with the latest code."
+                )
+                if existing_work:
+                    existing_work = f"{existing_work}\n\n{conflict_warning}"
+                else:
+                    existing_work = conflict_warning
+                logger.warning("[launch] Rebase failed - agent will need to resolve merge conflicts")
+
+            # Build command
+            rendered_prompt = agent_config.render_initial_prompt(
+                issue_number=issue.number,
+                issue_title=issue.title,
+                worktree=worktree_path,
+                existing_work=existing_work,
+            )
+            prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
+            base_command = agent_config.get_command_for_prompt(
+                rendered_prompt,
+                issue_number=issue.number,
+                issue_title=issue.title,
+                worktree=worktree_path,
+                task_kind=TaskKind.CODE.value,
+                extra_provider_args=extra_args,
+            )
+            base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir, extra_provider_args=extra_args)
+            completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
+            self._session_output.update_manifest(
+                run.run_dir,
+                {
+                    "completion_path": completion_path,
+                    "session_prompt_path": prompt_path,
+                },
+            )
+            env_exports = self._build_session_env(
+                completion_path=completion_path,
+                session_id=run.session_name,
+                agent_label=issue.agent_type,
+                issue_number=issue.number,
+                run_assets=run,
+                worktree_path=worktree_path,
+            )
+            if self.config.e2e_pr_labels:
+                labels_str = ",".join(self.config.e2e_pr_labels)
+                env_exports += f" E2E_PR_LABELS='{labels_str}'"
+            command = f"{env_exports} && {base_command}"
+            logger.info(
+                "[launch] Issue session command: issue=%s session=%s worktree=%s completion=%s command=%s",
+                issue.number,
+                session_name,
+                worktree_path,
+                completion_path,
+                command,
+            )
+
+            # Create terminal session
+            step_start = time.time()
+            session_created = self._create_session(session_name, command, worktree_path, issue.title)
+            logger.info(
+                "[launch] Issue session create result: issue=%s session=%s created=%s",
+                issue.number,
+                session_name,
+                session_created,
+            )
+            _session_time = time.time() - step_start
+
+            if not session_created:
+                log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
+                logger.error(issue_log(issue.number, "FAILED: session creation failed"))
+                self._apply_actions([
+                    RemoveLabelAction(
+                        issue_number=issue.number,
+                        label=self._lm.in_progress,
+                        reason="session creation failed",
+                        issue_key=issue.key.stable_id(),
+                    ),
+                ], context="launch_session_creation_failed")
+                self._release_claim_if_held(issue.number, claim)
+                return LaunchResult(None, False, "Failed to create terminal session")
+
+            # The terminal is now RUNNING - the irreversible external boundary
+            # (#6769 round 5). Post-start bookkeeping failures must NOT discard
+            # the authority of a live session: its completion would be rejected
+            # as missing_authority with no way to restore the trusted scope.
+            launch_reached_active = True
+
+            log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
+
+            # Create session object with domain identity
+            session = Session(
+                key=session_key,
+                issue=issue,
+                agent_config=agent_config,
+                terminal_id=session_name,
+                worktree_path=worktree_path,
+                branch_name=branch_name,
+                completion_path=completion_path,
+                run_assets=run,
+                agent_label=issue.agent_type,
+                original_prompt=rendered_prompt,
+                lease_id=claim.lease_id,
+                lease_acquired_at=claim.lease_acquired_at,
+                lease_expires_at=claim.lease_expires_at,
+            )
+
+            total_time = time.time() - launch_start
+            logger.info(
+                issue_log(issue.number, "Session launched: type=code agent=%s time=%.1fs"),
+                issue.agent_type, total_time
+            )
+
+            full_completion_path = (worktree_path / completion_path).resolve()
+            session_started_payload: SessionStartedEventPayload = {
+                "issue_number": issue.number,
+                "session_id": session_name,
+                "agent": issue.agent_type,
+                "task": "code",
+                "worktree_path": str(worktree_path),
+                "branch_name": branch_name,
+                "reset_from_scratch": from_scratch_pending,
+                "run_id": run.run_id,
+                "run_dir": str(run.run_dir),
                 "completion_path": completion_path,
+                "completion_path_absolute": str(full_completion_path),
                 "session_prompt_path": prompt_path,
-            },
-        )
-        env_exports = self._build_session_env(
-            completion_path=completion_path,
-            session_id=run.session_name,
-            agent_label=issue.agent_type,
-            issue_number=issue.number,
-            run_assets=run,
-            worktree_path=worktree_path,
-        )
-        if self.config.e2e_pr_labels:
-            labels_str = ",".join(self.config.e2e_pr_labels)
-            env_exports += f" E2E_PR_LABELS='{labels_str}'"
-        command = f"{env_exports} && {base_command}"
-        logger.info(
-            "[launch] Issue session command: issue=%s session=%s worktree=%s completion=%s command=%s",
-            issue.number,
-            session_name,
-            worktree_path,
-            completion_path,
-            command,
-        )
+            }
+            if from_scratch_pending:
+                session_started_payload["review_cache_boundary_started_at"] = run.started_at
+            self.events.publish(make_session_started_event(session_started_payload))
 
-        # Create terminal session
-        step_start = time.time()
-        session_created = self._create_session(session_name, command, worktree_path, issue.title)
-        logger.info(
-            "[launch] Issue session create result: issue=%s session=%s created=%s",
-            issue.number,
-            session_name,
-            session_created,
-        )
-        _session_time = time.time() - step_start
+            # State machine transitions
+            self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
 
-        if not session_created:
-            log_transition("issue", issue.number, "LAUNCHING", "FAILED", "session creation failed")
-            logger.error(issue_log(issue.number, "FAILED: session creation failed"))
-            self._apply_actions([
-                RemoveLabelAction(
-                    issue_number=issue.number,
-                    label=self._lm.in_progress,
-                    reason="session creation failed",
-                    issue_key=issue.key.stable_id(),
-                ),
-            ], context="launch_session_creation_failed")
-            self._release_claim_if_held(issue.number, claim)
-            return LaunchResult(None, False, "Failed to create terminal session")
-
-        log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
-
-        # Create session object with domain identity
-        session = Session(
-            key=session_key,
-            issue=issue,
-            agent_config=agent_config,
-            terminal_id=session_name,
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            completion_path=completion_path,
-            run_assets=run,
-            agent_label=issue.agent_type,
-            original_prompt=rendered_prompt,
-            lease_id=claim.lease_id,
-            lease_acquired_at=claim.lease_acquired_at,
-            lease_expires_at=claim.lease_expires_at,
-        )
-
-        total_time = time.time() - launch_start
-        logger.info(
-            issue_log(issue.number, "Session launched: type=code agent=%s time=%.1fs"),
-            issue.agent_type, total_time
-        )
-
-        full_completion_path = (worktree_path / completion_path).resolve()
-        session_started_payload: SessionStartedEventPayload = {
-            "issue_number": issue.number,
-            "session_id": session_name,
-            "agent": issue.agent_type,
-            "task": "code",
-            "worktree_path": str(worktree_path),
-            "branch_name": branch_name,
-            "reset_from_scratch": from_scratch_pending,
-            "run_id": run.run_id,
-            "run_dir": str(run.run_dir),
-            "completion_path": completion_path,
-            "completion_path_absolute": str(full_completion_path),
-            "session_prompt_path": prompt_path,
-        }
-        if from_scratch_pending:
-            session_started_payload["review_cache_boundary_started_at"] = run.started_at
-        self.events.publish(make_session_started_event(session_started_payload))
-
-        # State machine transitions
-        self._trigger_issue_session_state_transitions(issue, session_name, agent_config.timeout_minutes)
-
-        return LaunchResult(session, True)
+            return LaunchResult(session, True)
+        finally:
+            if not launch_reached_active:
+                self._discard_triage_authority_after_failed_launch(issue, ctx)
 
     def launch_validation_retry_session(
         self,

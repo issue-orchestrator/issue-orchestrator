@@ -81,6 +81,12 @@ class LabelManager:
 
         # Set of all resolved non-pattern labels for fast membership test
         self._resolved_set: frozenset[str] = frozenset(self._resolved.values())
+        # Casefolded variant for case-insensitive reserved-name checks:
+        # GitHub label names are case-insensitive, so untrusted label input
+        # must not bypass ownership by case-flipping an owned name.
+        self._resolved_folded: frozenset[str] = frozenset(
+            value.casefold() for value in self._resolved_set
+        )
 
     # ------------------------------------------------------------------
     # Registry construction
@@ -293,6 +299,26 @@ class LabelManager:
         if _PUBLISH_FAIL_COUNT_RE.match(base):
             return True
         return False
+
+    def is_workflow_reserved(self, label: str) -> bool:
+        """Case-insensitive union of ``is_ours`` and ``is_blocking``.
+
+        GitHub label names are case-insensitive, so agent-proposed labels
+        (untrusted input) are checked against casefolded owned/blocking
+        names — including a casefolded configured prefix — rather than the
+        exact-spelling checks used for orchestrator-written labels.
+        """
+        folded = label.casefold()
+        if folded in self._resolved_folded:
+            return True
+        base = folded
+        if self._prefix and folded.startswith(f"{self._prefix.casefold()}:"):
+            base = folded[len(self._prefix) + 1:]
+        if _REWORK_CYCLE_RE.match(base) or _PUBLISH_FAIL_COUNT_RE.match(base):
+            return True
+        if base == "blocked" or base.startswith(("blocked-", "blocked:")):
+            return True
+        return base in _LEGACY_BLOCKING
 
     def get_ours(self, labels: Sequence[str]) -> list[str]:
         """Return only orchestrator-owned labels from *labels*."""

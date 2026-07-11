@@ -17,6 +17,9 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.completion_types import ProcessingResult
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.ports.triage_authority import (
+    InMemoryTriageAuthorityStore,
+)
 from issue_orchestrator.control.publish_recovery import PublishRecoveryService
 from issue_orchestrator.domain.models import (
     Issue,
@@ -227,6 +230,7 @@ def _service(
     runner: Any = None,
     action_applier: _ActionApplier | None = None,
     code_review_agent_configured: bool = False,
+    triage_authority: InMemoryTriageAuthorityStore | None = None,
 ) -> tuple[PublishRecoveryService, JsonPublishRetryLocatorStore, Any]:
     store = JsonPublishRetryLocatorStore(tmp_path / "publish_retry_locators.json")
     runner = runner or _RecordingRunner()
@@ -242,6 +246,7 @@ def _service(
         fresh_issue_reader=repo,
         action_applier=action_applier or _ActionApplier(repo),
         code_review_agent_configured=code_review_agent_configured,
+        triage_authority=triage_authority or InMemoryTriageAuthorityStore(),
     )
     return service, store, runner
 
@@ -742,6 +747,7 @@ def _service_with_processor(tmp_path, repo, lm):
         fresh_issue_reader=repo,
         action_applier=_ActionApplier(repo),
         code_review_agent_configured=False,
+        triage_authority=InMemoryTriageAuthorityStore(),
     )
     return service, store, runner, processor
 
@@ -1071,3 +1077,80 @@ def test_deferred_review_exchange_does_not_finalize_publish(make_session, tmp_pa
     assert store.get(4057) is not None
     # And a follow-up retry is available once the exchange settles.
     assert service.retry_publish(4057, state).status == "submitted"
+
+
+# ---------------------------------------------------------------------------
+# Triage launch-authority retention at retry terminals (#6769 F3)
+# ---------------------------------------------------------------------------
+
+
+def _arm_authority_for_locators(authority_store, locators):
+    from issue_orchestrator.domain.triage_session import (
+        TriageLaunchAuthority,
+        TriageSessionFlavor,
+    )
+
+    authority_store.record(
+        run_id=locators.run_assets.run_id,
+        session_name=locators.run_assets.session_name,
+        authority=TriageLaunchAuthority(
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+            anchor_issue_number=4057,
+        ),
+    )
+
+
+def test_retry_success_discards_triage_authority_row(make_session, tmp_path) -> None:
+    """A publish-retryable failure keeps the run's authority row alive (the
+    retry re-validates it); the retry's success drain is the run's true
+    terminal, so the row is discarded there with the locators (#6769 F3)."""
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    authority_store = InMemoryTriageAuthorityStore()
+    service, store, runner = _service(
+        tmp_path, repo, lm, triage_authority=authority_store
+    )
+    _record_failure(service, make_session, tmp_path)
+    locators = store.get(4057)
+    assert locators is not None
+    _arm_authority_for_locators(authority_store, locators)
+    state = OrchestratorState()
+
+    assert service.retry_publish(4057, state).status == "submitted"
+    runner.run_all()
+    service.drain_completed_retries(state)
+
+    assert store.get(4057) is None
+    assert (
+        authority_store.load(
+            run_id=locators.run_assets.run_id,
+            session_name=locators.run_assets.session_name,
+        )
+        is None
+    )
+
+
+def test_abandon_issue_discards_triage_authority_row(make_session, tmp_path) -> None:
+    """Abandonment (reset/teardown) ends the retryable run: locators AND the
+    triage authority row go together (#6769 F3)."""
+    lm = LabelManager(_config(tmp_path))
+    repo = _Repo(issue=_issue(lm), labels=list(_issue(lm).labels))
+    authority_store = InMemoryTriageAuthorityStore()
+    service, store, _runner = _service(
+        tmp_path, repo, lm, triage_authority=authority_store
+    )
+    _record_failure(service, make_session, tmp_path)
+    locators = store.get(4057)
+    assert locators is not None
+    _arm_authority_for_locators(authority_store, locators)
+
+    service.abandon_issue(4057)
+
+    assert store.get(4057) is None
+    assert (
+        authority_store.load(
+            run_id=locators.run_assets.run_id,
+            session_name=locators.run_assets.session_name,
+        )
+        is None
+    )

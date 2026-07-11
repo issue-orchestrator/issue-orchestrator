@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from ..domain.models import PendingReview, PendingRework, PendingTriageReview
+    from ..ports.triage_authority import TriageAuthorityStore
     from .state_machine_manager import StateMachineManager
     from .label_manager import LabelManager
 
@@ -50,6 +51,7 @@ from .completion_action_planner import (
     critical_processing_errors,
     has_review_exchange_errors,
 )
+from .triage_completion import discard_triage_authority_after_completion
 from .invalid_record_actions import (
     failure_event_reason,
     invalid_record_event_fields,
@@ -65,10 +67,7 @@ from ..infra.run_audit import write_run_audit
 logger = logging.getLogger(__name__)
 
 
-_PUBLISH_STAGE_LABELS = {
-    "push_branch": "Push",
-    "create_pr": "PR creation",
-}
+_PUBLISH_STAGE_LABELS = {"push_branch": "Push", "create_pr": "PR creation"}
 
 # Maximum length of the blocked-card status-reason line. Cards render the
 # reason inline; anything longer wraps ugly or truncates without ellipsis
@@ -147,6 +146,7 @@ class CompletionHandler:
         get_session_machine_fn: Callable[[str], Optional["SessionStateMachine"]],
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
         session_output: SessionOutput,
+        triage_authority: "TriageAuthorityStore",
         remove_session_machine_fn: Callable[[str], None] | None = None,
         label_manager: "LabelManager | None" = None,
     ):
@@ -157,6 +157,7 @@ class CompletionHandler:
         self._get_session_machine = get_session_machine_fn
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
+        self._triage_authority = triage_authority
         self._remove_session_machine = remove_session_machine_fn
         if label_manager is None:
             from .label_manager import LabelManager
@@ -166,6 +167,7 @@ class CompletionHandler:
             config,
             repository_host,
             label_manager,
+            triage_authority,
         )
 
     def mark_session_retry(self, session: Session, reason: str) -> None:
@@ -359,6 +361,13 @@ class CompletionHandler:
         )
         if audit_actions:
             completion_actions = completion_actions + audit_actions
+
+        # Retention (#6769 F3): completion finalization is this run's terminal
+        # seam; publish-stage failures keep the row for Retry Publish.
+        discard_triage_authority_after_completion(
+            self.config, self._triage_authority, session,
+            processing_errors=processing_errors,
+        )
 
         result = CompletionResult(
             history_entry=history_entry,
@@ -795,14 +804,13 @@ class CompletionHandler:
         pr_url: Optional[str],
     ) -> None:
         """Update all relevant state machines for the session completion."""
-        status_reasons = {
+        status_reason = {
             SessionStatus.COMPLETED: "PR created successfully",
             SessionStatus.BLOCKED: "Agent marked issue as blocked",
             SessionStatus.NEEDS_HUMAN: "Agent requested human input",
             SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
             SessionStatus.FAILED: "Session ended without PR or status update",
-        }
-        status_reason = status_reasons.get(status, "Unknown")
+        }.get(status, "Unknown")
 
         logger.debug(f"[STATE_MACHINE] Triggering transitions for session {session.terminal_id}")
 
@@ -1006,9 +1014,8 @@ class CompletionHandler:
         issue_number: int | None,
     ) -> None:
         payload = {
-            "pr_number": pr_info.number,
+            "pr_number": pr_info.number, "pr_url": getattr(pr_info, "url", None),
             "labels": list(getattr(pr_info, "labels", []) or []),
-            "pr_url": getattr(pr_info, "url", None),
         }
         if issue_key is not None:
             payload["issue_key"] = issue_key
@@ -1024,11 +1031,8 @@ class CompletionHandler:
         issue_number: int,
     ) -> None:
         payload = {
-            "pr_number": pr_number,
-            "labels": [],
-            "pr_url": pr_url,
-            "issue_key": issue_key,
-            "issue_number": issue_number,
+            "pr_number": pr_number, "labels": [], "pr_url": pr_url,
+            "issue_key": issue_key, "issue_number": issue_number,
         }
         self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
@@ -1134,7 +1138,6 @@ class CompletionHandler:
         review_exchange_completed: bool,
     ) -> tuple[Action, ...]:
         """Return label actions after an approved local review exchange."""
-
         if not review_exchange_completed or not pr_url:
             return ()
         if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
@@ -1197,8 +1200,7 @@ class CompletionHandler:
         return resolve_session_run_dir(self._session_output, session)
 
 def launch_review_by_number(
-    n: int,
-    pending_reviews: list["PendingReview"],
+    n: int, pending_reviews: list["PendingReview"],
     launch_review_session_fn: Callable[["PendingReview"], Optional["Session"]],
 ) -> Optional["Session"]:
     """Launch review session by number - moved per method table."""
@@ -1207,8 +1209,7 @@ def launch_review_by_number(
 
 
 def launch_rework_by_number(
-    n: int,
-    pending_reworks: list["PendingRework"],
+    n: int, pending_reworks: list["PendingRework"],
     launch_rework_session_fn: Callable[["PendingRework"], Optional["Session"]],
 ) -> Optional["Session"]:
     """Launch rework session by number - moved per method table."""
@@ -1222,8 +1223,7 @@ def get_review_machine(pr: int, issue: int, state_machines: "StateMachineManager
 
 
 def launch_triage_by_number(
-    n: int,
-    pending_triage_reviews: list["PendingTriageReview"],
+    n: int, pending_triage_reviews: list["PendingTriageReview"],
     launch_triage_session_fn: Callable[["PendingTriageReview"], Optional["Session"]],
 ) -> Optional["Session"]:
     """Launch triage session by number - moved per method table.

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ..ports.e2e_issue_tracker import E2EIssueTracker
     from ..ports.goal_pilot_store import GoalPilotStore
     from ..ports.attempt_store import AttemptStore
+    from ..ports.triage_authority import TriageAuthorityStore
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
@@ -136,6 +137,10 @@ class OrchestratorDeps:
     @property
     def attempt_store(self) -> "AttemptStore":
         return self.services.attempt_store
+
+    @property
+    def triage_authority(self) -> "TriageAuthorityStore":
+        return self.services.triage_authority
 
     @property
     def provider_resilience(self) -> "ProviderResilienceManager":
