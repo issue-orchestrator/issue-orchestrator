@@ -333,6 +333,20 @@ class TriageHealthReviewConfig:
 
     interval_minutes: int = 0
 
+    def startup_errors(self) -> list[str]:
+        """Startup configuration errors for the health-review block.
+
+        The documented disable value is exactly 0; a negative interval is a
+        misconfiguration that must fail startup loudly, never be silently
+        treated as disabled (#6763 finding 8).
+        """
+        if self.interval_minutes < 0:
+            return [
+                "triage.health_review.interval_minutes must be >= 0 "
+                f"(0 disables the trigger), got {self.interval_minutes}"
+            ]
+        return []
+
 
 @dataclass
 class TriageConfig:

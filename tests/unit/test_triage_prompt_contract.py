@@ -105,3 +105,69 @@ def test_investigation_flavor_documents_focus_comment_rule(variant: str) -> None
     bullet = text[marker : marker + 800]
     assert "post_comment" in bullet
     assert "target_number" in bullet
+
+
+# --- Per-flavor flow isolation (#6763 finding 1) ---------------------------
+#
+# A health or failure-investigation session gets no PR manifest. If the
+# manifest-read step or the "Empty batch" artifact-pair fallback lives in a
+# section those flavors are told to follow, the session either fails on its
+# intentionally absent manifest or publishes an empty-batch result instead of
+# walking the board. Each prompt source must therefore isolate every
+# batch-only instruction inside the Batch Review Flow. These strings are the
+# unambiguous batch-only tells: the `manifest.json` read step and the literal
+# "Empty batch" summary the empty-audit fallback writes.
+_BATCH_ONLY_TELLS = ("manifest.json", "Empty batch")
+
+
+def _flow_section(text: str, heading: str) -> str:
+    """The named ``## <heading>`` flow, up to the next level-2 heading.
+
+    Level-3 subsections (``### 1. Read the Manifest`` etc.) belong to their
+    parent flow, so the section runs until the next ``## `` that is not
+    ``### ``.
+    """
+    marker = f"## {heading}"
+    assert marker in text, f"{heading!r} section missing"
+    start = text.index(marker)
+    rest = text[start + len(marker) :]
+    match = re.search(r"\n## (?!#)", rest)
+    end = start + len(marker) + (match.start() if match else len(rest))
+    return text[start:end]
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_all_three_flavor_flows_are_present(variant: str) -> None:
+    """The per-flavor structure the guardrails rely on exists in every source."""
+    text = PROMPT_VARIANTS[variant]
+    for heading in (
+        "Batch Review Flow",
+        "Failure Investigation Flow",
+        "Health Review Flow",
+    ):
+        assert f"## {heading}" in text, f"{variant} missing '## {heading}'"
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_batch_flow_still_carries_the_manifest_and_empty_batch_steps(
+    variant: str,
+) -> None:
+    """Non-vacuity: the tells the other flows must NOT contain live in batch."""
+    batch = _flow_section(PROMPT_VARIANTS[variant], "Batch Review Flow")
+    for tell in _BATCH_ONLY_TELLS:
+        assert tell in batch, f"{variant} batch flow lost the {tell!r} step"
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+@pytest.mark.parametrize(
+    "heading", ["Health Review Flow", "Failure Investigation Flow"]
+)
+def test_non_batch_flows_contain_no_batch_only_instructions(
+    variant: str, heading: str
+) -> None:
+    """A no-manifest flavor never inherits a manifest-read or empty-batch step."""
+    section = _flow_section(PROMPT_VARIANTS[variant], heading)
+    for tell in _BATCH_ONLY_TELLS:
+        assert tell not in section, (
+            f"{variant} '{heading}' contains batch-only instruction {tell!r}"
+        )

@@ -1135,6 +1135,7 @@ class ReviewSettings(BaseModel):
         0,
         title="Health Review Interval (minutes)",
         description="Create a periodic health-review issue every N minutes (0 = disabled)",
+        ge=0,
         json_schema_extra={
             "doc_examples": ["0", "240"],
             "doc_notes": (

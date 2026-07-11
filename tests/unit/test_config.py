@@ -3112,7 +3112,40 @@ triage:
 
         assert config.triage.health_review.interval_minutes == 240
 
+    def test_triage_health_review_negative_interval_is_startup_error(self):
+        """A negative interval is a misconfiguration, never silently disabled.
 
+        The documented disable value is exactly 0; ``-5`` must fail startup
+        validation loudly so an operator cannot accidentally turn the trigger
+        off with an out-of-range number (#6763 finding 8).
+        """
+        config = Config()
+        config.triage.health_review.interval_minutes = -5
+
+        errors = config.validate()
+
+        assert any(
+            "triage.health_review.interval_minutes" in e and "-5" in e
+            for e in errors
+        ), errors
+
+    def test_triage_health_review_startup_errors_reports_negative(self):
+        """The owning config block reports its own invariant (single owner)."""
+        config = Config()
+        config.triage.health_review.interval_minutes = -1
+
+        errors = config.triage.health_review.startup_errors()
+
+        assert len(errors) == 1
+        assert ">= 0" in errors[0]
+
+    def test_triage_health_review_zero_and_positive_have_no_startup_errors(self):
+        """0 (disabled) and any positive interval are both valid."""
+        config = Config()
+        config.triage.health_review.interval_minutes = 0
+        assert config.triage.health_review.startup_errors() == []
+        config.triage.health_review.interval_minutes = 240
+        assert config.triage.health_review.startup_errors() == []
 
 
 class TestSchedulingConfig:
