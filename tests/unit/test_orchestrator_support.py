@@ -1954,6 +1954,87 @@ class TestUpdateStateAfterAction:
 
         assert support_with_state.state.pending_triage_reviews == [existing]
 
+    def test_batch_triage_issue_does_not_stamp_health_review(self, support_with_state):
+        """Unmarked batch creation must NOT touch last_health_review_at."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+
+        store = MagicMock()
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Triage Batch Review",
+            body="Review these PRs",
+            labels=("agent:triage",),
+            pr_count=5,
+        )
+        result = MagicMock(success=True, details={"issue_number": 999})
+
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert support_with_state.state.last_health_review_at == 0.0
+        store.save_last_health_review_at.assert_not_called()
+        # And the intake routed to the BATCH owner operation, not health.
+        (triage,) = support_with_state.state.pending_triage_reviews
+        assert triage.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_marker_labeled_creation_stamps_and_persists_health_review(
+        self, support_with_state
+    ):
+        """Marker-labeled creation queues a HEALTH_REVIEW and stamps state AND
+        the durable store (ADR-0031 §4)."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        store = MagicMock()
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Health Review — walk the floor",
+            body="Walk the floor",
+            labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+            pr_count=0,
+        )
+        result = MagicMock(success=True, details={"issue_number": 1000})
+
+        before = time.time()
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        stamped = support_with_state.state.last_health_review_at
+        assert stamped >= before
+        store.save_last_health_review_at.assert_called_once_with(stamped)
+        # The anchor enters the pending-triage launch queue with the variant
+        # the marker label declares (typed intake, #6768 round 3).
+        (triage,) = support_with_state.state.pending_triage_reviews
+        assert triage.issue_number == 1000
+        assert triage.flavor is TriageSessionFlavor.HEALTH_REVIEW
+
+    def test_marker_labeled_creation_survives_store_persist_failure(
+        self, support_with_state, caplog
+    ):
+        """Persistence failure warns but keeps the in-memory stamp and queue entry."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        store = MagicMock()
+        store.save_last_health_review_at.side_effect = RuntimeError("disk full")
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Health Review — walk the floor",
+            body="Walk the floor",
+            labels=(HEALTH_REVIEW_MARKER_LABEL,),
+            pr_count=0,
+        )
+        result = MagicMock(success=True, details={"issue_number": 1001})
+
+        with caplog.at_level("WARNING"):
+            support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert support_with_state.state.last_health_review_at > 0.0
+        assert len(support_with_state.state.pending_triage_reviews) == 1
+        assert "last_health_review_at" in caplog.text
+
     def test_queue_triage_dedups_existing_queue_entry(self, support_with_state):
         """Repeated QUEUE_TRIAGE for the same issue stays a single queue entry."""
         from issue_orchestrator.control.actions import QueueTriageAction

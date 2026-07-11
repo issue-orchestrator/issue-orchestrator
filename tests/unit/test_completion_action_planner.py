@@ -254,6 +254,24 @@ def arm_investigation_session(
     )
 
 
+def arm_health_review_session(config: Config, session: Session) -> None:
+    """Plant the assignment copy AND the launch authority for a health review.
+
+    Anchor-only scope (ADR-0031 §4): no focus issue, empty manifest set.
+    """
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.HEALTH_REVIEW)
+    )
+    record_authority(
+        config,
+        session,
+        TriageLaunchAuthority(
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            anchor_issue_number=session.issue.number,
+        ),
+    )
+
+
 def make_triage_session(tmp_path: Path, *, terminal_id: str = "issue-1") -> Session:
     issue = make_issue(labels=["agent:triage"])  # agent_type derives from labels
     return make_session(tmp_path, issue=issue, terminal_id=terminal_id)
@@ -570,6 +588,149 @@ def test_failure_investigation_triage_session_never_labels_manifest_prs(
 
     assert _triage_labels(actions) == []
     assert "in-progress" in removed_labels(actions)
+
+
+def test_completed_health_review_plans_decision_and_closes_anchor(
+    tmp_path: Path,
+) -> None:
+    """Health review + valid pair: decision actions, close the anchor, no labels.
+
+    The anchor issue is a walk-the-floor log entry (ADR-0031 §4) — a landed
+    review closes it, and manifest labels never apply (there is no manifest).
+    """
+    config = make_triage_config(tmp_path)
+    session = make_triage_session(tmp_path)
+    arm_health_review_session(config, session)
+    # Even stray planted manifest noise must not be labeled for this flavor.
+    plant_triage_manifest(tmp_path, session)
+    plant_triage_decision_pair(session, comment_targets=(session.issue.number,))
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    assert "triage-reviewed" not in added_labels(actions)
+    assert "triage-failed" not in added_labels(actions)
+    decision_comments = [
+        action for action in actions
+        if isinstance(action, AddCommentAction)
+        and action.number == session.issue.number
+        and "Diagnosis" in action.comment
+    ]
+    assert len(decision_comments) == 1
+    (close,) = [a for a in actions if isinstance(a, CloseIssueAction)]
+    assert close.issue_number == session.issue.number
+    assert "Health review completed" in close.reason
+    # Terminal ordering: a mid-apply crash leaves the anchor open.
+    assert actions.index(close) == len(actions) - 1
+
+
+def test_health_review_missing_pair_surfaces_rejection_and_keeps_anchor_open(
+    tmp_path: Path,
+) -> None:
+    """Missing/invalid pair: rejection surfaced, anchor NOT closed (visibility)."""
+    config = make_triage_config(tmp_path)
+    session = make_triage_session(tmp_path)
+    arm_health_review_session(config, session)
+    # No decision artifact pair written.
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    rejections = [
+        action for action in actions if isinstance(action, SurfaceTriageProposalAction)
+    ]
+    assert len(rejections) == 1
+    assert rejections[0].mode == "rejected"
+    assert not any(isinstance(a, CloseIssueAction) for a in actions)
+
+
+def test_health_review_decision_targeting_anchor_passes_scope_validation(
+    tmp_path: Path,
+) -> None:
+    """The anchor issue is the ONE allowed target for health post_comment."""
+    config = make_triage_config(tmp_path)
+    session = make_triage_session(tmp_path)
+    arm_health_review_session(config, session)
+    plant_triage_decision_pair(session, comment_targets=(session.issue.number,))
+
+    error = triage_decision_processing_error(
+        config,
+        triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+        run_dir=session.run_dir,
+        run_id=session.run_assets.run_id,
+        session_name=session.run_assets.session_name,
+    )
+
+    assert error is None
+
+
+def test_health_review_decision_targeting_other_issue_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """A health decision may not address arbitrary issues (#6761 rr F2 scope).
+
+    Board-wide findings belong in scope-free create_issue/flag_pattern
+    proposals; a post_comment outside the anchor is a contract violation on
+    both completion seams (processing outcome AND planned effects).
+    """
+    config = make_triage_config(tmp_path)
+    session = make_triage_session(tmp_path)
+    arm_health_review_session(config, session)
+    plant_triage_decision_pair(session, comment_targets=(999,))
+
+    error = triage_decision_processing_error(
+        config,
+        triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+        run_dir=session.run_dir,
+        run_id=session.run_assets.run_id,
+        session_name=session.run_assets.session_name,
+    )
+    assert error is not None
+    assert "outside this session's launch scope" in error
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+    rejections = [
+        action for action in actions if isinstance(action, SurfaceTriageProposalAction)
+    ]
+    assert len(rejections) == 1
+    assert rejections[0].mode == "rejected"
+    assert not any(isinstance(a, CloseIssueAction) for a in actions)
+    # And the out-of-scope comment is never planned.
+    assert not any(
+        isinstance(a, AddCommentAction) and a.number == 999 for a in actions
+    )
+
+
+@pytest.mark.parametrize("status", [SessionStatus.FAILED, SessionStatus.TIMED_OUT])
+def test_failed_health_review_closes_anchor_without_labels(
+    tmp_path: Path, status: SessionStatus
+) -> None:
+    """FAILED/TIMED_OUT health sessions close the anchor (no manifest labels).
+
+    An open dead anchor would be requeued at restart AND dedupe the next
+    interval's trigger; closing it lets a fresh review fire on schedule.
+    """
+    config = make_triage_config(tmp_path)
+    config.retry.interrupted_sessions.enabled = False
+    session = make_triage_session(tmp_path)
+    arm_health_review_session(config, session)
+    plant_triage_manifest(tmp_path, session)  # planted noise: must stay unread
+
+    actions = make_planner(config).generate_completion_actions(session, status)
+
+    (close,) = [a for a in actions if isinstance(a, CloseIssueAction)]
+    assert close.issue_number == session.issue.number
+    assert "Health review session failed" in close.reason
+    assert _triage_failed_labels(actions) == []
+    assert _triage_labels(actions) == []
+    assert actions.index(close) == len(actions) - 1
 
 
 def test_triage_session_without_launch_authority_is_rejected(

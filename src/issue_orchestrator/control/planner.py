@@ -73,6 +73,7 @@ from .awaiting_merge_post_publish_policy import (
     build_post_publish_validation_comment,
     POST_PUBLISH_VALIDATION_SOURCE,
 )
+from .health_review_trigger import plan_health_review_issue_creation
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
@@ -172,6 +173,10 @@ class Planner:
         # Check if paused
         if snapshot.paused:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
+            # Run the health-review creation gate for its TRIAGE_SKIPPED
+            # emission: a due health review must be observably skipped while
+            # paused, not silently dropped by this early return (#6763).
+            self._plan_health_review_creation(snapshot)
             return Plan.empty()
 
         plan_context = PlanContext(issue_labels_by_number={
@@ -229,6 +234,12 @@ class Planner:
         triage_create_action = self._plan_triage_issue_creation(snapshot)
         if triage_create_action:
             actions.append(triage_create_action)
+
+        # 1f2. Create the periodic health-review anchor issue when due
+        # (ADR-0031 §4; policy lives in health_review_trigger).
+        health_review_action = self._plan_health_review_creation(snapshot)
+        if health_review_action:
+            actions.append(health_review_action)
 
         # 1g. Process cleanups for reviewed PRs
         cleanup_actions = self._plan_cleanups(snapshot)
@@ -585,6 +596,25 @@ class Planner:
                 plan_context.record_remove(issue.number, label)
         return actions
 
+    def _plan_health_review_creation(
+        self, snapshot: OrchestratorSnapshot
+    ) -> Optional[CreateTriageIssueAction]:
+        """Plan the periodic health-review anchor creation (ADR-0031 §4).
+
+        Policy lives in health_review_trigger; the TriageWorkflow owns the
+        paused/capacity gate and its TRIAGE_SKIPPED emissions (#6763).
+        """
+        if not self.triage_workflow:
+            return None
+        return plan_health_review_issue_creation(
+            snapshot.triage_facts,
+            snapshot.pending_triage,
+            self.config,
+            workflow=self.triage_workflow,
+            active_session_count=snapshot.active_count,
+            paused=snapshot.paused,
+        )
+
     def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:
         """Plan triage issue creation if threshold is met."""
         if not snapshot.triage_facts:
@@ -608,6 +638,10 @@ class Planner:
 
     def _should_create_triage_issue(self, facts: "TriageFacts") -> bool:
         """Check if triage issue should be created."""
+        if facts.threshold <= 0:
+            # Batch trigger disabled; facts may exist for the health review
+            # alone (ADR-0031 §4), which plans its own anchor creation.
+            return False
         if facts.pr_count < facts.threshold:
             logger.debug("Planner: triage threshold not met (%d/%d)", facts.pr_count, facts.threshold)
             return False

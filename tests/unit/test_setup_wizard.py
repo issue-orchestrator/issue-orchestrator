@@ -259,6 +259,7 @@ class TestCreateTriageReviewPrompt:
             assert "batch_review" in text, f"{name} missing batch flavor"
             assert "failure_investigation" in text, f"{name} missing failure flavor"
             assert "focus_issue_number" in text, f"{name} missing focus contract"
+            assert "health_review" in text, f"{name} missing health flavor"
 
     def test_includes_board_snapshot_contract(self, tmp_path):
         """All triage prompt sources must document the board snapshot file.
@@ -307,7 +308,7 @@ class TestCreateTriageReviewPrompt:
 
         content = prompt_path.read_text()
 
-        assert "Review Process" in content
+        assert "Batch Review Flow" in content
         assert "Document Your Findings" in content
         assert "Patterns observed" in content
         assert "Audit Principles" in content

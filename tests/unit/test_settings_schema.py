@@ -37,6 +37,7 @@ from issue_orchestrator.infra.settings_schema import (
     get_setup_fields,
     get_summary_fields,
 )
+from issue_orchestrator.infra.settings_schema_support import FORM_CONTROL_INTEGER
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,49 @@ class TestValidation:
     def test_review_max_rework_max(self):
         with pytest.raises(ValidationError):
             ReviewSettings(max_rework_cycles=11)
+
+    def test_health_review_interval_rejects_negative(self):
+        """ge=0: the dashboard and YAML must reject -5, not treat it as disabled
+        (the documented disable value is exactly 0, #6763 finding 8)."""
+        with pytest.raises(ValidationError):
+            ReviewSettings(triage_health_review_interval_minutes=-5)
+
+    def test_health_review_interval_accepts_zero_and_positive(self):
+        """0 disables; a positive value is accepted when a triage agent is set
+        (a positive value alone is a cross-field error — see below)."""
+        assert (
+            ReviewSettings(
+                triage_health_review_interval_minutes=0
+            ).triage_health_review_interval_minutes
+            == 0
+        )
+        assert (
+            ReviewSettings(
+                triage_health_review_interval_minutes=240,
+                triage_agent="agent:triage",
+            ).triage_health_review_interval_minutes
+            == 240
+        )
+
+    def test_positive_health_review_interval_without_agent_rejected(self):
+        """Cross-field invariant (#6776): a positive interval with no triage
+        agent must be rejected at the settings/POST boundary, never silently
+        disabled at runtime."""
+        with pytest.raises(ValidationError, match="no triage agent is configured"):
+            ReviewSettings(triage_health_review_interval_minutes=60)
+        with pytest.raises(ValidationError, match="no triage agent is configured"):
+            ReviewSettings(
+                triage_health_review_interval_minutes=60, triage_agent=""
+            )
+
+    def test_zero_interval_without_agent_is_valid(self):
+        """0 + no agent is the documented disabled state and must validate."""
+        assert (
+            ReviewSettings(
+                triage_health_review_interval_minutes=0
+            ).triage_health_review_interval_minutes
+            == 0
+        )
 
     def test_web_port_min(self):
         with pytest.raises(ValidationError):
@@ -452,6 +496,43 @@ class TestFormControlClassification:
             ReviewSettings.model_validate({"nits_by_agent": "{}"})
         with pytest.raises(ValidationError, match="nits_by_agent"):
             ReviewSettings.model_validate({"nits_by_agent": {"agent:frontend": "bogus"}})
+
+    def test_health_review_interval_projects_native_number_with_min_zero(self):
+        """The schema-driven control is a native number input with min=0.
+
+        ``ge=0`` becomes ``"minimum": 0`` in the field's JSON schema, which the
+        settings form renders as the HTML ``min`` attribute on a native number
+        input - so the dashboard cannot even offer -5 (#6763 finding 8). The
+        native ``<input type="number">`` keeps its label and focus treatment,
+        satisfying the accessibility requirement without custom ARIA.
+        """
+        schemas = get_settings_json_schema()
+        prop = schemas["review"]["properties"][
+            "triage_health_review_interval_minutes"
+        ]
+        assert prop["minimum"] == 0
+        control = classify_form_control(
+            "review.triage_health_review_interval_minutes", prop
+        )
+        assert control["kind"] == FORM_CONTROL_INTEGER
+
+    def test_rejected_negative_interval_surfaces_field_scoped_save_error(self):
+        """A rejected value must surface an accessible, field-scoped save error.
+
+        The settings POST route projects each ValidationError to
+        ``{"name": loc[-1], "detail": msg}`` (web_settings_routes), so the UI
+        can attach the message to the specific field. The error therefore MUST
+        carry the field name in its location.
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            ReviewSettings.model_validate(
+                {"triage_health_review_interval_minutes": -5}
+            )
+        errors = exc_info.value.errors()
+        assert any(
+            err["loc"][-1] == "triage_health_review_interval_minutes"
+            for err in errors
+        ), errors
 
 
 # ---------------------------------------------------------------------------

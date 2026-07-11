@@ -108,6 +108,38 @@ class TestWatermark:
         assert store.load_watermark() == "2025-01-01T00:00:00Z"
 
 
+class TestLastHealthReviewAt:
+    """Durable last-health-review marker (ADR-0031 §4)."""
+
+    def test_round_trip(self, store: QueueCacheStore) -> None:
+        store.save_last_health_review_at(1750000000.25)
+        assert store.load_last_health_review_at() == 1750000000.25
+
+    def test_defaults_to_zero_on_empty_store(self, store: QueueCacheStore) -> None:
+        assert store.load_last_health_review_at() == 0.0
+
+    def test_second_save_overwrites(self, store: QueueCacheStore) -> None:
+        store.save_last_health_review_at(100.0)
+        store.save_last_health_review_at(200.0)
+        assert store.load_last_health_review_at() == 200.0
+
+    def test_survives_snapshot_save(self, store: QueueCacheStore) -> None:
+        """save_snapshot (queue + watermark) must not clobber the marker."""
+        store.save_last_health_review_at(100.0)
+        store.save_snapshot([_issue(1)], "2025-06-01T00:00:00Z", repo="owner/repo")
+        assert store.load_last_health_review_at() == 100.0
+        assert store.load_watermark() == "2025-06-01T00:00:00Z"
+
+    def test_independent_of_watermark(self, store: QueueCacheStore) -> None:
+        store.save_last_health_review_at(100.0)
+        assert store.load_watermark() is None
+
+    def test_cleared_with_store(self, store: QueueCacheStore) -> None:
+        store.save_last_health_review_at(100.0)
+        store.clear()
+        assert store.load_last_health_review_at() == 0.0
+
+
 class TestReplaceSemantics:
     """save_snapshot replaces all issues."""
 

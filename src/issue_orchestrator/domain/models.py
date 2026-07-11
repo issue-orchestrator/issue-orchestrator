@@ -722,6 +722,7 @@ class Issue:
     body: Optional[str] = None
     milestone_number: Optional[int] = None
     milestone_due_on: Optional[str] = None  # ISO date string
+    created_at: Optional[str] = None  # ISO timestamp string
 
     @property
     def key(self) -> IssueKey:
@@ -1344,14 +1345,19 @@ class TriageFacts:
     Immutable snapshot of conditions for Planner to decide on triage.
     """
     pr_count: int = 0  # PRs with watch label
-    threshold: int = 0  # Configured threshold
+    threshold: int = 0  # Configured threshold (<= 0: batch trigger disabled)
     existing_triage_issue: Optional[int] = None  # Existing open triage issue number
-    watch_label: str = ""  # Label being watched
+    watch_label: str = ""  # Label being watched ("": batch trigger disabled)
     prs: tuple[Any, ...] = field(default_factory=tuple)  # PR info for body generation
     # Labels from source issues/PRs (for label inheritance)
     source_labels: frozenset[str] = field(default_factory=frozenset)
     # Milestones from source issues: tuple of (number, title) for milestone inheritance
     source_milestones: tuple[tuple[int, str], ...] = field(default_factory=tuple)
+    # Periodic health review (ADR-0031 §4). Independent of the batch fields
+    # above: triage.health_review.interval_minutes gates these while
+    # triage_review_threshold gates only the batch fields.
+    health_review_due: bool = False  # Interval elapsed since the last health review
+    existing_health_review_issue: Optional[int] = None  # Open marker-labeled anchor issue
 
 
 @dataclass(frozen=True)
@@ -1553,7 +1559,8 @@ class PendingTriageReview:
     so the launch-time board snapshot must read the failure from the queue
     item, not the buffer. It is required for FAILURE_INVESTIGATION (that
     variant exists only because a failure was discovered) and forbidden for
-    BATCH_REVIEW (threshold-created, no triggering failure).
+    BATCH_REVIEW and HEALTH_REVIEW (threshold-/interval-created, no
+    triggering failure).
     """
     issue_number: int  # The triage review GitHub issue number
     title: str  # Issue title (for display)
@@ -1580,11 +1587,15 @@ class PendingTriageReview:
                 "launch-time board snapshot would be missing its own triggering "
                 "failure (the discovered_failures buffer is cleared after planning)."
             )
-        if self.flavor is TriageSessionFlavor.BATCH_REVIEW and self.failure is not None:
+        if (
+            self.flavor is not TriageSessionFlavor.FAILURE_INVESTIGATION
+            and self.failure is not None
+        ):
             raise ValueError(
-                f"PendingTriageReview for issue #{self.issue_number} is a batch "
-                "review but carries failure context; batch reviews are "
-                "threshold-created and have no triggering failure."
+                f"PendingTriageReview for issue #{self.issue_number} is a "
+                f"{self.flavor.value} but carries failure context; batch and "
+                "health reviews are threshold-/interval-created and have no "
+                "triggering failure."
             )
 
 
@@ -1717,6 +1728,11 @@ class OrchestratorState:
     last_tick_started_at: float = 0.0  # Epoch seconds; 0 if no tick has started
     last_tick_completed_at: float = 0.0  # Epoch seconds; 0 if no tick has completed
     current_tick_phase: str = ""  # Non-empty only while a tick is mid-flight
+    # Periodic health review (ADR-0031 §4): epoch seconds when the last
+    # health-review anchor issue was created; 0 if never. Written by the
+    # health_review_trigger owner on successful anchor creation, hydrated at
+    # startup from the queue-cache meta store so restarts do not double-fire.
+    last_health_review_at: float = 0.0
 
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""

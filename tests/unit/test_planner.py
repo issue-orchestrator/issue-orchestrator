@@ -50,7 +50,9 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.control.workflows import TriageWorkflow
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -1502,6 +1504,184 @@ class TestPlanTriageIssueCreation:
         # Should pick lowest milestone number (1 = M1)
         assert action.milestone.inherited_number == 1
         assert action.milestone.explicit_name is None
+
+
+class TestPlanHealthReviewIssueCreation:
+    """Health-review anchor creation planning (ADR-0031 §4).
+
+    Policy lives in control/health_review_trigger; these tests exercise it
+    through the full planner (facts -> CreateTriageIssueAction).
+    """
+
+    @staticmethod
+    def _make_planner(interval_minutes: int = 60, events=None):
+        config = make_config(triage_review_agent="agent:triage")
+        config.triage.health_review.interval_minutes = interval_minutes
+        # The periodic trigger routes through the owned paused/capacity gate
+        # (TriageWorkflow), so the planner MUST carry that workflow — the same
+        # owner that emits TRIAGE_SKIPPED (#6763 finding 2).
+        events = events if events is not None else InMemoryEventSink()
+        workflow = TriageWorkflow(config=config, events=events)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config), triage_workflow=workflow
+        )
+        return planner, config
+
+    @staticmethod
+    def _health_facts(**kwargs):
+        from issue_orchestrator.domain.models import TriageFacts
+
+        defaults = {"health_review_due": True, "existing_health_review_issue": None}
+        defaults.update(kwargs)
+        return TriageFacts(**defaults)
+
+    @staticmethod
+    def _create_actions(plan):
+        return [
+            a for a in plan.actions
+            if a.action_type == ActionType.CREATE_TRIAGE_ISSUE
+        ]
+
+    def test_creates_anchor_with_agent_and_marker_labels_when_due(self):
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        planner, _ = self._make_planner()
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        actions = self._create_actions(plan)
+        assert len(actions) == 1
+        action = actions[0]
+        assert action.title == "Health Review — walk the floor"
+        assert "agent:triage" in action.labels
+        assert HEALTH_REVIEW_MARKER_LABEL in action.labels
+        assert action.pr_count == 0
+        assert "board snapshot" in action.body.lower()
+        assert "ADR-0031" in action.body
+
+    def test_includes_filter_label_when_configured(self):
+        """Filtered runs must scope the anchor so pickup and dedup both see it."""
+        planner, config = self._make_planner()
+        config.filtering.label = "io:e2e:run-1"
+
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        (action,) = self._create_actions(plan)
+        assert "io:e2e:run-1" in action.labels
+
+    def test_skips_when_not_due(self):
+        planner, _ = self._make_planner()
+        facts = self._health_facts(health_review_due=False)
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+    def test_skips_when_existing_anchor_open(self):
+        planner, _ = self._make_planner()
+        facts = self._health_facts(existing_health_review_issue=321)
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+    def test_skips_when_health_review_pending_launch(self):
+        """Dedup keys off the queue item's typed flavor, not its title."""
+        planner, _ = self._make_planner()
+        pending = PendingTriageReview(
+            issue_number=321,
+            title="renamed by an operator",
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        )
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), pending_triage=[pending])
+        )
+
+        assert self._create_actions(plan) == []
+
+    def test_pending_batch_launch_does_not_block_health_review(self):
+        """A queued BATCH item must not dedupe the health anchor (independent
+        triggers; only a pending HEALTH_REVIEW covers the creation window)."""
+        planner, _ = self._make_planner()
+        pending = PendingTriageReview(
+            issue_number=100,
+            title="Triage Batch Review: 5 PRs pending",
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+        )
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), pending_triage=[pending])
+        )
+
+        assert len(self._create_actions(plan)) == 1
+
+    def test_health_only_facts_never_create_batch_issue(self):
+        """threshold<=0 facts (health-only) must not trip batch creation."""
+        planner, _ = self._make_planner()
+        facts = self._health_facts(
+            health_review_due=False, pr_count=0, threshold=0, watch_label=""
+        )
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+    @staticmethod
+    def _triage_skipped(events: InMemoryEventSink):
+        return [e for e in events.events if e.name == "triage.skipped"]
+
+    def test_paused_skips_creation_and_emits_triage_skipped(self):
+        """A due health review, while paused, files NO anchor and is observably
+        skipped through the owned gate (not silently dropped, #6763 finding 2).
+
+        ``Planner.plan()`` early-returns an empty plan when paused; the health
+        gate must still run so TRIAGE_SKIPPED carries the paused reason.
+        """
+        events = InMemoryEventSink()
+        planner, _ = self._make_planner(events=events)
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), paused=True)
+        )
+
+        assert self._create_actions(plan) == []
+        skipped = self._triage_skipped(events)
+        assert [e.data["reason"] for e in skipped] == ["orchestrator_paused"]
+
+    def test_at_capacity_skips_creation_and_emits_triage_skipped(self):
+        """At capacity the anchor is NOT filed and TRIAGE_SKIPPED carries the
+        capacity reason — the phase-1 create must route through the gate, not
+        fire before it (#6763 finding 2)."""
+        events = InMemoryEventSink()
+        planner, config = self._make_planner(events=events)
+        config.max_concurrent_sessions = 2
+        active = [make_session(make_issue(1)), make_session(make_issue(2))]
+
+        plan = planner.plan(
+            make_snapshot(
+                triage_facts=self._health_facts(), active_sessions=active
+            )
+        )
+
+        assert self._create_actions(plan) == []
+        skipped = self._triage_skipped(events)
+        assert len(skipped) == 1
+        assert skipped[0].data["reason"] == "no_capacity"
+        assert skipped[0].data["active"] == 2
+        assert skipped[0].data["max"] == 2
+
+    def test_open_gate_still_creates_and_emits_no_skip(self):
+        """Belt and braces: with the gate open the anchor is filed and NO
+        spurious TRIAGE_SKIPPED is emitted (the happy path stays clean)."""
+        events = InMemoryEventSink()
+        planner, _ = self._make_planner(events=events)
+
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        assert len(self._create_actions(plan)) == 1
+        assert self._triage_skipped(events) == []
 
 
 class TestPlanDiscoveredReworks:

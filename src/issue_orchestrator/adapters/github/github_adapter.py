@@ -366,6 +366,7 @@ class GitHubAdapter:
                 milestone=(item.get("milestone") or {}).get("title"),
                 milestone_number=(item.get("milestone") or {}).get("number"),
                 milestone_due_on=(item.get("milestone") or {}).get("due_on"),
+                created_at=item.get("created_at"),
             )
             for item in raw_issues
             if isinstance(item, dict)
