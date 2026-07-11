@@ -300,21 +300,26 @@ class SessionLauncher:
         comment: str,
         context: str,
         event_data: dict[str, object],
-    ) -> None:
-        """Durable needs-human escalation through the owning action boundary.
+    ) -> bool:
+        """Durable needs-human escalation; the single owner for this transition.
 
-        Single owner for "this work needs a human": the configured
-        needs-human label plus an explanatory comment are applied via the
-        ActionApplier, then the ``ISSUE_NEEDS_HUMAN`` trace event is
-        published. Label and comment come first so the escalation is durable
-        on the issue even if the process dies immediately after — the event
-        is fire-and-forget while labels are the source of truth.
+        Returns ``True`` only when it durably committed: needs-human label AND
+        comment both applied through the ActionApplier. Only then is
+        ``ISSUE_NEEDS_HUMAN`` published — the event must not claim a transition
+        that did not land (#6771 round 4). On mutation failure the event is
+        withheld and ``False`` returned so a caller gating a destructive step
+        (dropping the only queued record) can retain and retry. Label is
+        applied first (recovery source of truth); comment is skipped on label
+        failure so a retry cannot double-post it.
         """
-        self._apply_actions([
-            AddLabelAction(issue_number=issue_number, label=self._lm.needs_human, reason=reason),
-            AddCommentAction(number=issue_number, comment=comment, reason=reason),
-        ], context=context)
-        self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, dict(event_data)))
+        label = AddLabelAction(issue_number=issue_number, label=self._lm.needs_human, reason=reason)
+        note = AddCommentAction(number=issue_number, comment=comment, reason=reason)
+        committed = self._apply_actions([label], context=context) and self._apply_actions(
+            [note], context=context
+        )
+        if committed:
+            self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, dict(event_data)))
+        return committed
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
         retry_cfg = self.config.retry.interrupted_sessions

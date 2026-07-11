@@ -154,8 +154,12 @@ class PendingSessionQueues:
         ``discovered_failures`` buffer is cleared after planning), so a
         transient required-input prep failure must retain it for retry, not
         delete it. Retention is bounded by ``TRIAGE_LAUNCH_RETRY_LIMIT``:
-        once exhausted the item is removed and ``EXHAUSTED`` is returned —
-        the caller must surface the drop loudly (durable error + event).
+        once exhausted ``EXHAUSTED`` is returned, but the item is NOT removed
+        here (#6771 round 4). Destructive removal of the only durable record
+        must not precede confirmation that the needs-human label/comment
+        transition landed, so the launch caller commits the drop via
+        ``remove_triage`` only after ``escalate_issue_needs_human`` succeeds;
+        on escalation failure the item is retained and re-attempted.
 
         Asking to retain an item that is not queued is an invariant violation
         upstream (the launch path holds the item it just failed to launch);
@@ -176,7 +180,6 @@ class PendingSessionQueues:
             )
         item.retryable_launch_failures += 1
         if item.retryable_launch_failures >= TRIAGE_LAUNCH_RETRY_LIMIT:
-            self.remove_triage(issue_number)
             return TriageRetentionOutcome.EXHAUSTED
         logger.warning(
             "[TRIAGE] Retaining %s for issue #%d after retryable launch failure "
@@ -406,30 +409,36 @@ def orchestrator_launch_triage_session(
     elif result.retry_queued:
         outcome = pending_queues.retain_triage_for_retry(triage.issue_number)
         if outcome is TriageRetentionOutcome.EXHAUSTED:
-            _escalate_dropped_triage(triage, result.reason, session_launcher)
+            _commit_or_retain_dropped_triage(
+                triage, result.reason, session_launcher, pending_queues
+            )
     else:
         pending_queues.remove_triage(triage.issue_number)
     return result.session if result.success else None
 
 
-def _escalate_dropped_triage(
+def _commit_or_retain_dropped_triage(
     triage: PendingTriageReview,
     last_error: str,
     session_launcher: SessionLauncher,
+    pending_queues: PendingSessionQueues,
 ) -> None:
-    """Durable needs-human escalation for a triage item dropped on exhaustion.
+    """Commit protocol for a triage item that exhausted its launch retries.
 
-    The queue owner (``PendingSessionQueues``) is state-scoped and only
-    returns ``EXHAUSTED``; this launch-path caller routes the escalation
-    through the launcher's owning action boundary — needs-human label plus
-    an explanatory comment via the ActionApplier, then the event — mirroring
-    how worktree-prep launch failures escalate (#6771 round 3). A log line
-    and an event alone are not durable: the label and comment persist on the
-    issue itself across orchestrator restarts (labels as source of truth).
+    The queued item is the ONLY durable record of a failure investigation, so
+    it is dropped ONLY after ``escalate_issue_needs_human`` confirms the
+    needs-human label + comment landed on the issue (#6771 round 4). The
+    ordering is the whole point: destructive queue removal must not precede
+    confirmation of the durable transition. If the escalation mutation fails,
+    the item is RETAINED as a recoverable record and re-attempted on a later
+    tick (either the launch prep recovers and the investigation runs, or a
+    subsequent exhaustion re-attempts the escalation until it commits); the
+    failure is surfaced loudly and no ISSUE_NEEDS_HUMAN event is emitted for
+    the non-transition.
     """
     logger.error(
-        "[TRIAGE] Dropping %s for issue #%d after %d retryable launch "
-        "failures: %s",
+        "[TRIAGE] Escalating dropped %s for issue #%d after %d retryable "
+        "launch failures: %s",
         triage.flavor.value,
         triage.issue_number,
         TRIAGE_LAUNCH_RETRY_LIMIT,
@@ -445,7 +454,7 @@ def _escalate_dropped_triage(
         "A human needs to fix the launch failure and re-queue (or close) "
         "this investigation."
     )
-    session_launcher.escalate_issue_needs_human(
+    escalated = session_launcher.escalate_issue_needs_human(
         issue_number=triage.issue_number,
         reason="triage launch retries exhausted",
         comment=comment,
@@ -460,6 +469,16 @@ def _escalate_dropped_triage(
             ),
         },
     )
+    if escalated:
+        pending_queues.remove_triage(triage.issue_number)
+    else:
+        logger.error(
+            "[TRIAGE] Durable needs-human escalation did NOT commit for issue "
+            "#%d; retaining the queued %s as the only recoverable record "
+            "(will re-attempt on a later tick)",
+            triage.issue_number,
+            triage.flavor.value,
+        )
 
 
 def session_launcher_callback(

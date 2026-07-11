@@ -2798,10 +2798,13 @@ class TestPendingSessionQueuesTriageIntake:
     def test_retain_triage_for_retry_is_bounded_by_the_owner(self):
         """Retryable launch failures retain the item; the owner bounds retries.
 
-        The queued investigation is the only durable record of the
-        investigation, so retention is the default — but bounded: the item is
-        dropped (EXHAUSTED) on the TRIAGE_LAUNCH_RETRY_LIMIT-th failure so a
-        genuinely broken input cannot relaunch-loop forever.
+        The queued investigation is the only durable record, so retention is
+        the default — but bounded: the owner signals EXHAUSTED on the
+        TRIAGE_LAUNCH_RETRY_LIMIT-th failure so a genuinely broken input
+        cannot relaunch-loop forever. EXHAUSTED does NOT remove the item here
+        (#6771 round 4): destructive removal is the launch caller's commit
+        protocol, run only after the durable needs-human transition lands, so
+        the owner leaves the recoverable record in place.
         """
         state = OrchestratorState()
         queues = PendingSessionQueues(state)
@@ -2819,7 +2822,10 @@ class TestPendingSessionQueuesTriageIntake:
             assert entry.retryable_launch_failures == attempt
 
         assert queues.retain_triage_for_retry(8) is TriageRetentionOutcome.EXHAUSTED
-        assert state.pending_triage_reviews == []
+        assert len(state.pending_triage_reviews) == 1, (
+            "EXHAUSTED must retain the record; the caller commits the drop only "
+            "after the durable needs-human transition succeeds"
+        )
 
     def test_retain_triage_for_retry_for_unqueued_issue_fails_fast(self):
         """Retaining an item that is not queued is an upstream invariant bug."""
@@ -3372,6 +3378,145 @@ class TestLaunchTriageIssueSessionFlavors:
         assert "failure_investigation" in comments[0].comment
         assert str(TRIAGE_LAUNCH_RETRY_LIMIT) in comments[0].comment
         assert "boom" in comments[0].comment
+
+    def _drive_to_exhaustion(
+        self, state, config, launcher_bundle
+    ) -> None:
+        """Drive a queued investigation through TRIAGE_LAUNCH_RETRY_LIMIT failures.
+
+        Every attempt fails at required-input prep (board snapshot error), so
+        the LIMIT-th attempt reaches the EXHAUSTED escalation/commit path.
+        """
+        for _ in range(TRIAGE_LAUNCH_RETRY_LIMIT):
+            orchestrator_launch_triage_session(
+                state.pending_triage_reviews[0],
+                state,
+                config,
+                launcher_bundle.launcher,
+                MagicMock(),
+            )
+
+    @staticmethod
+    def _queue_investigation(state) -> None:
+        PendingSessionQueues(state).queue_failure_investigation(
+            903,
+            "Investigate: Broken thing (failed)",
+            failure=DiscoveredFailure(
+                issue_number=903, issue_title="Broken thing", failure_reason="failed"
+            ),
+        )
+
+    def test_exhaustion_retains_item_when_needs_human_label_mutation_fails(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """#6771 round 4: the drop must not commit before the label lands.
+
+        If GitHub rejects the needs-human label, the only durable record of
+        the investigation (the queued item) must survive, no ISSUE_NEEDS_HUMAN
+        event may claim a transition that did not happen, and the explanatory
+        comment must be short-circuited (never posted after a failed label, so
+        a later retry cannot double-post it).
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+
+        def apply_action(action):
+            if isinstance(action, AddLabelAction) and action.label == "needs-human":
+                return ActionResult.fail(action, "github 422 rejected label")
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+
+        state = OrchestratorState()
+        self._queue_investigation(state)
+        self._drive_to_exhaustion(state, config, launcher_bundle)
+
+        # Recoverable record retained — destructive removal did not precede
+        # the (failed) durable transition.
+        assert len(state.pending_triage_reviews) == 1
+        assert (
+            state.pending_triage_reviews[0].retryable_launch_failures
+            >= TRIAGE_LAUNCH_RETRY_LIMIT
+        )
+        # No event may claim a durable needs-human transition that never landed.
+        assert not any(
+            str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN) for e in mock_events.events
+        )
+        applied = [
+            call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        # Label was attempted; comment short-circuited (never applied).
+        assert any(
+            isinstance(a, AddLabelAction) and a.label == "needs-human" for a in applied
+        )
+        assert not any(
+            isinstance(a, AddCommentAction) and a.number == 903 for a in applied
+        )
+
+    def test_exhaustion_retains_then_recovers_when_comment_mutation_fails(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """#6771 round 4: comment failure also blocks the drop, and it recovers.
+
+        A failed comment (label already applied) still withholds the event and
+        retains the item; on a later tick, once the mutation succeeds, the
+        durable transition commits — the item is removed and the event fires
+        exactly once. This locks the recoverable half of the invariant at the
+        public routing boundary.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+
+        comment_fails = {"active": True}
+
+        def apply_action(action):
+            if (
+                comment_fails["active"]
+                and isinstance(action, AddCommentAction)
+                and action.number == 903
+            ):
+                return ActionResult.fail(action, "github 422 rejected comment")
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+
+        state = OrchestratorState()
+        self._queue_investigation(state)
+        self._drive_to_exhaustion(state, config, launcher_bundle)
+
+        # Comment failed → item retained, event withheld, but the label
+        # (source of truth) was applied.
+        assert len(state.pending_triage_reviews) == 1
+        assert not any(
+            str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN) for e in mock_events.events
+        )
+        applied = [
+            call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        assert any(
+            isinstance(a, AddLabelAction) and a.label == "needs-human" for a in applied
+        )
+
+        # Later tick: the transient GitHub error clears; escalation now commits.
+        comment_fails["active"] = False
+        orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+        assert state.pending_triage_reviews == [], (
+            "the drop must commit only after the durable transition succeeds"
+        )
+        needs_human = [
+            e for e in mock_events.events
+            if str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN)
+        ]
+        assert len(needs_human) == 1
+        assert needs_human[0].data["issue_number"] == 903
 
 
 class TestTriageProducerToLaunchBoundary:
