@@ -1519,10 +1519,34 @@ class PendingTriageReview:
     which variant it is queueing; the launch path forwards it verbatim
     (#6768 B5 — collapsing both to one flavor made batch reviews skip
     manifest prep and audit nothing).
+
+    ``failure`` preserves the typed triggering-failure context across the
+    queue boundary: ``state.discovered_failures`` is a per-tick fact buffer
+    cleared after planning, but the queued item is consumed on a LATER tick,
+    so the launch-time board snapshot must read the failure from the queue
+    item, not the buffer. It is required for FAILURE_INVESTIGATION (that
+    variant exists only because a failure was discovered) and forbidden for
+    BATCH_REVIEW (threshold-created, no triggering failure).
     """
     issue_number: int  # The triage review GitHub issue number
     title: str  # Issue title (for display)
     flavor: TriageSessionFlavor  # Which triage variant this queue entry launches as
+    failure: DiscoveredFailure | None = None  # Triggering failure (FAILURE_INVESTIGATION only)
+
+    def __post_init__(self) -> None:
+        if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION and self.failure is None:
+            raise ValueError(
+                f"PendingTriageReview for issue #{self.issue_number} is a failure "
+                "investigation but carries no DiscoveredFailure context; the "
+                "launch-time board snapshot would be missing its own triggering "
+                "failure (the discovered_failures buffer is cleared after planning)."
+            )
+        if self.flavor is TriageSessionFlavor.BATCH_REVIEW and self.failure is not None:
+            raise ValueError(
+                f"PendingTriageReview for issue #{self.issue_number} is a batch "
+                "review but carries failure context; batch reviews are "
+                "threshold-created and have no triggering failure."
+            )
 
 
 @dataclass

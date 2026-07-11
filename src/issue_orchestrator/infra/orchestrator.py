@@ -42,6 +42,7 @@ from ..control.session_completion import (
     process_active_sessions as _process_active_sessions,
 )
 from ..control.session_launcher import SessionLauncher
+from ..control.board_snapshot_builder import StateBoardSnapshotProvider
 from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_retrospective_review_session as _launch_retrospective_review_session,
@@ -236,6 +237,7 @@ class Orchestrator:
             remove_session_machine=self.deps.state_machine_manager.remove_session_machine,
             label_manager=self.deps.label_manager,
             send_to_session_fn=lambda name, text: self.deps.session_manager.runner.send_to_session_by_name(name, text),
+            board_snapshot_provider=StateBoardSnapshotProvider(self.deps.board_snapshot_builder, lambda: self.state),
         )
 
     @cached_property

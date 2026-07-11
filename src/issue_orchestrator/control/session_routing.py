@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..domain.models import (
+    DiscoveredFailure,
     Issue,
     PendingReview,
     PendingRetrospectiveReview,
@@ -111,12 +112,23 @@ class PendingSessionQueues:
         )
 
     def queue_failure_investigation(
-        self, issue_number: int, title: str
+        self, issue_number: int, title: str, *, failure: DiscoveredFailure | None
     ) -> TriageQueueOutcome:
-        """Queue a focused investigation of one failed issue."""
+        """Queue a focused investigation of one failed issue.
+
+        ``failure`` is effectively required: the queue item is the only
+        carrier of the typed triggering-failure context once the per-tick
+        ``discovered_failures`` buffer is cleared after planning (the
+        launch-time board snapshot reads it from here). It is keyword-only
+        with no default so producers must state it; ``None`` fails fast in
+        ``PendingTriageReview.__post_init__``.
+        """
         return self._queue_triage(
             PendingTriageReview(
-                issue_number, title, flavor=TriageSessionFlavor.FAILURE_INVESTIGATION
+                issue_number,
+                title,
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                failure=failure,
             )
         )
 

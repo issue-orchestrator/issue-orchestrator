@@ -459,7 +459,7 @@ class OrchestratorSupport:
     def _handle_queue_triage(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueTriageAction
         a = cast(QueueTriageAction, action)
-        PendingSessionQueues(self.state).queue_failure_investigation(a.issue_number, a.title)
+        PendingSessionQueues(self.state).queue_failure_investigation(a.issue_number, a.title, failure=a.failure)
 
     def update_queue_cache(self) -> None:
         from .queue_projection import QueueProjection

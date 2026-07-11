@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from ..domain.models import (
     AwaitingMergeReconciliationSource,
     AwaitingMergeTerminalStatus,
+    DiscoveredFailure,
 )
 from .session_manager import SessionType
 
@@ -258,10 +259,18 @@ class QueueReworkAction(Action):
 
 @dataclass(frozen=True)
 class QueueTriageAction(Action):
-    """Queue an issue for triage review."""
+    """Queue an issue for triage review (failure investigation).
+
+    ``failure`` carries the typed triggering-failure context across the
+    plan/apply boundary: the planner reads it from the per-tick
+    ``discovered_failures`` buffer (cleared after planning), and the applier
+    stores it on the queue item so the launch-time board snapshot — built on
+    a later tick — still contains the investigation's own triggering failure.
+    """
 
     issue_number: int = 0
     title: str = ""
+    failure: Optional[DiscoveredFailure] = None
     action_type: ActionType = field(default=ActionType.QUEUE_TRIAGE, init=False)
 
 

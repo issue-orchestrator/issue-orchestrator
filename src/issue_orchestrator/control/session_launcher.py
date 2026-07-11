@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Callable, Mapping, Sequence
 
 if TYPE_CHECKING:
+    from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
@@ -197,6 +198,11 @@ class SessionLauncher:
         remove_session_machine: Callable[[str], None] | None = None,
         label_manager: Optional["LabelManager"] = None,
         send_to_session_fn: Optional[Callable[[str, str], bool]] = None,
+        *,
+        # Required (keyword-only): triage prompts treat board-snapshot.json as
+        # authoritative required input, so the launcher must always be able to
+        # produce one. Tests inject a null-object/fake provider, never None.
+        board_snapshot_provider: "BoardSnapshotProvider",
     ):
         self.config = config
         self.events = events
@@ -209,6 +215,7 @@ class SessionLauncher:
         self._session_output = session_output
         self._manifest_downloader = manifest_downloader
         self._triage_authority = triage_authority
+        self._board_snapshot_provider = board_snapshot_provider
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -688,6 +695,7 @@ class SessionLauncher:
             repository_host=self.repository_host,
             manifest_downloader=self._manifest_downloader,
             triage_authority=self._triage_authority,
+            board_snapshot_provider=self._board_snapshot_provider,
             issue=issue,
             ctx=ctx,
             triage_flavor=triage_flavor,
@@ -704,6 +712,36 @@ class SessionLauncher:
         self._triage_authority.discard(
             run_id=ctx.run.run_id, session_name=ctx.run.session_name
         )
+
+    def _fail_launch_for_triage_prep(
+        self, issue: "IssueProtocol", ctx: WorktreeContext, session_name: str,
+        worktree_path: Path, claim: ClaimAcquisitionResult, error: Exception,
+    ) -> LaunchResult:
+        """Fail the launch when required triage inputs cannot be prepared;
+        discards the authority row prep may have recorded before raising
+        (the post-prep lifecycle guard never runs for this exit)."""
+        log_transition("issue", issue.number, "LAUNCHING", "FAILED", "triage session data preparation failed")
+        logger.error(issue_log(issue.number, "FAILED: triage session data preparation failed: %s"), error)
+        self.events.publish(make_trace_event(
+            EventName.SESSION_START_FAILED,
+            {
+                "issue_number": issue.number,
+                "session_name": session_name,
+                "reason": "triage_session_data_failed",
+                "error": str(error),
+            },
+        ))
+        try:
+            self._worktree_manager.remove(worktree_path)
+            logger.info(issue_log(issue.number, "Cleaned up worktree after triage data failure: %s"), worktree_path)
+        except Exception as cleanup_error:
+            logger.warning(
+                issue_log(issue.number, "Failed to remove worktree after triage data failure: %s"),
+                cleanup_error,
+            )
+        self._discard_triage_authority_after_failed_launch(issue, ctx)
+        self._release_claim_if_held(issue.number, claim)
+        return LaunchResult(None, False, f"Triage session data preparation failed: {error}")
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
@@ -866,12 +904,16 @@ class SessionLauncher:
                 "review_cache_boundary_started_at": run.started_at,
             })
 
-        # For triage sessions, prepare flavor-scoped inputs (manifest/assignment)
-        self._prepare_triage_session_data(issue, ctx, triage_flavor)
-        # Launch-authority lifecycle guard (#6769 round 4): once recorded,
-        # the authority row is discarded on EVERY exit - returned failure or
-        # exception - unless the session actually reaches ACTIVE. Single
-        # owner; individual failure branches carry no cleanup of their own.
+        # Triage inputs (manifest/assignment/board snapshot) are REQUIRED —
+        # the prompt calls board-snapshot.json authoritative — so prep
+        # failure fails the launch loudly (setup-command seam).
+        try:
+            self._prepare_triage_session_data(issue, ctx, triage_flavor)
+        except Exception as e:
+            return self._fail_launch_for_triage_prep(
+                issue, ctx, session_name, worktree_path, claim, e
+            )
+        # Launch-authority guard (#6769 r4): discard on every pre-start exit; single owner.
         launch_reached_active = False
         try:
 
@@ -1062,10 +1104,7 @@ class SessionLauncher:
                 self._release_claim_if_held(issue.number, claim)
                 return LaunchResult(None, False, "Failed to create terminal session")
 
-            # The terminal is now RUNNING - the irreversible external boundary
-            # (#6769 round 5). Post-start bookkeeping failures must NOT discard
-            # the authority of a live session: its completion would be rejected
-            # as missing_authority with no way to restore the trusted scope.
+            # Terminal RUNNING = irreversible (#6769 r5): keep a live session's authority.
             launch_reached_active = True
 
             log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})

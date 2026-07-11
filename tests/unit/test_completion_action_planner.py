@@ -390,6 +390,48 @@ def test_completed_triage_session_missing_pair_fails_labels_and_surfaces_rejecti
     assert "triage-decision.json" in rejections[0].body_preview
 
 
+def test_triage_manifest_in_sibling_run_dir_is_ignored(tmp_path: Path) -> None:
+    """Completion reads only ``session.run_dir`` (typed run contract).
+
+    The pre-#6769 code scanned every run dir under the worktree's sessions
+    root and could pick up a stale prior run's manifest. A manifest planted
+    in a sibling run dir must now be invisible: no labels on its PRs.
+    """
+    config = make_triage_config(tmp_path)
+    session = make_triage_session(tmp_path)
+    plant_triage_assignment(
+        session, TriageAssignment(flavor=TriageSessionFlavor.BATCH_REVIEW)
+    )
+    plant_triage_decision_pair(session)
+    stale_run_dir = session.run_dir.parent / "20250101T000000000000Z__issue-1"
+    stale_run_dir.mkdir(parents=True)
+    stale_manifest = TriageManifest(
+        prs=[
+            PRToReview(
+                number=999, title="Stale PR", url="https://example/pr/999", branch="s"
+            )
+        ]
+    )
+    stale_manifest_path = tmp_path / "stale-triage-manifest.json"
+    stale_manifest.write(stale_manifest_path)
+    (stale_run_dir / "manifest.json").write_text(
+        json.dumps({"triage_manifest": str(stale_manifest_path)})
+    )
+
+    actions = make_planner(config).generate_completion_actions(
+        session,
+        SessionStatus.COMPLETED,
+    )
+
+    triage_label_targets = {
+        action.issue_number
+        for action in actions
+        if isinstance(action, AddLabelAction)
+        and action.label in ("triage-reviewed", "triage-failed")
+    }
+    assert triage_label_targets == set()
+
+
 def test_completed_triage_investigation_session_plans_decision_without_labels(
     tmp_path: Path,
 ) -> None:

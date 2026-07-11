@@ -1884,10 +1884,15 @@ class TestUpdateStateAfterAction:
     def test_queue_triage_adds_failure_investigation(self, support_with_state):
         """QUEUE_TRIAGE queues a failure investigation, not a batch review (#6768 B5)."""
         from issue_orchestrator.control.actions import QueueTriageAction
+        from issue_orchestrator.domain.models import DiscoveredFailure
 
+        failure = DiscoveredFailure(
+            issue_number=42, issue_title="Test issue", failure_reason="failed"
+        )
         action = QueueTriageAction(
             issue_number=42,
             title="Investigate: Test issue (failed)",
+            failure=failure,
             reason="Session failed with status 'failed'",
         )
         result = MagicMock(success=True, details={})
@@ -1899,6 +1904,25 @@ class TestUpdateStateAfterAction:
         triage = support_with_state.state.pending_triage_reviews[0]
         assert triage.issue_number == 42
         assert triage.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        # The typed failure context rides the queue item so the launch-time
+        # board snapshot (a later tick) still contains the triggering failure.
+        assert triage.failure is failure
+
+    def test_queue_triage_without_failure_context_fails_fast(self, support_with_state):
+        """A QUEUE_TRIAGE action lacking failure context is a producer bug."""
+        from issue_orchestrator.control.actions import QueueTriageAction
+
+        action = QueueTriageAction(
+            issue_number=42,
+            title="Investigate: Test issue (failed)",
+            reason="Session failed with status 'failed'",
+        )
+        result = MagicMock(success=True, details={})
+
+        with pytest.raises(ValueError, match="DiscoveredFailure"):
+            support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert support_with_state.state.pending_triage_reviews == []
 
     def test_create_triage_issue_dedups_existing_queue_entry(self, support_with_state):
         """The create-success path must not double-queue an issue (#6768 round 3).
@@ -1931,10 +1955,14 @@ class TestUpdateStateAfterAction:
     def test_queue_triage_dedups_existing_queue_entry(self, support_with_state):
         """Repeated QUEUE_TRIAGE for the same issue stays a single queue entry."""
         from issue_orchestrator.control.actions import QueueTriageAction
+        from issue_orchestrator.domain.models import DiscoveredFailure
 
         action = QueueTriageAction(
             issue_number=42,
             title="Investigate: Test issue (failed)",
+            failure=DiscoveredFailure(
+                issue_number=42, issue_title="Test issue", failure_reason="failed"
+            ),
             reason="Session failed with status 'failed'",
         )
         result = MagicMock(success=True, details={})
