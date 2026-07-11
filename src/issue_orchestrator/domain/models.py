@@ -1487,6 +1487,11 @@ class CleanupFacts:
     remove_worktrees: bool = False  # Config: whether to remove worktrees
     # Immediate cleanups (no deferred review) - sessions that completed/timed out
     immediate_cleanups: tuple["ImmediateCleanup", ...] = field(default_factory=tuple)
+    # Issues whose failed-session run assets a failure investigation still
+    # references (discovered/queued/active) — the Planner must NOT clean these
+    # up yet or the investigation launches into deleted artifact hints
+    # (#6771 round 3). Computed by failure_investigation_hold_issue_numbers.
+    held_issue_numbers: frozenset[int] = frozenset()
 
 
 @dataclass

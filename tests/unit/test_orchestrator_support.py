@@ -1117,7 +1117,7 @@ class TestClearDiscoveredFacts:
             DiscoveredFailure(issue_number=4, issue_title="Test", failure_reason="failed")
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config())
 
         # All lists should be empty
         assert len(sample_orchestrator_state.discovered_reviews) == 0
@@ -1152,7 +1152,7 @@ class TestClearDiscoveredFacts:
             ),
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config())
 
         assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
@@ -1171,7 +1171,7 @@ class TestClearDiscoveredFacts:
             )
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config())
 
         # Non-discovered fields should be untouched
         assert sample_orchestrator_state.paused is True

@@ -371,8 +371,11 @@ def orchestrator_launch_triage_session(
       record of the investigation (no labels-as-truth recovery), so one
       transient SQLite/log/filesystem error must not delete it. Retention is
       bounded by the queue owner (``retain_triage_for_retry``); on exhaustion
-      the item is dropped with a durable error and an ``ISSUE_NEEDS_HUMAN``
-      event so the drop is loud, never silent.
+      the item is dropped as a DURABLE needs-human transition — the
+      needs-human label plus an explanatory comment applied through the
+      launcher's owning action boundary, then the ``ISSUE_NEEDS_HUMAN``
+      event (#6771 round 3: a log line and an event alone do not survive an
+      orchestrator restart; labels are the source of truth).
     """
     agent = config.triage_review_agent
     if not agent or agent not in config.agents:
@@ -403,31 +406,60 @@ def orchestrator_launch_triage_session(
     elif result.retry_queued:
         outcome = pending_queues.retain_triage_for_retry(triage.issue_number)
         if outcome is TriageRetentionOutcome.EXHAUSTED:
-            logger.error(
-                "[TRIAGE] Dropping %s for issue #%d after %d retryable launch "
-                "failures: %s",
-                triage.flavor.value,
-                triage.issue_number,
-                TRIAGE_LAUNCH_RETRY_LIMIT,
-                result.reason,
-            )
-            session_launcher.events.publish(
-                make_trace_event(
-                    EventName.ISSUE_NEEDS_HUMAN,
-                    {
-                        "issue_number": triage.issue_number,
-                        "issue_title": triage.title,
-                        "reason": (
-                            f"triage launch failed {TRIAGE_LAUNCH_RETRY_LIMIT} "
-                            f"times on required-input preparation; dropping "
-                            f"queued {triage.flavor.value}: {result.reason}"
-                        ),
-                    },
-                )
-            )
+            _escalate_dropped_triage(triage, result.reason, session_launcher)
     else:
         pending_queues.remove_triage(triage.issue_number)
     return result.session if result.success else None
+
+
+def _escalate_dropped_triage(
+    triage: PendingTriageReview,
+    last_error: str,
+    session_launcher: SessionLauncher,
+) -> None:
+    """Durable needs-human escalation for a triage item dropped on exhaustion.
+
+    The queue owner (``PendingSessionQueues``) is state-scoped and only
+    returns ``EXHAUSTED``; this launch-path caller routes the escalation
+    through the launcher's owning action boundary — needs-human label plus
+    an explanatory comment via the ActionApplier, then the event — mirroring
+    how worktree-prep launch failures escalate (#6771 round 3). A log line
+    and an event alone are not durable: the label and comment persist on the
+    issue itself across orchestrator restarts (labels as source of truth).
+    """
+    logger.error(
+        "[TRIAGE] Dropping %s for issue #%d after %d retryable launch "
+        "failures: %s",
+        triage.flavor.value,
+        triage.issue_number,
+        TRIAGE_LAUNCH_RETRY_LIMIT,
+        last_error,
+    )
+    comment = (
+        f"**Queued {triage.flavor.value} dropped after "
+        f"{TRIAGE_LAUNCH_RETRY_LIMIT} launch failures**\n\n"
+        "The orchestrator could not prepare the required inputs for this "
+        f"triage session {TRIAGE_LAUNCH_RETRY_LIMIT} times in a row, so the "
+        "queued item was dropped and will not retry on its own.\n\n"
+        f"Last error: {last_error}\n\n"
+        "A human needs to fix the launch failure and re-queue (or close) "
+        "this investigation."
+    )
+    session_launcher.escalate_issue_needs_human(
+        issue_number=triage.issue_number,
+        reason="triage launch retries exhausted",
+        comment=comment,
+        context="triage_launch_retry_exhausted",
+        event_data={
+            "issue_number": triage.issue_number,
+            "issue_title": triage.title,
+            "reason": (
+                f"triage launch failed {TRIAGE_LAUNCH_RETRY_LIMIT} "
+                f"times on required-input preparation; dropping "
+                f"queued {triage.flavor.value}: {last_error}"
+            ),
+        },
+    )
 
 
 def session_launcher_callback(

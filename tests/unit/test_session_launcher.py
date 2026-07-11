@@ -61,6 +61,7 @@ from issue_orchestrator.control.session_routing import (
 from issue_orchestrator.control.workflows.triage_workflow import TriageWorkflow
 from issue_orchestrator.control.actions import (
     ActionResult,
+    AddCommentAction,
     AddLabelAction,
     CreateTriageIssueAction,
     QueueTriageAction,
@@ -3287,8 +3288,11 @@ class TestLaunchTriageIssueSessionFlavors:
         labels-as-truth recovery, so one transient SQLite/log/filesystem
         error must not delete the investigation forever. Retention is
         bounded: after TRIAGE_LAUNCH_RETRY_LIMIT retryable failures the queue
-        owner drops the item and the drop surfaces via a durable error and an
-        ISSUE_NEEDS_HUMAN event (loud, never silent).
+        owner drops the item and the drop is a DURABLE needs-human
+        transition (#6771 round 3): needs-human label + explanatory comment
+        through the launcher's owning action boundary, then the
+        ISSUE_NEEDS_HUMAN event. A log line and an event alone do not
+        survive an orchestrator restart.
         """
         config = launcher_bundle.launcher.config
         self._enable_triage_agent(config, tmp_path)
@@ -3347,6 +3351,27 @@ class TestLaunchTriageIssueSessionFlavors:
         assert needs_human[0].data["issue_number"] == 903
         assert "failure_investigation" in needs_human[0].data["reason"]
         assert "boom" in needs_human[0].data["reason"]
+
+        # #6771 round 3: the drop must also be DURABLE on the issue itself —
+        # needs-human label + explanatory comment through the action applier
+        # (labels as source of truth), not just a fire-and-forget event.
+        actions = [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        labels = [
+            a for a in actions
+            if isinstance(a, AddLabelAction) and a.issue_number == 903
+        ]
+        assert [a.label for a in labels] == ["needs-human"]
+        comments = [
+            a for a in actions
+            if isinstance(a, AddCommentAction) and a.number == 903
+        ]
+        assert len(comments) == 1
+        assert "failure_investigation" in comments[0].comment
+        assert str(TRIAGE_LAUNCH_RETRY_LIMIT) in comments[0].comment
+        assert "boom" in comments[0].comment
 
 
 class TestTriageProducerToLaunchBoundary:
@@ -4373,8 +4398,13 @@ class TestHandleSessionCompletion:
         assert len(state.completed_today) == 1
         assert 123 in state.completed_today
 
-    def test_adds_to_discovered_failures_on_failure(self, sample_agent_config, tmp_path):
-        """Verify failed session is added to discovered failures."""
+    def _discover_failure(self, sample_agent_config, tmp_path, *, diagnostic_path):
+        """Run a FAILED completion and return (failure, run artifacts).
+
+        Shared driver for the artifact-hint provenance contract (#6771 round
+        3): callers pass the diagnostic path exactly as their production
+        writer reports it (absolute or worktree-relative).
+        """
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
@@ -4409,15 +4439,10 @@ class TestHandleSessionCompletion:
             pr_url=None,
             pr_number=None,
         )
-        mock_action_applier = MagicMock()
-        mock_observer = MagicMock()
         config = MagicMock()
         config.cleanup.without_triage.close_ai_session_tabs = True
         config.code_review_agent = None
         run_dir = Path(session.run_assets.run_dir)
-        diagnostic = tmp_path / "worktree" / "failure-diagnostic.md"
-        diagnostic.parent.mkdir(parents=True, exist_ok=True)
-        diagnostic.write_text("what went wrong")
         claude_log = run_dir / "claude.jsonl"
         claude_log.write_text("{}\n")
         session_output = MagicMock(spec=SessionOutput)
@@ -4428,23 +4453,80 @@ class TestHandleSessionCompletion:
             status=SessionStatus.FAILED,
             state=state,
             completion_handler=mock_completion_handler,
-            action_applier=mock_action_applier,
-            observer=mock_observer,
+            action_applier=MagicMock(),
+            observer=MagicMock(),
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
             session_output=session_output,
-            diagnostic_path=str(diagnostic),
+            diagnostic_path=diagnostic_path,
         )
 
         assert len(state.discovered_failures) == 1
         failure = state.discovered_failures[0]
         assert failure.issue_number == 123
+        return failure, run_dir, claude_log
+
+    def test_adds_to_discovered_failures_on_failure(self, sample_agent_config, tmp_path):
+        """Absolute diagnostic paths (SessionOutput.write_diagnostic) pass through.
+
+        Verifies the failed session is added to discovered failures with real
+        artifact hints when the diagnostic is reported ABSOLUTE — the
+        ``SessionOutput.write_diagnostic`` contract.
+        """
+        diagnostic = tmp_path / "worktree" / "failure-diagnostic.md"
+        diagnostic.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic.write_text("what went wrong")
+
+        failure, run_dir, claude_log = self._discover_failure(
+            sample_agent_config, tmp_path, diagnostic_path=str(diagnostic)
+        )
+
         # #6762: the discovery seam gathers REAL artifact hints — the failure
         # diagnostic, the attached agent log, and the run-dir artifacts that
         # exist on disk (manifest + analysis + terminal recording).
         assert failure.artifact_hints == (
             str(diagnostic),
+            str(claude_log),
+            str(run_dir / "manifest.json"),
+            str(run_dir / "analysis.json"),
+            str(run_dir / "terminal-recording.jsonl"),
+        )
+
+    def test_relative_diagnostic_hint_resolves_against_worktree(
+        self, sample_agent_config, tmp_path
+    ):
+        """Worktree-relative diagnostics resolve to absolute hints (#6771 r3).
+
+        The production failure writer (``write_failure_diagnostic``) reports
+        the diagnostic as a WORKTREE-RELATIVE path
+        (``.issue-orchestrator/sessions/<run>/<file>``). The discovery seam
+        must resolve it against the failed session's worktree instead of
+        testing it against the process CWD — otherwise every real failure
+        diagnostic silently vanishes from ``artifact_hints``.
+        """
+        worktree = tmp_path / "worktree"
+        run_assets = make_session_run_assets(worktree, session_name="issue-123")
+        diagnostic_rel = (
+            f".issue-orchestrator/sessions/{run_assets.run_dir.name}/"
+            "failure-diagnostic-20260710-000000.json"
+        )
+        diagnostic_abs = worktree / diagnostic_rel
+        diagnostic_abs.write_text('{"errors": ["push failed"]}')
+        assert not Path(diagnostic_rel).exists(), (
+            "test must run with a CWD where the relative path does NOT "
+            "exist, otherwise it cannot catch CWD-relative resolution"
+        )
+
+        failure, run_dir, claude_log = self._discover_failure(
+            sample_agent_config, tmp_path, diagnostic_path=diagnostic_rel
+        )
+
+        # The relative production contract resolves against the worktree and
+        # is stored ABSOLUTE (the investigation launches ticks later from a
+        # different working directory).
+        assert failure.artifact_hints == (
+            str(diagnostic_abs),
             str(claude_log),
             str(run_dir / "manifest.json"),
             str(run_dir / "analysis.json"),

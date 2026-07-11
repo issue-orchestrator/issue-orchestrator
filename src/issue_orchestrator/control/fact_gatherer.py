@@ -349,4 +349,80 @@ class FactGatherer:
             close_tabs=close_tabs,
             remove_worktrees=remove_wt,
             immediate_cleanups=immediate_tuples,
+            held_issue_numbers=failure_investigation_hold_issue_numbers(
+                state, self.config
+            ),
         )
+
+
+def failure_investigation_hold_issue_numbers(
+    state: "OrchestratorState", config: Config
+) -> frozenset[int]:
+    """Issues whose failed-session run assets must be held from cleanup.
+
+    Owner of the single lifecycle rule for #6771 round 3: a failed session
+    records its ``ImmediateCleanup`` in the same pass that records the
+    ``DiscoveredFailure``, but the failure investigation launches on a LATER
+    tick — removing the worktree first deletes every artifact hint the
+    investigation was queued to read. The rule is evaluated fresh from state
+    at both consuming seams (``gather_cleanup_facts`` so the Planner skips
+    held cleanups, and ``clear_discovered_facts`` so held entries survive the
+    end-of-tick fact clear). Hold while the failure is still referenced by:
+
+    - a failure discovered this tick (triage-on-failure will queue it),
+    - a queued (pending) failure investigation, or
+    - an active triage session investigating the issue.
+
+    The hold releases by re-evaluation, with no dedicated release seam: once
+    the investigation completes — or is dropped on exhaustion, or its queue
+    action fails — none of the conditions match and the retained cleanup is
+    planned normally on the next tick.
+    """
+    from ..domain.triage_session import TriageSessionFlavor
+    from .triage_session_policy import is_triage_session
+
+    if not (config.triage_review_on_failure and config.triage_review_agent):
+        return frozenset()
+    held = {failure.issue_number for failure in state.discovered_failures}
+    held.update(
+        item.issue_number
+        for item in state.pending_triage_reviews
+        if item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+    )
+    held.update(
+        session.issue.number
+        for session in state.active_sessions
+        if is_triage_session(config.triage_review_agent, session.issue.agent_type)
+    )
+    return frozenset(held)
+
+
+# Tick-scoped fact buffers: recorded by discovery/completion seams, consumed
+# by one planning pass, cleared after the plan is applied.
+_DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
+    "discovered_reviews",
+    "discovered_retrospective_reviews",
+    "discovered_awaiting_merge_reconciliations",
+    "discovered_awaiting_merge_drifts",
+    "discovered_awaiting_merge_escalations",
+    "discovered_merge_queue_enqueues",
+    "discovered_reworks",
+    "discovered_escalations",
+    "discovered_failures",
+    "immediate_cleanups",
+)
+
+
+def clear_discovered_facts(state: "OrchestratorState", config: Config) -> None:
+    """Clear tick-scoped fact buffers, retaining held immediate cleanups.
+
+    Immediate cleanups referenced by a pending/active failure investigation
+    are retained across the clear (#6771 round 3): the Planner skipped them
+    this tick via ``CleanupFacts.held_issue_numbers``, and dropping them here
+    would leak the worktree forever once the hold releases.
+    """
+    held = failure_investigation_hold_issue_numbers(state, config)
+    retained = [c for c in state.immediate_cleanups if c.issue_number in held]
+    for attr in _DISCOVERED_FACT_ATTRS:
+        getattr(state, attr).clear()
+    state.immediate_cleanups.extend(retained)
