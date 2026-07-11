@@ -3518,6 +3518,68 @@ class TestLaunchTriageIssueSessionFlavors:
         assert len(needs_human) == 1
         assert needs_human[0].data["issue_number"] == 903
 
+    def test_recovered_launch_clears_stale_needs_human_from_incomplete_escalation(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """#6771 round 5: a recovered launch must not leave a stale label.
+
+        Prep exhausts and the escalation is incomplete (label applied, comment
+        fails), so the needs-human label sits on GitHub as incomplete
+        source-of-truth state. If prep then recovers and the investigation
+        launches, the successful-launch path must clear that stale label
+        through the action boundary — no contradictory needs-human marker may
+        survive alongside the now-running work.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+
+        comment_fails = {"active": True}
+
+        def apply_action(action):
+            if (
+                comment_fails["active"]
+                and isinstance(action, AddCommentAction)
+                and action.number == 903
+            ):
+                return ActionResult.fail(action, "github 422 rejected comment")
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+
+        state = OrchestratorState()
+        self._queue_investigation(state)
+        self._drive_to_exhaustion(state, config, launcher_bundle)
+
+        # Incomplete escalation: label applied, comment failed → item retained
+        # and flagged as leaving stale needs-human state.
+        assert len(state.pending_triage_reviews) == 1
+        assert state.pending_triage_reviews[0].needs_human_escalation_incomplete
+
+        # Prep recovers and the launch now succeeds this tick.
+        comment_fails["active"] = False
+        launcher_bundle.board_snapshot_provider.error = None
+        session = orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+
+        assert session is not None, "prep recovered, so the investigation must launch"
+        assert state.pending_triage_reviews == []
+        removed = [
+            a
+            for a in (
+                c.args[0] for c in launcher_bundle.action_applier.apply.call_args_list
+            )
+            if isinstance(a, RemoveLabelAction)
+            and a.issue_number == 903
+            and a.label == "needs-human"
+        ]
+        assert removed, "the successful launch must clear the stale needs-human label"
+
 
 class TestTriageProducerToLaunchBoundary:
     """The flavor set at the producer boundary must survive queue -> launch (#6768 B5).

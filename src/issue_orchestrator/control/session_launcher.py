@@ -40,6 +40,7 @@ from ..events import EventName
 from ..domain.models import (
     AgentConfig,
     Issue,
+    NeedsHumanEscalationResult,
     PendingReview,
     PendingRetrospectiveReview,
     PendingRework,
@@ -300,26 +301,25 @@ class SessionLauncher:
         comment: str,
         context: str,
         event_data: dict[str, object],
-    ) -> bool:
-        """Durable needs-human escalation; the single owner for this transition.
-
-        Returns ``True`` only when it durably committed: needs-human label AND
-        comment both applied through the ActionApplier. Only then is
-        ``ISSUE_NEEDS_HUMAN`` published — the event must not claim a transition
-        that did not land (#6771 round 4). On mutation failure the event is
-        withheld and ``False`` returned so a caller gating a destructive step
-        (dropping the only queued record) can retain and retry. Label is
-        applied first (recovery source of truth); comment is skipped on label
-        failure so a retry cannot double-post it.
-        """
+    ) -> NeedsHumanEscalationResult:
+        """Durable needs-human escalation (single owner). ``committed`` (label
+        AND comment landed) alone fires the event and lets a caller drop the
+        record; ``label_applied`` lets a caller clear the stale source-of-truth
+        label if the work later launches instead of escalating (#6771 r4/r5)."""
         label = AddLabelAction(issue_number=issue_number, label=self._lm.needs_human, reason=reason)
         note = AddCommentAction(number=issue_number, comment=comment, reason=reason)
-        committed = self._apply_actions([label], context=context) and self._apply_actions(
-            [note], context=context
-        )
+        label_ok = self._apply_actions([label], context=context)
+        committed = label_ok and self._apply_actions([note], context=context)
         if committed:
             self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, dict(event_data)))
-        return committed
+        return NeedsHumanEscalationResult(committed=committed, label_applied=label_ok)
+
+    def clear_needs_human_label(self, issue_number: int) -> None:
+        """Drop a needs-human label an incomplete escalation left (#6771 r5)."""
+        self._apply_actions([RemoveLabelAction(
+            issue_number=issue_number, label=self._lm.needs_human,
+            reason="triage launched; incomplete escalation superseded",
+        )], context="triage_clear_stale_needs_human")
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
         retry_cfg = self.config.retry.interrupted_sessions
