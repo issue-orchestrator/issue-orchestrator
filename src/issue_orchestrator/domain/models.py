@@ -1665,6 +1665,10 @@ class OrchestratorState:
     pending_triage_reviews: list["PendingTriageReview"] = field(default_factory=list)  # Triage batch reviews waiting
     pending_cleanups: list[PendingCleanup] = field(default_factory=list)  # Sessions awaiting cleanup after review
     pending_validation_retries: list["PendingValidationRetry"] = field(default_factory=list)  # Sessions needing validation retry
+    # Issue numbers whose stale needs-human label removal is still pending after
+    # a recovered launch cleared an incomplete escalation but the RemoveLabelAction
+    # failed to commit; a per-tick reconciler retries the removal only (#6771 round 6).
+    pending_needs_human_label_clears: list[int] = field(default_factory=list)
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
     cached_scope_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached full in-scope issue snapshot for dashboard/runtime recovery

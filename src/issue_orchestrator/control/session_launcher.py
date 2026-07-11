@@ -314,9 +314,9 @@ class SessionLauncher:
             self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, dict(event_data)))
         return NeedsHumanEscalationResult(committed=committed, label_applied=label_ok)
 
-    def clear_needs_human_label(self, issue_number: int) -> None:
-        """Drop a needs-human label an incomplete escalation left (#6771 r5)."""
-        self._apply_actions([RemoveLabelAction(
+    def clear_needs_human_label(self, issue_number: int) -> bool:
+        """Drop a stale needs-human label an incomplete escalation left; returns whether the single RemoveLabelAction committed so a failed removal is retained for durable reconciliation, not treated as success (#6771 r5/r6)."""
+        return self._apply_actions([RemoveLabelAction(
             issue_number=issue_number, label=self._lm.needs_human,
             reason="triage launched; incomplete escalation superseded",
         )], context="triage_clear_stale_needs_human")

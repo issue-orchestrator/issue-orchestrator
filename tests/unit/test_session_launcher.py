@@ -58,6 +58,9 @@ from issue_orchestrator.control.session_routing import (
     kill_session,
     get_session_machine,
 )
+from issue_orchestrator.control.triage_needs_human_reconcile import (
+    reconcile_pending_needs_human_label_clears,
+)
 from issue_orchestrator.control.workflows.triage_workflow import TriageWorkflow
 from issue_orchestrator.control.actions import (
     ActionResult,
@@ -3295,16 +3298,30 @@ class TestLaunchTriageIssueSessionFlavors:
 
 
     @staticmethod
-    def _support_for(state: OrchestratorState) -> OrchestratorSupport:
-        """Minimal OrchestratorSupport; the queue handlers only touch state."""
-        return OrchestratorSupport(
+    def _apply_actions(state: OrchestratorState, actions, **details) -> None:
+        """Drive the producer boundary through the public ``apply_plan`` seam.
+
+        The action applier is faked at its port boundary (``apply`` returns a
+        successful ``ActionResult`` carrying ``details``, the shape the real
+        applier produces), so ``apply_plan`` runs the real success-handling
+        path — including the post-apply state update that queues triage work.
+        """
+        from issue_orchestrator.control.planner_types import Plan
+
+        applier = MagicMock()
+        applier.apply.side_effect = lambda action: ActionResult.ok(
+            action, **details
+        )
+        event_context = MagicMock()
+        event_context.enrich.side_effect = lambda data: data
+        support = OrchestratorSupport(
             config=MagicMock(),
             events=MockEventSink(),
             repository_host=MagicMock(),
             state=state,
-            event_context=MagicMock(),
+            event_context=event_context,
             session_manager=MagicMock(),
-            action_applier=MagicMock(),
+            action_applier=applier,
             fact_gatherer=MagicMock(),
             planner=MagicMock(),
             worktree_manager=MagicMock(),
@@ -3312,6 +3329,9 @@ class TestLaunchTriageIssueSessionFlavors:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+        )
+        support.apply_plan(
+            Plan(actions=tuple(actions), skipped=()), MagicMock()
         )
 
     def test_marker_label_derives_health_review_flavor(
@@ -3398,16 +3418,18 @@ class TestLaunchTriageIssueSessionFlavors:
             TestLaunchTriageIssueSessionFlavors._triage_pr(555)
         ]
         state = OrchestratorState()
-        support = self._support_for(state)
 
-        support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
-            CreateTriageIssueAction(
-                title="Health Review — walk the floor",
-                body="Walk the floor",
-                labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
-                pr_count=0,
-            ),
-            MagicMock(success=True, details={"issue_number": 905}),
+        self._apply_actions(
+            state,
+            [
+                CreateTriageIssueAction(
+                    title="Health Review — walk the floor",
+                    body="Walk the floor",
+                    labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+                    pr_count=0,
+                )
+            ],
+            issue_number=905,
         )
         (queued,) = state.pending_triage_reviews
         assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
@@ -3733,6 +3755,109 @@ class TestLaunchTriageIssueSessionFlavors:
             and a.label == "needs-human"
         ]
         assert removed, "the successful launch must clear the stale needs-human label"
+
+    def test_failed_stale_needs_human_clear_survives_as_pending_reconciliation(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """#6771 round 6: a failed stale-label clear must not be lost as success.
+
+        Prep exhausts with an incomplete escalation (label applied, comment
+        fails), then prep recovers and the investigation launches — but the
+        stale-label ``RemoveLabelAction`` itself fails. The launch must still
+        commit (the session is running and must NOT be relaunched), yet the
+        needs-human label still sits on GitHub, so the reconciliation record
+        must survive in ``pending_needs_human_label_clears``. A later per-tick
+        reconciler retries the removal ONLY — never a session launch — and once
+        it commits the issue drops out of the durable list.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+
+        comment_fails = {"active": True}
+        remove_label_fails = {"active": True}
+
+        def apply_action(action):
+            if (
+                comment_fails["active"]
+                and isinstance(action, AddCommentAction)
+                and action.number == 903
+            ):
+                return ActionResult.fail(action, "github 422 rejected comment")
+            if (
+                remove_label_fails["active"]
+                and isinstance(action, RemoveLabelAction)
+                and action.issue_number == 903
+                and action.label == "needs-human"
+            ):
+                return ActionResult.fail(action, "github 422 rejected removal")
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+
+        state = OrchestratorState()
+        self._queue_investigation(state)
+        self._drive_to_exhaustion(state, config, launcher_bundle)
+
+        # Incomplete escalation: label applied, comment failed → stale marker.
+        assert len(state.pending_triage_reviews) == 1
+        assert state.pending_triage_reviews[0].needs_human_escalation_incomplete
+
+        # Prep recovers and the launch succeeds, but the stale-label removal fails.
+        comment_fails["active"] = False
+        launcher_bundle.board_snapshot_provider.error = None
+        session = orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+
+        # The session launched and the queue item was removed — it must NOT be
+        # relaunched — but the failed removal survives as a durable record.
+        assert session is not None, "prep recovered, so the investigation must launch"
+        assert state.pending_triage_reviews == []
+        assert state.pending_needs_human_label_clears == [903], (
+            "a failed stale-label removal must survive as a reconciliation record"
+        )
+        launches_before_reconcile = sum(
+            1 for e in mock_events.events if str(e.name) == "session.started"
+        )
+        removals_before_reconcile = sum(
+            1
+            for a in (
+                c.args[0] for c in launcher_bundle.action_applier.apply.call_args_list
+            )
+            if isinstance(a, RemoveLabelAction)
+            and a.issue_number == 903
+            and a.label == "needs-human"
+        )
+
+        # A later tick: GitHub recovers; the reconciler retries the removal only.
+        remove_label_fails["active"] = False
+        reconcile_pending_needs_human_label_clears(state, launcher_bundle.launcher)
+
+        assert state.pending_needs_human_label_clears == [], (
+            "a committed removal must drop the issue from the reconciliation list"
+        )
+        removals_after_reconcile = sum(
+            1
+            for a in (
+                c.args[0] for c in launcher_bundle.action_applier.apply.call_args_list
+            )
+            if isinstance(a, RemoveLabelAction)
+            and a.issue_number == 903
+            and a.label == "needs-human"
+        )
+        assert removals_after_reconcile == removals_before_reconcile + 1, (
+            "the reconciler must retry the RemoveLabelAction exactly once"
+        )
+        # The reconciler removes the label ONLY — it launches no duplicate work.
+        assert (
+            sum(1 for e in mock_events.events if str(e.name) == "session.started")
+            == launches_before_reconcile
+        )
 
 
 class TestTriageProducerToLaunchBoundary:
