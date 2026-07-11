@@ -27,10 +27,20 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/triage-assignment.json"
   `focus_issue_number` - that comment IS your diagnosis channel; a decision
   without it is rejected and the session is marked failed. Do NOT audit or
   label PRs - there is no PR manifest for this session.
+- **`"flavor": "health_review"`** - walk the floor: no PR audit. Review the
+  board snapshot holistically - hung or aging sessions, queue pile-ups,
+  repeated failures, cross-job patterns - and report findings through the
+  decision artifact. Targeted proposals (`post_comment`,
+  `escalate_to_human`, act-level) may only target THIS tracking issue;
+  board-wide findings belong in `create_issue`/`flag_pattern` proposals.
+  Then complete via
+  `coding-done completed --implementation "Health review findings" --problems "None"`.
+  Do NOT audit or label PRs - there is no PR manifest for this session. The
+  orchestrator closes the anchor issue when your review lands successfully.
 
 ### Board snapshot
 
-Both flavors also receive a snapshot of orchestrator state, taken at launch:
+Every flavor also receives a snapshot of orchestrator state, taken at launch:
 
 ```bash
 cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
@@ -41,7 +51,8 @@ blocked issues, recent failures, per-issue timeline extracts, and an
 orchestrator log tail. Batch reviews: use it to spot cross-PR and systemic
 patterns worth `flag_pattern`/`create_issue` proposals. Failure
 investigations: start from your focus issue, then use the snapshot for board
-context (what else was running, queued, or failing at the same time).
+context (what else was running, queued, or failing at the same time). Health
+reviews: the snapshot IS your assignment - review it end to end.
 
 Completing with no code changes is normal and succeeds - the orchestrator will
 not attempt PR-creation noise for a clean audit. If you did commit

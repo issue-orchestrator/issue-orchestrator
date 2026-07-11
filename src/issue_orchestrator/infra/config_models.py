@@ -323,12 +323,25 @@ class TriageAuthorityConfig:
 
 
 @dataclass
+class TriageHealthReviewConfig:
+    """Periodic health-review trigger settings (ADR-0031 §4).
+
+    ``interval_minutes`` drives the planner-side trigger: every N minutes
+    the orchestrator creates a health-review anchor issue for the triage
+    agent to walk the board snapshot. 0 (the default) disables the trigger.
+    """
+
+    interval_minutes: int = 0
+
+
+@dataclass
 class TriageConfig:
     """Triage issue configuration.
 
     Controls how labels and milestones are assigned to orchestrator-created
-    triage issues, and which triage decision proposals the orchestrator
-    executes versus surfaces (ADR-0031).
+    triage issues, which triage decision proposals the orchestrator
+    executes versus surfaces (ADR-0031), and the periodic health-review
+    trigger (ADR-0031 §4).
     """
 
     # Labels to inherit from source issues (if any source issue has the label)
@@ -346,6 +359,9 @@ class TriageConfig:
     # Per-action-type graduated authority for triage decision proposals
     authority: TriageAuthorityConfig = field(default_factory=TriageAuthorityConfig)
 
+    # Periodic health-review trigger (ADR-0031 §4)
+    health_review: TriageHealthReviewConfig = field(default_factory=TriageHealthReviewConfig)
+
     def to_event_dict(self) -> dict:
         """Serialized ``triage`` section for config event payloads."""
         return {
@@ -357,6 +373,7 @@ class TriageConfig:
             },
             "priority": self.priority,
             "authority": self.authority.to_event_dict(),
+            "health_review": {"interval_minutes": self.health_review.interval_minutes},
         }
 
 

@@ -47,7 +47,8 @@ from ..domain.models import (
 )
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
-from .session_routing import PendingSessionQueues, TriageQueueOutcome
+from .health_review_trigger import queue_recovered_triage_anchor
+from .session_routing import TriageQueueOutcome
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
@@ -701,11 +702,9 @@ class StartupManager:
                 print(f"  triage issue #{triage_issue.number}: Already running")
                 continue
 
-            # Flavor-safe as BATCH_REVIEW: only threshold-created batch tracking
-            # issues carry the triage agent label (#6768 B5).
-            outcome = PendingSessionQueues(state).queue_batch_review(
-                triage_issue.number, triage_issue.title
-            )
+            # The ADR-0031 §4 marker label declares the anchor's variant;
+            # the owner routes it (#6768 B5: queued flavor reaches launch verbatim).
+            outcome = queue_recovered_triage_anchor(state, triage_issue)
             if outcome is TriageQueueOutcome.DUPLICATE:
                 print(f"  triage issue #{triage_issue.number}: Already queued")
                 continue
@@ -843,6 +842,7 @@ class StartupManager:
         state.startup_message = "Restoring queue cache..."
         cached_issues = store.load_issues(self.config.repo or "")
         cached_watermark = store.load_watermark()
+        state.last_health_review_at = store.load_last_health_review_at()
         queue_cache = QueueCache(self.config, state, store)
 
         try:

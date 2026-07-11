@@ -1504,6 +1504,121 @@ class TestPlanTriageIssueCreation:
         assert action.milestone.explicit_name is None
 
 
+class TestPlanHealthReviewIssueCreation:
+    """Health-review anchor creation planning (ADR-0031 §4).
+
+    Policy lives in control/health_review_trigger; these tests exercise it
+    through the full planner (facts -> CreateTriageIssueAction).
+    """
+
+    @staticmethod
+    def _make_planner(interval_minutes: int = 60):
+        config = make_config(triage_review_agent="agent:triage")
+        config.triage.health_review.interval_minutes = interval_minutes
+        return Planner(config=config, scheduler=Scheduler(config)), config
+
+    @staticmethod
+    def _health_facts(**kwargs):
+        from issue_orchestrator.domain.models import TriageFacts
+
+        defaults = {"health_review_due": True, "existing_health_review_issue": None}
+        defaults.update(kwargs)
+        return TriageFacts(**defaults)
+
+    @staticmethod
+    def _create_actions(plan):
+        return [
+            a for a in plan.actions
+            if a.action_type == ActionType.CREATE_TRIAGE_ISSUE
+        ]
+
+    def test_creates_anchor_with_agent_and_marker_labels_when_due(self):
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        planner, _ = self._make_planner()
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        actions = self._create_actions(plan)
+        assert len(actions) == 1
+        action = actions[0]
+        assert action.title == "Health Review — walk the floor"
+        assert "agent:triage" in action.labels
+        assert HEALTH_REVIEW_MARKER_LABEL in action.labels
+        assert action.pr_count == 0
+        assert "board snapshot" in action.body.lower()
+        assert "ADR-0031" in action.body
+
+    def test_includes_filter_label_when_configured(self):
+        """Filtered runs must scope the anchor so pickup and dedup both see it."""
+        planner, config = self._make_planner()
+        config.filtering.label = "io:e2e:run-1"
+
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        (action,) = self._create_actions(plan)
+        assert "io:e2e:run-1" in action.labels
+
+    def test_skips_when_not_due(self):
+        planner, _ = self._make_planner()
+        facts = self._health_facts(health_review_due=False)
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+    def test_skips_when_existing_anchor_open(self):
+        planner, _ = self._make_planner()
+        facts = self._health_facts(existing_health_review_issue=321)
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+    def test_skips_when_health_review_pending_launch(self):
+        """Dedup keys off the queue item's typed flavor, not its title."""
+        planner, _ = self._make_planner()
+        pending = PendingTriageReview(
+            issue_number=321,
+            title="renamed by an operator",
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        )
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), pending_triage=[pending])
+        )
+
+        assert self._create_actions(plan) == []
+
+    def test_pending_batch_launch_does_not_block_health_review(self):
+        """A queued BATCH item must not dedupe the health anchor (independent
+        triggers; only a pending HEALTH_REVIEW covers the creation window)."""
+        planner, _ = self._make_planner()
+        pending = PendingTriageReview(
+            issue_number=100,
+            title="Triage Batch Review: 5 PRs pending",
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+        )
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), pending_triage=[pending])
+        )
+
+        assert len(self._create_actions(plan)) == 1
+
+    def test_health_only_facts_never_create_batch_issue(self):
+        """threshold<=0 facts (health-only) must not trip batch creation."""
+        planner, _ = self._make_planner()
+        facts = self._health_facts(
+            health_review_due=False, pr_count=0, threshold=0, watch_label=""
+        )
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+
 class TestPlanDiscoveredReworks:
     """Tests for Planner's _plan_discovered_reworks method.
 

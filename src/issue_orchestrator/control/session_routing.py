@@ -77,9 +77,9 @@ class PendingSessionQueues:
     """Owner for pending session queues: launch-routing removals + triage intake.
 
     Triage intake is behavior-level (#6768 round 3): producers say WHICH
-    variant they are queueing (batch review vs failure investigation) and this
-    owner constructs the ``PendingTriageReview``, applies the single
-    deduplication rule (by issue number against the pending queue), and
+    variant they are queueing (batch review, failure investigation, or health
+    review) and this owner constructs the ``PendingTriageReview``, applies the
+    single deduplication rule (by issue number against the pending queue), and
     returns an explicit :class:`TriageQueueOutcome`. Producers never touch the
     dataclass or the state list.
     """
@@ -122,6 +122,19 @@ class PendingSessionQueues:
         return self._queue_triage(
             PendingTriageReview(
                 issue_number, title, flavor=TriageSessionFlavor.BATCH_REVIEW
+            )
+        )
+
+    def queue_health_review(self, issue_number: int, title: str) -> TriageQueueOutcome:
+        """Queue an interval-created health-review anchor (walks the board snapshot).
+
+        No failure context: like batch reviews, health reviews are
+        orchestrator-created (ADR-0031 §4) — ``PendingTriageReview.__post_init__``
+        rejects one that arrives with a triggering failure.
+        """
+        return self._queue_triage(
+            PendingTriageReview(
+                issue_number, title, flavor=TriageSessionFlavor.HEALTH_REVIEW
             )
         )
 
@@ -354,8 +367,9 @@ def orchestrator_launch_triage_session(
 ) -> Optional[Session]:
     """Launch a queued triage session and update orchestrator queues.
 
-    The pending-triage queue carries BOTH variants — threshold-created batch
-    tracking issues and failure investigations — and the planner launches them
+    The pending-triage queue carries every triage variant — threshold-created
+    batch tracking issues, interval-created health-review anchors (ADR-0031
+    §4), and failure investigations — and the planner launches them
     through this path before ordinary issue pickup. The producer boundary that
     queued the item declared its flavor; forward it verbatim (#6768 B5:
     hard-coding one flavor here made batch reviews skip manifest prep).
