@@ -58,7 +58,7 @@ from ..control.session_routing import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
-from ..control.triage_needs_human_reconcile import reconcile_pending_needs_human_label_clears as _reconcile_needs_human_label_clears
+from ..control.triage_needs_human_reconcile import reconcile_needs_human_label_clears as _reconcile_needs_human_label_clears
 from ..control.cleanup_manager import CleanupManager
 from ..control.review_exchange_lifecycle import (
     IssueRuntimeTermination,
@@ -397,7 +397,7 @@ class Orchestrator:
             # the last tick (clears publish-failed state + stored locators on
             # success; leaves them retryable on failure).
             self.deps.publish_recovery.drain_completed_retries(self.state)
-            _reconcile_needs_human_label_clears(self._session_launcher)  # retry durable stale needs-human label clears (#6771 r6/r7); removal only, never relaunches
+            _reconcile_needs_human_label_clears(self._session_launcher, {s.issue.number for s in self.state.active_sessions})  # retry durable stale needs-human clears + resolve provisional ones by restored session (#6771 r6-r8); removal only, never relaunches
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
                 self._event_context,
