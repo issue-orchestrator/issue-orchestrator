@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, Optional, cast
 
 import yaml
@@ -518,6 +519,41 @@ def _print_claude_code_next_steps(
     )
 
 
+def _collect_stage2_triage(
+    prompter: Prompter, review: dict, code_reviewed_label: str, agent_labels: Iterable[str]
+) -> None:
+    """Prompt for the optional Stage 2 triage batch review and write it into the
+    review block (shared by both wizard flows).
+
+    A configured triage agent can propose create_issue follow-ups, so it also
+    REQUIRES a follow-up worker agent to route new issues to (#6779 R14) —
+    collected here so the generated config passes startup validation.
+    """
+    prompter.print("")
+    if not prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
+        return
+    prompter.print("\n  --- Stage 2: Triage Batch Review ---")
+    review_agent = prompter.input("  triage review agent label", "agent:triage")
+    reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
+    threshold_raw = prompter.input("  Trigger after N code-reviewed PRs", "5")
+    follow_up_default = next((a for a in agent_labels if a != review_agent), review_agent)
+    review["triage_review_agent"] = review_agent
+    review["triage_follow_up_agent"] = prompter.input(
+        "  Worker agent for triage-created follow-up issues", follow_up_default
+    )
+    review["triage_reviewed_label"] = reviewed_label
+    try:
+        threshold = int(threshold_raw)
+    except ValueError:
+        threshold = 0
+    if threshold > 0:
+        review["triage_review_threshold"] = threshold
+        prompter.print(
+            f"  ✓ triage review triggers after {threshold} PRs with '{code_reviewed_label}'"
+        )
+    prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {reviewed_label}")
+
+
 def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR0912 - interactive wizard with branches for each config option
     """Walk through new project setup."""
     config: dict[str, Any] = {"agents": {}}
@@ -787,31 +823,9 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
 
         # Stage 2: Triage Batch Review (advanced only)
         if advanced:
-            prompter.print("")
-            if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
-                prompter.print("\n  --- Stage 2: Triage Batch Review ---")
-                triage_review_agent = prompter.input(
-                    "  triage review agent label", "agent:triage"
-                )
-                triage_reviewed_label = prompter.input(
-                    "  Label after triage review", "triage-reviewed"
-                )
-                threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
-
-                config["review"]["triage_review_agent"] = triage_review_agent
-                config["review"]["triage_reviewed_label"] = triage_reviewed_label
-                try:
-                    threshold_int = int(threshold)
-                    if threshold_int > 0:
-                        config["review"]["triage_review_threshold"] = threshold_int
-                        prompter.print(
-                            f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'"
-                        )
-                except ValueError:
-                    pass
-                prompter.print(
-                    f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}"
-                )
+            _collect_stage2_triage(
+                prompter, config["review"], code_reviewed_label, config["agents"]
+            )
 
     return config
 
@@ -1135,31 +1149,9 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
             )
 
             # Stage 2: Triage Batch Review (only if Stage 1 enabled)
-            prompter.print("")
-            if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
-                prompter.print("\n  --- Stage 2: Triage Batch Review ---")
-                triage_review_agent = prompter.input(
-                    "  triage review agent label", "agent:triage"
-                )
-                triage_reviewed_label = prompter.input(
-                    "  Label after triage review", "triage-reviewed"
-                )
-                threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
-
-                config["review"]["triage_review_agent"] = triage_review_agent
-                config["review"]["triage_reviewed_label"] = triage_reviewed_label
-                try:
-                    threshold_int = int(threshold)
-                    if threshold_int > 0:
-                        config["review"]["triage_review_threshold"] = threshold_int
-                        prompter.print(
-                            f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'"
-                        )
-                except ValueError:
-                    pass
-                prompter.print(
-                    f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}"
-                )
+            _collect_stage2_triage(
+                prompter, config["review"], code_reviewed_label, config["agents"]
+            )
 
     return config, updating_existing_path
 

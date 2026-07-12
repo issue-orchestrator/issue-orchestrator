@@ -992,9 +992,11 @@ class ReviewSettings(BaseModel):
             "doc_notes": (
                 "When a triage decision proposes a new follow-up issue, the "
                 "orchestrator attaches this worker's agent label so normal "
-                "discovery picks it up. Must match a worker label under agents; "
-                "unset means a follow-up proposal fails loudly instead of "
-                "guessing by config order."
+                "discovery picks it up. Must match a worker label under agents. "
+                "REQUIRED whenever review.triage_review_agent is set: a "
+                "configured triage agent makes create_issue proposals reachable, "
+                "so leaving this unset fails startup validation instead of "
+                "guessing by config order later."
             ),
             "section": "Triage Review",
             "config_attr": "triage_follow_up_agent",

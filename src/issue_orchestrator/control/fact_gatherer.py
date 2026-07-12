@@ -20,6 +20,7 @@ Usage:
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
         TriageFacts,
         CleanupFacts,
     )
-    from ..domain.triage_session import ApprovedTriageOp
+    from ..domain.triage_session import ApprovedTriageOp, StoredTriageOp
     from .planner_types import OrchestratorSnapshot
 
 logger = logging.getLogger(__name__)
@@ -201,27 +202,50 @@ class FactGatherer:
     ) -> Optional["TriageFacts"]:
         """Gather facts for the triage batch and health-review triggers.
 
-        The batch fields are gated by ``triage_review_threshold`` (via the
-        watch label) and the health-review fields by
-        ``triage.health_review.interval_minutes`` — either feature alone
-        produces facts; neither produces None. GitHub API discipline shapes
-        every read here: due-ness is pure interval math computed FIRST, so a
-        health-only configuration that is not yet due makes ZERO GitHub calls
-        (no anchor fact can affect planning until the review is due); the
-        batch anchor scan runs only when the batch trigger is armed; and the
-        marker-scoped health-anchor dedup lookup runs only while a creation
-        decision is actually pending and the batch scan did not already find
-        the anchor. Observation only: milestone ASSEMBLY policy (strategy
-        choice, explicit name -> number resolution) belongs to planning and
-        the create-issue applier boundary (#6769 round 3) — no milestone API
-        reads happen here.
+        Three independent triggers can each produce facts (only the case where
+        none is active yields None):
+          * BATCH fields, gated by ``triage_review_threshold`` (via the watch
+            label);
+          * HEALTH-REVIEW fields, gated by
+            ``triage.health_review.interval_minutes``;
+          * PROPOSAL fields (approved-op execution + terminal-op cleanup
+            candidates), armed by the triage agent's local op ledger and
+            reconciled whenever it holds an op — INDEPENDENT of the batch
+            review threshold (#6779 R12), so a manual-approval / default
+            (threshold=0) proposal still advances and self-heals.
+
+        GitHub API discipline shapes every read here: due-ness is pure interval
+        math computed FIRST, so a health-only configuration that is not yet due
+        makes ZERO GitHub calls (no anchor fact can affect planning until the
+        review is due); the exhaustive triage-agent scan runs only when the
+        batch trigger is armed OR the local op ledger has proposals to
+        reconcile (an empty ledger has nothing to approve or clean up, so no
+        scan is worth making); and the marker-scoped health-anchor dedup lookup
+        runs only while a creation decision is actually pending and the scan did
+        not already find the anchor. Observation only: milestone ASSEMBLY policy
+        (strategy choice, explicit name -> number resolution) belongs to
+        planning and the create-issue applier boundary (#6769 round 3) — no
+        milestone API reads happen here.
         """
         from ..domain.models import TriageFacts
 
         watch_label = self._get_triage_watch_label()
         batch_armed = bool(watch_label)
+        triage_agent_configured = bool(self.config.triage_review_agent)
         health_armed = health_review_interval_minutes(self.config) > 0
-        if not batch_armed and not health_armed:
+
+        # The act-level PROPOSAL machinery is armed by having a triage agent, so
+        # it reconciles INDEPENDENT of the batch review threshold (#6779 R12):
+        # approved gated proposals must execute and terminal/absent proposals
+        # must be surfaced for cleanup even when threshold=0 (batch disabled).
+        # The local op ledger (no GitHub call) says whether there is anything to
+        # reconcile — an empty ledger produces no facts and no scan.
+        ops = (
+            dict(self.triage_authority.list_ops())
+            if triage_agent_configured and self.triage_authority is not None
+            else {}
+        )
+        if not batch_armed and not health_armed and not ops:
             return None
 
         due = health_review_due(
@@ -232,19 +256,24 @@ class FactGatherer:
         existing_health_review_issue: Optional[int] = None
         approved_ops: tuple["ApprovedTriageOp", ...] = ()
         absent_op_candidates: tuple[int, ...] = ()
-        if batch_armed:
+        if batch_armed or ops:
             # The ONE exhaustive open triage-agent scan classifies batch +
             # health anchors, open proposals, approved ops, and absent-ledger
-            # cleanup candidates in a single reconcile (#6778/#6779 R2/R4).
-            # Gated by batch_armed so a health-only config that is not yet due
-            # makes zero GitHub calls; the marker-scoped dedup below covers the
-            # health anchor when the batch scan did not (or could not) run.
+            # cleanup candidates in a single reconcile (#6778/#6779 R2/R4/R12).
+            # It runs when the batch trigger is armed OR the ledger has ops to
+            # reconcile — decoupling proposal advancement from the batch
+            # threshold. The marker-scoped dedup below covers the health anchor
+            # when this scan did not (or could not) run.
             (
-                existing_triage_issue,
+                batch_anchor,
                 existing_health_review_issue,
                 approved_ops,
                 absent_op_candidates,
-            ) = self._classify_triage_anchor_scan()
+            ) = self._classify_triage_anchor_scan(ops)
+            # Batch anchor classification stays gated on batch_armed: a batch
+            # anchor is meaningless while the batch trigger is off.
+            if batch_armed:
+                existing_triage_issue = batch_anchor
         if due and existing_health_review_issue is None:
             # Marker-scoped, exhaustive dedup lookup (crash-safe): an older
             # anchor can never fall off the first page of the broader
@@ -292,6 +321,7 @@ class FactGatherer:
 
     def _classify_triage_anchor_scan(
         self,
+        ops: Mapping[int, "StoredTriageOp"],
     ) -> tuple[int | None, int | None, tuple["ApprovedTriageOp", ...], tuple[int, ...]]:
         """Classify the ONE shared, exhaustive open triage-agent scan.
 
@@ -304,24 +334,21 @@ class FactGatherer:
         the gate label were approved by the operator. A backlog of proposals
         can never hide an older approved op or an anchor.
 
+        ``ops`` is the caller-provided local authority-store ledger (the caller
+        already read it to decide whether a scan is worthwhile — #6779 R12), so
+        no extra GitHub call is made here beyond the single anchor scan.
+
         Fact gathering is READ-ONLY (#6779 R10): reconciliation only
         CLASSIFIES ledger rows absent from the scan as terminal-cleanup
         CANDIDATES; the numbers are returned as a fact for the planner to turn
-        into a confirm-and-discard action, never mutated here. No extra GitHub
-        call is made — the op lookup is the local authority-store ledger.
+        into a confirm-and-discard action, never mutated here.
         """
         from .triage_proposals import reconcile_triage_proposals
 
-        triage_agent = self.config.triage_review_agent
-        if not triage_agent:
+        if not self.config.triage_review_agent:
             return None, None, (), ()
         existing = discover_open_triage_anchor_issues(
             self.repository_host, self.config
-        )
-        ops = (
-            dict(self.triage_authority.list_ops())
-            if self.triage_authority is not None
-            else {}
         )
         reconciled = reconcile_triage_proposals(existing, ops=ops)
         batch, health = classify_triage_anchor_issues(

@@ -988,6 +988,53 @@ def test_list_labels_single_page_makes_no_extra_request() -> None:
     assert requested_pages == [1]
 
 
+def test_list_labels_later_page_non_200_fails_loud() -> None:
+    """R8: a later-page non-200 must RAISE, not silently return the labels
+    gathered so far. control/triage_proposals.py makes a gate-ABSENT decision
+    from this list; a truncated scan that misses proposed-triage would falsely
+    refuse valid proposals, so completeness cannot be assumed."""
+    page1 = [{"name": f"label-{n}"} for n in range(100)]  # full page -> keep paging
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        if page == 1:
+            return httpx.Response(200, json=page1)
+        return httpx.Response(500, text="server error")  # later page fails
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    with pytest.raises(GitHubHttpError):
+        client.list_labels()
+
+
+def test_list_labels_page_cap_fails_loud_rather_than_truncating() -> None:
+    """R8: when every page is full past the cap, the scan cannot prove the list
+    is complete, so it RAISES rather than silently returning a truncated set."""
+    full_page = [{"name": f"label-{n}"} for n in range(100)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=full_page)  # always a full page
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    with pytest.raises(GitHubHttpError):
+        client.list_labels()
+
+
+def test_list_all_labels_later_page_non_200_fails_loud() -> None:
+    """R8: the cleanup all-labels path shares the same fail-loud pager, so a
+    later-page non-200 raises here too (no cross-path completeness drift)."""
+    page1 = [{"name": f"label-{n}"} for n in range(100)]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        if page == 1:
+            return httpx.Response(200, json=page1)
+        return httpx.Response(403, text="forbidden")
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    with pytest.raises(GitHubHttpError):
+        client.list_all_labels()
+
+
 def test_invalidate_pr_etag_clears_pr_cache() -> None:
     requests_seen: list[dict] = []
     call_count = 0

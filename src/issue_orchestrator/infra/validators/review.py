@@ -15,6 +15,8 @@ class ReviewWorkflowValidator(ConfigValidator):
     - If reviews enabled, default reviewer must be set
     - Default reviewer must exist in agents
     - Triage review agent must exist in agents (if set)
+    - A configured triage agent requires triage_follow_up_agent (#6779 R14)
+    - triage_follow_up_agent, when set, must name a real agent (#6779 R9)
     - Triage authority modes are valid; act-level 'execute' rejected (#6764)
     - Triage health-review interval is non-negative (0 = disabled, #6763)
     - A positive health-review interval requires a triage agent (#6776)
@@ -68,10 +70,26 @@ class ReviewWorkflowValidator(ConfigValidator):
     def _validate_triage_follow_up_agent(
         self, config: "Config", errors: list[str]
     ) -> None:
-        # Typed destination for triage create_issue proposals (#6779 R9): if
-        # set it MUST name a real agent, so routing can never fall back to
-        # dict order and hand new work to a reviewer/triage/goal-pilot agent.
+        # Typed destination for triage create_issue proposals (#6779 R9/R14).
+        #
+        # A configured triage agent makes create_issue proposals REACHABLE:
+        # both execute-authority (direct create) and propose-authority (a gated
+        # proposal issue that creates on approval) route the new issue to
+        # review.triage_follow_up_agent (see triage_follow_up_agent_label). Left
+        # unset, that routing RAISES at post-session planning time — a latent
+        # failure. So it is REQUIRED whenever a triage agent is configured
+        # (#6779 R14), and when set it MUST name a real agent so routing can
+        # never fall back to dict order and hand new work to a
+        # reviewer/triage/goal-pilot agent (#6779 R9).
         if not config.triage_follow_up_agent:
+            if config.triage_review_agent:
+                errors.append(
+                    "review.triage_follow_up_agent is required when a triage"
+                    " agent is configured: a triage create_issue proposal routes"
+                    " the new issue to it, and leaving it unset fails at"
+                    " post-session planning. Set it to a worker agent in `agents`"
+                    f" (available: {list(config.agents.keys())}) (#6779 R14)"
+                )
             return
         if config.triage_follow_up_agent not in config.agents:
             errors.append(

@@ -195,6 +195,7 @@ class TestReviewWorkflowValidator:
         """Verify error when triage agent doesn't exist."""
         config = self._make_config(
             triage_review_agent="agent:triage",
+            triage_follow_up_agent="agent:developer",
             agents={"agent:developer": MagicMock()},
         )
         errors = ReviewWorkflowValidator().validate(config)
@@ -220,15 +221,42 @@ class TestReviewWorkflowValidator:
         errors = ReviewWorkflowValidator().validate(config)
         assert errors == []
 
-    def test_unset_triage_follow_up_agent_ok(self):
-        """R9: unset is valid at config time (routing fails loudly only when a
-        create_issue proposal actually needs a destination)."""
+    def test_unset_triage_follow_up_agent_ok_without_triage_agent(self):
+        """R14: unset is valid ONLY when no triage agent is configured — then a
+        create_issue proposal can never be reached, so no destination is needed."""
         config = self._make_config(
+            triage_review_agent=None,
             triage_follow_up_agent=None,
             agents={"agent:developer": MagicMock()},
         )
         errors = ReviewWorkflowValidator().validate(config)
         assert errors == []
+
+    def test_triage_agent_requires_follow_up_agent(self):
+        """R14: a configured triage agent makes create_issue proposals reachable
+        (execute-create or a gated propose-create), both of which route to
+        triage_follow_up_agent — so leaving it unset is a startup error rather
+        than a latent post-session planning failure."""
+        config = self._make_config(
+            triage_review_agent="agent:triage",
+            triage_follow_up_agent=None,
+            agents={"agent:triage": MagicMock(), "agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert any(
+            "triage_follow_up_agent is required" in e for e in errors
+        ), errors
+
+    def test_triage_agent_with_follow_up_agent_ok(self):
+        """R14: a triage agent plus a follow-up worker naming a real agent is the
+        valid enabled pair — no create_issue routing failure lurking."""
+        config = self._make_config(
+            triage_review_agent="agent:triage",
+            triage_follow_up_agent="agent:developer",
+            agents={"agent:triage": MagicMock(), "agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert not any("triage_follow_up_agent" in e for e in errors), errors
 
     def test_negative_health_review_interval_error(self):
         """The validator surfaces the health-review interval invariant so a

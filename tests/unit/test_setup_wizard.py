@@ -1192,6 +1192,7 @@ class TestWizardNewProject:
             "agent:triage",            # triage review agent
             "triage-reviewed",         # triage reviewed label
             "5",                    # threshold
+            "agent:backend",           # triage follow-up worker agent (#6779 R14)
         ])
 
         config = wizard_new_project(prompter)
@@ -1204,6 +1205,9 @@ class TestWizardNewProject:
 
         # Stage 2: Triage Batch Review
         assert config["review"]["triage_review_agent"] == "agent:triage"
+        # R14: a configured triage agent must also route create_issue follow-ups
+        # to a worker agent, so the wizard collects it up front.
+        assert config["review"]["triage_follow_up_agent"] == "agent:backend"
         assert config["review"]["triage_reviewed_label"] == "triage-reviewed"
         assert config["review"]["triage_review_threshold"] == 5
 

@@ -143,6 +143,12 @@ review:
   code_reviewed_label: "code-reviewed"
   keep_current_approach_label: "reviewer-keep-current-approach"
   triage_review_agent: "agent:triage"
+  # Worker agent a triage create_issue proposal routes its new issue to.
+  # REQUIRED whenever triage_review_agent is set: a configured triage agent
+  # makes create_issue proposals reachable (executed directly or as a gated
+  # proposal issue), and both route the follow-up here. Must name a worker
+  # label in `agents` (#6779 R9/R14).
+  triage_follow_up_agent: "agent:backend"
   triage_review_label: "needs-triage-review"
   triage_reviewed_label: "triage-reviewed"
   triage_failed_label: "triage-failed"
@@ -360,8 +366,8 @@ triage:
   # execution-time re-validation (stale proposals are surfaced, not run).
   # Unwired act-level actions (kill_hung_session) must stay "propose"
   # until their executors land (#6764) - "execute" fails at startup.
-  # triage_follow_up_agent names the worker a create_issue follow-up routes to
-  # (must be a worker label in `agents`, #6779).
+  # A create_issue follow-up routes its new issue to review.triage_follow_up_agent
+  # (set above; REQUIRED whenever review.triage_review_agent is configured, #6779).
   # authority:
   #   post_comment: "execute"       # execute | propose
   #   create_issue: "execute"       # execute | propose (propose = gated issue)
