@@ -181,6 +181,26 @@ class TriageLaunchAuthority:
             return frozenset((self.anchor_issue_number,))
         return frozenset((*self.manifest_pr_numbers, self.anchor_issue_number))
 
+    def allowed_act_level_targets(self) -> frozenset[int]:
+        """Issue numbers an ACT-LEVEL proposal (reset_retry/kill_hung_session)
+        may target — a STRICTER scope than :meth:`allowed_targets`.
+
+        Act-level intents mutate a work ISSUE's runtime (scratch reset, session
+        kill). The issue reset owner is handed this number as an
+        ``issue_number``, so a batch manifest PR number — or a triage
+        bookkeeping anchor — passed here is a confused deputy: it resets the
+        wrong entity (#6764 re-review F1). Only a failure investigation owns a
+        work issue in scope: its focus issue. Batch and health reviews own no
+        resettable work issue (batch manifest entries are PRs; batch/health
+        anchors are triage bookkeeping issues), so NO act-level target is in
+        scope for them — board-wide remediation must route through the
+        scope-free ``create_issue``/``flag_pattern`` proposals instead.
+        """
+        if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
+            assert self.focus_issue_number is not None  # __post_init__
+            return frozenset((self.focus_issue_number,))
+        return frozenset()
+
     def matches_assignment(self, assignment: TriageAssignment) -> bool:
         """True when the agent-visible assignment copy mirrors this authority."""
         return (

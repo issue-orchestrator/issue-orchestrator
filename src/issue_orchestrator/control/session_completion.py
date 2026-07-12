@@ -395,7 +395,21 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
                 e,
             )
 
-    state.session_history.append(result.history_entry)
+    # Terminalize through the required-act-level outcome boundary (ADR-0031 §2,
+    # #6764 re-review F2): a decision-mandated reset that FAILED at apply time
+    # routes the whole completion to a FAILED terminal record — never a partial
+    # reset masked by the agent's "completed" intent. A committed/downgraded
+    # outcome leaves the success record untouched.
+    from .triage_reset_retry import (
+        evaluate_required_act_level_outcome,
+        finalize_required_act_level_history,
+    )
+    state.session_history.append(
+        finalize_required_act_level_history(
+            result.history_entry,
+            evaluate_required_act_level_outcome(applied_results),
+        )
+    )
     if result.should_defer_cleanup and result.pending_cleanup:
         state.pending_cleanups.append(result.pending_cleanup)
     else:

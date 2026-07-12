@@ -352,3 +352,29 @@ class TestCompletionPipelineEligibility:
         assert any(e.issue_number == 17 for e in state.session_history), (
             "a downgraded proposal posts no mutations - history must be intact"
         )
+
+    def test_reset_failure_suppresses_success_and_routes_failure(self, tmp_path):
+        """A reset-owner failure must not record a clean completion.
+
+        The mandated reset is the whole point of the investigation; when it
+        fails at apply time the completion routes to a FAILED terminal record
+        instead of the agent's 'completed' intent — the single authoritative
+        outcome boundary, never a partial reset masked as success
+        (#6764 re-review F2)."""
+        executor, _events, run_reset = make_executor(
+            outcome=ResetRetryRunOutcome(
+                success=False, error="branch delete exploded"
+            )
+        )
+
+        state = self._run_completion(tmp_path, executor)
+
+        run_reset.assert_called_once()
+        [entry] = state.session_history
+        assert entry.issue_number == 17
+        assert entry.status == "failed", (
+            "a failed mandated reset must suppress the completed success record"
+        )
+        assert "branch delete exploded" in (entry.status_reason or "")
+        # The reset never ran, so its issue is not re-cleared for relaunch.
+        assert 17 in state.failed_this_cycle

@@ -1076,6 +1076,57 @@ class TestDecisionTargetScope:
         [rejection] = _rejections(actions)
         assert "outside this session's launch scope" in rejection.body_preview
 
+    def test_batch_reset_retry_targeting_manifest_pr_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        """A batch reset_retry aimed at a manifest PR is a confused deputy.
+
+        The PR number is inside the general launch scope (comments/escalations
+        may target manifest PRs), but the issue reset owner would treat it as
+        an ``issue_number`` and reset the wrong entity. Act-level targets are
+        held to the stricter issue-only scope, which is EMPTY for a batch
+        review, so the proposal is rejected — never planned or executed
+        (#6764 re-review F1).
+        """
+        config, session = self._batch(tmp_path)
+        # Even with execute authority the confused deputy must be blocked.
+        config.triage.authority.reset_retry = "execute"
+        _plant_decision_with_actions(
+            session,
+            [
+                {
+                    "id": "A1",
+                    "action_type": "reset_retry",
+                    "target_number": 101,  # a manifest PR, NOT a work issue
+                    "body": "Scratch reset it.",
+                    "finding_ids": ["T1"],
+                },
+            ],
+        )
+
+        # Authoritative processing seam rejects the whole completion.
+        error = triage_decision_processing_error(
+            config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+        assert error is not None
+        assert "#101" in error
+        assert "outside this session's launch scope" in error
+
+        # Planning surfaces the rejection and plans NO reset / NO success
+        # terminalization (no close, no triage-reviewed labels).
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+        [rejection] = _rejections(actions)
+        assert "#101" in rejection.body_preview
+        assert not any(isinstance(a, ResetRetryIssueAction) for a in actions)
+        assert not any(isinstance(a, CloseIssueAction) for a in actions)
+        assert "triage-reviewed" not in added_labels(actions)
+
 
 class TestResetRetryExecutionPipeline:
     """Execute-authority reset_retry proposals flow from the decision

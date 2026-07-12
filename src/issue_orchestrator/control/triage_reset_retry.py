@@ -24,6 +24,14 @@ surfaced-proposal event (``TRIAGE_ACTION_PROPOSED`` with
 success a ``TRIAGE_ACTION_EXECUTED`` event records the boundary effects.
 Reset-owner failures fail the action loudly — never a silent success.
 
+This module is also the single authoritative outcome boundary for
+completion terminalization: :class:`RequiredActLevelOutcome` /
+:func:`evaluate_required_act_level_outcome` fold the applied results into
+one verdict ("did the mandated act-level action commit?"), and
+:func:`finalize_required_act_level_history` routes a failed mandated reset
+to a FAILED terminal record so the completion path cannot record a partial
+reset as a clean success (#6764 re-review F2).
+
 The reset itself is NOT reimplemented here: ``run_reset`` is the injected
 production boundary — the same ``reset_and_retry_issue`` pipeline the
 dashboard's ``/api/reset-retry`` endpoint uses (runtime termination, PR
@@ -39,15 +47,21 @@ handler and the stale-downgrade path cannot drift apart.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import EventSink, make_trace_event
-from .actions import ActionResult, ResetRetryIssueAction, SurfaceTriageProposalAction
+from .actions import (
+    ActionResult,
+    ActionResultType,
+    ResetRetryIssueAction,
+    SurfaceTriageProposalAction,
+)
 
 if TYPE_CHECKING:
+    from ..domain.models import SessionHistoryEntry
     from ..ports.issue import Issue
     from .label_manager import LabelManager
 
@@ -298,3 +312,76 @@ def preserve_reset_retry_eligibility(
         make_retryable(candidate.issue_number)
         cleared.append(candidate.issue_number)
     return cleared
+
+
+@dataclass(frozen=True)
+class RequiredActLevelOutcome:
+    """Did every decision-mandated act-level triage action commit? (ADR-0031 §2).
+
+    The single authoritative boundary the completion path consumes to decide
+    terminalization. A planned :class:`ResetRetryIssueAction` is a
+    decision-MANDATED act-level mutation: the triage decision required it, so a
+    completion is authoritative-success only if it committed. This owner folds
+    the applied results into that one verdict so the executor and the
+    completion handler cannot drift on what "committed" means.
+
+    ``committed`` is true when no required act-level action FAILED. A stale
+    downgrade (``ActionResultType.SKIPPED``) counts as committed: the board
+    moved and the reset owner correctly surfaced instead of mutating — a
+    non-failure outcome. Only a hard FAILURE (the reset owner itself failed)
+    blocks success terminalization.
+    """
+
+    committed: bool
+    failures: tuple[str, ...] = ()
+
+    @property
+    def failed(self) -> bool:
+        return not self.committed
+
+    def failure_summary(self) -> str:
+        return "; ".join(self.failures) or "reset owner did not commit"
+
+
+def evaluate_required_act_level_outcome(
+    applied: Sequence[ActionResult],
+) -> RequiredActLevelOutcome:
+    """Fold applied results into the required-act-level commit verdict.
+
+    Pure over the apply results — the single seam that classifies a mandated
+    act-level failure, shared by the completion terminalization path so a
+    failed reset can never be recorded as a clean success (#6764 re-review F2).
+    """
+    failures = tuple(
+        result.error or "reset owner failed"
+        for result in applied
+        if isinstance(result.action, ResetRetryIssueAction)
+        and result.result_type is ActionResultType.FAILURE
+    )
+    return RequiredActLevelOutcome(committed=not failures, failures=failures)
+
+
+def finalize_required_act_level_history(
+    history_entry: "SessionHistoryEntry",
+    outcome: RequiredActLevelOutcome,
+) -> "SessionHistoryEntry":
+    """Terminal history status for a completion carrying required act-level work.
+
+    The authoritative outcome boundary (ADR-0031 §2, #6764 re-review F2): a
+    decision-mandated act-level action that FAILED at apply time makes the
+    WHOLE completion a failure — never a partial success. The reset either
+    committed or the session's terminal record is FAILED, so the agent's
+    "completed" intent can never mask an un-run reset (orchestrator-authoritative,
+    fail-loud). A committed or stale-downgraded outcome returns the caller's
+    entry unchanged — success terminalization proceeds as before.
+    """
+    if outcome.committed:
+        return history_entry
+    return replace(
+        history_entry,
+        status="failed",
+        status_reason=(
+            "required act-level triage action did not commit: "
+            + outcome.failure_summary()
+        ),
+    )
