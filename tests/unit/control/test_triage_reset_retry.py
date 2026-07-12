@@ -608,6 +608,7 @@ class TestEffectiveTerminalOutcomeEvents:
             get_review_machine_fn=lambda _pr_number: None,
             session_output=session_output,
             triage_authority=InMemoryTriageAuthorityStore(),
+            active_session_run_id=lambda _issue_number: None,
             mandated_action=mandated_action,
         )
 
