@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         PersistentExchangePairRegistry,
     )
     from ..ports.turn_mailbox import TurnMailbox
+    from ..ports.needs_human_clear_store import NeedsHumanClearStore
     from ..ports.timeline_reader import TimelineReader
     from ..ports.timeline_store import TimelineStore
     from ..ports.timeline_writer import TimelineWriter
@@ -53,6 +54,8 @@ class InfraServices:
     attempt_store: "AttemptStore"
     # Orchestrator-owned triage launch authority port (ADR-0031 / #6769 F2).
     triage_authority: "TriageAuthorityStore"
+    # Durable provenance of orchestrator-owned stale needs-human clears (#6771 r7).
+    needs_human_clear_store: "NeedsHumanClearStore"
     pair_registry: "PersistentExchangePairRegistry | None" = None
     turn_mailbox: "TurnMailbox | None" = None
     background_job_supervisor: "BackgroundJobSupervisor | None" = None
