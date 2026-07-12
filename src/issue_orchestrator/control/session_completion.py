@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
     from .publish_recovery import PublishRecoveryService
     from .session_controller import SessionController, SessionDecision
+    from .triage_reset_retry import RequiredActLevelOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +206,34 @@ def _failure_artifact_hints(
     return tuple(str(path) for path in resolved if path.exists())
 
 
+def _surface_required_act_level_failure(
+    action_applier: "ActionApplier",
+    config: Config,
+    session: Session,
+    outcome: "RequiredActLevelOutcome",
+) -> None:
+    """Apply the durable operator surface for a failed mandated act-level action.
+
+    Routes a failed decision-mandated reset to a needs-human label + comment
+    through the existing action owners so the FAILED terminal is not merely
+    in-memory (#6764 re-review F2). The action builder returns an empty list for
+    a committed or genuine-failure outcome, so this applies nothing on those
+    paths — keeping the applier call sequence untouched when there is no
+    mandated failure to surface.
+    """
+    from .triage_reset_retry import build_required_act_level_failure_actions
+
+    actions = build_required_act_level_failure_actions(
+        issue_number=session.issue.number,
+        needs_human_label=config.get_label_needs_human(),
+        outcome=outcome,
+        session_id=session.terminal_id,
+        runtime_minutes=session.runtime_minutes,
+    )
+    if actions:
+        action_applier.apply_all(actions)
+
+
 def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
     session: Session,
     status: SessionStatus,
@@ -360,6 +389,21 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             status.value,
         )
 
+    # The required-act-level outcome is the single authoritative terminal-status
+    # policy for the whole post-apply phase (ADR-0031 §2, #6764 re-review F2): a
+    # decision-mandated reset that FAILED at apply time makes the EFFECTIVE
+    # terminal status FAILED, regardless of the agent's "completed" intent. Every
+    # consumer below (observer, failure discovery, retry gating, cleanup reason,
+    # history, operator surface) routes through `effective_status` so a partial
+    # reset can never be recorded as a clean success.
+    from .triage_reset_retry import (
+        effective_terminal_status,
+        evaluate_required_act_level_outcome,
+        finalize_required_act_level_history,
+    )
+    required_act_outcome = evaluate_required_act_level_outcome(applied_results)
+    effective_status = effective_terminal_status(status, required_act_outcome)
+
     _queue_rework_after_retrospective_changes(
         session=session,
         status=status,
@@ -368,7 +412,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     )
 
     # Observer handles session-level cleanup (kill sessions, close tabs)
-    observer.handle_completion(session, status)
+    observer.handle_completion(session, effective_status)
 
     # Release claim if session had one
     if claim_manager and session.lease_id:
@@ -400,14 +444,10 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     # routes the whole completion to a FAILED terminal record — never a partial
     # reset masked by the agent's "completed" intent. A committed/downgraded
     # outcome leaves the success record untouched.
-    from .triage_reset_retry import (
-        evaluate_required_act_level_outcome,
-        finalize_required_act_level_history,
-    )
     state.session_history.append(
         finalize_required_act_level_history(
             result.history_entry,
-            evaluate_required_act_level_outcome(applied_results),
+            required_act_outcome,
         )
     )
     if result.should_defer_cleanup and result.pending_cleanup:
@@ -419,7 +459,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             issue_number=session.issue.number,
             terminal_id=session.terminal_id,
             worktree_path=str(session.worktree_path),
-            reason=status.value,
+            reason=effective_status.value,
         ))
 
     if result.should_queue_review and result.pr_url and result.pr_number:
@@ -428,11 +468,11 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             agent_label=session.agent_label,
             issue_key=session.issue.key.stable_id(),
         ))
-    if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
+    if effective_status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
         state.record_discovered_failure(DiscoveredFailure(
             session.issue.number,
             session.issue.title,
-            status.value,
+            effective_status.value,
             artifact_hints=_failure_artifact_hints(
                 session.worktree_path, run_dir, diagnostic_path, claude_log_path
             ),
@@ -445,7 +485,14 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         )
 
         # Surface AI session logs for debugging
-        surface_failure_context(session, status)
+        surface_failure_context(session, effective_status)
+
+        # Crash-safe operator surface for a FAILED mandated act-level action. The
+        # completion handler planned the agent-reported (success) actions, so a
+        # reset that failed at apply time has no durable GitHub marker yet.
+        _surface_required_act_level_failure(
+            action_applier, config, session, required_act_outcome
+        )
 
     # A successful triage reset_retry action (#6764) made its target issue
     # retryable mid-apply, but the history append above re-keys the issue as

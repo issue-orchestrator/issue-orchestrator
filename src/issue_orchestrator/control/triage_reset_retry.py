@@ -28,9 +28,16 @@ This module is also the single authoritative outcome boundary for
 completion terminalization: :class:`RequiredActLevelOutcome` /
 :func:`evaluate_required_act_level_outcome` fold the applied results into
 one verdict ("did the mandated act-level action commit?"), and
-:func:`finalize_required_act_level_history` routes a failed mandated reset
-to a FAILED terminal record so the completion path cannot record a partial
-reset as a clean success (#6764 re-review F2).
+:func:`effective_terminal_status` turns that verdict into the ONE terminal
+status the whole post-apply completion phase consumes — so the observer,
+failure discovery, retry gating, cleanup reason, operator surface, and
+history all agree, never split between the agent's reported status and this
+verdict (#6764 re-review F2). :func:`finalize_required_act_level_history`
+keeps the persisted history row consistent with that status, and
+:func:`build_required_act_level_failure_actions` routes a failed mandated
+reset to a durable needs-human label + comment so the FAILED terminal is not
+merely in-memory. A failed mandated reset can therefore never be recorded as
+a clean success.
 
 The reset itself is NOT reimplemented here: ``run_reset`` is the injected
 production boundary — the same ``reset_and_retry_issue`` pipeline the
@@ -50,12 +57,16 @@ import logging
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
+from ..domain.models import SessionStatus
 from ..events import EventName
 from ..infra.logging_config import issue_log
 from ..ports import EventSink, make_trace_event
 from .actions import (
+    Action,
     ActionResult,
     ActionResultType,
+    AddCommentAction,
+    AddLabelAction,
     ResetRetryIssueAction,
     SurfaceTriageProposalAction,
 )
@@ -385,3 +396,74 @@ def finalize_required_act_level_history(
             + outcome.failure_summary()
         ),
     )
+
+
+def effective_terminal_status(
+    status: SessionStatus, outcome: RequiredActLevelOutcome
+) -> SessionStatus:
+    """The single terminal status the WHOLE post-apply completion phase consumes.
+
+    Terminal-status policy lives HERE, co-located with the required-act-level
+    outcome boundary, so the completion path cannot split it between the agent's
+    reported ``status`` and this outcome object (#6764 re-review F2, the final
+    abstraction point). A decision-mandated act-level action that FAILED at apply
+    time makes the effective terminal status :attr:`SessionStatus.FAILED`
+    regardless of the agent's "completed" intent — every downstream consumer
+    (observer, failure discovery, retry gating, cleanup reason, operator surface,
+    and history) then routes the completion as the failure it is. A committed or
+    stale-downgraded outcome preserves the agent-reported status unchanged, so
+    ordinary completions and genuine failures behave exactly as before.
+    """
+    if outcome.failed:
+        return SessionStatus.FAILED
+    return status
+
+
+def build_required_act_level_failure_actions(
+    *,
+    issue_number: int,
+    needs_human_label: str,
+    outcome: RequiredActLevelOutcome,
+    session_id: str,
+    runtime_minutes: float,
+) -> list[Action]:
+    """Durable, crash-safe operator surface for a failed mandated act-level action.
+
+    A failed mandated reset terminalizes the completion as FAILED
+    (:func:`effective_terminal_status`), but that terminal record is in-memory
+    only — a crash between it and the next tick would lose the signal. This
+    routes the failure to GitHub through the SAME label/comment action owners the
+    rest of completion uses (no parallel mechanism): the needs-human blocking
+    label plus an explanatory comment, mirroring the invalid-completion-record
+    surface ("the orchestrator could not safely apply the agent's requested
+    outcome"). Returns an EMPTY list when the outcome committed (or
+    stale-downgraded), so the caller applies nothing on the success path and the
+    genuine-failure path (whose surface the completion handler already planned).
+    """
+    if outcome.committed:
+        return []
+    comment = (
+        "**Reset & Retry Did Not Complete**\n\n"
+        "The triage decision mandated a scratch reset for this issue, but the "
+        "reset owner failed at apply time. The orchestrator recorded the session "
+        "as FAILED instead of accepting the agent's completed intent, so the "
+        "issue is not silently left as a partial reset.\n\n"
+        f"- Failure: {outcome.failure_summary()}\n"
+        f"- Session: `{session_id}`\n"
+        f"- Runtime: {runtime_minutes:.1f} minutes\n\n"
+        f"This issue has been marked as `{needs_human_label}` because the "
+        "orchestrator could not safely apply the mandated reset.\n"
+        "Remove the label after correcting or re-running the reset."
+    )
+    return [
+        AddLabelAction(
+            issue_number=issue_number,
+            label=needs_human_label,
+            reason="mandated reset_retry did not commit; routing to needs-human",
+        ),
+        AddCommentAction(
+            number=issue_number,
+            comment=comment,
+            reason="notify operator that the mandated reset failed at apply time",
+        ),
+    ]

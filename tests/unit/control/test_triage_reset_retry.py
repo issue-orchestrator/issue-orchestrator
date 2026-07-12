@@ -1,6 +1,6 @@
 """Tests for the triage reset_retry execution owner (#6764, ADR-0031 §2)."""
 
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -288,11 +288,26 @@ class TestCompletionPipelineEligibility:
             ),
         )
 
-    def _run_completion(self, tmp_path, executor) -> OrchestratorState:
+    def _arrange(
+        self,
+        tmp_path,
+        executor,
+        *,
+        seed_failed: bool = True,
+        config=None,
+        observer=None,
+        repository_host=None,
+        labels=None,
+    ):
+        """Arrange a COMPLETED triage completion whose one action is a mandated
+        reset, returning ``(state, run)`` so callers can assert on pre-run state
+        before invoking ``run()``. The agent always reports ``completed``; the
+        injected ``executor`` decides whether the mandated reset commits."""
         session = self._session(tmp_path)
         state = OrchestratorState()
         state.active_sessions = [session]
-        state.failed_this_cycle.add(17)
+        if seed_failed:
+            state.failed_this_cycle.add(17)
 
         completion_handler = MagicMock()
         completion_handler.process_completion.return_value = MagicMock(
@@ -312,24 +327,39 @@ class TestCompletionPipelineEligibility:
             pr_number=None,
         )
         applier = ActionApplier(
-            labels=MagicMock(), sessions=MagicMock(), events=MagicMock()
+            labels=labels if labels is not None else MagicMock(),
+            sessions=MagicMock(),
+            events=MagicMock(),
+            repository_host=repository_host,
         )
         applier.triage_reset_retry = executor
 
-        config = MagicMock()
-        config.code_review_agent = None
-        handle_session_completion(
-            session=session,
-            status=SessionStatus.COMPLETED,
-            state=state,
-            completion_handler=completion_handler,
-            action_applier=applier,
-            observer=MagicMock(),
-            worktree_manager=None,
-            kill_session_fn=lambda _x: None,
-            config=config,
-            session_output=MagicMock(spec=SessionOutput),
-        )
+        if config is None:
+            config = MagicMock()
+            config.code_review_agent = None
+
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.attach_claude_log.return_value = None
+
+        def run() -> None:
+            handle_session_completion(
+                session=session,
+                status=SessionStatus.COMPLETED,
+                state=state,
+                completion_handler=completion_handler,
+                action_applier=applier,
+                observer=observer if observer is not None else MagicMock(),
+                worktree_manager=None,
+                kill_session_fn=lambda _x: None,
+                config=config,
+                session_output=session_output,
+            )
+
+        return state, run
+
+    def _run_completion(self, tmp_path, executor) -> OrchestratorState:
+        state, run = self._arrange(tmp_path, executor)
+        run()
         return state
 
     def test_successful_reset_survives_the_history_append(self, tmp_path):
@@ -353,28 +383,74 @@ class TestCompletionPipelineEligibility:
             "a downgraded proposal posts no mutations - history must be intact"
         )
 
-    def test_reset_failure_suppresses_success_and_routes_failure(self, tmp_path):
-        """A reset-owner failure must not record a clean completion.
+    def test_failed_mandated_reset_routes_effective_failure_end_to_end(self, tmp_path):
+        """A COMPLETED agent whose mandated reset FAILED at apply time is
+        terminalized as FAILED and routed through EVERY post-apply consumer,
+        with no success effect surviving (#6764 re-review F2).
 
-        The mandated reset is the whole point of the investigation; when it
-        fails at apply time the completion routes to a FAILED terminal record
-        instead of the agent's 'completed' intent — the single authoritative
-        outcome boundary, never a partial reset masked as success
-        (#6764 re-review F2)."""
+        This begins with an EMPTY failure gate and asserts the completion path
+        itself adds the issue — unlike the prior version, which pre-seeded
+        ``failed_this_cycle`` and so passed even though the failed-reset path
+        never routed anything."""
         executor, _events, run_reset = make_executor(
             outcome=ResetRetryRunOutcome(
                 success=False, error="branch delete exploded"
             )
         )
+        observer = MagicMock()
+        repository_host = MagicMock()
+        labels = MagicMock()
+        labels.has_label.return_value = False  # let the needs-human add proceed
 
-        state = self._run_completion(tmp_path, executor)
+        state, run = self._arrange(
+            tmp_path,
+            executor,
+            seed_failed=False,
+            config=Config(),
+            observer=observer,
+            repository_host=repository_host,
+            labels=labels,
+        )
+        # Begins WITHOUT the failure gate: the completion path must add it.
+        assert 17 not in state.failed_this_cycle
+
+        run()
 
         run_reset.assert_called_once()
+
+        # Effective terminal status is FAILED across the whole post-apply phase.
+        # Observer observed the failure, not the agent-reported success:
+        observer.handle_completion.assert_called_once_with(ANY, SessionStatus.FAILED)
+
+        # Failure discovery recorded the failure as a fact:
+        [failure] = state.discovered_failures
+        assert failure.issue_number == 17
+        assert failure.failure_reason == "failed"
+
+        # Retry gate was set BY the completion path (started empty above):
+        assert 17 in state.failed_this_cycle
+
+        # Immediate cleanup reason reflects the effective failure, not "completed":
+        [cleanup] = state.immediate_cleanups
+        assert cleanup.reason == "failed"
+
+        # History terminalized as FAILED with the reset-owner error, never the
+        # agent's "completed" intent:
         [entry] = state.session_history
         assert entry.issue_number == 17
-        assert entry.status == "failed", (
-            "a failed mandated reset must suppress the completed success record"
-        )
+        assert entry.status == "failed"
         assert "branch delete exploded" in (entry.status_reason or "")
-        # The reset never ran, so its issue is not re-cleared for relaunch.
-        assert 17 in state.failed_this_cycle
+
+        # Durable, crash-safe operator surface via the existing label/comment
+        # action owners (needs-human label + explanatory comment on the issue):
+        labels.add_label.assert_any_call(17, "needs-human")
+        assert repository_host.add_comment.call_count == 1
+        comment_number, comment_body = repository_host.add_comment.call_args.args
+        assert comment_number == 17
+        assert "Reset & Retry Did Not Complete" in comment_body
+        assert "branch delete exploded" in comment_body
+
+        # No success effect survived: the reset-success side effect (making the
+        # issue retryable, which prunes its own history entry and clears the
+        # failure gate) did NOT run, so the FAILED record and gate both stand.
+        assert any(e.issue_number == 17 for e in state.session_history)
