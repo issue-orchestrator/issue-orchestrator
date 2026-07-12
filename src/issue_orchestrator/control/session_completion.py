@@ -333,11 +333,11 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         return  # Skip normal completion processing
 
     # Process completion through CompletionHandler (includes policy decisions).
-    # The terminal trace event and the completed_today success gate are BOTH
-    # deferred until the effective outcome is known below (#6764 re-review F3):
-    # process_completion emits no terminal event here, so a mandated act-level
-    # action that fails at apply cannot leave a false SESSION_COMPLETED or a
-    # completed_today entry the authoritative FAILED outcome would contradict.
+    # The terminal trace event, the cached state-machine transition, and the
+    # completed_today gate are ALL deferred until the effective outcome is known
+    # below (#6777): process_completion terminalizes nothing here, so a mandated
+    # act-level action that fails at apply cannot leave a false SESSION_COMPLETED,
+    # a completed cached machine, or a completed_today entry FAILED contradicts.
     try:
         result = completion_handler.process_completion(
             session, status, pr_url_hint=pr_url_hint,
@@ -348,7 +348,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             blocked_label=blocked_label,
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
-            emit_terminal_events=False,
+            finalize_terminal=False,
         )
     finally:
         # Completion state is orchestrator-authoritative. Runtime session
@@ -408,13 +408,13 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     required_act_outcome = evaluate_required_act_level_outcome(applied_results)
     effective_status = effective_terminal_status(status, required_act_outcome)
 
-    # Publish exactly ONE terminal trace event, derived from the SAME effective
-    # outcome as every other post-apply consumer (#6764 re-review F3). Deferring
-    # out of process_completion lets a failed mandated reset publish a single
-    # SESSION_FAILED rather than a false SESSION_COMPLETED the event contract
-    # cannot retract. The event keys off the history status so publish/PR
-    # failures still terminalize as FAILED exactly as before.
-    completion_handler.emit_trace_events(
+    # Finalize BOTH terminal-outcome commits — the ONE trace event and the cached
+    # SessionStateMachine transition — from the SAME effective outcome every other
+    # post-apply consumer uses (#6777). A failed mandated reset ends the machine
+    # FAILED and publishes a single SESSION_FAILED, never a false COMPLETED neither
+    # the event contract nor the cached machine can retract. Keys off history status
+    # so publish/PR failures still terminalize as FAILED exactly as before.
+    completion_handler.finalize_terminal_outcome(
         session,
         effective_terminal_status(result.history_status, required_act_outcome),
         result.pr_url,

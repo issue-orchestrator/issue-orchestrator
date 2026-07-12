@@ -30,6 +30,10 @@ from issue_orchestrator.domain.models import (
     SessionStatus,
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.state_machines.session_machine import (
+    SessionState,
+    SessionStateMachine,
+)
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports import InMemoryEventSink
@@ -514,6 +518,7 @@ class TestEffectiveTerminalOutcomeEvents:
         events: InMemoryEventSink,
         *,
         mandated_action: ResetRetryIssueAction | None,
+        session_machine: SessionStateMachine | None = None,
     ) -> CompletionHandler:
         repository_host = MagicMock()
         repository_host.get_prs_for_branch.return_value = []
@@ -528,7 +533,7 @@ class TestEffectiveTerminalOutcomeEvents:
             events=events,
             repository_host=repository_host,
             get_issue_machine_fn=lambda _issue: None,
-            get_session_machine_fn=lambda _terminal_id: None,
+            get_session_machine_fn=lambda _terminal_id: session_machine,
             get_review_machine_fn=lambda _pr_number: None,
             session_output=session_output,
             triage_authority=InMemoryTriageAuthorityStore(),
@@ -542,6 +547,7 @@ class TestEffectiveTerminalOutcomeEvents:
         events: InMemoryEventSink,
         executor=None,
         mandated_action: ResetRetryIssueAction | None,
+        session_machine: SessionStateMachine | None = None,
     ) -> OrchestratorState:
         session = self._session(tmp_path)
         state = OrchestratorState()
@@ -560,7 +566,9 @@ class TestEffectiveTerminalOutcomeEvents:
             status=SessionStatus.COMPLETED,
             state=state,
             completion_handler=self._real_handler(
-                events, mandated_action=mandated_action
+                events,
+                mandated_action=mandated_action,
+                session_machine=session_machine,
             ),
             action_applier=applier,
             observer=MagicMock(),
@@ -634,3 +642,61 @@ class TestEffectiveTerminalOutcomeEvents:
         assert 17 in state.completed_today
         [claim] = events.get_events(EventName.CLAIM_RELEASED.value)
         assert claim.data["status"] == "completed"
+
+    def test_failed_mandated_reset_ends_real_machine_failed(self, tmp_path):
+        """A REAL running SessionStateMachine ends FAILED — not COMPLETED — when
+        the agent reported COMPLETED but the mandated reset FAILED at apply.
+
+        The prior helper wired ``get_session_machine_fn`` to ``None``, so the
+        cached-machine transition never ran and the bug was invisible: the machine
+        was left COMPLETED before the authoritative reset outcome existed. With a
+        real machine wired through the handler, the deferred, effective-status-
+        driven transition (#6777) is exercised end-to-end."""
+        events = InMemoryEventSink()
+        executor, _events, run_reset = make_executor(
+            outcome=ResetRetryRunOutcome(success=False, error="branch delete exploded")
+        )
+        machine = SessionStateMachine(
+            "issue-17", 17, initial_state=SessionState.RUNNING
+        )
+
+        state = self._run(
+            tmp_path,
+            events=events,
+            executor=executor,
+            mandated_action=make_action(issue_number=17, anchor_issue_number=17),
+            session_machine=machine,
+        )
+
+        run_reset.assert_called_once()
+        # The cached lifecycle machine is terminalized from the SAME effective
+        # FAILED outcome as the event/history — never the agent's COMPLETED intent:
+        assert machine.get_state() is SessionState.FAILED
+        # The round-4 terminal-consumer guarantees still hold in lockstep:
+        assert events.get_events(EventName.SESSION_COMPLETED.value) == []
+        assert len(events.get_events(EventName.SESSION_FAILED.value)) == 1
+        assert 17 not in state.completed_today
+        [claim] = events.get_events(EventName.CLAIM_RELEASED.value)
+        assert claim.data["status"] == "failed"
+
+    def test_committed_reset_ends_real_machine_completed(self, tmp_path):
+        """A committed mandated reset ends the REAL machine COMPLETED, matching the
+        single SESSION_COMPLETED terminal event (no false split, #6777)."""
+        events = InMemoryEventSink()
+        executor, _events, run_reset = make_executor()  # commits
+        machine = SessionStateMachine(
+            "issue-17", 17, initial_state=SessionState.RUNNING
+        )
+
+        self._run(
+            tmp_path,
+            events=events,
+            executor=executor,
+            mandated_action=make_action(issue_number=17, anchor_issue_number=17),
+            session_machine=machine,
+        )
+
+        run_reset.assert_called_once()
+        assert machine.get_state() is SessionState.COMPLETED
+        assert len(events.get_events(EventName.SESSION_COMPLETED.value)) == 1
+        assert events.get_events(EventName.SESSION_FAILED.value) == []

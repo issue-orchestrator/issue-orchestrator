@@ -1,12 +1,8 @@
-"""CompletionHandler - handles session completion state machine updates and events.
+"""CompletionHandler - session completion state-machine updates and events.
 
-This module extracts completion logic from the orchestrator:
-1. State machine transitions (issue, session, review)
-2. Event emission for trace events
-3. History entry creation
-4. Cleanup decision logic
-
-The orchestrator calls this to handle the complex state updates when a session completes.
+Owns the complex state updates when a session completes: state-machine
+transitions (issue/session/review), trace-event emission, history entries,
+and cleanup decisions.
 """
 
 import logging
@@ -77,13 +73,10 @@ _PUBLISH_FAILURE_SUMMARY_CHAR_CAP = 160
 
 
 def _summarize_publish_failure(critical_errors: list[str]) -> str:
-    """Build a card-friendly summary from raw publish error strings.
+    """Card-friendly one-line summary from raw publish error strings.
 
-    Input strings look like ``push_branch: Push failed: git command timed out: ...``
-    or ``create_pr: <exc>`` — we strip the stage prefix, collapse to one line,
-    and cap length so it renders inside a card without overflowing. Falls back
-    to the legacy generic text if the shape is unexpected (so the card still
-    says *something* if the prefix convention ever changes).
+    Strips the ``push_branch:``/``create_pr:`` stage prefix and caps length so it
+    renders inside a card; falls back to generic text on an unexpected shape.
     """
     if not critical_errors:
         return "Push or PR creation failed"
@@ -129,13 +122,8 @@ class CompletionResult:
 class CompletionHandler:
     """Handles session completion state machine updates and event emission.
 
-    Dependencies:
-    - config: Configuration with cleanup and review settings
-    - events: EventSink for trace event emission
-    - repository_host: For fetching PR info
-    - issue_machines: Dict of issue state machines
-    - session_machines: Dict of session state machines
-    - review_machines: Dict of review state machines
+    Injected: config (cleanup/review settings), events (EventSink), repository_host,
+    and the issue/session/review state-machine lookups.
     """
 
     def __init__(
@@ -174,9 +162,8 @@ class CompletionHandler:
     def mark_session_retry(self, session: Session, reason: str) -> None:
         """Mark a session terminal when it will be retried.
 
-        Validation retries re-launch a session with the same name. Ensure the
-        existing session state machine reaches a terminal state so the next
-        launch can create a fresh machine without invalid transitions.
+        Validation retries re-launch under the same name, so drive the existing
+        machine to a terminal state first — the next launch builds a fresh one.
         """
         session_machine = self._get_session_machine(session.terminal_id)
         if not session_machine:
@@ -203,19 +190,14 @@ class CompletionHandler:
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
-        emit_terminal_events: bool = True,
+        finalize_terminal: bool = True,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
-        Args:
-            session: The completed session
-            status: The completion status
-            pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
-            processing_errors: Errors from completion processor (push failed, etc.)
-            diagnostic_path: Path to detailed failure diagnostic file (in worktree)
-
-        Returns:
-            CompletionResult with history entry and cleanup decision
+        Returns a CompletionResult with the history entry and cleanup decision.
+        With ``finalize_terminal=False`` the terminal trace event and the
+        state-machine transition defer to ``finalize_terminal_outcome`` so the
+        caller can drive both from the effective post-apply status (#6777).
         """
         start_time = time.monotonic()
         issue_key = session.key.issue.stable_id()
@@ -281,12 +263,13 @@ class CompletionHandler:
             session, history_status, pr_url, status_reason_override=history_status_reason
         )
 
-        # The terminal trace event is deferred post-apply when the caller finalizes the effective outcome (#6764 re-review F3).
-        if emit_terminal_events:
+        # The terminal trace event AND the cached state-machine transition are the
+        # two terminal-outcome commits; both defer to finalize_terminal_outcome when
+        # the caller finalizes post-apply from the EFFECTIVE status (#6777). Default
+        # commits both here from history_status, exactly as before.
+        if finalize_terminal:
             self.emit_trace_events(session, history_status, pr_url, pr_number, blocked_reason=blocked_reason, completion_detail=completion_detail)
-
-        # Update state machines
-        self._update_state_machines(session, history_status, pr_url)
+            self._update_state_machines(session, history_status, pr_url)
 
         # Determine cleanup strategy
         should_defer, pending_cleanup = self._determine_cleanup_strategy(
@@ -530,13 +513,8 @@ class CompletionHandler:
     ) -> tuple[Optional[str], Optional[int], Optional[list[Any]]]:
         """Fetch PR info for a completed session.
 
-        Args:
-            session: The completed session
-            status: The completion status
-            pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
-
-        Returns:
-            Tuple of (pr_url, pr_number, prs_list)
+        Returns ``(pr_url, pr_number, prs_list)``; ``pr_url_hint`` short-circuits
+        the branch lookup (dry-run mode).
         """
         pr_url = None
         pr_number = None
@@ -626,12 +604,8 @@ class CompletionHandler:
     ) -> SessionHistoryEntry:
         """Create a session history entry.
 
-        Args:
-            session: The session that completed
-            status: The status to record in history
-            pr_url: URL of the PR if one was created
-            status_reason_override: Optional override for the status reason
-                (used when agent said completed but push/PR failed)
+        ``status_reason_override`` supplies the reason when the agent said
+        completed but push/PR failed.
         """
         # Generate human-readable status reason
         status_reasons = {
@@ -658,6 +632,31 @@ class CompletionHandler:
             completed_at=datetime.now(timezone.utc),
         )
 
+    def finalize_terminal_outcome(
+        self,
+        session: Session,
+        effective_status: SessionStatus,
+        pr_url: Optional[str],
+        pr_number: Optional[int],
+        *,
+        blocked_reason: Optional[str] = None,
+        completion_detail: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Commit BOTH terminal consumers from the ONE effective status post-apply.
+
+        The terminal trace event and the cached ``SessionStateMachine`` transition
+        are the two terminal-outcome commits. ``handle_session_completion`` defers
+        both out of ``process_completion`` (``finalize_terminal=False``) and calls
+        this once with ``effective_terminal_status(history_status, outcome)`` so a
+        failed mandated reset ends the machine FAILED and emits one SESSION_FAILED —
+        never a false COMPLETED neither consumer can retract (#6777).
+        """
+        self.emit_trace_events(
+            session, effective_status, pr_url, pr_number,
+            blocked_reason=blocked_reason, completion_detail=completion_detail,
+        )
+        self._update_state_machines(session, effective_status, pr_url)
+
     def emit_trace_events(
         self,
         session: Session,
@@ -668,11 +667,10 @@ class CompletionHandler:
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Emit the terminal/lifecycle trace events for a completion.
+        """Emit the terminal/lifecycle trace event for a completion.
 
-        Public so ``handle_session_completion`` calls it post-apply with the EFFECTIVE
-        terminal status — a failed mandated reset then publishes one SESSION_FAILED,
-        never a false SESSION_COMPLETED (#6764 re-review F3).
+        Public so ``finalize_terminal_outcome`` drives it post-apply from the
+        EFFECTIVE status (#6777).
         """
         detail = completion_detail or {}
 
