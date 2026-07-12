@@ -117,6 +117,7 @@ class CompletionResult:
     """Result of processing a session completion."""
 
     history_entry: SessionHistoryEntry
+    history_status: SessionStatus = SessionStatus.COMPLETED
     pr_url: Optional[str] = None
     pr_number: Optional[int] = None
     should_defer_cleanup: bool = False
@@ -202,6 +203,7 @@ class CompletionHandler:
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
+        emit_terminal_events: bool = True,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -279,12 +281,9 @@ class CompletionHandler:
             session, history_status, pr_url, status_reason_override=history_status_reason
         )
 
-        # Emit trace events
-        self._emit_trace_events(
-            session, history_status, pr_url, pr_number,
-            blocked_reason=blocked_reason,
-            completion_detail=completion_detail,
-        )
+        # The terminal trace event is deferred post-apply when the caller finalizes the effective outcome (#6764 re-review F3).
+        if emit_terminal_events:
+            self.emit_trace_events(session, history_status, pr_url, pr_number, blocked_reason=blocked_reason, completion_detail=completion_detail)
 
         # Update state machines
         self._update_state_machines(session, history_status, pr_url)
@@ -371,6 +370,7 @@ class CompletionHandler:
 
         result = CompletionResult(
             history_entry=history_entry,
+            history_status=history_status,
             pr_url=pr_url,
             pr_number=pr_number,
             should_defer_cleanup=should_defer,
@@ -658,7 +658,7 @@ class CompletionHandler:
             completed_at=datetime.now(timezone.utc),
         )
 
-    def _emit_trace_events(
+    def emit_trace_events(
         self,
         session: Session,
         status: SessionStatus,
@@ -668,11 +668,11 @@ class CompletionHandler:
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Emit trace events for session completion.
+        """Emit the terminal/lifecycle trace events for a completion.
 
-        ``completion_detail`` carries curated fields from the CompletionRecord
-        so downstream consumers (timeline, UI) get the rich agent-provided data
-        without rummaging across files.
+        Public so ``handle_session_completion`` calls it post-apply with the EFFECTIVE
+        terminal status — a failed mandated reset then publishes one SESSION_FAILED,
+        never a false SESSION_COMPLETED (#6764 re-review F3).
         """
         detail = completion_detail or {}
 

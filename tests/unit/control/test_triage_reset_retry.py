@@ -1,5 +1,6 @@
 """Tests for the triage reset_retry execution owner (#6764, ADR-0031 §2)."""
 
+from dataclasses import replace
 from unittest.mock import ANY, MagicMock
 
 import pytest
@@ -9,6 +10,7 @@ from issue_orchestrator.control.actions import (
     ActionResultType,
     ResetRetryIssueAction,
 )
+from issue_orchestrator.control.completion_handler import CompletionHandler
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.control.session_completion import handle_session_completion
 from issue_orchestrator.control.triage_reset_retry import (
@@ -30,7 +32,9 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports import InMemoryEventSink
 from issue_orchestrator.ports.session_output import SessionOutput
+from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
 from tests.unit.session_run_helpers import make_session_run_assets
 
 BLOCKED_FAILED = "blocked-failed"
@@ -454,3 +458,179 @@ class TestCompletionPipelineEligibility:
         # issue retryable, which prunes its own history entry and clears the
         # failure gate) did NOT run, so the FAILED record and gate both stand.
         assert any(e.issue_number == 17 for e in state.session_history)
+
+
+class _HandlerWithMandatedReset(CompletionHandler):
+    """Real ``CompletionHandler`` that may also carry one decision-mandated reset
+    action (standing in for the triage decision that planned it), so the REAL
+    deferred terminal-event path runs while the applier's injected executor
+    decides whether the reset commits (#6764 re-review F3). With no mandated
+    action it is a plain completion."""
+
+    def __init__(
+        self, *args, mandated_action: ResetRetryIssueAction | None = None, **kwargs
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._mandated_action = mandated_action
+
+    def process_completion(self, *args, **kwargs):  # type: ignore[override]
+        result = super().process_completion(*args, **kwargs)
+        if self._mandated_action is None:
+            return result
+        return replace(result, actions=result.actions + (self._mandated_action,))
+
+
+class TestEffectiveTerminalOutcomeEvents:
+    """Terminal event + completed_today + CLAIM_RELEASED all derive from the ONE
+    effective outcome computed post-apply.
+
+    Unlike the mocked-handler pipeline test above, these use the REAL
+    ``CompletionHandler`` with a recording sink, so a false ``SESSION_COMPLETED``
+    emitted BEFORE the mandated reset is applied would be visible (#6764
+    re-review F3). The mandated reset is the completion's one act-level action;
+    the injected executor decides whether it commits."""
+
+    def _session(self, tmp_path) -> Session:
+        issue = Issue(
+            number=17, title="Broken issue", labels=["agent:triage"], repo="owner/repo"
+        )
+        return Session(
+            key=SessionKey(issue=FakeIssueKey("17"), task=TaskKind.CODE),
+            issue=issue,
+            agent_config=AgentConfig(
+                prompt_path=tmp_path / "prompt.md", timeout_minutes=45
+            ),
+            terminal_id="issue-17",
+            worktree_path=tmp_path / "worktree",
+            branch_name="17-fix",
+            lease_id="lease-17",
+            run_assets=make_session_run_assets(
+                tmp_path / "worktree", session_name="issue-17"
+            ),
+        )
+
+    def _real_handler(
+        self,
+        events: InMemoryEventSink,
+        *,
+        mandated_action: ResetRetryIssueAction | None,
+    ) -> CompletionHandler:
+        repository_host = MagicMock()
+        repository_host.get_prs_for_branch.return_value = []
+        repository_host.get_pr.return_value = None
+        repository_host.get_issue_labels_fresh.return_value = []
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.find_run_dir.return_value = None
+        session_output.attach_claude_log.return_value = None
+        session_output.get_log_path_for_run_dir.return_value = None
+        return _HandlerWithMandatedReset(
+            config=Config(),
+            events=events,
+            repository_host=repository_host,
+            get_issue_machine_fn=lambda _issue: None,
+            get_session_machine_fn=lambda _terminal_id: None,
+            get_review_machine_fn=lambda _pr_number: None,
+            session_output=session_output,
+            triage_authority=InMemoryTriageAuthorityStore(),
+            mandated_action=mandated_action,
+        )
+
+    def _run(
+        self,
+        tmp_path,
+        *,
+        events: InMemoryEventSink,
+        executor=None,
+        mandated_action: ResetRetryIssueAction | None,
+    ) -> OrchestratorState:
+        session = self._session(tmp_path)
+        state = OrchestratorState()
+        state.active_sessions = [session]
+        applier = ActionApplier(
+            labels=MagicMock(),
+            sessions=MagicMock(),
+            events=MagicMock(),
+            repository_host=MagicMock(),
+        )
+        applier.triage_reset_retry = executor
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.attach_claude_log.return_value = None
+        handle_session_completion(
+            session=session,
+            status=SessionStatus.COMPLETED,
+            state=state,
+            completion_handler=self._real_handler(
+                events, mandated_action=mandated_action
+            ),
+            action_applier=applier,
+            observer=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=lambda _x: None,
+            config=Config(),
+            session_output=session_output,
+            claim_manager=MagicMock(),
+            events=events,
+        )
+        return state
+
+    def test_failed_mandated_reset_publishes_only_session_failed(self, tmp_path):
+        events = InMemoryEventSink()
+        executor, _events, run_reset = make_executor(
+            outcome=ResetRetryRunOutcome(success=False, error="branch delete exploded")
+        )
+
+        state = self._run(
+            tmp_path,
+            events=events,
+            executor=executor,
+            mandated_action=make_action(issue_number=17, anchor_issue_number=17),
+        )
+
+        run_reset.assert_called_once()
+        # The false pre-apply success is never published; exactly one terminal
+        # event fires and it is the effective FAILURE:
+        assert events.get_events(EventName.SESSION_COMPLETED.value) == []
+        failed = events.get_events(EventName.SESSION_FAILED.value)
+        assert len(failed) == 1
+        assert failed[0].data["issue_number"] == 17
+        # A failed mandated reset leaves NO completed_today success entry:
+        assert 17 not in state.completed_today
+        # The CLAIM_RELEASED machine payload reports the effective failure:
+        [claim] = events.get_events(EventName.CLAIM_RELEASED.value)
+        assert claim.data["status"] == "failed"
+
+    def test_committed_reset_publishes_only_session_completed(self, tmp_path):
+        events = InMemoryEventSink()
+        executor, _events, run_reset = make_executor()  # commits
+
+        self._run(
+            tmp_path,
+            events=events,
+            executor=executor,
+            mandated_action=make_action(issue_number=17, anchor_issue_number=17),
+        )
+
+        run_reset.assert_called_once()
+        # No-regression: a committed reset keeps the single SESSION_COMPLETED and
+        # releases the claim as completed. (completed_today is intentionally
+        # re-cleared here by preserve_reset_retry_eligibility, since a reset
+        # issue is about to be retried — see the plain-completion case below for
+        # the completed_today success gate.)
+        assert len(events.get_events(EventName.SESSION_COMPLETED.value)) == 1
+        assert events.get_events(EventName.SESSION_FAILED.value) == []
+        [claim] = events.get_events(EventName.CLAIM_RELEASED.value)
+        assert claim.data["status"] == "completed"
+
+    def test_plain_completion_records_completed_today(self, tmp_path):
+        """No-regression for the completed_today success gate: an ordinary
+        committed completion (no mandated act-level action) still records the
+        issue and emits the single SESSION_COMPLETED terminal event."""
+        events = InMemoryEventSink()
+
+        state = self._run(tmp_path, events=events, mandated_action=None)
+
+        assert len(events.get_events(EventName.SESSION_COMPLETED.value)) == 1
+        assert events.get_events(EventName.SESSION_FAILED.value) == []
+        assert 17 in state.completed_today
+        [claim] = events.get_events(EventName.CLAIM_RELEASED.value)
+        assert claim.data["status"] == "completed"
