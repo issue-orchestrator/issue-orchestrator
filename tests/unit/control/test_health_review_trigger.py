@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from issue_orchestrator.adapters.github.errors import GitHubHttpError
 from issue_orchestrator.control.actions import CreateTriageIssueAction
 from issue_orchestrator.control.health_review_trigger import (
     HEALTH_REVIEW_ISSUE_TITLE,
@@ -75,7 +76,12 @@ class _AnchorTracker:
 
     def list_issues(self, labels=None, state="open", limit=100, **kwargs):
         self.calls.append(
-            {"labels": list(labels or []), "state": state, "limit": limit}
+            {
+                "labels": list(labels or []),
+                "state": state,
+                "limit": limit,
+                "exhaustive": kwargs.get("exhaustive", False),
+            }
         )
         wanted = {label.casefold() for label in (labels or [])}
         matched = [
@@ -237,6 +243,36 @@ class TestSharedAnchorDiscovery:
 
         assert len(found) == 25
         assert all(call["limit"] >= 25 for call in tracker.calls)
+
+    def test_discovery_requests_fail_loud_exhaustive_scan(self) -> None:
+        """R17: the authoritative scan is requested ``exhaustive`` so the pager
+        fails loud on a truncated read instead of returning a partial set."""
+        config = _config()
+        tracker = _AnchorTracker(
+            [Issue(number=1, title="Batch", labels=["agent:triage"], state="open")]
+        )
+
+        discover_open_triage_anchor_issues(tracker, config)
+
+        assert tracker.calls
+        assert all(call.get("exhaustive") is True for call in tracker.calls)
+
+    def test_discovery_propagates_truncated_scan_error_as_blocking(self) -> None:
+        """R17: a fail-loud scan error must PROPAGATE — planning/recovery cannot
+        proceed from a partial anchor set. It is never swallowed as 'no anchors'
+        (which would cause duplicate creation or a missed startup recovery)."""
+
+        class _RaisingTracker:
+            def list_issues(self, labels=None, state="open", limit=100, **kwargs):
+                raise GitHubHttpError(
+                    "GitHub returned status 500 while paging repository issues",
+                    method="GET",
+                    url="/repos/o/r/issues",
+                    status_code=500,
+                )
+
+        with pytest.raises(GitHubHttpError):
+            discover_open_triage_anchor_issues(_RaisingTracker(), _config())
 
     def test_marker_scoped_lookup_finds_anchor_beyond_the_broad_page(self) -> None:
         config = _config()

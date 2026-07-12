@@ -572,6 +572,23 @@ class TestProposedTriageLabel:
         assert lm.is_blocking("proposed-triage") is True
         assert lm.is_blocking_any(["agent:backend", "proposed-triage"]) is True
 
+    def test_is_blocking_gate_is_case_insensitive(self, lm: LabelManager) -> None:
+        """R15 (normal create-issue gate): GitHub folds label names, so a repo
+        whose canonical spelling is ``Proposed-Triage`` still keeps the proposal
+        out of pickup. Blocking classification must match the case-insensitive
+        reconciliation predicate — otherwise a canonical-cased gate would be
+        schedulable as ordinary work while reconciliation treats it as approved."""
+        for spelling in ("proposed-triage", "Proposed-Triage", "PROPOSED-TRIAGE"):
+            assert lm.is_blocking(spelling) is True, spelling
+        assert lm.is_blocking_any(["agent:backend", "Proposed-Triage"]) is True
+
+    def test_is_blocking_gate_case_insensitive_with_prefix(
+        self, plm: LabelManager
+    ) -> None:
+        """The raw (never-prefixed) gate still folds case under a configured
+        prefix — the gate is matched on its own name, not the prefix path."""
+        assert plm.is_blocking("Proposed-Triage") is True
+
     def test_raw_even_with_prefix(self, plm: LabelManager) -> None:
         """Triage-subsystem labels never take the orchestrator prefix."""
         assert plm.proposed_triage == "proposed-triage"

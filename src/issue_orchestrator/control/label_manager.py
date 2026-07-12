@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
-from ..domain.triage_session import PROPOSED_TRIAGE_LABEL
+from ..domain.triage_session import PROPOSED_TRIAGE_LABEL, is_proposed_triage_gate
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -360,14 +360,18 @@ class LabelManager:
 
         ``proposed-triage`` is blocking-class (#6778): gated triage proposal
         issues are excluded from pickup until an operator removes the gate
-        label (per-instance approval, ADR-0031 §2 amendment).
+        label (per-instance approval, ADR-0031 §2 amendment). The gate match is
+        case-insensitive via the shared owner (#6779 R15) — GitHub folds label
+        names, so a canonical ``Proposed-Triage`` still blocks and can never be
+        classified as approved by reconciliation while blocking treats it as
+        absent.
         """
         base = self._strip_prefix(label)
         if (
             base == "blocked"
             or base.startswith("blocked-")
             or base.startswith("blocked:")
-            or base == self._resolved["proposed_triage"]
+            or is_proposed_triage_gate(base)
         ):
             return True
         if base in _LEGACY_BLOCKING:

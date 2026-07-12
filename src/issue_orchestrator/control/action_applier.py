@@ -92,7 +92,7 @@ from .actions import (
     ResetRetryIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
-from .triage_proposals import apply_create_triage_issue, apply_discard_terminal_triage_proposal_ops, finalize_triage_op_execution
+from .triage_proposals import apply_create_triage_issue, apply_discard_terminal_triage_proposal_ops, execute_approved_triage_op
 from .triage_reset_retry import apply_surface_triage_proposal
 
 logger = logging.getLogger(__name__)
@@ -1563,9 +1563,9 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 f"triage {op_type} execution requested but no executor is"
                 " wired into this applier",
             )
-        return finalize_triage_op_execution(
-            apply_fn(action),
+        return execute_approved_triage_op(
             action,
+            apply_fn,
             repository_host=self.repository_host,
             ops=self.triage_ops,
         )

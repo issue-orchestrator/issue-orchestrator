@@ -148,6 +148,13 @@ def discover_open_triage_anchor_issues(
     (or approved op) past a small window. The exhaustive scan bound is the
     shared ``TRIAGE_PROPOSAL_SCAN_LIMIT`` (#6779 R4, paginated), so the SAME
     open scan feeds both anchor classification and proposal reconciliation.
+
+    The scan is AUTHORITATIVE, so it is requested ``exhaustive`` (#6779 R17): a
+    later-page HTTP/transport failure or a cap-exhausted read RAISES rather than
+    returning a silently partial set. A dropped page could otherwise hide an
+    older batch/health anchor (duplicate creation, missed startup recovery) or
+    delay an approved op indefinitely, so a failed scan must block this tick's
+    planning/recovery — it is never consumed as "no anchors".
     """
     from .triage_proposals import TRIAGE_PROPOSAL_SCAN_LIMIT
 
@@ -155,6 +162,7 @@ def discover_open_triage_anchor_issues(
         labels=_anchor_query_labels(config),
         state="open",
         limit=TRIAGE_PROPOSAL_SCAN_LIMIT,
+        exhaustive=True,
     )
     return _scoped_issues(issues, config.filtering.label)
 

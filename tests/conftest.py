@@ -256,11 +256,13 @@ class MockGitHubAdapter:
         state: str = "open",
         limit: int = 100,
         required_stable_ids: set[str] | None = None,
+        *,
+        exhaustive: bool = False,
     ) -> list[Issue]:
         """Return configured test issues, filtered by labels."""
         self.list_issues_calls.append({
             "labels": labels, "milestone": milestone, "state": state, "limit": limit,
-            "required_stable_ids": required_stable_ids,
+            "required_stable_ids": required_stable_ids, "exhaustive": exhaustive,
         })
         result = self.issues
         if labels:

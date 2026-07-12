@@ -53,12 +53,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Mapping, Sequence, TypeVar
 
 from ..domain.triage_session import (
     PROPOSED_TRIAGE_LABEL,
     ApprovedTriageOp,
     StoredTriageOp,
+    is_proposed_triage_gate,
 )
 from ..events import EventName
 from ..ports import make_trace_event
@@ -84,6 +85,13 @@ if TYPE_CHECKING:
     from .reconciliation import ExpectedState
 
 logger = logging.getLogger(__name__)
+
+# The two act-level op actions the consent-gated execution owner handles;
+# mirrors the applier's constrained TypeVar so the thin dispatch preserves the
+# concrete action type through the consent gate into finalize.
+_TriageOpAction = TypeVar(
+    "_TriageOpAction", ResetRetryIssueAction, KillHungSessionAction
+)
 
 # Exhaustive open triage-agent scan bound (#6779 R4). Both the per-tick fact
 # gatherer and startup recovery page the COMPLETE open set so a backlog of
@@ -301,6 +309,18 @@ class ReconciledTriageProposals:
     absent_op_issue_numbers: tuple[int, ...]
 
 
+def _issue_carries_gate(issue: "Issue") -> bool:
+    """True iff *issue* carries the owned proposal gate, case-insensitively.
+
+    The ONE gate predicate shared by reconciliation classification and the
+    apply-time consent re-check (#6779 R15/R16), delegating the case fold to
+    :func:`is_proposed_triage_gate`. GitHub folds label names, so a repo whose
+    canonical spelling is ``Proposed-Triage`` still gates: classification and
+    blocking cannot diverge on case.
+    """
+    return any(is_proposed_triage_gate(name) for name in issue.labels)
+
+
 def reconcile_triage_proposals(
     issues: Sequence["Issue"],
     *,
@@ -327,7 +347,7 @@ def reconcile_triage_proposals(
     remaining: list["Issue"] = []
     approved: list[ApprovedTriageOp] = []
     for issue in issues:
-        if PROPOSED_TRIAGE_LABEL in issue.labels:
+        if _issue_carries_gate(issue):
             continue  # open proposal (or foreign gate-labeled issue): inert
         op = ops.get(issue.number)
         if op is not None:
@@ -685,3 +705,95 @@ def finalize_triage_op_execution(
         result.success,
     )
     return result
+
+
+def _approval_confirmed(
+    repository_host: "RepositoryHost", proposal_issue: int
+) -> bool:
+    """Fresh read: True iff the proposal still openly holds operator approval.
+
+    Approval STILL STANDS only when a fresh read shows the proposal issue open
+    AND no longer gated (case-insensitive via the one shared predicate, #6779
+    R15/R16); a re-added gate, a closed issue, or a deleted issue each withdraw
+    it. Fail-safe: a read that raises is UNCONFIRMED (never approval), so the
+    caller preserves the op inert rather than act on unverifiable consent.
+    """
+    try:
+        issue = repository_host.get_issue(proposal_issue)
+    except Exception:
+        logger.exception(
+            "[triage] Fresh consent read for proposal #%d failed; treating"
+            " approval as unconfirmed and preserving the op (#6779 R16)",
+            proposal_issue,
+        )
+        return False
+    if issue is None:
+        return False  # proposal deleted -> gone, not approved
+    if issue.state != "open":
+        return False  # proposal closed -> rejected/terminal
+    return not _issue_carries_gate(issue)  # re-gated -> approval withdrawn
+
+
+def _withheld_for_withdrawn_approval(
+    action: "_TriageOpAction",
+    repository_host: "RepositoryHost | None",
+) -> ActionResult | None:
+    """None when approval still stands, else the inert result to return.
+
+    The consent gate the lifecycle owner runs immediately before a target
+    mutation. Direct execute-authority actions (``proposal_issue_number == 0``)
+    carry no per-instance gate and pass straight through (None). Otherwise a
+    fresh read decides: still approved -> None (proceed); withdrawn or
+    unconfirmable -> a non-terminal failure that PRESERVES the op (executor not
+    run, proposal not finalized) so the next tick re-reads it as an inert
+    proposal.
+    """
+    proposal_issue = getattr(action, "proposal_issue_number", 0)
+    if not proposal_issue:
+        return None
+    if repository_host is None:
+        return ActionResult.fail(
+            action,
+            "approved triage op consent re-check requires repository_host"
+            " wired into this applier",
+        )
+    if _approval_confirmed(repository_host, proposal_issue):
+        return None
+    logger.info(
+        "[triage] Proposal #%d no longer confirms operator approval before"
+        " apply (re-gated, closed, or unreadable): preserving its op inert"
+        " (#6779 R16)",
+        proposal_issue,
+    )
+    return ActionResult.fail(
+        action,
+        f"proposal #{proposal_issue} no longer confirms operator approval;"
+        " op preserved inert",
+        proposal_issue_number=proposal_issue,
+    )
+
+
+def execute_approved_triage_op(
+    action: "_TriageOpAction",
+    apply_fn: "Callable[[_TriageOpAction], ActionResult]",
+    *,
+    repository_host: "RepositoryHost | None",
+    ops: "TriageAuthorityStore | None",
+) -> ActionResult:
+    """Consent-gated execution boundary for an approved gated-proposal op.
+
+    The proposal lifecycle owner the applier dispatches an approved act-level op
+    to (the applier stays a thin dispatch). Immediately before the target
+    mutation it re-confirms per-instance approval with a FRESH read
+    (:func:`_withheld_for_withdrawn_approval`), then runs the executor and
+    finalizes. Consent is re-checked HERE, not snapshotted at plan time: an
+    operator who removes the gate, lets the scan plan the op, then re-adds the
+    gate before apply has the op preserved inert rather than executed and closed
+    (#6779 R16, the undoable-until-executed property). Read failures fail safe.
+    """
+    inert = _withheld_for_withdrawn_approval(action, repository_host)
+    if inert is not None:
+        return inert
+    return finalize_triage_op_execution(
+        apply_fn(action), action, repository_host=repository_host, ops=ops
+    )

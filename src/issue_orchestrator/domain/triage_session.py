@@ -42,6 +42,20 @@ HEALTH_REVIEW_MARKER_LABEL = "triage:health-review"
 # the triage subsystem manages its labels without the orchestrator prefix.
 PROPOSED_TRIAGE_LABEL = "proposed-triage"
 
+
+def is_proposed_triage_gate(name: str) -> bool:
+    """True iff *name* is the owned proposal gate, case-insensitively (#6779 R15).
+
+    GitHub folds label names, so a repository whose canonical spelling is
+    ``Proposed-Triage`` still carries the gate. This is the SINGLE owner of the
+    gate comparison: reconciliation classification, scheduler blocking, and the
+    apply-time consent re-check all fold case through here so they can never
+    diverge — e.g. classify a canonical-cased gate as "approved" while blocking
+    treats it as absent (or vice versa).
+    """
+    return name.casefold() == PROPOSED_TRIAGE_LABEL.casefold()
+
+
 _SCHEMA_VERSION = 1
 
 

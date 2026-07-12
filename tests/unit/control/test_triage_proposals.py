@@ -177,6 +177,29 @@ def test_split_still_gated_yields_nothing_to_execute() -> None:
     assert reconciled.absent_op_issue_numbers == ()
 
 
+def test_reconcile_treats_canonical_cased_gate_as_still_gated() -> None:
+    """R15 (act-level gate): GitHub folds label names, so a repo whose canonical
+    spelling is ``Proposed-Triage`` still gates. A case-variant gate must NOT be
+    mistaken for operator approval — the op stays inert, never `approved=[500]`."""
+    canonical = _issue(500, ["agent:triage", "Proposed-Triage"])
+
+    reconciled = reconcile_triage_proposals([canonical], ops={500: _op(13)})
+
+    # Case-insensitive: an open proposal, not an approved op and not an anchor.
+    assert reconciled.approved == ()
+    assert reconciled.anchor_candidate_issues == []
+    # Still present in the open scan, so never a terminal-cleanup candidate.
+    assert reconciled.absent_op_issue_numbers == ()
+
+
+def test_reconcile_gate_case_variants_all_block_approval() -> None:
+    """R15: every case spelling of the gate keeps the op inert (no divergence)."""
+    for spelling in ("proposed-triage", "Proposed-Triage", "PROPOSED-TRIAGE"):
+        issue = _issue(500, ["agent:triage", spelling])
+        reconciled = reconcile_triage_proposals([issue], ops={500: _op(13)})
+        assert reconciled.approved == (), spelling
+
+
 def test_split_without_ops_excludes_gate_labeled_issues() -> None:
     """A gate-labeled issue with no op row is inert — excluded from anchors,
     never executed."""
@@ -542,6 +565,11 @@ def _applier(host: MagicMock, ops: InMemoryTriageAuthorityStore) -> ActionApplie
         repository_host=host,
     )
     applier.triage_ops = ops
+    # Apply-time consent re-check (#6779 R16): the owner freshly re-reads the
+    # proposal issue immediately before the target mutation. By default model an
+    # issue that STILL confirms approval (open, gate absent) so the op proceeds;
+    # withdrawal tests override this side_effect.
+    host.get_issue.side_effect = lambda n: _issue(n, ["triage-agent"])
     return applier
 
 
@@ -652,6 +680,163 @@ def test_applier_kill_op_stale_when_session_already_gone() -> None:
     (number, comment), _ = host.add_comment.call_args
     assert number == 501 and "Preconditions no longer hold" in comment
     assert ops.load_op(issue_number=501) is None
+
+
+def _reset_execution() -> ResetRetryIssueAction:
+    [action] = plan_approved_triage_op_executions(
+        (ApprovedTriageOp(proposal_issue_number=500, op=_op()),)
+    )
+    assert isinstance(action, ResetRetryIssueAction)
+    return action
+
+
+def _kill_execution() -> KillHungSessionAction:
+    op = _kill_op(14, session_id="RUN-14")
+    [action] = plan_approved_triage_op_executions(
+        (ApprovedTriageOp(proposal_issue_number=501, op=op),)
+    )
+    assert isinstance(action, KillHungSessionAction)
+    return action
+
+
+def _wired_reset_applier(
+    host: MagicMock, ops: InMemoryTriageAuthorityStore, run_reset: MagicMock
+) -> ActionApplier:
+    applier = _applier(host, ops)
+    applier.triage_reset_retry = TriageResetRetryExecutor(
+        events=MagicMock(),
+        label_manager=LabelManager(Config()),
+        read_issue=lambda number: _issue(number, ["blocked-failed"]),
+        has_active_session=lambda _n: False,
+        run_reset=run_reset,
+    )
+    return applier
+
+
+def _wired_kill_applier(
+    host: MagicMock, ops: InMemoryTriageAuthorityStore, run_kill: MagicMock
+) -> ActionApplier:
+    applier = _applier(host, ops)
+    applier.triage_kill_session = TriageKillSessionExecutor(
+        events=MagicMock(),
+        active_session_run_id=lambda n: "RUN-14" if n == 14 else None,
+        run_kill=run_kill,
+    )
+    return applier
+
+
+def test_applier_reset_op_preserved_inert_when_gate_readded_before_apply() -> None:
+    """R16: remove-gate -> plan -> RE-ADD-gate -> apply. The fact scan planned
+    the reset while the gate was absent; the operator re-added it before apply.
+    The fresh consent re-read sees the gate back, so the op is PRESERVED inert —
+    the reset never runs and the proposal is NOT closed."""
+    host = MagicMock()
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=500, op=_op())
+    run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
+    applier = _wired_reset_applier(host, ops, run_reset)
+    # The operator re-added the gate between plan and apply.
+    host.get_issue.side_effect = lambda n: _issue(n, ["triage-agent", PROPOSED_TRIAGE_LABEL])
+
+    result = applier.apply(_reset_execution())
+
+    assert not result.success  # withheld, not executed
+    run_reset.assert_not_called()  # target never mutated
+    host.update_issue_state.assert_not_called()  # proposal NOT closed
+    assert ops.load_op(issue_number=500) is not None  # op preserved for next tick
+
+
+def test_applier_kill_op_preserved_inert_when_gate_readded_before_apply() -> None:
+    """R16 (kill path): the same withdraw-before-apply consent gate protects the
+    kill execution path, not just reset."""
+    host = MagicMock()
+    ops = InMemoryTriageAuthorityStore()
+    op = _kill_op(14, session_id="RUN-14")
+    ops.record_op(issue_number=501, op=op)
+    run_kill = MagicMock(return_value=KillSessionRunOutcome(success=True))
+    applier = _wired_kill_applier(host, ops, run_kill)
+    host.get_issue.side_effect = lambda n: _issue(n, ["triage-agent", PROPOSED_TRIAGE_LABEL])
+
+    result = applier.apply(_kill_execution())
+
+    assert not result.success
+    run_kill.assert_not_called()
+    host.update_issue_state.assert_not_called()
+    assert ops.load_op(issue_number=501) is not None
+
+
+def test_applier_gate_readded_case_variant_still_withholds() -> None:
+    """R16 x R15: a case-variant gate re-added before apply still withdraws
+    consent (the apply-time gate shares the case-insensitive predicate)."""
+    host = MagicMock()
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=500, op=_op())
+    run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
+    applier = _wired_reset_applier(host, ops, run_reset)
+    host.get_issue.side_effect = lambda n: _issue(n, ["triage-agent", "Proposed-Triage"])
+
+    result = applier.apply(_reset_execution())
+
+    assert not result.success
+    run_reset.assert_not_called()
+    assert ops.load_op(issue_number=500) is not None
+
+
+def test_applier_reset_op_executes_when_gate_still_absent_at_apply() -> None:
+    """R16 (no regression): remove-gate -> plan -> apply with the gate STILL
+    absent. The fresh consent re-read confirms approval, so the reset runs once
+    and the proposal is finalized/closed — the gate has not withdrawn it."""
+    host = MagicMock()
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=500, op=_op())
+    run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
+    applier = _wired_reset_applier(host, ops, run_reset)
+    host.get_issue.side_effect = lambda n: _issue(n, ["triage-agent"])  # gate absent
+
+    result = applier.apply(_reset_execution())
+
+    assert result.success
+    run_reset.assert_called_once_with(13, ["blocked-failed"])
+    host.update_issue_state.assert_called_once_with(500, "closed")
+    assert ops.load_op(issue_number=500) is None
+
+
+def test_applier_closed_proposal_preserves_op_without_executing() -> None:
+    """R16: a proposal CLOSED before apply is not approval — consent read shows
+    closed, so the op is preserved inert (never executed)."""
+    host = MagicMock()
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=500, op=_op())
+    run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
+    applier = _wired_reset_applier(host, ops, run_reset)
+    host.get_issue.side_effect = lambda n: Issue(
+        number=n, title="t", labels=["triage-agent"], state="closed", repo="owner/repo"
+    )
+
+    result = applier.apply(_reset_execution())
+
+    assert not result.success
+    run_reset.assert_not_called()
+    host.update_issue_state.assert_not_called()
+    assert ops.load_op(issue_number=500) is not None
+
+
+def test_applier_read_error_at_apply_withholds_execution_fail_safe() -> None:
+    """R16 (fail-safe): a consent read that RAISES must not execute. It cannot
+    confirm approval, so the op is preserved inert rather than acted on."""
+    host = MagicMock()
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=500, op=_op())
+    run_reset = MagicMock(return_value=ResetRetryRunOutcome(success=True))
+    applier = _wired_reset_applier(host, ops, run_reset)
+    host.get_issue.side_effect = RuntimeError("GitHub unreachable")
+
+    result = applier.apply(_reset_execution())
+
+    assert not result.success
+    run_reset.assert_not_called()
+    host.update_issue_state.assert_not_called()
+    assert ops.load_op(issue_number=500) is not None
 
 
 def test_applier_unwired_executors_fail_loudly() -> None:

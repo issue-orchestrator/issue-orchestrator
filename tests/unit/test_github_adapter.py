@@ -195,6 +195,7 @@ class TestIssueOperations:
             milestone=None,
             limit=10,
             use_cache=True,
+            exhaustive=False,
         )
 
     def test_list_issues_with_milestone(self, adapter, mock_http_client):
@@ -218,6 +219,7 @@ class TestIssueOperations:
             milestone="v1.0",
             limit=100,
             use_cache=True,
+            exhaustive=False,
         )
 
     def test_list_issues_http_error_propagates(self, adapter, mock_http_client):
