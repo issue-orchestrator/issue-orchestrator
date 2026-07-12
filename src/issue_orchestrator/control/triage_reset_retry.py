@@ -74,6 +74,7 @@ from .actions import (
 if TYPE_CHECKING:
     from ..domain.models import SessionHistoryEntry
     from ..ports.issue import Issue
+    from .action_applier import ActionApplier
     from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
@@ -354,6 +355,35 @@ class RequiredActLevelOutcome:
         return "; ".join(self.failures) or "reset owner did not commit"
 
 
+def is_required_act_level_action(action: Action) -> bool:
+    """True for a decision-MANDATED act-level action (ADR-0031 §2).
+
+    THE single source of "which actions carry mandated authority", shared by the
+    apply-time GATE (:func:`partition_required_act_level_actions`, which withholds
+    success-only effects) and the terminal VERDICT
+    (:func:`evaluate_required_act_level_outcome`), so authority and the effects it
+    gates classify the same actions and cannot drift (#6779 R13). A
+    ``ResetRetryIssueAction`` is the only wired act-level mutation today.
+    """
+    return isinstance(action, ResetRetryIssueAction)
+
+
+def partition_required_act_level_actions(
+    actions: Sequence[Action],
+) -> tuple[list[Action], list[Action]]:
+    """Split completion actions into (mandated act-level, success-only remainder).
+
+    Relative order within each partition is preserved. The mandated partition is
+    the authority gate applied first; the remainder holds the success-only effects
+    (labels/comments/close) that must NOT commit unless the gate commits (#6779).
+    """
+    mandated = [action for action in actions if is_required_act_level_action(action)]
+    remainder = [
+        action for action in actions if not is_required_act_level_action(action)
+    ]
+    return mandated, remainder
+
+
 def evaluate_required_act_level_outcome(
     applied: Sequence[ActionResult],
 ) -> RequiredActLevelOutcome:
@@ -366,10 +396,99 @@ def evaluate_required_act_level_outcome(
     failures = tuple(
         result.error or "reset owner failed"
         for result in applied
-        if isinstance(result.action, ResetRetryIssueAction)
+        if is_required_act_level_action(result.action)
         and result.result_type is ActionResultType.FAILURE
     )
     return RequiredActLevelOutcome(committed=not failures, failures=failures)
+
+
+def apply_completion_actions_gated(
+    action_applier: "ActionApplier",
+    actions: Sequence[Action],
+    *,
+    issue_number: int,
+) -> tuple[list[ActionResult], BaseException | None]:
+    """Apply completion actions so the mandated act-level outcome GATES the rest.
+
+    THE authority-with-effects owner (ADR-0031 §2, #6779 R13 root cause): the
+    decision-mandated ``ResetRetryIssueAction`` is applied FIRST as the gate, and
+    its success-only siblings (completion labels/comments/close) apply ONLY when it
+    commits — so a failing mandated reset can never leave a success-only effect
+    committed, no matter where it sat in the planned list. A raised apply past the
+    runtime-kill boundary (Reconciliation/Claim/adapter, #6777) withholds the
+    remainder too and is returned so the caller can finalize the ONE terminal
+    outcome, then re-raise. With no mandated action the whole list applies in one
+    pass — behavior for ordinary completions is unchanged.
+    """
+    mandated, remainder = partition_required_act_level_actions(actions)
+    applied, error = _apply_completion_action_batch(
+        action_applier, mandated or list(actions), issue_number
+    )
+    if not mandated or error is not None or evaluate_required_act_level_outcome(applied).failed:
+        if mandated and remainder:
+            logger.warning(
+                issue_log(issue_number, "Mandated act-level action did not commit; "
+                          "withholding %d success-only completion effect(s)"),
+                len(remainder),
+            )
+        return applied, error
+    remainder_applied, error = _apply_completion_action_batch(
+        action_applier, remainder, issue_number
+    )
+    return applied + remainder_applied, error
+
+
+def _apply_completion_action_batch(
+    action_applier: "ActionApplier",
+    actions: Sequence[Action],
+    issue_number: int,
+) -> tuple[list[ActionResult], BaseException | None]:
+    """Apply one batch of actions, capturing a raise past the runtime-kill boundary.
+
+    Terminal finalization must run on EVERY apply outcome (#6777): a propagated
+    ``ReconciliationRequired`` / ``ClaimLostError`` / adapter fault is CAPTURED and
+    returned rather than aborting before finalization.
+    """
+    if not actions:
+        return [], None
+    logger.info(
+        issue_log(issue_number, "Applying %d completion action(s): %s"),
+        len(actions),
+        [type(action).__name__ for action in actions],
+    )
+    try:
+        # `or []` tolerates test doubles whose apply_all returns None.
+        return list(action_applier.apply_all(list(actions)) or []), None
+    except Exception as exc:
+        logger.warning(
+            issue_log(issue_number, "Completion-action apply raised; finalizing "
+                      "terminal FAILED before re-raising: %s"),
+            exc,
+        )
+        return [], exc
+
+
+def required_act_level_outcome_after_apply(
+    applied: Sequence[ActionResult],
+    apply_error: BaseException | None,
+) -> RequiredActLevelOutcome:
+    """The required-act-level verdict once completion actions have been applied.
+
+    On a normal return this folds the real applied results
+    (:func:`evaluate_required_act_level_outcome`). When ``apply_all`` RAISED past
+    the runtime-kill boundary — ``ReconciliationRequired`` / ``ClaimLostError`` /
+    any adapter fault — the mandated act-level action cannot be confirmed
+    committed, so the verdict is a hard failure through the SAME machinery
+    (#6777). :func:`effective_terminal_status` therefore terminalizes the whole
+    completion FAILED (never a false COMPLETED) with no parallel status path, and
+    the caller re-raises ``apply_error`` only AFTER finalization has committed.
+    """
+    if apply_error is not None:
+        return RequiredActLevelOutcome(
+            committed=False,
+            failures=(f"completion action apply raised before commit: {apply_error}",),
+        )
+    return evaluate_required_act_level_outcome(applied)
 
 
 def finalize_required_act_level_history(

@@ -1,18 +1,25 @@
 """Tests for the triage reset_retry execution owner (#6764, ADR-0031 §2)."""
 
 from dataclasses import replace
-from unittest.mock import ANY, MagicMock
+from unittest.mock import ANY, MagicMock, call
 
 import pytest
 
 from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import (
     ActionResultType,
+    AddLabelAction,
     ResetRetryIssueAction,
 )
+from issue_orchestrator.control.claim_gate import ClaimLostError
 from issue_orchestrator.control.completion_handler import CompletionHandler
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.control.reconciliation import (
+    ExternalSnapshot,
+    ReconciliationRequired,
+)
 from issue_orchestrator.control.session_completion import handle_session_completion
+from issue_orchestrator.control.state_machine_manager import StateMachineManager
 from issue_orchestrator.control.triage_reset_retry import (
     STALE_DOWNGRADE_MODE,
     ResetRetryRunOutcome,
@@ -99,6 +106,21 @@ def published(events: MagicMock, name: EventName) -> list:
         for call in events.publish.call_args_list
         if call.args[0].name == name.value
     ]
+
+
+class _RaisingApplier:
+    """ActionApplier stand-in whose ``apply_all`` raises past the runtime-kill
+    boundary, modelling the ``ReconciliationRequired`` / ``ClaimLostError`` races
+    the real applier rethrows. Counts calls so a test can prove finalization
+    publishes exactly once with no second GitHub write after the raise."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+        self.apply_all_calls = 0
+
+    def apply_all(self, _actions):
+        self.apply_all_calls += 1
+        raise self._error
 
 
 class TestStaleReason:
@@ -306,11 +328,14 @@ class TestCompletionPipelineEligibility:
         observer=None,
         repository_host=None,
         labels=None,
+        leading_actions=(),
     ):
-        """Arrange a COMPLETED triage completion whose one action is a mandated
-        reset, returning ``(state, run)`` so callers can assert on pre-run state
-        before invoking ``run()``. The agent always reports ``completed``; the
-        injected ``executor`` decides whether the mandated reset commits."""
+        """Arrange a COMPLETED triage completion whose mandated action is a reset,
+        returning ``(state, run)`` so callers can assert on pre-run state before
+        invoking ``run()``. The agent always reports ``completed``; the injected
+        ``executor`` decides whether the mandated reset commits. ``leading_actions``
+        are success-only mutations planned BEFORE the reset in the same batch, to
+        prove the reset gates them (#6779 R13)."""
         session = self._session(tmp_path)
         state = OrchestratorState()
         state.active_sessions = [session]
@@ -319,7 +344,10 @@ class TestCompletionPipelineEligibility:
 
         completion_handler = MagicMock()
         completion_handler.process_completion.return_value = MagicMock(
-            actions=[make_action(issue_number=17, anchor_issue_number=17)],
+            actions=[
+                *leading_actions,
+                make_action(issue_number=17, anchor_issue_number=17),
+            ],
             history_entry=SessionHistoryEntry(
                 issue_number=17,
                 title="Broken issue",
@@ -463,6 +491,49 @@ class TestCompletionPipelineEligibility:
         # failure gate) did NOT run, so the FAILED record and gate both stand.
         assert any(e.issue_number == 17 for e in state.session_history)
 
+    def test_failing_mandated_reset_withholds_cobatched_success_effect(self, tmp_path):
+        """#6779 R13 root cause — mandated authority must GATE the success-only
+        effects it is co-batched with, not just the terminal consumers.
+
+        A success-only label mutation planned BEFORE the failing mandated reset in
+        the SAME action batch must NOT commit: the reset is the authority gate, so
+        its siblings are withheld when it fails. Before this fix ``apply_all`` ran
+        the whole list in order and committed the success mutation before the reset
+        failure was ever detected."""
+        executor, _events, run_reset = make_executor(
+            outcome=ResetRetryRunOutcome(success=False, error="reset exploded")
+        )
+        observer = MagicMock()
+        labels = MagicMock()
+        labels.has_label.return_value = False  # would let any add proceed
+        success_effect = AddLabelAction(
+            issue_number=17, label="triage-done", reason="success-only completion label"
+        )
+
+        state, run = self._arrange(
+            tmp_path,
+            executor,
+            seed_failed=False,
+            config=Config(),
+            observer=observer,
+            repository_host=MagicMock(),
+            labels=labels,
+            leading_actions=[success_effect],
+        )
+
+        run()
+
+        run_reset.assert_called_once()
+        # The co-batched success-only label was WITHHELD — the gate did not commit.
+        # (needs-human IS added by the crash-safe operator surface; assert the
+        # SUCCESS label specifically never applied.)
+        assert call(17, "triage-done") not in labels.add_label.call_args_list
+        # The whole completion still terminalized FAILED, with no success recorded:
+        observer.handle_completion.assert_called_once_with(ANY, SessionStatus.FAILED)
+        assert 17 not in state.completed_today
+        [entry] = state.session_history
+        assert entry.status == "failed"
+
 
 class _HandlerWithMandatedReset(CompletionHandler):
     """Real ``CompletionHandler`` that may also carry one decision-mandated reset
@@ -548,17 +619,22 @@ class TestEffectiveTerminalOutcomeEvents:
         executor=None,
         mandated_action: ResetRetryIssueAction | None,
         session_machine: SessionStateMachine | None = None,
+        action_applier=None,
+        state: OrchestratorState | None = None,
+        claim_manager=None,
     ) -> OrchestratorState:
         session = self._session(tmp_path)
-        state = OrchestratorState()
+        if state is None:
+            state = OrchestratorState()
         state.active_sessions = [session]
-        applier = ActionApplier(
-            labels=MagicMock(),
-            sessions=MagicMock(),
-            events=MagicMock(),
-            repository_host=MagicMock(),
-        )
-        applier.triage_reset_retry = executor
+        if action_applier is None:
+            action_applier = ActionApplier(
+                labels=MagicMock(),
+                sessions=MagicMock(),
+                events=MagicMock(),
+                repository_host=MagicMock(),
+            )
+            action_applier.triage_reset_retry = executor
         session_output = MagicMock(spec=SessionOutput)
         session_output.attach_claude_log.return_value = None
         handle_session_completion(
@@ -570,13 +646,13 @@ class TestEffectiveTerminalOutcomeEvents:
                 mandated_action=mandated_action,
                 session_machine=session_machine,
             ),
-            action_applier=applier,
+            action_applier=action_applier,
             observer=MagicMock(),
             worktree_manager=None,
             kill_session_fn=lambda _x: None,
             config=Config(),
             session_output=session_output,
-            claim_manager=MagicMock(),
+            claim_manager=claim_manager if claim_manager is not None else MagicMock(),
             events=events,
         )
         return state
@@ -700,3 +776,79 @@ class TestEffectiveTerminalOutcomeEvents:
         assert machine.get_state() is SessionState.COMPLETED
         assert len(events.get_events(EventName.SESSION_COMPLETED.value)) == 1
         assert events.get_events(EventName.SESSION_FAILED.value) == []
+
+    @pytest.mark.parametrize(
+        "raised",
+        [
+            ReconciliationRequired(
+                entity_type="issue",
+                entity_id=17,
+                expected=ExternalSnapshot.for_issue(17, set()),
+                actual=ExternalSnapshot.for_issue(17, {"drifted"}),
+                reason="labels changed under us",
+            ),
+            ClaimLostError(issue_number=17, operation="add_label"),
+        ],
+        ids=["reconciliation_required", "claim_lost"],
+    )
+    def test_apply_exception_finalizes_real_machine_failed_then_reraises(
+        self, tmp_path, raised
+    ):
+        """An apply that RAISES past the runtime-kill boundary must still drive the
+        REAL running machine to FAILED, commit every terminal consumer exactly
+        once, and re-raise — never leave a RUNNING machine a later same-id launch
+        could reuse (#6777).
+
+        This is the gap the round-5 owner missed: ``finalize_terminal_outcome``
+        only ran on the RETURN path from ``apply_all``. ``ReconciliationRequired``
+        and ``ClaimLostError`` are expected production races that ``ActionApplier``
+        rethrows, so before this fix they bypassed finalization and stranded a
+        RUNNING cached machine with the runtime already dead."""
+        events = InMemoryEventSink()
+        machine = SessionStateMachine(
+            "issue-17", 17, initial_state=SessionState.RUNNING
+        )
+        applier = _RaisingApplier(raised)
+        claim_manager = MagicMock()
+        state = OrchestratorState()
+
+        with pytest.raises(type(raised)) as excinfo:
+            self._run(
+                tmp_path,
+                events=events,
+                mandated_action=make_action(issue_number=17, anchor_issue_number=17),
+                session_machine=machine,
+                action_applier=applier,
+                state=state,
+                claim_manager=claim_manager,
+            )
+
+        # The SAME error propagates (nothing swallowed / re-wrapped)...
+        assert excinfo.value is raised
+        # ...but ONLY after finalization: the cached machine ends terminal FAILED.
+        assert machine.get_state() is SessionState.FAILED
+        # Exactly one terminal event, the deliberate FAILURE — no double publication
+        # and no false COMPLETED before the apply aborted:
+        assert events.get_events(EventName.SESSION_COMPLETED.value) == []
+        assert len(events.get_events(EventName.SESSION_FAILED.value)) == 1
+        # Success gate untouched:
+        assert 17 not in state.completed_today
+        # Claim released, its machine payload reporting the effective failure:
+        claim_manager.release_claim.assert_called_once_with(17, "lease-17")
+        [claim] = events.get_events(EventName.CLAIM_RELEASED.value)
+        assert claim.data["status"] == "failed"
+        # Failure discovery + cleanup facts committed, consistent with the return path:
+        assert [f.issue_number for f in state.discovered_failures] == [17]
+        assert 17 in state.failed_this_cycle
+        assert [c.reason for c in state.immediate_cleanups] == ["failed"]
+        # History terminalized FAILED, never the agent's "completed" intent:
+        [entry] = state.session_history
+        assert entry.status == "failed"
+        # The applier was invoked exactly once: no second GitHub write (operator
+        # surface) after the raise, so finalization publishes once and only once.
+        assert applier.apply_all_calls == 1
+        # A later launch under the same terminal id CANNOT reuse a RUNNING machine:
+        # the machine is terminal, so StateMachineManager replaces it on next get.
+        manager = StateMachineManager(Config())
+        manager.session_machines["issue-17"] = machine
+        assert manager.get_session_machine("issue-17", 17) is not machine

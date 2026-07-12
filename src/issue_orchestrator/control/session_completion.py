@@ -125,8 +125,7 @@ def _queue_rework_after_retrospective_changes(
 ) -> None:
     """Queue coder rework when a retrospective review requests changes.
 
-    Label/state effects for the same outcome live in CompletionHandler; this
-    function owns only the in-memory rework queue transition.
+    Label/state effects live in CompletionHandler; this owns only the rework queue.
     """
 
     if session.key.task != TaskKind.RETROSPECTIVE_REVIEW:
@@ -172,20 +171,15 @@ def _failure_artifact_hints(
 ) -> tuple[str, ...]:
     """On-disk artifacts a failure investigation should start from (#6762).
 
-    The discovery seam is the only place that knows both the failure
-    diagnostic and the session's run directory, so hints are gathered here
-    and carried on :class:`DiscoveredFailure` through plan -> queue -> board
-    snapshot. Only paths that EXIST are included: a hint pointing a triage
-    agent at a file that was never written is worse than no hint.
-
-    Path provenance is preserved here (#6771 round 3): the production
-    failure writer (``write_failure_diagnostic``) reports the diagnostic as
-    a WORKTREE-RELATIVE path (``.issue-orchestrator/sessions/<run>/<file>``)
-    while ``SessionOutput.write_diagnostic`` reports an absolute one, so
-    relative candidates are resolved against the failed session's worktree
-    before the existence check. Hints are stored ABSOLUTE: the queued
-    investigation launches ticks later from a different working directory,
-    so a relative hint would be unreadable by every downstream consumer.
+    The discovery seam knows both the failure diagnostic and the run directory,
+    so hints are gathered here and carried on :class:`DiscoveredFailure` through
+    plan -> queue -> board. Only EXISTING paths are included (a hint to a file
+    never written is worse than none). Provenance is preserved (#6771 r3):
+    ``write_failure_diagnostic`` reports a WORKTREE-RELATIVE diagnostic while
+    ``SessionOutput.write_diagnostic`` reports an absolute one, so relative
+    candidates are resolved against the worktree before the existence check;
+    hints are stored ABSOLUTE (the investigation launches ticks later from a
+    different cwd, where a relative hint would be unreadable).
     """
     from ..domain.run_manifest import MANIFEST_FILENAME
     from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
@@ -214,12 +208,10 @@ def _surface_required_act_level_failure(
 ) -> None:
     """Apply the durable operator surface for a failed mandated act-level action.
 
-    Routes a failed decision-mandated reset to a needs-human label + comment
-    through the existing action owners so the FAILED terminal is not merely
-    in-memory (#6764 re-review F2). The action builder returns an empty list for
-    a committed or genuine-failure outcome, so this applies nothing on those
-    paths — keeping the applier call sequence untouched when there is no
-    mandated failure to surface.
+    Routes a failed decision-mandated reset to a needs-human label + comment via
+    the existing action owners so the FAILED terminal is not merely in-memory
+    (#6764 F2). The builder returns [] for a committed/genuine-failure outcome, so
+    this applies nothing on those paths.
     """
     from .triage_reset_retry import build_required_act_level_failure_actions
 
@@ -262,27 +254,10 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     """Handle session completion - moved from Orchestrator per method table.
 
     Complexity is inherent - this processes validation retries, completion,
-    actions, observer cleanup, claim release, history, and failure tracking.
-    These are sequential steps that share the session context.
-
-    Args:
-        session: The completed session
-        status: The session status
-        state: Orchestrator state (active_sessions, session_history, etc.)
-        completion_handler: For processing completion
-        action_applier: For applying actions
-        observer: For cleanup
-        worktree_manager: For worktree removal
-        kill_session_fn: Function to kill terminal session
-        session_output: For session artifact management
-        config: Configuration
-        pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
-        processing_errors: Errors from completion processor (push failed, PR creation failed, etc.)
-        diagnostic_path: Path to detailed failure diagnostic file (in worktree)
-        validation_error: Validation error message (for retry prompt)
-        validation_error_file: Path to validation error file (for retry prompt)
-        claim_manager: Optional ClaimManager for releasing claims on completion
-        events: Optional EventSink for emitting claim events
+    actions, observer cleanup, claim release, history, and failure tracking as
+    sequential steps sharing the session context. ``process_completion`` defers
+    terminalization; the ONE effective outcome is finalized post-apply on every
+    apply outcome (return or raise), then any apply error is re-raised (#6777).
     """
     from ..domain.models import DiscoveredReview, DiscoveredFailure, PendingValidationRetry
 
@@ -332,12 +307,11 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         kill_session_fn(session.terminal_id)
         return  # Skip normal completion processing
 
-    # Process completion through CompletionHandler (includes policy decisions).
-    # The terminal trace event, the cached state-machine transition, and the
-    # completed_today gate are ALL deferred until the effective outcome is known
-    # below (#6777): process_completion terminalizes nothing here, so a mandated
-    # act-level action that fails at apply cannot leave a false SESSION_COMPLETED,
-    # a completed cached machine, or a completed_today entry FAILED contradicts.
+    # Process completion (policy decisions). The terminal trace event, the cached
+    # state-machine transition, and the completed_today gate ALL defer to the
+    # EFFECTIVE post-apply outcome below (#6777): process_completion terminalizes
+    # nothing here, so a mandated act-level action that fails — or an apply that
+    # RAISES — cannot leave a false SESSION_COMPLETED or a completed cached machine.
     try:
         result = completion_handler.process_completion(
             session, status, pr_url_hint=pr_url_hint,
@@ -357,11 +331,8 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         _terminate_finished_session(session, status, kill_session_fn)
 
     # Persist durable retry locators BEFORE applying the publish-failed labels
-    # below. The completion actions include publish-failed / publish-fail-count
-    # labels; a crash between applying those and recording locators would leave
-    # GitHub marked publish-failed with no locators, making the issue visibly
-    # label-retryable while Retry Publish stays unavailable. Recording first
-    # closes that window. No-op for non-publish failures.
+    # below, so a crash between the two can't leave GitHub marked publish-failed
+    # with no locators (Retry Publish unavailable). No-op for non-publish failures.
     if publish_recovery is not None:
         publish_recovery.record_publish_failure(
             session,
@@ -374,46 +345,38 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     claude_log_path = session_output.attach_claude_log(run_dir)
     run_session_analysis(run_dir)
 
-    # Apply completion actions (from CompletionHandler policy)
-    applied_results = []
-    if result.actions:
-        logger.info(
-            "[COMPLETION] Applying %d actions for issue #%d status=%s: %s",
-            len(result.actions),
-            session.issue.number,
-            status.value,
-            [type(a).__name__ for a in result.actions],
-        )
-        # `or []` tolerates test doubles whose apply_all returns None.
-        applied_results = action_applier.apply_all(list(result.actions)) or []
-    else:
-        logger.warning(
-            "[COMPLETION] No actions generated for issue #%d status=%s",
-            session.issue.number,
-            status.value,
-        )
-
-    # The required-act-level outcome is the single authoritative terminal-status
-    # policy for the whole post-apply phase (ADR-0031 §2, #6764 re-review F2): a
-    # decision-mandated reset that FAILED at apply time makes the EFFECTIVE
-    # terminal status FAILED, regardless of the agent's "completed" intent. Every
-    # consumer below (observer, failure discovery, retry gating, cleanup reason,
-    # history, operator surface) routes through `effective_status` so a partial
-    # reset can never be recorded as a clean success.
+    # Apply completion actions through the authority-with-effects owner (#6779 R13,
+    # #6777): the mandated act-level action GATES its success-only siblings — they
+    # do not commit unless it commits — and a raised apply past the runtime-kill
+    # boundary (ReconciliationRequired / ClaimLostError / adapter fault) is captured
+    # so terminal finalization still runs, then re-raised. Neither a failing
+    # mandated reset nor an aborted apply may leave a success effect committed or
+    # the cached machine RUNNING with the runtime dead.
     from .triage_reset_retry import (
+        apply_completion_actions_gated,
         effective_terminal_status,
         evaluate_required_act_level_outcome,
         finalize_required_act_level_history,
+        required_act_level_outcome_after_apply,
     )
-    required_act_outcome = evaluate_required_act_level_outcome(applied_results)
+    applied_results, apply_error = apply_completion_actions_gated(
+        action_applier, result.actions, issue_number=session.issue.number
+    )
+
+    # The required-act-level outcome is the single authoritative terminal-status
+    # policy for the whole post-apply phase (ADR-0031 §2, #6764 F2, #6777): a
+    # mandated reset that FAILED — or an apply that RAISED — makes the EFFECTIVE
+    # status FAILED regardless of the agent's intent, so every consumer below
+    # routes through `effective_status` and an aborted apply is never a success.
+    required_act_outcome = required_act_level_outcome_after_apply(
+        applied_results, apply_error
+    )
     effective_status = effective_terminal_status(status, required_act_outcome)
 
     # Finalize BOTH terminal-outcome commits — the ONE trace event and the cached
-    # SessionStateMachine transition — from the SAME effective outcome every other
-    # post-apply consumer uses (#6777). A failed mandated reset ends the machine
-    # FAILED and publishes a single SESSION_FAILED, never a false COMPLETED neither
-    # the event contract nor the cached machine can retract. Keys off history status
-    # so publish/PR failures still terminalize as FAILED exactly as before.
+    # SessionStateMachine transition — from the SAME effective outcome (#6777), on
+    # the return AND the raised-apply path: a failed/aborted apply ends the machine
+    # FAILED and emits a single SESSION_FAILED, never a false COMPLETED.
     completion_handler.finalize_terminal_outcome(
         session,
         effective_terminal_status(result.history_status, required_act_outcome),
@@ -422,8 +385,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         blocked_reason=blocked_reason,
         completion_detail=completion_detail,
     )
-    # completed_today is a success gate: record it only when the EFFECTIVE
-    # outcome is a clean completion, so a failed mandated reset leaves none.
+    # completed_today is a success gate: record only on a clean EFFECTIVE completion.
     if effective_status == SessionStatus.COMPLETED:
         state.completed_today.append(session.issue.number)
 
@@ -463,10 +425,9 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             )
 
     # Terminalize through the required-act-level outcome boundary (ADR-0031 §2,
-    # #6764 re-review F2): a decision-mandated reset that FAILED at apply time
-    # routes the whole completion to a FAILED terminal record — never a partial
-    # reset masked by the agent's "completed" intent. A committed/downgraded
-    # outcome leaves the success record untouched.
+    # #6764 F2, #6777): a mandated reset that failed — or an apply that raised —
+    # routes the whole completion to a FAILED terminal record, never masked by the
+    # agent's "completed" intent. A committed/downgraded outcome is untouched.
     state.session_history.append(
         finalize_required_act_level_history(
             result.history_entry,
@@ -510,18 +471,20 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         # Surface AI session logs for debugging
         surface_failure_context(session, effective_status)
 
-        # Crash-safe operator surface for a FAILED mandated act-level action. The
-        # completion handler planned the agent-reported (success) actions, so a
-        # reset that failed at apply time has no durable GitHub marker yet.
+        # Crash-safe operator surface for a mandated reset that FAILED in-band —
+        # driven by the REAL applied verdict, not the effective one. On the
+        # raised-apply path the verdict is committed (no results), so this posts
+        # nothing: a second GitHub write right after a reconciliation/claim raise
+        # would re-fail and mask the re-raise (the terminal is already FAILED).
         _surface_required_act_level_failure(
-            action_applier, config, session, required_act_outcome
+            action_applier, config, session,
+            evaluate_required_act_level_outcome(applied_results),
         )
 
-    # A successful triage reset_retry action (#6764) made its target issue
-    # retryable mid-apply, but the history append above re-keys the issue as
-    # "already ran" — which would silently re-block the relaunch the reset
-    # exists to trigger. Re-clear the planner/queue gates last, via their
-    # owner, exactly like the dashboard reset (which runs after completion).
+    # A successful reset_retry made its target issue retryable mid-apply, but the
+    # history append above re-keys it "already ran" and would re-block the very
+    # relaunch the reset exists to trigger. Re-clear the planner/queue gates last,
+    # via their owner (empty on the raised-apply path, so a no-op). (#6764)
     from .retry_history_state import RetryHistoryState
     from .triage_reset_retry import preserve_reset_retry_eligibility
 
@@ -534,6 +497,13 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             "[COMPLETION] Preserved reset_retry eligibility after history append: %s",
             cleared,
         )
+
+    # Re-raise the captured apply error ONLY now that terminal finalization has
+    # committed (#6777): the reconciliation/claim machinery gets the exact signal
+    # the pre-fix path raised, but never before the terminal is consistent — the
+    # completion is finalized FAILED, not lost in limbo.
+    if apply_error is not None:
+        raise apply_error
 
 
 def process_active_sessions(

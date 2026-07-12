@@ -953,7 +953,13 @@ def test_completed_but_undrained_retry_rejects_duplicate_submit(make_session, tm
 def test_locators_persisted_before_publish_failed_labels_applied(make_session, tmp_path) -> None:
     """handle_session_completion must record retry locators before applying the
     publish-failed labels, so a crash between the two can't leave GitHub marked
-    publish-failed with no locators (Retry Publish permanently unavailable)."""
+    publish-failed with no locators (Retry Publish permanently unavailable).
+
+    It must ALSO finalize the terminal outcome even when the apply raises past the
+    runtime-kill boundary (#6777): the raised apply is captured, the completion is
+    terminalized FAILED, and only THEN is the error re-raised. Before that fix the
+    apply raise skipped ``finalize_terminal_outcome`` entirely, so this asserts it
+    now runs with the effective FAILED status on the raising-apply path."""
     from issue_orchestrator.control.completion_handler import SessionStatus
     from issue_orchestrator.control.session_completion import handle_session_completion
 
@@ -968,14 +974,32 @@ def test_locators_persisted_before_publish_failed_labels_applied(make_session, t
     )
 
     completion_handler = MagicMock()
+    # A publish failure makes process_completion report FAILED for history; the
+    # full result lets the post-apply consumer chain run on the raising path.
     completion_handler.process_completion.return_value = SimpleNamespace(
         actions=[
             AddLabelAction(issue_number=4057, label=lm.publish_failed, reason="publish failed"),
         ],
+        history_status=SessionStatus.FAILED,
+        history_entry=SessionHistoryEntry(
+            issue_number=4057,
+            title="UI: Surface provider status",
+            agent_type="agent:coder",
+            status="failed",
+            runtime_minutes=1,
+            pr_url=None,
+        ),
+        pr_url=None,
+        pr_number=None,
+        should_defer_cleanup=False,
+        pending_cleanup=None,
+        should_queue_review=False,
     )
     # Applying the publish-failed label crashes (simulates a mid-apply failure).
     action_applier = MagicMock()
     action_applier.apply_all.side_effect = RuntimeError("boom applying publish-failed")
+    session_output = MagicMock()
+    session_output.attach_claude_log.return_value = None
 
     with pytest.raises(RuntimeError):
         handle_session_completion(
@@ -988,7 +1012,7 @@ def test_locators_persisted_before_publish_failed_labels_applied(make_session, t
             worktree_manager=None,
             kill_session_fn=lambda _terminal_id: None,
             config=MagicMock(),
-            session_output=MagicMock(),
+            session_output=session_output,
             processing_errors=["push_branch: Push failed: remote rejected"],
             publish_recovery=service,
         )
@@ -996,6 +1020,14 @@ def test_locators_persisted_before_publish_failed_labels_applied(make_session, t
     # Even though the label application crashed, the durable locators were
     # already persisted, so Retry Publish survives.
     assert store.get(4057) is not None
+    # Terminal finalization ran on the raising-apply path — exactly once, with the
+    # effective FAILED status — instead of being skipped (#6777).
+    completion_handler.finalize_terminal_outcome.assert_called_once()
+    finalize_args = completion_handler.finalize_terminal_outcome.call_args.args
+    assert finalize_args[1] == SessionStatus.FAILED
+    # The mandated-reset operator surface is NOT invoked here: no reset action was
+    # applied, so the raising path publishes the terminal once with no extra write.
+    assert action_applier.apply_all.call_count == 1
 
 
 # ---------------------------------------------------------------------------
