@@ -81,7 +81,7 @@ from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
-from .bootstrap_triage import create_board_snapshot_builder, create_triage_authority_store
+from .bootstrap_triage import create_board_snapshot_builder, create_needs_human_clear_store, create_triage_authority_store
 from ..infra.repo_identity import state_dir
 from ..infra.secret_env import (
     configure_extra_forbidden_env_vars,
@@ -906,7 +906,6 @@ def build_orchestrator(
     # Build infrastructure services bundle
     from ..control.infra_services import InfraServices
     from ..execution.label_store import LabelStore
-
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
     # Wire post-construction collaborators into action_applier: label_store for
@@ -928,6 +927,7 @@ def build_orchestrator(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         triage_authority=triage_authority,
+        needs_human_clear_store=create_needs_human_clear_store(config),
         pair_registry=pair_registry,
         turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
@@ -1251,7 +1251,6 @@ def build_orchestrator_for_testing(
     # Build infrastructure services bundle
     from ..control.infra_services import InfraServices
     from ..execution.label_store import LabelStore
-
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
     # Wire post-construction collaborators into action_applier (same as the
@@ -1272,6 +1271,7 @@ def build_orchestrator_for_testing(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         triage_authority=triage_authority_for_testing,
+        needs_human_clear_store=create_needs_human_clear_store(config),
         pair_registry=pair_registry_for_testing,
         turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,

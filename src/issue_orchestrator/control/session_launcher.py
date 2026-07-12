@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .action_applier import ActionApplier
     from ..ports.claim_manager import ClaimManager
+    from ..ports.needs_human_clear_store import NeedsHumanClearStore
     from ..ports.triage_authority import TriageAuthorityStore
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -204,6 +205,8 @@ class SessionLauncher:
         # authoritative required input, so the launcher must always be able to
         # produce one. Tests inject a null-object/fake provider, never None.
         board_snapshot_provider: "BoardSnapshotProvider",
+        # Required (keyword-only): durable provenance of stale needs-human clears this launcher owns (#6771 r7); tests inject an in-memory store.
+        needs_human_clear_store: "NeedsHumanClearStore",
     ):
         self.config = config
         self.events = events
@@ -217,6 +220,7 @@ class SessionLauncher:
         self._manifest_downloader = manifest_downloader
         self._triage_authority = triage_authority
         self._board_snapshot_provider = board_snapshot_provider
+        self.needs_human_clear_store = needs_human_clear_store  # public: read by the needs-human reconcile owner
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -302,10 +306,7 @@ class SessionLauncher:
         context: str,
         event_data: dict[str, object],
     ) -> NeedsHumanEscalationResult:
-        """Durable needs-human escalation (single owner). ``committed`` (label
-        AND comment landed) alone fires the event and lets a caller drop the
-        record; ``label_applied`` lets a caller clear the stale source-of-truth
-        label if the work later launches instead of escalating (#6771 r4/r5)."""
+        """Durable needs-human escalation (single owner). ``committed`` (label AND comment landed) alone fires the event and lets a caller drop the record; ``label_applied`` lets a caller clear the stale source-of-truth label if the work later launches instead of escalating (#6771 r4/r5)."""
         label = AddLabelAction(issue_number=issue_number, label=self._lm.needs_human, reason=reason)
         note = AddCommentAction(number=issue_number, comment=comment, reason=reason)
         label_ok = self._apply_actions([label], context=context)
@@ -316,10 +317,8 @@ class SessionLauncher:
 
     def clear_needs_human_label(self, issue_number: int) -> bool:
         """Drop a stale needs-human label an incomplete escalation left; returns whether the single RemoveLabelAction committed so a failed removal is retained for durable reconciliation, not treated as success (#6771 r5/r6)."""
-        return self._apply_actions([RemoveLabelAction(
-            issue_number=issue_number, label=self._lm.needs_human,
-            reason="triage launched; incomplete escalation superseded",
-        )], context="triage_clear_stale_needs_human")
+        action = RemoveLabelAction(issue_number=issue_number, label=self._lm.needs_human, reason="triage launched; incomplete escalation superseded")
+        return self._apply_actions([action], context="triage_clear_stale_needs_human")
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
         retry_cfg = self.config.retry.interrupted_sessions

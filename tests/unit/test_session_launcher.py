@@ -60,8 +60,9 @@ from issue_orchestrator.control.session_routing import (
 )
 from issue_orchestrator.control.triage_needs_human_reconcile import (
     reconcile_pending_needs_human_label_clears,
-    reconstruct_pending_needs_human_label_clears,
 )
+from issue_orchestrator.control.startup_manager import StartupManager
+from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.workflows.triage_workflow import TriageWorkflow
 from issue_orchestrator.control.actions import (
     ActionResult,
@@ -112,6 +113,12 @@ from issue_orchestrator.ports import (
     NullManifestDownloader,
 )
 from issue_orchestrator.ports.board_snapshot_provider import BoardSnapshotProvider
+from issue_orchestrator.ports.needs_human_clear_store import (
+    InMemoryNeedsHumanClearStore,
+)
+from issue_orchestrator.execution.json_needs_human_clear_store import (
+    JsonNeedsHumanClearStore,
+)
 from issue_orchestrator.control.board_snapshot_builder import (
     BoardSnapshotBuilder,
     StateBoardSnapshotProvider,
@@ -456,6 +463,9 @@ class LauncherTestBundle:
     board_snapshot_provider: BoardSnapshotProvider = field(
         default_factory=RecordingBoardSnapshotProvider
     )
+    needs_human_clear_store: object = field(
+        default_factory=InMemoryNeedsHumanClearStore
+    )
 
 
 def _build_launcher_bundle(
@@ -467,15 +477,20 @@ def _build_launcher_bundle(
     mock_command_runner,
     *,
     board_snapshot_provider: BoardSnapshotProvider | None = None,
+    needs_human_clear_store: object | None = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
     ``board_snapshot_provider`` is constructor-injected (it is a REQUIRED
     launcher dependency); defaults to a fresh RecordingBoardSnapshotProvider
-    exposed on the bundle for assertions.
+    exposed on the bundle for assertions. ``needs_human_clear_store`` is
+    likewise REQUIRED; defaults to a fresh in-memory store (tests that exercise
+    restart durability inject a JSON-backed store at a shared path).
     """
     if board_snapshot_provider is None:
         board_snapshot_provider = RecordingBoardSnapshotProvider()
+    if needs_human_clear_store is None:
+        needs_human_clear_store = InMemoryNeedsHumanClearStore()
     session_exists_calls = []
     create_session_calls = []
     session_exists_override = [None]  # List so tests can replace the callable
@@ -536,6 +551,7 @@ def _build_launcher_bundle(
         get_review_machine=get_review_machine,
         remove_session_machine=remove_session_machine,
         board_snapshot_provider=board_snapshot_provider,
+        needs_human_clear_store=needs_human_clear_store,
     )
 
     bundle = LauncherTestBundle(
@@ -549,6 +565,7 @@ def _build_launcher_bundle(
         create_session_override=create_session_override,
         action_applier=mock_action_applier,
         board_snapshot_provider=board_snapshot_provider,
+        needs_human_clear_store=needs_human_clear_store,
     )
     return bundle
 
@@ -943,6 +960,7 @@ class TestLaunchIssueSession:
             refresh_issue_fn=refresh_issue,
             dependency_evaluator=_Evaluator(),
             board_snapshot_provider=NullBoardSnapshotProvider(),
+            needs_human_clear_store=InMemoryNeedsHumanClearStore(),
         )
 
         result = launcher.launch_issue_session(sample_issue, active_sessions=[])
@@ -3756,6 +3774,10 @@ class TestLaunchTriageIssueSessionFlavors:
             and a.label == "needs-human"
         ]
         assert removed, "the successful launch must clear the stale needs-human label"
+        assert launcher_bundle.needs_human_clear_store.pending_issue_numbers() == [], (
+            "write-ahead records the owed clear then discards it on a successful "
+            "removal — the end state carries no durable record"
+        )
 
     def test_failed_stale_needs_human_clear_survives_as_pending_reconciliation(
         self, launcher_bundle, mock_events, tmp_path
@@ -3767,9 +3789,9 @@ class TestLaunchTriageIssueSessionFlavors:
         stale-label ``RemoveLabelAction`` itself fails. The launch must still
         commit (the session is running and must NOT be relaunched), yet the
         needs-human label still sits on GitHub, so the reconciliation record
-        must survive in ``pending_needs_human_label_clears``. A later per-tick
+        must survive in the durable ``NeedsHumanClearStore``. A later per-tick
         reconciler retries the removal ONLY — never a session launch — and once
-        it commits the issue drops out of the durable list.
+        it commits the issue drops out of the durable store.
         """
         config = launcher_bundle.launcher.config
         self._enable_triage_agent(config, tmp_path)
@@ -3819,8 +3841,8 @@ class TestLaunchTriageIssueSessionFlavors:
         # relaunched — but the failed removal survives as a durable record.
         assert session is not None, "prep recovered, so the investigation must launch"
         assert state.pending_triage_reviews == []
-        assert state.pending_needs_human_label_clears == [903], (
-            "a failed stale-label removal must survive as a reconciliation record"
+        assert launcher_bundle.needs_human_clear_store.pending_issue_numbers() == [903], (
+            "a failed stale-label removal must survive as a durable reconciliation record"
         )
         launches_before_reconcile = sum(
             1 for e in mock_events.events if str(e.name) == "session.started"
@@ -3837,10 +3859,10 @@ class TestLaunchTriageIssueSessionFlavors:
 
         # A later tick: GitHub recovers; the reconciler retries the removal only.
         remove_label_fails["active"] = False
-        reconcile_pending_needs_human_label_clears(state, launcher_bundle.launcher)
+        reconcile_pending_needs_human_label_clears(launcher_bundle.launcher)
 
-        assert state.pending_needs_human_label_clears == [], (
-            "a committed removal must drop the issue from the reconciliation list"
+        assert launcher_bundle.needs_human_clear_store.pending_issue_numbers() == [], (
+            "a committed removal must drop the issue from the durable reconciliation store"
         )
         removals_after_reconcile = sum(
             1
@@ -3885,81 +3907,125 @@ class TestLaunchTriageIssueSessionFlavors:
             ),
         )
 
-    def test_restart_reconstructs_stale_needs_human_clear_and_preserves_legitimate(
-        self, launcher_bundle, mock_events, tmp_path
+    @pytest.mark.asyncio
+    async def test_restart_reconciles_durably_owned_clear_and_preserves_legitimate_needs_human(
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        tmp_path,
+        monkeypatch,
     ):
-        """#6771 round 7: the memory-only clear list is rebuilt from durable facts.
+        """#6771 round 7 (provenance-based): the owner reconstructs its OWN record.
 
-        A failed stale-label clear leaves needs-human on GitHub while the
-        recovered investigation runs, and ``pending_needs_human_label_clears`` is
-        memory-only — so a process exit before the reconcile tick commits loses
-        the record. Startup recovery must reseed it from durable facts: an
-        active/restored investigation session whose issue still carries the
-        needs-human label. The per-tick reconciler then retries the
-        ``RemoveLabelAction`` ONLY (never a duplicate launch) and drops the record
-        once it commits. A LEGITIMATE committed needs-human escalation — an issue
-        whose investigation could not launch, so it has NO active/restored
-        session — is never reseeded and its label survives.
+        A prior process initiated a stale needs-human clear for issue 903 whose
+        ``RemoveLabelAction`` failed; that is persisted to the durable
+        ``NeedsHumanClearStore``. The process then exits. On restart the store —
+        NOT a re-derivation from "an active session still carries needs-human" —
+        is the sole source of truth for which clears the orchestrator owns:
+
+        - Issue 903 has a durable owed-clear record AND a running investigation
+          still carrying needs-human: its removal is retried and committed.
+        - Issue 904 is an active/restored session that legitimately transitioned
+          to needs-human (operator intent, or a running session's own stop) with
+          NO owed record: the round-7 inference would have stripped it; the
+          durable mechanism preserves it untouched.
+        - Issue 905 is a running session without needs-human: irrelevant either way.
+
+        The StartupManager recovery path is exercised (not the removed
+        reconstruction helper) to prove startup seeds nothing from active sessions.
         """
-        config = launcher_bundle.launcher.config
-        self._enable_triage_agent(config, tmp_path)
-        lm = LabelManager(config)
+        self._enable_triage_agent(sample_config, tmp_path)
+        lm = LabelManager(sample_config)
         needs_human = lm.needs_human
+        store_path = tmp_path / "state" / "needs_human_label_clears.json"
 
-        # Post-restart process: a FRESH state whose clear list is empty (lost).
+        # Session 1 (pre-crash): the failed clear for 903 is persisted durably.
+        JsonNeedsHumanClearStore(store_path).record(903)
+
+        # Restart: a fresh store instance loads the durable record from disk.
+        restarted_store = JsonNeedsHumanClearStore(store_path)
+        assert restarted_store.pending_issue_numbers() == [903], (
+            "the owed clear must survive the process exit on disk"
+        )
+
+        bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+            needs_human_clear_store=restarted_store,
+        )
+
+        # Post-restart state: fresh, with sessions rehydrated from GitHub labels.
         state = OrchestratorState()
-
-        # Issue 903: the recovered failure investigation is running. Its issue
-        # still carries the stale needs-human marker the failed clear left behind.
-        # A failure investigation runs on the FAILED issue, so agent_type stays
-        # the original coding agent (NOT the triage agent) — the discriminator
-        # must be "a session is running", not "a triage-agent session is running".
+        # 903: the recovered investigation; still carries the stale marker (owed).
         state.active_sessions.append(
             self._restored_session(903, [needs_human, "agent:developer"], tmp_path)
         )
-        # Issue 905: an unrelated running session with no needs-human marker; it
-        # must not be seeded (proves the needs-human predicate, not mere presence).
+        # 904: an active session that legitimately holds needs-human, NOT owed.
+        state.active_sessions.append(
+            self._restored_session(904, [needs_human, "agent:developer"], tmp_path)
+        )
+        # 905: an active session without needs-human.
         state.active_sessions.append(
             self._restored_session(905, ["agent:developer"], tmp_path)
         )
-        # Issue 904: a LEGITIMATE committed needs-human escalation. Its
-        # investigation exhausted retries and could NOT launch, so it has no
-        # active/restored session — only its GitHub label. It must be preserved.
 
-        seeded = reconstruct_pending_needs_human_label_clears(state, lm)
-
-        assert seeded == [903], "only the running investigation's stale marker is reseeded"
-        assert state.pending_needs_human_label_clears == [903]
-        assert 905 not in state.pending_needs_human_label_clears, (
-            "a running session without needs-human must not be reseeded"
+        # Drive the real StartupManager recovery path. There are no triage anchors
+        # to recover, so the only thing under test is whether recovery seeds the
+        # clear store from active sessions — it must not (the inference is gone).
+        monkeypatch.setattr(
+            "issue_orchestrator.control.startup_manager.discover_open_triage_anchor_issues",
+            lambda repository_host, config: [],
         )
-        assert 904 not in state.pending_needs_human_label_clears, (
-            "a committed needs-human with no active investigation must not be reseeded"
+        startup = StartupManager(
+            config=sample_config,
+            events=mock_events,
+            runner=MagicMock(),
+            repository_host=mock_repo_host,
+            action_applier=MagicMock(),
+            issue_branches_fn=lambda: {},
+            session_exists_fn=lambda name: True,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            label_manager=lm,
+        )
+        await startup._recover_pending_triage(state)  # noqa: SLF001
+
+        assert restarted_store.pending_issue_numbers() == [903], (
+            "startup must seed nothing from active sessions; 904/905 are not owed "
+            "clears merely because a session is active and needs-human is present"
         )
 
-        # Per-tick reconciler: GitHub is healthy → retry the removal only.
-        launcher_bundle.action_applier.apply = MagicMock(
+        # Per-tick reconciler: GitHub healthy → retry the OWNED removal only.
+        bundle.action_applier.apply = MagicMock(
             side_effect=lambda action: ActionResult.ok(action)
         )
         launches_before = sum(
             1 for e in mock_events.events if str(e.name) == "session.started"
         )
 
-        reconcile_pending_needs_human_label_clears(state, launcher_bundle.launcher)
+        reconcile_pending_needs_human_label_clears(bundle.launcher)
 
-        assert state.pending_needs_human_label_clears == [], (
-            "a committed removal drops the record from the reconciliation list"
+        assert restarted_store.pending_issue_numbers() == [], (
+            "a committed removal drops the record from the durable store"
         )
         removals = [
             a
-            for a in (
-                c.args[0] for c in launcher_bundle.action_applier.apply.call_args_list
-            )
+            for a in (c.args[0] for c in bundle.action_applier.apply.call_args_list)
             if isinstance(a, RemoveLabelAction) and a.label == needs_human
         ]
         assert [a.issue_number for a in removals] == [903], (
-            "the reconciler retries removal for the stale marker only; the "
-            "legitimate 904 label is never touched"
+            "only the durably-owned 903 clear is retried; the legitimate active "
+            "session 904's needs-human label is never touched"
         )
         assert (
             sum(1 for e in mock_events.events if str(e.name) == "session.started")
@@ -5822,6 +5888,7 @@ class TestStackRelaunchGate:
             refresh_issue_fn=refresh_issue,
             dependency_evaluator=self._CannedWorkEvaluator(report_fn),
             board_snapshot_provider=NullBoardSnapshotProvider(),
+            needs_human_clear_store=InMemoryNeedsHumanClearStore(),
         )
 
     @pytest.fixture

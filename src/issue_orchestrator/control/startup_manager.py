@@ -59,7 +59,6 @@ from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
 from .review_validity import evaluate_review_validity
 from .review_scope import ReviewScopeChecker, extract_issue_number_from_pr
 from .retrospective_review import discover_retrospective_review_issues
-from .triage_needs_human_reconcile import reconstruct_pending_needs_human_label_clears
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
@@ -712,7 +711,6 @@ class StartupManager:
 
         if state.pending_triage_reviews:
             print(f"  Found {len(state.pending_triage_reviews)} triage review(s) to process")
-        reconstruct_pending_needs_human_label_clears(state, self._lm)  # #6771 r7: rebuild stale needs-human clears lost across restart
 
     def _recover_pending_retrospective_reviews(self, state: OrchestratorState) -> None:
         """Recover trigger-labeled existing-work review requests on startup."""

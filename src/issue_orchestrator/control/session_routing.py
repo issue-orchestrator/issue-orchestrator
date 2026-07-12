@@ -401,7 +401,7 @@ def orchestrator_launch_triage_session(
         triage_flavor=triage.flavor,
     )
     if result.success and result.session:
-        clear_stale_needs_human_on_launch(triage, state, session_launcher)
+        clear_stale_needs_human_on_launch(triage, session_launcher)
         pending_queues.remove_triage(triage.issue_number)
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
@@ -416,7 +416,7 @@ def orchestrator_launch_triage_session(
             session_restorer=session_restorer,
         )
         if restored:
-            clear_stale_needs_human_on_launch(triage, state, session_launcher)
+            clear_stale_needs_human_on_launch(triage, session_launcher)
             pending_queues.remove_triage(triage.issue_number)
             return restored
     elif result.retry_queued:

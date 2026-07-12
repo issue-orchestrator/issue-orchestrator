@@ -974,6 +974,10 @@ def build_test_orchestrator_deps(
     # for tests that consume deps directly instead of relying on runtime wiring.
     _action_applier.lease_id_lookup = lambda _issue_number: None
 
+    from issue_orchestrator.ports.needs_human_clear_store import (
+        InMemoryNeedsHumanClearStore,
+    )
+
     infra_services = InfraServices(
         label_manager=label_manager,
         label_store=label_store,
@@ -985,6 +989,7 @@ def build_test_orchestrator_deps(
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
         triage_authority=triage_authority,
+        needs_human_clear_store=InMemoryNeedsHumanClearStore(),
     )
 
     from issue_orchestrator.execution.json_publish_retry_locator_store import (
