@@ -74,6 +74,7 @@ from .awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_SOURCE,
 )
 from .health_review_trigger import plan_health_review_issue_creation
+from .triage_proposals import plan_approved_triage_op_executions
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
@@ -240,6 +241,17 @@ class Planner:
         health_review_action = self._plan_health_review_creation(snapshot)
         if health_review_action:
             actions.append(health_review_action)
+
+        # 1f3. Execute APPROVED gated triage proposals (#6778): the operator
+        # removed the proposed-triage label, so the fact scan classified the
+        # stored op as approved. Policy lives in triage_proposals; the
+        # appliers re-validate preconditions and finalize the proposal issue.
+        if snapshot.triage_facts and snapshot.triage_facts.approved_triage_ops:
+            actions.extend(
+                plan_approved_triage_op_executions(
+                    snapshot.triage_facts.approved_triage_ops
+                )
+            )
 
         # 1g. Process cleanups for reviewed PRs
         cleanup_actions = self._plan_cleanups(snapshot)

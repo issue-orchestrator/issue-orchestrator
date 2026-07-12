@@ -34,6 +34,7 @@ from ..ports.issue import Issue
 if TYPE_CHECKING:
     from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
+    from ..ports.triage_authority import TriageAuthorityStore
     from .label_manager import LabelManager
     from .label_store_reconciler import FreshLabelSnapshot
 from ..domain.models import (
@@ -48,11 +49,9 @@ from ..domain.models import (
 from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
 from .health_review_trigger import (
-    discover_open_triage_anchor_issues,
     hydrate_last_health_review_at,
-    queue_recovered_triage_anchor,
+    recover_pending_triage_anchors,
 )
-from .session_routing import TriageQueueOutcome
 from .action_applier import ActionApplier
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
@@ -96,6 +95,7 @@ class StartupManager:
         queue_cache_store: "QueueCacheStore | None" = None,
         label_manager: "LabelManager | None" = None,
         label_store: "LabelStore | None" = None,
+        triage_authority: "TriageAuthorityStore | None" = None,
     ):
         """Initialize the startup manager.
 
@@ -134,6 +134,8 @@ class StartupManager:
             label_manager = LabelManager(config)
         self._lm = label_manager
         self._label_store = label_store
+        # Gated-proposal ledger (#6778); None (tests) = no op-backed exclusions.
+        self._triage_authority = triage_authority
         self._review_scope = ReviewScopeChecker(
             config,
             repository_host,
@@ -688,29 +690,24 @@ class StartupManager:
                 print(f"  PR #{pr_number}: Review already in progress")
 
     async def _recover_pending_triage(self, state: OrchestratorState) -> None:
-        """Recover pending triage review issues after crash/restart."""
+        """Recover pending triage review issues after crash/restart.
+
+        Anchor requeue and gated-proposal exclusion (#6778) live with the
+        trigger owner (``health_review_trigger``).
+        """
         state.startup_message = "Checking for pending triage review issues..."
         print("\nChecking for pending triage review issues...")
-
-        assert self.config.triage_review_agent is not None  # caller gates on triage_review_agent
-        # Shared scoped/exhaustive anchor discovery (#6763 finding 7).
-        triage_issues = discover_open_triage_anchor_issues(self.repository_host, self.config)
-
-        for triage_issue in triage_issues:
-            if self._session_exists(f"issue-{triage_issue.number}"):
-                print(f"  triage issue #{triage_issue.number}: Already running")
-                continue
-
-            # The ADR-0031 §4 marker label declares the anchor's variant;
-            # the owner routes it (#6768 B5: queued flavor reaches launch verbatim).
-            outcome = queue_recovered_triage_anchor(state, triage_issue)
-            if outcome is TriageQueueOutcome.DUPLICATE:
-                print(f"  triage issue #{triage_issue.number}: Already queued")
-                continue
-            print(f"  triage issue #{triage_issue.number}: Queued ({triage_issue.title})")
-
-        if state.pending_triage_reviews:
-            print(f"  Found {len(state.pending_triage_reviews)} triage review(s) to process")
+        # The shared scoped/exhaustive anchor-discovery owner (#6763 finding 7)
+        # and the gated-proposal reconciliation (#6778/#6779) both run inside
+        # the trigger owner, so recovery applies the same eligibility rule as
+        # fact gathering and never requeues a proposal issue as an anchor.
+        recover_pending_triage_anchors(
+            state,
+            repository_host=self.repository_host,
+            config=self.config,
+            session_exists=self._session_exists,
+            triage_authority=self._triage_authority,
+        )
 
     def _recover_pending_retrospective_reviews(self, state: OrchestratorState) -> None:
         """Recover trigger-labeled existing-work review requests on startup."""

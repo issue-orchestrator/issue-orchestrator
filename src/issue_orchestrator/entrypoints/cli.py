@@ -680,11 +680,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         console.print("[red]Error: Unable to create GitHub client[/red]")
         return 1
 
-    # Collect all labels to create
-    from ..control.label_manager import LabelManager
+    # Collect all labels to create (base workflow + agents + triage, incl. the
+    # #6779 R3 proposal gate) via the single owner so the CLI and Control
+    # Center provision the same set.
+    from .setup_wizard_common import required_repo_labels
 
-    _lm = LabelManager(config)
-    labels = _lm.repository_initialization_labels(list(config.agents))
+    labels = required_repo_labels(config)
 
     created = 0
     updated = 0

@@ -175,16 +175,24 @@ def test_non_batch_flows_contain_no_batch_only_instructions(
 
 @pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
 def test_act_level_wiring_state_is_synchronized(variant: str) -> None:
-    """#6764 first slice: every variant must say reset_retry executes under
-    configured authority while kill_hung_session stays would-have-done."""
+    """#6764/#6778: every variant must document the gated-proposal tier
+    (propose = reviewable issue, approval = removing the gate label), the
+    wired reset_retry execute authority, and the agent's prohibition on the
+    gate label itself."""
     text = PROMPT_VARIANTS[variant]
     assert "`triage.authority.reset_retry: execute`" in text, (
         f"{variant} does not document the wired reset_retry authority"
     )
-    assert "`kill_hung_session` is recorded as would-have-done" in text, (
-        f"{variant} does not document the unwired kill_hung_session state"
+    assert "`proposed-triage`" in text, (
+        f"{variant} does not document the gated-proposal label"
     )
-    # The pre-#6764 blanket claim must be gone from every variant.
-    assert "Act-level proposals (`reset_retry`" not in text, (
-        f"{variant} still claims reset_retry is unwired"
+    assert "removing that label" in text, (
+        f"{variant} does not document label removal as the approval gesture"
+    )
+    assert "Never propose or\n  touch the `proposed-triage` label" in text, (
+        f"{variant} does not forbid the agent from touching the gate label"
+    )
+    # The pre-#6778 shadow-only claim must be gone from every variant.
+    assert "recorded as would-have-done until its" not in text, (
+        f"{variant} still claims kill_hung_session is shadow-only"
     )

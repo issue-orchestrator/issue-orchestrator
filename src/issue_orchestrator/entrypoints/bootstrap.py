@@ -81,8 +81,11 @@ from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
-from .bootstrap_triage import create_board_snapshot_builder, create_triage_authority_store
-from .triage_reset_retry_wiring import build_triage_reset_retry_executor
+from .bootstrap_triage import (
+    create_board_snapshot_builder,
+    create_triage_authority_store,
+    wire_triage_act_executors,
+)
 from ..infra.repo_identity import state_dir
 from ..infra.secret_env import (
     configure_extra_forbidden_env_vars,
@@ -789,11 +792,13 @@ def build_orchestrator(
         reconcile=True,
     ) if github else None
 
-    # Create fact gatherer (read-only snapshot creation)
+    triage_authority = create_triage_authority_store(config)
+
+    # Create fact gatherer (read-only snapshot creation; the authority store
+    # lets its anchor scan classify approved gated proposals, #6778)
     fact_gatherer = FactGatherer(
-        config=config,
-        repository_host=github,
-        events=events,
+        config=config, repository_host=github,
+        events=events, triage_authority=triage_authority,
     ) if github else None
 
     # Create PR scanner and session restorer
@@ -837,8 +842,6 @@ def build_orchestrator(
     # (which the Control API reads to deliver verdicts).
     from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
     turn_mailbox = InMemoryTurnMailbox()
-
-    triage_authority = create_triage_authority_store(config)
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
@@ -965,9 +968,8 @@ def build_orchestrator(
     )
 
     orchestrator = Orchestrator(config=config, deps=deps)
-    # Post-construction (#6764): the executor's runner closes over live
-    # orchestrator state, so it can only be wired once the orchestrator exists.
-    action_applier.triage_reset_retry = build_triage_reset_retry_executor(orchestrator)
+    # Act-level executor wiring closes over live orchestrator state (#6764/#6778).
+    wire_triage_act_executors(orchestrator)
     return orchestrator
 
 
@@ -1109,12 +1111,14 @@ def build_orchestrator_for_testing(
             reconcile=False,  # Disable for testing by default
         )
 
+    triage_authority_for_testing = create_triage_authority_store(config)
+
     # Create default fact gatherer
     if fact_gatherer is None:
         fact_gatherer = FactGatherer(
             config=config,
             repository_host=github,
-            events=events,
+            events=events, triage_authority=triage_authority_for_testing,
         )
 
     # Create HealthGate for testing
@@ -1157,11 +1161,10 @@ def build_orchestrator_for_testing(
     pair_registry_for_testing = _build_pair_registry_with_worktree_hook()
     from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
     turn_mailbox = InMemoryTurnMailbox()
-    from ..infra.triage_authority_store import SqliteTriageAuthorityStore
-    triage_authority_for_testing = SqliteTriageAuthorityStore.for_repo(config.repo_root)
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor
+        action_applier.triage_ops = triage_authority_for_testing
 
     def _cancel_review_exchange_for_testing(
         issue_number: int,

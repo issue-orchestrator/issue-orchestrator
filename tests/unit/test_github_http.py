@@ -504,6 +504,41 @@ def test_list_issues_filters_pull_requests() -> None:
     assert issues[0]["number"] == 1
 
 
+def test_list_issues_paginates_when_limit_exceeds_one_page() -> None:
+    """R4: a limit above one page walks every page so a backlog of proposals
+    can never hide an older op/anchor behind the 100-item cap."""
+    page1 = [{"number": n, "title": f"I{n}"} for n in range(1, 101)]  # full page
+    page2 = [{"number": n, "title": f"I{n}"} for n in range(101, 131)]  # short page
+
+    requested_pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        requested_pages.append(page)
+        return httpx.Response(200, json=page1 if page == 1 else page2)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    issues = client.list_issues(labels=["triage-agent"], limit=2000)
+
+    assert [i["number"] for i in issues] == list(range(1, 131))
+    assert requested_pages == [1, 2]  # short page 2 stops the walk
+
+
+def test_list_issues_single_page_when_limit_within_one_page() -> None:
+    """The common case (limit<=100) keeps the single cached page — no walk."""
+    requested_pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_pages.append(int(request.url.params.get("page", "1")))
+        return httpx.Response(200, json=[{"number": n, "title": "x"} for n in range(1, 101)])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    issues = client.list_issues(limit=100)
+
+    assert len(issues) == 100
+    assert requested_pages == [1]  # never asked for page 2
+
+
 def test_list_issues_since_returns_oldest_watermark_hint() -> None:
     payload = [
         {"number": 10, "title": "Newest", "updated_at": "2026-01-02T10:00:00Z"},

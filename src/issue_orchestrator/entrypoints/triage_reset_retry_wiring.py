@@ -1,6 +1,6 @@
-"""Composition wiring for the triage ``reset_retry`` executor (#6764).
+"""Composition wiring for the triage act-level executors (#6764, #6778).
 
-Production boundary: the executor's ``run_reset`` reuses
+Production boundary: the reset executor's ``run_reset`` reuses
 ``reset_and_retry_issue`` — the exact per-issue pipeline behind the
 dashboard's ``/api/reset-retry`` endpoint — with ``from_scratch=True``
 (ADR-0031's action vocabulary defines ``reset_retry`` as reset-and-retry
@@ -8,9 +8,15 @@ FROM SCRATCH). Nothing about the reset boundary (runtime termination, PR
 superseding, branch deletion, label/history/timeline clearing,
 pending-label relaunch marking, queue re-insertion) is reimplemented here.
 
+The kill executor's ``run_kill`` (#6778) reuses
+``Orchestrator.terminate_issue_runtime_for_issue`` — the SAME
+``terminate_issue_runtime`` boundary the reset owner applies (sessions, the
+persistent exchange pair, supervised jobs, publish retries), WITHOUT the
+reset that follows it.
+
 Lives outside ``bootstrap`` so the composition root stays wiring-only; the
-closures read live orchestrator state at EXECUTION time, which is why this
-executor can only be wired after the orchestrator is constructed.
+closures read live orchestrator state at EXECUTION time, which is why these
+executors can only be wired after the orchestrator is constructed.
 """
 
 from __future__ import annotations
@@ -18,6 +24,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Sequence
 
 from ..control.queue_cache import QueueCache
+from ..control.triage_kill_session import (
+    KillSessionRunOutcome,
+    TriageKillSessionExecutor,
+)
 from ..control.triage_reset_retry import (
     ResetRetryRunOutcome,
     TriageResetRetryExecutor,
@@ -30,6 +40,51 @@ if TYPE_CHECKING:
 # Event provenance for ISSUE_UNBLOCKED emitted by an agent-authorized reset,
 # distinguishing it from the operator-clicked "web.reset-retry" source.
 TRIAGE_RESET_RETRY_EVENT_SOURCE = "triage.reset_retry"
+
+
+def _active_session_run_id_fn(orchestrator: "Orchestrator"):
+    """Run id of an issue's live session, or None (#6779 R1).
+
+    The kill owner binds approval to this exact generation; a replacement
+    session for the same issue reports a different run id, so the executor
+    can tell the diagnosed session from its successor.
+    """
+    from ..control.active_sessions import active_session_run_id
+
+    def _active_session_run_id(issue_number: int) -> str | None:
+        return active_session_run_id(orchestrator.state.active_sessions, issue_number)
+
+    return _active_session_run_id
+
+
+def build_triage_kill_session_executor(
+    orchestrator: "Orchestrator",
+) -> TriageKillSessionExecutor:
+    """Build the production kill_hung_session executor (#6778)."""
+
+    def _run_kill(issue_number: int, reason: str) -> KillSessionRunOutcome:
+        try:
+            termination = orchestrator.terminate_issue_runtime_for_issue(
+                issue_number, reason=reason
+            )
+        except Exception as e:  # loud failure -> ActionResult.fail upstream
+            return KillSessionRunOutcome(success=False, error=str(e))
+        return KillSessionRunOutcome(
+            success=True,
+            details={
+                "stopped_session_ids": list(termination.stopped_session_ids),
+                "cleared_active_session_ids": list(
+                    termination.cleared_active_session_ids
+                ),
+                "cancelled_job_ids": list(termination.cancelled_job_ids),
+            },
+        )
+
+    return TriageKillSessionExecutor(
+        events=orchestrator.deps.events,
+        active_session_run_id=_active_session_run_id_fn(orchestrator),
+        run_kill=_run_kill,
+    )
 
 
 def build_triage_reset_retry_executor(

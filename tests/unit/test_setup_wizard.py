@@ -636,6 +636,57 @@ class TestSetupWizardSharedHelpers:
         assert "needs-code-review" in label_names
         assert "code-reviewed" in label_names
         assert "triage-reviewed" in label_names
+        # R3: a triage-enabled config provisions the act-level proposal gate
+        # (raw, never prefixed) and the health-review marker.
+        assert "proposed-triage" in label_names
+        assert "triage:health-review" in label_names
+
+    def test_plan_setup_labels_omits_gate_without_triage(self):
+        """No triage agent -> no gate label to provision."""
+        labels = plan_setup_labels({
+            "agents": {"agent:backend": {}},
+            "review": {"default": "agent:reviewer"},
+        })
+        assert "proposed-triage" not in {name for name, _, _ in labels}
+
+    def test_required_repo_labels_includes_triage_gate(self):
+        """The CLI `init` label set (single owner) provisions the R3 gate."""
+        from unittest.mock import Mock
+
+        from issue_orchestrator.entrypoints.setup_wizard_common import (
+            required_repo_labels,
+        )
+        from issue_orchestrator.infra.config import Config
+
+        config = Config()
+        config.agents = {"agent:backend": Mock()}
+        config.triage_review_agent = "agent:triage"
+        config.triage_reviewed_label = "triage-reviewed"
+
+        labels = required_repo_labels(config)
+
+        assert "proposed-triage" in labels
+        assert "agent:triage" in labels
+        assert "triage:health-review" in labels
+        assert "agent:backend" in labels
+        # De-duped: no label appears twice.
+        assert len(labels) == len(set(labels))
+
+    def test_required_repo_labels_omits_triage_when_unconfigured(self):
+        from unittest.mock import Mock
+
+        from issue_orchestrator.entrypoints.setup_wizard_common import (
+            required_repo_labels,
+        )
+        from issue_orchestrator.infra.config import Config
+
+        config = Config()
+        config.agents = {"agent:backend": Mock()}
+
+        labels = required_repo_labels(config)
+
+        assert "proposed-triage" not in labels
+        assert "agent:backend" in labels
 
     def test_plan_setup_labels_can_preserve_control_api_behavior(self):
         """Control Center setup should keep its legacy label surface."""

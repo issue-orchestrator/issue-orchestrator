@@ -28,7 +28,7 @@ Usage:
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Literal, Optional, Sequence, TypeVar
 
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -50,7 +50,9 @@ if TYPE_CHECKING:
     from ..ports.persistent_exchange_pair_registry import (
         PersistentExchangePairRegistry,
     )
+    from ..ports.triage_authority import TriageAuthorityStore
     from .session_history import SessionHistoryOwner
+    from .triage_kill_session import TriageKillSessionExecutor
     from .triage_reset_retry import TriageResetRetryExecutor
 from .reconciliation import (
     ExternalSnapshot,
@@ -81,6 +83,7 @@ from .actions import (
     CloseIssueAction,
     SetIssueStateAction,
     CreateTriageIssueAction,
+    KillHungSessionAction,
     SurfaceTriageProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
@@ -89,7 +92,7 @@ from .actions import (
     ResetRetryIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
-from .triage_issue_policy import resolve_triage_milestone_number
+from .triage_proposals import apply_create_triage_issue, finalize_triage_op_execution
 from .triage_reset_retry import apply_surface_triage_proposal
 
 logger = logging.getLogger(__name__)
@@ -103,6 +106,8 @@ ValidationRetryLauncherCallback = Callable[[int], Optional[Session]]
 # Type alias for lease_id lookup callback
 # Takes issue_number and returns lease_id if active session exists
 LeaseIdLookup = Callable[[int], str | None]
+# Act-level triage op actions share one dispatch shape (#6764/#6778).
+_TriageOpAction = TypeVar("_TriageOpAction", ResetRetryIssueAction, KillHungSessionAction)
 LabelMutationStatField = Literal[
     "label_add_attempted",
     "label_add_applied",
@@ -205,11 +210,13 @@ class ActionApplier:
     on_worktree_removed: Optional[Callable[[str], int]] = None
     # Owner for controlled in-memory history mutations.
     history_owner: Optional["SessionHistoryOwner"] = None
-    # Execution-time owner for triage reset_retry proposals (#6764). Wired
-    # post-construction by the composition root (its production runner
-    # closes over live orchestrator state); unwired means execute-authority
-    # reset proposals fail loudly instead of silently no-oping.
+    # Execution-time owners for act-level triage ops (#6764/#6778), plus the
+    # orchestrator-owned gated-proposal op store. Wired post-construction by
+    # the composition root (production runners close over live orchestrator
+    # state); unwired means the actions fail loudly instead of no-oping.
     triage_reset_retry: Optional["TriageResetRetryExecutor"] = None
+    triage_kill_session: Optional["TriageKillSessionExecutor"] = None
+    triage_ops: Optional["TriageAuthorityStore"] = None
     _active_label_mutation_stats: _LabelMutationStats | None = field(
         default=None, init=False, repr=False
     )
@@ -283,12 +290,15 @@ class ActionApplier:
             ActionType.QUEUE_TRIAGE: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
-            # Issue creation
+            # Issue creation (plain triage issues AND gated proposals, #6778)
             ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
+            ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE: self._apply_create_triage_issue,
             # Triage decision proposals - event-only, no GitHub calls (ADR-0031)
             ActionType.SURFACE_TRIAGE_PROPOSAL: self._apply_surface_triage_proposal,
             # Act-level triage execution via the reset owner (#6764)
             ActionType.RESET_RETRY_ISSUE: self._apply_reset_retry_issue,
+            # Approved kill_hung_session ops via the termination owner (#6778)
+            ActionType.KILL_HUNG_SESSION: self._apply_kill_hung_session,
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
@@ -1493,54 +1503,21 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         )
 
     def _apply_create_triage_issue(self, action: Action) -> ActionResult:
-        """Create a triage review issue.
-
-        THE milestone resolution boundary (#6769 finding 4): the planned
-        intent's explicit name is resolved to a number here, immediately
-        before the issue is created — one API read per actual creation, and
-        an unresolvable configured name fails this action loudly.
-        """
+        """Create a plain triage issue OR a gated proposal issue (#6778) via
+        the ``triage_proposals`` owner (milestone resolution boundary,
+        op recording, anchor link)."""
         assert isinstance(action, CreateTriageIssueAction)
-
         if not self.repository_host:
             return ActionResult.fail(
                 action, "No repository_host configured for issue creation"
             )
-
-        try:
-            milestone = resolve_triage_milestone_number(
-                action.milestone, self.repository_host.list_milestones
-            )
-            result = self.repository_host.create_issue(
-                title=action.title,
-                body=action.body,
-                labels=list(action.labels),
-                milestone=milestone,
-            )
-
-            issue_number = result.get("number") if result else None
-            if issue_number:
-                logger.info(
-                    "[APPLIER] Created triage issue #%d for %d PRs (milestone=%s)",
-                    issue_number, action.pr_count, milestone,
-                )
-                self._emit_issue_labels_changed(issue_number, list(action.labels), [])
-                self.events.publish(make_trace_event(EventName.TRIAGE_ISSUE_CREATED, {
-                    "issue_number": issue_number, "pr_count": action.pr_count,
-                }))
-                return ActionResult.ok(
-                    action, issue_number=issue_number, pr_count=action.pr_count,
-                )
-
-            logger.warning(
-                "[APPLIER] Triage issue creation returned None (title=%s labels=%s)",
-                action.title, list(action.labels),
-            )
-            return ActionResult.fail(action, "Issue creation returned None")
-
-        except Exception as e:
-            logger.exception("Failed to create triage issue")
-            return ActionResult.fail(action, str(e))
+        return apply_create_triage_issue(
+            action,
+            repository_host=self.repository_host,
+            events=self.events,
+            ops=self.triage_ops,
+            emit_labels_changed=self._emit_issue_labels_changed,
+        )
 
     def _apply_surface_triage_proposal(self, action: Action) -> ActionResult:
         """Surface a triage decision proposal as a trace event (ADR-0031).
@@ -1554,21 +1531,43 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     def _apply_reset_retry_issue(self, action: Action) -> ActionResult:
         """Execute a triage reset_retry proposal via the injected owner (#6764).
 
-        Enforces the reconciliation pause gate first (raises
-        ReconciliationRequired) — a paused issue must never be scratch-reset
-        from an agent proposal. Precondition re-validation, stale downgrade,
-        and the reset itself are owned by TriageResetRetryExecutor.
+        Precondition re-validation, stale downgrade, and the reset itself are
+        owned by TriageResetRetryExecutor; approved gated proposals (#6778)
+        are finalized by the triage_proposals owner.
         """
         assert isinstance(action, ResetRetryIssueAction)
-        self._require_expected(action, action.issue_number)
         executor = self.triage_reset_retry
-        if executor is None:
+        return self._apply_triage_op(action, executor.apply if executor else None, "reset_retry")
+
+    def _apply_kill_hung_session(self, action: Action) -> ActionResult:
+        """Execute an APPROVED kill_hung_session op via the injected owner
+        (#6778) — same pause gate / stale policy / finalization shape as
+        reset_retry."""
+        assert isinstance(action, KillHungSessionAction)
+        executor = self.triage_kill_session
+        return self._apply_triage_op(action, executor.apply if executor else None, "kill_hung_session")
+
+    def _apply_triage_op(
+        self,
+        action: "_TriageOpAction",
+        apply_fn: "Callable[[_TriageOpAction], ActionResult] | None",
+        op_type: str,
+    ) -> ActionResult:
+        # Reconciliation pause gate first (raises ReconciliationRequired) — a
+        # paused issue must never be mutated from an agent proposal.
+        self._require_expected(action, action.issue_number)
+        if apply_fn is None:
             return ActionResult.fail(
                 action,
-                "triage reset_retry execution requested but no"
-                " TriageResetRetryExecutor is wired into this applier",
+                f"triage {op_type} execution requested but no executor is"
+                " wired into this applier",
             )
-        return executor.apply(action)
+        return finalize_triage_op_execution(
+            apply_fn(action),
+            action,
+            repository_host=self.repository_host,
+            ops=self.triage_ops,
+        )
 
     def _apply_cleanup_session(self, action: Action) -> ActionResult:
         """Clean up a completed session."""

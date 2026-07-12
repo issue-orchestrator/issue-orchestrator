@@ -213,14 +213,13 @@ class Orchestrator:
 
     @cached_property
     def _completion_handler(self) -> CompletionHandler:
+        from ..control.active_sessions import active_session_run_id
+        smm = self.deps.state_machine_manager
         return CompletionHandler(
             self.config, self.deps.events, self.deps.repository_host,
-            lambda issue: self.deps.state_machine_manager.issue_machines.get(issue.number),
-            lambda s: self.deps.state_machine_manager.session_machines.get(s),
-            lambda n: self.deps.state_machine_manager.review_machines.get(n),
-            self.deps.session_output, self.deps.triage_authority,
-            remove_session_machine_fn=self.deps.state_machine_manager.remove_session_machine,
-            label_manager=self.deps.label_manager,
+            lambda issue: smm.issue_machines.get(issue.number), lambda s: smm.session_machines.get(s), lambda n: smm.review_machines.get(n),
+            self.deps.session_output, self.deps.triage_authority, lambda n: active_session_run_id(self.state.active_sessions, n),
+            remove_session_machine_fn=smm.remove_session_machine, label_manager=self.deps.label_manager,
         )
 
     @cached_property
@@ -306,6 +305,7 @@ class Orchestrator:
             queue_cache_store=self.deps.queue_cache_store,
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
+            triage_authority=self.deps.services.triage_authority,
         )
 
     async def startup(self) -> None:

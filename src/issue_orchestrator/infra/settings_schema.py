@@ -1110,8 +1110,10 @@ class ReviewSettings(BaseModel):
                 "execute runs the reset+retry-from-scratch owner after "
                 "re-validating the proposal's preconditions at execution time; "
                 "stale proposals downgrade to a surfaced record (#6764). "
-                "propose (default) records would-have-done only. Allowed "
-                "values: execute, propose."
+                "propose (default) files each proposal as a gated GitHub issue "
+                "carrying the proposed-triage label; removing the label is "
+                "per-instance approval and triggers the same re-validated "
+                "execution (#6778). Allowed values: execute, propose."
             ),
             "section": "Triage Review",
             "config_attr": "triage.authority.reset_retry",
@@ -1126,8 +1128,12 @@ class ReviewSettings(BaseModel):
             "enum": list(TRIAGE_AUTHORITY_MODES),
             "doc_examples": ["propose"],
             "doc_notes": (
-                "Act-level authority is not wired yet (#6764): execute is a "
-                "startup configuration error. Allowed values: execute, propose."
+                "propose (default) files each proposal as a gated GitHub issue "
+                "carrying the proposed-triage label; removing the label is "
+                "per-instance approval and executes the stored op after "
+                "re-validating the target session is still active (#6778). "
+                "Direct execute is not wired yet (#6764) and remains a startup "
+                "configuration error. Allowed values: execute, propose."
             ),
             "section": "Triage Review",
             "config_attr": "triage.authority.kill_hung_session",

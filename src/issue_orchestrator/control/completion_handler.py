@@ -136,6 +136,7 @@ class CompletionHandler:
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
         session_output: SessionOutput,
         triage_authority: "TriageAuthorityStore",
+        active_session_run_id: Callable[[int], str | None],
         remove_session_machine_fn: Callable[[str], None] | None = None,
         label_manager: "LabelManager | None" = None,
     ):
@@ -153,10 +154,8 @@ class CompletionHandler:
             label_manager = LabelManager(config)
         self._lm = label_manager
         self._action_planner = CompletionActionPlanner(
-            config,
-            repository_host,
-            label_manager,
-            triage_authority,
+            config, repository_host, label_manager, triage_authority,
+            active_session_run_id,
         )
 
     def mark_session_retry(self, session: Session, reason: str) -> None:

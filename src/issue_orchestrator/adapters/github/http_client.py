@@ -659,7 +659,55 @@ class GitHubHttpClient:
         if not isinstance(payload, list):
             return []
         issues = [item for item in payload if "pull_request" not in item]
+        # Exhaustive discovery (#6779 R4): a single page caps at 100, so a
+        # caller asking for more than that and receiving a FULL first page may
+        # be truncating the matching set. Walk subsequent pages until a short
+        # page or the requested limit is reached. The common case (limit<=100)
+        # keeps the cached single-page path untouched.
+        if limit > 100 and len(payload) >= int(params["per_page"]):
+            issues.extend(
+                self._list_issues_remaining_pages(params=params, limit=limit)
+            )
         return issues[:limit]
+
+    def _list_issues_remaining_pages(
+        self, *, params: dict[str, Any], limit: int
+    ) -> list[dict[str, Any]]:
+        """Fetch issue pages beyond the first until short page / limit (#6779 R4).
+
+        Uncached (mirrors :meth:`list_all_labels`): later pages are read fresh
+        rather than ETag-cached per page. Bounded by a page cap so an
+        unbounded scan fails loud rather than looping.
+        """
+        collected: list[dict[str, Any]] = []
+        page = 2
+        while True:
+            page_params = {**params, "page": page}
+            try:
+                response = self._client.get(
+                    f"/repos/{self._config.repo}/issues",
+                    params=page_params,
+                    headers=self._auth_headers(),
+                )
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                raise GitHubTransportError(
+                    "GitHub transport error for list_issues pagination",
+                    method="GET",
+                    url=f"/repos/{self._config.repo}/issues",
+                    original=exc,
+                ) from exc
+            if response.status_code != 200:
+                break
+            batch = response.json()
+            if not isinstance(batch, list) or not batch:
+                break
+            collected.extend(item for item in batch if "pull_request" not in item)
+            if len(batch) < int(params["per_page"]) or len(collected) >= limit:
+                break
+            page += 1
+            if page > 20:  # Safety limit: 20 * 100 = 2000 issues (list_all_labels parity)
+                break
+        return collected
 
     def list_issues_since(
         self,

@@ -1506,6 +1506,79 @@ class TestPlanTriageIssueCreation:
         assert action.milestone.explicit_name is None
 
 
+class TestPlanApprovedTriageOpExecutions:
+    """Approved gated proposals (#6778): the plan carries the stored op's
+    execution action; still-gated proposals plan nothing."""
+
+    @staticmethod
+    def _op(target: int, op_type: str = "reset_retry"):
+        from issue_orchestrator.domain.triage_session import StoredTriageOp
+
+        return StoredTriageOp(
+            op_type=op_type,
+            target_issue_number=target,
+            rationale="r",
+            source_run_id="run-1",
+            source_session_name="issue-99",
+            source_action_id="A2",
+            created_at="2026-07-11T00:00:00+00:00",
+        )
+
+    def _plan(self, approved_ops):
+        from issue_orchestrator.domain.models import TriageFacts
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=3,
+            triage_reviewed_label="triage-reviewed",
+        )
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        snapshot = make_snapshot(
+            triage_facts=TriageFacts(
+                threshold=3,
+                watch_label="code-reviewed",
+                approved_triage_ops=approved_ops,
+            ),
+        )
+        return planner.plan(snapshot)
+
+    def test_approved_ops_plan_execution_actions(self):
+        from issue_orchestrator.control.actions import (
+            KillHungSessionAction,
+            ResetRetryIssueAction,
+        )
+        from issue_orchestrator.domain.triage_session import ApprovedTriageOp
+
+        plan = self._plan((
+            ApprovedTriageOp(proposal_issue_number=500, op=self._op(13)),
+            ApprovedTriageOp(
+                proposal_issue_number=501,
+                op=self._op(14, "kill_hung_session"),
+            ),
+        ))
+
+        [reset] = [a for a in plan.actions if isinstance(a, ResetRetryIssueAction)]
+        assert reset.issue_number == 13
+        assert reset.proposal_issue_number == 500
+        [kill] = [a for a in plan.actions if isinstance(a, KillHungSessionAction)]
+        assert kill.issue_number == 14
+        assert kill.proposal_issue_number == 501
+
+    def test_no_approved_ops_plans_no_executions(self):
+        """Still-gated proposals never reach the facts, so nothing plans."""
+        from issue_orchestrator.control.actions import (
+            KillHungSessionAction,
+            ResetRetryIssueAction,
+        )
+
+        plan = self._plan(())
+
+        assert not any(
+            isinstance(a, (ResetRetryIssueAction, KillHungSessionAction))
+            for a in plan.actions
+        )
+
+
 class TestPlanHealthReviewIssueCreation:
     """Health-review anchor creation planning (ADR-0031 §4).
 

@@ -37,11 +37,13 @@ from .health_review_trigger import (
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
+    from ..ports.triage_authority import TriageAuthorityStore
     from ..domain.models import (
         OrchestratorState,
         TriageFacts,
         CleanupFacts,
     )
+    from ..domain.triage_session import ApprovedTriageOp
     from .planner_types import OrchestratorSnapshot
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,10 @@ class FactGatherer:
     config: Config
     repository_host: RepositoryHost
     events: Optional[EventSink] = None
+    # Orchestrator-owned gated-proposal ledger (#6778). Optional so unrelated
+    # tests need not wire it; without it the anchor scan classifies no
+    # approved ops (gate-labeled proposals are still excluded from anchors).
+    triage_authority: Optional["TriageAuthorityStore"] = None
 
     def fetch_issues(
         self,
@@ -224,9 +230,16 @@ class FactGatherer:
 
         existing_triage_issue: Optional[int] = None
         existing_health_review_issue: Optional[int] = None
+        approved_ops: tuple["ApprovedTriageOp", ...] = ()
         if batch_armed:
-            existing_triage_issue, existing_health_review_issue = (
-                self._find_existing_triage_anchor_issues()
+            # The ONE exhaustive open triage-agent scan classifies batch +
+            # health anchors, open proposals, approved ops, and terminal
+            # ledger rows in a single reconcile (#6778/#6779 R2/R4). Gated by
+            # batch_armed so a health-only config that is not yet due makes
+            # zero GitHub calls; the marker-scoped dedup below covers the
+            # health anchor when the batch scan did not (or could not) run.
+            existing_triage_issue, existing_health_review_issue, approved_ops = (
+                self._classify_triage_anchor_scan()
             )
         if due and existing_health_review_issue is None:
             # Marker-scoped, exhaustive dedup lookup (crash-safe): an older
@@ -249,6 +262,7 @@ class FactGatherer:
             source_milestones=tuple(source_milestones),
             health_review_due=due,
             existing_health_review_issue=existing_health_review_issue,
+            approved_triage_ops=approved_ops,
         )
 
     def _get_triage_watch_label(self) -> str | None:
@@ -271,16 +285,62 @@ class FactGatherer:
         prs = self.repository_host.get_prs_with_label(watch_label, state="all")
         return [pr for pr in prs if policy.is_candidate(_pr_labels(pr))]
 
-    def _find_existing_triage_anchor_issues(self) -> tuple[int | None, int | None]:
-        """Find existing open (batch, health-review) anchor issues in one scan.
+    def _classify_triage_anchor_scan(
+        self,
+    ) -> tuple[int | None, int | None, tuple["ApprovedTriageOp", ...]]:
+        """Classify the ONE shared, exhaustive open triage-agent scan.
 
-        Uses the shared scoped/exhaustive anchor-discovery owner so this path
-        and startup recovery apply ONE eligibility rule (#6763 finding 7).
+        The scoped/exhaustive anchor-discovery owner backs both this path and
+        startup recovery, so both apply ONE eligibility rule (#6763 finding 7)
+        over the COMPLETE open set (#6779 R4). Gated proposal issues carry the
+        triage agent label, so the SAME scan that finds batch/health anchors
+        classifies them (#6778): gate-labeled issues are open proposals
+        (excluded from anchor classification), and op-backed issues WITHOUT
+        the gate label were approved by the operator. A backlog of proposals
+        can never hide an older approved op or an anchor, and the lifecycle
+        owner reconciles closed/leaked ledger rows against it (#6779 R2). No
+        extra GitHub call is made — the op lookup is the local
+        authority-store ledger.
         """
+        from .triage_proposals import reconcile_triage_proposals
+
+        triage_agent = self.config.triage_review_agent
+        if not triage_agent:
+            return None, None, ()
         existing = discover_open_triage_anchor_issues(
             self.repository_host, self.config
         )
-        return classify_triage_anchor_issues(existing, self.config.filtering.label)
+        ops = (
+            dict(self.triage_authority.list_ops())
+            if self.triage_authority is not None
+            else {}
+        )
+        reconciled = reconcile_triage_proposals(existing, ops=ops)
+        self._discard_terminal_proposal_ops(reconciled.terminal_op_issue_numbers)
+        batch, health = classify_triage_anchor_issues(
+            reconciled.anchor_candidate_issues, self.config.filtering.label
+        )
+        return batch, health, reconciled.approved
+
+    def _discard_terminal_proposal_ops(self, terminal: tuple[int, ...]) -> None:
+        """Self-heal ledger rows whose proposal issue is closed/absent (#6779 R2).
+
+        Idempotent reconciliation of orchestrator-owned bookkeeping to the
+        exhaustive live scan — NOT an external mutation or a decision. A
+        manually closed proposal, or a finalize that crashed after closing the
+        issue but before ``discard_op``, leaves a row that ``list_ops`` would
+        otherwise report as a live proposal forever; discarding it here clears
+        that on the very next scan.
+        """
+        if not terminal or self.triage_authority is None:
+            return
+        for issue_number in terminal:
+            self.triage_authority.discard_op(issue_number=issue_number)
+            logger.info(
+                "[triage] Reconciled terminal proposal #%d: discarded leaked"
+                " ledger row (#6779)",
+                issue_number,
+            )
 
     def _collect_pr_metadata(self, prs: list[Any]) -> tuple[set[str], list[tuple[int, str]]]:
         """Collect labels and milestones from PRs and their linked issues."""

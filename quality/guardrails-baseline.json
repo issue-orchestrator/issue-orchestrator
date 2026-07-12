@@ -9,12 +9,12 @@
       "value": 18
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/actions.py": {
-      "detail": "1 branch site(s) mention lifecycle/control terms",
+      "detail": "2 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
       "metric_id": "src/issue_orchestrator/control/actions.py",
       "path": "src/issue_orchestrator/control/actions.py",
       "rule_id": "control_policy_branch_sites",
-      "value": 1
+      "value": 2
     },
     "control_policy_branch_sites:src/issue_orchestrator/control/awaiting_merge_reconciler.py": {
       "detail": "13 branch site(s) mention lifecycle/control terms",

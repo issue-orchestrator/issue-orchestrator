@@ -5,25 +5,40 @@ this module applies the configured graduated authority per action type and
 emits the orchestrator's action vocabulary:
 
 - ``execute`` authority -> the concrete action (comment, issue, escalation).
-- ``propose`` authority -> a shadow :class:`SurfaceTriageProposalAction`.
+- ``propose`` authority -> a shadow :class:`SurfaceTriageProposalAction` for
+  ``post_comment``/``escalate_to_human``/``flag_pattern`` (the
+  immediate/report tier).
+- ``create_issue`` with ``propose`` authority -> the issue is CREATED, gated
+  with ``proposed-triage`` (#6778): removing the label flows it into normal
+  scheduling. The gate label is orchestrator-attached by the
+  ``triage_issue_policy`` owner and rejected by the agent-label allowlist.
 - ``flag_pattern`` with ``execute`` authority -> surfaced with
   ``mode="pattern"``: recording the pattern IS the execution. Under
   ``propose`` authority it is a shadow record like any other proposal.
 - ``reset_retry`` with ``execute`` authority -> a typed
   :class:`ResetRetryIssueAction`; the applier's owner re-validates the
   proposal's preconditions at execution time and downgrades stale proposals
-  to a surfaced record (#6764, ADR-0031 §2). Under ``propose`` authority it
-  stays a shadow record.
-- Still-unwired act-level proposals (``kill_hung_session``) -> always
-  surfaced (``mode="shadow"``); config validation guarantees their authority
-  is ``propose`` until the executors are wired (#6764).
+  to a surfaced record (#6764, ADR-0031 §2).
+- Act-level proposals otherwise (``reset_retry`` under ``propose``;
+  ``kill_hung_session`` always, until its direct execute tier ships) ->
+  GATED PROPOSAL ISSUES (#6778): a
+  :class:`~.actions.CreateTriageProposalIssueAction` whose applier creates
+  the issue AND records the executable :class:`StoredTriageOp` create-once.
+  Removing the gate label is per-instance approval; the fact gatherer's
+  label scan then triggers execution of the STORED op. Dedup is
+  ledger-based: one open proposal per (op, target) — a re-proposal plans an
+  ``AddCommentAction`` on the existing proposal issue instead. Never trust
+  config for ``kill_hung_session``: startup rejects ``execute`` for it, and
+  this planner treats ANY mode as propose.
 
 Shadow proposals additionally plan ONE durable would-have-done digest
 comment on the triage session's anchor issue. The trace event alone is not
 an operator surface: ADR-0031 §2 requires shadow records to be visible "in
 the report, as a structured event, and on the escalation surface", and the
 escalation surface in this codebase is the crash-safe GitHub label/comment
-channel that the dashboard projects (#6761 finding 6).
+channel that the dashboard projects (#6761 finding 6). Gated proposals do
+NOT appear in the digest — their surface is the proposal issue itself,
+linked from the anchor by the creation applier.
 
 Decision-driven ``create_issue`` proposals are composed by the
 ``triage_issue_policy`` owner: configured triage labels/priority/milestone
@@ -43,10 +58,10 @@ is stopped and no other labels are touched.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Callable, Mapping
 
 from ..domain.triage_artifacts import (
-    UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS,
     ProposedTriageAction,
     TriageDecision,
 )
@@ -63,7 +78,12 @@ from .label_manager import LabelManager
 from .triage_issue_policy import (
     apply_triage_priority_prefix,
     decision_issue_labels,
+    triage_follow_up_agent_label,
     triage_issue_milestone_intent,
+)
+from .triage_proposals import (
+    build_duplicate_proposal_comment,
+    build_triage_proposal_issue_action,
 )
 
 if TYPE_CHECKING:
@@ -110,6 +130,7 @@ def _concrete_actions(
     anchor_issue: Issue,
     expected: "ExpectedState",
     needs_human_label: str,
+    gate_issue: bool = False,
 ) -> list[Action]:
     body = (action.body or "") + _provenance_footer(action)
     if action.action_type == "post_comment":
@@ -135,6 +156,11 @@ def _concrete_actions(
             if anchor_issue.milestone_number is not None
             else []
         )
+        gate_note = (
+            " (gated with proposed-triage: propose authority, #6778)"
+            if gate_issue
+            else ""
+        )
         return [
             CreateTriageIssueAction(
                 title=apply_triage_priority_prefix(config, action.title or ""),
@@ -144,10 +170,18 @@ def _concrete_actions(
                     anchor_labels=anchor_issue.labels,
                     agent_labels=action.labels,
                     labels=labels,
+                    # Orchestrator-owned routing label so removing the gate
+                    # alone lands a schedulable issue (#6779 R5); attached for
+                    # execute-authority create_issue too — both need an agent.
+                    destination_agent=triage_follow_up_agent_label(config),
+                    gate=gate_issue,
                 ),
                 pr_count=0,
                 milestone=triage_issue_milestone_intent(config, anchor_milestones),
-                reason=f"triage decision action {action.id}: create follow-up issue",
+                reason=(
+                    f"triage decision action {action.id}: create follow-up"
+                    f" issue{gate_note}"
+                ),
                 expected=expected,
             )
         ]
@@ -195,83 +229,196 @@ def plan_triage_decision_actions(
     *,
     anchor_issue: Issue,
     expected: "ExpectedState",
+    op_ledger: Mapping[tuple[str, int], int],
+    source_run_id: str,
+    source_session_name: str,
+    active_session_run_id: Callable[[int], str | None],
 ) -> list[Action]:
-    """Plan orchestrator actions for a validated triage decision."""
-    authority = config.triage.authority
-    anchor_issue_number = anchor_issue.number
-    actions: list[Action] = []
-    shadow: list[SurfaceTriageProposalAction] = []
+    """Plan orchestrator actions for a validated triage decision.
 
-    def _surface_shadow(proposed: ProposedTriageAction) -> None:
-        surfaced = _surface(
-            proposed, anchor_issue_number=anchor_issue_number, mode="shadow"
-        )
-        shadow.append(surfaced)
-        actions.append(surfaced)
-
+    ``op_ledger`` maps (op_type, target_issue_number) of every currently
+    recorded gated-proposal op to its proposal issue number (the authority
+    store's rows, projected by ``triage_proposals.build_op_ledger``): one
+    open proposal per (op, target) — re-proposals comment on the existing
+    issue. ``source_run_id``/``source_session_name`` are the proposing
+    session's identity, recorded on each :class:`StoredTriageOp`.
+    ``active_session_run_id`` resolves the target issue's live session run id
+    so a ``kill_hung_session`` proposal binds approval to that exact
+    generation (#6779 R1).
+    """
+    planner = _DecisionActionPlanner(
+        config=config,
+        labels=labels,
+        anchor_issue=anchor_issue,
+        expected=expected,
+        op_ledger=op_ledger,
+        source_run_id=source_run_id,
+        source_session_name=source_session_name,
+        active_session_run_id=active_session_run_id,
+    )
     for proposed in decision.proposed_actions:
+        planner.plan(proposed)
+    if planner.shadow:
+        planner.actions.append(
+            _shadow_digest_comment(
+                planner.shadow,
+                anchor_issue_number=anchor_issue.number,
+                expected=expected,
+            )
+        )
+    return planner.actions
+
+
+@dataclass
+class _DecisionActionPlanner:
+    """Per-decision planning state: one authority dispatch per proposal."""
+
+    config: "Config"
+    labels: LabelManager
+    anchor_issue: Issue
+    expected: "ExpectedState"
+    op_ledger: Mapping[tuple[str, int], int]
+    source_run_id: str
+    source_session_name: str
+    active_session_run_id: Callable[[int], str | None]
+    actions: list[Action] = field(default_factory=list)
+    shadow: list[SurfaceTriageProposalAction] = field(default_factory=list)
+    _planned_ops: set[tuple[str, int]] = field(default_factory=set)
+
+    @property
+    def _anchor_number(self) -> int:
+        return self.anchor_issue.number
+
+    def plan(self, proposed: ProposedTriageAction) -> None:
         if proposed.action_type == "flag_pattern":
-            # Authority-aware (#6761 finding 5): execute records the pattern
-            # (mode="pattern" IS the execution); propose is shadow mode.
-            if authority.mode_for("flag_pattern") == "execute":
-                actions.append(
-                    _surface(
-                        proposed,
-                        anchor_issue_number=anchor_issue_number,
-                        mode="pattern",
-                    )
-                )
-            else:
-                _surface_shadow(proposed)
-            continue
-        if proposed.is_act_level:
-            # reset_retry is wired (#6764, first slice): execute authority
-            # plans the typed action whose applier re-validates the
-            # preconditions at execution time. Unwired act-level intents
-            # (kill_hung_session) surface unconditionally — config validation
-            # guarantees their authority is "propose", but never trust it.
-            if (
-                proposed.action_type == "reset_retry"
-                and authority.mode_for("reset_retry") == "execute"
-            ):
-                assert proposed.target_number is not None  # enforced by validate()
-                actions.append(
-                    ResetRetryIssueAction(
-                        issue_number=proposed.target_number,
-                        rationale=proposed.body or "",
-                        proposal_id=proposed.id,
-                        finding_ids=proposed.finding_ids,
-                        anchor_issue_number=anchor_issue_number,
-                        reason=(
-                            f"triage decision action {proposed.id}:"
-                            " reset and retry from scratch"
-                        ),
-                        expected=expected,
-                    )
-                )
-                continue
-            _surface_shadow(proposed)
-            continue
-        if authority.mode_for(proposed.action_type) == "execute":
-            actions.extend(
-                _concrete_actions(
+            self._plan_flag_pattern(proposed)
+        elif proposed.is_act_level:
+            self._plan_act_level(proposed)
+        else:
+            self._plan_decision_tier(proposed)
+
+    def _surface_shadow(self, proposed: ProposedTriageAction) -> None:
+        surfaced = _surface(
+            proposed, anchor_issue_number=self._anchor_number, mode="shadow"
+        )
+        self.shadow.append(surfaced)
+        self.actions.append(surfaced)
+
+    def _plan_flag_pattern(self, proposed: ProposedTriageAction) -> None:
+        # Authority-aware (#6761 finding 5): execute records the pattern
+        # (mode="pattern" IS the execution); propose is shadow mode.
+        if self.config.triage.authority.mode_for("flag_pattern") == "execute":
+            self.actions.append(
+                _surface(
                     proposed,
-                    config=config,
-                    labels=labels,
-                    anchor_issue=anchor_issue,
-                    expected=expected,
-                    needs_human_label=labels.needs_human,
+                    anchor_issue_number=self._anchor_number,
+                    mode="pattern",
                 )
             )
         else:
-            _surface_shadow(proposed)
-    if shadow:
-        actions.append(
-            _shadow_digest_comment(
-                shadow, anchor_issue_number=anchor_issue_number, expected=expected
+            self._surface_shadow(proposed)
+
+    def _plan_gated_op(self, proposed: ProposedTriageAction) -> None:
+        """Gated proposal issue for an act-level intent (#6778)."""
+        assert proposed.target_number is not None  # enforced by validate()
+        key = (proposed.action_type, proposed.target_number)
+        existing = self.op_ledger.get(key)
+        if existing is not None:
+            self.actions.append(
+                AddCommentAction(
+                    number=existing,
+                    comment=build_duplicate_proposal_comment(
+                        proposed, anchor_issue_number=self._anchor_number
+                    ),
+                    is_pr=False,
+                    reason=(
+                        f"triage decision action {proposed.id}: duplicate"
+                        f" {proposed.action_type} proposal for"
+                        f" #{proposed.target_number}; commenting on open"
+                        f" proposal #{existing} (#6778)"
+                    ),
+                    expected=self.expected,
+                )
+            )
+            return
+        if key in self._planned_ops:
+            # Two identical act-level proposals inside ONE decision: the
+            # first creation covers both; a second issue would break the
+            # one-open-proposal-per-(op, target) ledger invariant.
+            return
+        self._planned_ops.add(key)
+        # kill_hung_session binds approval to the target's live session
+        # generation (#6779 R1); reset_retry carries no generation binding.
+        target_session_id = (
+            self.active_session_run_id(proposed.target_number) or ""
+            if proposed.action_type == "kill_hung_session"
+            else ""
+        )
+        self.actions.append(
+            build_triage_proposal_issue_action(
+                proposed,
+                config=self.config,
+                anchor_issue_number=self._anchor_number,
+                source_run_id=self.source_run_id,
+                source_session_name=self.source_session_name,
+                expected=self.expected,
+                target_session_id=target_session_id,
             )
         )
-    return actions
+
+    def _plan_act_level(self, proposed: ProposedTriageAction) -> None:
+        # reset_retry is wired (#6764, first slice): execute authority plans
+        # the typed action whose applier re-validates the preconditions at
+        # execution time. Everything else act-level becomes a GATED PROPOSAL
+        # ISSUE (#6778) — including kill_hung_session under any configured
+        # mode: startup rejects "execute" for it until its direct tier
+        # ships, but never trust config.
+        if (
+            proposed.action_type == "reset_retry"
+            and self.config.triage.authority.mode_for("reset_retry") == "execute"
+        ):
+            assert proposed.target_number is not None  # enforced by validate()
+            self.actions.append(
+                ResetRetryIssueAction(
+                    issue_number=proposed.target_number,
+                    rationale=proposed.body or "",
+                    proposal_id=proposed.id,
+                    finding_ids=proposed.finding_ids,
+                    anchor_issue_number=self._anchor_number,
+                    reason=(
+                        f"triage decision action {proposed.id}:"
+                        " reset and retry from scratch"
+                    ),
+                    expected=self.expected,
+                )
+            )
+            return
+        self._plan_gated_op(proposed)
+
+    def _plan_decision_tier(self, proposed: ProposedTriageAction) -> None:
+        # Execute authority -> the concrete action(s). Propose-authority
+        # create_issue -> the issue is CREATED, gated with proposed-triage
+        # (#6778): per-instance approval is removing the label, after which
+        # the issue flows into normal scheduling. Everything else propose ->
+        # shadow record.
+        execute = (
+            self.config.triage.authority.mode_for(proposed.action_type)
+            == "execute"
+        )
+        if not execute and proposed.action_type != "create_issue":
+            self._surface_shadow(proposed)
+            return
+        self.actions.extend(
+            _concrete_actions(
+                proposed,
+                config=self.config,
+                labels=self.labels,
+                anchor_issue=self.anchor_issue,
+                expected=self.expected,
+                needs_human_label=self.labels.needs_human,
+                gate_issue=not execute,
+            )
+        )
 
 
 def _shadow_digest_comment(
@@ -303,38 +450,18 @@ def _shadow_digest_comment(
             lines.append(f"  > {item.body_preview}")
         if item.finding_ids:
             lines.append(f"  findings: {', '.join(item.finding_ids)}")
-    # Wired proposal types (including act-level reset_retry, #6764 first
-    # slice) get the config-flip guidance; only the still-unwired act-level
-    # intents keep the "not wired" note so operators are never told to flip
-    # a knob that startup rejects (#6761 re-review finding 5).
-    gated = sorted(
-        {
-            item.proposal_type
-            for item in shadow
-            if item.proposal_type not in UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS
-        }
-    )
-    unwired = sorted(
-        {
-            item.proposal_type
-            for item in shadow
-            if item.proposal_type in UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS
-        }
-    )
+    # Only immediate/report-tier types reach the shadow digest (#6778):
+    # create_issue proposals become gated issues, and act-level proposals
+    # become gated proposal issues — the anchor gets a per-proposal link
+    # comment from the creation applier instead of a digest entry. Every
+    # remaining shadow type is a real, flip-able authority knob.
+    knob_types = sorted({item.proposal_type for item in shadow})
     lines.append("")
-    if gated:
-        knobs = ", ".join(f"`triage.authority.{name}`" for name in gated)
-        lines.append(
-            f"*Flip {knobs} to `execute` to let the orchestrator perform"
-            " these next time.*"
-        )
-    if unwired:
-        names = ", ".join(f"`{name}`" for name in unwired)
-        lines.append(
-            f"*{names}: orchestrator execution is not wired yet (#6764) —"
-            " startup rejects `execute` for these until it lands, so act on"
-            " them manually if warranted.*"
-        )
+    knobs = ", ".join(f"`triage.authority.{name}`" for name in knob_types)
+    lines.append(
+        f"*Flip {knobs} to `execute` to let the orchestrator perform"
+        " these next time.*"
+    )
     return AddCommentAction(
         number=anchor_issue_number,
         comment="\n".join(lines),
