@@ -60,6 +60,7 @@ from issue_orchestrator.control.session_routing import (
 )
 from issue_orchestrator.control.triage_needs_human_reconcile import (
     reconcile_pending_needs_human_label_clears,
+    reconstruct_pending_needs_human_label_clears,
 )
 from issue_orchestrator.control.workflows.triage_workflow import TriageWorkflow
 from issue_orchestrator.control.actions import (
@@ -3858,6 +3859,112 @@ class TestLaunchTriageIssueSessionFlavors:
             sum(1 for e in mock_events.events if str(e.name) == "session.started")
             == launches_before_reconcile
         )
+
+    @staticmethod
+    def _restored_session(issue_number: int, labels: list[str], tmp_path: Path) -> Session:
+        """A restored issue session as startup rehydrates it (fresh GitHub labels).
+
+        ``session_restorer`` refetches the issue via ``get_issue`` on restore, so
+        the restored session carries GitHub-truth labels — including any stale
+        needs-human marker an incomplete escalation left behind.
+        """
+        return Session(
+            key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+            issue=Issue(
+                number=issue_number,
+                title=f"Issue {issue_number}",
+                labels=labels,
+                repo="test/repo",
+            ),
+            agent_config=AgentConfig(prompt_path=tmp_path / "p.md", timeout_minutes=45),
+            terminal_id=f"issue-{issue_number}",
+            worktree_path=tmp_path,
+            branch_name=f"{issue_number}-branch",
+            run_assets=make_session_run_assets(
+                tmp_path, session_name=f"issue-{issue_number}"
+            ),
+        )
+
+    def test_restart_reconstructs_stale_needs_human_clear_and_preserves_legitimate(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """#6771 round 7: the memory-only clear list is rebuilt from durable facts.
+
+        A failed stale-label clear leaves needs-human on GitHub while the
+        recovered investigation runs, and ``pending_needs_human_label_clears`` is
+        memory-only — so a process exit before the reconcile tick commits loses
+        the record. Startup recovery must reseed it from durable facts: an
+        active/restored investigation session whose issue still carries the
+        needs-human label. The per-tick reconciler then retries the
+        ``RemoveLabelAction`` ONLY (never a duplicate launch) and drops the record
+        once it commits. A LEGITIMATE committed needs-human escalation — an issue
+        whose investigation could not launch, so it has NO active/restored
+        session — is never reseeded and its label survives.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        lm = LabelManager(config)
+        needs_human = lm.needs_human
+
+        # Post-restart process: a FRESH state whose clear list is empty (lost).
+        state = OrchestratorState()
+
+        # Issue 903: the recovered failure investigation is running. Its issue
+        # still carries the stale needs-human marker the failed clear left behind.
+        # A failure investigation runs on the FAILED issue, so agent_type stays
+        # the original coding agent (NOT the triage agent) — the discriminator
+        # must be "a session is running", not "a triage-agent session is running".
+        state.active_sessions.append(
+            self._restored_session(903, [needs_human, "agent:developer"], tmp_path)
+        )
+        # Issue 905: an unrelated running session with no needs-human marker; it
+        # must not be seeded (proves the needs-human predicate, not mere presence).
+        state.active_sessions.append(
+            self._restored_session(905, ["agent:developer"], tmp_path)
+        )
+        # Issue 904: a LEGITIMATE committed needs-human escalation. Its
+        # investigation exhausted retries and could NOT launch, so it has no
+        # active/restored session — only its GitHub label. It must be preserved.
+
+        seeded = reconstruct_pending_needs_human_label_clears(state, lm)
+
+        assert seeded == [903], "only the running investigation's stale marker is reseeded"
+        assert state.pending_needs_human_label_clears == [903]
+        assert 905 not in state.pending_needs_human_label_clears, (
+            "a running session without needs-human must not be reseeded"
+        )
+        assert 904 not in state.pending_needs_human_label_clears, (
+            "a committed needs-human with no active investigation must not be reseeded"
+        )
+
+        # Per-tick reconciler: GitHub is healthy → retry the removal only.
+        launcher_bundle.action_applier.apply = MagicMock(
+            side_effect=lambda action: ActionResult.ok(action)
+        )
+        launches_before = sum(
+            1 for e in mock_events.events if str(e.name) == "session.started"
+        )
+
+        reconcile_pending_needs_human_label_clears(state, launcher_bundle.launcher)
+
+        assert state.pending_needs_human_label_clears == [], (
+            "a committed removal drops the record from the reconciliation list"
+        )
+        removals = [
+            a
+            for a in (
+                c.args[0] for c in launcher_bundle.action_applier.apply.call_args_list
+            )
+            if isinstance(a, RemoveLabelAction) and a.label == needs_human
+        ]
+        assert [a.issue_number for a in removals] == [903], (
+            "the reconciler retries removal for the stale marker only; the "
+            "legitimate 904 label is never touched"
+        )
+        assert (
+            sum(1 for e in mock_events.events if str(e.name) == "session.started")
+            == launches_before
+        ), "the reconciler removes the label only — it launches no duplicate work"
 
 
 class TestTriageProducerToLaunchBoundary:
