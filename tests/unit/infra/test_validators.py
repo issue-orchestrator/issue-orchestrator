@@ -118,12 +118,16 @@ class TestReviewWorkflowValidator:
         review_exchange_require_validation=True,
         agents=None,
         health_review_interval_minutes=0,
+        triage_follow_up_agent=None,
     ):
         """Create a mock config with review settings."""
         config = MagicMock()
         config.review_enabled = review_enabled
         config.code_review_agent = code_review_agent
         config.triage_review_agent = triage_review_agent
+        # Explicit None default so the typed follow-up-agent invariant (#6779 R9)
+        # is exercised deterministically (a bare MagicMock is truthy).
+        config.triage_follow_up_agent = triage_follow_up_agent
         # Concrete int so the cross-field health-review invariant (#6776) is
         # exercised deterministically (a bare MagicMock compares > 0 truthy).
         config.triage.health_review.interval_minutes = health_review_interval_minutes
@@ -196,6 +200,35 @@ class TestReviewWorkflowValidator:
         errors = ReviewWorkflowValidator().validate(config)
         assert len(errors) == 1
         assert "triage_review_agent" in errors[0]
+
+    def test_unknown_triage_follow_up_agent_error(self):
+        """R9: a follow-up worker naming an agent absent from `agents` is rejected."""
+        config = self._make_config(
+            triage_follow_up_agent="agent:ghost",
+            agents={"agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert len(errors) == 1
+        assert "triage_follow_up_agent" in errors[0]
+
+    def test_valid_triage_follow_up_agent_ok(self):
+        """R9: a follow-up worker that names a real agent passes."""
+        config = self._make_config(
+            triage_follow_up_agent="agent:developer",
+            agents={"agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert errors == []
+
+    def test_unset_triage_follow_up_agent_ok(self):
+        """R9: unset is valid at config time (routing fails loudly only when a
+        create_issue proposal actually needs a destination)."""
+        config = self._make_config(
+            triage_follow_up_agent=None,
+            agents={"agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert errors == []
 
     def test_negative_health_review_interval_error(self):
         """The validator surfaces the health-review interval invariant so a

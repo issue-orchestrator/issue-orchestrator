@@ -1578,6 +1578,53 @@ class TestPlanApprovedTriageOpExecutions:
             for a in plan.actions
         )
 
+    def _plan_with_candidates(self, candidates):
+        from issue_orchestrator.domain.models import TriageFacts
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=3,
+            triage_reviewed_label="triage-reviewed",
+        )
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        snapshot = make_snapshot(
+            triage_facts=TriageFacts(
+                threshold=3,
+                watch_label="code-reviewed",
+                absent_proposal_op_candidates=candidates,
+            ),
+        )
+        return planner.plan(snapshot)
+
+    def test_absent_op_candidates_emit_confirm_and_discard_action(self):
+        """R7/R10: the planner turns the read-only absent-candidate fact into a
+        single DiscardTerminalTriageProposalOpsAction; the applier confirms each
+        with a targeted read before discarding."""
+        from issue_orchestrator.control.actions import (
+            DiscardTerminalTriageProposalOpsAction,
+        )
+
+        plan = self._plan_with_candidates((501, 777))
+
+        [discard] = [
+            a
+            for a in plan.actions
+            if isinstance(a, DiscardTerminalTriageProposalOpsAction)
+        ]
+        assert discard.candidate_issue_numbers == (501, 777)
+
+    def test_no_absent_candidates_plans_no_discard(self):
+        from issue_orchestrator.control.actions import (
+            DiscardTerminalTriageProposalOpsAction,
+        )
+
+        plan = self._plan_with_candidates(())
+
+        assert not any(
+            isinstance(a, DiscardTerminalTriageProposalOpsAction)
+            for a in plan.actions
+        )
+
 
 class TestPlanHealthReviewIssueCreation:
     """Health-review anchor creation planning (ADR-0031 §4).

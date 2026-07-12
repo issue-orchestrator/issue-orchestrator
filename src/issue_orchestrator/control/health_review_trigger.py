@@ -331,8 +331,10 @@ def recover_pending_triage_anchors(
     launch a triage session on a proposal issue — the same
     ``reconcile_triage_proposals`` owner the fact gatherer uses excludes
     them here, over an EXHAUSTIVE open scan (#6779 R4) so a proposal backlog
-    can never hide an anchor, and it self-heals closed/leaked ledger rows on
-    the same startup pass (#6779 R2).
+    can never hide an anchor. Startup recovery is read-only (#6779 R10):
+    leaked/terminal ledger rows are NOT discarded here — the first control
+    tick's fact gatherer surfaces them as cleanup candidates and the planner's
+    confirm-and-discard action self-heals them.
     """
     from .session_routing import TriageQueueOutcome
     from .triage_proposals import reconcile_triage_proposals
@@ -349,9 +351,6 @@ def recover_pending_triage_anchors(
         else {}
     )
     reconciled = reconcile_triage_proposals(issues, ops=ops)
-    if triage_authority is not None:
-        for issue_number in reconciled.terminal_op_issue_numbers:
-            triage_authority.discard_op(issue_number=issue_number)
     anchors = reconciled.anchor_candidate_issues
     skipped = len(issues) - len(anchors)
     if skipped:

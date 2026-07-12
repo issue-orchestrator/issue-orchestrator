@@ -350,15 +350,21 @@ triage:
   priority: null
   # Graduated authority for triage decision proposals (ADR-0031).
   # execute = orchestrator performs the proposed action;
-  # propose = shadow mode - recorded as would-have-done, nothing executed.
+  # propose = shadow mode - recorded as would-have-done, nothing executed
+  #   (except create_issue, see below).
   # escalate_to_human is not configurable: it always executes (the floor).
+  # create_issue "propose" is NOT shadow: it files a REAL gated proposal issue
+  # carrying the proposed-triage label, inert until an operator removes it
+  # (per-instance approval, #6778). "execute" files the follow-up issue directly.
   # reset_retry "execute" runs the reset+retry-from-scratch owner with
   # execution-time re-validation (stale proposals are surfaced, not run).
   # Unwired act-level actions (kill_hung_session) must stay "propose"
   # until their executors land (#6764) - "execute" fails at startup.
+  # triage_follow_up_agent names the worker a create_issue follow-up routes to
+  # (must be a worker label in `agents`, #6779).
   # authority:
   #   post_comment: "execute"       # execute | propose
-  #   create_issue: "execute"       # execute | propose
+  #   create_issue: "execute"       # execute | propose (propose = gated issue)
   #   flag_pattern: "execute"       # execute | propose
   #   reset_retry: "propose"        # execute | propose
   #   kill_hung_session: "propose"  # propose only until #6764

@@ -61,6 +61,7 @@ from .actions import (
     QueueReworkAction,
     QueueTriageAction,
     CreateTriageIssueAction,
+    DiscardTerminalTriageProposalOpsAction,
     EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
@@ -250,6 +251,24 @@ class Planner:
             actions.extend(
                 plan_approved_triage_op_executions(
                     snapshot.triage_facts.approved_triage_ops
+                )
+            )
+
+        # 1f4. Confirm-and-discard terminal gated-proposal ledger rows (#6779
+        # R7/R10): fact gathering only CLASSIFIED ledger rows absent from the
+        # exhaustive scan as cleanup candidates (it stays read-only). Emit the
+        # cleanup action so the applier re-reads each proposal issue before
+        # discarding — absence from a possibly-truncated scan must never delete
+        # a live op.
+        candidates = (
+            snapshot.triage_facts.absent_proposal_op_candidates
+            if snapshot.triage_facts
+            else ()
+        )
+        if candidates:
+            actions.append(
+                DiscardTerminalTriageProposalOpsAction(
+                    candidate_issue_numbers=candidates
                 )
             )
 

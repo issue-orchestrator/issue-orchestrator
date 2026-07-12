@@ -82,6 +82,11 @@ class ActionType(Enum):
     # Act-level triage execution: terminate issue runtime (#6778, approved ops)
     KILL_HUNG_SESSION = "kill_hung_session"
 
+    # Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10):
+    # the single mutating boundary for proposal-op cleanup, applied off the
+    # read-only fact path so fact gathering stays side-effect free.
+    DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS = "discard_terminal_triage_proposal_ops"
+
     # Escalation
     ESCALATE_TO_HUMAN = "escalate_to_human"
 
@@ -477,6 +482,28 @@ class KillHungSessionAction(Action):
                 "KillHungSessionAction requires the gated proposal issue number"
                 " (there is no direct execute tier for kill_hung_session)"
             )
+
+
+@dataclass(frozen=True)
+class DiscardTerminalTriageProposalOpsAction(Action):
+    """Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10).
+
+    Emitted by the planner from a read-only fact (``candidate_issue_numbers``):
+    ledger op rows whose proposal issue was ABSENT from the exhaustive open
+    scan. Absence alone is not proof of terminality — an exhaustive-scan
+    truncation (a later-page API failure, or a >2000-issue repo) can drop a
+    still-open proposal from the scan. So the applier's owner CONFIRMS each
+    candidate with a fresh targeted issue read before discarding: a deleted or
+    closed issue is terminal and its op is discarded; a still-open issue was a
+    pagination gap and its live op is preserved. This keeps fact gathering
+    read-only while routing the (formerly scattered) discard mutation through
+    one invariant-enforcing boundary.
+    """
+
+    candidate_issue_numbers: tuple[int, ...] = ()
+    action_type: ActionType = field(
+        default=ActionType.DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS, init=False
+    )
 
 
 @dataclass(frozen=True)

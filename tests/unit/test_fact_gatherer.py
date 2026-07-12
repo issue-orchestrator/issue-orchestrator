@@ -1139,13 +1139,16 @@ class TestGatedProposalScanClassification:
         assert kwargs["limit"] == TRIAGE_PROPOSAL_SCAN_LIMIT
         assert TRIAGE_PROPOSAL_SCAN_LIMIT > 100  # forces the adapter to paginate
 
-    def test_ledger_row_for_closed_issue_is_discarded_idempotently(
+    def test_ledger_row_absent_from_scan_is_surfaced_as_candidate_read_only(
         self, mock_config, mock_repository_host, sample_state
     ) -> None:
-        """R2: an op whose proposal issue is absent from the exhaustive scan
-        (manual close, or a finalize that crashed before discard_op) is a
-        leaked row — the fact scan self-heals it, idempotently."""
-        # #500 is still an open proposal; #501's issue is gone from the scan.
+        """R7/R10: an op whose proposal issue is absent from the exhaustive scan
+        is surfaced as a cleanup CANDIDATE, but fact gathering is READ-ONLY —
+        it must NOT discard the ledger row during observation. Cleanup flows
+        through the planner's DiscardTerminalTriageProposalOpsAction/owner,
+        which confirms with a targeted read first (a truncated scan must never
+        delete a live op)."""
+        # #500 is still an open proposal; #501's issue is absent from the scan.
         mock_repository_host.list_issues.return_value = [
             Issue(number=500, title="Triage proposal", labels=["triage-agent", "proposed-triage"]),
         ]
@@ -1155,13 +1158,16 @@ class TestGatedProposalScanClassification:
             [(500, self._op(13)), (501, self._op(14, "kill_hung_session"))],
         )
 
-        gatherer.gather_triage_facts(sample_state)
+        facts = gatherer.gather_triage_facts(sample_state)
 
-        # The leaked row is gone; the live proposal row is untouched.
-        assert [n for n, _ in gatherer.triage_authority.list_ops()] == [500]
-        # A second scan makes no further change (idempotent self-heal).
+        # The absent row is surfaced as a candidate...
+        assert facts is not None
+        assert facts.absent_proposal_op_candidates == (501,)
+        # ...but the store is UNTOUCHED — observation never mutates the ledger.
+        assert sorted(n for n, _ in gatherer.triage_authority.list_ops()) == [500, 501]
+        # A second scan is still read-only (no self-heal happens here).
         gatherer.gather_triage_facts(sample_state)
-        assert [n for n, _ in gatherer.triage_authority.list_ops()] == [500]
+        assert sorted(n for n, _ in gatherer.triage_authority.list_ops()) == [500, 501]
 
     def test_without_store_gate_labeled_issues_are_still_excluded(
         self, mock_config, mock_repository_host, sample_state

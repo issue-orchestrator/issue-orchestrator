@@ -949,6 +949,45 @@ def test_invalidate_labels_etag_clears_cache() -> None:
     assert "if-none-match" not in requests_seen[0]["headers"]
 
 
+def test_list_labels_paginates_beyond_the_first_full_page() -> None:
+    """R8: list_labels() promises ALL labels, so a full first page continues
+    paging. A gate label sorted onto a later page (e.g. proposed-triage in a
+    repo with 100+ labels) must be returned, else valid proposal creation is
+    falsely refused."""
+    page1 = [{"name": f"label-{n}"} for n in range(100)]  # full page -> keep paging
+    page2 = [{"name": "proposed-triage"}]  # gate label lives on page 2 (short page)
+
+    requested_pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        requested_pages.append(page)
+        return httpx.Response(200, json=page1 if page == 1 else page2)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    labels = client.list_labels()
+
+    names = {entry["name"] for entry in labels}
+    assert "proposed-triage" in names  # later-page gate label is not missed
+    assert len(labels) == 101
+    assert requested_pages == [1, 2]  # walked both pages, stopped on the short one
+
+
+def test_list_labels_single_page_makes_no_extra_request() -> None:
+    """A short first page is exhaustive on its own — no later-page fetch."""
+    requested_pages: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_pages.append(int(request.url.params.get("page", "1")))
+        return httpx.Response(200, json=[{"name": "bug"}, {"name": "proposed-triage"}])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    labels = client.list_labels()
+
+    assert {e["name"] for e in labels} == {"bug", "proposed-triage"}
+    assert requested_pages == [1]
+
+
 def test_invalidate_pr_etag_clears_pr_cache() -> None:
     requests_seen: list[dict] = []
     call_count = 0

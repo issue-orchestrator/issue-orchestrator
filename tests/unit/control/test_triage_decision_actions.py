@@ -54,8 +54,9 @@ def _config(**authority_overrides: str) -> Config:
 
     config = Config()
     # A worker agent must exist: decision-driven create_issue routes the new
-    # issue to the orchestrator-owned default worker (#6779 R5).
+    # issue to the typed, validated follow-up worker (#6779 R5/R9).
     config.agents = {"agent:web": Mock()}
+    config.triage_follow_up_agent = "agent:web"
     for key, value in authority_overrides.items():
         setattr(config.triage.authority, key, value)
     return config

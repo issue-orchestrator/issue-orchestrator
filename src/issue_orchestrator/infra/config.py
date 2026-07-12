@@ -86,6 +86,12 @@ from .validation_config_loader import (
 )
 
 
+def _put_if_truthy(target: dict, key: str, value: object) -> None:
+    """Insert ``key`` only when truthy (to_dict omits defaults)."""
+    if value:
+        target[key] = value
+
+
 @dataclass
 class Config:
     """Orchestrator configuration."""
@@ -265,6 +271,8 @@ class Config:
     triage_failed_label: str = "triage-failed"  # Label when triage fails (matches load_review_section default)
     triage_review_threshold: int = 0  # Trigger triage review after N PRs (0 = manual only)
     triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
+    # Validated worker a triage create_issue follow-up routes to (#6779 R9).
+    triage_follow_up_agent: Optional[str] = None
 
     @property
     def triage_watch_label(self) -> str:
@@ -978,8 +986,8 @@ class Config:
             review_dict["code_review_label"] = self.code_review_label
         if self.code_reviewed_label:
             review_dict["code_reviewed_label"] = self.code_reviewed_label
-        if self.triage_review_agent:
-            review_dict["triage_review_agent"] = self.triage_review_agent
+        _put_if_truthy(review_dict, "triage_review_agent", self.triage_review_agent)
+        _put_if_truthy(review_dict, "triage_follow_up_agent", self.triage_follow_up_agent)
         if self.triage_review_label:
             review_dict["triage_review_label"] = self.triage_review_label
         if self.triage_reviewed_label and self.triage_reviewed_label != "triage-reviewed":

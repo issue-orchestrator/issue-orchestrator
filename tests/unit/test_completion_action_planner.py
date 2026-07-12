@@ -197,8 +197,9 @@ def make_triage_config(tmp_path: Path) -> Config:
     config.triage_review_agent = "agent:triage"
     config.triage_reviewed_label = "triage-reviewed"
     config.triage_failed_label = "triage-failed"
-    # Destination worker a create_issue proposal routes to (#6779 R5).
+    # Destination worker a create_issue proposal routes to (#6779 R5/R9).
     config.agents = {"agent:web": Mock()}
+    config.triage_follow_up_agent = "agent:web"
     return config
 
 

@@ -26,11 +26,16 @@ the whole gated lifecycle:
   owner that partitions the fact gatherer's EXHAUSTIVE open-issue scan (#6779
   R2/R4) against the durable ledger in one pass: a gate-labeled issue is an
   open proposal; an op-backed issue WITHOUT the gate label was approved; a
-  ledger row whose issue is absent from the exhaustive scan is terminal
-  (manual close, or a finalize that crashed before ``discard_op``) and is
-  discarded idempotently by the caller. Anchor classification runs on the
-  remainder so a proposal issue can never be mistaken for a batch/health
-  anchor.
+  ledger row whose issue is absent from the scan is only a CANDIDATE for
+  terminal cleanup (#6779 R7) — the scan can be truncated, so absence alone
+  never proves terminality. Reconciliation stays READ-ONLY: it classifies but
+  does not mutate the ledger. Anchor classification runs on the remainder so a
+  proposal issue can never be mistaken for a batch/health anchor.
+* **Terminal cleanup** — :func:`apply_discard_terminal_triage_proposal_ops` is
+  the single mutating boundary the applier invokes on a
+  :class:`DiscardTerminalTriageProposalOpsAction` the planner emitted from the
+  absent-candidate fact. It CONFIRMS each candidate with a fresh targeted read
+  before discarding, so a paginated scan gap can never delete a live op.
 * **Approval planning** — :func:`plan_approved_triage_op_executions` turns
   approved ops into the typed execution actions (``reset_retry`` reuses the
   #6777 executor + stale policy verbatim; ``kill_hung_session`` uses its own
@@ -62,6 +67,7 @@ from .actions import (
     ActionResult,
     CreateTriageIssueAction,
     CreateTriageProposalIssueAction,
+    DiscardTerminalTriageProposalOpsAction,
     KillHungSessionAction,
     ResetRetryIssueAction,
 )
@@ -275,15 +281,24 @@ class ReconciledTriageProposals:
     """Live partition of the EXHAUSTIVE open triage-agent scan vs the ledger.
 
     The single lifecycle-owner view every caller reads instead of re-deriving
-    proposal state from an open-only scan (#6779 R2). Because the scan is
-    exhaustive over open triage-agent issues (#6779 R4) and a live proposal
-    (gated or approved) always carries the triage-agent label and is open, a
-    ledger row whose issue is absent from the scan is definitively terminal.
+    proposal state from an open-only scan (#6779 R2). A live proposal (gated or
+    approved) always carries the triage-agent label and is open, so its
+    presence in the scan is authoritative: gate-labeled -> open proposal,
+    op-backed-without-gate -> approved.
+
+    Absence is NOT authoritative, though (#6779 R7): the exhaustive scan can be
+    truncated by a later-page API failure or a >2000-issue repo, dropping a
+    still-open proposal from the result. So ``absent_op_issue_numbers`` are
+    only CANDIDATES for terminal cleanup — the discard owner
+    (:func:`apply_discard_terminal_triage_proposal_ops`) confirms each with a
+    fresh targeted read before deleting its ledger row.
     """
 
     anchor_candidate_issues: list["Issue"]  # -> batch/health anchor classifier
     approved: tuple[ApprovedTriageOp, ...]  # gate removed -> execute
-    terminal_op_issue_numbers: tuple[int, ...]  # closed/absent -> discard
+    # Ledger rows whose proposal issue was absent from the exhaustive scan:
+    # candidates for cleanup, confirmed terminal (deleted/closed) before discard.
+    absent_op_issue_numbers: tuple[int, ...]
 
 
 def reconcile_triage_proposals(
@@ -299,11 +314,13 @@ def reconcile_triage_proposals(
     * gate-labeled open issues are open proposals — inert, nothing to execute;
     * op-backed open issues WITHOUT the gate label were approved (the operator
       removed it) — returned for the planner to execute;
-    * ledger rows whose proposal issue is absent from the exhaustive open scan
-      are terminal: the operator closed it manually, or a finalize crashed
-      after the close but before ``discard_op`` (the non-atomic-finalize leak).
-      Their issue numbers are returned so the caller discards them idempotently,
-      self-healing on the next scan;
+    * ledger rows whose proposal issue is absent from the scan are only
+      CANDIDATES for terminal cleanup (#6779 R7): most were closed manually or
+      leaked by a finalize that crashed before ``discard_op``, but a truncated
+      scan (a later-page API failure, or a repo with more open issues than the
+      scan cap) can also drop a still-open proposal. Reconciliation is
+      read-only, so it returns the candidate numbers without deleting anything;
+      the confirm-and-discard owner re-reads each before cleanup;
     * everything else flows on to the batch/health anchor classifier.
     """
     open_numbers = {issue.number for issue in issues}
@@ -319,13 +336,80 @@ def reconcile_triage_proposals(
             )
             continue
         remaining.append(issue)
-    terminal = tuple(
+    absent = tuple(
         sorted(number for number in ops if number not in open_numbers)
     )
     return ReconciledTriageProposals(
         anchor_candidate_issues=remaining,
         approved=tuple(approved),
-        terminal_op_issue_numbers=terminal,
+        absent_op_issue_numbers=absent,
+    )
+
+
+def _proposal_issue_is_open(tracker: "RepositoryHost", issue_number: int) -> bool:
+    """Fresh targeted read: is this proposal issue confirmably still open?
+
+    The exhaustive open scan can be truncated — a later-page API failure, or a
+    repo with more open issues than :data:`TRIAGE_PROPOSAL_SCAN_LIMIT` — so a
+    ledger row's absence from it is only a candidate for cleanup (#6779 R7).
+    This re-reads the ONE issue directly: ``open`` means the scan had a gap and
+    the op is live; ``closed`` or absent (deleted) means the proposal is
+    genuinely terminal. A transient read error raises out of ``get_issue_state``
+    and aborts the whole discard action, so a momentary API failure never
+    deletes a live op.
+    """
+    return tracker.get_issue_state(issue_number) == "open"
+
+
+def apply_discard_terminal_triage_proposal_ops(
+    action: Action,
+    *,
+    tracker: "RepositoryHost | None",
+    authority: "TriageAuthorityStore | None",
+) -> ActionResult:
+    """Confirm-and-discard terminal gated-proposal ledger rows (#6779 R7/R10).
+
+    The single mutating boundary for proposal-op cleanup, invoked by the
+    applier off the read-only fact path. :func:`reconcile_triage_proposals`
+    only CLASSIFIES which ledger rows were absent from the exhaustive scan;
+    the planner surfaces those numbers as a
+    :class:`DiscardTerminalTriageProposalOpsAction`; this owner CONFIRMS each
+    candidate with a fresh targeted read before discarding.
+
+    A still-open candidate is a scan gap and its op is PRESERVED (never
+    deleted); a closed or deleted candidate is genuinely terminal and its op
+    is discarded. Discards are idempotent (``discard_op`` no-ops on an absent
+    row), so a candidate confirmed terminal but re-emitted next tick self-heals.
+    """
+    assert isinstance(action, DiscardTerminalTriageProposalOpsAction)
+    if tracker is None or authority is None:
+        return ActionResult.fail(
+            action,
+            "terminal triage proposal cleanup requires repository_host and the"
+            " TriageAuthorityStore wired into this applier",
+        )
+    discarded: list[int] = []
+    preserved: list[int] = []
+    for issue_number in action.candidate_issue_numbers:
+        if _proposal_issue_is_open(tracker, issue_number):
+            preserved.append(issue_number)
+            logger.info(
+                "[triage] Proposal #%d absent from the open scan but still open:"
+                " preserving its ledger op (scan gap, #6779 R7)",
+                issue_number,
+            )
+            continue
+        authority.discard_op(issue_number=issue_number)
+        discarded.append(issue_number)
+        logger.info(
+            "[triage] Confirmed terminal proposal #%d: discarded its leaked"
+            " ledger op (#6779 R7/R10)",
+            issue_number,
+        )
+    return ActionResult.ok(
+        action,
+        discarded_op_count=len(discarded),
+        preserved_op_count=len(preserved),
     )
 
 

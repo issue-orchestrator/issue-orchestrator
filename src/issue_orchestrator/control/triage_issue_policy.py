@@ -198,16 +198,23 @@ def triage_follow_up_agent_label(config: "Config") -> str:
     ``explicit_labels`` defaults empty — so the created issue would carry no
     agent label and normal discovery (which queries per configured worker
     agent) would never fetch it. The orchestrator therefore assigns the
-    destination itself: the first configured worker agent. Fails loudly when
-    none is configured — a triage-enabled repo must have a worker agent
-    (#6779 R5).
+    destination itself.
+
+    The destination is the TYPED, VALIDATED ``review.triage_follow_up_agent``
+    setting (#6779 R9), NOT the first key of ``config.agents``: that mapping
+    also holds reviewer, triage, and goal-pilot agents, so dict order could
+    route new work to an agent that cannot perform it. The
+    :class:`ReviewWorkflowValidator` guarantees the configured value names a
+    real agent; this fails loudly when it is unset rather than guessing.
     """
-    for agent_label in config.agents:
-        return agent_label
-    raise ValueError(
-        "a triage create_issue proposal needs a destination worker agent, but"
-        " config.agents is empty"
-    )
+    destination = config.triage_follow_up_agent
+    if not destination:
+        raise ValueError(
+            "a triage create_issue proposal needs a destination worker agent;"
+            " set review.triage_follow_up_agent to a worker label in `agents`"
+            " (#6779 R9)"
+        )
+    return destination
 
 
 def decision_issue_labels(

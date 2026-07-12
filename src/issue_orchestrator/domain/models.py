@@ -1363,6 +1363,13 @@ class TriageFacts:
     # classified from the SAME anchor scan. The planner turns each into the
     # stored op's execution action.
     approved_triage_ops: tuple["ApprovedTriageOp", ...] = field(default_factory=tuple)
+    # Ledger rows whose proposal issue was ABSENT from the exhaustive scan
+    # (#6779 R7). Absence is only a candidate for terminal cleanup — the scan
+    # can be truncated — so the planner emits a
+    # DiscardTerminalTriageProposalOpsAction and the applier confirms each with
+    # a fresh targeted read before discarding. Surfacing these as a fact keeps
+    # fact gathering read-only (#6779 R10).
+    absent_proposal_op_candidates: tuple[int, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

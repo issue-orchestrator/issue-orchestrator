@@ -25,6 +25,7 @@ class ReviewWorkflowValidator(ConfigValidator):
 
         self._validate_review_defaults(config, errors)
         self._validate_triage_agent(config, errors)
+        self._validate_triage_follow_up_agent(config, errors)
         # Graduated triage authority (ADR-0031): act-level 'execute' is a
         # startup configuration error until its executor is wired (#6764).
         errors.extend(config.triage.authority.startup_errors())
@@ -62,6 +63,20 @@ class ReviewWorkflowValidator(ConfigValidator):
             errors.append(
                 f"triage_review_agent '{config.triage_review_agent}' not found in agents. "
                 f"Available: {list(config.agents.keys())}"
+            )
+
+    def _validate_triage_follow_up_agent(
+        self, config: "Config", errors: list[str]
+    ) -> None:
+        # Typed destination for triage create_issue proposals (#6779 R9): if
+        # set it MUST name a real agent, so routing can never fall back to
+        # dict order and hand new work to a reviewer/triage/goal-pilot agent.
+        if not config.triage_follow_up_agent:
+            return
+        if config.triage_follow_up_agent not in config.agents:
+            errors.append(
+                f"review.triage_follow_up_agent '{config.triage_follow_up_agent}' "
+                f"not found in agents. Available: {list(config.agents.keys())}"
             )
 
     def _validate_health_review_requires_agent(

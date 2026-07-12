@@ -845,7 +845,51 @@ class GitHubHttpClient:
             params={"per_page": 100},
             caller="list_labels",
         )
-        return payload if isinstance(payload, list) else []
+        labels = payload if isinstance(payload, list) else []
+        # The port promises ALL labels (#6779 R8): page 1 keeps its ETag cache
+        # for the common (<=100 labels) case, but a FULL first page means more
+        # may exist, so continue paging. Without this a gate label sorted onto a
+        # later page (e.g. proposed-triage in a repo with 100+ labels) is missed
+        # and valid proposal creation is falsely refused. Mirrors list_issues.
+        if len(labels) >= 100:
+            labels = list(labels) + self._list_labels_remaining_pages()
+        return labels
+
+    def _list_labels_remaining_pages(self) -> list[dict[str, Any]]:
+        """Fetch label pages beyond the first until a short page (#6779 R8).
+
+        Uncached (mirrors :meth:`list_all_labels`): later pages are read fresh
+        rather than ETag-cached per page, and bounded by the same page cap so
+        an unbounded scan fails loud rather than looping forever.
+        """
+        collected: list[dict[str, Any]] = []
+        page = 2
+        while True:
+            try:
+                response = self._client.get(
+                    f"/repos/{self._config.repo}/labels",
+                    params={"per_page": 100, "page": page},
+                    headers=self._auth_headers(),
+                )
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                raise GitHubTransportError(
+                    "GitHub transport error for list_labels pagination",
+                    method="GET",
+                    url=f"/repos/{self._config.repo}/labels",
+                    original=exc,
+                ) from exc
+            if response.status_code != 200:
+                break
+            batch = response.json()
+            if not isinstance(batch, list) or not batch:
+                break
+            collected.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+            if page > 20:  # Safety limit: 20 * 100 = 2000 labels (list_all_labels parity)
+                break
+        return collected
 
     def list_all_labels(self) -> list[dict[str, Any]]:
         """Fetch all labels with pagination (for cleanup operations).

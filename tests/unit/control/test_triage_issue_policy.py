@@ -12,6 +12,7 @@ from issue_orchestrator.control.triage_issue_policy import (
     is_protected_triage_label,
     protected_triage_label_violations,
     resolve_triage_milestone_number,
+    triage_follow_up_agent_label,
     triage_issue_milestone_intent,
 )
 from issue_orchestrator.control.health_review_trigger import (
@@ -30,11 +31,42 @@ def make_config(**overrides) -> Config:
 
     config = Config()
     config.triage_review_agent = "agent:triage"
-    # Worker agent the orchestrator routes a create_issue proposal to (#6779 R5).
+    # Worker agent the orchestrator routes a create_issue proposal to (#6779 R5/R9).
     config.agents = {DEST_AGENT: Mock()}
+    config.triage_follow_up_agent = DEST_AGENT
     for key, value in overrides.items():
         setattr(config, key, value)
     return config
+
+
+class TestTriageFollowUpAgentLabel:
+    """The create_issue destination is the typed, validated worker (#6779 R9)."""
+
+    def test_returns_configured_worker_even_when_a_non_worker_sorts_first(self) -> None:
+        """Dict order must NOT decide routing: a reviewer/triage/goal-pilot
+        agent appearing first is never chosen; the configured worker is."""
+        from unittest.mock import Mock
+
+        config = Config()
+        # reviewer + triage precede the worker in insertion order.
+        config.agents = {
+            "agent:reviewer": Mock(),
+            "agent:triage": Mock(),
+            "agent:worker": Mock(),
+        }
+        config.triage_follow_up_agent = "agent:worker"
+
+        assert triage_follow_up_agent_label(config) == "agent:worker"
+
+    def test_fails_loudly_when_unset_rather_than_guessing_by_dict_order(self) -> None:
+        from unittest.mock import Mock
+
+        config = Config()
+        config.agents = {"agent:reviewer": Mock(), "agent:worker": Mock()}
+        config.triage_follow_up_agent = None
+
+        with pytest.raises(ValueError, match="triage_follow_up_agent"):
+            triage_follow_up_agent_label(config)
 
 
 class TestProtectedLabelSet:

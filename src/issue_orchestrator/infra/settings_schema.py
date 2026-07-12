@@ -983,6 +983,24 @@ class ReviewSettings(BaseModel):
             "doctor_severity": DOCTOR_SEVERITY_ERROR,
         },
     )
+    triage_follow_up_agent: Optional[str] = Field(
+        None,
+        title="Triage Follow-Up Agent",
+        description="Worker agent that triage-proposed follow-up issues route to",
+        json_schema_extra={
+            "doc_examples": ["agent:developer"],
+            "doc_notes": (
+                "When a triage decision proposes a new follow-up issue, the "
+                "orchestrator attaches this worker's agent label so normal "
+                "discovery picks it up. Must match a worker label under agents; "
+                "unset means a follow-up proposal fails loudly instead of "
+                "guessing by config order."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage_follow_up_agent",
+            "yaml_path": "review.triage_follow_up_agent",
+        },
+    )
     triage_threshold: int = Field(
         0,
         title="Triage Threshold",
@@ -1070,13 +1088,15 @@ class ReviewSettings(BaseModel):
     triage_authority_create_issue: str = Field(
         "execute",
         title="Triage Authority: Create Issue",
-        description="Execute or surface triage-proposed follow-up issues",
+        description="Execute or gate triage-proposed follow-up issues",
         json_schema_extra={
             "enum": list(TRIAGE_AUTHORITY_MODES),
             "doc_examples": ["execute", "propose"],
             "doc_notes": (
-                "execute files the proposed issue; propose (shadow mode) "
-                "surfaces it as would-have-done. Allowed values: execute, propose."
+                "execute files the proposed follow-up issue directly; propose "
+                "files it as a gated proposal issue carrying the proposed-triage "
+                "label, inert until an operator removes that label (per-instance "
+                "approval, #6778). Allowed values: execute, propose."
             ),
             "section": "Triage Review",
             "config_attr": "triage.authority.create_issue",

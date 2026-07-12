@@ -9,6 +9,7 @@ from issue_orchestrator.control.actions import (
     ActionResult,
     AddCommentAction,
     CreateTriageProposalIssueAction,
+    DiscardTerminalTriageProposalOpsAction,
     KillHungSessionAction,
     ResetRetryIssueAction,
 )
@@ -20,6 +21,7 @@ from issue_orchestrator.control.triage_kill_session import (
 )
 from issue_orchestrator.control.triage_proposals import (
     apply_create_triage_issue,
+    apply_discard_terminal_triage_proposal_ops,
     build_op_ledger,
     build_triage_proposal_issue_action,
     finalize_triage_op_execution,
@@ -161,8 +163,8 @@ def test_split_classifies_open_approved_and_anchors() -> None:
     assert reconciled.approved == (
         ApprovedTriageOp(proposal_issue_number=501, op=ops[501]),
     )
-    # Every ledger row is accounted for by a live open issue: nothing terminal.
-    assert reconciled.terminal_op_issue_numbers == ()
+    # Every ledger row is accounted for by a live open issue: no candidates.
+    assert reconciled.absent_op_issue_numbers == ()
 
 
 def test_split_still_gated_yields_nothing_to_execute() -> None:
@@ -172,7 +174,7 @@ def test_split_still_gated_yields_nothing_to_execute() -> None:
 
     assert reconciled.anchor_candidate_issues == []
     assert reconciled.approved == ()
-    assert reconciled.terminal_op_issue_numbers == ()
+    assert reconciled.absent_op_issue_numbers == ()
 
 
 def test_split_without_ops_excludes_gate_labeled_issues() -> None:
@@ -187,10 +189,11 @@ def test_split_without_ops_excludes_gate_labeled_issues() -> None:
     assert reconciled.approved == ()
 
 
-def test_reconcile_flags_ledger_row_whose_issue_is_closed_or_absent() -> None:
-    """R2: a ledger op whose proposal issue is not in the exhaustive open scan
-    (manual close, or a finalize that crashed before discard_op) is terminal —
-    surfaced for the caller to discard idempotently."""
+def test_reconcile_flags_ledger_row_absent_from_scan_as_candidate_only() -> None:
+    """R7: a ledger op whose proposal issue is not in the exhaustive open scan
+    (manual close, a finalize that crashed before discard_op, OR a truncated
+    scan) is surfaced only as a cleanup CANDIDATE — reconciliation is read-only
+    and never proves terminality on absence alone."""
     # #500 is still open+gated; #501's proposal issue is gone from the scan.
     gated = _issue(500, ["triage-agent", PROPOSED_TRIAGE_LABEL])
     ops = {500: _op(13), 501: _kill_op(14)}
@@ -199,7 +202,105 @@ def test_reconcile_flags_ledger_row_whose_issue_is_closed_or_absent() -> None:
 
     assert reconciled.approved == ()
     assert reconciled.anchor_candidate_issues == []
-    assert reconciled.terminal_op_issue_numbers == (501,)
+    assert reconciled.absent_op_issue_numbers == (501,)
+
+
+# --- Confirm-and-discard owner (#6779 R7/R10) -----------------------------
+
+
+class _FakeTracker:
+    """Targeted-read stand-in: maps issue number -> 'open'/'closed'/None."""
+
+    def __init__(self, states: dict[int, str | None]) -> None:
+        self._states = states
+        self.reads: list[int] = []
+
+    def get_issue_state(self, issue_number: int, repo=None) -> str | None:
+        self.reads.append(issue_number)
+        return self._states.get(issue_number)
+
+
+def test_discard_owner_preserves_op_when_confirm_read_shows_open() -> None:
+    """R7 (data-loss safety): a candidate absent from the scan but confirmed
+    STILL OPEN is a pagination gap — its live op must be preserved."""
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=501, op=_kill_op(14))
+    tracker = _FakeTracker({501: "open"})
+    action = DiscardTerminalTriageProposalOpsAction(candidate_issue_numbers=(501,))
+
+    result = apply_discard_terminal_triage_proposal_ops(
+        action, tracker=tracker, authority=ops
+    )
+
+    assert result.success
+    assert tracker.reads == [501]  # a FRESH targeted read confirmed it
+    assert ops.load_op(issue_number=501) is not None  # PRESERVED, not deleted
+    assert result.details["discarded_op_count"] == 0
+    assert result.details["preserved_op_count"] == 1
+
+
+def test_discard_owner_discards_op_when_confirmed_closed() -> None:
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=501, op=_kill_op(14))
+    tracker = _FakeTracker({501: "closed"})
+    action = DiscardTerminalTriageProposalOpsAction(candidate_issue_numbers=(501,))
+
+    result = apply_discard_terminal_triage_proposal_ops(
+        action, tracker=tracker, authority=ops
+    )
+
+    assert result.success
+    assert ops.load_op(issue_number=501) is None  # confirmed terminal -> discarded
+    assert result.details["discarded_op_count"] == 1
+
+
+def test_discard_owner_discards_op_when_issue_deleted() -> None:
+    """A deleted proposal issue reads as None (404) and is genuinely terminal."""
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=501, op=_kill_op(14))
+    tracker = _FakeTracker({501: None})
+    action = DiscardTerminalTriageProposalOpsAction(candidate_issue_numbers=(501,))
+
+    result = apply_discard_terminal_triage_proposal_ops(
+        action, tracker=tracker, authority=ops
+    )
+
+    assert result.success
+    assert ops.load_op(issue_number=501) is None
+
+
+def test_discard_owner_never_deletes_live_op_on_truncated_scan() -> None:
+    """R7: a later-page scan failure drops a still-open proposal from the
+    exhaustive scan, so it arrives as a cleanup candidate alongside a genuinely
+    closed one. The confirm read discards only the closed op and preserves the
+    live one — a partial scan can never delete a live op."""
+    ops = InMemoryTriageAuthorityStore()
+    ops.record_op(issue_number=600, op=_op(20))     # genuinely closed
+    ops.record_op(issue_number=601, op=_kill_op(21))  # live, dropped by truncation
+    tracker = _FakeTracker({600: "closed", 601: "open"})
+    action = DiscardTerminalTriageProposalOpsAction(
+        candidate_issue_numbers=(600, 601)
+    )
+
+    result = apply_discard_terminal_triage_proposal_ops(
+        action, tracker=tracker, authority=ops
+    )
+
+    assert result.success
+    assert ops.load_op(issue_number=600) is None      # confirmed closed -> discarded
+    assert ops.load_op(issue_number=601) is not None  # live -> preserved
+    assert result.details["discarded_op_count"] == 1
+    assert result.details["preserved_op_count"] == 1
+
+
+def test_discard_owner_fails_loudly_without_tracker_or_store() -> None:
+    action = DiscardTerminalTriageProposalOpsAction(candidate_issue_numbers=(1,))
+
+    result = apply_discard_terminal_triage_proposal_ops(
+        action, tracker=None, authority=InMemoryTriageAuthorityStore()
+    )
+
+    assert not result.success
 
 
 # --- Approval planning ----------------------------------------------------

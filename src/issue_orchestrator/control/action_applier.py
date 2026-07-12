@@ -92,7 +92,7 @@ from .actions import (
     ResetRetryIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
-from .triage_proposals import apply_create_triage_issue, finalize_triage_op_execution
+from .triage_proposals import apply_create_triage_issue, apply_discard_terminal_triage_proposal_ops, finalize_triage_op_execution
 from .triage_reset_retry import apply_surface_triage_proposal
 
 logger = logging.getLogger(__name__)
@@ -299,6 +299,7 @@ class ActionApplier:
             ActionType.RESET_RETRY_ISSUE: self._apply_reset_retry_issue,
             # Approved kill_hung_session ops via the termination owner (#6778)
             ActionType.KILL_HUNG_SESSION: self._apply_kill_hung_session,
+            ActionType.DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS: lambda action: apply_discard_terminal_triage_proposal_ops(action, tracker=self.repository_host, authority=self.triage_ops),
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
