@@ -23,6 +23,7 @@ from .session_launcher import SessionLauncher
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
+    from .label_manager import LabelManager
 
 
 def clear_stale_needs_human_on_launch(
@@ -69,3 +70,37 @@ def reconcile_pending_needs_human_label_clears(
         removal_committed = session_launcher.clear_needs_human_label(issue_number)
         if removal_committed:
             state.pending_needs_human_label_clears.remove(issue_number)
+
+
+def reconstruct_pending_needs_human_label_clears(
+    state: "OrchestratorState", label_manager: "LabelManager"
+) -> list[int]:
+    """Rebuild the needs-human clear list lost across a process restart (#6771 r7).
+
+    ``OrchestratorState.pending_needs_human_label_clears`` is memory-only: if the
+    process exits after a stale-clear ``RemoveLabelAction`` fails but before a
+    reconcile tick commits it, the record is dropped while GitHub still carries
+    the needs-human source-of-truth marker — leaving a running investigation
+    permanently contradictory (the exact invariant this owner closes). Rather
+    than add a second persistent store, startup rebuilds the list from durable
+    facts (labels-as-truth, crash-safe from labels — ADR-0013).
+
+    Reconstruction rule: a STALE needs-human marker is one whose issue has an
+    active/restored session (the investigation that superseded the escalation is
+    running) yet still carries the needs-human label; it is seeded so the
+    per-tick reconciler retries the removal — and only the removal. A LEGITIMATE
+    committed needs-human escalation is for an issue whose investigation could
+    NOT launch (retries exhausted): it has no active/restored session, so it is
+    never seeded and its label is preserved. Idempotent: an issue already queued
+    for a clear (or seen twice among active sessions) is not re-added.
+    """
+    already = set(state.pending_needs_human_label_clears)
+    seeded: list[int] = []
+    for session in state.active_sessions:
+        issue_number = session.issue.number
+        if issue_number in already or not label_manager.requires_human_any(session.issue.labels):
+            continue
+        already.add(issue_number)
+        seeded.append(issue_number)
+    state.pending_needs_human_label_clears.extend(seeded)
+    return seeded
