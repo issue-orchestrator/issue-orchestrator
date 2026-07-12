@@ -12,5 +12,10 @@ pre_push_runtime:
   command: "ISSUE_ORCHESTRATOR_INTERNAL_VALIDATE_PR=1 make _validate-pr"
   metric: "validation_elapsed_seconds"
   baseline_seconds: 540
-  max_increase_seconds: 240
+  # Raised 240 -> 330 (cap 780 -> 870s, still < the 900s hard max_seconds):
+  # the ADR-0031 triage-tech-lead stack (#6768-#6779) added hundreds of unit
+  # tests and the live-CLI agent phases run slower under current API latency, so
+  # a clean validate-pr now measures ~780s — the prior cap false-positived on
+  # accumulated/environmental runtime, not a real per-change regression.
+  max_increase_seconds: 330
   max_seconds: 900
