@@ -19,7 +19,6 @@ from ..infra.logging_config import get_repo_log_path, read_log_tail
 if TYPE_CHECKING:
     from ..control.board_snapshot_builder import BoardSnapshotBuilder
     from ..infra.config import Config
-    from ..ports.needs_human_clear_store import NeedsHumanClearStore
     from ..ports.timeline_store import TimelineStore
     from ..ports.triage_authority import TriageAuthorityStore
 
@@ -29,22 +28,6 @@ def create_triage_authority_store(config: "Config") -> "TriageAuthorityStore":
     from ..infra.triage_authority_store import SqliteTriageAuthorityStore
 
     return SqliteTriageAuthorityStore.for_repo(config.repo_root)
-
-
-def create_needs_human_clear_store(config: "Config") -> "NeedsHumanClearStore":
-    """Durable provenance of orchestrator-owned stale needs-human clears (#6771 r7).
-
-    A recovered launch that supersedes an incomplete escalation must retry its
-    stale-label removal across restarts; this durable record — not an inference
-    from any active session carrying needs-human — is what proves the
-    orchestrator owns the clear.
-    """
-    from ..execution.json_needs_human_clear_store import JsonNeedsHumanClearStore
-    from ..infra.repo_identity import state_dir
-
-    return JsonNeedsHumanClearStore(
-        state_dir(config.repo_root) / "needs_human_label_clears.json"
-    )
 
 
 def create_board_snapshot_builder(

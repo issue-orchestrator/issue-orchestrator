@@ -684,16 +684,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     from ..control.label_manager import LabelManager
 
     _lm = LabelManager(config)
-    labels = [
-        _lm.in_progress,
-        _lm.blocked,
-        _lm.needs_human,
-        "priority:high",
-        "priority:medium",
-        "priority:low",
-    ]
-    # Add all agent labels from config
-    labels.extend(config.agents.keys())
+    labels = _lm.repository_initialization_labels(list(config.agents))
 
     created = 0
     updated = 0

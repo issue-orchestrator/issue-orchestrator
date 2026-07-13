@@ -632,6 +632,7 @@ class TestSetupWizardSharedHelpers:
         assert "agent:reviewer" in label_names
         assert "priority:high" in label_names
         assert "io:in-progress" in label_names
+        assert "io:triage-needs-human" in label_names
         assert "needs-code-review" in label_names
         assert "code-reviewed" in label_names
         assert "triage-reviewed" in label_names

@@ -39,6 +39,11 @@ class LabelEntry:
 # Legacy labels that predated the blocked-* convention
 _LEGACY_BLOCKING = frozenset({"needs-human", "failed", "publish-failed"})
 
+# Provenance marker for needs-human escalations owned by the triage launcher.
+# It is intentionally informational: the paired needs-human label carries the
+# blocking semantics, while this label answers only "who owns the transition?".
+TRIAGE_NEEDS_HUMAN_LABEL = "triage-needs-human"
+
 _REWORK_CYCLE_RE = re.compile(r"^rework-cycle-(\d+)$")
 _PUBLISH_FAIL_COUNT_RE = re.compile(r"^publish-fail-count-(\d+)$")
 
@@ -125,6 +130,12 @@ class LabelManager:
             LabelEntry("blocked_failed", "blocked-failed", LabelCategory.BLOCKING, "Failed run"),
             LabelEntry("publish_failed", "publish-failed", LabelCategory.BLOCKING, "Publishing failed"),
             LabelEntry("blocked_needs_human", config.label_needs_human, LabelCategory.BLOCKING, "Needs human"),
+            LabelEntry(
+                "triage_needs_human",
+                TRIAGE_NEEDS_HUMAN_LABEL,
+                LabelCategory.INFORMATIONAL,
+                "Triage needs-human provenance",
+            ),
             LabelEntry("blocked_cross_milestone", "blocked-cross-milestone", LabelCategory.BLOCKING, "Cross-milestone dep"),
             LabelEntry("needs_rework", config.label_needs_rework, LabelCategory.LIFECYCLE, "Needs rework"),
             LabelEntry("validation_failed", config.label_validation_failed, LabelCategory.LIFECYCLE, "Validation failed"),
@@ -207,6 +218,10 @@ class LabelManager:
     @property
     def needs_human(self) -> str:
         return self._resolved["blocked_needs_human"]
+
+    @property
+    def triage_needs_human(self) -> str:
+        return self._resolved["triage_needs_human"]
 
     @property
     def blocked_cross_milestone(self) -> str:
@@ -355,6 +370,21 @@ class LabelManager:
         """Remove only blocking labels, returning what remains."""
         return [l for l in labels if not self.is_blocking(l)]
 
+    def repository_initialization_labels(
+        self, agent_labels: Sequence[str]
+    ) -> list[str]:
+        """Return the shared minimal label set for repository init commands."""
+        return [
+            self.in_progress,
+            self.blocked,
+            self.needs_human,
+            self.triage_needs_human,
+            "priority:high",
+            "priority:medium",
+            "priority:low",
+            *agent_labels,
+        ]
+
     # ------------------------------------------------------------------
     # Recovery / completion cleanup
     # ------------------------------------------------------------------
@@ -371,6 +401,7 @@ class LabelManager:
         """
         return (
             label == self.pr_pending
+            or label == self.triage_needs_human
             or self.is_blocking(label)
             or self.is_publish_fail_count(label)
         )

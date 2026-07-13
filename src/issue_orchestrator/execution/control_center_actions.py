@@ -331,15 +331,7 @@ class InitializeLabelsCommand:
             from ..control.label_manager import LabelManager
             _lm = LabelManager(config)
             client = create_repository_host(config.repo, config=config)
-            labels = [
-                _lm.in_progress,
-                _lm.blocked,
-                _lm.needs_human,
-                "priority:high",
-                "priority:medium",
-                "priority:low",
-            ]
-            labels.extend(config.agents.keys())
+            labels = _lm.repository_initialization_labels(list(config.agents))
             created: list[str] = []
             updated: list[str] = []
             failed: list[str] = []

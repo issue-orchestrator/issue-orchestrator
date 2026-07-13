@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from ..control.label_manager import TRIAGE_NEEDS_HUMAN_LABEL
 from ..infra.config_value_rules import resolve_triage_watch_label
 from .setup_wizard_prompts import (
     build_code_review_prompt_text,
@@ -453,6 +454,11 @@ def _plan_setup_labels(
             prefixed(labels_config.get("needs_human", "needs-human")),
             "FBCA04",
             "Agent needs human input",
+        ),
+        (
+            prefixed(TRIAGE_NEEDS_HUMAN_LABEL),
+            "D4C5F9",
+            "Orchestrator-owned triage needs-human provenance",
         ),
     ]
 

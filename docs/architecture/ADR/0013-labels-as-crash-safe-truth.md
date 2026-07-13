@@ -32,7 +32,15 @@ Options considered:
 | `code-reviewed` | Review passed, awaiting triage |
 | `needs-rework` | Review requested changes |
 | `needs-human` | Escalated, human intervention required |
+| `triage-needs-human` | Provenance marker for a `needs-human` escalation owned by the triage launch workflow; informational, not independently blocking |
 | `blocked` | Dependencies not met |
+
+The triage launch workflow writes `triage-needs-human` before `needs-human`.
+When a running or restored investigation supersedes that escalation, the
+orchestrator removes `needs-human` first and then its marker. A bare
+`needs-human` label has no orchestrator-owned provenance and is never removed by
+this reconciliation. This ordering makes partial writes and removals safe to
+retry from labels alone after a crash.
 
 ### Recovery Flow
 
