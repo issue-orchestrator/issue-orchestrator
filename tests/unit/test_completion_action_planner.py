@@ -1127,6 +1127,66 @@ class TestDecisionTargetScope:
         assert not any(isinstance(a, CloseIssueAction) for a in actions)
         assert "triage-reviewed" not in added_labels(actions)
 
+    def test_duplicate_reset_retry_target_rejects_completion_without_effects(
+        self, tmp_path: Path
+    ) -> None:
+        """One focus issue cannot carry contradictory act-level commands."""
+        config = make_triage_config(tmp_path)
+        config.triage.authority.reset_retry = "execute"
+        session = make_triage_session(tmp_path)
+        arm_investigation_session(config, session)
+        _plant_decision_with_actions(
+            session,
+            [
+                {
+                    "id": "A1",
+                    "action_type": "post_comment",
+                    "target_number": 1,
+                    "body": "Diagnosis for the originating issue.",
+                    "finding_ids": ["T1"],
+                },
+                {
+                    "id": "A2",
+                    "action_type": "reset_retry",
+                    "target_number": 1,
+                    "body": "Reset the corrupted worktree.",
+                    "finding_ids": ["T1"],
+                },
+                {
+                    "id": "A3",
+                    "action_type": "reset_retry",
+                    "target_number": 1,
+                    "body": "Retry the same issue from scratch.",
+                    "finding_ids": ["T1"],
+                },
+            ],
+        )
+
+        error = triage_decision_processing_error(
+            config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+        assert error is not None
+        assert "multiple act-level proposed actions target #1: A2, A3" in error
+
+        actions = make_planner(config).generate_completion_actions(
+            session, SessionStatus.COMPLETED
+        )
+
+        [rejection] = _rejections(actions)
+        assert "multiple act-level proposed actions" in rejection.body_preview
+        prohibited_effects = (
+            ResetRetryIssueAction,
+            AddLabelAction,
+            AddCommentAction,
+            CloseIssueAction,
+        )
+        assert not any(isinstance(action, prohibited_effects) for action in actions)
+        assert removed_labels(actions) == {"in-progress"}
+
 
 class TestResetRetryExecutionPipeline:
     """Execute-authority reset_retry proposals flow from the decision

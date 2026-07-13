@@ -351,6 +351,7 @@ class TriageDecision:
                 f" duplicate ids: {', '.join(sorted(duplicates))}"
             )
         known = set(finding_ids)
+        act_level_action_by_target: dict[int, str] = {}
         for action in self.proposed_actions:
             action.validate()
             unknown = [ref for ref in action.finding_ids if ref not in known]
@@ -359,6 +360,16 @@ class TriageDecision:
                     f"proposed action {action.id} references unknown finding ids:"
                     f" {', '.join(unknown)}"
                 )
+            if action.is_act_level:
+                assert action.target_number is not None  # enforced by validate()
+                prior_action_id = act_level_action_by_target.get(action.target_number)
+                if prior_action_id is not None:
+                    raise ValueError(
+                        "multiple act-level proposed actions target"
+                        f" #{action.target_number}: {prior_action_id}, {action.id};"
+                        " exactly one act-level command per target is allowed"
+                    )
+                act_level_action_by_target[action.target_number] = action.id
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
