@@ -321,6 +321,19 @@ class PublishRecoveryService:
     # Termination (called when an issue's attempt is reset / torn down)
     # ------------------------------------------------------------------
 
+    def has_active_retry(self, issue_number: int) -> bool:
+        """Report whether a publish retry is in-flight or stored for the issue.
+
+        Non-mutating counterpart to :meth:`abandon_issue`: it reads the exact
+        state ``abandon_issue`` would clear — the live submission in ``_pending``
+        and the durable locators — so a lifecycle boundary that must decide
+        whether resetting would abandon live publish-retry work reads the same
+        owner state the abandon mutates, and the two can never drift.
+        """
+        with self._lock:
+            pending_present = issue_number in self._pending
+        return pending_present or self._locator_store.get(issue_number) is not None
+
     def abandon_issue(self, issue_number: int) -> None:
         """Abandon any in-flight publish retry and drop the durable locators.
 

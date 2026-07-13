@@ -70,3 +70,15 @@ class PersistentExchangePairRegistry(Protocol):
         ``reason`` is propagated to per-pair release events.
         """
         ...
+
+    def has_active_pair(self, issue_key: Hashable) -> bool:
+        """Report whether a persistent pair is cached for ``issue_key``.
+
+        Non-mutating counterpart to :meth:`release`: a lifecycle boundary that
+        must decide whether it would tear down live review-exchange work reads
+        this instead of releasing. Returning ``True`` for any cached pair (the
+        exact membership :meth:`release` pops) keeps the activity check and the
+        teardown reading the same state, so a freshness predicate can never miss
+        a pair the reset would release.
+        """
+        ...

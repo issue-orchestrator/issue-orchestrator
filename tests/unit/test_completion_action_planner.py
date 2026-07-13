@@ -1225,7 +1225,7 @@ class TestResetRetryExecutionPipeline:
                 labels=["agent:test", "blocked-failed"],
                 repo="owner/repo",
             ),
-            has_active_session=lambda _number: False,
+            has_active_issue_runtime=lambda _number: False,
             run_reset=run_reset,
         )
         applier = ActionApplier(

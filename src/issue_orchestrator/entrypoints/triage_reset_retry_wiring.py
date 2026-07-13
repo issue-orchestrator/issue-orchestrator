@@ -39,7 +39,10 @@ def build_triage_reset_retry_executor(
     # Lazy: web_retry_history_routes pulls in the FastAPI routing stack,
     # which composition should not load at module-import time.
     from ..control.maintenance import reset_issue
-    from .web_retry_history_routes import reset_and_retry_issue
+    from .web_retry_history_routes import (
+        has_active_reset_retry_runtime,
+        reset_and_retry_issue,
+    )
 
     deps = orchestrator.deps
     label_manager = deps.label_manager
@@ -74,16 +77,22 @@ def build_triage_reset_retry_executor(
     def _read_issue(issue_number: int) -> "Issue | None":
         return deps.repository_host.get_issue(issue_number)
 
-    def _has_active_session(issue_number: int) -> bool:
-        return any(
-            session.issue.number == issue_number
-            for session in orchestrator.state.active_sessions
+    def _has_active_issue_runtime(issue_number: int) -> bool:
+        # Consults the SAME runtime owners the reset boundary would terminate
+        # (via ``_reset_retry_runtime_owners``): visible issue/rework sessions,
+        # the persistent coder/reviewer pair, supervised review-exchange jobs,
+        # and pending publish retry. A stale proposal thus downgrades before it
+        # can tear down hidden live work it never observed (#6777).
+        return has_active_reset_retry_runtime(
+            issue_number=issue_number,
+            state=orchestrator.state,
+            deps=deps,
         )
 
     return TriageResetRetryExecutor(
         events=deps.events,
         label_manager=label_manager,
         read_issue=_read_issue,
-        has_active_session=_has_active_session,
+        has_active_issue_runtime=_has_active_issue_runtime,
         run_reset=_run_reset,
     )

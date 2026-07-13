@@ -94,7 +94,7 @@ def make_executor(
         events=events,
         label_manager=LabelManager(Config()),
         read_issue=lambda _n: resolved_issue,
-        has_active_session=lambda _n: active_session,
+        has_active_issue_runtime=lambda _n: active_session,
         run_reset=run_reset,
     )
     return executor, events, run_reset
@@ -129,7 +129,7 @@ class TestStaleReason:
     def test_valid_when_open_blocked_and_idle(self):
         reason = reset_retry_stale_reason(
             issue=make_issue(),
-            active_session=False,
+            active_runtime=False,
             label_manager=LabelManager(Config()),
         )
         assert reason is None
@@ -137,7 +137,7 @@ class TestStaleReason:
     def test_unreadable_issue_is_stale(self):
         reason = reset_retry_stale_reason(
             issue=None,
-            active_session=False,
+            active_runtime=False,
             label_manager=LabelManager(Config()),
         )
         assert reason is not None and "could not be read" in reason
@@ -145,23 +145,23 @@ class TestStaleReason:
     def test_closed_issue_is_stale(self):
         reason = reset_retry_stale_reason(
             issue=make_issue(state="closed"),
-            active_session=False,
+            active_runtime=False,
             label_manager=LabelManager(Config()),
         )
         assert reason is not None and "closed" in reason
 
-    def test_active_session_is_stale(self):
+    def test_active_runtime_is_stale(self):
         reason = reset_retry_stale_reason(
             issue=make_issue(),
-            active_session=True,
+            active_runtime=True,
             label_manager=LabelManager(Config()),
         )
-        assert reason is not None and "active session" in reason
+        assert reason is not None and "active runtime" in reason
 
     def test_no_blocking_label_is_stale(self):
         reason = reset_retry_stale_reason(
             issue=make_issue(labels=["agent:test"]),
-            active_session=False,
+            active_runtime=False,
             label_manager=LabelManager(Config()),
         )
         assert reason is not None and "blocking-class" in reason

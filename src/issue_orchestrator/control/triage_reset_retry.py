@@ -8,10 +8,13 @@ preconditions against CURRENT state immediately before invoking the reset
 owner:
 
 1. the target issue can still be read and is still open;
-2. no active session is running for the issue — the reset boundary
-   force-terminates issue runtime, which an operator clicking
-   "Reset & Retry" consents to, but an agent proposal written before a
-   new session started must never kill unobserved live work;
+2. no runtime the reset boundary would terminate is active for the issue
+   — a visible issue/rework session, the persistent coder/reviewer pair, a
+   supervised review-exchange job, or a pending publish retry. The reset
+   force-terminates ALL of these, which an operator clicking "Reset & Retry"
+   consents to, but an agent proposal written before that work started must
+   never kill unobserved live work (the freshness check reads the same owner
+   set the teardown mutates — see ``has_active_reset_retry_runtime``);
 3. the issue still carries at least one blocking-class label
    (:meth:`LabelManager.get_blocking` — the same classification the retry
    entry points clear via ``labels_to_remove_for_retry``). If nothing
@@ -178,21 +181,25 @@ RunResetFn = Callable[[int, Sequence[str]], ResetRetryRunOutcome]
 def reset_retry_stale_reason(
     *,
     issue: "Issue | None",
-    active_session: bool,
+    active_runtime: bool,
     label_manager: "LabelManager",
 ) -> str | None:
     """Why the proposal's preconditions no longer hold, or None when valid.
 
     Pure policy — see the module docstring for the precondition rationale.
+    ``active_runtime`` is the aggregate signal from every runtime owner the
+    reset boundary would terminate (visible session, persistent review-exchange
+    pair/job, or pending publish retry), not just a visible session.
     """
     if issue is None:
         return "target issue could not be read from the repository host"
     if issue.state != "open":
         return f"target issue #{issue.number} is {issue.state}, not open"
-    if active_session:
+    if active_runtime:
         return (
-            f"issue #{issue.number} has an active session; resetting would"
-            " terminate live work the proposal did not observe"
+            f"issue #{issue.number} has active runtime (session, review-exchange"
+            " pair/job, or publish retry); resetting would terminate live work"
+            " the proposal did not observe"
         )
     if not label_manager.get_blocking(issue.labels):
         return (
@@ -215,14 +222,14 @@ class TriageResetRetryExecutor:
     events: EventSink
     label_manager: "LabelManager"
     read_issue: Callable[[int], "Issue | None"]
-    has_active_session: Callable[[int], bool]
+    has_active_issue_runtime: Callable[[int], bool]
     run_reset: RunResetFn
 
     def apply(self, action: ResetRetryIssueAction) -> ActionResult:
         issue = self.read_issue(action.issue_number)
         stale = reset_retry_stale_reason(
             issue=issue,
-            active_session=self.has_active_session(action.issue_number),
+            active_runtime=self.has_active_issue_runtime(action.issue_number),
             label_manager=self.label_manager,
         )
         if stale is not None:
