@@ -474,5 +474,3 @@ coding-done blocked \\
 - **Flag, don't approve** - your job is to surface concerns, humans make final decisions
 - **Don't block for style** - focus on correctness and maintainability
 """
-
-
