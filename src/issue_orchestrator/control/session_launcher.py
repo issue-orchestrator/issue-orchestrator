@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
     from .action_applier import ActionApplier
     from ..ports.claim_manager import ClaimManager
-    from ..ports.needs_human_clear_store import NeedsHumanClearStore
     from ..ports.triage_authority import TriageAuthorityStore
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -41,7 +40,6 @@ from ..events import EventName
 from ..domain.models import (
     AgentConfig,
     Issue,
-    NeedsHumanEscalationResult,
     PendingReview,
     PendingRetrospectiveReview,
     PendingRework,
@@ -72,7 +70,8 @@ from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
-from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .actions import Action, AddLabelAction, RemoveLabelAction
+from .triage_needs_human_reconcile import TriageNeedsHumanLifecycle
 from .session_manager import SessionManager, SessionRef
 from .session_launch_types import ClaimAcquisitionResult, LaunchResult
 from .session_rework_launcher import (
@@ -205,8 +204,6 @@ class SessionLauncher:
         # authoritative required input, so the launcher must always be able to
         # produce one. Tests inject a null-object/fake provider, never None.
         board_snapshot_provider: "BoardSnapshotProvider",
-        # Required (keyword-only): durable provenance of stale needs-human clears this launcher owns (#6771 r7); tests inject an in-memory store.
-        needs_human_clear_store: "NeedsHumanClearStore",
     ):
         self.config = config
         self.events = events
@@ -220,7 +217,6 @@ class SessionLauncher:
         self._manifest_downloader = manifest_downloader
         self._triage_authority = triage_authority
         self._board_snapshot_provider = board_snapshot_provider
-        self.needs_human_clear_store = needs_human_clear_store  # public: read by the needs-human reconcile owner
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -238,6 +234,14 @@ class SessionLauncher:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._triage_needs_human = TriageNeedsHumanLifecycle(
+            labels=label_manager,
+            events=events,
+            read_labels=repository_host.get_issue_labels_fresh,
+            apply_actions=lambda actions, context: self._apply_actions(
+                actions, context=context
+            ),
+        )
 
     def _worktree_reuse_options(
         self,
@@ -305,20 +309,21 @@ class SessionLauncher:
         comment: str,
         context: str,
         event_data: dict[str, object],
-    ) -> NeedsHumanEscalationResult:
-        """Durable needs-human escalation (single owner). ``committed`` (label AND comment landed) alone fires the event and lets a caller drop the record; ``label_applied`` lets a caller clear the stale source-of-truth label if the work later launches instead of escalating (#6771 r4/r5)."""
-        label = AddLabelAction(issue_number=issue_number, label=self._lm.needs_human, reason=reason)
-        note = AddCommentAction(number=issue_number, comment=comment, reason=reason)
-        label_ok = self._apply_actions([label], context=context)
-        committed = label_ok and self._apply_actions([note], context=context)
-        if committed:
-            self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, dict(event_data)))
-        return NeedsHumanEscalationResult(committed=committed, label_applied=label_ok)
+    ) -> bool:
+        """Commit the marker-owned needs-human escalation."""
+        return self._triage_needs_human.escalate(
+            issue_number=issue_number,
+            reason=reason,
+            comment=comment,
+            context=context,
+            event_data=event_data,
+        )
 
-    def clear_needs_human_label(self, issue_number: int) -> bool:
-        """Drop a stale needs-human label an incomplete escalation left; returns whether the single RemoveLabelAction committed so a failed removal is retained for durable reconciliation, not treated as success (#6771 r5/r6)."""
-        action = RemoveLabelAction(issue_number=issue_number, label=self._lm.needs_human, reason="triage launched; incomplete escalation superseded")
-        return self._apply_actions([action], context="triage_clear_stale_needs_human")
+    def reconcile_stale_triage_needs_human(
+        self, active_sessions: Sequence[Session]
+    ) -> None:
+        """Reconcile marker-owned escalations against active/restored work."""
+        self._triage_needs_human.reconcile(active_sessions)
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
         retry_cfg = self.config.retry.interrupted_sessions
@@ -811,21 +816,15 @@ class SessionLauncher:
         issue_key = issue.key
         session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
 
+        _identity_log_extra = log_context(issue_key=issue_key.stable_id(), session_id=session_name)
         logger.info(
             "[launch] Issue session identity: issue=%s issue_key=%s agent=%s task=%s session=%s",
-            issue.number,
-            issue_key,
-            issue.agent_type,
-            TaskKind.CODE.value,
-            session_name,
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+            issue.number, issue_key, issue.agent_type, TaskKind.CODE.value, session_name,
+            extra=_identity_log_extra,
         )
         logger.info(
             "[launch] Issue session key: issue=%s session=%s session_key=%s",
-            issue.number,
-            session_name,
-            session_key.stable_id(),
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+            issue.number, session_name, session_key.stable_id(), extra=_identity_log_extra,
         )
 
         # Phase 2: Verify dependencies haven't changed (CAS check)

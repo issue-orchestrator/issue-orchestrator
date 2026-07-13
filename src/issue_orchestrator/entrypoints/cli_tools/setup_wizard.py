@@ -18,6 +18,7 @@ from ..setup_wizard_common import (
     find_existing_config,
     find_prompt_candidates,
     get_repository_host as _get_repository_host,
+    plan_setup_labels,
     run_git,
     write_config,
 )
@@ -1407,68 +1408,10 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         repo_config.get("name") if isinstance(repo_config, dict) else repo_config
     )
     if repo_name:
-        # Gather all labels we want to ensure exist
-        labels_config = config.get("labels", {})
-        label_prefix = labels_config.get("prefix", "")
-
-        def prefixed(label: str) -> str:
-            """Apply label prefix if configured."""
-            return f"{label_prefix}:{label}" if label_prefix else label
-
-        # Agent labels (e.g., agent:developer, agent:reviewer)
-        agent_labels = [
-            (agent_name, "1D76DB", f"Issues for {agent_name.split(':')[-1]} agent")
-            for agent_name in config.get("agents", {}).keys()
-        ]
-
-        priority_labels = [
-            ("priority:high", "D93F0B", "Urgent - do first"),
-            ("priority:medium", "FBCA04", "Normal priority"),
-            ("priority:low", "0E8A16", "Nice to have"),
-        ]
-        status_labels = [
-            (
-                prefixed(labels_config.get("in_progress", "in-progress")),
-                "5319E7",
-                "Agent is working on this",
-            ),
-            (
-                prefixed(labels_config.get("blocked", "blocked")),
-                "B60205",
-                "Agent is blocked",
-            ),
-            (
-                prefixed(labels_config.get("needs_human", "needs-human")),
-                "FBCA04",
-                "Agent needs human input",
-            ),
-        ]
-        all_labels = agent_labels + priority_labels + status_labels
-
-        # Add review labels if configured (two-stage review workflow)
-        if code_review_agent:
-            all_labels.extend(
-                [
-                    (code_review_label, "7057FF", "PR needs code review"),
-                    (code_reviewed_label, "0E8A16", "PR has been code reviewed"),
-                ]
-            )
-        if triage_review_agent:
-            all_labels.append(
-                (triage_reviewed_label, "1D76DB", "PR has been triage reviewed")
-            )
-
-        # Check which labels already exist and collect missing ones
         existing_labels = set(fetch_github_labels(repo_name))
-        missing_labels = [
-            (name, color, desc)
-            for name, color, desc in all_labels
-            if name not in existing_labels
-        ]
-
-        for name, color, desc in missing_labels:
-            file_collector.add_label(name, color, desc)
-
+        for name, color, description in plan_setup_labels(config):
+            if name not in existing_labels:
+                file_collector.add_label(name, color, description)
     # Show summary and ask for confirmation
     _print_changes_summary(file_collector, prompter, dry_run)
 

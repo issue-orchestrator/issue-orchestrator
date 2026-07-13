@@ -58,7 +58,6 @@ from ..control.session_routing import (
     orchestrator_launch_session as _launch_session,
     get_session_machine as _sl_get_session_machine,
 )
-from ..control.triage_needs_human_reconcile import reconcile_needs_human_label_clears as _reconcile_needs_human_label_clears
 from ..control.cleanup_manager import CleanupManager
 from ..control.review_exchange_lifecycle import (
     IssueRuntimeTermination,
@@ -238,7 +237,7 @@ class Orchestrator:
             remove_session_machine=self.deps.state_machine_manager.remove_session_machine,
             label_manager=self.deps.label_manager,
             send_to_session_fn=lambda name, text: self.deps.session_manager.runner.send_to_session_by_name(name, text),
-            board_snapshot_provider=StateBoardSnapshotProvider(self.deps.board_snapshot_builder, lambda: self.state), needs_human_clear_store=self.deps.needs_human_clear_store,
+            board_snapshot_provider=StateBoardSnapshotProvider(self.deps.board_snapshot_builder, lambda: self.state),
         )
 
     @cached_property
@@ -397,7 +396,7 @@ class Orchestrator:
             # the last tick (clears publish-failed state + stored locators on
             # success; leaves them retryable on failure).
             self.deps.publish_recovery.drain_completed_retries(self.state)
-            _reconcile_needs_human_label_clears(self._session_launcher, {s.issue.number for s in self.state.active_sessions})  # retry durable stale needs-human clears + resolve provisional ones by restored session (#6771 r6-r8); removal only, never relaunches
+            self._session_launcher.reconcile_stale_triage_needs_human(self.state.active_sessions)
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
                 self._event_context,

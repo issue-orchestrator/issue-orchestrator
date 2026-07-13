@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from ..ports.goal_pilot_store import GoalPilotStore
     from ..ports.attempt_store import AttemptStore
     from ..ports.triage_authority import TriageAuthorityStore
-    from ..ports.needs_human_clear_store import NeedsHumanClearStore
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
@@ -146,10 +145,6 @@ class OrchestratorDeps:
     @property
     def triage_authority(self) -> "TriageAuthorityStore":
         return self.services.triage_authority
-
-    @property
-    def needs_human_clear_store(self) -> "NeedsHumanClearStore":
-        return self.services.needs_human_clear_store
 
     @property
     def provider_resilience(self) -> "ProviderResilienceManager":

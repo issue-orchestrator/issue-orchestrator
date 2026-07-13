@@ -30,7 +30,6 @@ from ..ports.session_runner import DiscoveredSession
 from .active_sessions import append_unique_active_sessions
 from .session_launcher import SessionLauncher
 from .session_manager import SessionManager, SessionRef
-from .triage_needs_human_reconcile import clear_stale_needs_human_on_launch, record_pending_needs_human_clear, withdraw_pending_needs_human_clear
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -395,16 +394,14 @@ def orchestrator_launch_triage_session(
     if not agent or agent not in config.agents:
         raise ValueError(f"Invalid triage agent: {agent}")
     pending_queues = PendingSessionQueues(state)
-    record_pending_needs_human_clear(triage, session_launcher)  # write-ahead a provisional clear obligation BEFORE the terminal can be lost (#6771 r8)
     result = session_launcher.launch_issue_session(
         Issue(triage.issue_number, triage.title, [agent]),
         state.active_sessions,
         triage_flavor=triage.flavor,
     )
     if result.success and result.session:
-        clear_stale_needs_human_on_launch(triage, session_launcher)
-        pending_queues.remove_triage(triage.issue_number)
         append_unique_active_sessions(state.active_sessions, [result.session])
+        pending_queues.remove_triage(triage.issue_number)
     elif result.keep_queued:
         restored = _restore_existing_terminal(
             request=_ExistingTerminalRestorationRequest(
@@ -417,18 +414,15 @@ def orchestrator_launch_triage_session(
             session_restorer=session_restorer,
         )
         if restored:
-            clear_stale_needs_human_on_launch(triage, session_launcher)
             pending_queues.remove_triage(triage.issue_number)
             return restored
     elif result.retry_queued:
-        withdraw_pending_needs_human_clear(triage, session_launcher)  # launch did not start → stale label legitimate (#6771 r8)
         outcome = pending_queues.retain_triage_for_retry(triage.issue_number)
         if outcome is TriageRetentionOutcome.EXHAUSTED:
             _commit_or_retain_dropped_triage(
                 triage, result.reason, session_launcher, pending_queues
             )
     else:
-        withdraw_pending_needs_human_clear(triage, session_launcher)  # permanent launch failure → stale label legitimate (#6771 r8)
         pending_queues.remove_triage(triage.issue_number)
     return result.session if result.success else None
 
@@ -470,7 +464,7 @@ def _commit_or_retain_dropped_triage(
         "A human needs to fix the launch failure and re-queue (or close) "
         "this investigation."
     )
-    result = session_launcher.escalate_issue_needs_human(
+    committed = session_launcher.escalate_issue_needs_human(
         issue_number=triage.issue_number,
         reason="triage launch retries exhausted",
         comment=comment,
@@ -485,15 +479,9 @@ def _commit_or_retain_dropped_triage(
             ),
         },
     )
-    if result.committed:
+    if committed:
         pending_queues.remove_triage(triage.issue_number)
         return
-    # Not committed: retain the recoverable record. Remember any partially
-    # applied needs-human label so a later successful launch can clear it
-    # (#6771 round 5) — once applied it stays tracked until cleared or committed.
-    triage.needs_human_escalation_incomplete = (
-        triage.needs_human_escalation_incomplete or result.label_applied
-    )
     logger.error(
         "[TRIAGE] Durable needs-human escalation did NOT commit for issue "
         "#%d; retaining the queued %s as the only recoverable record "

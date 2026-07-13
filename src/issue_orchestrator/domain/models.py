@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Literal, NamedTuple, Optional, TYPE_CHECKING, TypeAlias
+from typing import Any, Iterable, Literal, Optional, TYPE_CHECKING, TypeAlias
 from unittest.mock import Mock
 
 from .dependency_gates import DependencyGateSnapshot
@@ -1525,20 +1525,6 @@ class PendingRework:
             return None
 
 
-class NeedsHumanEscalationResult(NamedTuple):
-    """Outcome of a needs-human escalation attempt (#6771 round 4/5).
-
-    ``committed`` is true only when the label AND comment both landed (the only
-    case that fires the event and lets a caller drop the durable record).
-    ``label_applied`` reports whether the source-of-truth label was applied at
-    all — true-but-not-committed is the partial state a caller must remember to
-    clear if the work later launches instead of escalating.
-    """
-
-    committed: bool
-    label_applied: bool
-
-
 @dataclass
 class PendingTriageReview:
     """A triage session queued for processing (ADR-0031).
@@ -1572,13 +1558,6 @@ class PendingTriageReview:
     # is the ONLY durable record of the investigation, so transient prep
     # failures retain it instead of dropping it.
     retryable_launch_failures: int = 0
-    # Set when an EXHAUSTED escalation applied the needs-human label but did
-    # NOT commit (comment mutation failed). The marker persists on GitHub as
-    # incomplete source-of-truth state; if a later tick's prep recovers and the
-    # investigation launches, the successful-launch path must clear that stale
-    # marker so no contradictory needs-human state survives (#6771 round 5).
-    needs_human_escalation_incomplete: bool = False
-
     def __post_init__(self) -> None:
         if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION and self.failure is None:
             raise ValueError(

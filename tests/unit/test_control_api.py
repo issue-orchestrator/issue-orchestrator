@@ -89,6 +89,7 @@ def create_mock_orchestrator():
     lm = mock.deps.label_manager
     lm.blocked = "blocked"
     lm.needs_human = "blocked-needs-human"
+    lm.triage_needs_human = "triage-needs-human"
     lm.blocked_failed = "blocked-failed"
     lm.blocked_pr_closed = "blocked:pr-closed"
     lm.pr_pending = "pr-pending"
