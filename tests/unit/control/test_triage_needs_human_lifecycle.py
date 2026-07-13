@@ -115,6 +115,7 @@ def _lifecycle(config, events, live, *, stale_read, on_apply=None):
         labels=LabelManager(config),
         events=events,
         read_labels=lambda issue_number: list(stale_read.get(issue_number, [])),
+        discover_marked_issue_numbers=lambda: (),
         apply_actions=applier,
     )
     return lifecycle, applier
@@ -226,6 +227,53 @@ class TestEscalateGuards:
         assert applier.comments == []
         assert mock_event_sink.events == []
 
+    def test_preexisting_needs_human_is_not_claimed(
+        self, sample_config, mock_event_sink, tmp_path
+    ):
+        """A bare human/session-owned label remains outside this lifecycle."""
+        labels = LabelManager(sample_config)
+        live = {903: {labels.needs_human}}
+        lifecycle, applier = _lifecycle(
+            sample_config,
+            mock_event_sink,
+            live,
+            stale_read={903: {labels.needs_human}},
+        )
+
+        assert self._escalate(lifecycle) is True
+        assert live[903] == {labels.needs_human}
+        assert not any(
+            isinstance(action, AddLabelAction)
+            and action.label == labels.triage_needs_human
+            for action in applier.applied
+        )
+
+        lifecycle.reconcile([_session(903, tmp_path)])
+
+        assert live[903] == {labels.needs_human}
+        assert not any(
+            isinstance(action, RemoveLabelAction) for action in applier.applied
+        )
+
+    def test_concurrent_needs_human_blocks_marker_claim(
+        self, sample_config, mock_event_sink
+    ):
+        """The write guard closes the race after an initially empty read."""
+        labels = LabelManager(sample_config)
+        live = {903: {labels.needs_human}}
+        lifecycle, applier = _lifecycle(
+            sample_config,
+            mock_event_sink,
+            live,
+            stale_read={903: set()},
+        )
+
+        assert self._escalate(lifecycle) is False
+        assert live[903] == {labels.needs_human}
+        assert applier.applied == []
+        assert applier.comments == []
+        assert mock_event_sink.events == []
+
     def test_guards_carry_marker_provenance_contract(
         self, sample_config, mock_event_sink
     ):
@@ -250,6 +298,8 @@ class TestEscalateGuards:
             assert labels.needs_reconcile in guard.forbidden_labels
 
         assert marker_add.required_labels == frozenset()
+        assert labels.triage_needs_human in marker_add.forbidden_labels
+        assert labels.needs_human in marker_add.forbidden_labels
         assert needs_human_add.required_labels == frozenset(
             {labels.triage_needs_human}
         )
@@ -380,12 +430,41 @@ class TestReconcileGuards:
             labels=labels,
             events=mock_event_sink,
             read_labels=read_labels,
+            discover_marked_issue_numbers=lambda: (),
             apply_actions=applier,
         )
 
         lifecycle.reconcile([_session(903, tmp_path), _session(904, tmp_path)])
 
         assert live[904] == set()
+
+    def test_fresh_process_recovers_marker_without_queue_or_active_session(
+        self, sample_config, mock_event_sink
+    ):
+        """A marker-only crash remains discoverable and becomes blocking."""
+        labels = LabelManager(sample_config)
+        live = {903: {labels.triage_needs_human}}
+        applier = GuardEnforcingApplier(live)
+        lifecycle = TriageNeedsHumanLifecycle(
+            labels=labels,
+            events=mock_event_sink,
+            read_labels=lambda issue_number: list(live[issue_number]),
+            discover_marked_issue_numbers=lambda: (903,),
+            apply_actions=applier,
+        )
+
+        lifecycle.reconcile([])
+
+        assert live[903] == {labels.triage_needs_human, labels.needs_human}
+        assert any(
+            isinstance(action, AddLabelAction) and action.label == labels.needs_human
+            for action in applier.applied
+        )
+        assert len(applier.comments) == 1
+        assert "recovered an interrupted triage" in applier.comments[0].comment
+        assert [str(event.name) for event in mock_event_sink.events] == [
+            str(EventName.ISSUE_NEEDS_HUMAN)
+        ]
 
 
 class TestPrefixResolvedPauseLabel:

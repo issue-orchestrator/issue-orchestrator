@@ -1184,7 +1184,9 @@ class TestRunLoop:
         ):
             await run_loop_one_tick(orchestrator)
 
-        reconcile.assert_called_once_with(orchestrator.state.active_sessions)
+        reconcile.assert_called_once_with(
+            orchestrator.state.active_sessions, discover_markers=True
+        )
 
     @pytest.mark.asyncio
     async def test_run_loop_checks_active_sessions(

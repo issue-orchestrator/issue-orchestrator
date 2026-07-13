@@ -158,15 +158,15 @@ class PendingSessionQueues:
     def retain_triage_for_retry(self, issue_number: int) -> TriageRetentionOutcome:
         """Bounded retention of a queued triage item after a retryable launch failure.
 
-        Failure investigations have no labels-as-truth recovery: the queued
-        item is the ONLY durable record of the investigation (the per-tick
+        Before escalation starts, failure investigations have no labels-as-
+        truth recovery: the queued item is the only record (the per-tick
         ``discovered_failures`` buffer is cleared after planning), so a
         transient required-input prep failure must retain it for retry, not
         delete it. Retention is bounded by ``TRIAGE_LAUNCH_RETRY_LIMIT``:
         once exhausted ``EXHAUSTED`` is returned, but the item is NOT removed
-        here (#6771 round 4). Destructive removal of the only durable record
-        must not precede confirmation that the needs-human label/comment
-        transition landed, so the launch caller commits the drop via
+        here (#6771 round 4). Destructive queue removal must not precede the
+        lifecycle's committed needs-human transition, so the launch caller
+        commits the drop via
         ``remove_triage`` only after ``escalate_issue_needs_human`` succeeds;
         on escalation failure the item is retained and re-attempted.
 
@@ -435,16 +435,12 @@ def _commit_or_retain_dropped_triage(
 ) -> None:
     """Commit protocol for a triage item that exhausted its launch retries.
 
-    The queued item is the ONLY durable record of a failure investigation, so
-    it is dropped ONLY after ``escalate_issue_needs_human`` confirms the
-    needs-human label + comment landed on the issue (#6771 round 4). The
-    ordering is the whole point: destructive queue removal must not precede
-    confirmation of the durable transition. If the escalation mutation fails,
-    the item is RETAINED as a recoverable record and re-attempted on a later
-    tick (either the launch prep recovers and the investigation runs, or a
-    subsequent exhaustion re-attempts the escalation until it commits); the
-    failure is surfaced loudly and no ISSUE_NEEDS_HUMAN event is emitted for
-    the non-transition.
+    The queued item is the only record before escalation starts, so it is
+    dropped only after ``escalate_issue_needs_human`` confirms the label and
+    comment transition (#6771 round 4). A partial marker commit is independently
+    crash-recoverable, while this process retains the richer queued context for
+    retry. The failure is surfaced and no ISSUE_NEEDS_HUMAN event is emitted for
+    a non-transition.
     """
     logger.error(
         "[TRIAGE] Escalating dropped %s for issue #%d after %d retryable "
@@ -484,8 +480,8 @@ def _commit_or_retain_dropped_triage(
         return
     logger.error(
         "[TRIAGE] Durable needs-human escalation did NOT commit for issue "
-        "#%d; retaining the queued %s as the only recoverable record "
-        "(will re-attempt on a later tick)",
+        "#%d; retaining queued %s context for retry (any committed marker "
+        "also enables crash recovery)",
         triage.issue_number,
         triage.flavor.value,
     )

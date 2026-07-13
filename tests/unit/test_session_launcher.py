@@ -164,6 +164,7 @@ class MockRepositoryHost:
         self.search_pr_refs_calls: list[int] = []
         self.prs_with_label: list[PRInfo] = []
         self.get_prs_with_label_calls: list[tuple[str, str]] = []
+        self.list_issues_calls: list[tuple[list[str] | None, str, int]] = []
         self.get_issue_labels_fresh = MagicMock(
             side_effect=lambda issue_number: sorted(
                 self.labels.get(issue_number, set())
@@ -180,6 +181,27 @@ class MockRepositoryHost:
 
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
+
+    def list_issues(
+        self,
+        labels: list[str] | None = None,
+        milestone: str | None = None,
+        state: str = "open",
+        limit: int = 100,
+        required_stable_ids: set[str] | None = None,
+    ) -> list[Issue]:
+        del milestone, required_stable_ids
+        self.list_issues_calls.append((labels, state, limit))
+        candidates = [
+            self.get_issue(issue_number)
+            for issue_number in sorted(set(self.issues) | set(self.labels))
+        ]
+        required_labels = set(labels or ())
+        return [
+            issue
+            for issue in candidates
+            if issue is not None and required_labels <= set(issue.labels)
+        ][:limit]
 
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
         self.get_prs_with_label_calls.append((label, state))
@@ -3948,6 +3970,82 @@ class TestLaunchTriageIssueSessionFlavors:
             (903, labels.triage_needs_human),
             (905, labels.triage_needs_human),
         ]
+
+    def test_restart_discovers_marker_only_without_queue_or_active_session(
+        self, launcher_bundle, mock_repo_host, mock_events
+    ):
+        """A fresh launcher recovers the durable marker without memory state."""
+        labels = LabelManager(launcher_bundle.launcher.config)
+        mock_repo_host.labels[903] = {labels.triage_needs_human}
+
+        def apply_action(action):
+            if isinstance(action, AddLabelAction):
+                mock_repo_host.labels[action.issue_number].add(action.label)
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human([])
+
+        assert mock_repo_host.labels[903] == {
+            labels.triage_needs_human,
+            labels.needs_human,
+        }
+        assert mock_repo_host.list_issues_calls == [
+            (
+                [labels.triage_needs_human],
+                "open",
+                100,
+            )
+        ]
+        applied = [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        assert any(
+            isinstance(action, AddCommentAction)
+            and "recovered an interrupted triage" in action.comment
+            for action in applied
+        )
+        assert [
+            event
+            for event in mock_events.events
+            if str(event.name) == str(EventName.ISSUE_NEEDS_HUMAN)
+        ]
+
+    def test_escalation_does_not_claim_preexisting_needs_human(
+        self, launcher_bundle, mock_repo_host, tmp_path
+    ):
+        """The public launcher boundary preserves a legitimate bare label."""
+        labels = LabelManager(launcher_bundle.launcher.config)
+        mock_repo_host.labels[903] = {labels.needs_human}
+        launcher_bundle.action_applier.apply = MagicMock(
+            side_effect=lambda action: ActionResult.ok(action)
+        )
+
+        committed = launcher_bundle.launcher.escalate_issue_needs_human(
+            issue_number=903,
+            reason="failure investigation exhausted",
+            comment="failure investigation could not launch",
+            context="triage_exhausted",
+            event_data={"issue_number": 903},
+        )
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human(
+            [self._restored_session(903, [labels.needs_human], tmp_path)]
+        )
+
+        assert committed is True
+        assert mock_repo_host.labels[903] == {labels.needs_human}
+        applied = [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        assert not any(
+            isinstance(action, AddLabelAction)
+            and action.label == labels.triage_needs_human
+            for action in applied
+        )
+        assert not any(isinstance(action, RemoveLabelAction) for action in applied)
 
     def test_reconcile_read_failure_defers_without_mutation(
         self, launcher_bundle, tmp_path

@@ -71,7 +71,7 @@ from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddLabelAction, RemoveLabelAction
-from .triage_needs_human_reconcile import TriageNeedsHumanLifecycle
+from .triage_needs_human_reconcile import TriageNeedsHumanLifecycle, discover_triage_needs_human_issue_numbers
 from .session_manager import SessionManager, SessionRef
 from .session_launch_types import ClaimAcquisitionResult, LaunchResult
 from .session_rework_launcher import (
@@ -238,6 +238,7 @@ class SessionLauncher:
             labels=label_manager,
             events=events,
             read_labels=repository_host.get_issue_labels_fresh,
+            discover_marked_issue_numbers=lambda: discover_triage_needs_human_issue_numbers(repository_host, label_manager.triage_needs_human),
             apply_actions=lambda actions, context: self._apply_actions(
                 actions, context=context
             ),
@@ -319,11 +320,9 @@ class SessionLauncher:
             event_data=event_data,
         )
 
-    def reconcile_stale_triage_needs_human(
-        self, active_sessions: Sequence[Session]
-    ) -> None:
-        """Reconcile marker-owned escalations against active/restored work."""
-        self._triage_needs_human.reconcile(active_sessions)
+    def reconcile_stale_triage_needs_human(self, active_sessions: Sequence[Session], *, discover_markers: bool = True) -> None:
+        """Recover or clear marker-owned escalation state from GitHub."""
+        self._triage_needs_human.reconcile(active_sessions, discover_markers=discover_markers)
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
         retry_cfg = self.config.retry.interrupted_sessions
