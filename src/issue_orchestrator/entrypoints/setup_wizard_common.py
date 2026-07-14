@@ -11,7 +11,10 @@ from urllib.parse import urlparse
 
 import yaml
 
-from ..control.label_manager import TRIAGE_NEEDS_HUMAN_LABEL
+from ..control.label_manager import (
+    TRIAGE_NEEDS_HUMAN_LABEL,
+    triage_issue_label_metadata,
+)
 from ..infra.config_value_rules import resolve_triage_watch_label
 from .setup_wizard_prompts import (
     build_code_review_prompt_text,
@@ -489,6 +492,10 @@ def _plan_setup_labels(
         from ..domain.triage_session import (
             HEALTH_REVIEW_MARKER_LABEL,
             PROPOSED_TRIAGE_LABEL,
+            TRIAGE_OBSERVATION_LABEL,
+        )
+        observation_color, observation_description = triage_issue_label_metadata(
+            TRIAGE_OBSERVATION_LABEL
         )
 
         all_labels.extend(
@@ -515,6 +522,11 @@ def _plan_setup_labels(
                     "C5DEF5",
                     "Periodic health-review anchor",
                 ),
+                (
+                    TRIAGE_OBSERVATION_LABEL,
+                    observation_color,
+                    observation_description,
+                ),
             ]
         )
 
@@ -527,9 +539,9 @@ def required_repo_labels(config: "Config") -> list[str]:
     Base workflow labels (including the orchestrator-owned ``triage-needs-human``
     marker from the #6771 redesign) + priority tiers + configured worker agents
     + triage workflow labels (the #6779 R3 proposal gate, the triage-agent
-    label, and the health-review marker) when triage is configured. De-duped so
-    labels appearing in more than one source (e.g. an agent that is also the
-    triage agent) are not provisioned twice.
+    label, the health-review marker, and the #6781 observation marker) when
+    triage is configured. De-duped so labels appearing in more than one source
+    (e.g. an agent that is also the triage agent) are not provisioned twice.
     """
     from ..control.label_manager import LabelManager
 
@@ -548,6 +560,7 @@ def required_repo_labels(config: "Config") -> list[str]:
         from ..domain.triage_session import (
             HEALTH_REVIEW_MARKER_LABEL,
             PROPOSED_TRIAGE_LABEL,
+            TRIAGE_OBSERVATION_LABEL,
         )
 
         labels.extend(
@@ -557,6 +570,7 @@ def required_repo_labels(config: "Config") -> list[str]:
                 config.triage_reviewed_label,
                 PROPOSED_TRIAGE_LABEL,
                 HEALTH_REVIEW_MARKER_LABEL,
+                TRIAGE_OBSERVATION_LABEL,
             )
             if label
         )

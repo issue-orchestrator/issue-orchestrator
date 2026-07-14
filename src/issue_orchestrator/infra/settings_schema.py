@@ -1108,13 +1108,21 @@ class ReviewSettings(BaseModel):
     triage_authority_flag_pattern: str = Field(
         "execute",
         title="Triage Authority: Flag Pattern",
-        description="Record triage-flagged cross-job patterns",
+        description="Open/append durable pattern case-file issues for recurring cross-job patterns",
         json_schema_extra={
             "enum": list(TRIAGE_AUTHORITY_MODES),
             "doc_examples": ["execute", "propose"],
             "doc_notes": (
-                "Pattern flags are recorded as events either way; this key "
-                "exists for parity. Allowed values: execute, propose."
+                "execute opens a durable pattern case-file issue the first time "
+                "a pattern_signature is observed and appends an evidence comment "
+                "to that same case file on every repeat observation (one case "
+                "file per signature, #6781), so cross-job pattern evidence "
+                "accrues for later health reviews to mine; it also emits the "
+                "pattern trace event. propose (shadow mode) records only a "
+                "would-have-done proposal and opens no case file. Every "
+                "flag_pattern action MUST carry a pattern_signature (the "
+                "case-file ledger key) or the triage decision is rejected. "
+                "Allowed values: execute, propose."
             ),
             "section": "Triage Review",
             "config_attr": "triage.authority.flag_pattern",

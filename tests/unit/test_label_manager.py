@@ -604,3 +604,35 @@ class TestProposedTriageLabel:
         """Agent-proposed labels must not bypass the gate by case-flipping."""
         assert lm.is_workflow_reserved("proposed-triage") is True
         assert lm.is_workflow_reserved("Proposed-Triage") is True
+
+
+class TestTriageObservationLabel:
+    """Pattern case-file label (#6781): blocking-class (never picked up),
+    raw (never prefixed), workflow-reserved."""
+
+    @pytest.fixture
+    def lm(self) -> LabelManager:
+        return LabelManager(_StubConfig())  # type: ignore[arg-type]
+
+    @pytest.fixture
+    def plm(self) -> LabelManager:
+        return LabelManager(_StubConfig(label_prefix="bot"))  # type: ignore[arg-type]
+
+    def test_is_blocking_excludes_from_pickup(self, lm: LabelManager) -> None:
+        """A case file carrying the observation label is never scheduled."""
+        assert lm.is_blocking("triage-observation") is True
+        assert lm.is_blocking_any(["agent:backend", "triage-observation"]) is True
+
+    def test_raw_even_with_prefix(self, plm: LabelManager) -> None:
+        assert plm.triage_observation == "triage-observation"
+        assert plm.is_blocking("triage-observation") is True
+        assert plm.is_ours("triage-observation") is True
+
+    def test_describe(self, lm: LabelManager) -> None:
+        assert lm.describe("triage-observation") == (
+            "Pattern case file (triage observation ledger)"
+        )
+
+    def test_workflow_reserved_case_insensitively(self, lm: LabelManager) -> None:
+        assert lm.is_workflow_reserved("triage-observation") is True
+        assert lm.is_workflow_reserved("Triage-Observation") is True

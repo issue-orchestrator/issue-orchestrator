@@ -1042,6 +1042,8 @@ def build_test_orchestrator_deps(
         board_snapshot_builder=BoardSnapshotBuilder(
             timeline_reader=lambda issue, limit: [],
             log_tail_provider=lambda lines: [],
+            case_file_reader=lambda: (),
+            shipped_fix_reader=lambda limit: (),
             clock=datetime.now,
         ),
         session_output=session_output,

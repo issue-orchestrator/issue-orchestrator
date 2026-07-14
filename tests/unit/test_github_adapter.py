@@ -128,6 +128,9 @@ class TestIssueOperations:
             "state": "open",
             "body": "Issue body",
             "milestone": {"title": "v1.0", "number": 1, "due_on": "2024-01-01"},
+            "created_at": "2026-07-10T10:00:00Z",
+            "updated_at": "2026-07-11T12:00:00Z",
+            "comments": 4,
         }
 
         issue = adapter.get_issue(42)
@@ -140,6 +143,9 @@ class TestIssueOperations:
         assert issue.body == "Issue body"
         assert issue.milestone == "v1.0"
         assert issue.milestone_number == 1
+        assert issue.created_at == "2026-07-10T10:00:00Z"
+        assert issue.updated_at == "2026-07-11T12:00:00Z"
+        assert issue.comment_count == 4
         mock_http_client.get_issue.assert_called_once_with(42)
 
     def test_get_issue_not_found(self, adapter, mock_http_client):
@@ -174,6 +180,8 @@ class TestIssueOperations:
                 "title": "Issue 1",
                 "labels": [{"name": "bug"}],
                 "state": "open",
+                "updated_at": "2026-07-11T12:00:00Z",
+                "comments": 3,
             },
             {
                 "number": 2,
@@ -188,6 +196,8 @@ class TestIssueOperations:
         assert len(issues) == 2
         assert all(isinstance(i, GitHubIssue) for i in issues)
         assert issues[0].number == 1
+        assert issues[0].updated_at == "2026-07-11T12:00:00Z"
+        assert issues[0].comment_count == 3
         assert issues[1].number == 2
         mock_http_client.list_issues.assert_called_once_with(
             labels=["bug"],

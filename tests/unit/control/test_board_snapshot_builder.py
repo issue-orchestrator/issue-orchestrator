@@ -20,7 +20,11 @@ from issue_orchestrator.control.board_snapshot_builder import (
     StateBoardSnapshotProvider,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.domain.triage_session import TriageSessionFlavor
+from issue_orchestrator.domain.triage_session import (
+    TriageCaseFileSummary,
+    TriageSessionFlavor,
+    TriageShippedFixSummary,
+)
 from issue_orchestrator.control.session_routing import PendingSessionQueues
 from issue_orchestrator.domain.models import (
     AgentConfig,
@@ -81,10 +85,14 @@ def _make_builder(
     *,
     timeline_reader: FakeTimelineReader | None = None,
     log_tail: FakeLogTail | None = None,
+    case_files: tuple[TriageCaseFileSummary, ...] = (),
+    shipped_fixes: tuple[TriageShippedFixSummary, ...] = (),
 ) -> BoardSnapshotBuilder:
     return BoardSnapshotBuilder(
         timeline_reader=timeline_reader or FakeTimelineReader(),
         log_tail_provider=log_tail or FakeLogTail([]),
+        case_file_reader=lambda: case_files,
+        shipped_fix_reader=lambda limit: shipped_fixes[:limit],
         clock=lambda: FIXED_NOW,
     )
 
@@ -177,6 +185,68 @@ class TestSessions:
         assert len(state.active_sessions) == 101
         assert len(snapshot.sessions) == MAX_LIST_ENTRIES
         assert snapshot.sessions[0].issue_number == 1000  # first entries win
+
+
+class TestPatternCaseFiles:
+    def test_projects_open_case_files_and_durable_shipped_fix_facts(self) -> None:
+        case_files = (
+            TriageCaseFileSummary(
+                issue_number=700, title="Pattern case file: db-timeout",
+                comment_count=4, updated_at="2026-07-10T11:00:00+00:00", area="db",
+            ),
+            TriageCaseFileSummary(
+                issue_number=701, title="Pattern case file: pool-starvation",
+                comment_count=2, updated_at="2026-07-10T10:00:00+00:00", area="db",
+            ),
+        )
+        shipped_fixes = (
+            TriageShippedFixSummary(
+                issue_number=600,
+                title="Repair DB seam",
+                pr_url="https://github.com/o/r/pull/600",
+                area="db",
+                merged_at="2026-07-09T12:00:00+00:00",
+            ),
+        )
+
+        snapshot = _make_builder(
+            case_files=case_files, shipped_fixes=shipped_fixes
+        ).build(OrchestratorState())
+
+        assert [item.issue_number for item in snapshot.case_files] == [700, 701]
+        assert snapshot.case_files[0].comment_count == 4
+        [signal] = snapshot.area_signals
+        assert (signal.area, signal.distinct_patterns, signal.shipped_fixes) == ("db", 2, 1)
+        [fix] = snapshot.recent_shipped_fixes
+        assert (fix.issue_number, fix.area, fix.pr_url) == (
+            600,
+            "db",
+            "https://github.com/o/r/pull/600",
+        )
+
+    def test_recent_shipped_fixes_are_bounded_when_reader_overdelivers(self) -> None:
+        fixes = tuple(
+            TriageShippedFixSummary(
+                issue_number=600 + index,
+                title=f"Fix {index}",
+                pr_url=f"https://github.com/o/r/pull/{700 + index}",
+                area="db",
+                merged_at="2026-07-09T12:00:00+00:00",
+            )
+            for index in range(MAX_LIST_ENTRIES + 1)
+        )
+        builder = BoardSnapshotBuilder(
+            timeline_reader=FakeTimelineReader(),
+            log_tail_provider=FakeLogTail([]),
+            case_file_reader=lambda: (),
+            shipped_fix_reader=lambda _limit: fixes,
+            clock=lambda: FIXED_NOW,
+        )
+
+        snapshot = builder.build(OrchestratorState())
+
+        assert len(snapshot.recent_shipped_fixes) == MAX_LIST_ENTRIES
+        assert snapshot.area_signals[0].shipped_fixes == MAX_LIST_ENTRIES
 
 
 class TestQueuesBlockedAndFailures:

@@ -34,7 +34,11 @@ import re
 from collections.abc import Callable, Collection, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ..domain.triage_session import HEALTH_REVIEW_MARKER_LABEL
+from ..domain.triage_session import (
+    HEALTH_REVIEW_MARKER_LABEL,
+    TRIAGE_AREA_LABEL_PREFIX,
+    TRIAGE_OBSERVATION_LABEL,
+)
 from .actions import TriageMilestoneIntent
 from .label_manager import LabelManager
 
@@ -45,10 +49,11 @@ if TYPE_CHECKING:
 # Workflow label families that no agent-proposed label may match. These are
 # families, not concrete names: concrete orchestrator-owned names (including
 # any configured prefix) come from LabelManager/config at call time.
-# ``proposed-triage`` (#6778) is doubly covered: it is a registered
-# LabelManager label (workflow-reserved) AND matched here, so the gate can
-# only ever be orchestrator-attached — an agent proposing it is a contract
-# violation regardless of which owner checks first.
+# ``proposed-triage`` (#6778) and ``triage-observation`` (#6781) are doubly
+# covered: they are registered LabelManager labels (workflow-reserved) AND
+# matched here, so both can only ever be orchestrator-attached — an agent
+# proposing either is a contract violation regardless of which owner checks
+# first.
 _PROTECTED_LABEL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"needs-", re.IGNORECASE),
     re.compile(r".*-reviewed\Z", re.IGNORECASE),
@@ -58,6 +63,7 @@ _PROTECTED_LABEL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"agent:", re.IGNORECASE),
     re.compile(r"triage:", re.IGNORECASE),
     re.compile(r"proposed-triage\Z", re.IGNORECASE),
+    re.compile(r"triage-observation\Z", re.IGNORECASE),
 )
 
 
@@ -157,6 +163,30 @@ def triage_issue_milestone_intent(
     return TriageMilestoneIntent()
 
 
+def case_file_issue_labels(config: "Config", *, area: str | None) -> tuple[str, ...]:
+    """Labels for a pattern case-file issue (#6781).
+
+    Mirrors :func:`~.triage_proposals.proposal_issue_labels`: the triage
+    agent label keeps the case file inside the fact gatherer's ONE anchor
+    scan, the filtering label keeps it inside the active scope, and the
+    orchestrator-attached observation label blocks pickup and marks it as an
+    evidence ledger. The optional ``area`` becomes an ``area:*`` tag so
+    evidence clusters are queryable across signatures (#6781 amendment).
+    The observation label is exempt from the agent-label allowlist here and
+    ONLY here — an agent proposing it directly is a contract violation.
+    """
+    return tuple(
+        value
+        for value in (
+            config.triage_review_agent,
+            config.filtering.label,
+            TRIAGE_OBSERVATION_LABEL,
+            f"{TRIAGE_AREA_LABEL_PREFIX}{area}" if area else None,
+        )
+        if value
+    )
+
+
 def batch_review_issue_labels(
     config: "Config", *, source_labels: Collection[str]
 ) -> tuple[str, ...]:
@@ -225,6 +255,7 @@ def decision_issue_labels(
     labels: LabelManager,
     destination_agent: str,
     gate: bool = False,
+    area: str | None = None,
 ) -> tuple[str, ...]:
     """Labels for a decision-driven follow-up issue.
 
@@ -263,8 +294,9 @@ def decision_issue_labels(
     if config.filtering.label:
         base.append(config.filtering.label)
     composed = _with_configured_labels(config, base, source_labels=anchor_labels)
+    area_labels = (f"{TRIAGE_AREA_LABEL_PREFIX}{area}",) if area else ()
     gate_labels = (labels.proposed_triage,) if gate else ()
-    return _deduped((*composed, *agent_labels, destination_agent, *gate_labels))
+    return _deduped((*composed, *agent_labels, *area_labels, destination_agent, *gate_labels))
 
 
 def _with_configured_labels(

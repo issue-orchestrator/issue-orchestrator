@@ -7,6 +7,7 @@ from issue_orchestrator.control.actions import TriageMilestoneIntent
 from issue_orchestrator.control.triage_issue_policy import (
     apply_triage_priority_prefix,
     batch_review_issue_labels,
+    case_file_issue_labels,
     decision_issue_labels,
     health_review_issue_labels,
     is_protected_triage_label,
@@ -18,7 +19,10 @@ from issue_orchestrator.control.triage_issue_policy import (
 from issue_orchestrator.control.health_review_trigger import (
     HEALTH_REVIEW_ISSUE_TITLE,
 )
-from issue_orchestrator.domain.triage_session import HEALTH_REVIEW_MARKER_LABEL
+from issue_orchestrator.domain.triage_session import (
+    HEALTH_REVIEW_MARKER_LABEL,
+    TRIAGE_OBSERVATION_LABEL,
+)
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import MilestoneStrategyConfig
 
@@ -442,3 +446,42 @@ class TestProposedTriageGate:
                 destination_agent=DEST_AGENT,
                 gate=True,
             )
+
+
+class TestTriageObservationLabel:
+    """The pattern case-file observation label (#6781): agent-rejected,
+    orchestrator-attached only, area-tagged."""
+
+    @pytest.mark.parametrize(
+        "label", ["triage-observation", "Triage-Observation", "TRIAGE-OBSERVATION"]
+    )
+    def test_agent_proposed_observation_label_is_rejected(self, label: str) -> None:
+        config = make_config()
+        labels = LabelManager(config)
+
+        assert is_protected_triage_label(label, config=config, labels=labels)
+        assert protected_triage_label_violations(
+            [label], config=config, labels=labels
+        ) == [label]
+
+    def test_case_file_labels_carry_scan_scope_and_observation(self) -> None:
+        config = make_config()
+        config.filtering.label = "io-scope"
+
+        composed = case_file_issue_labels(config, area="db")
+
+        assert composed == (
+            "agent:triage",
+            "io-scope",
+            TRIAGE_OBSERVATION_LABEL,
+            "area:db",
+        )
+
+    def test_case_file_labels_omit_area_when_absent(self) -> None:
+        config = make_config()
+        config.filtering.label = "io-scope"
+
+        composed = case_file_issue_labels(config, area=None)
+
+        assert composed == ("agent:triage", "io-scope", TRIAGE_OBSERVATION_LABEL)
+        assert not any(label.startswith("area:") for label in composed)

@@ -92,7 +92,7 @@ from issue_orchestrator.domain.models import (
     SessionKey,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
-from issue_orchestrator.domain.board_snapshot import BoardSnapshot
+from issue_orchestrator.domain.board_snapshot import BOARD_SNAPSHOT_SCHEMA_VERSION, BoardSnapshot
 from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
@@ -3303,7 +3303,7 @@ class TestLaunchTriageIssueSessionFlavors:
         snapshot_path = run_dir / "triage-data" / "board-snapshot.json"
         run_manifest = json.loads((run_dir / "manifest.json").read_text())
         assert run_manifest["board_snapshot"] == str(snapshot_path)
-        assert BoardSnapshot.read(snapshot_path).schema_version == 1
+        assert BoardSnapshot.read(snapshot_path).schema_version == BOARD_SNAPSHOT_SCHEMA_VERSION
         # Still no PR manifest — and no GitHub reads at all for this flavor.
         assert "triage_manifest" not in run_manifest
         assert mock_repo_host.get_prs_with_label_calls == []
@@ -4198,6 +4198,8 @@ class TestTriageProducerToLaunchBoundary:
             BoardSnapshotBuilder(
                 timeline_reader=lambda issue, limit: [],
                 log_tail_provider=lambda lines: [],
+                case_file_reader=lambda: (),
+                shipped_fix_reader=lambda limit: (),
                 clock=lambda: datetime(2026, 7, 10, 12, 0, 0),
             ),
             lambda: state,

@@ -122,6 +122,7 @@ class RetrySuccessFinalizer:
             pr_url=pr_url,
             worktree_path=worktree_path,
             history_reason=history_reason,
+            issue_labels=tuple(labels),
         )
 
     def _review_candidate(
@@ -209,6 +210,7 @@ class RetrySuccessFinalizer:
         pr_url: str | None,
         worktree_path: str | None,
         history_reason: str,
+        issue_labels: tuple[str, ...],
     ) -> None:
         state.failed_this_cycle.discard(issue_number)
         state.discovered_failures = [
@@ -232,6 +234,7 @@ class RetrySuccessFinalizer:
                 status_reason=history_reason,
                 worktree_path=Path(worktree_path) if worktree_path else None,
                 completed_at=datetime.now(timezone.utc),
+                issue_labels=issue_labels,
             )
         )
 

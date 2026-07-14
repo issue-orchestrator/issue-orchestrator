@@ -26,10 +26,13 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 
 from ..domain.board_snapshot import (
+    BoardAreaSignal,
     BoardBlockedIssue,
+    BoardCaseFile,
     BoardFailure,
     BoardQueueEntry,
     BoardSessionInfo,
+    BoardShippedFix,
     BoardSnapshot,
     BoardTimelineExtract,
 )
@@ -40,6 +43,7 @@ from ..domain.models import (
     PendingRework,
     Session,
 )
+from ..domain.triage_session import TriageCaseFileSummary, TriageShippedFixSummary
 from ..ports.timeline_store import TimelineRecord
 
 logger = logging.getLogger(__name__)
@@ -62,6 +66,8 @@ class BoardSnapshotBuilder:
         *,
         timeline_reader: Callable[[int, int], Sequence[TimelineRecord]],
         log_tail_provider: Callable[[int], list[str]],
+        case_file_reader: Callable[[], Sequence[TriageCaseFileSummary]],
+        shipped_fix_reader: Callable[[int], Sequence[TriageShippedFixSummary]],
         clock: Callable[[], datetime],
     ) -> None:
         """Create a builder over injected fact sources.
@@ -71,11 +77,15 @@ class BoardSnapshotBuilder:
                 must expose the ``TimelineRecord`` fields (``event_id``,
                 ``timestamp``, ``event``, ``data``).
             log_tail_provider: ``(n) -> last n orchestrator log lines``.
+            case_file_reader: latest open case files from the anchor scan.
+            shipped_fix_reader: ``(limit) -> recent durable merged-fix facts``.
             clock: current-time source; injected so session ages are
                 deterministic under test.
         """
         self._timeline_reader = timeline_reader
         self._log_tail_provider = log_tail_provider
+        self._case_file_reader = case_file_reader
+        self._shipped_fix_reader = shipped_fix_reader
         self._clock = clock
 
     def build(
@@ -110,6 +120,10 @@ class BoardSnapshotBuilder:
         ``log_tail_lines`` lines.
         """
         now = self._clock()
+        case_files = tuple(self._case_file_reader())[:MAX_LIST_ENTRIES]
+        shipped_fixes = tuple(
+            self._shipped_fix_reader(MAX_LIST_ENTRIES)
+        )[:MAX_LIST_ENTRIES]
         return BoardSnapshot(
             generated_at=now.isoformat(),
             orchestrator_paused=state.paused,
@@ -138,6 +152,27 @@ class BoardSnapshotBuilder:
                     artifact_hints=list(failure.artifact_hints),
                 )
                 for failure in list(failures)[:MAX_LIST_ENTRIES]
+            ],
+            case_files=[
+                BoardCaseFile(
+                    issue_number=item.issue_number,
+                    title=item.title,
+                    comment_count=item.comment_count,
+                    updated_at=item.updated_at,
+                    area=item.area,
+                )
+                for item in case_files
+            ],
+            area_signals=_area_signals(case_files, shipped_fixes),
+            recent_shipped_fixes=[
+                BoardShippedFix(
+                    issue_number=item.issue_number,
+                    title=item.title,
+                    pr_url=item.pr_url,
+                    area=item.area,
+                    merged_at=item.merged_at,
+                )
+                for item in shipped_fixes
             ],
             timeline=self._timeline_extracts(
                 state, focus_issue=focus_issue, failures=failures, limit=timeline_limit
@@ -360,3 +395,28 @@ def _retrospective_detail(retro: PendingRetrospectiveReview) -> str:
 def _clip(text: str) -> str:
     """Truncate a detail/log line to the per-line bound (agent-read file)."""
     return text[:MAX_LINE_CHARS]
+
+
+def _area_signals(
+    case_files: Sequence[TriageCaseFileSummary],
+    shipped_fix_history: Sequence[TriageShippedFixSummary],
+) -> list[BoardAreaSignal]:
+    """Assemble bounded cross-signature step-back facts by area/seam."""
+    distinct_patterns: dict[str, int] = {}
+    for case_file in case_files:
+        area = case_file.area or "unclassified"
+        distinct_patterns[area] = distinct_patterns.get(area, 0) + 1
+
+    shipped_fixes: dict[str, int] = {}
+    for fix in shipped_fix_history:
+        area = fix.area or "unclassified"
+        shipped_fixes[area] = shipped_fixes.get(area, 0) + 1
+
+    return [
+        BoardAreaSignal(
+            area=area,
+            distinct_patterns=distinct_patterns.get(area, 0),
+            shipped_fixes=shipped_fixes.get(area, 0),
+        )
+        for area in sorted(set(distinct_patterns) | set(shipped_fixes))
+    ]

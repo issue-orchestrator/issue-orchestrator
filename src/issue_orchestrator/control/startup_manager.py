@@ -493,6 +493,7 @@ class StartupManager:
                     pr_url=analysis.pr_url,
                     status_reason="Recovered awaiting merge state on startup",
                     completed_at=datetime.now(timezone.utc),
+                    issue_labels=tuple(issue.labels),
                 )
             )
             record_issue_refreshes(state, {issue.number}, time.time())

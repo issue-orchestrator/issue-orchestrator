@@ -79,6 +79,7 @@ from .triage_decision_loader import (
     TriageDecisionLoadFailure,
     load_triage_artifact_pair_for_run,
 )
+from .triage_case_files import build_pattern_ledger
 from .triage_issue_policy import protected_triage_label_violations
 from .triage_proposals import build_op_ledger
 from .triage_session_policy import is_triage_session, read_triage_assignment
@@ -543,9 +544,9 @@ def generate_triage_completion_actions(
         return actions
     if load_result.decision is not None:
         # The op ledger (one open gated proposal per (op, target), #6778)
-        # comes from the same injected authority store that owns launch
-        # scope: rows live from proposal creation to terminal handling, so
-        # this read needs no GitHub call.
+        # and the pattern ledger (one case file per signature, #6781) come
+        # from the same injected authority store that owns launch scope:
+        # both reads are local, so planning needs no GitHub call.
         actions.extend(
             plan_triage_decision_actions(
                 load_result.decision,
@@ -554,8 +555,12 @@ def generate_triage_completion_actions(
                 anchor_issue=session.issue,
                 expected=expected,
                 op_ledger=build_op_ledger(triage_authority.list_ops()),
+                pattern_ledger=build_pattern_ledger(
+                    triage_authority.list_patterns()
+                ),
                 source_run_id=session.run_assets.run_id,
                 source_session_name=session.run_assets.session_name,
+                observed_at=session.run_assets.started_at,
                 active_session_run_id=active_session_run_id,
             )
         )

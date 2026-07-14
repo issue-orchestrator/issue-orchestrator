@@ -38,7 +38,6 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
-from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
@@ -68,6 +67,7 @@ from .actions import (
     Action,
     ActionResult,
     ActionType,
+    TRIAGE_ISSUE_CREATION_ACTION_TYPES,
     AddLabelAction,
     RemoveLabelAction,
     SyncLabelsAction,
@@ -92,7 +92,9 @@ from .actions import (
     ResetRetryIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
-from .triage_proposals import apply_create_triage_issue, apply_discard_terminal_triage_proposal_ops, execute_approved_triage_op
+from .triage_issue_creation import apply_create_triage_issue
+from .history_reconciliation import apply_history_reconciliation
+from .triage_proposals import apply_discard_terminal_triage_proposal_ops, execute_approved_triage_op
 from .triage_reset_retry import apply_surface_triage_proposal
 
 logger = logging.getLogger(__name__)
@@ -290,9 +292,8 @@ class ActionApplier:
             ActionType.QUEUE_TRIAGE: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
-            # Issue creation (plain triage issues AND gated proposals, #6778)
-            ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
-            ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE: self._apply_create_triage_issue,
+            # All triage-authored issues share one apply-time creation owner.
+            **dict.fromkeys(TRIAGE_ISSUE_CREATION_ACTION_TYPES, self._apply_create_triage_issue),
             # Triage decision proposals - event-only, no GitHub calls (ADR-0031)
             ActionType.SURFACE_TRIAGE_PROPOSAL: self._apply_surface_triage_proposal,
             # Act-level triage execution via the reset owner (#6764)
@@ -1288,95 +1289,14 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     def _apply_reconcile_history_entry(self, action: Action) -> ActionResult:
         """Reconcile a session history entry through the history owner."""
         assert isinstance(action, ReconcileHistoryEntryAction)
-
-        if self.history_owner is None:
-            return ActionResult.fail(action, "Session history owner is not configured")
-
-        outcome = self.history_owner.reconcile_awaiting_merge(
-            issue_number=action.issue_number,
-            pr_url=action.pr_url,
-            status=action.status,
-            status_reason=action.reason,
-        )
-        if not isinstance(outcome, HistoryReconciliationMutation):
-            if outcome.reason == "missing":
-                logger.warning(
-                    "Awaiting-merge history reconciliation missing entry: issue=%d pr=%d pr_url=%s status=%s",
-                    action.issue_number,
-                    action.pr_number,
-                    action.pr_url,
-                    action.status,
-                )
-            else:
-                logger.info(
-                    "Awaiting-merge history reconciliation no-op: issue=%d pr=%d current_status=%s status=%s",
-                    action.issue_number,
-                    action.pr_number,
-                    outcome.current_status,
-                    action.status,
-                )
-            return ActionResult.ok(
-                action,
-                issue_number=action.issue_number,
-                pr_number=action.pr_number,
-                status=action.status,
-                noop_reason=outcome.reason,
-                current_status=outcome.current_status,
-                no_op=True,
-            )
-
-        self.events.publish(make_trace_event(
-            EventName.HISTORY_RECONCILED,
-            {
-                "issue_number": action.issue_number,
-                "issue_key": action.issue_key or str(action.issue_number),
-                "pr_number": action.pr_number,
-                "pr_url": action.pr_url,
-                "previous_status": outcome.previous_status,
-                "status": outcome.status,
-                "status_reason": outcome.status_reason,
-                "source": action.source,
-            },
-        ))
-        # When the PR reaches the merged terminal state, surface a
-        # user-visible "PR merged" event on the timeline. The catalog,
-        # spec, view registry, and issue-detail view-models are all
-        # already wired for `review.merged` — only the publication was
-        # missing, leaving the dashboard with a HISTORY_RECONCILED
-        # debug-only record after a successful merge. Emitting here
-        # closes that gap at the orchestrator's canonical merge-detection
-        # point (the awaiting-merge reconciler).
-        if outcome.status == "merged":
-            self.events.publish(make_trace_event(
-                EventName.REVIEW_MERGED,
-                {
-                    "issue_number": action.issue_number,
-                    "issue_key": action.issue_key or str(action.issue_number),
-                    "pr_number": action.pr_number,
-                    "pr_url": action.pr_url,
-                    "source": action.source,
-                },
-            ))
-
-        # Awaiting-merge reconciliation that flips an issue's history
-        # entry to a terminal state (``merged`` or ``closed``) is the
-        # canonical "issue done" boundary. Terminate every issue-scoped
-        # runtime owner here so it doesn't linger until orchestrator
-        # shutdown — ADR 0026 / B2 review feedback (PR #6212): without
-        # this, a successfully merged issue keeps subprocesses or
-        # supervised background jobs alive even though no more exchanges
-        # can occur.
-        if outcome.status in {"merged", "closed"}:
-            self._terminate_issue_runtime_for_issue(
-                action.issue_number,
-                reason="issue-completed",
-            )
-        return ActionResult.ok(
+        return apply_history_reconciliation(
             action,
-            issue_number=action.issue_number,
-            pr_number=action.pr_number,
-            previous_status=outcome.previous_status,
-            status=outcome.status,
+            history_owner=self.history_owner,
+            events=self.events,
+            triage_authority=self.triage_ops,
+            terminate_issue_runtime=lambda issue_number, reason: (
+                self._terminate_issue_runtime_for_issue(issue_number, reason=reason)
+            ),
         )
 
     def _apply_recover_terminal_issue(self, action: Action) -> ActionResult:
@@ -1504,9 +1424,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         )
 
     def _apply_create_triage_issue(self, action: Action) -> ActionResult:
-        """Create a plain triage issue OR a gated proposal issue (#6778) via
-        the ``triage_proposals`` owner (milestone resolution boundary,
-        op recording, anchor link)."""
+        """Delegate triage-authored issue creation to its apply-time owner."""
         assert isinstance(action, CreateTriageIssueAction)
         if not self.repository_host:
             return ActionResult.fail(
@@ -1517,6 +1435,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             repository_host=self.repository_host,
             events=self.events,
             ops=self.triage_ops,
+            add_comment=self.repository_host.add_comment,
             emit_labels_changed=self._emit_issue_labels_changed,
         )
 

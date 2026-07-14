@@ -36,6 +36,7 @@ from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import Issue, Session, AgentConfig, SessionHistoryEntry
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.claim_manager import ClaimManager
+from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
 
 
 @pytest.fixture
@@ -339,6 +340,122 @@ class TestReconcileHistoryEntryAction:
         assert merged.data["pr_url"] == "https://github.com/test/repo/pull/318"
         assert merged.data["issue_key"] == "M1-228"
         assert merged.data["source"] == "pull_request"
+
+    def test_merged_area_tagged_issue_records_durable_shipped_fix(
+        self, applier
+    ) -> None:
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Repair DB seam",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=10,
+            pr_url="https://github.com/test/repo/pull/318",
+            issue_labels=("Area:db",),
+        )
+        store = InMemoryTriageAuthorityStore()
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.triage_ops = store
+
+        result = applier.apply(ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        ))
+
+        assert result.success
+        [fix] = store.list_recent_shipped_fixes(limit=10)
+        assert (fix.issue_number, fix.title, fix.area) == (
+            228,
+            "Repair DB seam",
+            "db",
+        )
+
+    def test_shipped_fix_persistence_failure_leaves_history_retryable(
+        self, applier
+    ) -> None:
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Repair DB seam",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=10,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+            issue_labels=("area:db",),
+        )
+        store = MagicMock()
+        store.record_shipped_fix.side_effect = RuntimeError("disk full")
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.triage_ops = store
+
+        result = applier.apply(ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        ))
+
+        assert not result.success
+        assert result.error == "disk full"
+        assert entry.status == "completed"
+        assert entry.status_reason == "Recovered awaiting merge state on startup"
+
+    def test_area_tagged_merge_requires_durable_store(self, applier) -> None:
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Repair DB seam",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=10,
+            pr_url="https://github.com/test/repo/pull/318",
+            issue_labels=("area:db",),
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+
+        result = applier.apply(ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        ))
+
+        assert not result.success
+        assert "required to record" in result.error
+        assert entry.status == "completed"
+
+    def test_closed_area_tagged_issue_is_not_a_shipped_fix(self, applier) -> None:
+        entry = SessionHistoryEntry(
+            issue_number=229,
+            title="Abandoned DB repair",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=10,
+            pr_url="https://github.com/test/repo/pull/319",
+            issue_labels=("area:db",),
+        )
+        store = MagicMock()
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.triage_ops = store
+
+        result = applier.apply(ReconcileHistoryEntryAction(
+            issue_number=229,
+            pr_number=319,
+            pr_url="https://github.com/test/repo/pull/319",
+            status="closed",
+            source="pull_request",
+            reason="PR closed without merge",
+        ))
+
+        assert result.success
+        store.record_shipped_fix.assert_not_called()
 
     def test_reconcile_history_entry_closed_does_not_emit_review_merged(
         self,
@@ -2366,6 +2483,10 @@ class TestClaimGateAudit:
     # - CREATE_TRIAGE_PROPOSAL_ISSUE: creates a NEW gated issue + records the
     #   stored op (#6778); the anchor link comment targets the triage
     #   session's own anchor issue, never a claimed coding issue
+    # - CREATE_TRIAGE_CASE_FILE_ISSUE: creates a NEW observation-labeled case
+    #   file + records the pattern ledger row (#6781); the repeat-observation
+    #   evidence comment targets that orchestrator-owned case file, never a
+    #   claimed coding issue
     # - SURFACE_TRIAGE_PROPOSAL: emits a trace event only, no GitHub calls
     # - RESET_RETRY_ISSUE: owner command (#6764) - every GitHub write it
     #   triggers is delegated to the reset owner, which routes label/PR
@@ -2393,6 +2514,7 @@ class TestClaimGateAudit:
         ActionType.QUEUE_TRIAGE,
         ActionType.CREATE_TRIAGE_ISSUE,
         ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE,
+        ActionType.CREATE_TRIAGE_CASE_FILE_ISSUE,
         ActionType.SURFACE_TRIAGE_PROPOSAL,
         ActionType.RESET_RETRY_ISSUE,
         ActionType.KILL_HUNG_SESSION,

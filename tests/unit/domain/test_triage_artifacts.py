@@ -216,17 +216,104 @@ class TestProposedActionParsing:
         with pytest.raises(ValueError, match="requires target_number"):
             TriageDecision.from_agent_payload(_payload(proposed_actions=[action]))
 
-    def test_flag_pattern_requires_body_only(self):
+    def test_flag_pattern_requires_body_and_signature(self):
+        """#6781: flag_pattern needs body PLUS a pattern_signature (the durable
+        case-file ledger key); no target."""
+        action = {
+            "id": "A1",
+            "action_type": "flag_pattern",
+            "body": "Every timeout follows a provider 429 burst.",
+            "pattern_signature": "provider-429-timeout",
+            "finding_ids": ["T1"],
+        }
+        decision = TriageDecision.from_agent_payload(
+            _payload(proposed_actions=[action])
+        )
+        parsed = decision.proposed_actions[0]
+        assert parsed.target_number is None
+        assert parsed.pattern_signature == "provider-429-timeout"
+
+    def test_flag_pattern_without_signature_is_contract_violation(self):
+        """A flag_pattern that cannot accrue evidence is rejected (#6781)."""
         action = {
             "id": "A1",
             "action_type": "flag_pattern",
             "body": "Every timeout follows a provider 429 burst.",
             "finding_ids": ["T1"],
         }
+        with pytest.raises(ValueError, match="requires pattern_signature"):
+            TriageDecision.from_agent_payload(_payload(proposed_actions=[action]))
+
+    def test_flag_pattern_blank_signature_is_rejected(self):
+        """Direct construction bypasses from_mapping normalization; validate
+        still rejects a present-but-blank signature (#6781)."""
+        from issue_orchestrator.domain.triage_artifacts import ProposedTriageAction
+
+        action = ProposedTriageAction(
+            id="A1", action_type="flag_pattern", body="b", pattern_signature="   "
+        )
+        with pytest.raises(ValueError, match="pattern_signature must be non-empty"):
+            action.validate()
+
+    def test_flag_pattern_area_must_be_label_safe(self):
+        action = {
+            "id": "A1",
+            "action_type": "flag_pattern",
+            "body": "b",
+            "pattern_signature": "sig",
+            "area": "bad area!",
+            "finding_ids": ["T1"],
+        }
+        with pytest.raises(ValueError, match="area must be a non-empty label-safe"):
+            TriageDecision.from_agent_payload(_payload(proposed_actions=[action]))
+
+    def test_flag_pattern_round_trips_signature_and_area(self):
+        action = {
+            "id": "A1",
+            "action_type": "flag_pattern",
+            "body": "b",
+            "pattern_signature": "db-pool-exhausted",
+            "area": "db",
+            "finding_ids": ["T1"],
+        }
         decision = TriageDecision.from_agent_payload(
             _payload(proposed_actions=[action])
         )
-        assert decision.proposed_actions[0].target_number is None
+        payload = decision.proposed_actions[0].to_dict()
+        assert payload["pattern_signature"] == "db-pool-exhausted"
+        assert payload["area"] == "db"
+
+    def test_pattern_signature_is_bounded(self):
+        from issue_orchestrator.domain.triage_artifacts import (
+            MAX_PATTERN_SIGNATURE_CHARS,
+        )
+
+        action = {
+            "id": "A1",
+            "action_type": "flag_pattern",
+            "body": "b",
+            "pattern_signature": "x" * (MAX_PATTERN_SIGNATURE_CHARS + 1),
+            "finding_ids": ["T1"],
+        }
+        with pytest.raises(ValueError, match="pattern_signature"):
+            TriageDecision.from_agent_payload(_payload(proposed_actions=[action]))
+
+    def test_direct_signature_and_area_are_bounded(self):
+        from issue_orchestrator.domain.triage_artifacts import (
+            MAX_AREA_CHARS,
+            MAX_PATTERN_SIGNATURE_CHARS,
+            ProposedTriageAction,
+        )
+        with pytest.raises(ValueError, match="pattern_signature"):
+            ProposedTriageAction(
+                id="A1", action_type="flag_pattern", body="b",
+                pattern_signature="x" * (MAX_PATTERN_SIGNATURE_CHARS + 1),
+            ).validate()
+        with pytest.raises(ValueError, match="area"):
+            ProposedTriageAction(
+                id="A1", action_type="create_issue", title="t", body="b",
+                area="x" * (MAX_AREA_CHARS + 1),
+            ).validate()
 
     @pytest.mark.parametrize("act_type", sorted(ACT_LEVEL_TRIAGE_ACTIONS))
     def test_act_level_requires_target_and_rationale(self, act_type):

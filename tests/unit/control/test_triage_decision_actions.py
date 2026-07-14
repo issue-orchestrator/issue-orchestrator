@@ -5,6 +5,7 @@ import pytest
 from issue_orchestrator.control.actions import (
     AddCommentAction,
     AddLabelAction,
+    CreateTriageCaseFileIssueAction,
     CreateTriageIssueAction,
     CreateTriageProposalIssueAction,
     ResetRetryIssueAction,
@@ -22,13 +23,20 @@ from issue_orchestrator.domain.triage_artifacts import (
     TriageDecision,
     TriageFinding,
 )
-from issue_orchestrator.domain.triage_session import PROPOSED_TRIAGE_LABEL
+from issue_orchestrator.domain.triage_session import (
+    PROPOSED_TRIAGE_LABEL,
+    TRIAGE_OBSERVATION_LABEL,
+)
 from issue_orchestrator.infra.config import Config
 
 
 EXPECTED = build_expected_for_mutation()
 NEEDS_HUMAN = "needs-human"
-SOURCE_RUN = {"source_run_id": "run-1", "source_session_name": "issue-99"}
+SOURCE_RUN = {
+    "source_run_id": "run-1",
+    "source_session_name": "issue-99",
+    "observed_at": "2026-07-11T00:00:00+00:00",
+}
 
 
 def _decision(*actions: ProposedTriageAction) -> TriageDecision:
@@ -79,6 +87,7 @@ def _plan(
     anchor: Issue | None = None,
     op_ledger: dict[tuple[str, int], int] | None = None,
     active_session_run_id=lambda _n: None,
+    pattern_ledger: dict[str, int] | None = None,
 ):
     config = config or _config()
     return plan_triage_decision_actions(
@@ -88,7 +97,8 @@ def _plan(
         anchor_issue=anchor or _anchor(),
         expected=EXPECTED,
         op_ledger=op_ledger or {},
-        active_session_run_id=active_session_run_id,
+    active_session_run_id=active_session_run_id,
+    pattern_ledger=pattern_ledger or {},
         **SOURCE_RUN,
     )
 
@@ -200,6 +210,15 @@ class TestDecisionIssuePolicy:
 
         assert isinstance(planned, CreateTriageIssueAction)
         assert planned.milestone == TriageMilestoneIntent(explicit_name="M5")
+
+    def test_root_cause_issue_carries_area_seam_label(self) -> None:
+        action = ProposedTriageAction(
+            id="A1", action_type="create_issue", title="Review DB seam",
+            body="Repeated patching has not held.", labels=("design-review",), area="db",
+        )
+        [planned] = _plan(_decision(action))
+        assert isinstance(planned, CreateTriageIssueAction)
+        assert "area:db" in planned.labels
 
     def test_protected_agent_labels_fail_loudly_at_planning(self) -> None:
         """Validation upstream must have rejected these; planning never
@@ -350,28 +369,117 @@ def test_execute_only_decision_plans_no_digest_comment() -> None:
     assert _shadow_digests(planned) == []
 
 
-def test_flag_pattern_execute_surfaces_as_pattern() -> None:
+def test_flag_pattern_execute_surfaces_as_pattern_and_opens_case_file() -> None:
+    """Execute flag_pattern surfaces the pattern event AND opens the durable
+    case file for a first-seen signature (#6781)."""
     action = ProposedTriageAction(
         id="A4",
         action_type="flag_pattern",
         body="Three sessions hit the same 422.",
+        pattern_signature="github-422-batch",
+        area="github-api",
     )
 
-    [planned] = _plan(_decision(action))
+    surfaced, case_file = _plan(_decision(action))
 
-    assert isinstance(planned, SurfaceTriageProposalAction)
-    assert planned.mode == "pattern"
-    assert planned.proposal_type == "flag_pattern"
-    assert planned.target_number == 0
+    assert isinstance(surfaced, SurfaceTriageProposalAction)
+    assert surfaced.mode == "pattern"
+    assert surfaced.proposal_type == "flag_pattern"
+    assert surfaced.target_number == 0
+
+    assert isinstance(case_file, CreateTriageCaseFileIssueAction)
+    assert case_file.pattern_signature == "github-422-batch"
+    assert case_file.area == "github-api"
+    assert TRIAGE_OBSERVATION_LABEL in case_file.labels
+    assert "area:github-api" in case_file.labels
+    assert case_file.expected is EXPECTED
 
 
-def test_flag_pattern_propose_surfaces_as_shadow() -> None:
-    """triage.authority.flag_pattern must not be dead config (#6761 F5)."""
+def test_flag_pattern_execute_known_signature_comments_evidence() -> None:
+    """A repeat observation of a recorded signature appends evidence to the
+    existing case file instead of filing a second issue (#6781)."""
+    action = ProposedTriageAction(
+        id="A4",
+        action_type="flag_pattern",
+        body="Seen again in two more sessions.",
+        pattern_signature="github-422-batch",
+        finding_ids=("T1",),
+    )
+
+    surfaced, comment = _plan(
+        _decision(action), pattern_ledger={"github-422-batch": 777}
+    )
+
+    assert isinstance(surfaced, SurfaceTriageProposalAction)
+    assert surfaced.mode == "pattern"
+    assert isinstance(comment, AddCommentAction)
+    assert comment.number == 777
+    assert comment.is_pr is False
+    assert "observed again" in comment.reason
+    assert not any(
+        isinstance(a, CreateTriageCaseFileIssueAction) for a in (surfaced, comment)
+    )
+
+
+def test_two_same_signature_observations_open_one_case_file() -> None:
+    """Two flag_pattern proposals with the SAME signature in ONE decision open
+    exactly one case file and preserve the second as an evidence comment."""
+    first = ProposedTriageAction(
+        id="A1", action_type="flag_pattern", body="obs1", pattern_signature="sig-x"
+    )
+    second = ProposedTriageAction(
+        id="A2", action_type="flag_pattern", body="obs2", pattern_signature="sig-x"
+    )
+
+    planned = _plan(_decision(first, second))
+
+    creations = [
+        a for a in planned if isinstance(a, CreateTriageCaseFileIssueAction)
+    ]
+    assert len(creations) == 1
+    assert creations[0].pattern_signature == "sig-x"
+    assert len(creations[0].additional_observation_comments) == 1
+    assert "obs2" in creations[0].additional_observation_comments[0]
+
+
+def test_different_signatures_open_distinct_case_files() -> None:
+    first = ProposedTriageAction(
+        id="A1", action_type="flag_pattern", body="obs1", pattern_signature="sig-a"
+    )
+    second = ProposedTriageAction(
+        id="A2", action_type="flag_pattern", body="obs2", pattern_signature="sig-b"
+    )
+
+    planned = _plan(_decision(first, second))
+
+    creations = [
+        a for a in planned if isinstance(a, CreateTriageCaseFileIssueAction)
+    ]
+    assert {c.pattern_signature for c in creations} == {"sig-a", "sig-b"}
+
+
+def test_case_file_ledger_for_other_signature_does_not_dedup() -> None:
+    action = ProposedTriageAction(
+        id="A4", action_type="flag_pattern", body="obs", pattern_signature="sig-new"
+    )
+
+    _surface, case_file = _plan(
+        _decision(action), pattern_ledger={"sig-other": 321}
+    )
+
+    assert isinstance(case_file, CreateTriageCaseFileIssueAction)
+    assert case_file.pattern_signature == "sig-new"
+
+
+def test_flag_pattern_propose_surfaces_as_shadow_and_opens_no_case_file() -> None:
+    """triage.authority.flag_pattern must not be dead config (#6761 F5); under
+    propose it stays a shadow record with NO durable case file (#6781)."""
     config = _config(flag_pattern="propose")
     action = ProposedTriageAction(
         id="A4",
         action_type="flag_pattern",
         body="Three sessions hit the same 422.",
+        pattern_signature="github-422-batch",
     )
 
     planned = _plan(_decision(action), config)
@@ -380,6 +488,9 @@ def test_flag_pattern_propose_surfaces_as_shadow() -> None:
     assert surfaced.mode == "shadow"
     assert surfaced.proposal_type == "flag_pattern"
     assert len(_shadow_digests(planned)) == 1
+    assert not any(
+        isinstance(a, CreateTriageCaseFileIssueAction) for a in planned
+    )
 
 
 @pytest.mark.parametrize("act_type", ["reset_retry", "kill_hung_session"])
@@ -537,7 +648,9 @@ def test_mixed_decision_preserves_order_and_authority() -> None:
     issue = ProposedTriageAction(
         id="A2", action_type="create_issue", title="t", body="b"
     )
-    pattern = ProposedTriageAction(id="A3", action_type="flag_pattern", body="p")
+    pattern = ProposedTriageAction(
+        id="A3", action_type="flag_pattern", body="p", pattern_signature="sig-mix"
+    )
 
     planned = _plan(_decision(comment, issue, pattern), config)
 
@@ -545,8 +658,11 @@ def test_mixed_decision_preserves_order_and_authority() -> None:
     # create_issue under propose is a gated creation now (#6778), not shadow.
     assert isinstance(planned[1], CreateTriageIssueAction)
     assert PROPOSED_TRIAGE_LABEL in planned[1].labels
+    # flag_pattern under execute surfaces the event AND opens the case file.
     assert isinstance(planned[2], SurfaceTriageProposalAction)
     assert planned[2].mode == "pattern"
+    assert isinstance(planned[3], CreateTriageCaseFileIssueAction)
+    assert planned[3].pattern_signature == "sig-mix"
     # No shadow proposals in this decision -> no digest.
     assert _shadow_digests(planned) == []
 

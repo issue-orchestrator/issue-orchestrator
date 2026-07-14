@@ -14,7 +14,12 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
-from ..domain.triage_session import PROPOSED_TRIAGE_LABEL, is_proposed_triage_gate
+from ..domain.triage_session import (
+    PROPOSED_TRIAGE_LABEL,
+    TRIAGE_AREA_LABEL_PREFIX,
+    TRIAGE_OBSERVATION_LABEL,
+    is_proposed_triage_gate,
+)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -49,6 +54,30 @@ TRIAGE_NEEDS_HUMAN_LABEL = "triage-needs-human"
 
 _REWORK_CYCLE_RE = re.compile(r"^rework-cycle-(\d+)$")
 _PUBLISH_FAIL_COUNT_RE = re.compile(r"^publish-fail-count-(\d+)$")
+
+_TRIAGE_ISSUE_LABEL_METADATA = {
+    TRIAGE_OBSERVATION_LABEL.casefold(): (
+        "B60205",
+        "Pattern case file (triage observation ledger)",
+    ),
+}
+
+
+def triage_issue_label_metadata(name: str) -> tuple[str, str]:
+    """Return creation metadata for a trusted triage issue label.
+
+    Dynamic ``area:*`` names cannot be provisioned during setup. The shared
+    triage issue-creation owner uses this registry metadata before creating an
+    issue; configured repository labels receive neutral metadata only when an
+    upgraded repository has not provisioned them yet.
+    """
+    metadata = _TRIAGE_ISSUE_LABEL_METADATA.get(name.casefold())
+    if metadata is not None:
+        return metadata
+    area_prefix = TRIAGE_AREA_LABEL_PREFIX.casefold()
+    if name.casefold().startswith(area_prefix):
+        return "1D76DB", "Triage pattern area"
+    return "EDEDED", "Required by an orchestrator-created triage issue"
 
 
 class LabelManager:
@@ -159,6 +188,9 @@ class LabelManager:
             # scheduler never picks one up; raw (never prefixed) like the
             # rest of the triage subsystem's labels.
             LabelEntry("proposed_triage", PROPOSED_TRIAGE_LABEL, LabelCategory.BLOCKING, "Triage proposal awaiting operator approval", raw=True),
+            # Pattern case-file issues (#6781): same treatment as the gate
+            # label — blocking-class (never picked up), raw (never prefixed).
+            LabelEntry("triage_observation", TRIAGE_OBSERVATION_LABEL, LabelCategory.BLOCKING, "Pattern case file (triage observation ledger)", raw=True),
         ]
         for e in entries:
             self._entries[e.key] = e
@@ -292,6 +324,11 @@ class LabelManager:
         return self._resolved["proposed_triage"]
 
     @property
+    def triage_observation(self) -> str:
+        """The pattern case-file label (#6781). Raw — never prefixed."""
+        return self._resolved["triage_observation"]
+
+    @property
     def review_keep_approach(self) -> str:
         return self._resolved["review_keep_approach"]
 
@@ -365,6 +402,8 @@ class LabelManager:
         names, so a canonical ``Proposed-Triage`` still blocks and can never be
         classified as approved by reconciliation while blocking treats it as
         absent.
+        ``triage-observation`` is blocking-class the same way (#6781):
+        pattern case files are evidence ledgers, never agent work items.
         """
         base = self._strip_prefix(label)
         if (
@@ -372,6 +411,7 @@ class LabelManager:
             or base.startswith("blocked-")
             or base.startswith("blocked:")
             or is_proposed_triage_gate(base)
+            or base.casefold() == self._resolved["triage_observation"].casefold()
         ):
             return True
         if base in _LEGACY_BLOCKING:

@@ -21,7 +21,7 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import cast
+from typing import Collection, cast
 
 from .triage_artifacts import ACT_LEVEL_TRIAGE_ACTIONS
 
@@ -54,6 +54,54 @@ def is_proposed_triage_gate(name: str) -> bool:
     treats it as absent (or vice versa).
     """
     return name.casefold() == PROPOSED_TRIAGE_LABEL.casefold()
+
+
+# Observation label carried by pattern case-file issues (#6781). Mirrors
+# PROPOSED_TRIAGE_LABEL's treatment exactly: orchestrator-attached at
+# creation, blocking-class (excluded from agent pickup by the scheduler),
+# rejected as a protected workflow label when agent-proposed, and raw
+# (never prefixed). Case files are durable flag_pattern evidence ledgers —
+# never work items and never triage anchors.
+TRIAGE_OBSERVATION_LABEL = "triage-observation"
+
+# Area tag prefix on case-file issues (#6781 amendment): the optional
+# ``area`` a flag_pattern proposal carries becomes an ``area:<name>`` label
+# so evidence clusters are queryable across signatures from the anchor scan.
+TRIAGE_AREA_LABEL_PREFIX = "area:"
+
+
+def triage_area_from_labels(labels: Collection[str]) -> str:
+    """Return the first ``area:*`` label value, or ``""`` when absent.
+
+    The case-file classifier, merge-history recorder, and board projection all
+    need the same area/seam interpretation. Keep it here beside the label
+    prefix so those paths cannot drift on casing or malformed empty values.
+    """
+    for label in labels:
+        if label.casefold().startswith(TRIAGE_AREA_LABEL_PREFIX.casefold()):
+            return label[len(TRIAGE_AREA_LABEL_PREFIX):]
+    return ""
+
+
+def is_triage_observation_label(name: str) -> bool:
+    """True iff *name* is the owned observation label, case-insensitively."""
+    return name.casefold() == TRIAGE_OBSERVATION_LABEL.casefold()
+
+
+def require_case_file_observation_label(labels: Collection[str]) -> None:
+    """Enforce the case-file label invariant (#6781): the domain owns it.
+
+    A pattern case-file issue MUST carry the orchestrator-owned observation
+    label — without it the issue would be schedulable agent work rather than
+    an evidence ledger. Co-located with ``TRIAGE_OBSERVATION_LABEL`` so the
+    action layer delegates label semantics to the domain owner instead of
+    re-deciding them at a control branch site.
+    """
+    if not any(is_triage_observation_label(label) for label in labels):
+        raise ValueError(
+            "pattern case file must carry the"
+            f" {TRIAGE_OBSERVATION_LABEL!r} observation label"
+        )
 
 
 _SCHEMA_VERSION = 1
@@ -428,3 +476,46 @@ class ApprovedTriageOp:
 
     proposal_issue_number: int
     op: StoredTriageOp
+
+
+@dataclass(frozen=True)
+class TriageCaseFileSummary:
+    """One open pattern case-file issue, as seen by the anchor scan (#6781).
+
+    Classified by the fact gatherer from the SAME open-issue scan that finds
+    triage anchors: an open issue carrying ``TRIAGE_OBSERVATION_LABEL``.
+    Comment cadence is the severity signal, so the summary carries the
+    comment count and last-update time alongside the ``area:*`` tag; health
+    reviews mine these from the board snapshot instead of the current tick.
+    """
+
+    issue_number: int
+    title: str
+    comment_count: int = 0
+    updated_at: str = ""  # ISO timestamp; "" when the scan source lacks it
+    area: str = ""  # the area:* tag's value; "" when unclassified
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "issue_number": self.issue_number,
+            "title": self.title,
+            "comment_count": self.comment_count,
+            "updated_at": self.updated_at,
+            "area": self.area,
+        }
+
+
+@dataclass(frozen=True)
+class TriageShippedFixSummary:
+    """One area-tagged fix observed at the canonical PR-merge boundary.
+
+    Persisted in the orchestrator-owned triage ledger so health reviews can
+    recognize fixed-then-recurred seams across process restarts instead of
+    relying on the bounded, process-local session history projection.
+    """
+
+    issue_number: int
+    title: str
+    pr_url: str
+    area: str
+    merged_at: str
