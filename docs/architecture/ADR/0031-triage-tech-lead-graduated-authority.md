@@ -93,7 +93,7 @@ was given) and **typed proposed actions**:
 | `post_comment` | Diagnosis comment on an issue/PR | `execute` |
 | `create_issue` | File a follow-up issue (labels, milestone per `triage:` config) | `execute` |
 | `escalate_to_human` | Route to the needs-human surface | `execute` (floor: cannot be disabled) |
-| `flag_pattern` | Record a cross-job pattern (event + report) | `execute` |
+| `flag_pattern` | Open/append a durable pattern case-file issue for a cross-job pattern (amended by #6781); requires a `pattern_signature` | `execute` |
 | `reset_retry` | Reset-and-retry an issue from scratch (executor wired — #6764 first slice) | `propose` |
 | `kill_hung_session` | Terminate a stuck session (executor not wired yet — #6764) | `propose` |
 
@@ -143,6 +143,19 @@ Semantics:
   most once — the op row is discarded after terminal handling (outcome
   comment + close on execution, or stale-downgrade comment + close).
   Per-instance approval and config-level trust coexist.
+- **Durable pattern case files (amended by #6781).** `flag_pattern` under
+  `execute` is no longer event-only. Each flag_pattern action carries a
+  required `pattern_signature` (a short stable slug; a decision without one is
+  rejected). The orchestrator keeps a durable case-file ledger keyed by that
+  signature: the first time a signature is observed it opens a **pattern
+  case-file issue** (create-once, keyed by signature), and every repeat
+  observation appends an **evidence comment** to that same case file rather
+  than opening a new one. Evidence therefore *accrues* on one issue per
+  pattern, and the open case files are projected into the board snapshot (§3)
+  and the local triage board so the periodic health review (§4) can mine
+  accumulated cross-job evidence. The `mode="pattern"` trace event still fires.
+  Under `propose`, `flag_pattern` stays a shadow *would-have-done* record and
+  opens no case file.
 - Per-action flags, not a level scale: trust is not linear. An operator may
   trust issue-filing for months before trusting session-killing.
 - Fail-safe: anything that mutates orchestrator runtime state defaults to
