@@ -1698,6 +1698,36 @@ class TestPlanHealthReviewIssueCreation:
 
         assert self._create_actions(plan) == []
 
+    def test_problem_storm_creates_one_unscheduled_health_review(self):
+        """K recent problems collapse to one health anchor and zero per-issue
+        investigations even when the periodic interval is not due (#6780)."""
+        planner, config = self._make_planner(interval_minutes=0)
+        config.triage.health_review.storm_threshold = 3
+        config.triage.health_review.storm_window_minutes = 5
+        problems = tuple(
+            DiscoveredFailure(
+                issue_number=number,
+                issue_title=f"Problem {number}",
+                failure_reason="failed",
+                observed_at=1_000.0,
+            )
+            for number in (3, 1, 2)
+        )
+        planner = Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config, InMemoryEventSink()),
+            clock=lambda: 1_100.0,
+        )
+
+        plan = planner.plan(make_snapshot(discovered_failures=problems))
+
+        assert not plan.actions_of_type(ActionType.QUEUE_TRIAGE)
+        [action] = self._create_actions(plan)
+        assert tuple(p.issue_number for p in action.storm_problems) == (1, 2, 3)
+        assert action.reason == "problem storm: 3 issues inside settle window"
+        assert "instead of" in action.body
+
     def test_skips_when_existing_anchor_open(self):
         planner, _ = self._make_planner()
         facts = self._health_facts(existing_health_review_issue=321)

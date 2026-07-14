@@ -42,6 +42,7 @@ from issue_orchestrator.control.reconciliation import (
     get_pause_label,
 )
 from issue_orchestrator.control.session_history import CLOSED_ISSUE_HISTORY_STATUS_REASON
+from issue_orchestrator.control.session_routing import PendingSessionQueues
 from issue_orchestrator.control.actions import (
     ActionResult,
     ActionType,
@@ -2023,6 +2024,42 @@ class TestUpdateStateAfterAction:
         (triage,) = support_with_state.state.pending_triage_reviews
         assert triage.issue_number == 1000
         assert triage.flavor is TriageSessionFlavor.HEALTH_REVIEW
+
+    def test_storm_health_creation_replaces_member_investigations(
+        self, support_with_state
+    ):
+        """Successful anchor intake atomically leaves one health review and
+        zero per-member failure investigations (#6780)."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.models import DiscoveredFailure
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        cohort = tuple(
+            DiscoveredFailure(number, f"Problem {number}", "failed")
+            for number in (41, 42, 43)
+        )
+        queues = PendingSessionQueues(support_with_state.state)
+        for failure in cohort:
+            queues.queue_failure_investigation(
+                failure.issue_number,
+                f"Investigate {failure.issue_number}",
+                failure=failure,
+            )
+        action = CreateTriageIssueAction(
+            title="Health Review — walk the floor",
+            body="Problem storm",
+            labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+            pr_count=0,
+            storm_problems=cohort,
+        )
+
+        self._apply_via_plan(support_with_state, [action], issue_number=1000)
+
+        [queued] = support_with_state.state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert queued.problem_cohort == cohort
 
     def test_marker_labeled_creation_survives_store_persist_failure(
         self, support_with_state, caplog

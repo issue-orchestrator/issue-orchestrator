@@ -133,10 +133,9 @@ def test_allowed_targets_by_flavor() -> None:
 
 def test_allowed_act_level_targets_are_issue_only() -> None:
     """Act-level (reset_retry/kill_hung_session) scope is the STRICTER
-    issue-only set (#6764 re-review F1): only a failure investigation owns a
-    resettable work issue; batch/health reviews expose none, so a manifest PR
-    (or anchor) can never be handed to the issue reset owner as an issue_number
-    (confused deputy)."""
+    issue-only set (#6764 re-review F1, #6780): an investigation owns its focus;
+    a health review owns its immutable snapshot problem cohort; a batch owns no
+    resettable issue. Triage anchors and manifest PRs are never act targets."""
     investigation = TriageLaunchAuthority(
         flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
         anchor_issue_number=7,
@@ -149,8 +148,32 @@ def test_allowed_act_level_targets_are_issue_only() -> None:
     health = TriageLaunchAuthority(
         flavor=TriageSessionFlavor.HEALTH_REVIEW,
         anchor_issue_number=9,
+        problem_issue_numbers=(12, 14),
     )
-    assert health.allowed_act_level_targets() == frozenset()
+    assert health.allowed_act_level_targets() == frozenset({12, 14})
+    assert 9 not in health.allowed_act_level_targets()
+
+
+def test_health_problem_cohort_round_trips_and_is_validated() -> None:
+    health = TriageLaunchAuthority(
+        flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        anchor_issue_number=9,
+        problem_issue_numbers=(12, 14),
+    )
+
+    assert TriageLaunchAuthority.from_dict(health.to_dict()) == health
+    with pytest.raises(ValueError, match="sorted and unique"):
+        TriageLaunchAuthority(
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            anchor_issue_number=9,
+            problem_issue_numbers=(14, 12, 12),
+        )
+    with pytest.raises(ValueError, match="only for a health review"):
+        TriageLaunchAuthority(
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+            anchor_issue_number=9,
+            problem_issue_numbers=(12,),
+        )
 
 
 def test_discard_removes_only_the_named_run(tmp_path: Path) -> None:

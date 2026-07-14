@@ -44,7 +44,12 @@ from .triage_issue_policy import (
 )
 
 if TYPE_CHECKING:
-    from ..domain.models import OrchestratorState, PendingTriageReview, TriageFacts
+    from ..domain.models import (
+        DiscoveredFailure,
+        OrchestratorState,
+        PendingTriageReview,
+        TriageFacts,
+    )
     from ..infra.config import Config
     from ..ports import Issue, RepositoryHost
     from ..ports.queue_cache_store import QueueCacheStore
@@ -74,6 +79,28 @@ queues, recent failures, timeline extracts, and an orchestrator log tail.
 Look for hung or aging sessions, queue pile-ups, repeated failures, and
 cross-job patterns. Report findings and propose actions through the triage
 decision artifact; the orchestrator closes this issue when the review lands.
+"""
+
+
+def _problem_storm_issue_body(
+    problems: Sequence["DiscoveredFailure"],
+) -> str:
+    cohort = "\n".join(
+        f"- #{problem.issue_number}: {problem.issue_title} "
+        f"(`{problem.failure_reason}`)"
+        for problem in problems
+    )
+    return f"""## Immediate Problem-Storm Health Review (ADR-0031)
+
+The orchestrator observed {len(problems)} blocked/failed problem issues inside
+the configured settle window and escalated them as one cohort instead of
+launching per-issue investigations:
+
+{cohort}
+
+Walk the floor using `triage-data/board-snapshot.json`. Diagnose shared root
+causes and propose group remediation through the triage decision artifact.
+Each act-level proposal remains individually gated and re-validated.
 """
 
 
@@ -222,6 +249,8 @@ def plan_health_review_issue_creation(
     workflow: "TriageWorkflow",
     active_session_count: int,
     paused: bool,
+    storm_problems: Sequence["DiscoveredFailure"] = (),
+    issues: Sequence["Issue"] = (),
 ) -> Optional[CreateTriageIssueAction]:
     """Plan the health-review anchor creation when due, not duplicated, and
     allowed by the owned paused/capacity gate.
@@ -238,12 +267,25 @@ def plan_health_review_issue_creation(
     milestone intent) comes from the ``triage_issue_policy`` owner — the same
     policy batch anchors get (#6763 finding 5).
     """
-    if facts is None or not facts.health_review_due:
+    interval_due = bool(facts and facts.health_review_due)
+    if not interval_due and not storm_problems:
         return None
-    if facts.existing_health_review_issue is not None:
+    existing_health_review_issue = (
+        facts.existing_health_review_issue if facts is not None else None
+    )
+    if existing_health_review_issue is None:
+        existing_health_review_issue = next(
+            (
+                issue.number
+                for issue in issues
+                if issue.state == "open" and has_health_review_marker(issue.labels)
+            ),
+            None,
+        )
+    if existing_health_review_issue is not None:
         logger.debug(
             "Planner: health-review anchor #%d already open",
-            facts.existing_health_review_issue,
+            existing_health_review_issue,
         )
         return None
     if any(
@@ -263,19 +305,38 @@ def plan_health_review_issue_creation(
     # the create-issue execution boundary (#6769 finding 4). Health anchors
     # have no source PRs, so only the explicit strategy can apply.
     milestone = triage_issue_milestone_intent(config, ())
-    logger.info("Planner: creating health-review anchor issue (labels=%s)", labels)
+    trigger_reason = (
+        f"problem storm: {len(storm_problems)} issues inside settle window"
+        if storm_problems
+        else "health review interval elapsed"
+    )
+    logger.info(
+        "Planner: creating health-review anchor issue (labels=%s, reason=%s)",
+        labels,
+        trigger_reason,
+    )
     return CreateTriageIssueAction(
         title=title,
-        body=_HEALTH_REVIEW_ISSUE_BODY,
+        body=(
+            _problem_storm_issue_body(storm_problems)
+            if storm_problems
+            else _HEALTH_REVIEW_ISSUE_BODY
+        ),
         labels=labels,
         pr_count=0,
         milestone=milestone,
-        reason="health review interval elapsed",
+        storm_problems=tuple(storm_problems),
+        reason=trigger_reason,
     )
 
 
 def _queue_anchor_by_marker(
-    state: "OrchestratorState", issue_number: int, title: str, labels: Iterable[str]
+    state: "OrchestratorState",
+    issue_number: int,
+    title: str,
+    labels: Iterable[str],
+    *,
+    storm_problems: tuple["DiscoveredFailure", ...] = (),
 ) -> "TriageQueueOutcome":
     """Route an orchestrator-created anchor to its variant's owner queue op.
 
@@ -288,7 +349,16 @@ def _queue_anchor_by_marker(
 
     queues = PendingSessionQueues(state)
     if has_health_review_marker(labels):
-        return queues.queue_health_review(issue_number, title)
+        storm_issue_numbers = frozenset(
+            problem.issue_number for problem in storm_problems
+        )
+        if storm_issue_numbers:
+            queues.remove_failure_investigations(storm_issue_numbers)
+        return queues.queue_health_review(
+            issue_number,
+            title,
+            problem_cohort=storm_problems,
+        )
     return queues.queue_batch_review(issue_number, title)
 
 
@@ -303,7 +373,13 @@ def intake_created_triage_anchor(
     Health creations additionally stamp/persist ``last_health_review_at``
     (:func:`record_health_review_creation` keys off the marker label).
     """
-    outcome = _queue_anchor_by_marker(state, issue_number, action.title, action.labels)
+    outcome = _queue_anchor_by_marker(
+        state,
+        issue_number,
+        action.title,
+        action.labels,
+        storm_problems=action.storm_problems,
+    )
     record_health_review_creation(action, state, store)
     return outcome
 

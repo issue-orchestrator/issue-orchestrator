@@ -125,14 +125,42 @@ class PendingSessionQueues:
             )
         )
 
-    def queue_health_review(self, issue_number: int, title: str) -> TriageQueueOutcome:
+    def queue_health_review(
+        self,
+        issue_number: int,
+        title: str,
+        *,
+        problem_cohort: tuple[DiscoveredFailure, ...] = (),
+    ) -> TriageQueueOutcome:
         """Queue an interval-created health-review anchor (ADR-0031 §4); like a
-        batch review it carries no failure context (``__post_init__`` rejects one)."""
+        batch review it carries no singular failure context. An unscheduled
+        problem-storm review instead carries its typed cohort so the later
+        launch snapshot cannot lose the trigger facts at end-of-tick."""
         return self._queue_triage(
             PendingTriageReview(
-                issue_number, title, flavor=TriageSessionFlavor.HEALTH_REVIEW
+                issue_number,
+                title,
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+                problem_cohort=problem_cohort,
             )
         )
+
+    def remove_failure_investigations(
+        self, issue_numbers: frozenset[int]
+    ) -> None:
+        """Remove only storm-superseded individual investigation entries.
+
+        Batch and health anchors may share an issue number with other triage
+        bookkeeping and must never be removed by a problem-cohort transition.
+        """
+        self.state.pending_triage_reviews[:] = [
+            item
+            for item in self.state.pending_triage_reviews
+            if not (
+                item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+                and item.issue_number in issue_numbers
+            )
+        ]
 
     def queue_failure_investigation(
         self, issue_number: int, title: str, *, failure: DiscoveredFailure

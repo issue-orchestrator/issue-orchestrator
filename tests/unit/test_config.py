@@ -3098,10 +3098,12 @@ triage:
             config.triage.authority.mode_for("push_code")
 
     def test_triage_health_review_default_disabled(self):
-        """Health review defaults to disabled (interval 0, ADR-0031 §4)."""
+        """Periodic review is off; problem-storm escalation has safe defaults."""
         config = Config()
 
         assert config.triage.health_review.interval_minutes == 0
+        assert config.triage.health_review.storm_threshold == 3
+        assert config.triage.health_review.storm_window_minutes == 5
 
     def test_triage_health_review_from_yaml(self, tmp_path):
         """triage.health_review.interval_minutes parses as an int."""
@@ -3113,6 +3115,8 @@ agents:
 triage:
   health_review:
     interval_minutes: 240
+    storm_threshold: 4
+    storm_window_minutes: 10
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -3120,6 +3124,8 @@ triage:
         config = Config.load(config_file)
 
         assert config.triage.health_review.interval_minutes == 240
+        assert config.triage.health_review.storm_threshold == 4
+        assert config.triage.health_review.storm_window_minutes == 10
 
     def test_triage_health_review_negative_interval_is_startup_error(self):
         """A negative interval is a misconfiguration, never silently disabled.
@@ -3155,6 +3161,23 @@ triage:
         assert config.triage.health_review.startup_errors() == []
         config.triage.health_review.interval_minutes = 240
         assert config.triage.health_review.startup_errors() == []
+
+    @pytest.mark.parametrize(
+        ("attr", "value", "path"),
+        [
+            ("storm_threshold", -1, "storm_threshold"),
+            ("storm_window_minutes", 0, "storm_window_minutes"),
+        ],
+    )
+    def test_triage_health_review_rejects_invalid_storm_settings(
+        self, attr: str, value: int, path: str
+    ) -> None:
+        config = Config()
+        setattr(config.triage.health_review, attr, value)
+
+        errors = config.validate()
+
+        assert any(f"triage.health_review.{path}" in error for error in errors)
 
 
 class TestSchedulingConfig:

@@ -214,6 +214,10 @@ class TriageLaunchAuthority:
     anchor_issue_number: int
     focus_issue_number: int | None = None
     manifest_pr_numbers: tuple[int, ...] = ()
+    # Snapshot-derived health-review cohort (#6780). These are the problem
+    # issue numbers present in the orchestrator-built board snapshot at launch.
+    # They are immutable act-level authority, not agent-provided scope.
+    problem_issue_numbers: tuple[int, ...] = ()
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -234,8 +238,29 @@ class TriageLaunchAuthority:
         ):
             raise ValueError(
                 "TriageLaunchAuthority with flavor=health_review carries no "
-                "focus issue or manifest PRs; its scope is the anchor issue only "
-                "(ADR-0031 §4)"
+                "focus issue or manifest PRs; its general scope is the anchor "
+                "and its act-level scope is the snapshot problem cohort"
+            )
+        if (
+            self.flavor is not TriageSessionFlavor.HEALTH_REVIEW
+            and self.problem_issue_numbers
+        ):
+            raise ValueError(
+                "TriageLaunchAuthority problem_issue_numbers are valid only "
+                "for a health review"
+            )
+        if any(
+            isinstance(number, bool) or number <= 0
+            for number in self.problem_issue_numbers
+        ):
+            raise ValueError(
+                "TriageLaunchAuthority problem_issue_numbers must contain "
+                "positive ints"
+            )
+        if self.problem_issue_numbers != tuple(sorted(set(self.problem_issue_numbers))):
+            raise ValueError(
+                "TriageLaunchAuthority problem_issue_numbers must be sorted "
+                "and unique"
             )
 
     def allowed_targets(self) -> frozenset[int]:
@@ -263,15 +288,18 @@ class TriageLaunchAuthority:
         ``issue_number``, so a batch manifest PR number — or a triage
         bookkeeping anchor — passed here is a confused deputy: it resets the
         wrong entity (#6764 re-review F1). Only a failure investigation owns a
-        work issue in scope: its focus issue. Batch and health reviews own no
-        resettable work issue (batch manifest entries are PRs; batch/health
-        anchors are triage bookkeeping issues), so NO act-level target is in
-        scope for them — board-wide remediation must route through the
-        scope-free ``create_issue``/``flag_pattern`` proposals instead.
+        work issue in scope: its focus issue. A health review additionally owns
+        the problem issues captured from its own orchestrator-authored board
+        snapshot at launch (#6780), enabling group diagnosis with individually
+        gated and execution-time re-validated resets. Batch reviews own no
+        resettable work issue because manifest entries are PRs and their anchor
+        is bookkeeping.
         """
         if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
             assert self.focus_issue_number is not None  # __post_init__
             return frozenset((self.focus_issue_number,))
+        if self.flavor is TriageSessionFlavor.HEALTH_REVIEW:
+            return frozenset(self.problem_issue_numbers)
         return frozenset()
 
     def matches_assignment(self, assignment: TriageAssignment) -> bool:
@@ -288,6 +316,7 @@ class TriageLaunchAuthority:
             "anchor_issue_number": self.anchor_issue_number,
             "focus_issue_number": self.focus_issue_number,
             "manifest_pr_numbers": list(self.manifest_pr_numbers),
+            "problem_issue_numbers": list(self.problem_issue_numbers),
         }
 
     @classmethod
@@ -323,11 +352,21 @@ class TriageLaunchAuthority:
             raise ValueError(
                 f"triage authority manifest_pr_numbers must be a list of ints, got {raw_prs!r}"
             )
+        raw_problems = data.get("problem_issue_numbers", [])
+        if not isinstance(raw_problems, list) or any(
+            isinstance(number, bool) or not isinstance(number, int)
+            for number in raw_problems
+        ):
+            raise ValueError(
+                "triage authority problem_issue_numbers must be a list of ints, "
+                f"got {raw_problems!r}"
+            )
         return cls(
             flavor=flavor,
             anchor_issue_number=anchor,
             focus_issue_number=focus,
             manifest_pr_numbers=tuple(raw_prs),
+            problem_issue_numbers=tuple(raw_problems),
             schema_version=raw_schema,
         )
 

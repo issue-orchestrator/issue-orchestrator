@@ -85,7 +85,12 @@ flowchart TD
   TRIAGE -->|no| DONE2["Ready for human merge"]
 
   FAIL["Session failed / blocked / timeout"] --> TFAIL{"triage_review_on_failure?"}
-  TFAIL -->|yes| INVEST["Triage agent investigates failure"]
+  TFAIL -->|yes| CLASSIFY{"Explained dependency block?"}
+  CLASSIFY -->|yes| WAIT["Healthy wait — no reaction"]
+  CLASSIFY -->|no| STORM{"Problem-storm threshold met?"}
+  STORM -->|yes| HEALTH["One unscheduled health review for cohort"]
+  STORM -->|no, failed/timeout| INVEST["Queue failure investigation"]
+  STORM -->|no, blocked + dependents| INVEST
   TFAIL -->|no| SKIP["No investigation"]
 ```
 
@@ -141,7 +146,13 @@ review:
   # Triage batch review
   triage_review_agent: "agent:triage"
   triage_review_threshold: 5           # Trigger after N code-reviewed PRs
-  triage_review_on_failure: true       # Investigate failures (default: true)
+  triage_review_on_failure: true       # React to failed/timed-out/unexplained blocked sessions
+
+triage:
+  health_review:
+    interval_minutes: 240              # Periodic floor; 0 disables interval
+    storm_threshold: 3                 # K recent problems -> one health review; 0 disables
+    storm_window_minutes: 5            # Settle window for the problem cohort
 ```
 
 ## Key Design Decisions

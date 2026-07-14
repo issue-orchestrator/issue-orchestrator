@@ -349,12 +349,17 @@ def _merge_failure_sources(state: OrchestratorState) -> tuple[DiscoveredFailure,
     """
     live = tuple(state.discovered_failures)
     seen = {failure.issue_number for failure in live}
-    queued = tuple(
-        triage.failure
-        for triage in state.pending_triage_reviews
-        if triage.failure is not None and triage.failure.issue_number not in seen
-    )
-    return live + queued
+    queued: list[DiscoveredFailure] = []
+    for triage in state.pending_triage_reviews:
+        candidates = (
+            (triage.failure,) if triage.failure is not None else triage.problem_cohort
+        )
+        for failure in candidates:
+            if failure.issue_number in seen:
+                continue
+            queued.append(failure)
+            seen.add(failure.issue_number)
+    return live + tuple(queued)
 
 
 def _rework_issue_number(rework: PendingRework) -> int:

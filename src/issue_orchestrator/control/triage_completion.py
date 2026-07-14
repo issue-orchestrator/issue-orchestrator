@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from ..domain.models import Session
+from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.triage_artifacts import ACT_LEVEL_TRIAGE_ACTIONS
 from ..domain.triage_manifest import TriageManifest
 from ..domain.triage_session import TriageLaunchAuthority, TriageSessionFlavor
@@ -143,6 +144,28 @@ def read_triage_manifest(run_dir: Path) -> TriageManifest | None:
         return None
 
 
+def _health_snapshot_scope_error(
+    run_dir: Path, authority: TriageLaunchAuthority
+) -> str | None:
+    """Return snapshot/cohort tamper detail for a health-review authority."""
+    snapshot_path = run_dir / "triage-data" / BOARD_SNAPSHOT_FILENAME
+    if not snapshot_path.exists():
+        return "worktree board-snapshot.json is missing (deleted after launch)"
+    try:
+        worktree_snapshot = BoardSnapshot.read(snapshot_path)
+    except Exception as exc:
+        return f"worktree board-snapshot.json is malformed: {exc}"
+    worktree_problems = worktree_snapshot.problem_issue_numbers()
+    authority_problems = frozenset(authority.problem_issue_numbers)
+    if worktree_problems != authority_problems:
+        return (
+            f"worktree board-snapshot problem set {sorted(worktree_problems)}"
+            " does not match the launch authority cohort "
+            f"{sorted(authority_problems)}"
+        )
+    return None
+
+
 def resolve_triage_launch_authority(
     triage_authority: "TriageAuthorityStore",
     *,
@@ -190,6 +213,9 @@ def resolve_triage_launch_authority(
                 " match the launch authority set"
                 f" {sorted(authority.manifest_pr_numbers)}"
             )
+    if authority.flavor is TriageSessionFlavor.HEALTH_REVIEW:
+        if error := _health_snapshot_scope_error(run_dir, authority):
+            return authority, error
     return authority, None
 
 
@@ -202,8 +228,8 @@ def _launch_scope_description(
     if authority.flavor is TriageSessionFlavor.HEALTH_REVIEW:
         return (
             f"the health-review anchor issue #{authority.anchor_issue_number}"
-            " (board-wide findings belong in create_issue/flag_pattern"
-            " proposals)"
+            " (board-wide comments/escalations belong on the anchor; act-level"
+            " proposals use the separate snapshot cohort)"
         )
     return (
         "the audited manifest PRs and the tracking issue"
@@ -215,6 +241,12 @@ def _act_level_scope_description(authority: TriageLaunchAuthority) -> str:
     """Human-readable ISSUE-only scope for an out-of-scope act-level violation."""
     if authority.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
         return f"the originating work issue #{authority.focus_issue_number}"
+    if authority.flavor is TriageSessionFlavor.HEALTH_REVIEW:
+        cohort = ", ".join(f"#{n}" for n in authority.problem_issue_numbers)
+        return (
+            "the health review's immutable snapshot problem cohort"
+            f" ({cohort or 'empty'})"
+        )
     return (
         "no work issue is in scope for an act-level reset/kill from this"
         " session — that intent applies only to a failure investigation's"

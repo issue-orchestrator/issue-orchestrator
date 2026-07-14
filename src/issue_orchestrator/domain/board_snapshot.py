@@ -253,6 +253,17 @@ class BoardSnapshot:
     timeline: list[BoardTimelineExtract] = field(default_factory=list)
     log_tail: list[str] = field(default_factory=list)
 
+    def problem_issue_numbers(self) -> frozenset[int]:
+        """Issue numbers in the snapshot's blocked/failed reaction cohort.
+
+        Reactive BLOCKED facts use ``BoardFailure`` with
+        ``failure_reason='blocked'`` alongside failed/timed-out sessions, so
+        ``recent_failures`` is the one typed problem surface. Dependency-
+        blocked entries are deliberately excluded: a tracked open dependency
+        is healthy waiting, not act-level remediation authority (#6780).
+        """
+        return frozenset(item.issue_number for item in self.recent_failures)
+
     def to_dict(self) -> BoardSnapshotDict:
         """Convert to JSON-serializable dict."""
         return {

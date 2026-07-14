@@ -1,9 +1,10 @@
 # ADR 0031: Triage as a tech lead with graduated, config-scoped authority
 
 **Status:** Proposed
-**Date:** 2026-07-10 (amended 2026-07-11: §2 gated-issue surfacing, #6778)
+**Date:** 2026-07-10 (amended 2026-07-11: §2 gated-issue surfacing, #6778;
+2026-07-14: §4 reaction model, #6780)
 **Milestone:** P1
-**Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778
+**Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778, #6780
 
 ## TL;DR
 
@@ -185,7 +186,7 @@ to the failed issue plus board context; batch sessions get it alongside the PR
 manifest. The canonical prompt documents the layout; the agent stays
 sandbox-compatible (reads local files, never queries GitHub).
 
-### 4. Periodic trigger: the health review
+### 4. Reaction triggers: investigations and health reviews
 
 `triage.health_review.interval_minutes` (absent/0 = disabled) drives a
 planner-side trigger: when the interval elapses and no health review is active
@@ -194,6 +195,32 @@ board snapshot. The last-run marker is persisted so restarts do not
 double-fire. Capacity/pause gating reuses `TriageWorkflow.should_launch_triage()`.
 Health-review completions flow through the decision artifact — there is no PR
 manifest to label.
+
+The interval is a periodic floor, not the only reaction trigger. Session
+completion records `BLOCKED` alongside `FAILED` and `TIMED_OUT` as a typed,
+timestamped problem fact. One deterministic reaction-policy owner classifies
+the fact using the existing dependency evaluator and reverse dependency graph:
+
+- a plain block on a tracked open dependency is explained healthy waiting and
+  launches no investigation;
+- a `blocked-failed` result, a dependency-satisfied-but-stuck issue, or a block
+  with no tracked open dependency is unexplained; when that issue has
+  downstream dependents, it queues an immediate failure investigation ahead
+  of ordinary issue pickup;
+- `triage.health_review.storm_threshold` problem issues observed inside
+  `triage.health_review.storm_window_minutes` suppress their individual
+  investigations and create one immediate, unscheduled health review. A zero
+  threshold disables storm escalation without changing the interval trigger.
+
+A storm-created anchor carries its typed problem cohort through the pending
+queue into the launch-time board snapshot. The orchestrator derives
+`TriageLaunchAuthority.problem_issue_numbers` from that exact snapshot instance
+and persists it outside the agent-writable worktree. A health review may issue
+act-level `reset_retry`/`kill_hung_session` proposals only for that immutable
+cohort; general comments and escalations remain anchor-scoped. Completion
+re-reads the worktree snapshot solely as tamper evidence and rejects any
+problem-set divergence before accepting the decision. Execution-time
+precondition checks still apply independently to each cohort action.
 
 ### 5. Sequencing and scope boundaries
 

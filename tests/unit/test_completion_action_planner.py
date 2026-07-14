@@ -29,6 +29,7 @@ from issue_orchestrator.control.triage_completion import (
     triage_decision_processing_error,
 )
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.domain.board_snapshot import BoardFailure, BoardSnapshot
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -263,20 +264,36 @@ def arm_investigation_session(
     )
 
 
-def arm_health_review_session(config: Config, session: Session) -> None:
-    """Plant the assignment copy AND the launch authority for a health review.
-
-    Anchor-only scope (ADR-0031 §4): no focus issue, empty manifest set.
-    """
+def arm_health_review_session(
+    config: Config,
+    session: Session,
+    *,
+    problem_issue_numbers: tuple[int, ...] = (),
+) -> None:
+    """Plant the snapshot, assignment, and immutable health authority."""
     plant_triage_assignment(
         session, TriageAssignment(flavor=TriageSessionFlavor.HEALTH_REVIEW)
     )
+    BoardSnapshot(
+        generated_at="2026-07-14T12:00:00+00:00",
+        orchestrator_paused=False,
+        recent_failures=[
+            BoardFailure(
+                issue_number=number,
+                issue_title=f"Problem {number}",
+                failure_reason="failed",
+                artifact_hints=[],
+            )
+            for number in problem_issue_numbers
+        ],
+    ).write(session.run_dir / "triage-data" / "board-snapshot.json")
     record_authority(
         config,
         session,
         TriageLaunchAuthority(
             flavor=TriageSessionFlavor.HEALTH_REVIEW,
             anchor_issue_number=session.issue.number,
+            problem_issue_numbers=problem_issue_numbers,
         ),
     )
 
@@ -1204,6 +1221,97 @@ class TestDecisionTargetScope:
         assert not any(isinstance(a, ResetRetryIssueAction) for a in actions)
         assert not any(isinstance(a, CloseIssueAction) for a in actions)
         assert "triage-reviewed" not in added_labels(actions)
+
+    def test_health_reset_retry_accepts_snapshot_problem_cohort(
+        self, tmp_path: Path
+    ) -> None:
+        config = make_triage_config(tmp_path)
+        session = make_triage_session(tmp_path)
+        arm_health_review_session(
+            config, session, problem_issue_numbers=(41, 42, 43)
+        )
+        _plant_decision_with_actions(
+            session,
+            [
+                {
+                    "id": "A1",
+                    "action_type": "reset_retry",
+                    "target_number": 42,
+                    "body": "Reset the stuck cohort member.",
+                    "finding_ids": ["T1"],
+                }
+            ],
+        )
+
+        error = triage_decision_processing_error(
+            config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+
+        assert error is None
+
+    def test_health_reset_retry_rejects_issue_outside_snapshot_cohort(
+        self, tmp_path: Path
+    ) -> None:
+        config = make_triage_config(tmp_path)
+        session = make_triage_session(tmp_path)
+        arm_health_review_session(
+            config, session, problem_issue_numbers=(41, 42, 43)
+        )
+        _plant_decision_with_actions(
+            session,
+            [
+                {
+                    "id": "A1",
+                    "action_type": "reset_retry",
+                    "target_number": 99,
+                    "body": "Out-of-cohort reset attempt.",
+                    "finding_ids": ["T1"],
+                }
+            ],
+        )
+
+        error = triage_decision_processing_error(
+            config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+
+        assert error is not None
+        assert "immutable snapshot problem cohort (#41, #42, #43)" in error
+
+    def test_health_snapshot_problem_set_tampering_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        config = make_triage_config(tmp_path)
+        session = make_triage_session(tmp_path)
+        arm_health_review_session(
+            config, session, problem_issue_numbers=(41, 42, 43)
+        )
+        BoardSnapshot(
+            generated_at="2026-07-14T12:01:00+00:00",
+            orchestrator_paused=False,
+            recent_failures=[
+                BoardFailure(99, "Injected problem", "failed", [])
+            ],
+        ).write(session.run_dir / "triage-data" / "board-snapshot.json")
+
+        error = triage_decision_processing_error(
+            config,
+            triage_authority=SqliteTriageAuthorityStore.for_repo(config.repo_root),
+            run_dir=session.run_dir,
+            run_id=session.run_assets.run_id,
+            session_name=session.run_assets.session_name,
+        )
+
+        assert error is not None
+        assert error.startswith("triage_authority: scope_tampered")
+        assert "problem set [99]" in error
 
     def test_duplicate_reset_retry_target_rejects_completion_without_effects(
         self, tmp_path: Path

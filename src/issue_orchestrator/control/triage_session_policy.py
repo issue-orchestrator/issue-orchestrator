@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 from ..domain.models import RequestedAction
 from ..domain.triage_manifest import TriageManifest
-from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME
+from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME, BoardSnapshot
 from ..domain.triage_session import (
     HEALTH_REVIEW_MARKER_LABEL,
     TRIAGE_ASSIGNMENT_FILENAME,
@@ -153,8 +153,9 @@ def prepare_triage_session_data(
     trusted half — an orchestrator-owned :class:`TriageLaunchAuthority`
     record persisted outside the agent-writable worktree, keyed by this
     run's identity, which completion reads as the only scope authority
-    (#6761 re-review F1). Health reviews record an anchor-only scope: no
-    focus issue, empty manifest set, board-wide snapshot.
+    (#6761 re-review F1). Health reviews record no focus/manifest scope plus
+    the problem-issue cohort derived from the exact board snapshot written for
+    the session (#6780); act-level proposals may target only that cohort.
 
     Flavor resolution: an explicit ``triage_flavor`` wins (the pending-queue
     launch path forwards the producer-declared flavor); otherwise the
@@ -193,6 +194,13 @@ def prepare_triage_session_data(
     assignment_path = run_dir / "triage-data" / TRIAGE_ASSIGNMENT_FILENAME
     assignment.write(assignment_path)
     ctx.update_manifest({"triage_assignment": str(assignment_path)})
+    focus_issue = issue.number if focused else None
+    board_snapshot = board_snapshot_provider.snapshot(focus_issue)
+    problem_issue_numbers = (
+        tuple(sorted(board_snapshot.problem_issue_numbers()))
+        if flavor is TriageSessionFlavor.HEALTH_REVIEW
+        else ()
+    )
     triage_authority.record(
         run_id=ctx.run.run_id,
         session_name=ctx.run.session_name,
@@ -203,23 +211,21 @@ def prepare_triage_session_data(
             manifest_pr_numbers=tuple(pr.number for pr in triage_manifest.prs)
             if triage_manifest
             else (),
+            problem_issue_numbers=problem_issue_numbers,
         ),
     )
     logger.info("[triage] Wrote %s assignment: %s", flavor.value, assignment_path)
     _write_board_snapshot(
         ctx,
         run_dir,
-        board_snapshot_provider,
-        focus_issue=issue.number if focused else None,
+        board_snapshot,
     )
 
 
 def _write_board_snapshot(
     ctx: "WorktreeContext",
     run_dir: Path,
-    provider: "BoardSnapshotProvider",
-    *,
-    focus_issue: int | None,
+    snapshot: BoardSnapshot,
 ) -> None:
     """Write the ADR-0031 §3 board snapshot into the triage-data directory.
 
@@ -231,6 +237,5 @@ def _write_board_snapshot(
     never points at a missing file.
     """
     snapshot_path = run_dir / "triage-data" / BOARD_SNAPSHOT_FILENAME
-    snapshot = provider.snapshot(focus_issue)
     snapshot.write(snapshot_path)
     ctx.update_manifest({"board_snapshot": str(snapshot_path)})

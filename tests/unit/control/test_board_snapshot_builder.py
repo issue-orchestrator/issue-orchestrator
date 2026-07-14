@@ -662,3 +662,34 @@ class TestStateBoardSnapshotProvider:
         snapshot = provider.snapshot(None)
 
         assert snapshot.recent_failures == []
+
+    def test_storm_health_queue_preserves_problem_cohort_after_tick(self) -> None:
+        """The health launch snapshot retains the whole storm after the
+        per-tick discovery buffer is cleared (#6780)."""
+        state = OrchestratorState()
+        cohort = tuple(
+            DiscoveredFailure(
+                issue_number=number,
+                issue_title=f"Problem {number}",
+                failure_reason="blocked" if number == 42 else "failed",
+                observed_at=1_000.0,
+            )
+            for number in (41, 42, 43)
+        )
+        PendingSessionQueues(state).queue_health_review(
+            900,
+            "Health Review — walk the floor",
+            problem_cohort=cohort,
+        )
+        state.discovered_failures.clear()
+
+        snapshot = StateBoardSnapshotProvider(
+            _make_builder(), lambda: state
+        ).snapshot(None)
+
+        assert [failure.issue_number for failure in snapshot.recent_failures] == [
+            41,
+            42,
+            43,
+        ]
+        assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43})

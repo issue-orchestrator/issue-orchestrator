@@ -141,7 +141,8 @@ class SqliteTriageAuthorityStore:
                 (run_id, session_name),
             ).fetchone()
             if row is not None:
-                if json.dumps(json.loads(row[0]), sort_keys=True) == payload:
+                existing = TriageLaunchAuthority.from_dict(json.loads(row[0]))
+                if existing == authority:
                     return
                 raise TriageAuthorityConflictError(
                     f"launch authority already recorded for run_id={run_id!r} "
@@ -160,12 +161,13 @@ class SqliteTriageAuthorityStore:
             )
         logger.info(
             "[triage] Recorded launch authority: run_id=%s session=%s flavor=%s "
-            "focus=%s manifest_prs=%s",
+            "focus=%s manifest_prs=%s problem_issues=%s",
             run_id,
             session_name,
             authority.flavor.value,
             authority.focus_issue_number,
             list(authority.manifest_pr_numbers),
+            list(authority.problem_issue_numbers),
         )
 
     def load(

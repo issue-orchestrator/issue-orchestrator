@@ -353,6 +353,10 @@ class CreateTriageIssueAction(Action):
     labels: tuple[str, ...] = field(default_factory=tuple)
     pr_count: int = 0
     milestone: TriageMilestoneIntent = field(default_factory=TriageMilestoneIntent)
+    # Non-empty only for an immediate problem-storm health review. Preserves
+    # the exact discovery facts across create -> pending queue -> launch so the
+    # board snapshot and immutable cohort authority describe the same issues.
+    storm_problems: tuple[DiscoveredFailure, ...] = ()
     action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
 
 

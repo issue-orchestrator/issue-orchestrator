@@ -92,7 +92,11 @@ from issue_orchestrator.domain.models import (
     SessionKey,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
-from issue_orchestrator.domain.board_snapshot import BOARD_SNAPSHOT_SCHEMA_VERSION, BoardSnapshot
+from issue_orchestrator.domain.board_snapshot import (
+    BOARD_SNAPSHOT_SCHEMA_VERSION,
+    BoardFailure,
+    BoardSnapshot,
+)
 from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
@@ -451,6 +455,7 @@ class RecordingBoardSnapshotProvider:
     def __init__(self, error: Exception | None = None):
         self.calls: list[int | None] = []
         self.error = error
+        self.recent_failures: list[BoardFailure] = []
 
     def snapshot(self, focus_issue: int | None) -> BoardSnapshot:
         self.calls.append(focus_issue)
@@ -459,6 +464,7 @@ class RecordingBoardSnapshotProvider:
         return BoardSnapshot(
             generated_at="2026-07-10T00:00:00",
             orchestrator_paused=False,
+            recent_failures=list(self.recent_failures),
         )
 
 
@@ -3419,7 +3425,51 @@ class TestLaunchTriageIssueSessionFlavors:
         assert authority.anchor_issue_number == 905
         assert authority.focus_issue_number is None
         assert authority.manifest_pr_numbers == ()
+        assert authority.problem_issue_numbers == ()
         assert authority.allowed_targets() == frozenset({905})
+
+    def test_health_authority_records_exact_snapshot_problem_cohort(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """Producer-side contract: one snapshot instance supplies both the
+        agent-visible file and immutable act-level authority (#6780)."""
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        provider = launcher_bundle.board_snapshot_provider
+        assert isinstance(provider, RecordingBoardSnapshotProvider)
+        provider.recent_failures = [
+            BoardFailure(43, "Problem 43", "failed", []),
+            BoardFailure(41, "Problem 41", "blocked", []),
+            BoardFailure(42, "Problem 42", "timed_out", []),
+        ]
+        issue = Issue(
+            number=905,
+            title="Health Review — problem storm",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        run_dir = self._started_run_dir(mock_events)
+        snapshot = BoardSnapshot.read(
+            run_dir / "triage-data" / "board-snapshot.json"
+        )
+        authority = SqliteTriageAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.problem_issue_numbers == (41, 42, 43)
+        assert authority.allowed_act_level_targets() == frozenset({41, 42, 43})
+        assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43})
 
 
     def test_health_review_anchor_launches_as_health_flavor(
@@ -5684,12 +5734,21 @@ class TestHandleSessionCompletion:
             kill_session_fn=lambda x: None,
             config=config,
             session_output=MagicMock(spec=SessionOutput),
+            blocked_label="blocked-upstream",
             blocked_reason="Waiting for external API",
         )
 
         mock_completion_handler.process_completion.assert_called_once()
         kwargs = mock_completion_handler.process_completion.call_args.kwargs
         assert kwargs["blocked_reason"] == "Waiting for external API"
+        [problem] = state.discovered_failures
+        assert problem.issue_number == 123
+        assert problem.failure_reason == "blocked"
+        assert problem.blocking_label == "blocked-upstream"
+        assert problem.observed_at > 0
+        assert problem.issue_body == (issue.body or "")
+        assert problem.issue_milestone == issue.milestone
+        assert 123 not in state.failed_this_cycle
 
 
 # =============================================================================
