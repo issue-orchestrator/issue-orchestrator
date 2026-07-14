@@ -106,7 +106,11 @@ def _host(created_number: int = 500) -> MagicMock:
     host.create_issue.return_value = {"number": created_number}
     host.list_milestones.return_value = []
     # The gate must be provisioned or the applier refuses to create (#6779 R3).
-    host.list_labels.return_value = [{"name": PROPOSED_TRIAGE_LABEL}]
+    host.list_labels.return_value = [
+        {"name": PROPOSED_TRIAGE_LABEL},
+        {"name": "triage-agent"},
+        {"name": TRIAGE_OBSERVATION_LABEL},
+    ]
     return host
 
 
@@ -424,12 +428,18 @@ def test_apply_proposal_creation_without_store_fails_loudly() -> None:
 
 
 def _case_file_action(
-    signature: str = "sig-x", *, additional_comments: tuple[str, ...] = ()
+    signature: str = "sig-x",
+    *,
+    area: str | None = None,
+    additional_comments: tuple[str, ...] = (),
 ) -> CreateTriageCaseFileIssueAction:
+    labels = ["triage-agent", TRIAGE_OBSERVATION_LABEL]
+    if area is not None:
+        labels.append(f"area:{area}")
     return CreateTriageCaseFileIssueAction(
         title=f"Pattern case file: {signature}",
         body="documentation only",
-        labels=("triage-agent", TRIAGE_OBSERVATION_LABEL),
+        labels=tuple(labels),
         pr_count=0,
         pattern_signature=signature,
         dedup_comment="first observation",
@@ -458,6 +468,88 @@ def test_apply_case_file_creation_records_pattern_ledger() -> None:
     # Case files do not record ops and post no anchor-link comment.
     assert ops.list_ops() == ()
     host.add_comment.assert_not_called()
+
+
+def test_apply_case_file_missing_observation_label_creates_no_orphan() -> None:
+    """A failed blocking-label write must stop before issue creation."""
+    host = _host(600)
+    host.list_labels.return_value = [{"name": "triage-agent"}]
+    host.create_label.side_effect = RuntimeError("label permission denied")
+    ops = InMemoryTriageAuthorityStore()
+
+    result = apply_create_triage_issue(
+        _case_file_action("db-timeout"),
+        repository_host=host,
+        events=MagicMock(),
+        ops=ops,
+        add_comment=host.add_comment,
+        emit_labels_changed=lambda *_: None,
+    )
+
+    assert not result.success
+    assert TRIAGE_OBSERVATION_LABEL in (result.error or "")
+    host.create_issue.assert_not_called()
+    assert ops.lookup_pattern(signature="db-timeout") is None
+
+
+def test_apply_case_file_missing_area_label_creates_no_orphan() -> None:
+    """A failed dynamic area-label write must stop before issue creation."""
+    host = _host(600)
+    host.create_label.side_effect = RuntimeError("label permission denied")
+    ops = InMemoryTriageAuthorityStore()
+
+    result = apply_create_triage_issue(
+        _case_file_action("db-timeout", area="database"),
+        repository_host=host,
+        events=MagicMock(),
+        ops=ops,
+        add_comment=host.add_comment,
+        emit_labels_changed=lambda *_: None,
+    )
+
+    assert not result.success
+    assert "area:database" in (result.error or "")
+    host.create_issue.assert_not_called()
+    assert ops.lookup_pattern(signature="db-timeout") is None
+
+
+def test_apply_case_file_provisions_labels_before_blocking_area_tagged_issue() -> None:
+    """Missing static/dynamic labels are guaranteed before issue creation."""
+    host = _host(600)
+    host.list_labels.return_value = [{"name": "triage-agent"}]
+    ops = InMemoryTriageAuthorityStore()
+    action = _case_file_action("db-timeout", area="database")
+
+    result = apply_create_triage_issue(
+        action,
+        repository_host=host,
+        events=MagicMock(),
+        ops=ops,
+        add_comment=host.add_comment,
+        emit_labels_changed=lambda *_: None,
+    )
+
+    assert result.success
+    assert host.method_calls == [
+        call.list_labels(),
+        call.create_label(
+            TRIAGE_OBSERVATION_LABEL,
+            color="B60205",
+            description="Pattern case file (triage observation ledger)",
+        ),
+        call.create_label(
+            "area:database",
+            color="1D76DB",
+            description="Triage pattern area",
+        ),
+        call.create_issue(
+            title=action.title,
+            body=action.body,
+            labels=["triage-agent", TRIAGE_OBSERVATION_LABEL, "area:database"],
+            milestone=None,
+        ),
+    ]
+    assert ops.lookup_pattern(signature="db-timeout") == 600
 
 
 def test_apply_case_file_creation_without_store_fails_loudly() -> None:

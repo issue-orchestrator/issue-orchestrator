@@ -34,7 +34,11 @@ import re
 from collections.abc import Callable, Collection, Iterable, Sequence
 from typing import TYPE_CHECKING, Any, Mapping
 
-from ..domain.triage_session import HEALTH_REVIEW_MARKER_LABEL, TRIAGE_AREA_LABEL_PREFIX
+from ..domain.triage_session import (
+    HEALTH_REVIEW_MARKER_LABEL,
+    TRIAGE_AREA_LABEL_PREFIX,
+    TRIAGE_OBSERVATION_LABEL,
+)
 from .actions import TriageMilestoneIntent
 from .label_manager import LabelManager
 
@@ -171,8 +175,6 @@ def case_file_issue_labels(config: "Config", *, area: str | None) -> tuple[str, 
     The observation label is exempt from the agent-label allowlist here and
     ONLY here — an agent proposing it directly is a contract violation.
     """
-    from ..domain.triage_session import TRIAGE_OBSERVATION_LABEL
-
     return tuple(
         value
         for value in (

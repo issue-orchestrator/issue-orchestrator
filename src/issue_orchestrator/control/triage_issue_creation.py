@@ -20,6 +20,7 @@ from .actions import (
     CreateTriageIssueAction,
     CreateTriageProposalIssueAction,
 )
+from .label_manager import triage_issue_label_metadata
 from .triage_issue_policy import resolve_triage_milestone_number
 
 if TYPE_CHECKING:
@@ -29,10 +30,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _proposal_gate_provisioning_error(
+def _required_label_provisioning_error(
+    action: CreateTriageProposalIssueAction | CreateTriageCaseFileIssueAction,
+    *,
     repository_host: "RepositoryHost",
 ) -> str | None:
-    """Reason the proposal gate is unusable, or None when provisioned."""
+    """Guarantee action labels before issue creation, or return the reason."""
     try:
         existing = {
             name.casefold()
@@ -41,16 +44,51 @@ def _proposal_gate_provisioning_error(
             and isinstance((name := entry.get("name")), str)
         }
     except Exception as exc:
+        if isinstance(action, CreateTriageProposalIssueAction):
+            return (
+                f"could not verify the {PROPOSED_TRIAGE_LABEL!r} gate label is"
+                f" provisioned; refusing to create an ungated proposal: {exc}"
+            )
         return (
-            f"could not verify the {PROPOSED_TRIAGE_LABEL!r} gate label is"
-            f" provisioned; refusing to create an ungated proposal: {exc}"
+            "could not verify required pattern case-file labels; refusing to"
+            f" create an issue: {exc}"
         )
-    if PROPOSED_TRIAGE_LABEL.casefold() not in existing:
+
+    if (
+        isinstance(action, CreateTriageProposalIssueAction)
+        and PROPOSED_TRIAGE_LABEL.casefold() not in existing
+    ):
         return (
             f"the {PROPOSED_TRIAGE_LABEL!r} gate label is not provisioned in"
             " this repository; run `issue-orchestrator init` to create it."
             " Refusing to create an ungated triage proposal (#6779 R3)"
         )
+
+    for label in action.labels:
+        folded = label.casefold()
+        if folded in existing:
+            continue
+        color, description = triage_issue_label_metadata(label)
+        try:
+            # RepositoryHost.create_label verifies the write. Doing this before
+            # create_issue prevents GitHub from silently dropping an unknown
+            # label and leaving an orphaned, schedulable issue.
+            repository_host.create_label(
+                label,
+                color=color,
+                description=description,
+            )
+        except Exception as exc:
+            issue_kind = (
+                "triage proposal"
+                if isinstance(action, CreateTriageProposalIssueAction)
+                else "pattern case file"
+            )
+            return (
+                f"could not provision required label {label!r} for {issue_kind};"
+                f" refusing to create an issue: {exc}"
+            )
+        existing.add(folded)
     return None
 
 
@@ -83,30 +121,41 @@ def _creation_preflight(
             "gated triage proposal / pattern case file requested but no"
             " TriageAuthorityStore is wired into this applier",
         )
-    if is_proposal:
-        gate_error = _proposal_gate_provisioning_error(repository_host)
-        if gate_error is not None:
-            logger.error("[APPLIER] %s", gate_error)
-            return ActionResult.fail(action, gate_error)
-    if not is_case_file:
-        return None
-    assert isinstance(action, CreateTriageCaseFileIssueAction)
-    assert ops is not None
-    try:
-        existing = ops.lookup_pattern(signature=action.pattern_signature)
-        if existing is None:
-            return None
-        for comment in (action.dedup_comment, *action.additional_observation_comments):
-            add_comment(existing, comment)
-        return ActionResult.ok(
+    if is_case_file:
+        assert isinstance(action, CreateTriageCaseFileIssueAction)
+        assert ops is not None
+        try:
+            existing = ops.lookup_pattern(signature=action.pattern_signature)
+            if existing is not None:
+                for comment in (
+                    action.dedup_comment,
+                    *action.additional_observation_comments,
+                ):
+                    add_comment(existing, comment)
+                return ActionResult.ok(
+                    action,
+                    issue_number=existing,
+                    pr_count=action.pr_count,
+                    deduplicated=True,
+                )
+        except Exception as exc:
+            logger.exception(
+                "Failed to reconcile pattern ledger before case-file creation"
+            )
+            return ActionResult.fail(action, str(exc))
+    if is_proposal or is_case_file:
+        assert isinstance(
             action,
-            issue_number=existing,
-            pr_count=action.pr_count,
-            deduplicated=True,
+            (CreateTriageProposalIssueAction, CreateTriageCaseFileIssueAction),
         )
-    except Exception as exc:
-        logger.exception("Failed to reconcile pattern ledger before case-file creation")
-        return ActionResult.fail(action, str(exc))
+        label_error = _required_label_provisioning_error(
+            action,
+            repository_host=repository_host,
+        )
+        if label_error is not None:
+            logger.error("[APPLIER] %s", label_error)
+            return ActionResult.fail(action, label_error)
+    return None
 
 
 def apply_create_triage_issue(

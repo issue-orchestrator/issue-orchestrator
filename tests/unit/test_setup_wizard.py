@@ -637,9 +637,11 @@ class TestSetupWizardSharedHelpers:
         assert "code-reviewed" in label_names
         assert "triage-reviewed" in label_names
         # R3: a triage-enabled config provisions the act-level proposal gate
-        # (raw, never prefixed) and the health-review marker.
+        # (raw, never prefixed), health-review marker, and the static blocking
+        # observation marker. Dynamic area:* labels are provisioned at apply.
         assert "proposed-triage" in label_names
         assert "triage:health-review" in label_names
+        assert "triage-observation" in label_names
 
     def test_plan_setup_labels_omits_gate_without_triage(self):
         """No triage agent -> no gate label to provision."""
@@ -647,7 +649,9 @@ class TestSetupWizardSharedHelpers:
             "agents": {"agent:backend": {}},
             "review": {"default": "agent:reviewer"},
         })
-        assert "proposed-triage" not in {name for name, _, _ in labels}
+        label_names = {name for name, _, _ in labels}
+        assert "proposed-triage" not in label_names
+        assert "triage-observation" not in label_names
 
     def test_required_repo_labels_includes_triage_gate(self):
         """The CLI `init` label set (single owner) provisions the R3 gate."""
@@ -668,6 +672,7 @@ class TestSetupWizardSharedHelpers:
         assert "proposed-triage" in labels
         assert "agent:triage" in labels
         assert "triage:health-review" in labels
+        assert "triage-observation" in labels
         assert "agent:backend" in labels
         # De-duped: no label appears twice.
         assert len(labels) == len(set(labels))
@@ -686,6 +691,7 @@ class TestSetupWizardSharedHelpers:
         labels = required_repo_labels(config)
 
         assert "proposed-triage" not in labels
+        assert "triage-observation" not in labels
         assert "agent:backend" in labels
 
     def test_plan_setup_labels_can_preserve_control_api_behavior(self):
