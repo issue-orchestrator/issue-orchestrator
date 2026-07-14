@@ -170,6 +170,7 @@ def make_handler(
         get_review_machine_fn=lambda _pr_number: review_machine,
         session_output=session_output if session_output is not None else default_session_output,
         triage_authority=triage_authority,
+        active_session_run_id=lambda _n: None,
     )
 
 

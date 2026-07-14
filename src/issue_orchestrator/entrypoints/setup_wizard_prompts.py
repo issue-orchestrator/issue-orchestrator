@@ -228,11 +228,15 @@ Compact `triage-decision.json` example:
 - Valid `action_type` values: `post_comment`, `create_issue`,
   `escalate_to_human`, `flag_pattern`, `reset_retry`, `kill_hung_session`.
 - Proposals are intent, not execution: the orchestrator decides what to
-  execute per its configured authority. `reset_retry` executes only under
-  `triage.authority.reset_retry: execute`, and the orchestrator re-checks
-  the target's state at execution time — stale proposals are recorded, not
-  executed. `kill_hung_session` is recorded as would-have-done until its
-  executor is wired (#6764).
+  execute per its configured authority. Act-level proposals (`reset_retry`,
+  `kill_hung_session`) under `propose` authority become reviewable GitHub
+  issues carrying the `proposed-triage` label; a human approves one by
+  removing that label, and the orchestrator re-checks the target's state
+  before executing — stale proposals are closed with a comment, not
+  executed. `reset_retry` under `triage.authority.reset_retry: execute`
+  runs directly with the same execution-time re-check. Never propose or
+  touch the `proposed-triage` label yourself; it is orchestrator-owned and
+  rejected like other workflow labels.
 - A completed session missing either artifact — or violating any rule
   above — is recorded as FAILED and marked triage-failed.
 """

@@ -1040,3 +1040,220 @@ class TestFactGathererFetchIssues:
         results = gatherer.fetch_issues(labels_for_agent=["test-label"])
 
         assert [issue.number for issue in results] == [1, 3]
+
+
+class TestGatedProposalScanClassification:
+    """The ONE anchor scan classifies gated proposals too (#6778)."""
+
+    def _op(self, target: int, op_type: str = "reset_retry"):
+        from issue_orchestrator.domain.triage_session import StoredTriageOp
+
+        return StoredTriageOp(
+            op_type=op_type,
+            target_issue_number=target,
+            rationale="r",
+            source_run_id="run-1",
+            source_session_name="issue-99",
+            source_action_id="A2",
+            created_at="2026-07-11T00:00:00+00:00",
+        )
+
+    def _gatherer(self, mock_config, mock_repository_host, ops):
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 5
+        mock_config.code_reviewed_label = "code-reviewed"
+        store = InMemoryTriageAuthorityStore()
+        for issue_number, op in ops:
+            store.record_op(issue_number=issue_number, op=op)
+        return FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            triage_authority=store,
+        )
+
+    def test_approved_op_classified_from_same_scan(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """An op-backed issue WITHOUT the gate label is approved; the anchor
+        classification still works on the remaining issues — all from one
+        list_issues call."""
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=500, title="Triage proposal: reset & retry issue #13 from scratch", labels=["triage-agent"]),
+            Issue(number=7, title="Triage Batch Review: 3 PRs pending", labels=["triage-agent"]),
+        ]
+        gatherer = self._gatherer(
+            mock_config, mock_repository_host, [(500, self._op(13))]
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        [approved] = facts.approved_triage_ops
+        assert approved.proposal_issue_number == 500
+        assert approved.op.target_issue_number == 13
+        assert facts.existing_triage_issue == 7
+        # Exactly one issue scan was made for anchors + proposals.
+        assert mock_repository_host.list_issues.call_count == 1
+
+    def test_still_gated_proposal_yields_nothing_and_never_becomes_anchor(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=500,
+                title="Triage proposal: kill hung session for issue #14",
+                labels=["triage-agent", "proposed-triage"],
+            ),
+        ]
+        gatherer = self._gatherer(
+            mock_config,
+            mock_repository_host,
+            [(500, self._op(14, "kill_hung_session"))],
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        assert facts.approved_triage_ops == ()
+        assert facts.existing_triage_issue is None
+        assert facts.existing_health_review_issue is None
+
+    def test_exhaustive_scan_limit_prevents_hiding_ops_behind_a_backlog(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """R4: the anchor/proposal scan pages the COMPLETE matching set."""
+        from issue_orchestrator.control.triage_proposals import (
+            TRIAGE_PROPOSAL_SCAN_LIMIT,
+        )
+
+        mock_repository_host.list_issues.return_value = []
+        gatherer = self._gatherer(mock_config, mock_repository_host, [])
+
+        gatherer.gather_triage_facts(sample_state)
+
+        _, kwargs = mock_repository_host.list_issues.call_args
+        assert kwargs["limit"] == TRIAGE_PROPOSAL_SCAN_LIMIT
+        assert TRIAGE_PROPOSAL_SCAN_LIMIT > 100  # forces the adapter to paginate
+
+    def test_ledger_row_absent_from_scan_is_surfaced_as_candidate_read_only(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """R7/R10: an op whose proposal issue is absent from the exhaustive scan
+        is surfaced as a cleanup CANDIDATE, but fact gathering is READ-ONLY —
+        it must NOT discard the ledger row during observation. Cleanup flows
+        through the planner's DiscardTerminalTriageProposalOpsAction/owner,
+        which confirms with a targeted read first (a truncated scan must never
+        delete a live op)."""
+        # #500 is still an open proposal; #501's issue is absent from the scan.
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=500, title="Triage proposal", labels=["triage-agent", "proposed-triage"]),
+        ]
+        gatherer = self._gatherer(
+            mock_config,
+            mock_repository_host,
+            [(500, self._op(13)), (501, self._op(14, "kill_hung_session"))],
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        # The absent row is surfaced as a candidate...
+        assert facts is not None
+        assert facts.absent_proposal_op_candidates == (501,)
+        # ...but the store is UNTOUCHED — observation never mutates the ledger.
+        assert sorted(n for n, _ in gatherer.triage_authority.list_ops()) == [500, 501]
+        # A second scan is still read-only (no self-heal happens here).
+        gatherer.gather_triage_facts(sample_state)
+        assert sorted(n for n, _ in gatherer.triage_authority.list_ops()) == [500, 501]
+
+    def test_without_store_gate_labeled_issues_are_still_excluded(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 5
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=500,
+                title="Triage proposal: reset & retry issue #13 from scratch",
+                labels=["triage-agent", "proposed-triage"],
+            ),
+        ]
+        gatherer = FactGatherer(
+            config=mock_config, repository_host=mock_repository_host
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        assert facts.approved_triage_ops == ()
+        assert facts.existing_triage_issue is None
+
+    def _gatherer_batch_disabled(self, mock_config, mock_repository_host, ops):
+        """Threshold=0 (batch trigger OFF) but a triage agent + wired ledger.
+
+        The proposal machinery must still reconcile in this shape (#6779 R12):
+        proposal advancement is decoupled from the batch review threshold.
+        """
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 0  # batch trigger disabled
+        mock_config.code_reviewed_label = "code-reviewed"
+        store = InMemoryTriageAuthorityStore()
+        for issue_number, op in ops:
+            store.record_op(issue_number=issue_number, op=op)
+        return FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            triage_authority=store,
+        )
+
+    def test_batch_disabled_proposals_still_execute_and_clean_up(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """R12: with the batch threshold at 0 (batch trigger OFF) but a triage
+        agent configured, an APPROVED gated proposal's op is still executed and
+        a terminal/absent proposal op is still surfaced for cleanup. Proposal
+        reconcile is decoupled from the batch review threshold — otherwise
+        manual-approval / default-threshold proposals never advance or
+        self-heal."""
+        # #500 is approved (op-backed issue WITHOUT the gate label); #501's
+        # issue is absent from the scan (terminal cleanup candidate).
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=500, title="Triage proposal for issue #13", labels=["triage-agent"]),
+        ]
+        gatherer = self._gatherer_batch_disabled(
+            mock_config,
+            mock_repository_host,
+            [(500, self._op(13)), (501, self._op(14, "kill_hung_session"))],
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        assert facts.threshold == 0  # batch trigger stays OFF
+        assert facts.existing_triage_issue is None  # no batch anchor surfaced
+        # The approved op is executed even though the batch threshold is 0.
+        [approved] = facts.approved_triage_ops
+        assert approved.proposal_issue_number == 500
+        assert approved.op.target_issue_number == 13
+        # The terminal/absent op is still surfaced for cleanup.
+        assert facts.absent_proposal_op_candidates == (501,)
+
+    def test_batch_disabled_empty_ledger_makes_no_scan(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """R12 frugality: batch threshold 0 + triage agent but an EMPTY ledger
+        has nothing to reconcile, so it produces None and makes ZERO GitHub
+        calls (no scan is worth making)."""
+        mock_config.triage.health_review.interval_minutes = 0
+        gatherer = self._gatherer_batch_disabled(mock_config, mock_repository_host, [])
+
+        assert gatherer.gather_triage_facts(sample_state) is None
+        mock_repository_host.list_issues.assert_not_called()

@@ -486,15 +486,81 @@ def _plan_setup_labels(
 
     triage_review_agent = review_config.get("triage_review_agent")
     if triage_review_agent:
-        all_labels.append(
-            (
-                review_config.get("triage_reviewed_label", "triage-reviewed"),
-                "1D76DB",
-                "PR has been triage reviewed",
-            )
+        from ..domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+            PROPOSED_TRIAGE_LABEL,
+        )
+
+        all_labels.extend(
+            [
+                (
+                    review_config.get("triage_reviewed_label", "triage-reviewed"),
+                    "1D76DB",
+                    "PR has been triage reviewed",
+                ),
+                # Gate label for act-level triage proposals (#6779 R3): a fresh
+                # install must provision it, else a proposal issue is created
+                # with the triage/filter labels but no blocking gate and becomes
+                # schedulable as ordinary triage work.
+                (
+                    PROPOSED_TRIAGE_LABEL,
+                    "B60205",
+                    "Triage proposal awaiting operator approval",
+                ),
+                # Health-review anchor marker (ADR-0031 §4): same class of
+                # orchestrator-managed workflow label; a fresh install needs it
+                # so the marker is not silently dropped at anchor creation.
+                (
+                    HEALTH_REVIEW_MARKER_LABEL,
+                    "C5DEF5",
+                    "Periodic health-review anchor",
+                ),
+            ]
         )
 
     return all_labels
+
+
+def required_repo_labels(config: "Config") -> list[str]:
+    """The full label set the CLI ``init`` command provisions (single owner).
+
+    Base workflow labels (including the orchestrator-owned ``triage-needs-human``
+    marker from the #6771 redesign) + priority tiers + configured worker agents
+    + triage workflow labels (the #6779 R3 proposal gate, the triage-agent
+    label, and the health-review marker) when triage is configured. De-duped so
+    labels appearing in more than one source (e.g. an agent that is also the
+    triage agent) are not provisioned twice.
+    """
+    from ..control.label_manager import LabelManager
+
+    lm = LabelManager(config)
+    labels: list[str] = [
+        lm.in_progress,
+        lm.blocked,
+        lm.needs_human,
+        lm.triage_needs_human,
+        "priority:high",
+        "priority:medium",
+        "priority:low",
+    ]
+    labels.extend(config.agents.keys())
+    if config.triage_review_agent:
+        from ..domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+            PROPOSED_TRIAGE_LABEL,
+        )
+
+        labels.extend(
+            label
+            for label in (
+                config.triage_review_agent,
+                config.triage_reviewed_label,
+                PROPOSED_TRIAGE_LABEL,
+                HEALTH_REVIEW_MARKER_LABEL,
+            )
+            if label
+        )
+    return list(dict.fromkeys(labels))
 
 
 def load_config_for_repo(repo_root: Path | None) -> "Config | None":

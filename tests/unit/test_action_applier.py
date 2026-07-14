@@ -2363,11 +2363,22 @@ class TestClaimGateAudit:
     # - CREATE_WORKTREE / REMOVE_WORKTREE: local filesystem only
     # - QUEUE_RETROSPECTIVE_REVIEW / QUEUE_REWORK / QUEUE_TRIAGE: local state operations
     # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
+    # - CREATE_TRIAGE_PROPOSAL_ISSUE: creates a NEW gated issue + records the
+    #   stored op (#6778); the anchor link comment targets the triage
+    #   session's own anchor issue, never a claimed coding issue
     # - SURFACE_TRIAGE_PROPOSAL: emits a trace event only, no GitHub calls
     # - RESET_RETRY_ISSUE: owner command (#6764) - every GitHub write it
     #   triggers is delegated to the reset owner, which routes label/PR
     #   mutations back through this applier's claim-verified handlers
     #   (AddLabel/RemoveLabel/SupersedePR), same as the dashboard reset.
+    # - KILL_HUNG_SESSION: owner command (#6778) - applies the local
+    #   issue-runtime termination boundary (sessions/jobs/pair); its only
+    #   GitHub writes are the proposal-issue outcome comment + close, on the
+    #   unclaimed gated proposal issue the operator just approved.
+    # - DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS: orchestrator-owned ledger cleanup
+    #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
+    #   (get_issue_state) and discards only the local authority-store op row;
+    #   it never writes GitHub state and never touches a claimed coding issue.
     # - CLEANUP_SESSION: post-completion cleanup
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
     # - CREATE_PR: not implemented in action_applier
@@ -2381,8 +2392,11 @@ class TestClaimGateAudit:
         ActionType.QUEUE_REWORK,
         ActionType.QUEUE_TRIAGE,
         ActionType.CREATE_TRIAGE_ISSUE,
+        ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE,
         ActionType.SURFACE_TRIAGE_PROPOSAL,
         ActionType.RESET_RETRY_ISSUE,
+        ActionType.KILL_HUNG_SESSION,
+        ActionType.DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,

@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
+from ..domain.triage_session import PROPOSED_TRIAGE_LABEL, is_proposed_triage_gate
+
 if TYPE_CHECKING:
     from ..infra.config import Config
 
@@ -34,6 +36,7 @@ class LabelEntry:
     category: LabelCategory
     description: str  # Human-readable: "failed run"
     pattern: bool = False  # True for rework-cycle-{N}
+    raw: bool = False  # True for triage-subsystem labels that never take a prefix
 
 
 # Legacy labels that predated the blocked-* convention
@@ -79,7 +82,7 @@ class LabelManager:
 
         # Pre-compute resolved names for O(1) named-property access
         self._resolved: dict[str, str] = {
-            e.key: self._resolve_base(e.base_name)
+            e.key: (e.base_name if e.raw else self._resolve_base(e.base_name))
             for e in self._entries.values()
             if not e.pattern
         }
@@ -152,6 +155,10 @@ class LabelManager:
             LabelEntry("review_keep_approach", config.review_keep_current_approach_label, LabelCategory.INFORMATIONAL, "Keep current approach"),
             LabelEntry("code_review", config.code_review_label or "needs-code-review", LabelCategory.LIFECYCLE, "Needs code review"),
             LabelEntry("code_reviewed", config.code_reviewed_label or "code-reviewed", LabelCategory.LIFECYCLE, "Code reviewed"),
+            # Gated triage proposal issues (#6778): blocking-class so the
+            # scheduler never picks one up; raw (never prefixed) like the
+            # rest of the triage subsystem's labels.
+            LabelEntry("proposed_triage", PROPOSED_TRIAGE_LABEL, LabelCategory.BLOCKING, "Triage proposal awaiting operator approval", raw=True),
         ]
         for e in entries:
             self._entries[e.key] = e
@@ -280,6 +287,11 @@ class LabelManager:
         return self._triage_reviewed_base
 
     @property
+    def proposed_triage(self) -> str:
+        """The gated-proposal label (#6778). Raw — never prefixed."""
+        return self._resolved["proposed_triage"]
+
+    @property
     def review_keep_approach(self) -> str:
         return self._resolved["review_keep_approach"]
 
@@ -344,9 +356,23 @@ class LabelManager:
     # ------------------------------------------------------------------
 
     def is_blocking(self, label: str) -> bool:
-        """Return True if *label* blocks processing (prefix-aware)."""
+        """Return True if *label* blocks processing (prefix-aware).
+
+        ``proposed-triage`` is blocking-class (#6778): gated triage proposal
+        issues are excluded from pickup until an operator removes the gate
+        label (per-instance approval, ADR-0031 §2 amendment). The gate match is
+        case-insensitive via the shared owner (#6779 R15) — GitHub folds label
+        names, so a canonical ``Proposed-Triage`` still blocks and can never be
+        classified as approved by reconciliation while blocking treats it as
+        absent.
+        """
         base = self._strip_prefix(label)
-        if base == "blocked" or base.startswith("blocked-") or base.startswith("blocked:"):
+        if (
+            base == "blocked"
+            or base.startswith("blocked-")
+            or base.startswith("blocked:")
+            or is_proposed_triage_gate(base)
+        ):
             return True
         if base in _LEGACY_BLOCKING:
             return True

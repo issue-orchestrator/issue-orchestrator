@@ -462,6 +462,7 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path, lm: LabelManager
         get_review_machine_fn=lambda _pr: None,
         session_output=FileSystemSessionOutput(),
         triage_authority=InMemoryTriageAuthorityStore(),
+        active_session_run_id=lambda _n: None,
     )
 
     for _ in range(3):

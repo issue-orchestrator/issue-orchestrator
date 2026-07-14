@@ -249,17 +249,22 @@ TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS = (
 class TriageAuthorityConfig:
     """Per-action-type authority modes for triage decision proposals (ADR-0031).
 
-    ``execute`` — the orchestrator performs the proposed action.
-    ``propose`` — shadow mode: the proposal is surfaced as would-have-done.
+    ``execute`` — the orchestrator performs the proposed action directly.
+    ``propose`` — for ``post_comment``/``flag_pattern``: shadow mode (the
+    proposal is surfaced as would-have-done). For ``create_issue`` and
+    act-level actions: a GATED ISSUE (#6778) — the proposal is created as a
+    GitHub issue carrying ``proposed-triage``; removing that label is
+    per-instance operator approval. Per-instance approval and config-level
+    trust coexist.
 
     ``escalate_to_human`` is intentionally not a field: it is the
     non-configurable floor and always executes. Act-level actions
     (``reset_retry``, ``kill_hung_session``) default to ``propose``.
     ``reset_retry: execute`` is honored — it is wired to the
     reset+retry-from-scratch owner with execution-time re-validation
-    (#6764, first slice). Still-unwired act-level actions
-    (``kill_hung_session``) are rejected at startup if set to ``execute``
-    until their executors land — see ``Config.validate``.
+    (#6764, first slice). ``kill_hung_session: execute`` remains a startup
+    error: its DIRECT tier is not wired yet — it ships as gated proposal
+    issues (#6778) — see ``Config.validate``.
     """
 
     post_comment: str = "execute"
@@ -306,10 +311,13 @@ class TriageAuthorityConfig:
     def startup_errors(self) -> list[str]:
         """Startup configuration errors for this authority block (ADR-0031).
 
-        ``execute`` on an act-level action whose executor is not wired yet
-        must be a startup configuration error, never a silent no-op (#6764).
-        ``reset_retry`` is wired (first slice) and no longer rejected;
-        the unwired set lives in ``UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS``.
+        ``execute`` on an act-level action whose DIRECT executor is not
+        wired yet must be a startup configuration error, never a silent
+        no-op (#6764). ``reset_retry`` is wired and no longer rejected; the
+        unwired set lives in ``UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS``. The
+        rejection is deliberate even though ``kill_hung_session`` ships as
+        GATED PROPOSAL ISSUES under ``propose`` (#6778): the gated tier is
+        the point — per-instance approval, not config-level trust.
         """
         errors: list[str] = []
         for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
@@ -322,8 +330,9 @@ class TriageAuthorityConfig:
         for key in sorted(UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS):
             if getattr(self, key) == "execute":
                 errors.append(
-                    f"triage.authority.{key}: act-level triage authority"
-                    " 'execute' is not wired yet (#6764); use 'propose'"
+                    f"triage.authority.{key}: direct 'execute' is not wired"
+                    " yet (#6764); use 'propose' — proposals surface as"
+                    " gated issues awaiting per-instance approval (#6778)"
                 )
         return errors
 

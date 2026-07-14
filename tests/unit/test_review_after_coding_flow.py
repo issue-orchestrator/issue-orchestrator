@@ -82,6 +82,7 @@ def make_completion_handler(config: Config, repository_host) -> CompletionHandle
         get_review_machine_fn=lambda _pr_number: None,
         session_output=session_output,
         triage_authority=InMemoryTriageAuthorityStore(),
+        active_session_run_id=lambda _n: None,
     )
 
 

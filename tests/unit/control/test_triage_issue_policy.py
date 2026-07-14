@@ -12,6 +12,7 @@ from issue_orchestrator.control.triage_issue_policy import (
     is_protected_triage_label,
     protected_triage_label_violations,
     resolve_triage_milestone_number,
+    triage_follow_up_agent_label,
     triage_issue_milestone_intent,
 )
 from issue_orchestrator.control.health_review_trigger import (
@@ -22,12 +23,50 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import MilestoneStrategyConfig
 
 
+DEST_AGENT = "agent:web"
+
+
 def make_config(**overrides) -> Config:
+    from unittest.mock import Mock
+
     config = Config()
     config.triage_review_agent = "agent:triage"
+    # Worker agent the orchestrator routes a create_issue proposal to (#6779 R5/R9).
+    config.agents = {DEST_AGENT: Mock()}
+    config.triage_follow_up_agent = DEST_AGENT
     for key, value in overrides.items():
         setattr(config, key, value)
     return config
+
+
+class TestTriageFollowUpAgentLabel:
+    """The create_issue destination is the typed, validated worker (#6779 R9)."""
+
+    def test_returns_configured_worker_even_when_a_non_worker_sorts_first(self) -> None:
+        """Dict order must NOT decide routing: a reviewer/triage/goal-pilot
+        agent appearing first is never chosen; the configured worker is."""
+        from unittest.mock import Mock
+
+        config = Config()
+        # reviewer + triage precede the worker in insertion order.
+        config.agents = {
+            "agent:reviewer": Mock(),
+            "agent:triage": Mock(),
+            "agent:worker": Mock(),
+        }
+        config.triage_follow_up_agent = "agent:worker"
+
+        assert triage_follow_up_agent_label(config) == "agent:worker"
+
+    def test_fails_loudly_when_unset_rather_than_guessing_by_dict_order(self) -> None:
+        from unittest.mock import Mock
+
+        config = Config()
+        config.agents = {"agent:reviewer": Mock(), "agent:worker": Mock()}
+        config.triage_follow_up_agent = None
+
+        with pytest.raises(ValueError, match="triage_follow_up_agent"):
+            triage_follow_up_agent_label(config)
 
 
 class TestProtectedLabelSet:
@@ -141,8 +180,9 @@ class TestSharedComposition:
             anchor_labels=[],
             agent_labels=("bug", "docs"),
             labels=LabelManager(config),
+            destination_agent=DEST_AGENT,
         )
-        assert labels == ("Bug", "docs")
+        assert labels == ("Bug", "docs", DEST_AGENT)
 
     def test_inherit_match_is_case_insensitive(self) -> None:
         config = make_config()
@@ -152,8 +192,9 @@ class TestSharedComposition:
             anchor_labels=["team:backend"],
             agent_labels=(),
             labels=LabelManager(config),
+            destination_agent=DEST_AGENT,
         )
-        assert labels == ("Team:Backend",)
+        assert labels == ("Team:Backend", DEST_AGENT)
 
     def test_decision_labels_never_include_the_triage_agent(self) -> None:
         """A decision-created follow-up must not loop back into triage."""
@@ -163,9 +204,38 @@ class TestSharedComposition:
             anchor_labels=["agent:triage"],
             agent_labels=("bug",),
             labels=LabelManager(config),
+            destination_agent=DEST_AGENT,
         )
         assert "agent:triage" not in labels
-        assert labels == ("bug",)
+        assert labels == ("bug", DEST_AGENT)
+
+    def test_decision_labels_route_to_the_orchestrator_owned_worker(self) -> None:
+        """R5: the created issue carries a valid worker agent label so removing
+        the gate alone makes normal discovery pick it up."""
+        config = make_config()
+        gated = decision_issue_labels(
+            config,
+            anchor_labels=[],
+            agent_labels=("bug",),
+            labels=LabelManager(config),
+            destination_agent=DEST_AGENT,
+            gate=True,
+        )
+        assert DEST_AGENT in gated
+        # After the operator removes only the gate, a schedulable agent remains.
+        after_approval = tuple(l for l in gated if l != "proposed-triage")
+        assert DEST_AGENT in after_approval
+
+    def test_decision_labels_reject_unknown_destination_agent(self) -> None:
+        config = make_config()
+        with pytest.raises(ValueError, match="destination_agent"):
+            decision_issue_labels(
+                config,
+                anchor_labels=[],
+                agent_labels=("bug",),
+                labels=LabelManager(config),
+                destination_agent="agent:not-configured",
+            )
 
     def test_decision_labels_reject_protected_agent_labels_loudly(self) -> None:
         config = make_config()
@@ -175,6 +245,7 @@ class TestSharedComposition:
                 anchor_labels=[],
                 agent_labels=("needs-human",),
                 labels=LabelManager(config),
+                destination_agent=DEST_AGENT,
             )
 
     def test_priority_prefix_applied_once(self) -> None:
@@ -311,4 +382,63 @@ class TestExplicitMilestoneResolution:
         with pytest.raises(ValueError, match="does not match any"):
             resolve_triage_milestone_number(
                 TriageMilestoneIntent(explicit_name="Nope"), self._milestones
+            )
+
+
+class TestProposedTriageGate:
+    """The proposed-triage gate label (#6778): agent-rejected, owner-attached."""
+
+    @pytest.mark.parametrize("label", ["proposed-triage", "Proposed-Triage"])
+    def test_agent_proposed_gate_label_is_rejected(self, label: str) -> None:
+        config = make_config()
+        labels = LabelManager(config)
+
+        assert is_protected_triage_label(label, config=config, labels=labels)
+        assert protected_triage_label_violations(
+            [label], config=config, labels=labels
+        ) == [label]
+
+    def test_gate_flag_appends_orchestrator_attached_label(self) -> None:
+        config = make_config()
+        labels = LabelManager(config)
+
+        composed = decision_issue_labels(
+            config,
+            anchor_labels=("agent:triage",),
+            agent_labels=("ci",),
+            labels=labels,
+            destination_agent=DEST_AGENT,
+            gate=True,
+        )
+
+        assert composed[-1] == "proposed-triage"
+        assert "ci" in composed
+
+    def test_gate_flag_defaults_off(self) -> None:
+        config = make_config()
+        labels = LabelManager(config)
+
+        composed = decision_issue_labels(
+            config,
+            anchor_labels=("agent:triage",),
+            agent_labels=("ci",),
+            labels=labels,
+            destination_agent=DEST_AGENT,
+        )
+
+        assert "proposed-triage" not in composed
+
+    def test_gate_flag_never_launders_an_agent_proposed_gate(self) -> None:
+        """Even with gate=True, an agent-proposed gate label still fails."""
+        config = make_config()
+        labels = LabelManager(config)
+
+        with pytest.raises(ValueError, match="protected labels"):
+            decision_issue_labels(
+                config,
+                anchor_labels=(),
+                agent_labels=("proposed-triage",),
+                labels=labels,
+                destination_agent=DEST_AGENT,
+                gate=True,
             )

@@ -51,7 +51,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ..domain.models import Session
 from ..domain.triage_artifacts import ACT_LEVEL_TRIAGE_ACTIONS
@@ -80,6 +80,7 @@ from .triage_decision_loader import (
     load_triage_artifact_pair_for_run,
 )
 from .triage_issue_policy import protected_triage_label_violations
+from .triage_proposals import build_op_ledger
 from .triage_session_policy import is_triage_session, read_triage_assignment
 
 if TYPE_CHECKING:
@@ -486,6 +487,7 @@ def generate_triage_completion_actions(
     completed_ok: bool,
     labels: LabelManager,
     triage_authority: "TriageAuthorityStore",
+    active_session_run_id: "Callable[[int], str | None]",
 ) -> list[Action]:
     """Plan all completion effects for a triage session (see module docstring).
 
@@ -540,6 +542,10 @@ def generate_triage_completion_actions(
     if load_result is None:
         return actions
     if load_result.decision is not None:
+        # The op ledger (one open gated proposal per (op, target), #6778)
+        # comes from the same injected authority store that owns launch
+        # scope: rows live from proposal creation to terminal handling, so
+        # this read needs no GitHub call.
         actions.extend(
             plan_triage_decision_actions(
                 load_result.decision,
@@ -547,6 +553,10 @@ def generate_triage_completion_actions(
                 labels,
                 anchor_issue=session.issue,
                 expected=expected,
+                op_ledger=build_op_ledger(triage_authority.list_ops()),
+                source_run_id=session.run_assets.run_id,
+                source_session_name=session.run_assets.session_name,
+                active_session_run_id=active_session_run_id,
             )
         )
     else:

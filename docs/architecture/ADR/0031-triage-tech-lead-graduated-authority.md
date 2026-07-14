@@ -1,9 +1,9 @@
 # ADR 0031: Triage as a tech lead with graduated, config-scoped authority
 
 **Status:** Proposed
-**Date:** 2026-07-10
+**Date:** 2026-07-10 (amended 2026-07-11: §2 gated-issue surfacing, #6778)
 **Milestone:** P1
-**Tracks:** Issues #6760, #6761, #6762, #6763, #6764
+**Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778
 
 ## TL;DR
 
@@ -121,10 +121,28 @@ Semantics:
 - The agent **always proposes its full action set**; prompts do not change as
   trust grows. Graduation is flipping `propose` → `execute` in config (a
   settings-UI toggle, since these keys are in the settings schema).
-- `propose` is **shadow mode**: the action is recorded visibly — in the
-  report, as a structured event, and on the escalation surface — as
-  *would-have-done*, giving the operator an audit trail to compare against
-  their own judgment before granting authority.
+- `propose` on `post_comment`/`flag_pattern` is **shadow mode**: the action is
+  recorded visibly — in the report, as a structured event, and on the
+  escalation surface — as *would-have-done*, giving the operator an audit
+  trail to compare against their own judgment before granting authority.
+- **Gated issues (amended by #6778).** Consequential proposals surface as
+  *gated GitHub issues* instead of shadow records: `create_issue` proposals
+  under `propose` authority are created carrying the `proposed-triage` label,
+  and act-level proposals (`reset_retry` under `propose`;
+  `kill_hung_session` always, until its direct tier is wired) become gated
+  proposal issues. **Removing `proposed-triage` is per-instance approval**:
+  a proposed work issue flows into normal scheduling; an act-level proposal
+  triggers execution of the **stored op** recorded orchestrator-side at
+  creation (authority-store pattern, keyed by issue number, create-once).
+  The issue body is human documentation only and is never re-parsed as a
+  command — what the approver read and delabeled is exactly what runs. The
+  scheduler's blocking-label layer excludes gate-labeled issues from pickup,
+  and `proposed-triage` joins the protected/orchestrator-owned label family
+  (agents cannot propose or strip it). Ledger hygiene: one open proposal per
+  (op, target); re-proposals comment on the existing issue. Ops execute at
+  most once — the op row is discarded after terminal handling (outcome
+  comment + close on execution, or stale-downgrade comment + close).
+  Per-instance approval and config-level trust coexist.
 - Per-action flags, not a level scale: trust is not linear. An operator may
   trust issue-filing for months before trusting session-killing.
 - Fail-safe: anything that mutates orchestrator runtime state defaults to

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
 from ..infra.config import Config
@@ -101,11 +101,15 @@ class CompletionActionPlanner:
         repository_host: RepositoryHost,
         label_manager: LabelManager,
         triage_authority: TriageAuthorityStore,
+        active_session_run_id: Callable[[int], str | None],
     ) -> None:
         self.config = config
         self.repository_host = repository_host
         self._lm = label_manager
         self._triage_authority = triage_authority
+        # Resolves the target issue's live session run id so a gated
+        # kill_hung_session proposal binds approval to that generation (#6779 R1).
+        self._active_session_run_id = active_session_run_id
 
     def _interrupted_retry_mode(self, session: Session) -> str | None:
         """Map session type to interrupted-retry mode."""
@@ -226,6 +230,7 @@ class CompletionActionPlanner:
             completed_ok=True,
             labels=self._lm,
             triage_authority=self._triage_authority,
+            active_session_run_id=self._active_session_run_id,
         )
 
     def _generate_triage_failure_actions(

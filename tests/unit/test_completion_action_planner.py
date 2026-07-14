@@ -102,7 +102,8 @@ def make_planner(
         else InMemoryTriageAuthorityStore()
     )
     return CompletionActionPlanner(
-        config, repository_host, LabelManager(config), triage_authority
+        config, repository_host, LabelManager(config), triage_authority,
+        lambda _n: None,  # no live target session in these unit fixtures (#6779 R1)
     )
 
 
@@ -189,11 +190,16 @@ def test_review_exchange_halt_puts_issue_on_hold(tmp_path: Path) -> None:
 
 
 def make_triage_config(tmp_path: Path) -> Config:
+    from unittest.mock import Mock
+
     config = Config()
     config.repo_root = tmp_path  # authority store lives in the repo state dir
     config.triage_review_agent = "agent:triage"
     config.triage_reviewed_label = "triage-reviewed"
     config.triage_failed_label = "triage-failed"
+    # Destination worker a create_issue proposal routes to (#6779 R5/R9).
+    config.agents = {"agent:web": Mock()}
+    config.triage_follow_up_agent = "agent:web"
     return config
 
 
@@ -1241,20 +1247,35 @@ class TestResetRetryExecutionPipeline:
         ]
         assert surfaced == []
 
-    def test_propose_authority_still_surfaces_shadow(self, tmp_path: Path) -> None:
+    def test_propose_authority_plans_gated_proposal_issue(self, tmp_path: Path) -> None:
+        """Propose-authority reset_retry is a gated proposal issue carrying
+        the stored op (#6778): never a shadow record or a direct execution."""
+        from issue_orchestrator.control.actions import (
+            CreateTriageProposalIssueAction,
+        )
+        from issue_orchestrator.domain.triage_session import PROPOSED_TRIAGE_LABEL
+
         config, session = self._armed_investigation(tmp_path, authority_mode="propose")
 
         actions = make_planner(config).generate_completion_actions(
             session, SessionStatus.COMPLETED
         )
 
-        assert not any(isinstance(a, ResetRetryIssueAction) for a in actions)
-        [surfaced] = [
-            a for a in actions
-            if isinstance(a, SurfaceTriageProposalAction)
+        assert not any(type(a) is ResetRetryIssueAction for a in actions)
+        assert not any(
+            isinstance(a, SurfaceTriageProposalAction)
             and a.proposal_type == "reset_retry"
+            for a in actions
+        )
+        [proposal] = [
+            a for a in actions if isinstance(a, CreateTriageProposalIssueAction)
         ]
-        assert surfaced.mode == "shadow"
+        assert proposal.op.op_type == "reset_retry"
+        assert proposal.op.target_issue_number == 1
+        assert proposal.op.source_action_id == "A2"
+        assert proposal.op.source_run_id == session.run_assets.run_id
+        assert proposal.op.source_session_name == session.run_assets.session_name
+        assert PROPOSED_TRIAGE_LABEL in proposal.labels
 
     def test_full_pipeline_invokes_reset_owner(self, tmp_path: Path) -> None:
         """Completed investigation + execute authority -> the reset owner is
@@ -1603,10 +1624,15 @@ class TestMilestoneResolutionBoundary:
             config, repository_host=cast(RepositoryHost, host)
         ).generate_completion_actions(session, SessionStatus.COMPLETED)
 
-    def test_shadow_create_issue_with_explicit_milestone_makes_zero_reads(
+    def test_gated_create_issue_with_explicit_milestone_makes_zero_reads(
         self, tmp_path: Path
     ) -> None:
+        """Propose-authority create_issue is a GATED creation now (#6778):
+        it still plans milestone INTENT with zero GitHub reads, and the
+        planned issue carries the proposed-triage gate label."""
         from unittest.mock import MagicMock
+
+        from issue_orchestrator.domain.triage_session import PROPOSED_TRIAGE_LABEL
 
         config = make_triage_config(tmp_path)
         config.triage.milestone_strategy.explicit = "M5"
@@ -1619,16 +1645,15 @@ class TestMilestoneResolutionBoundary:
         actions = self._completed_actions(config, session, host)
 
         host.list_milestones.assert_not_called()
-        shadow = [
-            action
-            for action in actions
-            if isinstance(action, SurfaceTriageProposalAction)
-            and action.proposal_type == "create_issue"
-        ]
-        assert len(shadow) == 1 and shadow[0].mode == "shadow"
         assert not any(
-            isinstance(action, CreateTriageIssueAction) for action in actions
+            isinstance(action, SurfaceTriageProposalAction)
+            and action.proposal_type == "create_issue"
+            for action in actions
         )
+        [create] = [
+            action for action in actions if isinstance(action, CreateTriageIssueAction)
+        ]
+        assert PROPOSED_TRIAGE_LABEL in create.labels
 
     def test_execute_create_issue_plans_name_intent_without_reads(
         self, tmp_path: Path

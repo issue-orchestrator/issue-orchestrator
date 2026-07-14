@@ -400,6 +400,8 @@ class GitHubAdapter:
         state: str = "open",
         limit: int = 100,
         required_stable_ids: set[str] | None = None,
+        *,
+        exhaustive: bool = False,
     ) -> "list[Issue]":
         """List issues matching the given criteria.
 
@@ -410,6 +412,10 @@ class GitHubAdapter:
             limit: Maximum number of issues to return.
             required_stable_ids: Optional set of stable IDs that must be discovered.
                 If provided and missing after cached fetch, retry without cache.
+            exhaustive: If True, the multi-page walk fails loud rather than
+                returning a silently partial set (#6779 R17) — for AUTHORITATIVE
+                callers (the open-issue anchor scan) that must not plan/recover
+                from a truncated result.
 
         Returns:
             List of GitHubIssue objects matching the criteria.
@@ -425,6 +431,7 @@ class GitHubAdapter:
                 milestone=milestone,
                 limit=limit,
                 use_cache=use_cache,
+                exhaustive=exhaustive,
             )
 
         # First attempt with cache

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.domain.triage_session import (
+    StoredTriageOp,
     TriageLaunchAuthority,
     TriageSessionFlavor,
 )
@@ -12,6 +13,7 @@ from issue_orchestrator.infra.repo_identity import state_dir
 from issue_orchestrator.ports.triage_authority import (
     InMemoryTriageAuthorityStore,
     TriageAuthorityConflictError,
+    TriageOpConflictError,
 )
 from issue_orchestrator.infra.triage_authority_store import (
     SqliteTriageAuthorityStore,
@@ -184,3 +186,106 @@ def test_health_review_authority_targets_only_its_anchor() -> None:
         anchor_issue_number=9,
     )
     assert health.allowed_targets() == frozenset({9})
+
+
+# --- Gated proposal ops (#6778) ------------------------------------------
+
+
+def _op(target: int = 13, *, op_type: str = "reset_retry", rationale: str = "r") -> "StoredTriageOp":
+    return StoredTriageOp(
+        op_type=op_type,
+        target_issue_number=target,
+        rationale=rationale,
+        source_run_id="run-1",
+        source_session_name="issue-7",
+        source_action_id="A2",
+        created_at="2026-07-11T00:00:00+00:00",
+    )
+
+
+OP_STORES = [
+    lambda tmp_path: SqliteTriageAuthorityStore.for_repo(tmp_path),
+    lambda _tmp_path: InMemoryTriageAuthorityStore(),
+]
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_op_round_trip(tmp_path: Path, make_store) -> None:
+    store = make_store(tmp_path)
+    store.record_op(issue_number=500, op=_op())
+
+    assert store.load_op(issue_number=500) == _op()
+    assert store.load_op(issue_number=501) is None
+    assert store.list_ops() == ((500, _op()),)
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_record_op_identical_payload_is_noop(tmp_path: Path, make_store) -> None:
+    store = make_store(tmp_path)
+    store.record_op(issue_number=500, op=_op())
+    store.record_op(issue_number=500, op=_op())
+
+    assert store.load_op(issue_number=500) == _op()
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_record_op_conflicting_payload_fails_loudly(tmp_path: Path, make_store) -> None:
+    """The approver's consent binds to exactly one recorded payload; it must
+    never silently change after the proposal issue exists (#6778)."""
+    store = make_store(tmp_path)
+    store.record_op(issue_number=500, op=_op(13))
+
+    with pytest.raises(TriageOpConflictError):
+        store.record_op(issue_number=500, op=_op(14))
+
+    loaded = store.load_op(issue_number=500)
+    assert loaded is not None and loaded.target_issue_number == 13
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_discard_op_removes_only_the_named_issue(tmp_path: Path, make_store) -> None:
+    store = make_store(tmp_path)
+    store.record_op(issue_number=500, op=_op(13))
+    store.record_op(issue_number=501, op=_op(14, op_type="kill_hung_session"))
+
+    store.discard_op(issue_number=500)
+
+    assert store.load_op(issue_number=500) is None
+    assert store.load_op(issue_number=501) is not None
+    assert [n for n, _ in store.list_ops()] == [501]
+    # No-op when absent (once-only owner).
+    store.discard_op(issue_number=500)
+
+
+def test_op_survives_reopen(tmp_path: Path) -> None:
+    """Crash-safety: an unexecuted op outlives the recording process."""
+    SqliteTriageAuthorityStore.for_repo(tmp_path).record_op(
+        issue_number=500, op=_op()
+    )
+
+    reopened = SqliteTriageAuthorityStore.for_repo(tmp_path)
+
+    assert reopened.load_op(issue_number=500) == _op()
+
+
+def test_stored_op_rejects_unknown_op_type() -> None:
+    with pytest.raises(ValueError, match="op_type"):
+        _op(op_type="merge_pr")
+
+
+def test_stored_op_rejects_blank_source_identity() -> None:
+    with pytest.raises(ValueError, match="source_run_id"):
+        StoredTriageOp(
+            op_type="reset_retry",
+            target_issue_number=13,
+            rationale="r",
+            source_run_id=" ",
+            source_session_name="issue-7",
+            source_action_id="A2",
+            created_at="2026-07-11T00:00:00+00:00",
+        )
+
+
+def test_stored_op_dict_round_trip() -> None:
+    op = _op(42, op_type="kill_hung_session", rationale="hung 90m")
+    assert StoredTriageOp.from_dict(op.to_dict()) == op

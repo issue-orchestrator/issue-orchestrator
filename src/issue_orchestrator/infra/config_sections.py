@@ -417,6 +417,7 @@ def load_review_section(config: "Config", review_section: dict) -> None:
     config.code_review_label = review_section.get("code_review_label", "needs-code-review")
     config.code_reviewed_label = review_section.get("code_reviewed_label", "code-reviewed")
     config.triage_review_agent = review_section.get("triage_review_agent")
+    config.triage_follow_up_agent = review_section.get("triage_follow_up_agent")
     config.triage_review_label = review_section.get("triage_review_label")
     config.triage_reviewed_label = review_section.get("triage_reviewed_label", "triage-reviewed")
     config.triage_failed_label = review_section.get("triage_failed_label", "triage-failed")

@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Iterable, Optional, Sequence
 
 from ..domain.triage_session import HEALTH_REVIEW_MARKER_LABEL, TriageSessionFlavor
 from .actions import CreateTriageIssueAction
@@ -46,9 +46,9 @@ from .triage_issue_policy import (
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState, PendingTriageReview, TriageFacts
     from ..infra.config import Config
-    from ..ports import Issue
+    from ..ports import Issue, RepositoryHost
     from ..ports.queue_cache_store import QueueCacheStore
-    from ..ports.repository_host import RepositoryHost
+    from ..ports.triage_authority import TriageAuthorityStore
     from .session_routing import TriageQueueOutcome
     from .workflows import TriageWorkflow
 
@@ -56,10 +56,12 @@ logger = logging.getLogger(__name__)
 
 HEALTH_REVIEW_ISSUE_TITLE = "Health Review — walk the floor"
 
-# Anchor scans are label-scoped, so a single page is exhaustive in practice;
-# 100 is the GitHub API page maximum, far above any sane open-anchor count
-# (the adapter does not paginate, so a small fixed limit could strand an
-# older anchor beyond the first page — #6763 findings 4 and 7).
+# Marker-scoped anchor lookups (health-review dedup / last-fired) match at
+# most a handful of issues, so a single 100-item page (the GitHub API page
+# maximum) is exhaustive for them. The BROAD triage-agent scan instead uses
+# the paginated ``TRIAGE_PROPOSAL_SCAN_LIMIT`` (#6779 R4), because gated
+# proposals share the triage-agent label and could crowd an older anchor past
+# a fixed first page (#6763 findings 4 and 7).
 _ANCHOR_SCAN_LIMIT = 100
 
 _HEALTH_REVIEW_ISSUE_BODY = """## Periodic Health Review (ADR-0031 §4)
@@ -141,12 +143,26 @@ def discover_open_triage_anchor_issues(
     recovery (#6763 finding 7). Both paths must apply the same
     ``filtering.label`` scope — startup queueing an out-of-scope anchor would
     let a run-scoped restart launch another run's health review — and both
-    must see past any fixed first page smaller than the label-scoped result.
+    must page the COMPLETE open set: gated proposals share the triage-agent
+    label (#6778), so a proposal backlog could otherwise push an older anchor
+    (or approved op) past a small window. The exhaustive scan bound is the
+    shared ``TRIAGE_PROPOSAL_SCAN_LIMIT`` (#6779 R4, paginated), so the SAME
+    open scan feeds both anchor classification and proposal reconciliation.
+
+    The scan is AUTHORITATIVE, so it is requested ``exhaustive`` (#6779 R17): a
+    later-page HTTP/transport failure or a cap-exhausted read RAISES rather than
+    returning a silently partial set. A dropped page could otherwise hide an
+    older batch/health anchor (duplicate creation, missed startup recovery) or
+    delay an approved op indefinitely, so a failed scan must block this tick's
+    planning/recovery — it is never consumed as "no anchors".
     """
+    from .triage_proposals import TRIAGE_PROPOSAL_SCAN_LIMIT
+
     issues = repository_host.list_issues(
         labels=_anchor_query_labels(config),
         state="open",
-        limit=_ANCHOR_SCAN_LIMIT,
+        limit=TRIAGE_PROPOSAL_SCAN_LIMIT,
+        exhaustive=True,
     )
     return _scoped_issues(issues, config.filtering.label)
 
@@ -304,6 +320,65 @@ def queue_recovered_triage_anchor(
     anchor already exists; ``last_health_review_at`` records creation time.
     """
     return _queue_anchor_by_marker(state, issue.number, issue.title, issue.labels)
+
+
+def recover_pending_triage_anchors(
+    state: "OrchestratorState",
+    *,
+    repository_host: "RepositoryHost",
+    config: "Config",
+    session_exists: Callable[[str], bool],
+    triage_authority: "TriageAuthorityStore | None",
+) -> None:
+    """Requeue open triage anchors on startup (crash-safe label recovery).
+
+    Gated triage proposals share the triage agent label (#6778) but are
+    never anchors: gate-labeled issues await operator approval, and
+    op-backed issues without the gate label are approved ops the planner
+    executes from the fact scan. Requeuing either as a batch anchor would
+    launch a triage session on a proposal issue — the same
+    ``reconcile_triage_proposals`` owner the fact gatherer uses excludes
+    them here, over an EXHAUSTIVE open scan (#6779 R4) so a proposal backlog
+    can never hide an anchor. Startup recovery is read-only (#6779 R10):
+    leaked/terminal ledger rows are NOT discarded here — the first control
+    tick's fact gatherer surfaces them as cleanup candidates and the planner's
+    confirm-and-discard action self-heals them.
+    """
+    from .session_routing import TriageQueueOutcome
+    from .triage_proposals import reconcile_triage_proposals
+
+    assert config.triage_review_agent is not None  # caller-gated
+    # Shared scoped/exhaustive anchor discovery (#6763 finding 7) feeds the
+    # proposal reconciliation (#6779 R2/R4): the SAME exhaustive open scan the
+    # fact gatherer classifies, so startup applies the same filtering.label
+    # eligibility rule and a proposal backlog can never hide an anchor.
+    issues = discover_open_triage_anchor_issues(repository_host, config)
+    ops = (
+        dict(triage_authority.list_ops())
+        if triage_authority is not None
+        else {}
+    )
+    reconciled = reconcile_triage_proposals(issues, ops=ops)
+    anchors = reconciled.anchor_candidate_issues
+    skipped = len(issues) - len(anchors)
+    if skipped:
+        print(f"  Skipped {skipped} gated triage proposal issue(s) (#6778)")
+    for issue in anchors:
+        if session_exists(f"issue-{issue.number}"):
+            print(f"  triage issue #{issue.number}: Already running")
+            continue
+        # The ADR-0031 §4 marker label declares the anchor's variant; the
+        # owner routes it (#6768 B5: queued flavor reaches launch verbatim).
+        outcome = queue_recovered_triage_anchor(state, issue)
+        if outcome is TriageQueueOutcome.DUPLICATE:
+            print(f"  triage issue #{issue.number}: Already queued")
+            continue
+        print(f"  triage issue #{issue.number}: Queued ({issue.title})")
+    if state.pending_triage_reviews:
+        print(
+            f"  Found {len(state.pending_triage_reviews)} triage review(s)"
+            " to process"
+        )
 
 
 def record_health_review_creation(

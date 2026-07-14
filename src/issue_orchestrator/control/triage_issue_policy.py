@@ -45,6 +45,10 @@ if TYPE_CHECKING:
 # Workflow label families that no agent-proposed label may match. These are
 # families, not concrete names: concrete orchestrator-owned names (including
 # any configured prefix) come from LabelManager/config at call time.
+# ``proposed-triage`` (#6778) is doubly covered: it is a registered
+# LabelManager label (workflow-reserved) AND matched here, so the gate can
+# only ever be orchestrator-attached — an agent proposing it is a contract
+# violation regardless of which owner checks first.
 _PROTECTED_LABEL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"needs-", re.IGNORECASE),
     re.compile(r".*-reviewed\Z", re.IGNORECASE),
@@ -53,6 +57,7 @@ _PROTECTED_LABEL_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"blocked", re.IGNORECASE),
     re.compile(r"agent:", re.IGNORECASE),
     re.compile(r"triage:", re.IGNORECASE),
+    re.compile(r"proposed-triage\Z", re.IGNORECASE),
 )
 
 
@@ -185,12 +190,41 @@ def health_review_issue_labels(config: "Config") -> tuple[str, ...]:
     return _with_configured_labels(config, base, source_labels=())
 
 
+def triage_follow_up_agent_label(config: "Config") -> str:
+    """The orchestrator-owned worker agent a ``create_issue`` proposal routes to.
+
+    A triage decision may propose a NEW issue, but agent-proposed ``agent:*``
+    labels are rejected as protected input (they could hijack routing), and
+    ``explicit_labels`` defaults empty — so the created issue would carry no
+    agent label and normal discovery (which queries per configured worker
+    agent) would never fetch it. The orchestrator therefore assigns the
+    destination itself.
+
+    The destination is the TYPED, VALIDATED ``review.triage_follow_up_agent``
+    setting (#6779 R9), NOT the first key of ``config.agents``: that mapping
+    also holds reviewer, triage, and goal-pilot agents, so dict order could
+    route new work to an agent that cannot perform it. The
+    :class:`ReviewWorkflowValidator` guarantees the configured value names a
+    real agent; this fails loudly when it is unset rather than guessing.
+    """
+    destination = config.triage_follow_up_agent
+    if not destination:
+        raise ValueError(
+            "a triage create_issue proposal needs a destination worker agent;"
+            " set review.triage_follow_up_agent to a worker label in `agents`"
+            " (#6779 R9)"
+        )
+    return destination
+
+
 def decision_issue_labels(
     config: "Config",
     *,
     anchor_labels: Collection[str],
     agent_labels: Iterable[str],
     labels: LabelManager,
+    destination_agent: str,
+    gate: bool = False,
 ) -> tuple[str, ...]:
     """Labels for a decision-driven follow-up issue.
 
@@ -199,6 +233,17 @@ def decision_issue_labels(
     proposed labels. Protected agent labels are a bug at this point — the
     decision must have been rejected as a contract violation upstream
     (``triage_completion``) — so fail loudly instead of silently filtering.
+
+    ``destination_agent`` is the orchestrator-owned worker agent label the
+    created issue is routed to (#6779 R5): appended AFTER the protection check
+    (exempt like the gate — it is orchestrator-attached, not agent-proposed)
+    so that removing the gate alone lands a fully schedulable issue. It must
+    be a configured worker agent, else the issue would still be unschedulable.
+
+    ``gate=True`` (propose-authority ``create_issue``, #6778) appends the
+    orchestrator-attached ``proposed-triage`` gate AFTER the protection
+    check: the gate is exempt from the agent-label allowlist here and ONLY
+    here — an agent proposing it is still a contract violation.
     """
     violations = protected_triage_label_violations(
         agent_labels, config=config, labels=labels
@@ -208,11 +253,18 @@ def decision_issue_labels(
             "protected labels must be rejected at decision validation, got: "
             + ", ".join(violations)
         )
+    if destination_agent not in config.agents:
+        raise ValueError(
+            "decision_issue_labels destination_agent must be a configured worker"
+            f" agent, got {destination_agent!r} (agents:"
+            f" {sorted(config.agents)})"
+        )
     base: list[str] = []
     if config.filtering.label:
         base.append(config.filtering.label)
     composed = _with_configured_labels(config, base, source_labels=anchor_labels)
-    return _deduped((*composed, *agent_labels))
+    gate_labels = (labels.proposed_triage,) if gate else ()
+    return _deduped((*composed, *agent_labels, destination_agent, *gate_labels))
 
 
 def _with_configured_labels(

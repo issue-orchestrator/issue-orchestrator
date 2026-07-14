@@ -39,8 +39,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from ..domain.triage_session import TriageLaunchAuthority
-from ..ports.triage_authority import TriageAuthorityConflictError
+from ..domain.triage_session import StoredTriageOp, TriageLaunchAuthority
+from ..ports.triage_authority import TriageAuthorityConflictError, TriageOpConflictError
 from .repo_identity import state_dir
 from .sqlite_connection import open_sqlite
 
@@ -53,6 +53,11 @@ CREATE TABLE IF NOT EXISTS triage_launch_authority (
     authority TEXT NOT NULL,
     recorded_at TEXT NOT NULL,
     PRIMARY KEY (run_id, session_name)
+);
+CREATE TABLE IF NOT EXISTS triage_proposal_ops (
+    issue_number INTEGER PRIMARY KEY,
+    op TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
 );
 """
 
@@ -180,3 +185,74 @@ class SqliteTriageAuthorityStore:
                 run_id,
                 session_name,
             )
+
+    # -- Gated proposal ops (#6778, ADR-0031 §2 amendment) -----------------
+
+    def record_op(self, *, issue_number: int, op: StoredTriageOp) -> None:
+        """Persist a proposal issue's executable op (create-once).
+
+        Identical payload for an existing key: no-op. Different payload:
+        :class:`TriageOpConflictError` — the approver's consent binds to
+        exactly one recorded payload, which must never silently change.
+        """
+        payload = json.dumps(op.to_dict(), sort_keys=True)
+        with self._transaction() as tx:
+            row = tx.execute(
+                "SELECT op FROM triage_proposal_ops WHERE issue_number = ?",
+                (issue_number,),
+            ).fetchone()
+            if row is not None:
+                if json.dumps(json.loads(row[0]), sort_keys=True) == payload:
+                    return
+                raise TriageOpConflictError(
+                    f"a different triage op is already recorded for proposal"
+                    f" issue #{issue_number}"
+                )
+            tx.execute(
+                "INSERT INTO triage_proposal_ops (issue_number, op, recorded_at)"
+                " VALUES (?, ?, ?)",
+                (issue_number, payload, datetime.now(timezone.utc).isoformat()),
+            )
+        logger.info(
+            "[triage] Recorded proposal op: issue=#%d op=%s target=#%d action=%s",
+            issue_number,
+            op.op_type,
+            op.target_issue_number,
+            op.source_action_id,
+        )
+
+    def load_op(self, *, issue_number: int) -> StoredTriageOp | None:
+        """Load a proposal issue's op, or None when absent.
+
+        Malformed stored content raises ValueError loudly — the store is
+        orchestrator-owned, so corruption is a bug, never agent input.
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT op FROM triage_proposal_ops WHERE issue_number = ?",
+            (issue_number,),
+        ).fetchone()
+        if row is None:
+            return None
+        return StoredTriageOp.from_dict(json.loads(row["op"]))
+
+    def discard_op(self, *, issue_number: int) -> None:
+        """Remove a proposal issue's op row (once-only owner; no-op if absent)."""
+        with self._transaction() as tx:
+            deleted = tx.execute(
+                "DELETE FROM triage_proposal_ops WHERE issue_number = ?",
+                (issue_number,),
+            ).rowcount
+        if deleted:
+            logger.info("[triage] Discarded proposal op: issue=#%d", issue_number)
+
+    def list_ops(self) -> tuple[tuple[int, StoredTriageOp], ...]:
+        """All (proposal_issue_number, op) rows — the open-proposal ledger."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT issue_number, op FROM triage_proposal_ops ORDER BY issue_number",
+        ).fetchall()
+        return tuple(
+            (int(row["issue_number"]), StoredTriageOp.from_dict(json.loads(row["op"])))
+            for row in rows
+        )

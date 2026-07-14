@@ -21,6 +21,9 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import cast
+
+from .triage_artifacts import ACT_LEVEL_TRIAGE_ACTIONS
 
 TRIAGE_ASSIGNMENT_FILENAME = "triage-assignment.json"
 
@@ -30,6 +33,28 @@ TRIAGE_ASSIGNMENT_FILENAME = "triage-assignment.json"
 # already-open health-review anchor. Single owner — the planner, launcher,
 # fact gatherer, and startup recovery all import it from here.
 HEALTH_REVIEW_MARKER_LABEL = "triage:health-review"
+
+# Gate label carried by gated triage proposal issues (#6778, ADR-0031 §2
+# amendment). Orchestrator-attached at creation; REMOVING it is per-instance
+# operator approval. The scheduler's blocking-label classification excludes
+# gate-labeled issues from pickup, and the agent-label allowlist rejects it
+# as a protected workflow label. Raw (never prefixed), like the marker label:
+# the triage subsystem manages its labels without the orchestrator prefix.
+PROPOSED_TRIAGE_LABEL = "proposed-triage"
+
+
+def is_proposed_triage_gate(name: str) -> bool:
+    """True iff *name* is the owned proposal gate, case-insensitively (#6779 R15).
+
+    GitHub folds label names, so a repository whose canonical spelling is
+    ``Proposed-Triage`` still carries the gate. This is the SINGLE owner of the
+    gate comparison: reconciliation classification, scheduler blocking, and the
+    apply-time consent re-check all fold case through here so they can never
+    diverge — e.g. classify a canonical-cased gate as "approved" while blocking
+    treats it as absent (or vice versa).
+    """
+    return name.casefold() == PROPOSED_TRIAGE_LABEL.casefold()
+
 
 _SCHEMA_VERSION = 1
 
@@ -257,3 +282,149 @@ class TriageLaunchAuthority:
             manifest_pr_numbers=tuple(raw_prs),
             schema_version=raw_schema,
         )
+
+
+@dataclass(frozen=True)
+class StoredTriageOp:
+    """Orchestrator-recorded executable payload of a gated triage proposal.
+
+    Recorded create-once in the orchestrator-owned authority store when a
+    gated proposal issue is created (#6778): the GitHub issue body is human
+    documentation ONLY and is never re-parsed as a command. What the approver
+    read and delabeled is exactly what runs — execution consumes THIS record.
+    """
+
+    op_type: str  # one of ACT_LEVEL_TRIAGE_ACTIONS
+    target_issue_number: int
+    rationale: str
+    source_run_id: str
+    source_session_name: str
+    source_action_id: str  # the decision artifact action id (A<n>)
+    created_at: str  # ISO-8601 UTC timestamp
+    # The target issue's ACTIVE session run id captured at proposal time
+    # (#6779 R1). ``kill_hung_session`` consents to terminating exactly THAT
+    # generation: the kill executor refuses to act unless the target issue's
+    # live session still carries this run id, so a replacement session that
+    # started before approval is never killed. Empty for ``reset_retry`` —
+    # that op is stale-checked by labels/no-active-session, never bound to a
+    # specific generation (a non-empty value there is a bug).
+    target_session_id: str = ""
+    # The decision findings the approver saw for this op (#6779 R6): forwarded
+    # into ``TRIAGE_ACTION_EXECUTED`` so execution correlates to those findings.
+    finding_ids: tuple[str, ...] = ()
+    schema_version: int = _SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if self.schema_version != _SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported triage op schema_version: {self.schema_version!r}"
+            )
+        if self.op_type not in ACT_LEVEL_TRIAGE_ACTIONS:
+            raise ValueError(
+                f"StoredTriageOp op_type must be one of"
+                f" {sorted(ACT_LEVEL_TRIAGE_ACTIONS)}, got {self.op_type!r}"
+            )
+        # Runtime re-checks: from_dict feeds this dataclass persisted JSON,
+        # so the declared annotations carry no runtime guarantee here.
+        target = cast(object, self.target_issue_number)
+        if isinstance(target, bool) or not isinstance(target, int) or target <= 0:
+            raise ValueError(
+                "StoredTriageOp target_issue_number must be a positive int,"
+                f" got {target!r}"
+            )
+        for field_name in (
+            "source_run_id",
+            "source_session_name",
+            "source_action_id",
+            "created_at",
+        ):
+            value: object = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"StoredTriageOp {field_name} must be a non-empty string,"
+                    f" got {value!r}"
+                )
+        rationale = cast(object, self.rationale)
+        if not isinstance(rationale, str):
+            raise ValueError(
+                f"StoredTriageOp rationale must be a string, got {rationale!r}"
+            )
+        session_id = cast(object, self.target_session_id)
+        if not isinstance(session_id, str):
+            raise ValueError(
+                "StoredTriageOp target_session_id must be a string,"
+                f" got {session_id!r}"
+            )
+        if self.op_type == "reset_retry" and session_id.strip():
+            raise ValueError(
+                "StoredTriageOp target_session_id must be empty for reset_retry;"
+                " that op is never bound to a specific session generation,"
+                f" got {session_id!r}"
+            )
+        findings = cast(object, self.finding_ids)
+        if not isinstance(findings, tuple) or any(
+            not isinstance(item, str) for item in findings
+        ):
+            raise ValueError(
+                "StoredTriageOp finding_ids must be a tuple of strings,"
+                f" got {findings!r}"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "op_type": self.op_type,
+            "target_issue_number": self.target_issue_number,
+            "rationale": self.rationale,
+            "source_run_id": self.source_run_id,
+            "source_session_name": self.source_session_name,
+            "source_action_id": self.source_action_id,
+            "created_at": self.created_at,
+            "target_session_id": self.target_session_id,
+            "finding_ids": list(self.finding_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "StoredTriageOp":
+        """Parse from dict; malformed content fails loudly with ValueError.
+
+        The store is orchestrator-owned, so corruption is a bug, never agent
+        input to fail-safe around (mirrors TriageLaunchAuthority.from_dict).
+        """
+        raw_schema = data.get("schema_version")
+        if isinstance(raw_schema, bool) or not isinstance(raw_schema, int):
+            raise ValueError(
+                f"triage op schema_version must be an int, got {raw_schema!r}"
+            )
+        raw_findings = data.get("finding_ids", [])
+        if not isinstance(raw_findings, list):
+            raise ValueError(
+                f"triage op finding_ids must be a list, got {raw_findings!r}"
+            )
+        return cls(
+            op_type=str(data.get("op_type")),
+            target_issue_number=data.get("target_issue_number"),  # type: ignore[arg-type]
+            rationale=str(data.get("rationale", "")),
+            source_run_id=str(data.get("source_run_id", "")),
+            source_session_name=str(data.get("source_session_name", "")),
+            source_action_id=str(data.get("source_action_id", "")),
+            created_at=str(data.get("created_at", "")),
+            target_session_id=str(data.get("target_session_id", "")),
+            finding_ids=tuple(str(item) for item in raw_findings),
+            schema_version=raw_schema,
+        )
+
+
+@dataclass(frozen=True)
+class ApprovedTriageOp:
+    """A stored op whose proposal issue no longer carries the gate label.
+
+    Classified by the fact gatherer from the SAME open-issue scan that finds
+    triage anchors (#6778): an open issue with a stored op but without
+    ``PROPOSED_TRIAGE_LABEL`` was approved by the operator. The planner turns
+    each into the op's execution action; the applier re-validates
+    preconditions and finalizes the proposal issue.
+    """
+
+    proposal_issue_number: int
+    op: StoredTriageOp

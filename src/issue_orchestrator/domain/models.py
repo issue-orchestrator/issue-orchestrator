@@ -14,7 +14,7 @@ from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
-from .triage_session import TriageSessionFlavor
+from .triage_session import ApprovedTriageOp, TriageSessionFlavor
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue as IssueProtocol
@@ -1358,6 +1358,18 @@ class TriageFacts:
     # triage_review_threshold gates only the batch fields.
     health_review_due: bool = False  # Interval elapsed since the last health review
     existing_health_review_issue: Optional[int] = None  # Open marker-labeled anchor issue
+    # Approved gated triage proposals (#6778): open issues that carry a
+    # StoredTriageOp but no longer carry the proposed-triage gate label,
+    # classified from the SAME anchor scan. The planner turns each into the
+    # stored op's execution action.
+    approved_triage_ops: tuple["ApprovedTriageOp", ...] = field(default_factory=tuple)
+    # Ledger rows whose proposal issue was ABSENT from the exhaustive scan
+    # (#6779 R7). Absence is only a candidate for terminal cleanup — the scan
+    # can be truncated — so the planner emits a
+    # DiscardTerminalTriageProposalOpsAction and the applier confirms each with
+    # a fresh targeted read before discarding. Surfacing these as a fact keeps
+    # fact gathering read-only (#6779 R10).
+    absent_proposal_op_candidates: tuple[int, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

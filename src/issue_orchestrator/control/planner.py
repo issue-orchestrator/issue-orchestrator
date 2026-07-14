@@ -61,6 +61,7 @@ from .actions import (
     QueueReworkAction,
     QueueTriageAction,
     CreateTriageIssueAction,
+    DiscardTerminalTriageProposalOpsAction,
     EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
@@ -74,6 +75,7 @@ from .awaiting_merge_post_publish_policy import (
     POST_PUBLISH_VALIDATION_SOURCE,
 )
 from .health_review_trigger import plan_health_review_issue_creation
+from .triage_proposals import plan_approved_triage_op_executions
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
@@ -240,6 +242,35 @@ class Planner:
         health_review_action = self._plan_health_review_creation(snapshot)
         if health_review_action:
             actions.append(health_review_action)
+
+        # 1f3. Execute APPROVED gated triage proposals (#6778): the operator
+        # removed the proposed-triage label, so the fact scan classified the
+        # stored op as approved. Policy lives in triage_proposals; the
+        # appliers re-validate preconditions and finalize the proposal issue.
+        if snapshot.triage_facts and snapshot.triage_facts.approved_triage_ops:
+            actions.extend(
+                plan_approved_triage_op_executions(
+                    snapshot.triage_facts.approved_triage_ops
+                )
+            )
+
+        # 1f4. Confirm-and-discard terminal gated-proposal ledger rows (#6779
+        # R7/R10): fact gathering only CLASSIFIED ledger rows absent from the
+        # exhaustive scan as cleanup candidates (it stays read-only). Emit the
+        # cleanup action so the applier re-reads each proposal issue before
+        # discarding — absence from a possibly-truncated scan must never delete
+        # a live op.
+        candidates = (
+            snapshot.triage_facts.absent_proposal_op_candidates
+            if snapshot.triage_facts
+            else ()
+        )
+        if candidates:
+            actions.append(
+                DiscardTerminalTriageProposalOpsAction(
+                    candidate_issue_numbers=candidates
+                )
+            )
 
         # 1g. Process cleanups for reviewed PRs
         cleanup_actions = self._plan_cleanups(snapshot)

@@ -118,12 +118,16 @@ class TestReviewWorkflowValidator:
         review_exchange_require_validation=True,
         agents=None,
         health_review_interval_minutes=0,
+        triage_follow_up_agent=None,
     ):
         """Create a mock config with review settings."""
         config = MagicMock()
         config.review_enabled = review_enabled
         config.code_review_agent = code_review_agent
         config.triage_review_agent = triage_review_agent
+        # Explicit None default so the typed follow-up-agent invariant (#6779 R9)
+        # is exercised deterministically (a bare MagicMock is truthy).
+        config.triage_follow_up_agent = triage_follow_up_agent
         # Concrete int so the cross-field health-review invariant (#6776) is
         # exercised deterministically (a bare MagicMock compares > 0 truthy).
         config.triage.health_review.interval_minutes = health_review_interval_minutes
@@ -191,11 +195,68 @@ class TestReviewWorkflowValidator:
         """Verify error when triage agent doesn't exist."""
         config = self._make_config(
             triage_review_agent="agent:triage",
+            triage_follow_up_agent="agent:developer",
             agents={"agent:developer": MagicMock()},
         )
         errors = ReviewWorkflowValidator().validate(config)
         assert len(errors) == 1
         assert "triage_review_agent" in errors[0]
+
+    def test_unknown_triage_follow_up_agent_error(self):
+        """R9: a follow-up worker naming an agent absent from `agents` is rejected."""
+        config = self._make_config(
+            triage_follow_up_agent="agent:ghost",
+            agents={"agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert len(errors) == 1
+        assert "triage_follow_up_agent" in errors[0]
+
+    def test_valid_triage_follow_up_agent_ok(self):
+        """R9: a follow-up worker that names a real agent passes."""
+        config = self._make_config(
+            triage_follow_up_agent="agent:developer",
+            agents={"agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert errors == []
+
+    def test_unset_triage_follow_up_agent_ok_without_triage_agent(self):
+        """R14: unset is valid ONLY when no triage agent is configured — then a
+        create_issue proposal can never be reached, so no destination is needed."""
+        config = self._make_config(
+            triage_review_agent=None,
+            triage_follow_up_agent=None,
+            agents={"agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert errors == []
+
+    def test_triage_agent_requires_follow_up_agent(self):
+        """R14: a configured triage agent makes create_issue proposals reachable
+        (execute-create or a gated propose-create), both of which route to
+        triage_follow_up_agent — so leaving it unset is a startup error rather
+        than a latent post-session planning failure."""
+        config = self._make_config(
+            triage_review_agent="agent:triage",
+            triage_follow_up_agent=None,
+            agents={"agent:triage": MagicMock(), "agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert any(
+            "triage_follow_up_agent is required" in e for e in errors
+        ), errors
+
+    def test_triage_agent_with_follow_up_agent_ok(self):
+        """R14: a triage agent plus a follow-up worker naming a real agent is the
+        valid enabled pair — no create_issue routing failure lurking."""
+        config = self._make_config(
+            triage_review_agent="agent:triage",
+            triage_follow_up_agent="agent:developer",
+            agents={"agent:triage": MagicMock(), "agent:developer": MagicMock()},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert not any("triage_follow_up_agent" in e for e in errors), errors
 
     def test_negative_health_review_interval_error(self):
         """The validator surfaces the health-review interval invariant so a

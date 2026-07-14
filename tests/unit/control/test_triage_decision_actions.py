@@ -6,6 +6,7 @@ from issue_orchestrator.control.actions import (
     AddCommentAction,
     AddLabelAction,
     CreateTriageIssueAction,
+    CreateTriageProposalIssueAction,
     ResetRetryIssueAction,
     SurfaceTriageProposalAction,
     TriageMilestoneIntent,
@@ -21,11 +22,13 @@ from issue_orchestrator.domain.triage_artifacts import (
     TriageDecision,
     TriageFinding,
 )
+from issue_orchestrator.domain.triage_session import PROPOSED_TRIAGE_LABEL
 from issue_orchestrator.infra.config import Config
 
 
 EXPECTED = build_expected_for_mutation()
 NEEDS_HUMAN = "needs-human"
+SOURCE_RUN = {"source_run_id": "run-1", "source_session_name": "issue-99"}
 
 
 def _decision(*actions: ProposedTriageAction) -> TriageDecision:
@@ -47,7 +50,13 @@ def _decision(*actions: ProposedTriageAction) -> TriageDecision:
 
 
 def _config(**authority_overrides: str) -> Config:
+    from unittest.mock import Mock
+
     config = Config()
+    # A worker agent must exist: decision-driven create_issue routes the new
+    # issue to the typed, validated follow-up worker (#6779 R5/R9).
+    config.agents = {"agent:web": Mock()}
+    config.triage_follow_up_agent = "agent:web"
     for key, value in authority_overrides.items():
         setattr(config.triage.authority, key, value)
     return config
@@ -68,6 +77,8 @@ def _plan(
     decision: TriageDecision,
     config: Config | None = None,
     anchor: Issue | None = None,
+    op_ledger: dict[tuple[str, int], int] | None = None,
+    active_session_run_id=lambda _n: None,
 ):
     config = config or _config()
     return plan_triage_decision_actions(
@@ -76,6 +87,9 @@ def _plan(
         LabelManager(config),
         anchor_issue=anchor or _anchor(),
         expected=EXPECTED,
+        op_ledger=op_ledger or {},
+        active_session_run_id=active_session_run_id,
+        **SOURCE_RUN,
     )
 
 
@@ -158,11 +172,14 @@ class TestDecisionIssuePolicy:
 
         assert isinstance(planned, CreateTriageIssueAction)
         assert planned.title.startswith("[P2-000] ")
+        # The orchestrator-owned destination worker (#6779 R5) is appended so
+        # the created issue is schedulable by normal discovery.
         assert planned.labels == (
             "io-scope",
             "needs-batch-review",
             "team:backend",
             "bug",
+            "agent:web",
         )
 
     def test_milestone_strategy_inherits_anchor_milestone(self) -> None:
@@ -179,13 +196,7 @@ class TestDecisionIssuePolicy:
         config = _config()
         config.triage.milestone_strategy.explicit = "M5"
 
-        [planned] = plan_triage_decision_actions(
-            _decision(self._issue_action()),
-            config,
-            LabelManager(config),
-            anchor_issue=_anchor(),
-            expected=EXPECTED,
-        )
+        [planned] = _plan(_decision(self._issue_action()), config)
 
         assert isinstance(planned, CreateTriageIssueAction)
         assert planned.milestone == TriageMilestoneIntent(explicit_name="M5")
@@ -295,57 +306,38 @@ def test_shadow_proposals_plan_durable_digest_comment() -> None:
     assert any(isinstance(a, SurfaceTriageProposalAction) for a in planned)
 
 
-def test_digest_guidance_is_action_aware() -> None:
-    """Shadow digests name flip-able knobs (including wired reset_retry) but
-    must not tell operators to flip a knob that startup still rejects
-    (#6761 re-review finding 5 / #6764 first slice)."""
+def test_digest_names_only_shadow_tier_knobs() -> None:
+    """Act-level proposals never reach the shadow digest anymore (#6778):
+    they become gated issues. The digest names only the flip-able knobs of
+    the immediate/report tier proposals that stayed shadow."""
     config = _config(post_comment="propose")
-    gated = ProposedTriageAction(
+    shadowed = ProposedTriageAction(
         id="A1", action_type="post_comment", target_number=42, body="c"
     )
-    wired_act = ProposedTriageAction(
+    act_level = ProposedTriageAction(
         id="A2", action_type="reset_retry", target_number=42, body="r"
     )
-    unwired_act = ProposedTriageAction(
-        id="A3", action_type="kill_hung_session", target_number=42, body="k"
-    )
 
-    planned = _plan(_decision(gated, wired_act, unwired_act), config)
+    planned = _plan(_decision(shadowed, act_level), config)
 
     [digest] = _shadow_digests(planned)
     assert "`triage.authority.post_comment`" in digest.comment
-    # reset_retry is wired (#6764 first slice): the knob is real guidance now.
-    assert "`triage.authority.reset_retry`" in digest.comment
-    # kill_hung_session stays unwired: never named as a flip-able knob.
-    assert "#6764" in digest.comment
-    assert "`kill_hung_session`" in digest.comment
-    assert "triage.authority.kill_hung_session" not in digest.comment
+    assert "Flip" in digest.comment
+    # The act-level proposal is a gated issue, not a digest entry.
+    assert "reset_retry" not in digest.comment
+    assert any(isinstance(a, CreateTriageProposalIssueAction) for a in planned)
 
 
-def test_unwired_act_level_only_digest_omits_config_flip_guidance() -> None:
+def test_act_level_only_decision_plans_no_digest() -> None:
+    """Gated proposals replace shadow digests for act-level intents (#6778)."""
     action = ProposedTriageAction(
         id="A1", action_type="kill_hung_session", target_number=13, body="r"
     )
 
     planned = _plan(_decision(action))
 
-    [digest] = _shadow_digests(planned)
-    assert "#6764" in digest.comment
-    assert "Flip" not in digest.comment
-
-
-def test_reset_retry_only_digest_gives_flip_guidance_without_unwired_note() -> None:
-    """A shadow reset_retry is a flip-able knob, not an unwired intent."""
-    action = ProposedTriageAction(
-        id="A1", action_type="reset_retry", target_number=13, body="r"
-    )
-
-    planned = _plan(_decision(action))
-
-    [digest] = _shadow_digests(planned)
-    assert "`triage.authority.reset_retry`" in digest.comment
-    assert "Flip" in digest.comment
-    assert "#6764" not in digest.comment
+    assert _shadow_digests(planned) == []
+    assert not any(isinstance(a, SurfaceTriageProposalAction) for a in planned)
 
 
 def test_execute_only_decision_plans_no_digest_comment() -> None:
@@ -391,21 +383,106 @@ def test_flag_pattern_propose_surfaces_as_shadow() -> None:
 
 
 @pytest.mark.parametrize("act_type", ["reset_retry", "kill_hung_session"])
-def test_act_level_surfaces_shadow_under_propose_config(act_type: str) -> None:
+def test_act_level_under_propose_plans_gated_proposal_issue(act_type: str) -> None:
+    """Propose-authority act-level intents become gated issues carrying the
+    op payload (#6778): never shadow records, never direct executions."""
     action = ProposedTriageAction(
         id="A5",
         action_type=act_type,
         target_number=13,
         body="Rationale.",
+        finding_ids=("T1",),
     )
 
-    planned = _plan(_decision(action))
+    [planned] = _plan(_decision(action))
 
-    [surfaced] = [a for a in planned if isinstance(a, SurfaceTriageProposalAction)]
-    assert surfaced.mode == "shadow"
-    assert surfaced.proposal_type == act_type
-    assert surfaced.target_number == 13
-    assert len(_shadow_digests(planned)) == 1
+    assert isinstance(planned, CreateTriageProposalIssueAction)
+    assert PROPOSED_TRIAGE_LABEL in planned.labels
+    assert planned.anchor_issue_number == 99
+    assert planned.expected is EXPECTED
+    # The stored op is the executable payload; the body is documentation.
+    assert planned.op.op_type == act_type
+    assert planned.op.target_issue_number == 13
+    assert planned.op.rationale == "Rationale."
+    assert planned.op.source_action_id == "A5"
+    assert planned.op.source_run_id == "run-1"
+    assert planned.op.source_session_name == "issue-99"
+    # Human documentation names the op, target, and the approval gesture.
+    assert f"`{act_type}`" in planned.body
+    assert "#13" in planned.body
+    assert PROPOSED_TRIAGE_LABEL in planned.body
+    assert "Batch Review" not in planned.title
+    assert "Triage Review" not in planned.title
+
+
+@pytest.mark.parametrize("act_type", ["reset_retry", "kill_hung_session"])
+def test_duplicate_open_proposal_comments_instead_of_second_issue(
+    act_type: str,
+) -> None:
+    """One open proposal per (op, target) (#6778): a re-proposal plans a
+    comment on the existing proposal issue, never a second issue."""
+    action = ProposedTriageAction(
+        id="A5", action_type=act_type, target_number=13, body="Again."
+    )
+
+    [planned] = _plan(
+        _decision(action), op_ledger={(act_type, 13): 321}
+    )
+
+    assert isinstance(planned, AddCommentAction)
+    assert planned.number == 321
+    assert planned.is_pr is False
+    assert PROPOSED_TRIAGE_LABEL in planned.comment
+    assert "Again." in planned.comment
+    assert not isinstance(planned, CreateTriageProposalIssueAction)
+
+
+def test_duplicate_within_one_decision_plans_single_proposal_issue() -> None:
+    first = ProposedTriageAction(
+        id="A1", action_type="reset_retry", target_number=13, body="r1"
+    )
+    second = ProposedTriageAction(
+        id="A2", action_type="reset_retry", target_number=13, body="r2"
+    )
+
+    planned = _plan(_decision(first, second))
+
+    creations = [a for a in planned if isinstance(a, CreateTriageProposalIssueAction)]
+    assert len(creations) == 1
+    assert creations[0].op.source_action_id == "A1"
+
+
+def test_ledger_for_other_target_does_not_dedup() -> None:
+    action = ProposedTriageAction(
+        id="A5", action_type="reset_retry", target_number=13, body="r"
+    )
+
+    [planned] = _plan(
+        _decision(action), op_ledger={("reset_retry", 14): 321}
+    )
+
+    assert isinstance(planned, CreateTriageProposalIssueAction)
+
+
+def test_create_issue_propose_creates_gated_issue() -> None:
+    """Propose-authority create_issue CREATES the issue WITH the gate label
+    (#6778) instead of a shadow record."""
+    config = _config(create_issue="propose")
+    action = ProposedTriageAction(
+        id="A2",
+        action_type="create_issue",
+        title="Fix flaky CI runner",
+        body="The runner disconnects mid-build.",
+        labels=("ci",),
+    )
+
+    [planned] = _plan(_decision(action), config)
+
+    assert isinstance(planned, CreateTriageIssueAction)
+    assert not isinstance(planned, CreateTriageProposalIssueAction)
+    assert PROPOSED_TRIAGE_LABEL in planned.labels
+    assert "ci" in planned.labels
+    assert not any(isinstance(a, SurfaceTriageProposalAction) for a in [planned])
 
 
 def test_reset_retry_execute_plans_typed_reset_action() -> None:
@@ -433,9 +510,10 @@ def test_reset_retry_execute_plans_typed_reset_action() -> None:
     assert not any(isinstance(a, SurfaceTriageProposalAction) for a in [planned])
 
 
-def test_kill_hung_session_stays_shadow_even_if_execute_sneaks_past_startup() -> None:
-    """The planner never trusts config validation for unwired act-level
-    intents: kill_hung_session surfaces as shadow even under 'execute'."""
+def test_kill_hung_session_stays_gated_even_if_execute_sneaks_past_startup() -> None:
+    """The planner never trusts config validation for kill_hung_session:
+    it is a GATED PROPOSAL ISSUE even under 'execute' (its direct tier is
+    not wired; startup rejects the mode, #6778)."""
     config = _config(kill_hung_session="execute")
     action = ProposedTriageAction(
         id="A8",
@@ -444,12 +522,11 @@ def test_kill_hung_session_stays_shadow_even_if_execute_sneaks_past_startup() ->
         body="Session looks hung.",
     )
 
-    planned = _plan(_decision(action), config)
+    [planned] = _plan(_decision(action), config)
 
-    [surfaced] = [a for a in planned if isinstance(a, SurfaceTriageProposalAction)]
-    assert surfaced.mode == "shadow"
-    assert surfaced.proposal_type == "kill_hung_session"
-    assert not any(isinstance(a, ResetRetryIssueAction) for a in planned)
+    assert isinstance(planned, CreateTriageProposalIssueAction)
+    assert planned.op.op_type == "kill_hung_session"
+    assert not isinstance(planned, ResetRetryIssueAction)
 
 
 def test_mixed_decision_preserves_order_and_authority() -> None:
@@ -465,13 +542,13 @@ def test_mixed_decision_preserves_order_and_authority() -> None:
     planned = _plan(_decision(comment, issue, pattern), config)
 
     assert isinstance(planned[0], AddCommentAction)
-    assert isinstance(planned[1], SurfaceTriageProposalAction)
-    assert planned[1].mode == "shadow"
+    # create_issue under propose is a gated creation now (#6778), not shadow.
+    assert isinstance(planned[1], CreateTriageIssueAction)
+    assert PROPOSED_TRIAGE_LABEL in planned[1].labels
     assert isinstance(planned[2], SurfaceTriageProposalAction)
     assert planned[2].mode == "pattern"
-    # Shadow digest is appended after the proposal actions.
-    assert len(_shadow_digests(planned)) == 1
-    assert planned.index(_shadow_digests(planned)[0]) == len(planned) - 1
+    # No shadow proposals in this decision -> no digest.
+    assert _shadow_digests(planned) == []
 
 
 def test_authority_mode_for_unknown_action_raises() -> None:
