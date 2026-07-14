@@ -564,7 +564,16 @@ def clear_discovered_facts(state: "OrchestratorState", config: Config) -> None:
     are retained across the clear (#6771 round 3): the Planner skipped them
     this tick via ``CleanupFacts.held_issue_numbers``, and dropping them here
     would leak the worktree forever once the hold releases.
+
+    A PAUSED tick retains every fact (#6780 R2 F1). The clear exists to drop
+    facts the tick consumed, but a paused tick consumes none: the Planner
+    returns an empty plan and ``apply_plan`` refuses to apply actions while
+    paused. Clearing would silently discard problems that nothing recorded —
+    a session that fails while paused is discovered exactly once, so a dropped
+    storm cohort could never be recovered, even after resume.
     """
+    if state.paused:
+        return
     held = failure_investigation_hold_issue_numbers(state, config)
     retained = [c for c in state.immediate_cleanups if c.issue_number in held]
     for attr in _DISCOVERED_FACT_ATTRS:

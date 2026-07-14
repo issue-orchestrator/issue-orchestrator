@@ -212,6 +212,17 @@ the fact using the existing dependency evaluator and reverse dependency graph:
   investigations and create one immediate, unscheduled health review. A zero
   threshold disables storm escalation without changing the interval trigger.
 
+Suppression is bound to persistence, never merely to the decision to escalate.
+The cohort is queued as individual investigations first, and only the anchor's
+intake — the one owner that knows the anchor was actually created — retires the
+investigations it supersedes. Every path that leaves the cohort without an
+anchor (an open or pending health review, no capacity, a failed create, the
+apply-time triage cooldown) therefore leaves the investigations queued, and
+they consolidate into one health review on a later tick. A paused tick applies
+nothing, so it retains its discovered facts instead of clearing them. A problem
+is discovered exactly once, so any suppression not matched by a persisted
+cohort would drop it permanently.
+
 A storm-created anchor carries its typed problem cohort through the pending
 queue into the launch-time board snapshot. The orchestrator derives
 `TriageLaunchAuthority.problem_issue_numbers` from that exact snapshot instance

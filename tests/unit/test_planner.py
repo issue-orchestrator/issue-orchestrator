@@ -1699,8 +1699,14 @@ class TestPlanHealthReviewIssueCreation:
         assert self._create_actions(plan) == []
 
     def test_problem_storm_creates_one_unscheduled_health_review(self):
-        """K recent problems collapse to one health anchor and zero per-issue
-        investigations even when the periodic interval is not due (#6780)."""
+        """K recent problems escalate to one health anchor carrying the whole
+        cohort, even when the periodic interval is not due (#6780).
+
+        The cohort is also queued as individual investigations in the same
+        plan: the anchor's intake collapses them on a successful create, so
+        persisting first is what keeps the problems recoverable if the create
+        never lands (#6780 R2 F1). See TestReactiveTriageStormEscalation.
+        """
         planner, config = self._make_planner(interval_minutes=0)
         config.triage.health_review.storm_threshold = 3
         config.triage.health_review.storm_window_minutes = 5
@@ -1722,11 +1728,14 @@ class TestPlanHealthReviewIssueCreation:
 
         plan = planner.plan(make_snapshot(discovered_failures=problems))
 
-        assert not plan.actions_of_type(ActionType.QUEUE_TRIAGE)
         [action] = self._create_actions(plan)
         assert tuple(p.issue_number for p in action.storm_problems) == (1, 2, 3)
         assert action.reason == "problem storm: 3 issues inside settle window"
         assert "instead of" in action.body
+        # Persist-first: the cohort is queued ahead of the anchor that retires it.
+        assert sorted(
+            a.issue_number for a in plan.actions_of_type(ActionType.QUEUE_TRIAGE)
+        ) == [1, 2, 3]
 
     def test_skips_when_existing_anchor_open(self):
         planner, _ = self._make_planner()
@@ -1835,15 +1844,16 @@ class TestPlanHealthReviewIssueCreation:
 
 
 class TestReactiveTriageStormEscalation:
-    """Atomic storm escalation vs individual investigations (#6780 R2 F1/A1).
+    """Persist-first storm escalation (#6780 R2 F1/A1).
 
-    A storm suppresses per-issue investigations ONLY when its cohort is durably
-    escalated to a health-review anchor this tick. When the anchor cannot be
-    created (an existing/pending health review, no capacity, or paused) the
-    cohort would be lost at the end-of-tick discovered-fact clear, so the
-    planner falls back to queueing the individual investigations — and does NOT
-    suppress their launches. These tests pin that the fallback keeps the cohort
-    in the plan under every gating condition the reviewer called out.
+    The cohort is ALWAYS queued as individual investigations — the pending
+    queue is the only durable carrier of a problem once discovered_failures is
+    cleared at end of tick — and the anchor is planned after them, so a
+    successful create collapses them at intake. Every path that leaves the
+    cohort without an anchor (existing/pending health review, no capacity, a
+    failed create, the apply-time cooldown) therefore keeps the investigations
+    queued. Suppression only holds back launches on the tick the cohort is
+    actually escalated; it never decides retention.
     """
 
     STORM_CLOCK = 1_100.0
@@ -1887,15 +1897,25 @@ class TestReactiveTriageStormEscalation:
             if a.action_type == ActionType.QUEUE_TRIAGE
         )
 
-    def test_storm_escalates_to_one_anchor_and_suppresses_investigations(self):
-        """The happy path: the cohort collapses to one anchor and zero
-        per-issue QUEUE_TRIAGE actions."""
+    def test_storm_persists_cohort_before_planning_its_anchor(self):
+        """Persist-first: an escalating storm queues the cohort as individual
+        investigations AND plans the anchor, with the QUEUE_TRIAGE actions
+        ordered strictly BEFORE the create. Intake collapses them on a
+        successful create; if the create never lands, those queued items are
+        what keeps the cohort alive (#6780 R2 F1)."""
         planner, _ = self._planner()
 
         plan = planner.plan(make_snapshot(discovered_failures=self._cohort()))
 
         assert len(plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE)) == 1
-        assert self._queued_triage_issue_numbers(plan) == []
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+        # Ordering is load-bearing: apply_plan applies in plan order, and the
+        # anchor's intake is what retires the investigations it supersedes.
+        action_types = [a.action_type for a in plan.actions]
+        last_queue = max(
+            i for i, t in enumerate(action_types) if t == ActionType.QUEUE_TRIAGE
+        )
+        assert action_types.index(ActionType.CREATE_TRIAGE_ISSUE) > last_queue
 
     def test_storm_defers_to_investigations_when_anchor_already_open(self):
         from issue_orchestrator.domain.models import TriageFacts
@@ -1946,18 +1966,20 @@ class TestReactiveTriageStormEscalation:
         assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
         assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
 
-    def test_storm_defers_to_investigations_while_paused(self):
-        """Paused freezes launches, but the cohort must still be recorded as
-        queued investigations so it is not lost at the fact clear — the
-        planner's paused early-return no longer drops it."""
+    def test_paused_storm_plans_nothing(self):
+        """A paused tick plans no reactive actions: apply_plan refuses to apply
+        anything while paused, so emitting fallback actions here would be dead
+        code that reports work it never does. The cohort instead survives
+        because clear_discovered_facts retains facts on a paused tick — see
+        TestClearDiscoveredFacts and the paused end-to-end coverage in
+        test_orchestrator_support (#6780 R2 F1)."""
         planner, _ = self._planner()
 
         plan = planner.plan(
             make_snapshot(discovered_failures=self._cohort(), paused=True)
         )
 
-        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
-        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+        assert plan.actions == ()
 
     def _cohort_with_one_already_queued(self):
         """Cohort where #1 is already a queued investigation and #2/#3 are

@@ -94,15 +94,24 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class _ReactiveTriagePlan:
-    """Atomic outcome of the tech-lead reaction for one tick (#6780 R2).
+    """Outcome of the tech-lead reaction for one tick (#6780 R2).
 
-    A problem storm and the individual investigations it would replace are
-    decided together here so that suppressing the individual investigations
-    (and their launches) is bound to actually persisting the cohort to a
-    health-review anchor — never split across the reaction classifier and the
-    health-review trigger (F1/A1). ``suppressed_issue_numbers`` is non-empty
-    only when the cohort was escalated; on a deferred escalation the fallback
-    investigations are queued and nothing is suppressed.
+    ``actions`` ALWAYS queues the individual investigations the classifier
+    selected, and appends the storm/periodic health-review anchor when one can
+    be created. Queue-then-collapse is deliberate: the pending queue is the
+    only durable carrier of a problem once ``discovered_failures`` is cleared
+    at end of tick, so the cohort is persisted FIRST and a successfully created
+    anchor collapses it at intake (``_queue_anchor_by_marker`` removes the
+    superseded investigations and stamps ``problem_cohort`` onto the pending
+    health review in one step). Planning the anchor *instead of* the
+    investigations would lose the cohort whenever the create never lands —
+    a GitHub failure or the triage cooldown, both invisible to the planner
+    (F1/A1).
+
+    ``suppressed_issue_numbers`` governs LAUNCH timing only, never retention:
+    it holds back already-queued member investigations on the tick the cohort
+    is escalated, since intake is about to collapse them. If the anchor create
+    then fails, those items simply remain queued and launch on a later tick.
     """
 
     actions: tuple[Action, ...]
@@ -211,13 +220,12 @@ class Planner:
         # Check if paused
         if snapshot.paused:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
-            # Paused freezes launches, but reactive triage still records
-            # durable queue state (queue-population only — no launches, no
-            # GitHub writes) so a problem-storm cohort, or a lone failure, is
-            # not lost at the end-of-tick discovered-fact clear (#6780 R2).
-            # The health-review anchor stays gated off while paused (its owned
-            # gate already emitted TRIAGE_SKIPPED above), so no anchor is filed.
-            return Plan(actions=tuple(reactive.actions), skipped=())
+            # Returning actions here would be dead code: apply_plan refuses to
+            # apply anything while paused. The discovered facts a paused tick
+            # cannot act on are instead RETAINED by clear_discovered_facts, so
+            # a storm cohort survives the pause (#6780 R2 F1). The health-review
+            # gate already ran above for its TRIAGE_SKIPPED emission (#6763).
+            return Plan.empty()
 
         plan_context = PlanContext(issue_labels_by_number={
             issue.number: tuple(issue.labels) for issue in snapshot.issues
@@ -699,49 +707,41 @@ class Planner:
     def _plan_reactive_triage(
         self, snapshot: OrchestratorSnapshot, reaction: TriageReaction
     ) -> _ReactiveTriagePlan:
-        """Map the tech-lead reaction to actions atomically (#6780 R2 F1/A1).
+        """Map the tech-lead reaction onto persist-first actions (#6780 R2 F1/A1).
 
-        A problem storm suppresses the individual investigations ONLY when the
-        cohort is durably escalated to a health-review anchor this tick: the
-        anchor's intake persists ``problem_cohort`` onto the pending health
-        review, from which the launch authority's ``problem_issue_numbers``
-        later derive. If no anchor carries the cohort — an existing or pending
-        health review, paused, or no capacity — the cohort would be lost at the
-        end-of-tick discovered-fact clear, so the planner falls back to queueing
-        the individual investigations and does NOT suppress their launches (the
-        already-queued members self-heal into one consolidated health review
-        once an anchor can be created). Absent a storm, individual
-        investigations queue directly and any due periodic anchor is planned
-        independently.
+        The individual investigations are queued unconditionally — they are the
+        durable carrier of each problem once the tick-scoped
+        ``discovered_failures`` buffer is cleared. The storm anchor is appended
+        AFTER them, so that on a successful create the intake owner
+        (``_queue_anchor_by_marker``) collapses the cohort atomically: it
+        removes the superseded investigations and stamps ``problem_cohort``
+        onto the pending health review, from which the launch authority's
+        ``problem_issue_numbers`` later derive.
 
-        Binding the suppression and the persistence decision here — instead of
-        letting the classifier drop the individuals before the trigger knows
-        whether a cohort can be persisted — is the ADR-0031 owner invariant the
-        split violated (A1).
+        Suppression is therefore never the thing that decides retention (F1):
+        every path that leaves the cohort without an anchor — an existing or
+        pending health review, no capacity, paused, a failed GitHub create, or
+        the apply-time triage cooldown — leaves the individual investigations
+        queued, and they self-heal into one consolidated health review on a
+        later tick once an anchor can be created. Only the intake owner, which
+        alone knows the cohort was persisted, retires them (A1).
         """
         health_review_action = self._plan_health_review_creation(
             snapshot, storm_problems=reaction.storm_problems
         )
-        if reaction.storm_problems:
-            if health_review_action is not None:
-                # Cohort durably escalated as one anchor: suppress the
-                # individual investigations and their launches.
-                return _ReactiveTriagePlan(
-                    actions=(health_review_action,),
-                    suppressed_issue_numbers=reaction.storm_issue_numbers,
-                )
-            # Deferred escalation: fall back so the cohort is not lost.
-            return _ReactiveTriagePlan(
-                actions=tuple(
-                    self._plan_failure_investigations(reaction.investigations)
-                ),
-                suppressed_issue_numbers=frozenset(),
-            )
         actions = self._plan_failure_investigations(reaction.investigations)
         if health_review_action is not None:
             actions.append(health_review_action)
+        # Hold back already-queued member launches only on the tick the cohort
+        # is actually escalated; intake is about to collapse them into the
+        # anchor. A deferred storm suppresses nothing.
+        suppressed = (
+            reaction.storm_issue_numbers
+            if reaction.storm_problems and health_review_action is not None
+            else frozenset()
+        )
         return _ReactiveTriagePlan(
-            actions=tuple(actions), suppressed_issue_numbers=frozenset()
+            actions=tuple(actions), suppressed_issue_numbers=suppressed
         )
 
     def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:

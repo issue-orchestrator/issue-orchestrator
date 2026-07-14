@@ -19,6 +19,7 @@ from issue_orchestrator.domain.models import (
     PendingTriageReview,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredFailure,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -1430,3 +1431,55 @@ class TestCaseFileScanClassification:
         # The projection the board snapshot builder reads is preserved, not
         # wiped by the empty tuple the frugal tick carried.
         assert [cf.issue_number for cf in publisher.case_files()] == [800]
+
+
+class TestClearDiscoveredFacts:
+    """Retention rule for the tick-scoped fact buffers (#6780 R2 F1).
+
+    The clear exists to drop facts the tick CONSUMED. A paused tick consumes
+    nothing — the Planner returns an empty plan and ``apply_plan`` refuses to
+    apply actions while paused — so clearing there would silently discard
+    problems that nothing else records. A session that fails while paused is
+    discovered exactly once, so a dropped storm cohort is unrecoverable even
+    after resume.
+    """
+
+    @staticmethod
+    def _config() -> Config:
+        config = Config(repo="test/repo")
+        config.triage_review_agent = "agent:triage"
+        config.triage_review_on_failure = True
+        return config
+
+    @staticmethod
+    def _state_with_cohort(*, paused: bool) -> OrchestratorState:
+        state = OrchestratorState()
+        state.paused = paused
+        for number in (41, 42, 43):
+            state.record_discovered_failure(
+                DiscoveredFailure(
+                    issue_number=number,
+                    issue_title=f"Problem {number}",
+                    failure_reason="failed",
+                    observed_at=1_000.0,
+                )
+            )
+        return state
+
+    def test_paused_tick_retains_discovered_failures(self):
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        state = self._state_with_cohort(paused=True)
+
+        clear_discovered_facts(state, self._config())
+
+        assert [f.issue_number for f in state.discovered_failures] == [41, 42, 43]
+
+    def test_running_tick_clears_discovered_failures(self):
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        state = self._state_with_cohort(paused=False)
+
+        clear_discovered_facts(state, self._config())
+
+        assert state.discovered_failures == []

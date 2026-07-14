@@ -40,19 +40,18 @@ if TYPE_CHECKING:
 class TriageReaction:
     """One tick's reaction facts for the planner to map onto actions.
 
-    ``investigations`` is the individual failure-investigation set to queue
-    when the cohort is NOT escalated. ``storm_problems`` is the time-bounded
-    cohort when the storm threshold is met (empty otherwise) — the planner's
-    escalation candidate.
+    ``investigations`` is the individual failure-investigation set to queue;
+    ``storm_problems`` is the time-bounded cohort when the storm threshold is
+    met (empty otherwise) — the escalation candidate.
 
-    When a storm is present BOTH collections are populated: the classifier no
-    longer decides suppression by zeroing ``investigations``. Whether the storm
-    suppresses the individual investigations is the planner's decision, because
-    only the planner knows whether the cohort was durably persisted to a
-    health-review anchor this tick. A suppression not matched by a persisted
-    cohort would silently lose the problems at the end-of-tick discovered-fact
-    clear, so on a deferred escalation the planner falls back to queueing
-    ``investigations`` (#6780 R2 F1/A1).
+    When a storm is present BOTH collections are populated: the classifier does
+    NOT decide suppression by zeroing ``investigations``. The individual
+    investigations are always queued, because the pending queue is the only
+    durable carrier of a problem once the discovered-fact buffer is cleared at
+    end of tick. Retiring them belongs solely to the anchor-intake owner, which
+    alone knows the cohort was actually persisted — a classifier that dropped
+    them up front would lose the problems on every path where the anchor never
+    lands (#6780 R2 F1/A1).
     """
 
     investigations: tuple[DiscoveredFailure, ...] = ()

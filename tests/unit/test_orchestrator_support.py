@@ -2061,48 +2061,33 @@ class TestUpdateStateAfterAction:
         assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
         assert queued.problem_cohort == cohort
 
-    def test_deferred_storm_investigations_survive_apply_and_fact_clear(
-        self, support_with_state
-    ):
-        """End-to-end (#6780 R2 F1): when a storm cannot escalate (here an
-        already-pending health review blocks a new anchor), the planner's
-        fallback investigations, once applied, survive the end-of-tick
-        discovered-fact clear — the cohort is NOT lost.
-
-        Drives the real planner -> apply -> clear chain so the atomic
-        escalate-or-defer decision and the durable queue outcome are exercised
-        together, not just asserted on the in-memory plan.
-        """
-        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
-        from issue_orchestrator.control.planner import Planner
-        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
-        from issue_orchestrator.control.scheduler import Scheduler
-        from issue_orchestrator.control.workflows import TriageWorkflow
+    @staticmethod
+    def _storm_config():
         from issue_orchestrator.infra.config import Config
-        from issue_orchestrator.ports.event_sink import InMemoryEventSink
 
         config = Config(repo="test/repo", max_concurrent_sessions=3)
         config.triage_review_agent = "agent:triage"
         config.triage_review_on_failure = True
+        # Isolate the storm path from the periodic health-review interval.
         config.triage.health_review.interval_minutes = 0
         config.triage.health_review.storm_threshold = 3
         config.triage.health_review.storm_window_minutes = 5
+        return config
 
-        cohort = tuple(
-            DiscoveredFailure(n, f"Problem {n}", "failed", observed_at=1_000.0)
-            for n in (41, 42, 43)
-        )
-        for failure in cohort:
-            support_with_state.state.record_discovered_failure(failure)
-        # An already-pending health review defers a new storm anchor.
-        support_with_state.state.pending_triage_reviews.append(
-            PendingTriageReview(
-                issue_number=999,
-                title="Health Review",
-                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+    def _plan_storm_tick(self, support, config):
+        """Record a 3-problem storm cohort and return the real planner's plan."""
+        from issue_orchestrator.control.planner import Planner
+        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+        from issue_orchestrator.control.scheduler import Scheduler
+        from issue_orchestrator.control.workflows import TriageWorkflow
+        from issue_orchestrator.ports.event_sink import InMemoryEventSink
+
+        for number in (41, 42, 43):
+            support.state.record_discovered_failure(
+                DiscoveredFailure(
+                    number, f"Problem {number}", "failed", observed_at=1_000.0
+                )
             )
-        )
-
         planner = Planner(
             config=config,
             scheduler=Scheduler(config),
@@ -2111,10 +2096,118 @@ class TestUpdateStateAfterAction:
         )
         snapshot = OrchestratorSnapshot.from_state(
             issues=(),
-            state=support_with_state.state,
-            discovered_failures=tuple(support_with_state.state.discovered_failures),
+            state=support.state,
+            discovered_failures=tuple(support.state.discovered_failures),
         )
-        plan = planner.plan(snapshot)
+        return planner.plan(snapshot)
+
+    @staticmethod
+    def _queued_investigation_numbers(support) -> list[int]:
+        return sorted(
+            t.issue_number
+            for t in support.state.pending_triage_reviews
+            if t.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        )
+
+    def test_escalated_storm_collapses_investigations_into_anchor_cohort(
+        self, support_with_state
+    ):
+        """End-to-end (#6780 R2 F1) happy path: the cohort is queued FIRST, then
+        the created anchor's intake collapses it — leaving exactly one pending
+        health review carrying ``problem_cohort`` and zero leftover individual
+        investigations. Persist-first must not double-book the work.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        config = self._storm_config()
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        self._apply_via_plan(support_with_state, list(plan.actions), issue_number=999)
+        clear_discovered_facts(support_with_state.state, config)
+
+        assert self._queued_investigation_numbers(support_with_state) == []
+        (queued,) = support_with_state.state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert sorted(p.issue_number for p in queued.problem_cohort) == [41, 42, 43]
+
+    def test_storm_investigations_survive_a_failed_anchor_create(
+        self, support_with_state
+    ):
+        """End-to-end (#6780 R2 F1): the anchor create FAILS at apply time (a
+        GitHub outage/rate-limit/permission error), so no intake runs and no
+        cohort is persisted. The queued investigations must therefore remain —
+        binding suppression to a create the planner merely *planned* would drop
+        the cohort at the unconditional end-of-tick clear.
+        """
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+        from issue_orchestrator.control.planner_types import Plan
+
+        config = self._storm_config()
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        # Only the GitHub create fails; queue operations are in-memory no-ops
+        # in the real applier and always succeed.
+        support_with_state.action_applier.apply.side_effect = lambda action: (
+            ActionResult.fail(action, error="GitHub 403")
+            if action.action_type == ActionType.CREATE_TRIAGE_ISSUE
+            else ActionResult.ok(action)
+        )
+        support_with_state.apply_plan(
+            Plan(actions=tuple(plan.actions), skipped=()), MagicMock()
+        )
+        clear_discovered_facts(support_with_state.state, config)
+
+        assert support_with_state.state.discovered_failures == []
+        assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
+
+    def test_paused_storm_retains_cohort_facts_across_the_tick(
+        self, support_with_state
+    ):
+        """End-to-end (#6780 R2 F1): a paused tick plans nothing and applies
+        nothing (``apply_plan`` breaks on paused), so the discovered facts must
+        be RETAINED rather than cleared. A session that fails while paused is
+        discovered exactly once — clearing here would lose the cohort forever,
+        even after resume.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        config = self._storm_config()
+        support_with_state.state.paused = True
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        assert plan.actions == ()
+        self._apply_via_plan(support_with_state, list(plan.actions))
+        clear_discovered_facts(support_with_state.state, config)
+
+        assert [
+            f.issue_number for f in support_with_state.state.discovered_failures
+        ] == [41, 42, 43]
+
+    def test_deferred_storm_investigations_survive_apply_and_fact_clear(
+        self, support_with_state
+    ):
+        """End-to-end (#6780 R2 F1): when a storm cannot escalate (here an
+        already-pending health review blocks a new anchor), the queued
+        investigations survive the end-of-tick discovered-fact clear — the
+        cohort is NOT lost.
+
+        Drives the real planner -> apply -> clear chain so the persist-first
+        decision and the durable queue outcome are exercised together, not just
+        asserted on the in-memory plan.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        config = self._storm_config()
+        # An already-pending health review defers a new storm anchor.
+        support_with_state.state.pending_triage_reviews.append(
+            PendingTriageReview(
+                issue_number=999,
+                title="Health Review",
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            )
+        )
+        plan = self._plan_storm_tick(support_with_state, config)
 
         self._apply_via_plan(support_with_state, list(plan.actions))
         # The end-of-tick fact clear runs unconditionally; the fallback
@@ -2122,12 +2215,7 @@ class TestUpdateStateAfterAction:
         clear_discovered_facts(support_with_state.state, config)
 
         assert support_with_state.state.discovered_failures == []
-        investigations = [
-            t
-            for t in support_with_state.state.pending_triage_reviews
-            if t.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
-        ]
-        assert sorted(t.issue_number for t in investigations) == [41, 42, 43]
+        assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
 
     def test_marker_labeled_creation_survives_store_persist_failure(
         self, support_with_state, caplog
