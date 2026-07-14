@@ -23,6 +23,7 @@ Usage:
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..infra.config import Config
@@ -89,6 +90,23 @@ from .triage_issue_policy import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _ReactiveTriagePlan:
+    """Atomic outcome of the tech-lead reaction for one tick (#6780 R2).
+
+    A problem storm and the individual investigations it would replace are
+    decided together here so that suppressing the individual investigations
+    (and their launches) is bound to actually persisting the cohort to a
+    health-review anchor — never split across the reaction classifier and the
+    health-review trigger (F1/A1). ``suppressed_issue_numbers`` is non-empty
+    only when the cohort was escalated; on a deferred escalation the fallback
+    investigations are queued and nothing is suppressed.
+    """
+
+    actions: tuple[Action, ...]
+    suppressed_issue_numbers: frozenset[int]
 
 
 class Planner:
@@ -183,17 +201,23 @@ class Planner:
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         reaction = self._triage_reactions.assess(snapshot)
+        # Reactive triage is one ATOMIC decision (#6780 R2 F1/A1): storm
+        # escalation vs individual investigations, computed once so suppression
+        # is bound to actual cohort persistence. Computing it here (before the
+        # paused early-return) also runs the health-review gate exactly once,
+        # so its TRIAGE_SKIPPED still fires while paused.
+        reactive = self._plan_reactive_triage(snapshot, reaction)
 
         # Check if paused
         if snapshot.paused:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
-            # Run the health-review creation gate for its TRIAGE_SKIPPED
-            # emission: a due health review must be observably skipped while
-            # paused, not silently dropped by this early return (#6763).
-            self._plan_health_review_creation(
-                snapshot, storm_problems=reaction.storm_problems
-            )
-            return Plan.empty()
+            # Paused freezes launches, but reactive triage still records
+            # durable queue state (queue-population only — no launches, no
+            # GitHub writes) so a problem-storm cohort, or a lone failure, is
+            # not lost at the end-of-tick discovered-fact clear (#6780 R2).
+            # The health-review anchor stays gated off while paused (its owned
+            # gate already emitted TRIAGE_SKIPPED above), so no anchor is filed.
+            return Plan(actions=tuple(reactive.actions), skipped=())
 
         plan_context = PlanContext(issue_labels_by_number={
             issue.number: tuple(issue.labels) for issue in snapshot.issues
@@ -242,22 +266,16 @@ class Planner:
         merge_queue_actions = self._plan_merge_queue_enqueues(snapshot)
         actions.extend(merge_queue_actions)
 
-        # 1e. Queue triage reviews for session failures
-        failure_triage_actions = self._plan_discovered_failures(reaction)
-        actions.extend(failure_triage_actions)
+        # 1e+1f2. Reactive triage (tech-lead reaction, ADR-0031): the storm
+        # cohort escalates to one unscheduled health-review anchor OR the
+        # individual failure investigations queue — decided atomically above so
+        # a suppressed cohort is never lost — plus any due periodic anchor.
+        actions.extend(reactive.actions)
 
         # 1f. Create triage issue if threshold met
         triage_create_action = self._plan_triage_issue_creation(snapshot)
         if triage_create_action:
             actions.append(triage_create_action)
-
-        # 1f2. Create the periodic health-review anchor issue when due
-        # (ADR-0031 §4; policy lives in health_review_trigger).
-        health_review_action = self._plan_health_review_creation(
-            snapshot, storm_problems=reaction.storm_problems
-        )
-        if health_review_action:
-            actions.append(health_review_action)
 
         # 1f3. Execute APPROVED gated triage proposals (#6778): the operator
         # removed the proposed-triage label, so the fact scan classified the
@@ -299,7 +317,10 @@ class Planner:
         launch_actions, launch_skipped = self._plan_session_launches(
             snapshot,
             plan_context,
-            suppressed_triage_issue_numbers=reaction.storm_issue_numbers,
+            # Suppress individual investigation launches only when the cohort
+            # was actually escalated this tick; on a deferred storm the fallback
+            # investigations must be allowed to launch (#6780 R2 F1).
+            suppressed_triage_issue_numbers=reactive.suppressed_issue_numbers,
         )
         actions.extend(launch_actions)
         skipped.extend(launch_skipped)
@@ -675,6 +696,54 @@ class Planner:
             issues=snapshot.issues,
         )
 
+    def _plan_reactive_triage(
+        self, snapshot: OrchestratorSnapshot, reaction: TriageReaction
+    ) -> _ReactiveTriagePlan:
+        """Map the tech-lead reaction to actions atomically (#6780 R2 F1/A1).
+
+        A problem storm suppresses the individual investigations ONLY when the
+        cohort is durably escalated to a health-review anchor this tick: the
+        anchor's intake persists ``problem_cohort`` onto the pending health
+        review, from which the launch authority's ``problem_issue_numbers``
+        later derive. If no anchor carries the cohort — an existing or pending
+        health review, paused, or no capacity — the cohort would be lost at the
+        end-of-tick discovered-fact clear, so the planner falls back to queueing
+        the individual investigations and does NOT suppress their launches (the
+        already-queued members self-heal into one consolidated health review
+        once an anchor can be created). Absent a storm, individual
+        investigations queue directly and any due periodic anchor is planned
+        independently.
+
+        Binding the suppression and the persistence decision here — instead of
+        letting the classifier drop the individuals before the trigger knows
+        whether a cohort can be persisted — is the ADR-0031 owner invariant the
+        split violated (A1).
+        """
+        health_review_action = self._plan_health_review_creation(
+            snapshot, storm_problems=reaction.storm_problems
+        )
+        if reaction.storm_problems:
+            if health_review_action is not None:
+                # Cohort durably escalated as one anchor: suppress the
+                # individual investigations and their launches.
+                return _ReactiveTriagePlan(
+                    actions=(health_review_action,),
+                    suppressed_issue_numbers=reaction.storm_issue_numbers,
+                )
+            # Deferred escalation: fall back so the cohort is not lost.
+            return _ReactiveTriagePlan(
+                actions=tuple(
+                    self._plan_failure_investigations(reaction.investigations)
+                ),
+                suppressed_issue_numbers=frozenset(),
+            )
+        actions = self._plan_failure_investigations(reaction.investigations)
+        if health_review_action is not None:
+            actions.append(health_review_action)
+        return _ReactiveTriagePlan(
+            actions=tuple(actions), suppressed_issue_numbers=frozenset()
+        )
+
     def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:
         """Plan triage issue creation if threshold is met."""
         if not snapshot.triage_facts:
@@ -908,23 +977,25 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             )
         return actions
 
-    def _plan_discovered_failures(self, reaction: TriageReaction) -> list[Action]:
-        """Plan triage actions for session failures.
+    def _plan_failure_investigations(
+        self, failures: tuple["DiscoveredFailure", ...]
+    ) -> list[Action]:
+        """Queue one focused triage investigation per discovered failure.
 
-        When a session fails or times out, the Planner decides whether to
-        queue a triage review based on:
-        - triage_review_on_failure config setting
-        - triage_review_agent being configured
-        - not already queued for this issue
+        The classifier (``TriageReactionPolicy``) already decided which
+        failures warrant an individual investigation (config gate, dependency
+        explanation, dedup against the pending queue); this maps each survivor
+        to a ``QueueTriageAction``. Called either directly (no storm) or as the
+        storm fallback when the cohort could not be escalated (#6780 R2).
 
         Returns:
             List of QueueTriageAction for failures to investigate
         """
         actions: list[Action] = []
 
-        if not reaction.investigations:
+        if not failures:
             return actions
-        for failure in reaction.investigations:
+        for failure in failures:
             actions.append(QueueTriageAction(
                 issue_number=failure.issue_number,
                 title=f"Investigate: {failure.issue_title} ({failure.failure_reason})",

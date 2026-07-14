@@ -2061,6 +2061,74 @@ class TestUpdateStateAfterAction:
         assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
         assert queued.problem_cohort == cohort
 
+    def test_deferred_storm_investigations_survive_apply_and_fact_clear(
+        self, support_with_state
+    ):
+        """End-to-end (#6780 R2 F1): when a storm cannot escalate (here an
+        already-pending health review blocks a new anchor), the planner's
+        fallback investigations, once applied, survive the end-of-tick
+        discovered-fact clear — the cohort is NOT lost.
+
+        Drives the real planner -> apply -> clear chain so the atomic
+        escalate-or-defer decision and the durable queue outcome are exercised
+        together, not just asserted on the in-memory plan.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+        from issue_orchestrator.control.planner import Planner
+        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+        from issue_orchestrator.control.scheduler import Scheduler
+        from issue_orchestrator.control.workflows import TriageWorkflow
+        from issue_orchestrator.infra.config import Config
+        from issue_orchestrator.ports.event_sink import InMemoryEventSink
+
+        config = Config(repo="test/repo", max_concurrent_sessions=3)
+        config.triage_review_agent = "agent:triage"
+        config.triage_review_on_failure = True
+        config.triage.health_review.interval_minutes = 0
+        config.triage.health_review.storm_threshold = 3
+        config.triage.health_review.storm_window_minutes = 5
+
+        cohort = tuple(
+            DiscoveredFailure(n, f"Problem {n}", "failed", observed_at=1_000.0)
+            for n in (41, 42, 43)
+        )
+        for failure in cohort:
+            support_with_state.state.record_discovered_failure(failure)
+        # An already-pending health review defers a new storm anchor.
+        support_with_state.state.pending_triage_reviews.append(
+            PendingTriageReview(
+                issue_number=999,
+                title="Health Review",
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            )
+        )
+
+        planner = Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+            clock=lambda: 1_100.0,
+        )
+        snapshot = OrchestratorSnapshot.from_state(
+            issues=(),
+            state=support_with_state.state,
+            discovered_failures=tuple(support_with_state.state.discovered_failures),
+        )
+        plan = planner.plan(snapshot)
+
+        self._apply_via_plan(support_with_state, list(plan.actions))
+        # The end-of-tick fact clear runs unconditionally; the fallback
+        # investigations must have migrated to the durable pending queue.
+        clear_discovered_facts(support_with_state.state, config)
+
+        assert support_with_state.state.discovered_failures == []
+        investigations = [
+            t
+            for t in support_with_state.state.pending_triage_reviews
+            if t.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        ]
+        assert sorted(t.issue_number for t in investigations) == [41, 42, 43]
+
     def test_marker_labeled_creation_survives_store_persist_failure(
         self, support_with_state, caplog
     ):

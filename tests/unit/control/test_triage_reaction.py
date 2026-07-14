@@ -199,7 +199,11 @@ def test_unexplained_block_without_dependents_does_not_spawn_investigation() -> 
     assert reaction.investigations == ()
 
 
-def test_problem_storm_replaces_individual_investigations() -> None:
+def test_problem_storm_reports_cohort_and_individual_fallback() -> None:
+    """A storm reports BOTH the cohort and the individual fallback the planner
+    queues when the cohort cannot be escalated (#6780 R2 F1/A1). Suppressing
+    the individual investigations is the planner's decision — bound to actual
+    cohort persistence — not the classifier's."""
     problems = (_failed(9), _failed(3), _blocked(6))
     reaction = _policy(_config(threshold=3)).assess(
         _snapshot(
@@ -211,8 +215,8 @@ def test_problem_storm_replaces_individual_investigations() -> None:
         )
     )
 
-    assert reaction.investigations == ()
     assert tuple(p.issue_number for p in reaction.storm_problems) == (3, 6, 9)
+    assert tuple(p.issue_number for p in reaction.investigations) == (3, 6, 9)
 
 
 def test_recent_queued_problems_join_new_discovery_across_ticks() -> None:
@@ -230,7 +234,10 @@ def test_recent_queued_problems_join_new_discovery_across_ticks() -> None:
         _snapshot(problems=(_failed(3, observed_at=1_090.0),), pending=queued)
     )
 
-    assert reaction.investigations == ()
+    # Already-queued members (1, 2) are not re-queued; only the newly
+    # discovered #3 is in the individual fallback the planner would queue if
+    # the cohort could not be escalated.
+    assert tuple(p.issue_number for p in reaction.investigations) == (3,)
     assert tuple(p.issue_number for p in reaction.storm_problems) == (1, 2, 3)
 
 

@@ -1834,6 +1834,194 @@ class TestPlanHealthReviewIssueCreation:
         assert self._triage_skipped(events) == []
 
 
+class TestReactiveTriageStormEscalation:
+    """Atomic storm escalation vs individual investigations (#6780 R2 F1/A1).
+
+    A storm suppresses per-issue investigations ONLY when its cohort is durably
+    escalated to a health-review anchor this tick. When the anchor cannot be
+    created (an existing/pending health review, no capacity, or paused) the
+    cohort would be lost at the end-of-tick discovered-fact clear, so the
+    planner falls back to queueing the individual investigations — and does NOT
+    suppress their launches. These tests pin that the fallback keeps the cohort
+    in the plan under every gating condition the reviewer called out.
+    """
+
+    STORM_CLOCK = 1_100.0
+    WINDOW_OBSERVED_AT = 1_000.0
+
+    def _planner(self, *, max_concurrent: int = 3, events=None):
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_on_failure=True,
+            max_concurrent_sessions=max_concurrent,
+        )
+        # Isolate the storm path from the periodic interval.
+        config.triage.health_review.interval_minutes = 0
+        config.triage.health_review.storm_threshold = 3
+        config.triage.health_review.storm_window_minutes = 5
+        events = events if events is not None else InMemoryEventSink()
+        planner = Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config=config, events=events),
+            clock=lambda: self.STORM_CLOCK,
+        )
+        return planner, config
+
+    def _cohort(self, numbers=(1, 2, 3)) -> tuple[DiscoveredFailure, ...]:
+        return tuple(
+            DiscoveredFailure(
+                issue_number=n,
+                issue_title=f"Problem {n}",
+                failure_reason="failed",
+                observed_at=self.WINDOW_OBSERVED_AT,
+            )
+            for n in numbers
+        )
+
+    @staticmethod
+    def _queued_triage_issue_numbers(plan) -> list[int]:
+        return sorted(
+            a.issue_number
+            for a in plan.actions
+            if a.action_type == ActionType.QUEUE_TRIAGE
+        )
+
+    def test_storm_escalates_to_one_anchor_and_suppresses_investigations(self):
+        """The happy path: the cohort collapses to one anchor and zero
+        per-issue QUEUE_TRIAGE actions."""
+        planner, _ = self._planner()
+
+        plan = planner.plan(make_snapshot(discovered_failures=self._cohort()))
+
+        assert len(plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE)) == 1
+        assert self._queued_triage_issue_numbers(plan) == []
+
+    def test_storm_defers_to_investigations_when_anchor_already_open(self):
+        from issue_orchestrator.domain.models import TriageFacts
+
+        planner, _ = self._planner()
+        facts = TriageFacts(
+            health_review_due=False, existing_health_review_issue=555
+        )
+
+        plan = planner.plan(
+            make_snapshot(discovered_failures=self._cohort(), triage_facts=facts)
+        )
+
+        # No anchor carries the cohort, so the individual investigations must
+        # be queued instead of silently dropped.
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+
+    def test_storm_defers_to_investigations_when_health_review_pending(self):
+        planner, _ = self._planner()
+        pending = [
+            PendingTriageReview(
+                issue_number=777,
+                title="Health Review",
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            )
+        ]
+
+        plan = planner.plan(
+            make_snapshot(
+                discovered_failures=self._cohort(), pending_triage=pending
+            )
+        )
+
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+
+    def test_storm_defers_to_investigations_when_at_capacity(self):
+        planner, _ = self._planner(max_concurrent=2)
+        active = [make_session(make_issue(50)), make_session(make_issue(51))]
+
+        plan = planner.plan(
+            make_snapshot(
+                discovered_failures=self._cohort(), active_sessions=active
+            )
+        )
+
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+
+    def test_storm_defers_to_investigations_while_paused(self):
+        """Paused freezes launches, but the cohort must still be recorded as
+        queued investigations so it is not lost at the fact clear — the
+        planner's paused early-return no longer drops it."""
+        planner, _ = self._planner()
+
+        plan = planner.plan(
+            make_snapshot(discovered_failures=self._cohort(), paused=True)
+        )
+
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+
+    def _cohort_with_one_already_queued(self):
+        """Cohort where #1 is already a queued investigation and #2/#3 are
+        freshly discovered — enough members to trip the storm threshold."""
+        already = PendingTriageReview(
+            issue_number=1,
+            title="Investigate 1",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=1,
+                issue_title="Problem 1",
+                failure_reason="failed",
+                observed_at=self.WINDOW_OBSERVED_AT,
+            ),
+        )
+        discovered = self._cohort((2, 3))
+        return already, discovered
+
+    @staticmethod
+    def _launched_triage_issue_numbers(plan) -> list[int]:
+        return sorted(
+            a.number
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.TRIAGE
+        )
+
+    def test_escalated_storm_suppresses_a_member_investigation_launch(self):
+        """When the cohort escalates, an already-queued member investigation is
+        held back from launch (the anchor covers it, and intake removes it)."""
+        planner, _ = self._planner()
+        already, discovered = self._cohort_with_one_already_queued()
+
+        plan = planner.plan(
+            make_snapshot(
+                discovered_failures=discovered, pending_triage=[already]
+            )
+        )
+
+        assert len(plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE)) == 1
+        assert self._launched_triage_issue_numbers(plan) == []
+
+    def test_deferred_storm_does_not_suppress_a_member_investigation_launch(self):
+        """When the cohort is deferred, the already-queued member investigation
+        must be allowed to launch — the deferred storm suppresses nothing."""
+        from issue_orchestrator.domain.models import TriageFacts
+
+        planner, _ = self._planner()
+        already, discovered = self._cohort_with_one_already_queued()
+        facts = TriageFacts(
+            health_review_due=False, existing_health_review_issue=555
+        )
+
+        plan = planner.plan(
+            make_snapshot(
+                discovered_failures=discovered,
+                pending_triage=[already],
+                triage_facts=facts,
+            )
+        )
+
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._launched_triage_issue_numbers(plan) == [1]
+
+
 class TestPlanDiscoveredReworks:
     """Tests for Planner's _plan_discovered_reworks method.
 
@@ -2343,10 +2531,10 @@ class TestPlanAwaitingMergeEscalations:
 
 
 class TestPlanDiscoveredFailures:
-    """Tests for Planner's _plan_discovered_failures method.
+    """Tests for the planner's failure-investigation queueing.
 
-    This method processes DiscoveredFailure facts from session completions
-    and produces QueueTriageAction for the orchestrator to apply.
+    Exercised through the public ``plan()`` API: DiscoveredFailure facts from
+    session completions produce QueueTriageAction for the orchestrator to apply.
     """
 
     def test_plans_triage_action_for_discovered_failure(self):

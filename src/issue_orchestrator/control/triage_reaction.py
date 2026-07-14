@@ -38,10 +38,21 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class TriageReaction:
-    """One tick's reaction outcome.
+    """One tick's reaction facts for the planner to map onto actions.
 
-    Exactly one collection is populated: a storm replaces individual
-    investigations for every member in its cohort.
+    ``investigations`` is the individual failure-investigation set to queue
+    when the cohort is NOT escalated. ``storm_problems`` is the time-bounded
+    cohort when the storm threshold is met (empty otherwise) — the planner's
+    escalation candidate.
+
+    When a storm is present BOTH collections are populated: the classifier no
+    longer decides suppression by zeroing ``investigations``. Whether the storm
+    suppresses the individual investigations is the planner's decision, because
+    only the planner knows whether the cohort was durably persisted to a
+    health-review anchor this tick. A suppression not matched by a persisted
+    cohort would silently lose the problems at the end-of-tick discovered-fact
+    clear, so on a deferred escalation the planner falls back to queueing
+    ``investigations`` (#6780 R2 F1/A1).
     """
 
     investigations: tuple[DiscoveredFailure, ...] = ()
@@ -162,18 +173,24 @@ class TriageReactionPolicy:
                 continue
             investigations.append(problem)
 
+        sorted_investigations = tuple(
+            sorted(investigations, key=lambda item: item.issue_number)
+        )
         threshold = self._config.triage.health_review.storm_threshold
         if threshold > 0 and len(storm_candidates) >= threshold:
+            # Report BOTH the cohort and the individual fallback. Suppressing
+            # the individual investigations is the planner's decision, made at
+            # the boundary that also knows whether the cohort was durably
+            # persisted to a health-review anchor (#6780 R2 F1/A1); a
+            # suppression not backed by a persisted cohort would lose the
+            # problems at the end-of-tick discovered-fact clear.
             return TriageReaction(
+                investigations=sorted_investigations,
                 storm_problems=tuple(
                     sorted(storm_candidates, key=lambda item: item.issue_number)
-                )
+                ),
             )
-        return TriageReaction(
-            investigations=tuple(
-                sorted(investigations, key=lambda item: item.issue_number)
-            )
-        )
+        return TriageReaction(investigations=sorted_investigations)
 
     def _is_explained_block(
         self, problem: DiscoveredFailure, issue: "Issue | None"
