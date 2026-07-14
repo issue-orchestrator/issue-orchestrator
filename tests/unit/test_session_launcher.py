@@ -15,6 +15,7 @@ import os
 import shlex
 import pytest
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, cast
 from unittest.mock import MagicMock, patch
@@ -40,8 +41,10 @@ from issue_orchestrator.control.session_launcher import (
 from issue_orchestrator.control.isolation import GRADLE_USER_HOME_ENV
 from issue_orchestrator.control.session_review_support import build_review_existing_work
 from issue_orchestrator.control.session_routing import (
+    TRIAGE_LAUNCH_RETRY_LIMIT,
     PendingSessionQueues,
     TriageQueueOutcome,
+    TriageRetentionOutcome,
     orchestrator_launch_session,
     orchestrator_launch_review_session,
     orchestrator_launch_rework_session,
@@ -58,6 +61,7 @@ from issue_orchestrator.control.session_routing import (
 from issue_orchestrator.control.workflows.triage_workflow import TriageWorkflow
 from issue_orchestrator.control.actions import (
     ActionResult,
+    AddCommentAction,
     AddLabelAction,
     CreateTriageIssueAction,
     QueueTriageAction,
@@ -70,6 +74,7 @@ from issue_orchestrator.control.retrospective_review_completion import (
 )
 from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import (
+    DiscoveredFailure,
     Issue,
     ORCHESTRATOR_PR_MARKER,
     Session,
@@ -87,6 +92,7 @@ from issue_orchestrator.domain.models import (
     SessionKey,
 )
 from issue_orchestrator.domain.issue_key import GitHubIssueKey, FakeIssueKey
+from issue_orchestrator.domain.board_snapshot import BoardSnapshot
 from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
@@ -98,7 +104,13 @@ from issue_orchestrator.ports import (
     NullEventSink,
     TraceEvent,
     CommandResult,
+    NullBoardSnapshotProvider,
     NullManifestDownloader,
+)
+from issue_orchestrator.ports.board_snapshot_provider import BoardSnapshotProvider
+from issue_orchestrator.control.board_snapshot_builder import (
+    BoardSnapshotBuilder,
+    StateBoardSnapshotProvider,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 from issue_orchestrator.ports.pull_request_tracker import PRInfo, PRRef
@@ -152,6 +164,12 @@ class MockRepositoryHost:
         self.search_pr_refs_calls: list[int] = []
         self.prs_with_label: list[PRInfo] = []
         self.get_prs_with_label_calls: list[tuple[str, str]] = []
+        self.list_issues_calls: list[tuple[list[str] | None, str, int]] = []
+        self.get_issue_labels_fresh = MagicMock(
+            side_effect=lambda issue_number: sorted(
+                self.labels.get(issue_number, set())
+            )
+        )
 
     def add_label(self, issue_number: int, label: str) -> None:
         self.add_label_calls.append((issue_number, label))
@@ -163,6 +181,27 @@ class MockRepositoryHost:
 
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
+
+    def list_issues(
+        self,
+        labels: list[str] | None = None,
+        milestone: str | None = None,
+        state: str = "open",
+        limit: int = 100,
+        required_stable_ids: set[str] | None = None,
+    ) -> list[Issue]:
+        del milestone, required_stable_ids
+        self.list_issues_calls.append((labels, state, limit))
+        candidates = [
+            self.get_issue(issue_number)
+            for issue_number in sorted(set(self.issues) | set(self.labels))
+        ]
+        required_labels = set(labels or ())
+        return [
+            issue
+            for issue in candidates
+            if issue is not None and required_labels <= set(issue.labels)
+        ][:limit]
 
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
         self.get_prs_with_label_calls.append((label, state))
@@ -402,6 +441,27 @@ def sample_agent_config(tmp_path):
     )
 
 
+class RecordingBoardSnapshotProvider:
+    """Fake BoardSnapshotProvider: records focus issues, optionally raises.
+
+    ``error`` is a public attribute so tests flip the provider into failure
+    mode through the object they injected, never through launcher internals.
+    """
+
+    def __init__(self, error: Exception | None = None):
+        self.calls: list[int | None] = []
+        self.error = error
+
+    def snapshot(self, focus_issue: int | None) -> BoardSnapshot:
+        self.calls.append(focus_issue)
+        if self.error is not None:
+            raise self.error
+        return BoardSnapshot(
+            generated_at="2026-07-10T00:00:00",
+            orchestrator_paused=False,
+        )
+
+
 @dataclass
 class LauncherTestBundle:
     """Bundle of launcher and tracking objects for tests."""
@@ -416,21 +476,29 @@ class LauncherTestBundle:
     create_session_override: list = field(default_factory=lambda: [None])
     # Injected mocks for test assertions
     action_applier: MagicMock = field(default_factory=MagicMock)
+    board_snapshot_provider: BoardSnapshotProvider = field(
+        default_factory=RecordingBoardSnapshotProvider
+    )
 
 
-@pytest.fixture
-def launcher_bundle(
+def _build_launcher_bundle(
     sample_config,
     mock_events,
     mock_repo_host,
     mock_worktree_manager,
     mock_working_copy,
     mock_command_runner,
+    *,
+    board_snapshot_provider: BoardSnapshotProvider | None = None,
 ) -> LauncherTestBundle:
     """Create a SessionLauncher with mock dependencies and tracking.
 
-    Returns a bundle with the launcher and tracking objects for test assertions.
+    ``board_snapshot_provider`` is constructor-injected (it is a REQUIRED
+    launcher dependency); defaults to a fresh RecordingBoardSnapshotProvider
+    exposed on the bundle for assertions.
     """
+    if board_snapshot_provider is None:
+        board_snapshot_provider = RecordingBoardSnapshotProvider()
     session_exists_calls = []
     create_session_calls = []
     session_exists_override = [None]  # List so tests can replace the callable
@@ -490,6 +558,7 @@ def launcher_bundle(
         get_session_machine=get_session_machine,
         get_review_machine=get_review_machine,
         remove_session_machine=remove_session_machine,
+        board_snapshot_provider=board_snapshot_provider,
     )
 
     bundle = LauncherTestBundle(
@@ -502,8 +571,29 @@ def launcher_bundle(
         session_exists_override=session_exists_override,
         create_session_override=create_session_override,
         action_applier=mock_action_applier,
+        board_snapshot_provider=board_snapshot_provider,
     )
     return bundle
+
+
+@pytest.fixture
+def launcher_bundle(
+    sample_config,
+    mock_events,
+    mock_repo_host,
+    mock_worktree_manager,
+    mock_working_copy,
+    mock_command_runner,
+) -> LauncherTestBundle:
+    """Create a SessionLauncher bundle with default mock dependencies."""
+    return _build_launcher_bundle(
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+    )
 
 
 @pytest.fixture
@@ -875,6 +965,7 @@ class TestLaunchIssueSession:
             get_review_machine=lambda pr, issue: ReviewStateMachine(pr, issue),
             refresh_issue_fn=refresh_issue,
             dependency_evaluator=_Evaluator(),
+            board_snapshot_provider=NullBoardSnapshotProvider(),
         )
 
         result = launcher.launch_issue_session(sample_issue, active_sessions=[])
@@ -2662,9 +2753,12 @@ class TestPendingSessionQueuesTriageIntake:
 
     def test_queue_failure_investigation_constructs_failure_entry(self):
         state = OrchestratorState()
+        failure = DiscoveredFailure(
+            issue_number=8, issue_title="Timeout victim", failure_reason="timed_out"
+        )
 
         outcome = PendingSessionQueues(state).queue_failure_investigation(
-            8, "Investigate: timeout"
+            8, "Investigate: timeout", failure=failure
         )
 
         assert outcome is TriageQueueOutcome.QUEUED
@@ -2672,6 +2766,32 @@ class TestPendingSessionQueuesTriageIntake:
         assert entry.issue_number == 8
         assert entry.title == "Investigate: timeout"
         assert entry.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        # The typed triggering failure rides the queue item so the launch-time
+        # board snapshot still has it after discovered_failures is cleared.
+        assert entry.failure is failure
+
+    def test_failure_investigation_without_failure_context_fails_fast(self):
+        """The queue item is the only carrier of the triggering failure; a
+        failure investigation without it would launch with an empty
+        recent_failures section (the P1 defect this guards against)."""
+        with pytest.raises(ValueError, match="failure"):
+            PendingTriageReview(
+                issue_number=8,
+                title="Investigate: timeout",
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            )
+
+    def test_batch_review_with_failure_context_fails_fast(self):
+        """Batch reviews are threshold-created; failure context is a producer bug."""
+        with pytest.raises(ValueError, match="batch"):
+            PendingTriageReview(
+                issue_number=7,
+                title="Triage Batch",
+                flavor=TriageSessionFlavor.BATCH_REVIEW,
+                failure=DiscoveredFailure(
+                    issue_number=7, issue_title="x", failure_reason="failed"
+                ),
+            )
 
     def test_duplicate_issue_number_returns_duplicate_without_double_queue(self):
         state = OrchestratorState()
@@ -2690,18 +2810,67 @@ class TestPendingSessionQueuesTriageIntake:
         queues = PendingSessionQueues(state)
         queues.queue_batch_review(7, "Triage Batch")
 
-        outcome = queues.queue_failure_investigation(7, "Investigate: timeout")
+        outcome = queues.queue_failure_investigation(
+            7,
+            "Investigate: timeout",
+            failure=DiscoveredFailure(
+                issue_number=7, issue_title="x", failure_reason="timed_out"
+            ),
+        )
 
         assert outcome is TriageQueueOutcome.DUPLICATE
         (entry,) = state.pending_triage_reviews
         assert entry.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_retain_triage_for_retry_is_bounded_by_the_owner(self):
+        """Retryable launch failures retain the item; the owner bounds retries.
+
+        The queued investigation is the only durable record, so retention is
+        the default — but bounded: the owner signals EXHAUSTED on the
+        TRIAGE_LAUNCH_RETRY_LIMIT-th failure so a genuinely broken input
+        cannot relaunch-loop forever. EXHAUSTED does NOT remove the item here
+        (#6771 round 4): destructive removal is the launch caller's commit
+        protocol, run only after the durable needs-human transition lands, so
+        the owner leaves the recoverable record in place.
+        """
+        state = OrchestratorState()
+        queues = PendingSessionQueues(state)
+        queues.queue_failure_investigation(
+            8,
+            "Investigate: timeout",
+            failure=DiscoveredFailure(
+                issue_number=8, issue_title="x", failure_reason="timed_out"
+            ),
+        )
+
+        for attempt in range(1, TRIAGE_LAUNCH_RETRY_LIMIT):
+            assert queues.retain_triage_for_retry(8) is TriageRetentionOutcome.RETAINED
+            (entry,) = state.pending_triage_reviews
+            assert entry.retryable_launch_failures == attempt
+
+        assert queues.retain_triage_for_retry(8) is TriageRetentionOutcome.EXHAUSTED
+        assert len(state.pending_triage_reviews) == 1, (
+            "EXHAUSTED must retain the record; the caller commits the drop only "
+            "after the durable needs-human transition succeeds"
+        )
+
+    def test_retain_triage_for_retry_for_unqueued_issue_fails_fast(self):
+        """Retaining an item that is not queued is an upstream invariant bug."""
+        with pytest.raises(ValueError, match="no such item is queued"):
+            PendingSessionQueues(OrchestratorState()).retain_triage_for_retry(999)
 
     def test_remove_triage_removes_only_matching_issue(self):
         """remove_triage completes the owner lifecycle (#6768 round 4)."""
         state = OrchestratorState()
         queues = PendingSessionQueues(state)
         queues.queue_batch_review(7, "Triage Batch")
-        queues.queue_failure_investigation(8, "Investigate: timeout")
+        queues.queue_failure_investigation(
+            8,
+            "Investigate: timeout",
+            failure=DiscoveredFailure(
+                issue_number=8, issue_title="x", failure_reason="timed_out"
+            ),
+        )
 
         queues.remove_triage(7)
 
@@ -2716,8 +2885,17 @@ def _make_queued_triage(
     issue_number: int = 789,
     flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW,
 ) -> PendingTriageReview:
+    failure = (
+        DiscoveredFailure(
+            issue_number=issue_number,
+            issue_title="Triage batch",
+            failure_reason="failed",
+        )
+        if flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        else None
+    )
     return PendingTriageReview(
-        issue_number=issue_number, title="Triage batch", flavor=flavor
+        issue_number=issue_number, title="Triage batch", flavor=flavor, failure=failure
     )
 
 
@@ -2811,7 +2989,11 @@ class TestOrchestratorLaunchTriageSession:
         assert state.active_sessions == [session]
 
     def test_keep_queued_launch_retains_item_for_retry(self, sample_config):
-        """keep_queued (existing terminal, not yet restorable) is the ONLY retention case."""
+        """keep_queued (existing terminal, not yet restorable) retains the item.
+
+        (The other retention case is ``retry_queued`` — a transient
+        required-input prep failure — covered by the bounded-retention tests.)
+        """
         sample_config.triage_review_agent = "agent:web"
         state = OrchestratorState()
         PendingSessionQueues(state).queue_batch_review(789, "Triage batch")
@@ -2834,7 +3016,13 @@ class TestOrchestratorLaunchTriageSession:
         """
         sample_config.triage_review_agent = "agent:web"
         state = OrchestratorState()
-        PendingSessionQueues(state).queue_failure_investigation(789, "Investigate")
+        PendingSessionQueues(state).queue_failure_investigation(
+            789,
+            "Investigate",
+            failure=DiscoveredFailure(
+                issue_number=789, issue_title="x", failure_reason="failed"
+            ),
+        )
         launcher = _stub_triage_launcher(LaunchResult(session=None, success=False))
 
         result = orchestrator_launch_triage_session(
@@ -3050,6 +3238,829 @@ class TestLaunchTriageIssueSessionFlavors:
         assert "triage_assignment" not in run_manifest
         assert not (run_dir / "triage-data").exists()
 
+    def test_batch_flavor_writes_board_snapshot_with_manifest_entry(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """Batch reviews get board-snapshot.json plus a run-manifest entry.
+
+        Board data is local orchestrator state (ADR-0031 §3): the launch must
+        make no repository-host calls beyond the pre-existing batch manifest
+        fetch — no new call types.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        provider = launcher_bundle.board_snapshot_provider
+        issue = Issue(
+            number=901, title="Batch Review", labels=["agent:triage"], repo="test/repo"
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        # Batch reviews take the whole-board view: no focus issue.
+        assert provider.calls == [None]
+        run_dir = self._started_run_dir(mock_events)
+        snapshot_path = run_dir / "triage-data" / "board-snapshot.json"
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["board_snapshot"] == str(snapshot_path)
+        # The written file must parse back through the typed reader.
+        snapshot = BoardSnapshot.read(snapshot_path)
+        assert snapshot.orchestrator_paused is False
+        # No new repository-host call types: only the batch manifest fetch.
+        assert mock_repo_host.get_prs_with_label_calls == [
+            (config.triage_watch_label, "all")
+        ]
+        assert mock_repo_host.add_label_calls == []
+        assert mock_repo_host.remove_label_calls == []
+        assert mock_repo_host.search_pr_refs_calls == []
+
+    def test_failure_flavor_board_snapshot_scoped_to_focus_issue(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """Failure investigations get a snapshot scoped to the failed issue."""
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        provider = launcher_bundle.board_snapshot_provider
+        issue = Issue(
+            number=902,
+            title="Investigate: session timed out",
+            labels=["agent:triage"],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue,
+            active_sessions=[],
+            triage_flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        )
+
+        assert result.success is True
+        assert provider.calls == [902]
+        run_dir = self._started_run_dir(mock_events)
+        snapshot_path = run_dir / "triage-data" / "board-snapshot.json"
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert run_manifest["board_snapshot"] == str(snapshot_path)
+        assert BoardSnapshot.read(snapshot_path).schema_version == 1
+        # Still no PR manifest — and no GitHub reads at all for this flavor.
+        assert "triage_manifest" not in run_manifest
+        assert mock_repo_host.get_prs_with_label_calls == []
+
+    @staticmethod
+    def _launch(queued, state, launcher_bundle):
+        session = orchestrator_launch_triage_session(
+            queued,
+            state,
+            launcher_bundle.launcher.config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+        assert session is not None
+        return session
+
+
+    @staticmethod
+    def _apply_actions(state: OrchestratorState, actions, **details) -> None:
+        """Drive the producer boundary through the public ``apply_plan`` seam.
+
+        The action applier is faked at its port boundary (``apply`` returns a
+        successful ``ActionResult`` carrying ``details``, the shape the real
+        applier produces), so ``apply_plan`` runs the real success-handling
+        path — including the post-apply state update that queues triage work.
+        """
+        from issue_orchestrator.control.planner_types import Plan
+
+        applier = MagicMock()
+        applier.apply.side_effect = lambda action: ActionResult.ok(
+            action, **details
+        )
+        event_context = MagicMock()
+        event_context.enrich.side_effect = lambda data: data
+        support = OrchestratorSupport(
+            config=MagicMock(),
+            events=MockEventSink(),
+            repository_host=MagicMock(),
+            state=state,
+            event_context=event_context,
+            session_manager=MagicMock(),
+            action_applier=applier,
+            fact_gatherer=MagicMock(),
+            planner=MagicMock(),
+            worktree_manager=MagicMock(),
+            state_machine_manager=MagicMock(),
+            cleanup_manager=MagicMock(),
+            get_review_machine=MagicMock(),
+            kill_session=MagicMock(),
+        )
+        support.apply_plan(
+            Plan(actions=tuple(actions), skipped=()), MagicMock()
+        )
+
+    def test_marker_label_derives_health_review_flavor(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """The ADR-0031 §4 marker label alone selects HEALTH_REVIEW.
+
+        No explicit ``triage_flavor``: startup recovery relaunches the anchor
+        from its labels (crash-safe truth), so the marker must derive the
+        flavor — no PR manifest query or build, a board-wide snapshot, and an
+        anchor-only authority record (no focus issue, empty manifest set).
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+        from issue_orchestrator.infra.triage_authority_store import (
+            SqliteTriageAuthorityStore as TriageAuthorityStore,
+        )
+
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [self._triage_pr(555)]
+        provider = launcher_bundle.board_snapshot_provider
+        issue = Issue(
+            number=905,
+            title="Health Review — walk the floor",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            repo="test/repo",
+        )
+
+        result = launcher_bundle.launcher.launch_issue_session(
+            issue, active_sessions=[]
+        )
+
+        assert result.success is True
+        # The global batch PR manifest must NOT be built or queried.
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = self._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        assert not (run_dir / "triage-data" / "manifest.json").exists()
+        # Board-wide snapshot: no focus issue.
+        assert provider.calls == [None]
+        assert run_manifest["board_snapshot"] == str(
+            run_dir / "triage-data" / "board-snapshot.json"
+        )
+        # The agent-readable assignment records the health flavor, no focus.
+        assignment = json.loads(
+            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+        )
+        assert assignment["flavor"] == "health_review"
+        assert assignment["focus_issue_number"] is None
+        assert assignment["focus_reason"] == ""
+        # The trusted authority record: anchor-only scope (#6761 rr F1).
+        authority = TriageAuthorityStore.for_repo(config.repo_root).load(
+            run_id=result.session.run_assets.run_id,
+            session_name=result.session.run_assets.session_name,
+        )
+        assert authority is not None
+        assert authority.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert authority.anchor_issue_number == 905
+        assert authority.focus_issue_number is None
+        assert authority.manifest_pr_numbers == ()
+        assert authority.allowed_targets() == frozenset({905})
+
+
+    def test_health_review_anchor_launches_as_health_flavor(
+        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+    ):
+        """Marker-labeled creation -> typed intake -> queue -> launch (ADR-0031 §4).
+
+        The producer boundary derives HEALTH_REVIEW from the marker label on
+        the creation action; the queued flavor must survive to launch — no
+        batch manifest query, a board-wide snapshot, a health assignment —
+        and the launched item must leave the queue.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        config = launcher_bundle.launcher.config
+        TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
+        mock_repo_host.prs_with_label = [
+            TestLaunchTriageIssueSessionFlavors._triage_pr(555)
+        ]
+        state = OrchestratorState()
+
+        self._apply_actions(
+            state,
+            [
+                CreateTriageIssueAction(
+                    title="Health Review — walk the floor",
+                    body="Walk the floor",
+                    labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+                    pr_count=0,
+                )
+            ],
+            issue_number=905,
+        )
+        (queued,) = state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert queued.failure is None
+        # The intake stamped the interval marker (dedup for the next tick).
+        assert state.last_health_review_at > 0.0
+
+        session = self._launch(queued, state, launcher_bundle)
+
+        # A launched item leaves the queue and cannot be relaunched next tick.
+        assert state.pending_triage_reviews == []
+        assert state.active_sessions == [session]
+        # Health review must NOT query or build the batch PR manifest...
+        assert mock_repo_host.get_prs_with_label_calls == []
+        run_dir = TestLaunchTriageIssueSessionFlavors._started_run_dir(mock_events)
+        run_manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert "triage_manifest" not in run_manifest
+        # ...its assignment records the health flavor with no focus...
+        assignment = json.loads(
+            (run_dir / "triage-data" / "triage-assignment.json").read_text()
+        )
+        assert assignment["flavor"] == "health_review"
+        assert assignment["focus_issue_number"] is None
+        # ...and the snapshot is board-wide (no focus issue).
+        assert launcher_bundle.board_snapshot_provider.calls == [None]
+
+
+    def test_board_snapshot_failure_retains_queued_investigation_until_bounded_drop(
+        self, launcher_bundle, mock_worktree_manager, mock_events, tmp_path
+    ):
+        """Required-input prep failure must not destroy the only investigation record.
+
+        board-snapshot.json is required input, so a DB/log bug still fails the
+        launch loudly through the established seam (SESSION_START_FAILED,
+        worktree cleanup, no session). But the QUEUED orchestration path must
+        RETAIN the pending item: for failure investigations the per-tick
+        discovered_failures buffer is already cleared and there is no
+        labels-as-truth recovery, so one transient SQLite/log/filesystem
+        error must not delete the investigation forever. Retention is
+        bounded: after TRIAGE_LAUNCH_RETRY_LIMIT retryable failures the queue
+        owner drops the item and the drop is a DURABLE needs-human
+        transition (#6771 round 3): needs-human label + explanatory comment
+        through the launcher's owning action boundary, then the
+        ISSUE_NEEDS_HUMAN event. A log line and an event alone do not
+        survive an orchestrator restart.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+        state = OrchestratorState()
+        PendingSessionQueues(state).queue_failure_investigation(
+            903,
+            "Investigate: Broken thing (failed)",
+            failure=DiscoveredFailure(
+                issue_number=903, issue_title="Broken thing", failure_reason="failed"
+            ),
+        )
+
+        # Transient failures below the bound: the investigation stays queued.
+        for attempt in range(1, TRIAGE_LAUNCH_RETRY_LIMIT):
+            session = orchestrator_launch_triage_session(
+                state.pending_triage_reviews[0],
+                state,
+                config,
+                launcher_bundle.launcher,
+                MagicMock(),
+            )
+            assert session is None
+            assert len(state.pending_triage_reviews) == 1, (
+                "a retryable prep failure must retain the queued investigation"
+            )
+            assert (
+                state.pending_triage_reviews[0].retryable_launch_failures == attempt
+            )
+
+        # Each attempt failed loudly through the established launch seam.
+        failed_events = [
+            e for e in mock_events.events
+            if str(e.name) == str(EventName.SESSION_START_FAILED)
+        ]
+        assert len(failed_events) == TRIAGE_LAUNCH_RETRY_LIMIT - 1
+        assert failed_events[0].data["reason"] == "triage_session_data_failed"
+        assert not any(str(e.name) == "session.started" for e in mock_events.events)
+        assert mock_worktree_manager.remove_calls, "worktree must be cleaned up"
+
+        # The final failure exhausts the bounded policy: dropped AND surfaced.
+        session = orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+        assert session is None
+        assert state.pending_triage_reviews == []
+        needs_human = [
+            e for e in mock_events.events
+            if str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN)
+        ]
+        assert len(needs_human) == 1
+        assert needs_human[0].data["issue_number"] == 903
+        assert "failure_investigation" in needs_human[0].data["reason"]
+        assert "boom" in needs_human[0].data["reason"]
+
+        # #6771 round 3: the drop must also be DURABLE on the issue itself —
+        # provenance marker + needs-human label + explanatory comment through
+        # the action applier
+        # (labels as source of truth), not just a fire-and-forget event.
+        actions = [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        labels = [
+            a for a in actions
+            if isinstance(a, AddLabelAction) and a.issue_number == 903
+        ]
+        assert [a.label for a in labels] == [
+            LabelManager(config).triage_needs_human,
+            "needs-human",
+        ]
+        comments = [
+            a for a in actions
+            if isinstance(a, AddCommentAction) and a.number == 903
+        ]
+        assert len(comments) == 1
+        assert "failure_investigation" in comments[0].comment
+        assert str(TRIAGE_LAUNCH_RETRY_LIMIT) in comments[0].comment
+        assert "boom" in comments[0].comment
+
+    def _drive_to_exhaustion(
+        self, state, config, launcher_bundle
+    ) -> None:
+        """Drive a queued investigation through TRIAGE_LAUNCH_RETRY_LIMIT failures.
+
+        Every attempt fails at required-input prep (board snapshot error), so
+        the LIMIT-th attempt reaches the EXHAUSTED escalation/commit path.
+        """
+        for _ in range(TRIAGE_LAUNCH_RETRY_LIMIT):
+            orchestrator_launch_triage_session(
+                state.pending_triage_reviews[0],
+                state,
+                config,
+                launcher_bundle.launcher,
+                MagicMock(),
+            )
+
+    @staticmethod
+    def _queue_investigation(state) -> None:
+        PendingSessionQueues(state).queue_failure_investigation(
+            903,
+            "Investigate: Broken thing (failed)",
+            failure=DiscoveredFailure(
+                issue_number=903, issue_title="Broken thing", failure_reason="failed"
+            ),
+        )
+
+    def test_exhaustion_retains_item_when_needs_human_label_mutation_fails(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """#6771 round 4: the drop must not commit before the label lands.
+
+        If GitHub rejects the needs-human label, the only durable record of
+        the investigation (the queued item) must survive, no ISSUE_NEEDS_HUMAN
+        event may claim a transition that did not happen, and the explanatory
+        comment must be short-circuited (never posted after a failed label, so
+        a later retry cannot double-post it).
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+
+        def apply_action(action):
+            if isinstance(action, AddLabelAction) and action.label == "needs-human":
+                return ActionResult.fail(action, "github 422 rejected label")
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+
+        state = OrchestratorState()
+        self._queue_investigation(state)
+        self._drive_to_exhaustion(state, config, launcher_bundle)
+
+        # Recoverable record retained — destructive removal did not precede
+        # the (failed) durable transition.
+        assert len(state.pending_triage_reviews) == 1
+        assert (
+            state.pending_triage_reviews[0].retryable_launch_failures
+            >= TRIAGE_LAUNCH_RETRY_LIMIT
+        )
+        # No event may claim a durable needs-human transition that never landed.
+        assert not any(
+            str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN) for e in mock_events.events
+        )
+        applied = [
+            call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        # Marker and label were attempted in order; comment short-circuited.
+        marker = LabelManager(config).triage_needs_human
+        assert any(
+            isinstance(a, AddLabelAction) and a.label == marker for a in applied
+        )
+        assert any(
+            isinstance(a, AddLabelAction) and a.label == "needs-human" for a in applied
+        )
+        assert not any(
+            isinstance(a, AddCommentAction) and a.number == 903 for a in applied
+        )
+
+    def test_exhaustion_retains_then_recovers_when_comment_mutation_fails(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """#6771 round 4: comment failure also blocks the drop, and it recovers.
+
+        A failed comment (label already applied) still withholds the event and
+        retains the item; on a later tick, once the mutation succeeds, the
+        durable transition commits — the item is removed and the event fires
+        exactly once. This locks the recoverable half of the invariant at the
+        public routing boundary.
+        """
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+
+        comment_fails = {"active": True}
+
+        def apply_action(action):
+            if (
+                comment_fails["active"]
+                and isinstance(action, AddCommentAction)
+                and action.number == 903
+            ):
+                return ActionResult.fail(action, "github 422 rejected comment")
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+
+        state = OrchestratorState()
+        self._queue_investigation(state)
+        self._drive_to_exhaustion(state, config, launcher_bundle)
+
+        # Comment failed → item retained, event withheld, but the label
+        # (source of truth) was applied.
+        assert len(state.pending_triage_reviews) == 1
+        assert not any(
+            str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN) for e in mock_events.events
+        )
+        applied = [
+            call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        assert any(
+            isinstance(a, AddLabelAction) and a.label == "needs-human" for a in applied
+        )
+        assert any(
+            isinstance(a, AddLabelAction)
+            and a.label == LabelManager(config).triage_needs_human
+            for a in applied
+        )
+
+        # Later tick: the transient GitHub error clears; escalation now commits.
+        comment_fails["active"] = False
+        orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+        assert state.pending_triage_reviews == [], (
+            "the drop must commit only after the durable transition succeeds"
+        )
+        needs_human = [
+            e for e in mock_events.events
+            if str(e.name) == str(EventName.ISSUE_NEEDS_HUMAN)
+        ]
+        assert len(needs_human) == 1
+        assert needs_human[0].data["issue_number"] == 903
+
+    def test_marker_failure_short_circuits_needs_human_and_comment(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """A needs-human transition cannot exist without provenance."""
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+        marker = LabelManager(config).triage_needs_human
+
+        def apply_action(action):
+            if isinstance(action, AddLabelAction) and action.label == marker:
+                return ActionResult.fail(action, "github rejected marker")
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+        state = OrchestratorState()
+        self._queue_investigation(state)
+        self._drive_to_exhaustion(state, config, launcher_bundle)
+
+        assert len(state.pending_triage_reviews) == 1
+        applied = [
+            call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        assert any(
+            isinstance(action, AddLabelAction) and action.label == marker
+            for action in applied
+        )
+        assert not any(
+            isinstance(action, AddLabelAction) and action.label == "needs-human"
+            for action in applied
+        )
+        assert not any(isinstance(action, AddCommentAction) for action in applied)
+        assert not any(
+            str(event.name) == str(EventName.ISSUE_NEEDS_HUMAN)
+            for event in mock_events.events
+        )
+
+    def test_recovered_launch_reconciles_marker_owned_needs_human(
+        self, launcher_bundle, tmp_path
+    ):
+        """A later tick clears both labels after the investigation launches."""
+        config = launcher_bundle.launcher.config
+        self._enable_triage_agent(config, tmp_path)
+        launcher_bundle.board_snapshot_provider.error = RuntimeError("boom")
+        labels = LabelManager(config)
+        github_labels: set[str] = set()
+        comment_fails = {"active": True}
+
+        def apply_action(action):
+            if isinstance(action, AddLabelAction):
+                github_labels.add(action.label)
+            if (
+                comment_fails["active"]
+                and isinstance(action, AddCommentAction)
+                and action.number == 903
+            ):
+                return ActionResult.fail(action, "github rejected comment")
+            if isinstance(action, RemoveLabelAction):
+                github_labels.discard(action.label)
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+        launcher_bundle.launcher.repository_host.get_issue_labels_fresh.side_effect = (
+            lambda issue_number: list(github_labels) if issue_number == 903 else []
+        )
+
+        state = OrchestratorState()
+        self._queue_investigation(state)
+        self._drive_to_exhaustion(state, config, launcher_bundle)
+
+        assert labels.triage_needs_human in github_labels
+        assert labels.needs_human in github_labels
+        assert len(state.pending_triage_reviews) == 1
+
+        comment_fails["active"] = False
+        launcher_bundle.board_snapshot_provider.error = None
+        session = orchestrator_launch_triage_session(
+            state.pending_triage_reviews[0],
+            state,
+            config,
+            launcher_bundle.launcher,
+            MagicMock(),
+        )
+
+        assert session is not None
+        assert state.pending_triage_reviews == []
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human(
+            state.active_sessions
+        )
+
+        assert labels.needs_human not in github_labels
+        assert labels.triage_needs_human not in github_labels
+        removals = [
+            action
+            for action in (
+                call.args[0]
+                for call in launcher_bundle.action_applier.apply.call_args_list
+            )
+            if isinstance(action, RemoveLabelAction)
+            and action.issue_number == 903
+            and action.label in {labels.needs_human, labels.triage_needs_human}
+        ]
+        assert [action.label for action in removals] == [
+            labels.needs_human,
+            labels.triage_needs_human,
+        ]
+
+    @staticmethod
+    def _restored_session(issue_number: int, labels: list[str], tmp_path: Path) -> Session:
+        """Build the active-session shape restored after a process restart."""
+        return Session(
+            key=SessionKey(issue=FakeIssueKey(str(issue_number)), task=TaskKind.CODE),
+            issue=Issue(
+                number=issue_number,
+                title=f"Issue {issue_number}",
+                labels=labels,
+                repo="test/repo",
+            ),
+            agent_config=AgentConfig(prompt_path=tmp_path / "p.md", timeout_minutes=45),
+            terminal_id=f"issue-{issue_number}",
+            worktree_path=tmp_path,
+            branch_name=f"{issue_number}-branch",
+            run_assets=make_session_run_assets(
+                tmp_path, session_name=f"issue-{issue_number}"
+            ),
+        )
+
+    def test_failed_clear_keeps_marker_and_retries_without_relaunch(
+        self, launcher_bundle, mock_events, tmp_path
+    ):
+        """Failed external removal is reconstructed from labels on the next tick."""
+        labels = LabelManager(launcher_bundle.launcher.config)
+        github_labels = {labels.triage_needs_human, labels.needs_human}
+        needs_human_remove_fails = {"active": True}
+
+        fresh_labels = launcher_bundle.launcher.repository_host.get_issue_labels_fresh
+        fresh_labels.side_effect = None
+        fresh_labels.return_value = list(github_labels)
+
+        def apply_action(action):
+            if (
+                needs_human_remove_fails["active"]
+                and isinstance(action, RemoveLabelAction)
+                and action.label == labels.needs_human
+            ):
+                return ActionResult.fail(action, "github rejected removal")
+            if isinstance(action, RemoveLabelAction):
+                github_labels.discard(action.label)
+                fresh_labels.return_value = list(github_labels)
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+        active = [
+            self._restored_session(
+                903, [labels.triage_needs_human, labels.needs_human], tmp_path
+            )
+        ]
+        launches_before = sum(
+            1 for event in mock_events.events if str(event.name) == "session.started"
+        )
+
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human(active)
+
+        assert github_labels == {labels.triage_needs_human, labels.needs_human}
+        first_pass = [
+            call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        assert [
+            action.label
+            for action in first_pass
+            if isinstance(action, RemoveLabelAction)
+        ] == [labels.needs_human]
+
+        needs_human_remove_fails["active"] = False
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human(active)
+
+        assert github_labels == set()
+        all_removals = [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+            if isinstance(call.args[0], RemoveLabelAction)
+        ]
+        assert [action.label for action in all_removals] == [
+            labels.needs_human,
+            labels.needs_human,
+            labels.triage_needs_human,
+        ]
+        assert (
+            sum(
+                1
+                for event in mock_events.events
+                if str(event.name) == "session.started"
+            )
+            == launches_before
+        )
+
+    def test_restart_uses_marker_provenance_and_preserves_legitimate_needs_human(
+        self, launcher_bundle, tmp_path
+    ):
+        """Restored sessions need no side record to distinguish label ownership."""
+        labels = LabelManager(launcher_bundle.launcher.config)
+        github_labels = {
+            903: {labels.triage_needs_human, labels.needs_human},
+            904: {labels.needs_human},
+            905: {labels.triage_needs_human},
+        }
+        launcher_bundle.launcher.repository_host.get_issue_labels_fresh.side_effect = (
+            lambda issue_number: list(github_labels[issue_number])
+        )
+
+        def apply_action(action):
+            if isinstance(action, RemoveLabelAction):
+                github_labels[action.issue_number].discard(action.label)
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+        restored = [
+            self._restored_session(903, list(github_labels[903]), tmp_path),
+            self._restored_session(904, list(github_labels[904]), tmp_path),
+            self._restored_session(905, list(github_labels[905]), tmp_path),
+        ]
+
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human(restored)
+
+        assert github_labels[903] == set()
+        assert github_labels[904] == {labels.needs_human}
+        assert github_labels[905] == set()
+        removals = [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+            if isinstance(call.args[0], RemoveLabelAction)
+        ]
+        assert [
+            (action.issue_number, action.label) for action in removals
+        ] == [
+            (903, labels.needs_human),
+            (903, labels.triage_needs_human),
+            (905, labels.triage_needs_human),
+        ]
+
+    def test_restart_discovers_marker_only_without_queue_or_active_session(
+        self, launcher_bundle, mock_repo_host, mock_events
+    ):
+        """A fresh launcher recovers the durable marker without memory state."""
+        labels = LabelManager(launcher_bundle.launcher.config)
+        mock_repo_host.labels[903] = {labels.triage_needs_human}
+
+        def apply_action(action):
+            if isinstance(action, AddLabelAction):
+                mock_repo_host.labels[action.issue_number].add(action.label)
+            return ActionResult.ok(action)
+
+        launcher_bundle.action_applier.apply = MagicMock(side_effect=apply_action)
+
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human([])
+
+        assert mock_repo_host.labels[903] == {
+            labels.triage_needs_human,
+            labels.needs_human,
+        }
+        assert mock_repo_host.list_issues_calls == [
+            (
+                [labels.triage_needs_human],
+                "open",
+                100,
+            )
+        ]
+        applied = [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        assert any(
+            isinstance(action, AddCommentAction)
+            and "recovered an interrupted triage" in action.comment
+            for action in applied
+        )
+        assert [
+            event
+            for event in mock_events.events
+            if str(event.name) == str(EventName.ISSUE_NEEDS_HUMAN)
+        ]
+
+    def test_escalation_does_not_claim_preexisting_needs_human(
+        self, launcher_bundle, mock_repo_host, tmp_path
+    ):
+        """The public launcher boundary preserves a legitimate bare label."""
+        labels = LabelManager(launcher_bundle.launcher.config)
+        mock_repo_host.labels[903] = {labels.needs_human}
+        launcher_bundle.action_applier.apply = MagicMock(
+            side_effect=lambda action: ActionResult.ok(action)
+        )
+
+        committed = launcher_bundle.launcher.escalate_issue_needs_human(
+            issue_number=903,
+            reason="failure investigation exhausted",
+            comment="failure investigation could not launch",
+            context="triage_exhausted",
+            event_data={"issue_number": 903},
+        )
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human(
+            [self._restored_session(903, [labels.needs_human], tmp_path)]
+        )
+
+        assert committed is True
+        assert mock_repo_host.labels[903] == {labels.needs_human}
+        applied = [
+            call.args[0]
+            for call in launcher_bundle.action_applier.apply.call_args_list
+        ]
+        assert not any(
+            isinstance(action, AddLabelAction)
+            and action.label == labels.triage_needs_human
+            for action in applied
+        )
+        assert not any(isinstance(action, RemoveLabelAction) for action in applied)
+
+    def test_reconcile_read_failure_defers_without_mutation(
+        self, launcher_bundle, tmp_path
+    ):
+        """A transient label read failure is visible and retried next tick."""
+        launcher_bundle.launcher.repository_host.get_issue_labels_fresh.side_effect = (
+            RuntimeError("github unavailable")
+        )
+        launcher_bundle.action_applier.apply.reset_mock()
+
+        launcher_bundle.launcher.reconcile_stale_triage_needs_human(
+            [self._restored_session(903, [], tmp_path)]
+        )
+
+        launcher_bundle.action_applier.apply.assert_not_called()
 
 class TestTriageProducerToLaunchBoundary:
     """The flavor set at the producer boundary must survive queue -> launch (#6768 B5).
@@ -3062,16 +4073,30 @@ class TestTriageProducerToLaunchBoundary:
     """
 
     @staticmethod
-    def _support_for(state: OrchestratorState) -> OrchestratorSupport:
-        """Minimal OrchestratorSupport; the queue handlers only touch state."""
-        return OrchestratorSupport(
+    def _apply_actions(state: OrchestratorState, actions, **details) -> None:
+        """Drive the producer boundary through the public ``apply_plan`` seam.
+
+        The action applier is faked at its port boundary (``apply`` returns a
+        successful ``ActionResult`` carrying ``details``, the shape the real
+        applier produces), so ``apply_plan`` runs the real success-handling
+        path — including the post-apply state update that queues triage work.
+        """
+        from issue_orchestrator.control.planner_types import Plan
+
+        applier = MagicMock()
+        applier.apply.side_effect = lambda action: ActionResult.ok(
+            action, **details
+        )
+        event_context = MagicMock()
+        event_context.enrich.side_effect = lambda data: data
+        support = OrchestratorSupport(
             config=MagicMock(),
             events=MockEventSink(),
             repository_host=MagicMock(),
             state=state,
-            event_context=MagicMock(),
+            event_context=event_context,
             session_manager=MagicMock(),
-            action_applier=MagicMock(),
+            action_applier=applier,
             fact_gatherer=MagicMock(),
             planner=MagicMock(),
             worktree_manager=MagicMock(),
@@ -3079,6 +4104,9 @@ class TestTriageProducerToLaunchBoundary:
             cleanup_manager=MagicMock(),
             get_review_machine=MagicMock(),
             kill_session=MagicMock(),
+        )
+        support.apply_plan(
+            Plan(actions=tuple(actions), skipped=()), MagicMock()
         )
 
     @staticmethod
@@ -3103,16 +4131,18 @@ class TestTriageProducerToLaunchBoundary:
             TestLaunchTriageIssueSessionFlavors._triage_pr(555)
         ]
         state = OrchestratorState()
-        support = self._support_for(state)
 
-        support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
-            CreateTriageIssueAction(
-                title="Triage Batch Review: 5 PRs pending",
-                body="Review these PRs",
-                labels=("agent:triage",),
-                pr_count=5,
-            ),
-            MagicMock(success=True, details={"issue_number": 903}),
+        self._apply_actions(
+            state,
+            [
+                CreateTriageIssueAction(
+                    title="Triage Batch Review: 5 PRs pending",
+                    body="Review these PRs",
+                    labels=("agent:triage",),
+                    pr_count=5,
+                )
+            ],
+            issue_number=903,
         )
         (queued,) = state.pending_triage_reviews
         assert queued.flavor is TriageSessionFlavor.BATCH_REVIEW
@@ -3145,28 +4175,75 @@ class TestTriageProducerToLaunchBoundary:
         assert assignment["focus_issue_number"] is None
 
     def test_failure_investigation_launches_as_failure_flavor(
-        self, launcher_bundle, mock_repo_host, mock_events, tmp_path
+        self,
+        sample_config,
+        mock_events,
+        mock_repo_host,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_command_runner,
+        tmp_path,
     ):
-        """_handle_queue_triage -> queue -> launch skips the manifest query."""
+        """_handle_queue_triage -> queue -> launch skips the manifest query.
+
+        Also the P1 producer-to-snapshot regression: the failure is discovered
+        on tick N (queued via QueueTriageAction), the per-tick
+        discovered_failures buffer is cleared after planning, and the launch
+        happens on tick N+1 — the written board snapshot must still contain
+        the investigation's own triggering failure. Uses the REAL
+        StateBoardSnapshotProvider over the same state, constructor-injected.
+        """
+        state = OrchestratorState()
+        provider = StateBoardSnapshotProvider(
+            BoardSnapshotBuilder(
+                timeline_reader=lambda issue, limit: [],
+                log_tail_provider=lambda lines: [],
+                clock=lambda: datetime(2026, 7, 10, 12, 0, 0),
+            ),
+            lambda: state,
+        )
+        launcher_bundle = _build_launcher_bundle(
+            sample_config,
+            mock_events,
+            mock_repo_host,
+            mock_worktree_manager,
+            mock_working_copy,
+            mock_command_runner,
+            board_snapshot_provider=provider,
+        )
         config = launcher_bundle.launcher.config
         TestLaunchTriageIssueSessionFlavors._enable_triage_agent(config, tmp_path)
         mock_repo_host.prs_with_label = [
             TestLaunchTriageIssueSessionFlavors._triage_pr(555)
         ]
-        state = OrchestratorState()
-        support = self._support_for(state)
+        diagnostic = tmp_path / "failure-diagnostic.md"
+        diagnostic.write_text("what went wrong")
 
-        support._update_state_after_action(  # noqa: SLF001 - producer boundary under test
-            QueueTriageAction(
-                issue_number=904,
-                title="Investigate: Test issue (timed_out)",
-                reason="Session failed with status 'timed_out'",
-            ),
-            MagicMock(success=True, details={}),
+        # Tick N: the planner threads the typed failure through the action.
+        self._apply_actions(
+            state,
+            [
+                QueueTriageAction(
+                    issue_number=904,
+                    title="Investigate: Test issue (timed_out)",
+                    failure=DiscoveredFailure(
+                        issue_number=904,
+                        issue_title="Test issue",
+                        failure_reason="timed_out",
+                        artifact_hints=(str(diagnostic),),
+                    ),
+                    reason="Session failed with status 'timed_out'",
+                )
+            ],
         )
         (queued,) = state.pending_triage_reviews
         assert queued.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        assert queued.failure is not None
 
+        # Tick boundary: the orchestrator clears the per-tick fact buffer.
+        state.discovered_failures.clear()
+
+        # Tick N+1: launch consumes the queue item.
         session = self._launch(queued, state, launcher_bundle)
 
         # A launched item leaves the queue and cannot be relaunched next tick.
@@ -3184,6 +4261,31 @@ class TestTriageProducerToLaunchBoundary:
         )
         assert assignment["flavor"] == "failure_investigation"
         assert assignment["focus_issue_number"] == 904
+
+        # The written snapshot preserves the triggering failure — including
+        # its real artifact hints — across the queue boundary even though the
+        # live buffer was cleared (#6762: hints must reach the agent, not be
+        # dropped at the projection).
+        snapshot = BoardSnapshot.read(run_dir / "triage-data" / "board-snapshot.json")
+        assert [
+            (f.issue_number, f.failure_reason, f.artifact_hints)
+            for f in snapshot.recent_failures
+        ] == [(904, "timed_out", [str(diagnostic)])]
+
+    def test_queue_triage_action_without_failure_context_fails_fast(self):
+        """The action boundary rejects failure investigations lacking context.
+
+        ``QueueTriageAction.failure`` is a required keyword field: an
+        investigation cannot even be DESCRIBED without its triggering failure
+        (``PendingTriageReview.__post_init__`` remains as defense-in-depth
+        for untyped callers reaching the queue owner directly).
+        """
+        with pytest.raises(TypeError, match="failure"):
+            QueueTriageAction(
+                issue_number=904,
+                title="Investigate: Test issue (timed_out)",
+                reason="Session failed with status 'timed_out'",
+            )
 
 
 # =============================================================================
@@ -3984,8 +5086,13 @@ class TestHandleSessionCompletion:
         assert len(state.completed_today) == 1
         assert 123 in state.completed_today
 
-    def test_adds_to_discovered_failures_on_failure(self, sample_agent_config, tmp_path):
-        """Verify failed session is added to discovered failures."""
+    def _discover_failure(self, sample_agent_config, tmp_path, *, diagnostic_path):
+        """Run a FAILED completion and return (failure, run artifacts).
+
+        Shared driver for the artifact-hint provenance contract (#6771 round
+        3): callers pass the diagnostic path exactly as their production
+        writer reports it (absolute or worktree-relative).
+        """
         issue = Issue(number=123, title="Test Issue", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
         session = Session(
@@ -4020,27 +5127,99 @@ class TestHandleSessionCompletion:
             pr_url=None,
             pr_number=None,
         )
-        mock_action_applier = MagicMock()
-        mock_observer = MagicMock()
         config = MagicMock()
         config.cleanup.without_triage.close_ai_session_tabs = True
         config.code_review_agent = None
+        run_dir = Path(session.run_assets.run_dir)
+        claude_log = run_dir / "claude.jsonl"
+        claude_log.write_text("{}\n")
+        session_output = MagicMock(spec=SessionOutput)
+        session_output.attach_claude_log.return_value = claude_log
 
         handle_session_completion(
             session=session,
             status=SessionStatus.FAILED,
             state=state,
             completion_handler=mock_completion_handler,
-            action_applier=mock_action_applier,
-            observer=mock_observer,
+            action_applier=MagicMock(),
+            observer=MagicMock(),
             worktree_manager=None,
             kill_session_fn=lambda x: None,
             config=config,
-            session_output=MagicMock(spec=SessionOutput),
+            session_output=session_output,
+            diagnostic_path=diagnostic_path,
         )
 
         assert len(state.discovered_failures) == 1
-        assert state.discovered_failures[0].issue_number == 123
+        failure = state.discovered_failures[0]
+        assert failure.issue_number == 123
+        return failure, run_dir, claude_log
+
+    def test_adds_to_discovered_failures_on_failure(self, sample_agent_config, tmp_path):
+        """Absolute diagnostic paths (SessionOutput.write_diagnostic) pass through.
+
+        Verifies the failed session is added to discovered failures with real
+        artifact hints when the diagnostic is reported ABSOLUTE — the
+        ``SessionOutput.write_diagnostic`` contract.
+        """
+        diagnostic = tmp_path / "worktree" / "failure-diagnostic.md"
+        diagnostic.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic.write_text("what went wrong")
+
+        failure, run_dir, claude_log = self._discover_failure(
+            sample_agent_config, tmp_path, diagnostic_path=str(diagnostic)
+        )
+
+        # #6762: the discovery seam gathers REAL artifact hints — the failure
+        # diagnostic, the attached agent log, and the run-dir artifacts that
+        # exist on disk (manifest + analysis + terminal recording).
+        assert failure.artifact_hints == (
+            str(diagnostic),
+            str(claude_log),
+            str(run_dir / "manifest.json"),
+            str(run_dir / "analysis.json"),
+            str(run_dir / "terminal-recording.jsonl"),
+        )
+
+    def test_relative_diagnostic_hint_resolves_against_worktree(
+        self, sample_agent_config, tmp_path
+    ):
+        """Worktree-relative diagnostics resolve to absolute hints (#6771 r3).
+
+        The production failure writer (``write_failure_diagnostic``) reports
+        the diagnostic as a WORKTREE-RELATIVE path
+        (``.issue-orchestrator/sessions/<run>/<file>``). The discovery seam
+        must resolve it against the failed session's worktree instead of
+        testing it against the process CWD — otherwise every real failure
+        diagnostic silently vanishes from ``artifact_hints``.
+        """
+        worktree = tmp_path / "worktree"
+        run_assets = make_session_run_assets(worktree, session_name="issue-123")
+        diagnostic_rel = (
+            f".issue-orchestrator/sessions/{run_assets.run_dir.name}/"
+            "failure-diagnostic-20260710-000000.json"
+        )
+        diagnostic_abs = worktree / diagnostic_rel
+        diagnostic_abs.write_text('{"errors": ["push failed"]}')
+        assert not Path(diagnostic_rel).exists(), (
+            "test must run with a CWD where the relative path does NOT "
+            "exist, otherwise it cannot catch CWD-relative resolution"
+        )
+
+        failure, run_dir, claude_log = self._discover_failure(
+            sample_agent_config, tmp_path, diagnostic_path=diagnostic_rel
+        )
+
+        # The relative production contract resolves against the worktree and
+        # is stored ABSOLUTE (the investigation launches ticks later from a
+        # different working directory).
+        assert failure.artifact_hints == (
+            str(diagnostic_abs),
+            str(claude_log),
+            str(run_dir / "manifest.json"),
+            str(run_dir / "analysis.json"),
+            str(run_dir / "terminal-recording.jsonl"),
+        )
 
     def test_timed_out_session_kills_terminal_before_actions(
         self,
@@ -4737,6 +5916,7 @@ class TestStackRelaunchGate:
             get_review_machine=lambda pr, issue: ReviewStateMachine(pr, issue),
             refresh_issue_fn=refresh_issue,
             dependency_evaluator=self._CannedWorkEvaluator(report_fn),
+            board_snapshot_provider=NullBoardSnapshotProvider(),
         )
 
     @pytest.fixture

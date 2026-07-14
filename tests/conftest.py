@@ -825,7 +825,10 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.control.health_gate import HealthGate
     from issue_orchestrator.control.session_restorer import SessionRestorer
     from issue_orchestrator.control.completion_dispatcher import SynchronousCompletionDispatcher
+    from datetime import datetime
+
     from issue_orchestrator.control.label_sync import LabelSync
+    from issue_orchestrator.control.board_snapshot_builder import BoardSnapshotBuilder
     from issue_orchestrator.control.orchestrator_deps import OrchestratorDeps
     from issue_orchestrator.events import EventHub
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
@@ -1033,6 +1036,12 @@ def build_test_orchestrator_deps(
         session_controller=_session_controller,
         completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
+        # Null fact sources: unit tests exercising snapshots inject their own.
+        board_snapshot_builder=BoardSnapshotBuilder(
+            timeline_reader=lambda issue, limit: [],
+            log_tail_provider=lambda lines: [],
+            clock=datetime.now,
+        ),
         session_output=session_output,
         claim_manager=claim_manager,
         claim_gate=claim_gate,

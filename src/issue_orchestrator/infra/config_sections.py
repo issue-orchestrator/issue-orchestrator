@@ -36,6 +36,7 @@ from .config_models import (
     TimelineConfig,
     TriageAuthorityConfig,
     TriageConfig,
+    TriageHealthReviewConfig,
     PublishValidationConfig,
     ValidationCommandConfig,
     ValidationConfig,
@@ -243,12 +244,18 @@ def parse_triage_config(data: dict) -> TriageConfig:
         explicit=ms_data.get("explicit"),
     )
 
+    health_review_data = data.get("health_review", {}) or {}
+    health_review = TriageHealthReviewConfig(
+        interval_minutes=int(health_review_data.get("interval_minutes", 0)),
+    )
+
     return TriageConfig(
         inherit_labels=list(inherit_labels),
         explicit_labels=list(explicit_labels),
         milestone_strategy=milestone_strategy,
         priority=data.get("priority"),
         authority=TriageAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
+        health_review=health_review,
     )
 
 

@@ -73,6 +73,7 @@ from .awaiting_merge_post_publish_policy import (
     build_post_publish_validation_comment,
     POST_PUBLISH_VALIDATION_SOURCE,
 )
+from .health_review_trigger import plan_health_review_issue_creation
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
 from .triage_issue_policy import (
@@ -172,6 +173,10 @@ class Planner:
         # Check if paused
         if snapshot.paused:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
+            # Run the health-review creation gate for its TRIAGE_SKIPPED
+            # emission: a due health review must be observably skipped while
+            # paused, not silently dropped by this early return (#6763).
+            self._plan_health_review_creation(snapshot)
             return Plan.empty()
 
         plan_context = PlanContext(issue_labels_by_number={
@@ -229,6 +234,12 @@ class Planner:
         triage_create_action = self._plan_triage_issue_creation(snapshot)
         if triage_create_action:
             actions.append(triage_create_action)
+
+        # 1f2. Create the periodic health-review anchor issue when due
+        # (ADR-0031 §4; policy lives in health_review_trigger).
+        health_review_action = self._plan_health_review_creation(snapshot)
+        if health_review_action:
+            actions.append(health_review_action)
 
         # 1g. Process cleanups for reviewed PRs
         cleanup_actions = self._plan_cleanups(snapshot)
@@ -585,6 +596,25 @@ class Planner:
                 plan_context.record_remove(issue.number, label)
         return actions
 
+    def _plan_health_review_creation(
+        self, snapshot: OrchestratorSnapshot
+    ) -> Optional[CreateTriageIssueAction]:
+        """Plan the periodic health-review anchor creation (ADR-0031 §4).
+
+        Policy lives in health_review_trigger; the TriageWorkflow owns the
+        paused/capacity gate and its TRIAGE_SKIPPED emissions (#6763).
+        """
+        if not self.triage_workflow:
+            return None
+        return plan_health_review_issue_creation(
+            snapshot.triage_facts,
+            snapshot.pending_triage,
+            self.config,
+            workflow=self.triage_workflow,
+            active_session_count=snapshot.active_count,
+            paused=snapshot.paused,
+        )
+
     def _plan_triage_issue_creation(self, snapshot: OrchestratorSnapshot) -> Optional[CreateTriageIssueAction]:
         """Plan triage issue creation if threshold is met."""
         if not snapshot.triage_facts:
@@ -608,6 +638,10 @@ class Planner:
 
     def _should_create_triage_issue(self, facts: "TriageFacts") -> bool:
         """Check if triage issue should be created."""
+        if facts.threshold <= 0:
+            # Batch trigger disabled; facts may exist for the health review
+            # alone (ADR-0031 §4), which plans its own anchor creation.
+            return False
         if facts.pr_count < facts.threshold:
             logger.debug("Planner: triage threshold not met (%d/%d)", facts.pr_count, facts.threshold)
             return False
@@ -854,6 +888,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             actions.append(QueueTriageAction(
                 issue_number=failure.issue_number,
                 title=f"Investigate: {failure.issue_title} ({failure.failure_reason})",
+                # Preserve the typed failure context across the queue boundary:
+                # discovered_failures is cleared after planning, but the queued
+                # investigation launches on a later tick and its board snapshot
+                # must still contain its own triggering failure.
+                failure=failure,
                 reason=f"Session failed with status '{failure.failure_reason}'",
             ))
             logger.info("Planner: queuing triage for failed issue #%d (%s)",
@@ -895,8 +934,19 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 logger.info("Planner: deferred cleanup for issue #%d (PR #%d reviewed)",
                            issue_number, pr_number)
 
-        # 2. Immediate cleanups - ready to execute now
+        # 2. Immediate cleanups - ready to execute now, EXCEPT run assets a
+        # pending/active failure investigation still references (#6771 round
+        # 3): cleaning those up before the investigation launches deletes the
+        # artifact hints it was queued to read. Held entries survive the
+        # end-of-tick fact clear and are re-planned once the hold releases.
         for cleanup in facts.immediate_cleanups:
+            if cleanup.issue_number in facts.held_issue_numbers:
+                logger.info(
+                    "Planner: holding cleanup for issue #%d — a failure "
+                    "investigation still references its run assets",
+                    cleanup.issue_number,
+                )
+                continue
             actions.append(CleanupSessionAction(
                 issue_number=cleanup.issue_number,
                 pr_number=0,  # No PR for immediate cleanups

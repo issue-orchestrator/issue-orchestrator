@@ -8,6 +8,7 @@ claims, and preserving failure diagnostics. Session launch setup stays in
 
 import logging
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ..domain.issue_key import GitHubIssueKey, IssueKey
@@ -162,6 +163,48 @@ def _queue_rework_after_retrospective_changes(
     )
 
 
+def _failure_artifact_hints(
+    worktree_path: Path,
+    run_dir: Path,
+    diagnostic_path: str | None,
+    claude_log_path: Path | None,
+) -> tuple[str, ...]:
+    """On-disk artifacts a failure investigation should start from (#6762).
+
+    The discovery seam is the only place that knows both the failure
+    diagnostic and the session's run directory, so hints are gathered here
+    and carried on :class:`DiscoveredFailure` through plan -> queue -> board
+    snapshot. Only paths that EXIST are included: a hint pointing a triage
+    agent at a file that was never written is worse than no hint.
+
+    Path provenance is preserved here (#6771 round 3): the production
+    failure writer (``write_failure_diagnostic``) reports the diagnostic as
+    a WORKTREE-RELATIVE path (``.issue-orchestrator/sessions/<run>/<file>``)
+    while ``SessionOutput.write_diagnostic`` reports an absolute one, so
+    relative candidates are resolved against the failed session's worktree
+    before the existence check. Hints are stored ABSOLUTE: the queued
+    investigation launches ticks later from a different working directory,
+    so a relative hint would be unreadable by every downstream consumer.
+    """
+    from ..domain.run_manifest import MANIFEST_FILENAME
+    from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
+    from .session_analyzer import ANALYSIS_FILENAME
+
+    candidates: list[Path] = []
+    if diagnostic_path:
+        candidates.append(Path(diagnostic_path))
+    if claude_log_path is not None:
+        candidates.append(claude_log_path)
+    candidates.extend(
+        run_dir / name
+        for name in (MANIFEST_FILENAME, ANALYSIS_FILENAME, TERMINAL_RECORDING_FILENAME)
+    )
+    resolved = (
+        path if path.is_absolute() else worktree_path / path for path in candidates
+    )
+    return tuple(str(path) for path in resolved if path.exists())
+
+
 def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
     session: Session,
     status: SessionStatus,
@@ -295,7 +338,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         )
 
     run_dir = resolve_session_run_dir(session_output, session)
-    session_output.attach_claude_log(run_dir)
+    claude_log_path = session_output.attach_claude_log(run_dir)
     run_session_analysis(run_dir)
 
     # Apply completion actions (from CompletionHandler policy)
@@ -370,7 +413,14 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             issue_key=session.issue.key.stable_id(),
         ))
     if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
-        state.discovered_failures.append(DiscoveredFailure(session.issue.number, session.issue.title, status.value))
+        state.record_discovered_failure(DiscoveredFailure(
+            session.issue.number,
+            session.issue.title,
+            status.value,
+            artifact_hints=_failure_artifact_hints(
+                session.worktree_path, run_dir, diagnostic_path, claude_log_path
+            ),
+        ))
         # Track failed issues to prevent immediate retry (cleared on cache refresh)
         state.failed_this_cycle.add(session.issue.number)
         logger.info(

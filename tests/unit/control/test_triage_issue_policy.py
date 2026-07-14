@@ -8,11 +8,16 @@ from issue_orchestrator.control.triage_issue_policy import (
     apply_triage_priority_prefix,
     batch_review_issue_labels,
     decision_issue_labels,
+    health_review_issue_labels,
     is_protected_triage_label,
     protected_triage_label_violations,
     resolve_triage_milestone_number,
     triage_issue_milestone_intent,
 )
+from issue_orchestrator.control.health_review_trigger import (
+    HEALTH_REVIEW_ISSUE_TITLE,
+)
+from issue_orchestrator.domain.triage_session import HEALTH_REVIEW_MARKER_LABEL
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.config_models import MilestoneStrategyConfig
 
@@ -206,6 +211,75 @@ class TestSharedComposition:
     def test_intent_rejects_carrying_both_shapes(self) -> None:
         with pytest.raises(ValueError, match="name OR a number"):
             TriageMilestoneIntent(explicit_name="M5", inherited_number=5)
+
+
+class TestHealthReviewAnchorPolicy:
+    """Health anchors are shaped by the SAME policy owner as batch anchors.
+
+    Before #6763 finding 5 the health-review trigger hand-rolled its own label
+    tuple, so it silently dropped ``triage.explicit_labels``, the configured
+    priority title, and the milestone strategy. The trigger now composes the
+    anchor from ``triage_issue_policy`` helpers; these tests pin that the
+    health variant carries every configured behavior plus its marker.
+    """
+
+    def test_labels_include_agent_filter_explicit_and_marker(self) -> None:
+        config = make_config()
+        config.filtering.label = "io-scope"
+        config.triage.explicit_labels = ["needs-batch-review", "team:backend"]
+
+        labels = health_review_issue_labels(config)
+
+        assert labels == (
+            "agent:triage",
+            "io-scope",
+            HEALTH_REVIEW_MARKER_LABEL,
+            "needs-batch-review",
+            "team:backend",
+        )
+
+    def test_marker_label_is_always_present(self) -> None:
+        """The marker is crash-safe truth (flavor derivation + dedup); it must
+        survive even with no filter label and no explicit labels."""
+        config = make_config()
+        labels = health_review_issue_labels(config)
+        assert HEALTH_REVIEW_MARKER_LABEL in labels
+        assert "agent:triage" in labels
+
+    def test_health_anchor_labels_dedupe_case_insensitively(self) -> None:
+        """An explicit label re-spelling the marker must not double it."""
+        config = make_config()
+        config.triage.explicit_labels = [HEALTH_REVIEW_MARKER_LABEL.upper()]
+        labels = health_review_issue_labels(config)
+        assert sum(
+            1 for label in labels if label.casefold() == HEALTH_REVIEW_MARKER_LABEL
+        ) == 1
+
+    def test_priority_title_shaping_applies_to_health_title(self) -> None:
+        config = make_config()
+        config.triage.priority = "P1"
+        assert (
+            apply_triage_priority_prefix(config, HEALTH_REVIEW_ISSUE_TITLE)
+            == f"[P1-000] {HEALTH_REVIEW_ISSUE_TITLE}"
+        )
+
+    def test_explicit_milestone_intent_applies_with_no_source_prs(self) -> None:
+        """Health anchors have no source PRs, so only the explicit strategy can
+        apply; the intent carries the NAME for the applier to resolve."""
+        config = make_config()
+        config.triage.milestone_strategy = MilestoneStrategyConfig(explicit="M9")
+        intent = triage_issue_milestone_intent(config, ())
+        assert intent.explicit_name == "M9"
+        assert intent.inherited_number is None
+
+    def test_inherit_strategy_yields_no_milestone_without_source_prs(self) -> None:
+        config = make_config()
+        config.triage.milestone_strategy = MilestoneStrategyConfig(
+            inherit_from_issues="earliest"
+        )
+        intent = triage_issue_milestone_intent(config, ())
+        assert intent.explicit_name is None
+        assert intent.inherited_number is None
 
 
 class TestExplicitMilestoneResolution:

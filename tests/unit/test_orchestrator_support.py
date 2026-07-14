@@ -1117,7 +1117,7 @@ class TestClearDiscoveredFacts:
             DiscoveredFailure(issue_number=4, issue_title="Test", failure_reason="failed")
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config())
 
         # All lists should be empty
         assert len(sample_orchestrator_state.discovered_reviews) == 0
@@ -1152,7 +1152,7 @@ class TestClearDiscoveredFacts:
             ),
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config())
 
         assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
@@ -1171,7 +1171,7 @@ class TestClearDiscoveredFacts:
             )
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config())
 
         # Non-discovered fields should be untouched
         assert sample_orchestrator_state.paused is True
@@ -1643,6 +1643,24 @@ class TestUpdateStateAfterAction:
             kill_session=Mock(),
         )
 
+    @staticmethod
+    def _apply_via_plan(support, actions, **details) -> None:
+        """Drive the producer boundary through the public ``apply_plan`` seam.
+
+        The action applier is faked at its port boundary (``apply`` returns a
+        successful ``ActionResult`` carrying ``details``, the shape the real
+        applier produces), so ``apply_plan`` runs the real success-handling
+        path — including the post-apply state update that queues triage work.
+        This keeps coverage on the public planner/action-owner command path
+        rather than reaching into the private ``_update_state_after_action``.
+        """
+        from issue_orchestrator.control.planner_types import Plan
+
+        support.action_applier.apply.side_effect = lambda action: ActionResult.ok(
+            action, **details
+        )
+        support.apply_plan(Plan(actions=tuple(actions), skipped=()), MagicMock())
+
     def test_queue_review_adds_to_pending_reviews(self, support_with_state, mock_repository_host):
         """QUEUE_REVIEW action adds PendingReview to state."""
         from issue_orchestrator.control.actions import QueueReviewAction
@@ -1884,10 +1902,15 @@ class TestUpdateStateAfterAction:
     def test_queue_triage_adds_failure_investigation(self, support_with_state):
         """QUEUE_TRIAGE queues a failure investigation, not a batch review (#6768 B5)."""
         from issue_orchestrator.control.actions import QueueTriageAction
+        from issue_orchestrator.domain.models import DiscoveredFailure
 
+        failure = DiscoveredFailure(
+            issue_number=42, issue_title="Test issue", failure_reason="failed"
+        )
         action = QueueTriageAction(
             issue_number=42,
             title="Investigate: Test issue (failed)",
+            failure=failure,
             reason="Session failed with status 'failed'",
         )
         result = MagicMock(success=True, details={})
@@ -1899,6 +1922,27 @@ class TestUpdateStateAfterAction:
         triage = support_with_state.state.pending_triage_reviews[0]
         assert triage.issue_number == 42
         assert triage.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        # The typed failure context rides the queue item so the launch-time
+        # board snapshot (a later tick) still contains the triggering failure.
+        assert triage.failure is failure
+
+    def test_queue_triage_without_failure_context_fails_fast(self, support_with_state):
+        """A QUEUE_TRIAGE action lacking failure context is a producer bug.
+
+        ``QueueTriageAction.failure`` is a required keyword field, so the
+        contract is enforced at action CONSTRUCTION — an investigation cannot
+        even be described without its triggering failure.
+        """
+        from issue_orchestrator.control.actions import QueueTriageAction
+
+        with pytest.raises(TypeError, match="failure"):
+            QueueTriageAction(
+                issue_number=42,
+                title="Investigate: Test issue (failed)",
+                reason="Session failed with status 'failed'",
+            )
+
+        assert support_with_state.state.pending_triage_reviews == []
 
     def test_create_triage_issue_dedups_existing_queue_entry(self, support_with_state):
         """The create-success path must not double-queue an issue (#6768 round 3).
@@ -1928,13 +1972,95 @@ class TestUpdateStateAfterAction:
 
         assert support_with_state.state.pending_triage_reviews == [existing]
 
+    def test_batch_triage_issue_does_not_stamp_health_review(self, support_with_state):
+        """Unmarked batch creation must NOT touch last_health_review_at."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+
+        store = MagicMock()
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Triage Batch Review",
+            body="Review these PRs",
+            labels=("agent:triage",),
+            pr_count=5,
+        )
+
+        self._apply_via_plan(support_with_state, [action], issue_number=999)
+
+        assert support_with_state.state.last_health_review_at == 0.0
+        store.save_last_health_review_at.assert_not_called()
+        # And the intake routed to the BATCH owner operation, not health.
+        (triage,) = support_with_state.state.pending_triage_reviews
+        assert triage.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_marker_labeled_creation_stamps_and_persists_health_review(
+        self, support_with_state
+    ):
+        """Marker-labeled creation queues a HEALTH_REVIEW and stamps state AND
+        the durable store (ADR-0031 §4)."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        store = MagicMock()
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Health Review — walk the floor",
+            body="Walk the floor",
+            labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+            pr_count=0,
+        )
+
+        before = time.time()
+        self._apply_via_plan(support_with_state, [action], issue_number=1000)
+
+        stamped = support_with_state.state.last_health_review_at
+        assert stamped >= before
+        store.save_last_health_review_at.assert_called_once_with(stamped)
+        # The anchor enters the pending-triage launch queue with the variant
+        # the marker label declares (typed intake, #6768 round 3).
+        (triage,) = support_with_state.state.pending_triage_reviews
+        assert triage.issue_number == 1000
+        assert triage.flavor is TriageSessionFlavor.HEALTH_REVIEW
+
+    def test_marker_labeled_creation_survives_store_persist_failure(
+        self, support_with_state, caplog
+    ):
+        """Persistence failure warns but keeps the in-memory stamp and queue entry."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        store = MagicMock()
+        store.save_last_health_review_at.side_effect = RuntimeError("disk full")
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Health Review — walk the floor",
+            body="Walk the floor",
+            labels=(HEALTH_REVIEW_MARKER_LABEL,),
+            pr_count=0,
+        )
+
+        with caplog.at_level("WARNING"):
+            self._apply_via_plan(support_with_state, [action], issue_number=1001)
+
+        assert support_with_state.state.last_health_review_at > 0.0
+        assert len(support_with_state.state.pending_triage_reviews) == 1
+        assert "last_health_review_at" in caplog.text
+
     def test_queue_triage_dedups_existing_queue_entry(self, support_with_state):
         """Repeated QUEUE_TRIAGE for the same issue stays a single queue entry."""
         from issue_orchestrator.control.actions import QueueTriageAction
+        from issue_orchestrator.domain.models import DiscoveredFailure
 
         action = QueueTriageAction(
             issue_number=42,
             title="Investigate: Test issue (failed)",
+            failure=DiscoveredFailure(
+                issue_number=42, issue_title="Test issue", failure_reason="failed"
+            ),
             reason="Session failed with status 'failed'",
         )
         result = MagicMock(success=True, details={})

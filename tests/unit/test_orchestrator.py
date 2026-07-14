@@ -1167,6 +1167,28 @@ class TestRunLoop:
         job_supervisor.wait_until_idle.assert_called_once_with(timeout=60.0)
 
     @pytest.mark.asyncio
+    async def test_tick_reconciles_triage_needs_human_against_active_sessions(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Every tick invokes the label-owned stale-escalation reconciler."""
+        mock_repository_host.issues = []
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        reconcile = MagicMock()
+
+        with patch.object(
+            orchestrator._session_launcher,  # noqa: SLF001
+            "reconcile_stale_triage_needs_human",
+            reconcile,
+        ):
+            await run_loop_one_tick(orchestrator)
+
+        reconcile.assert_called_once_with(
+            orchestrator.state.active_sessions, discover_markers=True
+        )
+
+    @pytest.mark.asyncio
     async def test_run_loop_checks_active_sessions(
         self,
         sample_config,

@@ -722,6 +722,7 @@ class Issue:
     body: Optional[str] = None
     milestone_number: Optional[int] = None
     milestone_due_on: Optional[str] = None  # ISO date string
+    created_at: Optional[str] = None  # ISO timestamp string
 
     @property
     def key(self) -> IssueKey:
@@ -1344,14 +1345,19 @@ class TriageFacts:
     Immutable snapshot of conditions for Planner to decide on triage.
     """
     pr_count: int = 0  # PRs with watch label
-    threshold: int = 0  # Configured threshold
+    threshold: int = 0  # Configured threshold (<= 0: batch trigger disabled)
     existing_triage_issue: Optional[int] = None  # Existing open triage issue number
-    watch_label: str = ""  # Label being watched
+    watch_label: str = ""  # Label being watched ("": batch trigger disabled)
     prs: tuple[Any, ...] = field(default_factory=tuple)  # PR info for body generation
     # Labels from source issues/PRs (for label inheritance)
     source_labels: frozenset[str] = field(default_factory=frozenset)
     # Milestones from source issues: tuple of (number, title) for milestone inheritance
     source_milestones: tuple[tuple[int, str], ...] = field(default_factory=tuple)
+    # Periodic health review (ADR-0031 §4). Independent of the batch fields
+    # above: triage.health_review.interval_minutes gates these while
+    # triage_review_threshold gates only the batch fields.
+    health_review_due: bool = False  # Interval elapsed since the last health review
+    existing_health_review_issue: Optional[int] = None  # Open marker-labeled anchor issue
 
 
 @dataclass(frozen=True)
@@ -1448,10 +1454,18 @@ class DiscoveredFailure:
 
     This is a "fact" - the Planner will decide whether to queue a triage review.
     Immutable to be safely included in OrchestratorSnapshot.
+
+    ``artifact_hints`` are absolute paths to on-disk artifacts a failure
+    investigation should start from (failure diagnostic, session run
+    manifest/analysis, attached agent log). Populated at the discovery seam
+    (``handle_session_completion``) with only paths that EXIST at completion
+    time — downstream consumers (plan -> queue -> board snapshot) project
+    them verbatim and must never invent or discard them.
     """
     issue_number: int
     issue_title: str
     failure_reason: str  # "failed" or "timed_out"
+    artifact_hints: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1479,6 +1493,11 @@ class CleanupFacts:
     remove_worktrees: bool = False  # Config: whether to remove worktrees
     # Immediate cleanups (no deferred review) - sessions that completed/timed out
     immediate_cleanups: tuple["ImmediateCleanup", ...] = field(default_factory=tuple)
+    # Issues whose failed-session run assets a failure investigation still
+    # references (discovered/queued/active) — the Planner must NOT clean these
+    # up yet or the investigation launches into deleted artifact hints
+    # (#6771 round 3). Computed by failure_investigation_hold_issue_numbers.
+    held_issue_numbers: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -1519,10 +1538,44 @@ class PendingTriageReview:
     which variant it is queueing; the launch path forwards it verbatim
     (#6768 B5 — collapsing both to one flavor made batch reviews skip
     manifest prep and audit nothing).
+
+    ``failure`` preserves the typed triggering-failure context across the
+    queue boundary: ``state.discovered_failures`` is a per-tick fact buffer
+    cleared after planning, but the queued item is consumed on a LATER tick,
+    so the launch-time board snapshot must read the failure from the queue
+    item, not the buffer. It is required for FAILURE_INVESTIGATION (that
+    variant exists only because a failure was discovered) and forbidden for
+    BATCH_REVIEW and HEALTH_REVIEW (threshold-/interval-created, no
+    triggering failure).
     """
     issue_number: int  # The triage review GitHub issue number
     title: str  # Issue title (for display)
     flavor: TriageSessionFlavor  # Which triage variant this queue entry launches as
+    failure: DiscoveredFailure | None = None  # Triggering failure (FAILURE_INVESTIGATION only)
+    # Retryable launch failures consumed so far (owner-tracked by
+    # PendingSessionQueues.retain_triage_for_retry; bounded — see
+    # TRIAGE_LAUNCH_RETRY_LIMIT). For failure investigations this queue item
+    # is the ONLY durable record of the investigation, so transient prep
+    # failures retain it instead of dropping it.
+    retryable_launch_failures: int = 0
+    def __post_init__(self) -> None:
+        if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION and self.failure is None:
+            raise ValueError(
+                f"PendingTriageReview for issue #{self.issue_number} is a failure "
+                "investigation but carries no DiscoveredFailure context; the "
+                "launch-time board snapshot would be missing its own triggering "
+                "failure (the discovered_failures buffer is cleared after planning)."
+            )
+        if (
+            self.flavor is not TriageSessionFlavor.FAILURE_INVESTIGATION
+            and self.failure is not None
+        ):
+            raise ValueError(
+                f"PendingTriageReview for issue #{self.issue_number} is a "
+                f"{self.flavor.value} but carries failure context; batch and "
+                "health reviews are threshold-/interval-created and have no "
+                "triggering failure."
+            )
 
 
 @dataclass
@@ -1654,6 +1707,11 @@ class OrchestratorState:
     last_tick_started_at: float = 0.0  # Epoch seconds; 0 if no tick has started
     last_tick_completed_at: float = 0.0  # Epoch seconds; 0 if no tick has completed
     current_tick_phase: str = ""  # Non-empty only while a tick is mid-flight
+    # Periodic health review (ADR-0031 §4): epoch seconds when the last
+    # health-review anchor issue was created; 0 if never. Written by the
+    # health_review_trigger owner on successful anchor creation, hydrated at
+    # startup from the queue-cache meta store so restarts do not double-fire.
+    last_health_review_at: float = 0.0
 
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
@@ -1692,6 +1750,15 @@ class OrchestratorState:
             return False
         self.pending_reworks.extend([rework])
         return True
+
+    def record_discovered_failure(self, failure: DiscoveredFailure) -> None:
+        """Record a session-failure fact for the Planner (owner boundary).
+
+        ``discovered_failures`` is a per-tick fact buffer; producers record
+        through this owner method rather than mutating the collection.
+        """
+
+        self.discovered_failures.extend([failure])
 
 
 @dataclass

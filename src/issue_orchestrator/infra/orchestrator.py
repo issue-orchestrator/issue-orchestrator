@@ -42,6 +42,7 @@ from ..control.session_completion import (
     process_active_sessions as _process_active_sessions,
 )
 from ..control.session_launcher import SessionLauncher
+from ..control.board_snapshot_builder import StateBoardSnapshotProvider
 from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_retrospective_review_session as _launch_retrospective_review_session,
@@ -236,6 +237,7 @@ class Orchestrator:
             remove_session_machine=self.deps.state_machine_manager.remove_session_machine,
             label_manager=self.deps.label_manager,
             send_to_session_fn=lambda name, text: self.deps.session_manager.runner.send_to_session_by_name(name, text),
+            board_snapshot_provider=StateBoardSnapshotProvider(self.deps.board_snapshot_builder, lambda: self.state),
         )
 
     @cached_property
@@ -390,10 +392,12 @@ class Orchestrator:
             supervisor = self.deps.services.background_job_supervisor
             if supervisor is not None:
                 supervisor.tick()
-            # Reconcile any off-thread "Retry publish" jobs that finished since
-            # the last tick (clears publish-failed state + stored locators on
-            # success; leaves them retryable on failure).
+            # Reconcile completed off-thread publish retries; success clears
+            # failure state, while failures remain retryable.
             self.deps.publish_recovery.drain_completed_retries(self.state)
+            self._session_launcher.reconcile_stale_triage_needs_human(
+                self.state.active_sessions, discover_markers=not self.state.paused
+            )
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
                 self._event_context,

@@ -128,6 +128,14 @@
       "rule_id": "control_policy_branch_sites",
       "value": 1
     },
+    "control_policy_branch_sites:src/issue_orchestrator/control/health_review_trigger.py": {
+      "detail": "4 branch site(s) mention lifecycle/control terms",
+      "kind": "control_policy_branch_sites",
+      "metric_id": "src/issue_orchestrator/control/health_review_trigger.py",
+      "path": "src/issue_orchestrator/control/health_review_trigger.py",
+      "rule_id": "control_policy_branch_sites",
+      "value": 4
+    },
     "control_policy_branch_sites:src/issue_orchestrator/control/issue_fetch_resilience.py": {
       "detail": "4 branch site(s) mention lifecycle/control terms",
       "kind": "control_policy_branch_sites",
@@ -2636,14 +2644,6 @@
       "detail": "issue-orchestrator.direct-runtime-state-mutation line 248: Route orchestrator runtime state collection mutations through an owner abstraction.",
       "kind": "semgrep_finding",
       "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:de3dc0d1488b",
-      "path": "src/issue_orchestrator/control/session_completion.py",
-      "rule_id": "semgrep_owner_boundaries",
-      "value": 1
-    },
-    "semgrep_owner_boundaries:src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:f94dd99e25e5": {
-      "detail": "issue-orchestrator.direct-runtime-state-mutation line 355: Route orchestrator runtime state collection mutations through an owner abstraction.",
-      "kind": "semgrep_finding",
-      "metric_id": "src/issue_orchestrator/control/session_completion.py:issue-orchestrator.direct-runtime-state-mutation:f94dd99e25e5",
       "path": "src/issue_orchestrator/control/session_completion.py",
       "rule_id": "semgrep_owner_boundaries",
       "value": 1

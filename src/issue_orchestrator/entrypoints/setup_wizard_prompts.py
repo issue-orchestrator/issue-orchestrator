@@ -312,22 +312,41 @@ Start by reading your assignment - it says which kind of triage session this is:
 cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/triage-assignment.json"
 ```
 
-- **`"flavor": "batch_review"`** - audit the manifest PRs (the Review Process
-  below).
-- **`"flavor": "failure_investigation"`** - investigate the single issue named
-  by `focus_issue_number`/`focus_reason` using local sources only (this
-  worktree, orchestrator logs, session data under
-  `.issue-orchestrator/sessions/`). Your `triage-decision.json` MUST include
-  at least one `post_comment` action whose `target_number` is the
-  `focus_issue_number` - that comment IS your diagnosis channel; a decision
-  without it is rejected and the session is marked failed. Do NOT audit or
-  label PRs - there is no PR manifest for this session.
+The `flavor` field selects exactly ONE flow below - follow only that flow:
+
+- **`batch_review`** - audit the orchestrator-prepared PR manifest
+  (see **Batch Review Flow**).
+- **`failure_investigation`** - diagnose the single issue named by
+  `focus_issue_number` (see **Failure Investigation Flow**).
+- **`health_review`** - walk the board snapshot holistically
+  (see **Health Review Flow**).
+
+Manifest steps belong ONLY to the batch flow: the other two flavors receive
+no PR manifest and must not follow any batch step.
+
+### Board snapshot
+
+Every flavor also receives a snapshot of orchestrator state, taken at launch:
+
+```bash
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
+```
+
+It contains active sessions (type/state/age), pending queues with reasons,
+blocked issues, recent failures, per-issue timeline extracts, and an
+orchestrator log tail. Batch reviews: use it to spot cross-PR and systemic
+patterns worth `flag_pattern`/`create_issue` proposals. Failure
+investigations: start from your focus issue, then use the snapshot for board
+context (what else was running, queued, or failing at the same time). Health
+reviews: the snapshot IS your assignment - review it end to end.
 
 Completing with no code changes is normal and succeeds - the orchestrator will
 not attempt PR-creation noise for a clean audit. If you did commit
 improvements, they are pushed and PR'd automatically after you complete.
 
-## Review Process
+## Batch Review Flow
+
+For `"flavor": "batch_review"` sessions only: audit the PR manifest.
 
 ### 1. Read the Manifest
 
@@ -375,13 +394,58 @@ Evaluate:
   worktree and commit with a clear message. The orchestrator publishes your
   branch after you complete.
 
+## Failure Investigation Flow
+
+For `"flavor": "failure_investigation"` sessions only. Investigate the single
+issue named by `focus_issue_number`/`focus_reason` using local sources only:
+this worktree, orchestrator logs, session data under
+`.issue-orchestrator/sessions/`, and the board snapshot for context (what
+else was running, queued, or failing at the same time).
+
+- Your `triage-decision.json` MUST include at least one `post_comment`
+  action whose `target_number` is the `focus_issue_number` - that comment IS
+  your diagnosis channel; a decision without it is rejected and the session
+  is marked failed.
+- There is no PR manifest for this session: do NOT audit or label PRs and do
+  NOT follow any Batch Review Flow step.
+- Write both required artifacts (below), then complete with `coding-done`.
+
+## Health Review Flow
+
+For `"flavor": "health_review"` sessions only. Walk the floor: review the
+board snapshot end to end instead of auditing a PR batch - the snapshot IS
+your assignment.
+
+```bash
+cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
+```
+
+- Look for hung or aging sessions, queue pile-ups, repeated failures, and
+  cross-job patterns; report findings through the decision artifact.
+- Targeted proposals (`post_comment`, `escalate_to_human`, act-level) may
+  only target THIS tracking issue; board-wide findings belong in
+  `create_issue`/`flag_pattern` proposals.
+- There is no PR manifest for this session: do NOT audit or label PRs, do
+  NOT follow any Batch Review Flow step, and do NOT write the batch flow's
+  empty-audit pair - your artifacts carry the board findings themselves.
+- Write both required artifacts (below), then complete:
+
+```bash
+coding-done completed \\
+  --implementation "Health review findings" \\
+  --problems "None"
+```
+
+The orchestrator closes the anchor issue when your review lands successfully.
+
 {_TRIAGE_ARTIFACTS_SECTION}
 ## Completion (MANDATORY)
 
 Use `coding-done` to report your findings AFTER writing both artifacts.
-Labels are automatic - the orchestrator adds `{reviewed_label}` to every PR
-in the manifest when you complete successfully, and executes your proposed
-actions per its configured authority. You never touch GitHub yourself.
+Labels are automatic - for a batch review the orchestrator adds
+`{reviewed_label}` to every PR in the manifest when you complete
+successfully - and it executes your proposed actions per its configured
+authority. You never touch GitHub yourself.
 
 ```bash
 coding-done completed \\
@@ -389,10 +453,11 @@ coding-done completed \\
   --problems "None"
 ```
 
-**If no PRs to review:** write the minimal empty-audit artifact pair first,
-then complete with the `coding-done` command shown in "Read the Manifest".
+**If a batch review has no PRs:** write the minimal empty-audit artifact pair
+first, then complete with the `coding-done` command shown in the Batch Review
+Flow's "Read the Manifest" step.
 
-**If you cannot complete the audit:**
+**If you cannot complete the session:**
 ```bash
 coding-done blocked \\
   --reason "Why the audit could not proceed" \\
@@ -409,5 +474,3 @@ coding-done blocked \\
 - **Flag, don't approve** - your job is to surface concerns, humans make final decisions
 - **Don't block for style** - focus on correctness and maintainability
 """
-
-

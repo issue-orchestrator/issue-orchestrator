@@ -103,6 +103,18 @@ class TestNamedProperties:
     def test_needs_human(self, lm: LabelManager) -> None:
         assert lm.needs_human == "needs-human"
 
+    def test_triage_needs_human(self, lm: LabelManager) -> None:
+        assert lm.triage_needs_human == "triage-needs-human"
+
+    def test_repository_initialization_labels_include_marker_and_agents(
+        self, lm: LabelManager
+    ) -> None:
+        labels = lm.repository_initialization_labels(["agent:backend"])
+
+        assert lm.needs_human in labels
+        assert lm.triage_needs_human in labels
+        assert labels[-1] == "agent:backend"
+
     def test_blocked_cross_milestone(self, lm: LabelManager) -> None:
         assert lm.blocked_cross_milestone == "blocked-cross-milestone"
 
@@ -151,6 +163,9 @@ class TestNamedPropertiesPrefixed:
 
     def test_publish_failed(self, plm: LabelManager) -> None:
         assert plm.publish_failed == "bot:publish-failed"
+
+    def test_triage_needs_human(self, plm: LabelManager) -> None:
+        assert plm.triage_needs_human == "bot:triage-needs-human"
 
     def test_reset_retry_scratch_pending(self, plm: LabelManager) -> None:
         assert plm.reset_retry_scratch_pending == "bot:reset-retry-scratch-pending"
@@ -249,6 +264,7 @@ class TestBlocking:
 
     def test_non_blocking(self, lm: LabelManager) -> None:
         assert lm.is_blocking("in-progress") is False
+        assert lm.is_blocking(lm.triage_needs_human) is False
 
     def test_legacy_needs_human(self, lm: LabelManager) -> None:
         assert lm.is_blocking("needs-human") is True
@@ -412,6 +428,7 @@ class TestRecoveredWorkflowLabels:
             "blocked",
             "blocked:pr-closed",
             "needs-human",
+            "triage-needs-human",
         ]
         assert lm.recovered_workflow_labels(labels) == labels
 
@@ -449,6 +466,7 @@ class TestRecoveredWorkflowLabels:
         assert lm.is_recovered_workflow_label("publish-failed") is True
         assert lm.is_recovered_workflow_label("publish-fail-count-9") is True
         assert lm.is_recovered_workflow_label("blocked:claim-lost") is True
+        assert lm.is_recovered_workflow_label("triage-needs-human") is True
         assert lm.is_recovered_workflow_label("in-progress") is False
         assert lm.is_recovered_workflow_label("agent:backend") is False
 

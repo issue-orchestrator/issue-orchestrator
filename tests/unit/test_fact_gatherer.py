@@ -508,6 +508,264 @@ class TestFactGathererTriageFacts:
         assert "priority:high" in result.source_labels
 
 
+class _LabelFilteringTracker:
+    """RepositoryHost fake honoring GitHub's server-side label AND-filter.
+
+    Returns only issues that carry EVERY requested label, then applies the
+    page ``limit`` — exactly the behavior that lets an older anchor fall off a
+    too-small first page of the broad triage-agent scan (#6763 finding 4). It
+    records each query so tests can prove the dedup lookup is marker-scoped.
+    """
+
+    def __init__(self, issues):
+        self._issues = list(issues)
+        self.calls: list[dict] = []
+
+    def list_issues(self, labels=None, state="open", limit=100, **kwargs):
+        self.calls.append(
+            {"labels": list(labels or []), "state": state, "limit": limit}
+        )
+        wanted = {label.casefold() for label in (labels or [])}
+        matched = [
+            issue
+            for issue in self._issues
+            if issue.state == state or state == "all"
+            if wanted <= {label.casefold() for label in issue.labels}
+        ]
+        return matched[:limit]
+
+    def get_prs_with_label(self, *args, **kwargs):
+        return []
+
+
+class TestFactGathererHealthReviewFacts:
+    """Health-review trigger facts (ADR-0031 §4).
+
+    The interval gates the health fields, triage_review_threshold gates the
+    batch fields — each feature works alone, and both share ONE list_issues
+    scan for anchor-issue dedup (GitHub API discipline).
+    """
+
+    @staticmethod
+    def _arm_health_review(mock_config, interval_minutes: int = 60) -> None:
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage.health_review.interval_minutes = interval_minutes
+
+    def test_due_when_interval_elapsed_with_batch_disabled(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """threshold=0 + interval set: health fields populate, batch stays inert."""
+        self._arm_health_review(mock_config)
+        sample_state.last_health_review_at = 1_000.0
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 3600)
+
+        assert result is not None
+        assert result.health_review_due is True
+        assert result.existing_health_review_issue is None
+        # Batch fields inert: no watch label, no PRs, threshold 0.
+        assert result.watch_label == ""
+        assert result.pr_count == 0
+        assert result.prs == ()
+        assert result.threshold == 0
+        # No PR fetch when batch is disabled — health review costs only the
+        # single anchor scan.
+        mock_repository_host.get_prs_with_label.assert_not_called()
+        mock_repository_host.list_issues.assert_called_once()
+
+    def test_not_due_within_interval(
+        self, fact_gatherer, sample_state, mock_config
+    ):
+        self._arm_health_review(mock_config, interval_minutes=60)
+        sample_state.last_health_review_at = 1_000.0
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 1800)
+
+        assert result is not None
+        assert result.health_review_due is False
+
+    def test_never_run_is_due_immediately(
+        self, fact_gatherer, sample_state, mock_config
+    ):
+        """last_health_review_at=0 means due as soon as the trigger is enabled."""
+        self._arm_health_review(mock_config, interval_minutes=60)
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is True
+
+    def test_disabled_interval_returns_none_without_batch(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """interval=0 + threshold=0 keeps the pre-existing None (no API calls)."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage.health_review.interval_minutes = 0
+
+        assert fact_gatherer.gather_triage_facts(sample_state) is None
+        mock_repository_host.list_issues.assert_not_called()
+        mock_repository_host.get_prs_with_label.assert_not_called()
+
+    def test_interval_without_triage_agent_is_disabled(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        mock_config.triage_review_agent = None
+        mock_config.triage.health_review.interval_minutes = 60
+
+        assert fact_gatherer.gather_triage_facts(sample_state) is None
+        mock_repository_host.list_issues.assert_not_called()
+
+    def test_health_only_facts_skip_explicit_milestone_resolution(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Batch-disabled facts never resolve triage.milestone_strategy.explicit.
+
+        The name -> number lookup costs a list_milestones call that only batch
+        creation consumes; health-only gathering must not pay it (GitHub API
+        discipline) nor fail on an unresolvable name.
+        """
+        self._arm_health_review(mock_config)
+        mock_config.triage.milestone_strategy.explicit = "M9"
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        mock_repository_host.list_milestones.assert_not_called()
+
+    def test_existing_marker_labeled_issue_detected(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """An open marker-labeled anchor dedupes creation (crash-safe)."""
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+        ]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is True
+        assert result.existing_health_review_issue == 200
+        # The marker-labeled anchor must NOT be misread as a batch anchor.
+        assert result.existing_triage_issue is None
+        mock_repository_host.list_issues.assert_called_once()
+
+    def test_both_triggers_share_one_issue_scan(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Batch + health armed together: one list_issues call, both classified."""
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:triage"]),
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+        ]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.existing_triage_issue == 100
+        assert result.existing_health_review_issue == 200
+        assert result.watch_label == "code-reviewed"
+        mock_repository_host.list_issues.assert_called_once()
+
+    def test_marker_issue_outside_filter_label_ignored(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Filtered runs ignore anchors outside the active label scope."""
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        mock_config.filtering.label = "io:e2e:run-1"
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+        ]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.existing_health_review_issue is None
+
+    def test_not_due_health_only_makes_zero_list_issues_calls(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """GitHub API discipline: due-ness is computed FIRST, so a health-only
+        config that is not yet due makes ZERO GitHub calls — no anchor fact can
+        affect planning before the review is due (#6763 finding 3)."""
+        self._arm_health_review(mock_config, interval_minutes=60)
+        sample_state.last_health_review_at = 1_000.0
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 1800)
+
+        assert result is not None
+        assert result.health_review_due is False
+        assert result.existing_health_review_issue is None
+        mock_repository_host.list_issues.assert_not_called()
+        mock_repository_host.get_prs_with_label.assert_not_called()
+
+    def test_marker_anchor_beyond_first_page_is_deduped(
+        self, sample_state, mock_config
+    ):
+        """Crash-safe dedup must be exhaustive: a marker anchor sitting BEYOND
+        the first ten triage-agent items is still found, so no duplicate anchor
+        is created (#6763 finding 4).
+
+        The fake honors GitHub's label AND-filter plus page limit, so a broad
+        ``[triage_agent]``/limit=10 scan would strand the anchor at position
+        11; the marker-scoped lookup finds it regardless of position.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        crowd = [
+            Issue(number=n, title=f"Batch {n}", labels=["agent:triage"])
+            for n in range(1, 12)
+        ]
+        anchor = Issue(
+            number=200,
+            title="Health Review — walk the floor",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+        )
+        tracker = _LabelFilteringTracker([*crowd, anchor])
+        gatherer = FactGatherer(config=mock_config, repository_host=tracker)
+
+        result = gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is True
+        assert result.existing_health_review_issue == 200
+        # The dedup lookup was marker-scoped (exhaustive), never the broad
+        # unbounded-position triage-agent page.
+        assert any(
+            HEALTH_REVIEW_MARKER_LABEL in call["labels"] for call in tracker.calls
+        )
+
+
 class TestFactGathererCleanupFacts:
     """Tests for gather_cleanup_facts method."""
 

@@ -37,6 +37,7 @@ from .queue_cache import (
     record_issue_refreshes,
 )
 from .dependency_gate_snapshot import build_refresh_snapshot
+from .fact_gatherer import clear_discovered_facts
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .reconciliation import ReconciliationRequired, get_pause_label
 from .tick_telemetry import report_slow_tick
@@ -56,18 +57,6 @@ from .session_routing import PendingSessionQueues
 logger = logging.getLogger(__name__)
 
 _BLOCKED_HISTORY_HOT_REFRESH_LOOKBACK = 200
-_DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
-    "discovered_reviews",
-    "discovered_retrospective_reviews",
-    "discovered_awaiting_merge_reconciliations",
-    "discovered_awaiting_merge_drifts",
-    "discovered_awaiting_merge_escalations",
-    "discovered_merge_queue_enqueues",
-    "discovered_reworks",
-    "discovered_escalations",
-    "discovered_failures",
-    "immediate_cleanups",
-)
 
 
 def init_orchestrator_components(orch: "Orchestrator") -> None:
@@ -195,8 +184,7 @@ class OrchestratorSupport:
         )
 
     def clear_discovered_facts(self) -> None:
-        for attr in _DISCOVERED_FACT_ATTRS:
-            getattr(self.state, attr).clear()
+        clear_discovered_facts(self.state, self.config)
 
     def emit_heartbeat_if_needed(self) -> None:
         if time.time() - self._last_ui_update >= self._ui_update_interval and self.state.active_sessions:
@@ -387,10 +375,10 @@ class OrchestratorSupport:
 
     def _handle_create_triage_issue(self, action: "Action", result: "ActionResult") -> None:
         from .actions import CreateTriageIssueAction
-        a = cast(CreateTriageIssueAction, action)
+        from .health_review_trigger import intake_created_triage_anchor
         num = result.details.get("issue_number")
         if num:
-            PendingSessionQueues(self.state).queue_batch_review(num, a.title)
+            intake_created_triage_anchor(cast(CreateTriageIssueAction, action), num, self.state, self.queue_cache_store)
             logger.info("Created triage #%d", num)
 
     def _handle_cleanup_session(self, action: "Action", result: "ActionResult") -> None:
@@ -459,7 +447,7 @@ class OrchestratorSupport:
     def _handle_queue_triage(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueTriageAction
         a = cast(QueueTriageAction, action)
-        PendingSessionQueues(self.state).queue_failure_investigation(a.issue_number, a.title)
+        PendingSessionQueues(self.state).queue_failure_investigation(a.issue_number, a.title, failure=a.failure)
 
     def update_queue_cache(self) -> None:
         from .queue_projection import QueueProjection
@@ -509,12 +497,6 @@ def pause_issue_for_reconciliation(
             "[RECONCILIATION] Failed to add pause label to #%d: %s",
             issue_number, e
         )
-
-
-def clear_discovered_facts(state: "OrchestratorState") -> None:
-    """Clear discovered facts from state - moved per method table."""
-    for attr in _DISCOVERED_FACT_ATTRS:
-        getattr(state, attr).clear()
 
 
 def emit_heartbeat_if_needed(

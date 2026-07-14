@@ -99,6 +99,23 @@ def test_investigation_authority_requires_focus() -> None:
         )
 
 
+def test_health_review_authority_rejects_focus_and_manifest() -> None:
+    """Health-review scope is the anchor only (ADR-0031 §4) — a launch that
+    records a focus issue or manifest PRs for it is a producer bug."""
+    with pytest.raises(ValueError, match="health_review"):
+        TriageLaunchAuthority(
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            anchor_issue_number=7,
+            focus_issue_number=7,
+        )
+    with pytest.raises(ValueError, match="health_review"):
+        TriageLaunchAuthority(
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            anchor_issue_number=7,
+            manifest_pr_numbers=(101,),
+        )
+
+
 def test_allowed_targets_by_flavor() -> None:
     investigation = TriageLaunchAuthority(
         flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
@@ -136,3 +153,12 @@ def test_sqlite_adapter_satisfies_the_port() -> None:
     for method in ("record", "load", "discard"):
         assert callable(getattr(SqliteTriageAuthorityStore, method))
         assert callable(getattr(TriageAuthorityStorePort, method))
+
+
+def test_health_review_authority_targets_only_its_anchor() -> None:
+    """HEALTH_REVIEW scope: targeted proposals may address only the anchor."""
+    health = TriageLaunchAuthority(
+        flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        anchor_issue_number=9,
+    )
+    assert health.allowed_targets() == frozenset({9})

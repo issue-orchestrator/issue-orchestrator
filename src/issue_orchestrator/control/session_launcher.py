@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Callable, Mapping, Sequence
 
 if TYPE_CHECKING:
+    from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..domain.state_machines.issue_machine import IssueStateMachine
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
@@ -69,7 +70,8 @@ from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
 from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
-from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .actions import Action, AddLabelAction, RemoveLabelAction
+from .triage_needs_human_reconcile import TriageNeedsHumanLifecycle, discover_triage_needs_human_issue_numbers
 from .session_manager import SessionManager, SessionRef
 from .session_launch_types import ClaimAcquisitionResult, LaunchResult
 from .session_rework_launcher import (
@@ -197,6 +199,11 @@ class SessionLauncher:
         remove_session_machine: Callable[[str], None] | None = None,
         label_manager: Optional["LabelManager"] = None,
         send_to_session_fn: Optional[Callable[[str, str], bool]] = None,
+        *,
+        # Required (keyword-only): triage prompts treat board-snapshot.json as
+        # authoritative required input, so the launcher must always be able to
+        # produce one. Tests inject a null-object/fake provider, never None.
+        board_snapshot_provider: "BoardSnapshotProvider",
     ):
         self.config = config
         self.events = events
@@ -209,6 +216,7 @@ class SessionLauncher:
         self._session_output = session_output
         self._manifest_downloader = manifest_downloader
         self._triage_authority = triage_authority
+        self._board_snapshot_provider = board_snapshot_provider
         self._session_exists = session_exists_fn
         self._create_session = create_session_fn
         self._get_issue_machine = get_issue_machine
@@ -226,6 +234,15 @@ class SessionLauncher:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._triage_needs_human = TriageNeedsHumanLifecycle(
+            labels=label_manager,
+            events=events,
+            read_labels=repository_host.get_issue_labels_fresh,
+            discover_marked_issue_numbers=lambda: discover_triage_needs_human_issue_numbers(repository_host, label_manager.triage_needs_human),
+            apply_actions=lambda actions, context: self._apply_actions(
+                actions, context=context
+            ),
+        )
 
     def _worktree_reuse_options(
         self,
@@ -284,6 +301,28 @@ class SessionLauncher:
                     result.error,
                 )
         return all_ok
+
+    def escalate_issue_needs_human(
+        self,
+        *,
+        issue_number: int,
+        reason: str,
+        comment: str,
+        context: str,
+        event_data: dict[str, object],
+    ) -> bool:
+        """Commit the marker-owned needs-human escalation."""
+        return self._triage_needs_human.escalate(
+            issue_number=issue_number,
+            reason=reason,
+            comment=comment,
+            context=context,
+            event_data=event_data,
+        )
+
+    def reconcile_stale_triage_needs_human(self, active_sessions: Sequence[Session], *, discover_markers: bool = True) -> None:
+        """Recover or clear marker-owned escalation state from GitHub."""
+        self._triage_needs_human.reconcile(active_sessions, discover_markers=discover_markers)
 
     def _interrupted_retry_guard_label(self, mode: str) -> str:
         retry_cfg = self.config.retry.interrupted_sessions
@@ -688,6 +727,7 @@ class SessionLauncher:
             repository_host=self.repository_host,
             manifest_downloader=self._manifest_downloader,
             triage_authority=self._triage_authority,
+            board_snapshot_provider=self._board_snapshot_provider,
             issue=issue,
             ctx=ctx,
             triage_flavor=triage_flavor,
@@ -704,6 +744,36 @@ class SessionLauncher:
         self._triage_authority.discard(
             run_id=ctx.run.run_id, session_name=ctx.run.session_name
         )
+
+    def _fail_launch_for_triage_prep(
+        self, issue: "IssueProtocol", ctx: WorktreeContext, session_name: str,
+        worktree_path: Path, claim: ClaimAcquisitionResult, error: Exception,
+    ) -> LaunchResult:
+        """Fail the launch when required triage inputs cannot be prepared; the
+        result is retry-queued (transient inputs; queue owner bounds retries) and
+        prep's authority row is discarded (post-prep guard never runs here)."""
+        log_transition("issue", issue.number, "LAUNCHING", "FAILED", "triage session data preparation failed")
+        logger.error(issue_log(issue.number, "FAILED: triage session data preparation failed: %s"), error)
+        self.events.publish(make_trace_event(
+            EventName.SESSION_START_FAILED,
+            {
+                "issue_number": issue.number,
+                "session_name": session_name,
+                "reason": "triage_session_data_failed",
+                "error": str(error),
+            },
+        ))
+        try:
+            self._worktree_manager.remove(worktree_path)
+            logger.info(issue_log(issue.number, "Cleaned up worktree after triage data failure: %s"), worktree_path)
+        except Exception as cleanup_error:
+            logger.warning(
+                issue_log(issue.number, "Failed to remove worktree after triage data failure: %s"),
+                cleanup_error,
+            )
+        self._discard_triage_authority_after_failed_launch(issue, ctx)
+        self._release_claim_if_held(issue.number, claim)
+        return LaunchResult(None, False, f"Triage session data preparation failed: {error}", retry_queued=True)
 
     def launch_issue_session(  # noqa: C901, PLR0912 - coordinator with claim acquisition, worktree setup, and error handling phases
         self,
@@ -745,21 +815,15 @@ class SessionLauncher:
         issue_key = issue.key
         session_key = SessionKey(issue=issue_key, task=TaskKind.CODE)
 
+        _identity_log_extra = log_context(issue_key=issue_key.stable_id(), session_id=session_name)
         logger.info(
             "[launch] Issue session identity: issue=%s issue_key=%s agent=%s task=%s session=%s",
-            issue.number,
-            issue_key,
-            issue.agent_type,
-            TaskKind.CODE.value,
-            session_name,
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+            issue.number, issue_key, issue.agent_type, TaskKind.CODE.value, session_name,
+            extra=_identity_log_extra,
         )
         logger.info(
             "[launch] Issue session key: issue=%s session=%s session_key=%s",
-            issue.number,
-            session_name,
-            session_key.stable_id(),
-            extra=log_context(issue_key=issue_key.stable_id(), session_id=session_name),
+            issue.number, session_name, session_key.stable_id(), extra=_identity_log_extra,
         )
 
         # Phase 2: Verify dependencies haven't changed (CAS check)
@@ -814,27 +878,17 @@ class SessionLauncher:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
             write_worktree_diagnostic(ctx.error)
-            needs_human_label = self._lm.needs_human
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=issue.number,
-                    label=needs_human_label,
-                    reason="worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=issue.number,
-                    comment=build_worktree_error_comment(ctx.error),
-                    reason="worktree preparation failed",
-                ),
-            ], context="worktree_prepare_issue")
-            self.events.publish(make_trace_event(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
+            self.escalate_issue_needs_human(
+                issue_number=issue.number,
+                reason="worktree preparation failed",
+                comment=build_worktree_error_comment(ctx.error),
+                context="worktree_prepare_issue",
+                event_data={
                     "issue_number": issue.number,
                     "issue_title": issue.title,
                     "reason": str(ctx.error),
                 },
-            ))
+            )
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
@@ -866,12 +920,18 @@ class SessionLauncher:
                 "review_cache_boundary_started_at": run.started_at,
             })
 
-        # For triage sessions, prepare flavor-scoped inputs (manifest/assignment)
-        self._prepare_triage_session_data(issue, ctx, triage_flavor)
-        # Launch-authority lifecycle guard (#6769 round 4): once recorded,
-        # the authority row is discarded on EVERY exit - returned failure or
-        # exception - unless the session actually reaches ACTIVE. Single
-        # owner; individual failure branches carry no cleanup of their own.
+        # Triage inputs (manifest/assignment/board snapshot) are REQUIRED —
+        # the prompt calls board-snapshot.json authoritative — so prep
+        # failure fails the launch loudly (setup-command seam).
+        try:
+            self._prepare_triage_session_data(issue, ctx, triage_flavor)
+        except Exception as e:
+            return self._fail_launch_for_triage_prep(
+                issue, ctx, session_name, worktree_path, claim, e
+            )
+        # Launch-authority lifecycle guard (#6769 r4): the row is discarded
+        # on EVERY exit unless the session reaches ACTIVE — single owner,
+        # no branch-local cleanup.
         launch_reached_active = False
         try:
 
@@ -1061,12 +1121,7 @@ class SessionLauncher:
                 ], context="launch_session_creation_failed")
                 self._release_claim_if_held(issue.number, claim)
                 return LaunchResult(None, False, "Failed to create terminal session")
-
-            # The terminal is now RUNNING - the irreversible external boundary
-            # (#6769 round 5). Post-start bookkeeping failures must NOT discard
-            # the authority of a live session: its completion would be rejected
-            # as missing_authority with no way to restore the trusted scope.
-            launch_reached_active = True
+            launch_reached_active = True  # terminal RUNNING = irreversible (#6769 r5)
 
             log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
 
@@ -1561,27 +1616,17 @@ class SessionLauncher:
             log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), ctx.error)
             write_worktree_diagnostic(ctx.error)
-            needs_human_label = self._lm.needs_human
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=review.issue_number,
-                    label=needs_human_label,
-                    reason="worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=review.issue_number,
-                    comment=build_worktree_error_comment(ctx.error),
-                    reason="worktree preparation failed",
-                ),
-            ], context="worktree_prepare_review")
-            self.events.publish(make_trace_event(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
+            self.escalate_issue_needs_human(
+                issue_number=review.issue_number,
+                reason="worktree preparation failed",
+                comment=build_worktree_error_comment(ctx.error),
+                context="worktree_prepare_review",
+                event_data={
                     "issue_number": review.issue_number,
                     "pr_number": review.pr_number,
                     "reason": str(ctx.error),
                 },
-            ))
+            )
             return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
         # Extract values from context
@@ -1846,26 +1891,17 @@ class SessionLauncher:
                 ctx.error,
             )
             write_worktree_diagnostic(ctx.error)
-            self._apply_actions([
-                AddLabelAction(
-                    issue_number=review.issue_number,
-                    label=self._lm.needs_human,
-                    reason="retrospective review worktree preparation failed",
-                ),
-                AddCommentAction(
-                    number=review.issue_number,
-                    comment=build_worktree_error_comment(ctx.error),
-                    reason="retrospective review worktree preparation failed",
-                ),
-            ], context="worktree_prepare_retrospective_review")
-            self.events.publish(make_trace_event(
-                EventName.ISSUE_NEEDS_HUMAN,
-                {
+            self.escalate_issue_needs_human(
+                issue_number=review.issue_number,
+                reason="retrospective review worktree preparation failed",
+                comment=build_worktree_error_comment(ctx.error),
+                context="worktree_prepare_retrospective_review",
+                event_data={
                     "issue_number": review.issue_number,
                     "reason": str(ctx.error),
                     "task": TaskKind.RETROSPECTIVE_REVIEW.value,
                 },
-            ))
+            )
             return LaunchResult(None, False, f"Worktree preparation failed: {ctx.error}")
 
         worktree_path = ctx.worktree_path

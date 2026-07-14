@@ -19,6 +19,7 @@ Usage:
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Optional, TYPE_CHECKING
 
@@ -26,6 +27,13 @@ from ..infra.config import Config
 from ..events import EventName
 from ..ports.repository_host import RepositoryHost, RepositoryHostError
 from ..ports import EventSink,  make_trace_event
+from .health_review_trigger import (
+    classify_triage_anchor_issues,
+    discover_open_health_review_anchor,
+    discover_open_triage_anchor_issues,
+    health_review_due,
+    health_review_interval_minutes,
+)
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -183,33 +191,64 @@ class FactGatherer:
     def gather_triage_facts(
         self,
         state: "OrchestratorState",
+        now: float | None = None,
     ) -> Optional["TriageFacts"]:
-        """Gather facts for triage review trigger decision.
+        """Gather facts for the triage batch and health-review triggers.
 
-        Observation only: threshold/existing-issue counting and source
-        label/milestone collection. Milestone ASSEMBLY policy (which
-        strategy applies, explicit name -> number resolution) belongs to
-        planning and the create-issue applier boundary (#6769 finding 4) —
-        no milestone API reads happen here.
+        The batch fields are gated by ``triage_review_threshold`` (via the
+        watch label) and the health-review fields by
+        ``triage.health_review.interval_minutes`` — either feature alone
+        produces facts; neither produces None. GitHub API discipline shapes
+        every read here: due-ness is pure interval math computed FIRST, so a
+        health-only configuration that is not yet due makes ZERO GitHub calls
+        (no anchor fact can affect planning until the review is due); the
+        batch anchor scan runs only when the batch trigger is armed; and the
+        marker-scoped health-anchor dedup lookup runs only while a creation
+        decision is actually pending and the batch scan did not already find
+        the anchor. Observation only: milestone ASSEMBLY policy (strategy
+        choice, explicit name -> number resolution) belongs to planning and
+        the create-issue applier boundary (#6769 round 3) — no milestone API
+        reads happen here.
         """
         from ..domain.models import TriageFacts
 
         watch_label = self._get_triage_watch_label()
-        if not watch_label:
+        batch_armed = bool(watch_label)
+        health_armed = health_review_interval_minutes(self.config) > 0
+        if not batch_armed and not health_armed:
             return None
 
-        prs = self._fetch_triage_prs(watch_label)
-        existing_triage_issue = self._find_existing_triage_issue()
+        due = health_review_due(
+            self.config, state, time.time() if now is None else now
+        )
+
+        existing_triage_issue: Optional[int] = None
+        existing_health_review_issue: Optional[int] = None
+        if batch_armed:
+            existing_triage_issue, existing_health_review_issue = (
+                self._find_existing_triage_anchor_issues()
+            )
+        if due and existing_health_review_issue is None:
+            # Marker-scoped, exhaustive dedup lookup (crash-safe): an older
+            # anchor can never fall off the first page of the broader
+            # triage-agent scan (#6763 finding 4).
+            existing_health_review_issue = discover_open_health_review_anchor(
+                self.repository_host, self.config
+            )
+
+        prs = self._fetch_triage_prs(watch_label) if batch_armed else []
         all_labels, source_milestones = self._collect_pr_metadata(prs)
 
         return TriageFacts(
             pr_count=len(prs),
             threshold=self.config.triage_review_threshold,
             existing_triage_issue=existing_triage_issue,
-            watch_label=watch_label,
+            watch_label=watch_label or "",
             prs=tuple((pr.number, pr.title) for pr in prs),
             source_labels=frozenset(all_labels),
             source_milestones=tuple(source_milestones),
+            health_review_due=due,
+            existing_health_review_issue=existing_health_review_issue,
         )
 
     def _get_triage_watch_label(self) -> str | None:
@@ -232,23 +271,16 @@ class FactGatherer:
         prs = self.repository_host.get_prs_with_label(watch_label, state="all")
         return [pr for pr in prs if policy.is_candidate(_pr_labels(pr))]
 
-    def _find_existing_triage_issue(self) -> int | None:
-        """Find existing triage review issue if any."""
-        triage_agent = self.config.triage_review_agent
-        if not triage_agent:
-            return None
-        existing = self.repository_host.list_issues(
-            labels=[triage_agent],
-            state="open",
-            limit=10,
+    def _find_existing_triage_anchor_issues(self) -> tuple[int | None, int | None]:
+        """Find existing open (batch, health-review) anchor issues in one scan.
+
+        Uses the shared scoped/exhaustive anchor-discovery owner so this path
+        and startup recovery apply ONE eligibility rule (#6763 finding 7).
+        """
+        existing = discover_open_triage_anchor_issues(
+            self.repository_host, self.config
         )
-        filter_label = self.config.filtering.label
-        for issue in existing:
-            if filter_label and filter_label not in issue.labels:
-                continue
-            if "Batch Review" in issue.title or "Triage Review" in issue.title:
-                return issue.number
-        return None
+        return classify_triage_anchor_issues(existing, self.config.filtering.label)
 
     def _collect_pr_metadata(self, prs: list[Any]) -> tuple[set[str], list[tuple[int, str]]]:
         """Collect labels and milestones from PRs and their linked issues."""
@@ -349,4 +381,80 @@ class FactGatherer:
             close_tabs=close_tabs,
             remove_worktrees=remove_wt,
             immediate_cleanups=immediate_tuples,
+            held_issue_numbers=failure_investigation_hold_issue_numbers(
+                state, self.config
+            ),
         )
+
+
+def failure_investigation_hold_issue_numbers(
+    state: "OrchestratorState", config: Config
+) -> frozenset[int]:
+    """Issues whose failed-session run assets must be held from cleanup.
+
+    Owner of the single lifecycle rule for #6771 round 3: a failed session
+    records its ``ImmediateCleanup`` in the same pass that records the
+    ``DiscoveredFailure``, but the failure investigation launches on a LATER
+    tick — removing the worktree first deletes every artifact hint the
+    investigation was queued to read. The rule is evaluated fresh from state
+    at both consuming seams (``gather_cleanup_facts`` so the Planner skips
+    held cleanups, and ``clear_discovered_facts`` so held entries survive the
+    end-of-tick fact clear). Hold while the failure is still referenced by:
+
+    - a failure discovered this tick (triage-on-failure will queue it),
+    - a queued (pending) failure investigation, or
+    - an active triage session investigating the issue.
+
+    The hold releases by re-evaluation, with no dedicated release seam: once
+    the investigation completes — or is dropped on exhaustion, or its queue
+    action fails — none of the conditions match and the retained cleanup is
+    planned normally on the next tick.
+    """
+    from ..domain.triage_session import TriageSessionFlavor
+    from .triage_session_policy import is_triage_session
+
+    if not (config.triage_review_on_failure and config.triage_review_agent):
+        return frozenset()
+    held = {failure.issue_number for failure in state.discovered_failures}
+    held.update(
+        item.issue_number
+        for item in state.pending_triage_reviews
+        if item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+    )
+    held.update(
+        session.issue.number
+        for session in state.active_sessions
+        if is_triage_session(config.triage_review_agent, session.issue.agent_type)
+    )
+    return frozenset(held)
+
+
+# Tick-scoped fact buffers: recorded by discovery/completion seams, consumed
+# by one planning pass, cleared after the plan is applied.
+_DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
+    "discovered_reviews",
+    "discovered_retrospective_reviews",
+    "discovered_awaiting_merge_reconciliations",
+    "discovered_awaiting_merge_drifts",
+    "discovered_awaiting_merge_escalations",
+    "discovered_merge_queue_enqueues",
+    "discovered_reworks",
+    "discovered_escalations",
+    "discovered_failures",
+    "immediate_cleanups",
+)
+
+
+def clear_discovered_facts(state: "OrchestratorState", config: Config) -> None:
+    """Clear tick-scoped fact buffers, retaining held immediate cleanups.
+
+    Immediate cleanups referenced by a pending/active failure investigation
+    are retained across the clear (#6771 round 3): the Planner skipped them
+    this tick via ``CleanupFacts.held_issue_numbers``, and dropping them here
+    would leak the worktree forever once the hold releases.
+    """
+    held = failure_investigation_hold_issue_numbers(state, config)
+    retained = [c for c in state.immediate_cleanups if c.issue_number in held]
+    for attr in _DISCOVERED_FACT_ATTRS:
+        getattr(state, attr).clear()
+    state.immediate_cleanups.extend(retained)

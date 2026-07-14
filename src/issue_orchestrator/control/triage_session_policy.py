@@ -24,7 +24,9 @@ from typing import TYPE_CHECKING
 
 from ..domain.models import RequestedAction
 from ..domain.triage_manifest import TriageManifest
+from ..domain.board_snapshot import BOARD_SNAPSHOT_FILENAME
 from ..domain.triage_session import (
+    HEALTH_REVIEW_MARKER_LABEL,
     TRIAGE_ASSIGNMENT_FILENAME,
     TriageAssignment,
     TriageLaunchAuthority,
@@ -34,6 +36,7 @@ from .completion_pr_collision import NoCommitsBetweenError
 from .triage_manifest_builder import TriageCandidatePolicy, TriageManifestBuilder
 
 if TYPE_CHECKING:
+    from ..ports.board_snapshot_provider import BoardSnapshotProvider
     from ..infra.config import Config
     from ..ports import ManifestDownloader, RepositoryHost
     from ..ports.issue import Issue
@@ -135,6 +138,7 @@ def prepare_triage_session_data(
     repository_host: "RepositoryHost",
     manifest_downloader: "ManifestDownloader",
     triage_authority: "TriageAuthorityStore",
+    board_snapshot_provider: "BoardSnapshotProvider",
     issue: "Issue",
     ctx: "WorktreeContext",
     triage_flavor: TriageSessionFlavor | None,
@@ -142,17 +146,29 @@ def prepare_triage_session_data(
     """Prepare per-flavor triage session inputs (ADR-0031).
 
     BATCH_REVIEW keeps the existing PR-manifest prep; FAILURE_INVESTIGATION
-    must NOT receive the global batch manifest (auditing unrelated PRs from
-    a focused investigation was the #6768 B4 defect). Both flavors get a
-    triage-assignment.json copy for the AGENT to read, and — the trusted
-    half — an orchestrator-owned :class:`TriageLaunchAuthority` record
-    persisted outside the agent-writable worktree, keyed by this run's
-    identity, which completion reads as the only scope authority
-    (#6761 re-review F1).
+    and HEALTH_REVIEW must NOT receive the global batch manifest (auditing
+    unrelated PRs from a focused investigation was the #6768 B4 defect; a
+    health review walks the board snapshot, not a PR batch). Every flavor
+    gets a triage-assignment.json copy for the AGENT to read, and — the
+    trusted half — an orchestrator-owned :class:`TriageLaunchAuthority`
+    record persisted outside the agent-writable worktree, keyed by this
+    run's identity, which completion reads as the only scope authority
+    (#6761 re-review F1). Health reviews record an anchor-only scope: no
+    focus issue, empty manifest set, board-wide snapshot.
+
+    Flavor resolution: an explicit ``triage_flavor`` wins (the pending-queue
+    launch path forwards the producer-declared flavor); otherwise the
+    ADR-0031 §4 marker label on the anchor issue selects HEALTH_REVIEW
+    (labels are the crash-safe truth a restart recovers from); otherwise
+    BATCH_REVIEW.
     """
     if not is_triage_session(config.triage_review_agent, issue.agent_type):
         return
-    flavor = triage_flavor or TriageSessionFlavor.BATCH_REVIEW
+    flavor = triage_flavor or (
+        TriageSessionFlavor.HEALTH_REVIEW
+        if HEALTH_REVIEW_MARKER_LABEL in issue.labels
+        else TriageSessionFlavor.BATCH_REVIEW
+    )
     run_dir = ctx.run.run_dir
     triage_manifest = None
     if flavor is TriageSessionFlavor.BATCH_REVIEW:
@@ -190,3 +206,31 @@ def prepare_triage_session_data(
         ),
     )
     logger.info("[triage] Wrote %s assignment: %s", flavor.value, assignment_path)
+    _write_board_snapshot(
+        ctx,
+        run_dir,
+        board_snapshot_provider,
+        focus_issue=issue.number if focused else None,
+    )
+
+
+def _write_board_snapshot(
+    ctx: "WorktreeContext",
+    run_dir: Path,
+    provider: "BoardSnapshotProvider",
+    *,
+    focus_issue: int | None,
+) -> None:
+    """Write the ADR-0031 §3 board snapshot into the triage-data directory.
+
+    The triage prompt treats board-snapshot.json as authoritative required
+    input, so build/write failures propagate and fail the launch loudly
+    (fail-fast: a DB/log bug must not silently launch a session missing its
+    input — the launcher converts the exception into a failed LaunchResult).
+    The run-manifest entry is recorded only after a successful write so it
+    never points at a missing file.
+    """
+    snapshot_path = run_dir / "triage-data" / BOARD_SNAPSHOT_FILENAME
+    snapshot = provider.snapshot(focus_issue)
+    snapshot.write(snapshot_path)
+    ctx.update_manifest({"board_snapshot": str(snapshot_path)})

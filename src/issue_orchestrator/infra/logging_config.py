@@ -62,6 +62,23 @@ def get_repo_log_path(repo_root: Path | str) -> Path:
     return log_dir / "orchestrator.log"
 
 
+def read_log_tail(log_path: Path, lines: int) -> list[str]:
+    """Return the last ``lines`` lines of ``log_path``, without newlines.
+
+    Fail-safe by design (shared by diagnostics bundling and the board
+    snapshot, both auxiliary observation surfaces): a missing or unreadable
+    log yields ``[]`` rather than an error.
+    """
+    if not log_path.exists():
+        return []
+    try:
+        with open(log_path) as f:
+            all_lines = f.readlines()
+    except OSError:
+        return []
+    return [line.rstrip() for line in all_lines[-lines:]]
+
+
 def get_control_center_log_path() -> Path:
     """Global, repo-independent log file for the Control Center process.
 

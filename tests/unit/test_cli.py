@@ -1287,6 +1287,10 @@ class TestCmdInitAdvanced:
                 mock_config = Mock()
                 mock_config.repo = "test/repo"
                 mock_config.agents = {"agent:backend": Mock(), "agent:frontend": Mock()}
+                mock_config.label_prefix = None
+                mock_config.label_in_progress = "in-progress"
+                mock_config.label_blocked = "blocked"
+                mock_config.label_needs_human = "needs-human"
                 mock_config.get_label_in_progress.return_value = "in-progress"
                 mock_config.get_label_blocked.return_value = "blocked"
                 mock_config.get_label_needs_human.return_value = "needs-human"
@@ -1302,8 +1306,11 @@ class TestCmdInitAdvanced:
                 result = cmd_init(args)
 
                 assert result == 0
-                # Should create: in-progress, blocked, needs-human, 3 priority labels, 2 agent labels
-                assert mock_client.create_label.call_count >= 8
+                # Includes the triage provenance marker used for crash-safe clears.
+                assert mock_client.create_label.call_count >= 9
+                mock_client.create_label.assert_any_call(
+                    "triage-needs-human", force=True
+                )
 
     def test_cmd_init_handles_failures(self):
         """Verify init reports failures correctly."""
@@ -1314,6 +1321,10 @@ class TestCmdInitAdvanced:
                 mock_config = Mock()
                 mock_config.repo = "test/repo"
                 mock_config.agents = {"agent:test": Mock()}
+                mock_config.label_prefix = None
+                mock_config.label_in_progress = "in-progress"
+                mock_config.label_blocked = "blocked"
+                mock_config.label_needs_human = "needs-human"
                 mock_config.get_label_in_progress.return_value = "in-progress"
                 mock_config.get_label_blocked.return_value = "blocked"
                 mock_config.get_label_needs_human.return_value = "needs-human"

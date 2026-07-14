@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .logging_config import read_log_tail
 from .repo_identity import state_dir
 from .startup_errors import read_startup_failure
 
@@ -123,13 +124,11 @@ def create_diagnostic_bundle(repo_root: Path) -> DiagnosticBundle:
         with open(bundle_dir / "last_failure.json", "w") as f:
             json.dump(bundle.last_failure, f, indent=2)
 
-    # 2. Log tail
+    # 2. Log tail (same last-N read the board snapshot uses)
     log_path = state_dir(repo_root) / "logs" / "orchestrator.log"
     if log_path.exists():
         try:
-            with open(log_path) as f:
-                lines = f.readlines()
-            bundle.log_tail = [line.rstrip() for line in lines[-200:]]
+            bundle.log_tail = read_log_tail(log_path, 200)
             with open(bundle_dir / "log_tail.txt", "w") as f:
                 f.write("\n".join(bundle.log_tail))
         except OSError:

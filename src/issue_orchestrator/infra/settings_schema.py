@@ -14,7 +14,7 @@ from __future__ import annotations
 import functools
 from typing import Any, Literal, Optional, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .config_models import MERGE_QUEUE_PROVIDERS, TRIAGE_AUTHORITY_MODES
 
@@ -1131,6 +1131,23 @@ class ReviewSettings(BaseModel):
             "yaml_path": "triage.authority.kill_hung_session",
         },
     )
+    triage_health_review_interval_minutes: int = Field(
+        0,
+        title="Health Review Interval (minutes)",
+        description="Create a periodic health-review issue every N minutes (0 = disabled)",
+        ge=0,
+        json_schema_extra={
+            "doc_examples": ["0", "240"],
+            "doc_notes": (
+                "ADR-0031 §4: when the interval elapses the orchestrator files "
+                "a health-review anchor issue for the triage agent to walk the "
+                "board snapshot. Requires a configured triage agent. 0 disables."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.health_review.interval_minutes",
+            "yaml_path": "triage.health_review.interval_minutes",
+        },
+    )
 
     @field_validator(
         "triage_authority_post_comment",
@@ -1147,6 +1164,22 @@ class ReviewSettings(BaseModel):
                 f" {list(TRIAGE_AUTHORITY_MODES)}, got {value!r}"
             )
         return value
+
+    @model_validator(mode="after")
+    def _health_review_interval_requires_triage_agent(self) -> "ReviewSettings":
+        # Cross-field invariant (#6763/#6776): a positive health-review
+        # interval without a configured triage agent would be silently
+        # disabled at runtime. Reject the pair so the misconfiguration is
+        # loud instead of degrading (0 disables; a positive interval needs
+        # an agent to walk the board).
+        if self.triage_health_review_interval_minutes > 0 and not self.triage_agent:
+            raise ValueError(
+                "triage.health_review.interval_minutes is "
+                f"{self.triage_health_review_interval_minutes} but no triage "
+                "agent is configured; set review.triage_review_agent, or use 0 "
+                "to disable the periodic health review."
+            )
+        return self
 
 
 class GoalPilotSettings(BaseModel):

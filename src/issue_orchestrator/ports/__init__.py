@@ -43,6 +43,12 @@ _EXPORTS = {
     "StackPredecessorFactsProvider": (
         ".stack_predecessor_facts", "StackPredecessorFactsProvider",
     ),
+    "BoardSnapshotProvider": (
+        ".board_snapshot_provider", "BoardSnapshotProvider",
+    ),
+    "NullBoardSnapshotProvider": (
+        ".board_snapshot_provider", "NullBoardSnapshotProvider",
+    ),
     "WorktreeManager": (".worktree_manager", "WorktreeManager"),
     "WorktreeInfo": (".worktree_manager", "WorktreeInfo"),
     "WorktreeReuseOptions": (".worktree_manager", "WorktreeReuseOptions"),
@@ -128,6 +134,8 @@ __all__ = (
     "RepositoryHostError",
     "IssueResolver",
     "StackPredecessorFactsProvider",
+    "BoardSnapshotProvider",
+    "NullBoardSnapshotProvider",
     "WorktreeManager",
     "WorktreeInfo",
     "WorktreeReuseOptions",
