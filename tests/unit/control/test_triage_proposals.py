@@ -586,7 +586,7 @@ def test_applier_reset_op_executes_once_and_finalizes() -> None:
         events=MagicMock(),
         label_manager=LabelManager(config),
         read_issue=lambda number: _issue(number, ["blocked-failed"]),
-        has_active_session=lambda _n: False,
+        has_active_issue_runtime=lambda _n: False,
         run_reset=run_reset,
     )
     [action] = plan_approved_triage_op_executions(
@@ -615,7 +615,7 @@ def test_applier_stale_reset_op_downgrades_with_zero_target_mutations() -> None:
         label_manager=LabelManager(config),
         # No blocking label left: the diagnosed failure already recovered.
         read_issue=lambda number: _issue(number, ["agent:test"]),
-        has_active_session=lambda _n: False,
+        has_active_issue_runtime=lambda _n: False,
         run_reset=run_reset,
     )
     [action] = plan_approved_triage_op_executions(
@@ -707,7 +707,7 @@ def _wired_reset_applier(
         events=MagicMock(),
         label_manager=LabelManager(Config()),
         read_issue=lambda number: _issue(number, ["blocked-failed"]),
-        has_active_session=lambda _n: False,
+        has_active_issue_runtime=lambda _n: False,
         run_reset=run_reset,
     )
     return applier
@@ -930,7 +930,7 @@ def test_end_to_end_gated_reset_proposal_executes_once() -> None:
         events=MagicMock(),
         label_manager=labels,
         read_issue=lambda number: _issue(number, ["blocked-failed"]),
-        has_active_session=lambda _n: False,
+        has_active_issue_runtime=lambda _n: False,
         run_reset=run_reset,
     )
     assert applier.apply(execution).success
