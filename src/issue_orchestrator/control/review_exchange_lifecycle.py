@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable, Protocol
+from typing import TYPE_CHECKING, Callable, Iterable, Protocol
 
 from .completion_review_exchange import is_review_exchange_job_for_issue
 
@@ -33,6 +33,18 @@ class PublishRetryAbandoner(Protocol):
     """
 
     def abandon_issue(self, issue_number: int) -> None: ...
+
+
+class IssuePublishRetryRuntime(PublishRetryAbandoner, Protocol):
+    """The publish-retry owner as seen by the shared issue-runtime boundary.
+
+    Extends the teardown seam (:class:`PublishRetryAbandoner`) with the
+    non-mutating activity query the reset-freshness predicate needs, so the
+    activity check and the abandon it guards read/mutate the exact same owner
+    through one contract and cannot drift.
+    """
+
+    def has_active_retry(self, issue_number: int) -> bool: ...
 
 from .session_manager import SessionType
 
@@ -175,6 +187,81 @@ def terminate_issue_runtime(
         stopped_session_ids=tuple(stopped),
         cleared_active_session_ids=terminal_ids_to_clear,
     )
+
+
+def has_active_issue_runtime(
+    *,
+    issue_number: int,
+    pair_registry: "PersistentExchangePairRegistry | None",
+    job_supervisor: "BackgroundJobSupervisor | None",
+    session_manager: "SessionManager | None" = None,
+    active_sessions: list["Session"] | None = None,
+    publish_recovery: "IssuePublishRetryRuntime | None" = None,
+    session_types: Iterable[SessionType] = ISSUE_RUNTIME_SESSION_TYPES,
+) -> bool:
+    """True when any runtime owner the reset boundary would terminate is active.
+
+    The activity counterpart to :func:`terminate_issue_runtime`, taking the SAME
+    owner set so the reset-freshness predicate and the reset teardown read/mutate
+    exactly the same runtime owners: visible issue/rework sessions, the persistent
+    coder/reviewer pair, supervised review-exchange jobs, and pending/in-flight
+    publish retry. A stale proposal can therefore never terminate live work the
+    predicate did not observe — the activity check and the boundary cannot drift
+    on what "active" means because they consult one owner set through one contract.
+
+    Fail-safe: an owner that raises when queried is treated as possibly active, so
+    unverifiable runtime state downgrades the reset rather than tearing down work
+    on an unchecked owner (orchestrator-authoritative, never silent-wrong).
+    """
+    probes: tuple[Callable[[], bool], ...] = (
+        lambda: _issue_runtime_session_active(
+            issue_number, session_manager, active_sessions, session_types
+        ),
+        lambda: pair_registry is not None
+        and pair_registry.has_active_pair(issue_number),
+        lambda: job_supervisor is not None
+        and job_supervisor.has_matching(
+            lambda job_id: is_review_exchange_job_for_issue(job_id, issue_number)
+        ),
+        lambda: publish_recovery is not None
+        and publish_recovery.has_active_retry(issue_number),
+    )
+    return any(_owner_active_or_unverifiable(probe) for probe in probes)
+
+
+def _owner_active_or_unverifiable(probe: Callable[[], bool]) -> bool:
+    """Run one owner activity probe; treat a raising owner as possibly active."""
+    try:
+        return bool(probe())
+    except Exception:
+        logger.warning(
+            "[ISSUE_RUNTIME] runtime-owner activity probe raised; treating issue "
+            "runtime as active (fail-safe)",
+            exc_info=True,
+        )
+        return True
+
+
+def _issue_runtime_session_active(
+    issue_number: int,
+    session_manager: "SessionManager | None",
+    active_sessions: list["Session"] | None,
+    session_types: Iterable[SessionType],
+) -> bool:
+    """True while a visible issue/rework terminal for the issue is live.
+
+    Reads ``active_sessions`` (the registry ``terminate_issue_runtime`` clears)
+    and, when supplied, the ``SessionManager`` it stops, so the visible-session
+    activity signal matches the terminals the reset would tear down.
+    """
+    registry_active = any(
+        session.issue.number == issue_number for session in (active_sessions or ())
+    )
+    refs = _issue_runtime_session_refs(issue_number, session_types)
+    manager_active = session_manager is not None and any(
+        session_manager.exists(ref) for ref in refs
+    )
+    return registry_active or manager_active
 
 
 def _issue_runtime_session_refs(

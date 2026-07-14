@@ -110,6 +110,28 @@ class TestTriageDecisionParsing:
                 _payload(proposed_actions=[_action("A1"), _action("A1")])
             )
 
+    def test_rejects_multiple_act_level_actions_for_one_target(self):
+        actions = [
+            _action(
+                "A1",
+                action_type="reset_retry",
+                target_number=17,
+                body="Reset the corrupted worktree.",
+            ),
+            _action(
+                "A2",
+                action_type="reset_retry",
+                target_number=17,
+                body="Retry the same issue from scratch.",
+            ),
+        ]
+
+        with pytest.raises(
+            ValueError,
+            match=r"multiple act-level proposed actions target #17: A1, A2",
+        ):
+            TriageDecision.from_agent_payload(_payload(proposed_actions=actions))
+
     def test_rejects_unknown_finding_reference(self):
         with pytest.raises(ValueError, match="unknown finding ids"):
             TriageDecision.from_agent_payload(

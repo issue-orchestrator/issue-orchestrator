@@ -171,3 +171,20 @@ def test_non_batch_flows_contain_no_batch_only_instructions(
         assert tell not in section, (
             f"{variant} '{heading}' contains batch-only instruction {tell!r}"
         )
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_act_level_wiring_state_is_synchronized(variant: str) -> None:
+    """#6764 first slice: every variant must say reset_retry executes under
+    configured authority while kill_hung_session stays would-have-done."""
+    text = PROMPT_VARIANTS[variant]
+    assert "`triage.authority.reset_retry: execute`" in text, (
+        f"{variant} does not document the wired reset_retry authority"
+    )
+    assert "`kill_hung_session` is recorded as would-have-done" in text, (
+        f"{variant} does not document the unwired kill_hung_session state"
+    )
+    # The pre-#6764 blanket claim must be gone from every variant.
+    assert "Act-level proposals (`reset_retry`" not in text, (
+        f"{variant} still claims reset_retry is unwired"
+    )

@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..domain.models import Session
+from ..domain.triage_artifacts import ACT_LEVEL_TRIAGE_ACTIONS
 from ..domain.triage_manifest import TriageManifest
 from ..domain.triage_session import TriageLaunchAuthority, TriageSessionFlavor
 from .actions import (
@@ -89,11 +90,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Proposal types whose target_number must fall inside the session's launch
-# scope. create_issue / flag_pattern carry no target and are scope-free.
-_SCOPED_ACTION_TYPES = frozenset(
-    ("post_comment", "escalate_to_human", "reset_retry", "kill_hung_session")
-)
+# Comment/routing proposals whose target_number must fall inside the general
+# launch scope (which, for a batch review, includes the audited manifest PRs).
+# create_issue / flag_pattern carry no target and are scope-free. Act-level
+# proposals (reset_retry / kill_hung_session) are validated separately against
+# the STRICTER issue-only scope — see ``allowed_act_level_targets`` (#6764 rr F1).
+_TARGET_SCOPED_ACTION_TYPES = frozenset(("post_comment", "escalate_to_human"))
 
 
 def read_triage_manifest(run_dir: Path) -> TriageManifest | None:
@@ -207,6 +209,52 @@ def _launch_scope_description(
     )
 
 
+def _act_level_scope_description(authority: TriageLaunchAuthority) -> str:
+    """Human-readable ISSUE-only scope for an out-of-scope act-level violation."""
+    if authority.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
+        return f"the originating work issue #{authority.focus_issue_number}"
+    return (
+        "no work issue is in scope for an act-level reset/kill from this"
+        " session — that intent applies only to a failure investigation's"
+        " focus issue; batch manifest entries are PRs and triage anchors are"
+        " bookkeeping issues, so route board findings through the scope-free"
+        " create_issue/flag_pattern proposals instead"
+    )
+
+
+def _target_scope_violation(
+    decision: "TriageDecision", authority: TriageLaunchAuthority
+) -> str | None:
+    """Out-of-scope target detail for any targeted proposal, or None.
+
+    Two scopes (#6764 re-review F1): comment/routing proposals may target the
+    general launch scope (manifest PRs included for a batch), while act-level
+    reset/kill proposals are held to the STRICTER issue-only scope so a
+    manifest PR number never reaches the issue reset owner as an ``issue_number``.
+    """
+    allowed = authority.allowed_targets()
+    act_allowed = authority.allowed_act_level_targets()
+    for action in decision.proposed_actions:
+        if action.action_type in ACT_LEVEL_TRIAGE_ACTIONS:
+            if action.target_number not in act_allowed:
+                return (
+                    f"proposed action {action.id} ({action.action_type}) targets"
+                    f" #{action.target_number}, outside this session's launch"
+                    f" scope for an act-level reset/kill:"
+                    f" {_act_level_scope_description(authority)}"
+                )
+            continue
+        if action.action_type not in _TARGET_SCOPED_ACTION_TYPES:
+            continue
+        if action.target_number not in allowed:
+            return (
+                f"proposed action {action.id} ({action.action_type}) targets"
+                f" #{action.target_number}, outside this session's launch"
+                f" scope: {_launch_scope_description(authority, allowed)}"
+            )
+    return None
+
+
 def validate_decision_for_authority(
     decision: "TriageDecision",
     authority: TriageLaunchAuthority,
@@ -220,27 +268,24 @@ def validate_decision_for_authority(
     Enforced here (the completion owner) against the immutable launch
     authority, never against the agent-writable worktree copies:
 
-    * Every targeted proposal must stay inside the launch scope — a failure
-      investigation may only address its focus issue; a batch review may
-      only address manifest PRs and the anchor tracking issue (#6761
-      re-review finding 2).
+    * Every targeted comment/routing proposal must stay inside the launch
+      scope — a failure investigation may only address its focus issue; a
+      batch review may only address manifest PRs and the anchor tracking
+      issue (#6761 re-review finding 2).
+    * An ACT-LEVEL proposal (reset_retry/kill_hung_session) is held to the
+      STRICTER issue-only scope (``allowed_act_level_targets``): its target is
+      handed to the issue reset owner as an ``issue_number``, so a batch
+      manifest PR number — or a triage bookkeeping anchor — is a confused
+      deputy that would reset the wrong entity (#6764 re-review F1).
     * Failure investigations must publish their diagnosis to the originating
       issue — >=1 ``post_comment`` targeting the focus issue (#6761 F2).
     * ``create_issue`` proposals may not carry protected workflow labels
       (#6761 F4). Checked at mapping time so the domain contract stays
       config-free.
     """
-    allowed = authority.allowed_targets()
-    scope_text = _launch_scope_description(authority, allowed)
-    for action in decision.proposed_actions:
-        if action.action_type not in _SCOPED_ACTION_TYPES:
-            continue
-        if action.target_number not in allowed:
-            return (
-                f"proposed action {action.id} ({action.action_type}) targets"
-                f" #{action.target_number}, outside this session's launch"
-                f" scope: {scope_text}"
-            )
+    target_violation = _target_scope_violation(decision, authority)
+    if target_violation is not None:
+        return target_violation
     if authority.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
         focus = authority.focus_issue_number
         has_focus_comment = any(

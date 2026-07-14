@@ -6,6 +6,7 @@ from issue_orchestrator.control.actions import (
     AddCommentAction,
     AddLabelAction,
     CreateTriageIssueAction,
+    ResetRetryIssueAction,
     SurfaceTriageProposalAction,
     TriageMilestoneIntent,
 )
@@ -295,27 +296,33 @@ def test_shadow_proposals_plan_durable_digest_comment() -> None:
 
 
 def test_digest_guidance_is_action_aware() -> None:
-    """Act-level shadow records must not tell operators to flip a knob that
-    startup rejects until #6764 (#6761 re-review finding 5)."""
+    """Shadow digests name flip-able knobs (including wired reset_retry) but
+    must not tell operators to flip a knob that startup still rejects
+    (#6761 re-review finding 5 / #6764 first slice)."""
     config = _config(post_comment="propose")
     gated = ProposedTriageAction(
         id="A1", action_type="post_comment", target_number=42, body="c"
     )
-    act = ProposedTriageAction(
+    wired_act = ProposedTriageAction(
         id="A2", action_type="reset_retry", target_number=42, body="r"
     )
+    unwired_act = ProposedTriageAction(
+        id="A3", action_type="kill_hung_session", target_number=42, body="k"
+    )
 
-    planned = _plan(_decision(gated, act), config)
+    planned = _plan(_decision(gated, wired_act, unwired_act), config)
 
     [digest] = _shadow_digests(planned)
     assert "`triage.authority.post_comment`" in digest.comment
+    # reset_retry is wired (#6764 first slice): the knob is real guidance now.
+    assert "`triage.authority.reset_retry`" in digest.comment
+    # kill_hung_session stays unwired: never named as a flip-able knob.
     assert "#6764" in digest.comment
-    assert "`reset_retry`" in digest.comment
-    # The config-flip guidance never names the act-level knobs.
-    assert "triage.authority.reset_retry" not in digest.comment
+    assert "`kill_hung_session`" in digest.comment
+    assert "triage.authority.kill_hung_session" not in digest.comment
 
 
-def test_act_level_only_digest_omits_config_flip_guidance() -> None:
+def test_unwired_act_level_only_digest_omits_config_flip_guidance() -> None:
     action = ProposedTriageAction(
         id="A1", action_type="kill_hung_session", target_number=13, body="r"
     )
@@ -325,6 +332,20 @@ def test_act_level_only_digest_omits_config_flip_guidance() -> None:
     [digest] = _shadow_digests(planned)
     assert "#6764" in digest.comment
     assert "Flip" not in digest.comment
+
+
+def test_reset_retry_only_digest_gives_flip_guidance_without_unwired_note() -> None:
+    """A shadow reset_retry is a flip-able knob, not an unwired intent."""
+    action = ProposedTriageAction(
+        id="A1", action_type="reset_retry", target_number=13, body="r"
+    )
+
+    planned = _plan(_decision(action))
+
+    [digest] = _shadow_digests(planned)
+    assert "`triage.authority.reset_retry`" in digest.comment
+    assert "Flip" in digest.comment
+    assert "#6764" not in digest.comment
 
 
 def test_execute_only_decision_plans_no_digest_comment() -> None:
@@ -370,7 +391,7 @@ def test_flag_pattern_propose_surfaces_as_shadow() -> None:
 
 
 @pytest.mark.parametrize("act_type", ["reset_retry", "kill_hung_session"])
-def test_act_level_surfaces_shadow_even_with_propose_config(act_type: str) -> None:
+def test_act_level_surfaces_shadow_under_propose_config(act_type: str) -> None:
     action = ProposedTriageAction(
         id="A5",
         action_type=act_type,
@@ -385,6 +406,50 @@ def test_act_level_surfaces_shadow_even_with_propose_config(act_type: str) -> No
     assert surfaced.proposal_type == act_type
     assert surfaced.target_number == 13
     assert len(_shadow_digests(planned)) == 1
+
+
+def test_reset_retry_execute_plans_typed_reset_action() -> None:
+    """Execute authority maps reset_retry to the typed executor action (#6764)."""
+    config = _config(reset_retry="execute")
+    action = ProposedTriageAction(
+        id="A7",
+        action_type="reset_retry",
+        target_number=13,
+        body="Worktree is unrecoverable; start from scratch.",
+        finding_ids=("T1",),
+    )
+
+    [planned] = _plan(_decision(action), config)
+
+    assert isinstance(planned, ResetRetryIssueAction)
+    assert planned.issue_number == 13
+    assert planned.anchor_issue_number == 99  # the anchor issue
+    assert planned.proposal_id == "A7"
+    assert planned.rationale.startswith("Worktree is unrecoverable")
+    assert planned.finding_ids == ("T1",)
+    assert "A7" in planned.reason
+    assert planned.expected is EXPECTED
+    # Execute-mode means no shadow surface and no digest for this proposal.
+    assert not any(isinstance(a, SurfaceTriageProposalAction) for a in [planned])
+
+
+def test_kill_hung_session_stays_shadow_even_if_execute_sneaks_past_startup() -> None:
+    """The planner never trusts config validation for unwired act-level
+    intents: kill_hung_session surfaces as shadow even under 'execute'."""
+    config = _config(kill_hung_session="execute")
+    action = ProposedTriageAction(
+        id="A8",
+        action_type="kill_hung_session",
+        target_number=13,
+        body="Session looks hung.",
+    )
+
+    planned = _plan(_decision(action), config)
+
+    [surfaced] = [a for a in planned if isinstance(a, SurfaceTriageProposalAction)]
+    assert surfaced.mode == "shadow"
+    assert surfaced.proposal_type == "kill_hung_session"
+    assert not any(isinstance(a, ResetRetryIssueAction) for a in planned)
 
 
 def test_mixed_decision_preserves_order_and_authority() -> None:

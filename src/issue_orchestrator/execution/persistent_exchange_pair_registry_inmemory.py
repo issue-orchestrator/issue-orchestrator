@@ -196,6 +196,18 @@ class InMemoryPersistentExchangePairRegistry(PersistentExchangePairRegistry):
                 pair = self._cache.pop(issue_key)
                 self._tear_down(pair, reason=reason)
 
+    def has_active_pair(self, issue_key: Hashable) -> bool:
+        """Return True while a pair is cached for ``issue_key``.
+
+        Reads the exact cache membership ``release`` pops, so a lifecycle
+        boundary's activity check never diverges from what a release would tear
+        down. Liveness is deliberately not re-probed here: a cached-but-dead pair
+        is still a resource ``release`` would reclaim, so treating it as active
+        keeps the boundary fail-safe.
+        """
+        with self._lock:
+            return issue_key in self._cache
+
     def _tear_down(self, pair: PersistentExchangePair, *, reason: str) -> None:
         """Close subprocesses and notify the worktree-removal hook.
 

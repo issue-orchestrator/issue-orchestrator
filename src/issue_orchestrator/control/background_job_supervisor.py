@@ -181,6 +181,15 @@ class BackgroundJobSupervisor:
         logger.info("[BG] job_id=%s cancelled: %s", job_id, reason)
         return True
 
+    def has_matching(self, predicate: Callable[[str], bool]) -> bool:
+        """Report whether any supervised job matches *predicate* (non-mutating).
+
+        Reads the same ``_running`` set :meth:`cancel_matching` iterates, so a
+        lifecycle boundary's activity check and its cancellation can never drift
+        on which jobs count as in-flight.
+        """
+        return any(predicate(job_id) for job_id in self._running)
+
     def cancel_matching(
         self,
         predicate: Callable[[str], bool],

@@ -72,6 +72,9 @@ class ActionType(Enum):
     # Triage decision proposals (event-only surfacing, ADR-0031)
     SURFACE_TRIAGE_PROPOSAL = "surface_triage_proposal"
 
+    # Act-level triage execution: scratch reset via the reset owner (#6764)
+    RESET_RETRY_ISSUE = "reset_retry_issue"
+
     # Escalation
     ESCALATE_TO_HUMAN = "escalate_to_human"
 
@@ -355,6 +358,39 @@ class SurfaceTriageProposalAction(Action):
     action_type: ActionType = field(
         default=ActionType.SURFACE_TRIAGE_PROPOSAL, init=False
     )
+
+
+@dataclass(frozen=True)
+class ResetRetryIssueAction(Action):
+    """Execute a triage ``reset_retry`` proposal via the reset owner (#6764).
+
+    Planned by ``plan_triage_decision_actions`` ONLY when
+    ``triage.authority.reset_retry`` is ``execute``. Proposals are
+    stale-checkable facts, not commands (ADR-0031 §2): the applier's owner
+    re-validates the recorded preconditions against current state at
+    execution time and downgrades to a surfaced proposal
+    (``TRIAGE_ACTION_PROPOSED``, ``mode="stale_downgrade"``) when the board
+    has moved — no mutations are posted on the downgrade path.
+
+    ``anchor_issue_number`` is the triage session's anchor issue — the event
+    surface a downgrade is reported against, mirroring
+    :class:`SurfaceTriageProposalAction`. For failure investigations and
+    health reviews the immutable launch scope forces
+    ``issue_number == anchor_issue_number``.
+    """
+
+    issue_number: int = 0  # The issue to scratch-reset (the proposal's target)
+    rationale: str = ""  # The agent's recorded rationale (proposal body)
+    proposal_id: str = ""  # The decision artifact action id (A<n>)
+    finding_ids: tuple[str, ...] = ()
+    anchor_issue_number: int = 0
+    action_type: ActionType = field(default=ActionType.RESET_RETRY_ISSUE, init=False)
+
+    def __post_init__(self) -> None:
+        if self.issue_number <= 0:
+            raise ValueError("ResetRetryIssueAction requires a positive issue_number")
+        if not self.proposal_id:
+            raise ValueError("ResetRetryIssueAction requires the proposal id")
 
 
 @dataclass(frozen=True)

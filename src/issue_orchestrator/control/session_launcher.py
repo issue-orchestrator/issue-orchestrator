@@ -929,9 +929,7 @@ class SessionLauncher:
             return self._fail_launch_for_triage_prep(
                 issue, ctx, session_name, worktree_path, claim, e
             )
-        # Launch-authority lifecycle guard (#6769 r4): the row is discarded
-        # on EVERY exit unless the session reaches ACTIVE — single owner,
-        # no branch-local cleanup.
+        # Launch-authority guard (#6769 r4): discard on every pre-start exit; single owner.
         launch_reached_active = False
         try:
 

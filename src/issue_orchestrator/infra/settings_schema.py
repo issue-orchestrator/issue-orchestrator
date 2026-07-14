@@ -1105,10 +1105,13 @@ class ReviewSettings(BaseModel):
         description="Act-level: reset-and-retry an issue from scratch",
         json_schema_extra={
             "enum": list(TRIAGE_AUTHORITY_MODES),
-            "doc_examples": ["propose"],
+            "doc_examples": ["propose", "execute"],
             "doc_notes": (
-                "Act-level authority is not wired yet (#6764): execute is a "
-                "startup configuration error. Allowed values: execute, propose."
+                "execute runs the reset+retry-from-scratch owner after "
+                "re-validating the proposal's preconditions at execution time; "
+                "stale proposals downgrade to a surfaced record (#6764). "
+                "propose (default) records would-have-done only. Allowed "
+                "values: execute, propose."
             ),
             "section": "Triage Review",
             "config_attr": "triage.authority.reset_retry",

@@ -3066,9 +3066,9 @@ triage:
         with pytest.raises(ValueError, match="triage.authority.post_comment"):
             Config.load(config_file)
 
-    @pytest.mark.parametrize("key", ["reset_retry", "kill_hung_session"])
-    def test_triage_authority_act_level_execute_is_startup_error(self, key):
-        """Act-level 'execute' must fail startup validation, never no-op."""
+    @pytest.mark.parametrize("key", ["kill_hung_session"])
+    def test_triage_authority_unwired_act_level_execute_is_startup_error(self, key):
+        """Unwired act-level 'execute' must fail startup validation, never no-op."""
         config = Config()
         setattr(config.triage.authority, key, "execute")
 
@@ -3077,6 +3077,15 @@ triage:
         assert any(
             f"triage.authority.{key}" in e and "#6764" in e for e in errors
         ), errors
+
+    def test_triage_authority_reset_retry_execute_is_valid_at_startup(self):
+        """reset_retry is wired (#6764 first slice): execute passes validation."""
+        config = Config()
+        config.triage.authority.reset_retry = "execute"
+
+        errors = config.validate()
+
+        assert not any("triage.authority.reset_retry" in e for e in errors), errors
 
     def test_triage_authority_mode_for_floor_and_unknown(self):
         """escalate_to_human always executes; unknown action types raise."""

@@ -352,13 +352,15 @@ triage:
   # execute = orchestrator performs the proposed action;
   # propose = shadow mode - recorded as would-have-done, nothing executed.
   # escalate_to_human is not configurable: it always executes (the floor).
-  # Act-level actions (reset_retry, kill_hung_session) must stay "propose"
-  # until their executors are wired (#6764) - "execute" fails at startup.
+  # reset_retry "execute" runs the reset+retry-from-scratch owner with
+  # execution-time re-validation (stale proposals are surfaced, not run).
+  # Unwired act-level actions (kill_hung_session) must stay "propose"
+  # until their executors land (#6764) - "execute" fails at startup.
   # authority:
   #   post_comment: "execute"       # execute | propose
   #   create_issue: "execute"       # execute | propose
   #   flag_pattern: "execute"       # execute | propose
-  #   reset_retry: "propose"        # propose only until #6764
+  #   reset_retry: "propose"        # execute | propose
   #   kill_hung_session: "propose"  # propose only until #6764
   # Periodic health review (ADR-0031 §4): every N minutes the orchestrator
   # files a "Health Review" anchor issue for the triage agent to walk the

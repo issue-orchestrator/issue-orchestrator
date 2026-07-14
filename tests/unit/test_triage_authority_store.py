@@ -126,6 +126,28 @@ def test_allowed_targets_by_flavor() -> None:
     assert _batch().allowed_targets() == frozenset({7, 101, 102})
 
 
+def test_allowed_act_level_targets_are_issue_only() -> None:
+    """Act-level (reset_retry/kill_hung_session) scope is the STRICTER
+    issue-only set (#6764 re-review F1): only a failure investigation owns a
+    resettable work issue; batch/health reviews expose none, so a manifest PR
+    (or anchor) can never be handed to the issue reset owner as an issue_number
+    (confused deputy)."""
+    investigation = TriageLaunchAuthority(
+        flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+        anchor_issue_number=7,
+        focus_issue_number=7,
+    )
+    assert investigation.allowed_act_level_targets() == frozenset({7})
+    # Batch manifest PRs are addressable for comments but NOT for act-level work.
+    assert _batch().allowed_act_level_targets() == frozenset()
+    assert 101 not in _batch().allowed_act_level_targets()
+    health = TriageLaunchAuthority(
+        flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        anchor_issue_number=9,
+    )
+    assert health.allowed_act_level_targets() == frozenset()
+
+
 def test_discard_removes_only_the_named_run(tmp_path: Path) -> None:
     """Retention (#6769 F3): discard drops one run's row and nothing else."""
     store = SqliteTriageAuthorityStore.for_repo(tmp_path)
