@@ -729,6 +729,11 @@ class TestFactGathererHealthReviewFacts:
         assert result is not None
         assert result.health_review_due is False
         assert result.existing_health_review_issue is None
+        # No scan ran, so the case-file projection is NOT observed this tick;
+        # the flag stays False so the board publisher retains its last
+        # projection instead of wiping it with the empty tuple (#6781 R2).
+        assert result.case_files_scanned is False
+        assert result.open_case_files == ()
         mock_repository_host.list_issues.assert_not_called()
         mock_repository_host.get_prs_with_label.assert_not_called()
 
@@ -1316,6 +1321,8 @@ class TestCaseFileScanClassification:
         assert case_file.area == "db"
         # The observation-labeled issue is NEVER an anchor; #7 still is.
         assert facts.existing_triage_issue == 7
+        # The anchor scan ran, so the projection is authoritative this tick.
+        assert facts.case_files_scanned is True
         # Still just one issue scan for anchors + proposals + case files.
         assert mock_repository_host.list_issues.call_count == 1
 
@@ -1351,3 +1358,75 @@ class TestCaseFileScanClassification:
         assert published_facts is facts
         assert last_health_review_at == sample_state.last_health_review_at
         assert len(published_facts.open_case_files) == 1
+
+    def test_no_scan_tick_preserves_prior_case_file_projection(
+        self, mock_config, mock_repository_host, sample_state, tmp_path
+    ) -> None:
+        """#6781 R2 end-to-end: a scanned tick populates the board projection;
+        a later health-armed/not-due/no-op tick makes NO scan and must not wipe
+        it. This wires the real gatherer -> real publisher path so the
+        ``case_files_scanned`` flag the gatherer stamps actually governs whether
+        the projection the board snapshot builder reads is retained.
+        """
+        from issue_orchestrator.control.triage_board import (
+            TriageBoardPublisher,
+            triage_board_path,
+        )
+        from issue_orchestrator.domain.triage_session import (
+            TRIAGE_OBSERVATION_LABEL,
+        )
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        # Health review armed; batch disabled (threshold 0 -> no watch label);
+        # empty op ledger. The only thing that ever triggers the anchor scan
+        # here is health-review due-ness.
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 0
+        mock_config.triage.health_review.interval_minutes = 60
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        publisher = TriageBoardPublisher(
+            board_path=triage_board_path(tmp_path),
+            authority=InMemoryTriageAuthorityStore(),
+        )
+        gatherer = FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            triage_authority=InMemoryTriageAuthorityStore(),
+            board_publisher=publisher,
+        )
+
+        # Tick 1: health review is due -> the anchor scan runs and observes an
+        # open pattern case file.
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=800,
+                title="Pattern case file: db-timeout",
+                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL, "area:db"],
+            ),
+        ]
+        sample_state.last_health_review_at = 1_000.0
+        scanned = gatherer.gather_triage_facts(sample_state, now=1_000.0 + 3600)
+        assert scanned is not None
+        assert scanned.case_files_scanned is True
+        assert [cf.issue_number for cf in publisher.case_files()] == [800]
+
+        # The review ran, so its timestamp advances (orchestrator authority).
+        sample_state.last_health_review_at = 1_000.0 + 3600
+
+        # Tick 2: not due, empty ledger, batch off -> NO scan this tick.
+        mock_repository_host.list_issues.reset_mock()
+        mock_repository_host.list_issues.return_value = []
+        not_scanned = gatherer.gather_triage_facts(
+            sample_state, now=1_000.0 + 3600 + 60
+        )
+        assert not_scanned is not None
+        assert not_scanned.case_files_scanned is False
+        assert not_scanned.open_case_files == ()
+        # Zero GitHub calls on the frugal tick (GitHub API discipline).
+        mock_repository_host.list_issues.assert_not_called()
+        # The projection the board snapshot builder reads is preserved, not
+        # wiped by the empty tuple the frugal tick carried.
+        assert [cf.issue_number for cf in publisher.case_files()] == [800]

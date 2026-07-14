@@ -255,7 +255,8 @@ def test_publish_retains_case_files_and_writes_board(tmp_path: Path) -> None:
     facts = TriageFacts(
         open_case_files=(
             _summary(700, comments=3, updated_at="2026-07-11T12:00:00+00:00", area="db"),
-        )
+        ),
+        case_files_scanned=True,
     )
     publisher = _publisher(tmp_path)
     publisher.publish(facts, last_health_review_at=0.0)
@@ -285,7 +286,9 @@ def test_publisher_reads_shipped_fixes_from_durable_authority(tmp_path: Path) ->
 
 def test_publish_throttles_unchanged_content(tmp_path: Path) -> None:
     """Identical facts render identically -> no second write (#6781)."""
-    facts = TriageFacts(open_case_files=(_summary(700, comments=1),))
+    facts = TriageFacts(
+        open_case_files=(_summary(700, comments=1),), case_files_scanned=True
+    )
     publisher = _publisher(tmp_path)
     publisher.publish(facts, last_health_review_at=0.0)
     board = triage_board_path(tmp_path)
@@ -299,8 +302,14 @@ def test_publish_throttles_unchanged_content(tmp_path: Path) -> None:
 
 def test_publish_rewrites_when_content_changes(tmp_path: Path) -> None:
     publisher = _publisher(tmp_path)
-    publisher.publish(TriageFacts(open_case_files=(_summary(700, comments=1),)), last_health_review_at=0.0)
-    publisher.publish(TriageFacts(open_case_files=(_summary(700, comments=2),)), last_health_review_at=0.0)
+    publisher.publish(
+        TriageFacts(open_case_files=(_summary(700, comments=1),), case_files_scanned=True),
+        last_health_review_at=0.0,
+    )
+    publisher.publish(
+        TriageFacts(open_case_files=(_summary(700, comments=2),), case_files_scanned=True),
+        last_health_review_at=0.0,
+    )
 
     content = triage_board_path(tmp_path).read_text()
     assert "| 2 |" in content  # the newer comment count landed
@@ -316,7 +325,7 @@ def test_publish_swallows_render_failure(tmp_path: Path) -> None:
         authority=InMemoryTriageAuthorityStore(),
         clock=boom,
     )
-    facts = TriageFacts(open_case_files=(_summary(700),))
+    facts = TriageFacts(open_case_files=(_summary(700),), case_files_scanned=True)
     publisher.publish(facts, last_health_review_at=0.0)  # must not raise
     assert publisher.case_files() == facts.open_case_files
     assert not triage_board_path(tmp_path).exists()
@@ -331,5 +340,74 @@ def test_publish_swallows_write_failure(tmp_path: Path) -> None:
         clock=lambda: datetime(2026, 7, 11, 5, 0, tzinfo=UTC),
     )
 
-    publisher.publish(TriageFacts(open_case_files=(_summary(700),)), last_health_review_at=0.0)
+    publisher.publish(
+        TriageFacts(open_case_files=(_summary(700),), case_files_scanned=True),
+        last_health_review_at=0.0,
+    )
     # No exception propagated.
+
+
+# --- Retain-vs-clear across scanned / not-scanned ticks (#6781 R2) ---------
+
+
+def test_publish_retains_prior_case_files_when_scan_did_not_run(tmp_path: Path) -> None:
+    """A frugal tick (no anchor scan) must NOT wipe the durable projection.
+
+    Regression for #6781 R2: a health-review-armed but not-due tick gathers
+    facts with ``case_files_scanned=False`` and ``open_case_files=()``. That
+    empty tuple means "not observed this tick", not "observed empty" — the
+    publisher must retain the last scanned projection so the board snapshot
+    keeps seeing accumulating case-file evidence between scans.
+    """
+    publisher = _publisher(tmp_path)
+    scanned = TriageFacts(
+        open_case_files=(
+            _summary(700, comments=3, updated_at="2026-07-11T12:00:00+00:00", area="db"),
+        ),
+        case_files_scanned=True,
+    )
+    publisher.publish(scanned, last_health_review_at=0.0)
+    assert publisher.case_files() == scanned.open_case_files
+
+    # A subsequent no-scan tick: empty case files, scanned flag off.
+    not_scanned = TriageFacts(open_case_files=(), case_files_scanned=False)
+    publisher.publish(not_scanned, last_health_review_at=0.0)
+
+    # The injected reader (what the board snapshot builder consumes) still
+    # holds the prior case file...
+    assert publisher.case_files() == scanned.open_case_files
+    # ...and the rendered board still surfaces it rather than "None".
+    content = triage_board_path(tmp_path).read_text()
+    assert "#700" in content
+    assert "Pattern case file: sig-700" in content
+
+
+def test_publish_clears_case_files_when_scan_observed_none(tmp_path: Path) -> None:
+    """A real scan that observed no open case files DOES clear the projection.
+
+    The counterpart to the retain-on-no-scan case: when the anchor scan runs
+    (``case_files_scanned=True``) and finds nothing, the empty tuple is a
+    genuine observation, so stale case files are removed from both the reader
+    and the board.
+    """
+    publisher = _publisher(tmp_path)
+    publisher.publish(
+        TriageFacts(
+            open_case_files=(_summary(700, comments=3, area="db"),),
+            case_files_scanned=True,
+        ),
+        last_health_review_at=0.0,
+    )
+    assert publisher.case_files()  # sanity: something to clear
+
+    # A real scan observing an empty ledger.
+    publisher.publish(
+        TriageFacts(open_case_files=(), case_files_scanned=True),
+        last_health_review_at=0.0,
+    )
+
+    assert publisher.case_files() == ()
+    content = triage_board_path(tmp_path).read_text()
+    assert "#700" not in content
+    # The case-file section collapses to the empty marker.
+    assert "## Open pattern case files\n\nNone." in content

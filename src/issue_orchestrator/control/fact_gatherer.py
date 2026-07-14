@@ -269,6 +269,12 @@ class FactGatherer:
         approved_ops: tuple["ApprovedTriageOp", ...] = ()
         absent_op_candidates: tuple[int, ...] = ()
         case_files: tuple["TriageCaseFileSummary", ...] = ()
+        # Distinguishes "scan ran and observed no case files" from "scan was
+        # skipped this tick" so the board projection is only replaced when the
+        # anchor scan actually observed the ledger (#6781 R2). A frugal tick
+        # (health armed but not due, no batch, empty ledger) leaves this False
+        # and its empty ``case_files`` must NOT wipe the retained projection.
+        case_files_scanned = False
         if batch_armed or ops or due:
             # The ONE exhaustive open triage-agent scan classifies batch +
             # health anchors, open proposals, approved ops, and absent-ledger
@@ -284,6 +290,7 @@ class FactGatherer:
                 absent_op_candidates,
                 case_files,
             ) = self._classify_triage_anchor_scan(ops)
+            case_files_scanned = True
             # Batch anchor classification stays gated on batch_armed: a batch
             # anchor is meaningless while the batch trigger is off.
             if batch_armed:
@@ -304,6 +311,7 @@ class FactGatherer:
             approved_triage_ops=approved_ops,
             absent_proposal_op_candidates=absent_op_candidates,
             open_case_files=case_files,
+            case_files_scanned=case_files_scanned,
         )
         if self.board_publisher is not None:
             self.board_publisher.publish(

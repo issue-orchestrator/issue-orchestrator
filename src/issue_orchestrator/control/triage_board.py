@@ -71,11 +71,25 @@ class TriageBoardPublisher:
         return self._authority.list_recent_shipped_fixes(limit=limit)
 
     def publish(self, facts: "TriageFacts", *, last_health_review_at: float) -> None:
-        """Retain the scan facts and refresh the local board projection."""
-        self._case_files = facts.open_case_files
+        """Retain the scan facts and refresh the local board projection.
+
+        The retained case-file projection is replaced ONLY when this tick
+        actually ran the anchor scan (``facts.case_files_scanned``). An
+        API-frugal tick that skipped the scan carries ``open_case_files=()``
+        meaning "not observed", not "observed empty"; overwriting the
+        projection with that empty tuple would erase durable case-file
+        evidence between scans and leave the board snapshot blind to
+        accumulating pattern evidence (#6781 R2). A scan that genuinely
+        observed no open case files still clears the projection — there the
+        empty tuple is a real observation. ``self._case_files`` is the single
+        source of truth for both the injected reader and the rendered board,
+        so ``_build_view`` reads it rather than the raw facts.
+        """
+        if facts.case_files_scanned:
+            self._case_files = facts.open_case_files
         try:
             rendered = render_triage_board_md(
-                self._build_view(facts, last_health_review_at)
+                self._build_view(last_health_review_at)
             )
         except Exception:
             logger.warning("[triage-board] Failed to render board", exc_info=True)
@@ -93,13 +107,11 @@ class TriageBoardPublisher:
         self._last_rendered = rendered
         logger.debug("[triage-board] Board written: %s", self._board_path)
 
-    def _build_view(
-        self, facts: "TriageFacts", last_health_review_at: float
-    ) -> "TriageBoardView":
+    def _build_view(self, last_health_review_at: float) -> "TriageBoardView":
         return build_triage_board_view(
             ops=self._authority.list_ops() if self._authority is not None else (),
-            case_files=facts.open_case_files,
-            area_counts=case_file_area_counts(facts.open_case_files),
+            case_files=self._case_files,
+            area_counts=case_file_area_counts(self._case_files),
             last_health_review_at=last_health_review_at,
             now=self._clock(),
         )
