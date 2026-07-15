@@ -22,8 +22,11 @@
 //
 //   D. Dispatcher round-trip: render → extract Command from
 //      ``data-lifecycle-command`` → dispatch via
-//      ``runLifecycleCommandFromToggle`` → assert
-//      ``/api/e2e-run-detail/{n}?view=user`` was fetched.
+//      ``runLifecycleCommandFromToggle`` → assert the run-detail
+//      owner (``_fetchE2ERunDetail``, in ``e2e_run_view.js``) was
+//      reached with the row's run id and view.  The URL and the
+//      ``E2ERunDetailPayload`` contract belong to that owner and are
+//      covered in ``e2e_run_detail_contract.test.js``.
 //
 //   E. Re-routed ``open_e2e_run``: the typed Command that used to
 //      open the modal now expands the matching row (and opens the
@@ -299,17 +302,23 @@ test('renderE2ERunRow: per-outcome counts render with the right tone color class
 
 // ── Layer D: render → extract → dispatch round-trip ────────────────
 
-function _attachFakeFetch(ctx) {
-    const calls = { fetch: [] };
-    ctx.fetch = (url) => {
-        calls.fetch.push(url);
+// Stubs the run-detail owner that lives in ``e2e_run_view.js``.
+//
+// Since issue #6337 the row loader does not fetch or parse anything
+// itself: it delegates to ``_fetchE2ERunDetail``, which owns the URL,
+// the ``E2ERunDetailPayload`` contract, and the throw-on-rejection
+// behaviour.  Those are covered where they live, in
+// ``e2e_run_detail_contract.test.js``.  What this file owns is the
+// dispatch chain: does toggling a row reach the owner, with the right
+// run id and view, exactly once?
+function _attachFakeRunDetailFetcher(ctx, impl = null) {
+    const calls = { runDetail: [] };
+    ctx._fetchE2ERunDetail = (runId, view) => {
+        calls.runDetail.push([runId, view]);
+        if (impl) return impl(runId, view);
         return Promise.resolve({
-            ok: true,
-            status: 200,
-            json: () => Promise.resolve({
-                run: { id: 88, started_at: '2026-05-12T10:00:00Z', status: 'passed', commit_sha: 'abc' },
-                results_summary: {},
-            }),
+            run: { id: 88, started_at: '2026-05-12T10:00:00Z', status: 'passed', commit_sha: 'abc' },
+            results_summary: {},
         });
     };
     return calls;
@@ -334,9 +343,9 @@ function _fakeRow(runId, payloadAttr, contentEl) {
     };
 }
 
-test('dispatcher round-trip: toggling a row calls loadE2ERunIntoRow and fetches /api/e2e-run-detail', async () => {
+test('dispatcher round-trip: toggling a row delegates to the run-detail owner', async () => {
     const ctx = _loadRunsListPlusDispatcher();
-    const calls = _attachFakeFetch(ctx);
+    const calls = _attachFakeRunDetailFetcher(ctx);
 
     // Render a row, then extract the typed Command from the
     // rendered HTML (the same path a real toggle would hit).
@@ -364,7 +373,7 @@ test('dispatcher round-trip: toggling a row calls loadE2ERunIntoRow and fetches 
     assert.strictEqual(detailsEl.dataset.loaded, '1', 'row must mark itself loaded');
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(calls.fetch, ['/api/e2e-run-detail/88?view=user']);
+    assert.deepStrictEqual(calls.runDetail, [[88, 'user']], 'toggle must reach the run-detail owner once');
 });
 
 test('dispatcher round-trip: loaded row binds shared timeline action delegate for plugin menus', async () => {
@@ -372,7 +381,7 @@ test('dispatcher round-trip: loaded row binds shared timeline action delegate fo
     const ctx = _loadRunsListPlusDispatcher({
         bindTimelineEventActions: (container) => boundContainers.push(container),
     });
-    _attachFakeFetch(ctx);
+    _attachFakeRunDetailFetcher(ctx);
     const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
     const match = html.match(/data-lifecycle-command="([^"]+)"/);
     const cmdRaw = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
@@ -389,7 +398,7 @@ test('dispatcher round-trip: loaded row binds shared timeline action delegate fo
 
 test('dispatcher round-trip: re-opening a loaded row is a no-op (predictable-collapse rule)', async () => {
     const ctx = _loadRunsListPlusDispatcher();
-    const calls = _attachFakeFetch(ctx);
+    const calls = _attachFakeRunDetailFetcher(ctx);
     const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
     const match = html.match(/data-lifecycle-command="([^"]+)"/);
     const cmdRaw = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
@@ -399,12 +408,12 @@ test('dispatcher round-trip: re-opening a loaded row is a no-op (predictable-col
     detailsEl.dataset.loaded = '1';
     ctx.runLifecycleCommandFromToggle(detailsEl);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(calls.fetch, [], 're-opening must NOT re-fetch (dataset.loaded === "1")');
+    assert.deepStrictEqual(calls.runDetail, [], 're-opening must NOT re-fetch (dataset.loaded === "1")');
 });
 
 test('dispatcher round-trip: closed <details> does not fire the loader', async () => {
     const ctx = _loadRunsListPlusDispatcher();
-    const calls = _attachFakeFetch(ctx);
+    const calls = _attachFakeRunDetailFetcher(ctx);
     const html = ctx.renderE2ERunsList({ runs: [_row(88)] });
     const match = html.match(/data-lifecycle-command="([^"]+)"/);
     const cmdRaw = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
@@ -413,7 +422,7 @@ test('dispatcher round-trip: closed <details> does not fire the loader', async (
     detailsEl.open = false;
     ctx.runLifecycleCommandFromToggle(detailsEl);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(calls.fetch, []);
+    assert.deepStrictEqual(calls.runDetail, []);
 });
 
 // ── Layer E: re-routed open_e2e_run ───────────────────────────────

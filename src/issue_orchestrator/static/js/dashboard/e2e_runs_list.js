@@ -145,12 +145,15 @@
         detailsEl.dataset.loaded = '1';
         body.innerHTML = '<div class="loading-spinner" role="status" aria-live="polite">Loading run details…</div>';
         try {
-            const res = await fetch(`/api/e2e-run-detail/${n}?view=user`);
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok) {
-                const message = (data && (data.error || data.detail)) || `HTTP ${res.status}`;
-                throw new Error(String(message));
-            }
+            // Fetched + contract-validated by the single owner in
+            // ``e2e_run_view.js`` (issue #6337).  This row loader used
+            // to duplicate the fetch and swallow a malformed body into
+            // ``{}``, which then rendered an empty run panel as if the
+            // run had no results.  ``_fetchE2ERunDetail`` applies
+            // ``E2ERunDetailPayload`` and throws on rejection, so
+            // ``data`` is contract-shaped by the time we render — or
+            // the catch below shows the failure.
+            const data = await _fetchE2ERunDetail(n, 'user');
             // Mount the canonical viewer body (same renderer the
             // legacy modal used) inline.  Re-uses every helper from
             // ``e2e_run_view.js`` — single owner for "render an E2E

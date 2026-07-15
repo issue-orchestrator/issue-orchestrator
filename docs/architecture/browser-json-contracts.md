@@ -94,6 +94,14 @@ Classification (issue #6337):
 - **context-local** — depends on DOM/user/runtime state a schema cannot express.
 - **raw-json-intentional** — no contract is useful; documented why.
 
+The `fetch` rows below are enforced, not just documented.
+`tests/unit/test_dashboard_ui_guardrails.py` derives the set of
+contract-covered endpoints from `docs/api/ui-openapi.json` and fails if a
+browser JS file touches one without either reading it through
+`uiContractJson.fromResponse(...)` (naming the schema the contract
+assigns to that endpoint) or being recorded as a known follow-up. The
+follow-up list is a ratchet: it may shrink, never grow.
+
 ### Dashboard (`static/js/dashboard/`, `static/js/`)
 
 | Site | Boundary | Class | Status |
@@ -103,9 +111,20 @@ Classification (issue #6337):
 | `e2e_runs_list.js` — `#recentE2ERunsData` | inline `<script>` | contract-covered | Validated as `RecentE2ERunsPayload` |
 | `e2e_runs_list.js` — `/api/e2e-runs/recent` | `fetch().json()` | contract-covered | Validated as `RecentE2ERunsPayload` |
 | `core.js` — `/api/view-model`, `/api/view-model-snapshot` | `fetch().json()` | contract-covered | Validated as `DashboardViewModelPayload` / `ViewModelSnapshotPayload`; replaced a hand-written `!payload.view_model \|\| !Array.isArray(payload.rows)` check |
+| `core.js` — `/api/issue-rows` | `fetch().json()` | contract-covered | Validated as `IssueRowsPayload`; replaced a `data.rows \|\| []` fallback that emptied the issue list on a malformed body |
+| `e2e_run_view.js` — `/api/e2e-run-detail/{run_id}` | `fetch().json()` | contract-covered | Validated as `E2ERunDetailPayload` in `_fetchE2ERunDetail`, the **single owner** of this read; replaced a `typeof payload === 'object'` check |
+| `e2e_runs_list.js` — run detail (`loadE2ERunIntoRow`) | delegated | contract-covered | Delegates to `_fetchE2ERunDetail`; previously duplicated the fetch and swallowed a malformed body into `{}` |
+| `validation_viewer.js` — `/api/e2e-run/{run_id}/test-output` | `fetch().json()` | contract-covered | Validated as `E2ETestOutputPayload`; replaced a `.catch(() => ({}))` that rendered "no captured output" for a malformed body. The URL arrives via `data-cvv-output-url`, so the guardrail's endpoint scan cannot see it — the binding is pinned explicitly |
+| `e2e_run_view.js`, `validation_viewer.js` — error bodies | `fetch()` error body | raw-json-intentional | The contract defines the 200 only, so a failure body has no schema; yields a display string, never a payload the renderer sees |
+| `core.js` — `/api/info`, `e2e_run_view.js` — `/control/e2e/create-issues/{run_id}` | `fetch().json()` | raw-json-intentional | Not in `ui-openapi.json`; no component to validate against |
+| `e2e_canonical_payload.js`, `ui_action_contract.js`, `flash_debug.js` — endpoint names | not a JSON read | n/a | Name a contract-covered endpoint without reading its body: a URL builder, a URL registry, and a `fetch` timing probe respectively |
 | `e2e_run_view.js` — `resolveRowCommandContext()` | DOM row identity | context-local | Stays local: proves a *valid* command targets the row that dispatched it |
 | `timeline.js` — `dataset.action` (`runTimelineEventAction`) | DOM `data-*` | contract-missing | Legacy action payload keyed by `type`, not `kind`; no OpenAPI component. Follow-up |
-| `session_dialogs.js`, `controls_refresh.js`, `e2e_runtime.js`, `issue_detail_*` — dialog/diagnostics endpoints | `fetch().json()` | contract-missing | Components exist for several of these; readers not yet applied. Follow-up |
+| `shell_actions.js`, `session_dialogs.js`, `issue_detail_modals.js`, `plugins/agent_context.js` — `/api/dialog/*` | `fetch().json()` | contract-missing | Components exist (`InfoDialogPayload`, `ConfigDialogPayload`, `DebugDialogPayload`, `DoctorDialogPayload`, `PhaseDialogPayload`, `BlockedIssuesDialogPayload`, `SessionDiagnosticsDialogPayload`, `ValidationFailureDialogPayload`); readers not yet applied. Follow-up |
+| `issue_detail_drawer.js`, `inline_agent_attempts.js`, `timeline.js` — `/api/issue-detail/*`, `/api/e2e-run/{run_id}/issue-detail/*` | `fetch().json()` | contract-missing | `IssueDetailPayload` exists; readers not yet applied. Follow-up |
+| `e2e_canonical_payload.js` — `/api/e2e-run/{run_id}/test-output` | `fetch().json()` | contract-missing | `E2ETestOutputPayload` exists; reader not yet applied. Follow-up |
+| `kanban_columns.js` — `/api/view-model` | `fetch().json()` | contract-missing | `DashboardViewModelPayload` exists; reader not yet applied. Follow-up |
+| `ui_action_contract.js` — `/api/retrospective-review`, `/api/retrospective-review/preflight` | `fetch().json()` | contract-missing | Components exist; readers not yet applied. Follow-up |
 | `issue_metadata.js` — SSE `e.data` (6 sites) | EventSource | contract-missing | SSE payloads are defined in `contracts/public.py`, not `ui-openapi.json`; needs a contract before a reader. Follow-up |
 | `issue_menus.js` — `dataset.labels`, `dataset.dependencies` | DOM `data-*` | contract-missing | Bare JSON arrays with no component. Follow-up |
 | `dashboard.html` — `window.dashboardData` | inline bootstrap | contract-missing | Mirrors `DashboardDataPayload`; assigned to a global rather than read through a reader. Follow-up |

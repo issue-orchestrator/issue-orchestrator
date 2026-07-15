@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import json
 import re
 
 from issue_orchestrator.view_models.dashboard_assets import DASHBOARD_CSS_CHUNKS
@@ -4275,6 +4276,216 @@ UI_CONTRACT_JSON_JS = ROOT / "src" / "issue_orchestrator" / "static" / "js" / "u
 UI_CONTRACT_VALIDATORS_JS = (
     ROOT / "src" / "issue_orchestrator" / "static" / "js" / "ui-contracts.validators.js"
 )
+STATIC_JS_DIR = ROOT / "src" / "issue_orchestrator" / "static" / "js"
+UI_OPENAPI_JSON = ROOT / "docs" / "api" / "ui-openapi.json"
+
+# Browser JS that reads a contract-covered success body, and the
+# endpoint it owns that read for. The schema name is NOT written here:
+# it is looked up from the OpenAPI contract, so renaming a component
+# there fails this test until the JS names the new schema.
+#
+# This set only grows. Migrating a boundary out of the pending set below
+# is the intended direction of travel; moving one back out is a
+# regression.
+CONTRACT_READER_BINDINGS = frozenset(
+    {
+        ("dashboard/core.js", "/api/issue-rows"),
+        ("dashboard/core.js", "/api/view-model"),
+        ("dashboard/core.js", "/api/view-model-snapshot"),
+        ("dashboard/e2e_run_view.js", "/api/e2e-run-detail/{run_id}"),
+        ("dashboard/e2e_runs_list.js", "/api/e2e-runs/recent"),
+        # The URL reaches this reader through ``data-cvv-output-url``
+        # rather than as a literal, so the endpoint scan below cannot
+        # see it. Pinned here explicitly for that reason.
+        ("dashboard/validation_viewer.js", "/api/e2e-run/{run_id}/test-output"),
+    }
+)
+
+# Files that own at least one binding above. A file may legitimately
+# reference an endpoint it does not read — ``e2e_runs_list.js`` mentions
+# ``/api/e2e-run-detail`` but delegates the read to the owner in
+# ``e2e_run_view.js`` — so ownership is stated, not inferred.
+CONTRACT_READER_REQUIRED_JS = frozenset(rel for rel, _ in CONTRACT_READER_BINDINGS) | {
+    "dashboard/e2e_runs_list.js",
+}
+
+# Browser JS that reads a contract-covered success body without the
+# shared reader. Mirrors the "contract-missing … Follow-up" rows in
+# docs/architecture/browser-json-contracts.md.
+#
+# Adding a file here is allowed only for an endpoint that was ALREADY
+# unmigrated. A new raw-JSON boundary on a contract-covered endpoint
+# must go through the reader instead.
+PENDING_CONTRACT_READER_MIGRATION_JS = frozenset(
+    {
+        "dashboard/inline_agent_attempts.js",
+        "dashboard/issue_detail_drawer.js",
+        "dashboard/issue_detail_modals.js",
+        "dashboard/kanban_columns.js",
+        "dashboard/plugins/agent_context.js",
+        "dashboard/session_dialogs.js",
+        "dashboard/shell_actions.js",
+        "dashboard/timeline.js",
+    }
+)
+
+# Browser JS that names a contract-covered endpoint but never reads its
+# body, so there is nothing for a reader to validate:
+#   - ``e2e_canonical_payload.js`` builds the test-output URL that
+#     ``validation_viewer.js`` (a bound reader above) later fetches.
+#   - ``ui_action_contract.js`` is a URL registry of endpoint constants.
+#   - ``flash_debug.js`` wraps ``fetch`` to time requests and logs the
+#     URL; it never touches the response body.
+CONTRACT_ENDPOINT_NON_READERS_JS = frozenset(
+    {
+        "dashboard/e2e_canonical_payload.js",
+        "flash_debug.js",
+        "ui_action_contract.js",
+    }
+)
+
+
+def _contract_covered_endpoints() -> dict[str, str]:
+    """Map every UI endpoint path to the schema its 200 body must satisfy.
+
+    Derived from the canonical OpenAPI contract rather than hand-listed,
+    so a new contract-covered endpoint is picked up automatically.
+    """
+    spec = json.loads(UI_OPENAPI_JSON.read_text(encoding="utf-8"))
+    covered: dict[str, str] = {}
+    for path, operations in spec["paths"].items():
+        for operation in operations.values():
+            schema = (
+                operation.get("responses", {})
+                .get("200", {})
+                .get("content", {})
+                .get("application/json", {})
+                .get("schema", {})
+            )
+            if "$ref" in schema:
+                covered[path] = schema["$ref"].rsplit("/", 1)[-1]
+    return covered
+
+
+def _endpoint_regex(path: str) -> re.Pattern[str]:
+    """Match an OpenAPI path as it appears in JS.
+
+    ``/api/dialog/phase/{issue_number}`` has to match both a template
+    literal (``/api/dialog/phase/${n}``) and a concrete URL in a test or
+    comment (``/api/dialog/phase/42``).
+    """
+    parts = re.split(r"(\{[^}]+\})", path)
+    pattern = "".join(
+        r"(?:\$\{[^}]*\}|[^/'\"`?\s]+)" if part.startswith("{") else re.escape(part)
+        for part in parts
+    )
+    return re.compile(pattern)
+
+
+def _browser_js_files() -> list[Path]:
+    return [
+        path
+        for path in sorted(STATIC_JS_DIR.rglob("*.js"))
+        if path.name != "ui-contracts.validators.js"
+    ]
+
+
+def _strip_line_comments(source: str) -> str:
+    """Drop ``//`` comment lines so prose about an endpoint isn't read as a
+    call to it. Whole-line comments only — enough for these checks, and it
+    can't mangle a URL inside a string literal.
+    """
+    return "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("//")
+    )
+
+
+def _contract_endpoint_references() -> dict[str, set[str]]:
+    """Map each browser JS file to the contract schemas it must honour."""
+    covered = _contract_covered_endpoints()
+    patterns = {path: _endpoint_regex(path) for path in covered}
+    references: dict[str, set[str]] = {}
+    for js_path in _browser_js_files():
+        source = js_path.read_text(encoding="utf-8")
+        rel = js_path.relative_to(STATIC_JS_DIR).as_posix()
+        for path, schema in covered.items():
+            if patterns[path].search(source):
+                references.setdefault(rel, set()).add(schema)
+    return references
+
+
+def test_contract_covered_responses_are_read_through_the_generated_contract() -> None:
+    """A migrated boundary cannot go back to reading JSON by hand.
+
+    The failure this closes: ``core.js`` fetched ``/api/issue-rows`` and
+    did ``await res.json()`` with a ``data.rows || []`` fallback, so a
+    malformed body silently emptied the issue list; the two
+    ``/api/e2e-run-detail`` callers did ``.json().catch(() => ({}))`` and
+    rendered an empty run panel for what was really a payload bug. The
+    OpenAPI contract defines a schema for each of those 200s, so nothing
+    about that had to be hand-written.
+
+    ``uiContractJson.fromResponse`` naming the generated schema is the
+    only accepted way to read one of these bodies.
+    """
+    covered = _contract_covered_endpoints()
+
+    for rel, endpoint in sorted(CONTRACT_READER_BINDINGS):
+        assert endpoint in covered, (
+            f"{rel} is pinned to {endpoint}, which the UI contract no longer "
+            "defines a JSON response for — update the binding"
+        )
+        schema = covered[endpoint]
+        source = (STATIC_JS_DIR / rel).read_text(encoding="utf-8")
+        assert "uiContractJson.fromResponse(" in source, (
+            f"{rel} reads a contract-covered success body and must go through "
+            "the shared reader"
+        )
+        assert f"'{schema}'" in source, (
+            f"{rel} reads {endpoint}, which the contract defines as {schema}, "
+            f"but never names that schema — the body is not validated"
+        )
+
+
+def test_every_contract_covered_boundary_is_classified() -> None:
+    """No contract-covered fetch site may go unclassified.
+
+    Each browser JS file that touches a contract-covered endpoint is
+    either migrated to the shared reader or recorded as a known
+    follow-up. A new file appearing in neither set fails here, so raw
+    ``.json()`` cannot quietly reappear on a contract-covered payload.
+    """
+    referencing = set(_contract_endpoint_references())
+    classified = (
+        CONTRACT_READER_REQUIRED_JS
+        | PENDING_CONTRACT_READER_MIGRATION_JS
+        | CONTRACT_ENDPOINT_NON_READERS_JS
+    )
+
+    assert not (CONTRACT_READER_REQUIRED_JS & PENDING_CONTRACT_READER_MIGRATION_JS), (
+        "a file cannot be both migrated and pending migration"
+    )
+    assert not (PENDING_CONTRACT_READER_MIGRATION_JS & CONTRACT_ENDPOINT_NON_READERS_JS), (
+        "a file cannot both read a contract body and not read one"
+    )
+    assert not (referencing - classified), (
+        "these files touch a contract-covered endpoint but are neither "
+        "migrated nor recorded as a follow-up — route the response through "
+        "uiContractJson.fromResponse(), or add it to "
+        f"PENDING_CONTRACT_READER_MIGRATION_JS: {sorted(referencing - classified)}"
+    )
+    # Bound readers are enforced by the bindings test above and may not
+    # name their endpoint literally (a URL can arrive via a data-*
+    # attribute), so only the unmigrated classifications are held to
+    # still being detectable. This is what keeps the follow-up list
+    # shrinking rather than accumulating dead entries.
+    stale = (
+        PENDING_CONTRACT_READER_MIGRATION_JS | CONTRACT_ENDPOINT_NON_READERS_JS
+    ) - referencing
+    assert not stale, (
+        "these files no longer touch a contract-covered endpoint and must be "
+        f"removed from the guardrail sets: {sorted(stale)}"
+    )
 
 
 def test_dashboard_loads_contract_validators_before_json_consuming_chunks() -> None:
@@ -4334,11 +4545,13 @@ def test_lifecycle_commands_parse_json_through_the_contract_reader() -> None:
 
 
 def test_e2e_runs_list_json_boundaries_are_contract_validated() -> None:
-    """Both runs-list JSON boundaries — the inline SSR bootstrap and the
-    refresh endpoint — validate before rendering.
+    """Every runs-list JSON boundary validates before rendering.
 
-    The pre-#6337 code swallowed a malformed bootstrap into ``{runs: []}``,
-    which rendered "no runs" for what was actually a payload bug.
+    Three of them: the inline SSR bootstrap, the refresh endpoint, and
+    the lazily-loaded run detail. The pre-#6337 code swallowed a
+    malformed bootstrap into ``{runs: []}`` and a malformed run detail
+    into ``{}``, rendering "no runs" / an empty run panel for what was
+    actually a payload bug.
     """
     src = (DASHBOARD_JS_DIR / "e2e_runs_list.js").read_text(encoding="utf-8")
 
@@ -4346,6 +4559,31 @@ def test_e2e_runs_list_json_boundaries_are_contract_validated() -> None:
     assert "uiContractJson.fromResponse(" in src, "refresh response must be contract-validated"
     assert "'RecentE2ERunsPayload'" in src or "RECENT_E2E_RUNS_SCHEMA" in src
     assert "JSON.parse(" not in src, "runs list must not hand-parse JSON"
+    # The row loader delegates to the run-detail owner rather than
+    # re-fetching and re-parsing. Both are the regression this closes:
+    # a second fetch site is a second place for the contract to drift.
+    assert "_fetchE2ERunDetail(n, 'user')" in src, (
+        "the row loader must delegate to the run-detail owner in e2e_run_view.js"
+    )
+    assert ".json()" not in src, "the runs list must not read a response body by hand"
+
+
+def test_run_detail_fetch_has_exactly_one_owner() -> None:
+    """``/api/e2e-run-detail`` is fetched in one place only.
+
+    Two callers mount a run — the runs-list row loader and the timeline
+    view switcher. Before #6337 each did its own fetch + parse, and they
+    had already drifted: one checked ``typeof payload === 'object'``, the
+    other checked nothing. One owner means one contract application.
+    """
+    fetch_sites = [
+        path.relative_to(STATIC_JS_DIR).as_posix()
+        for path in _browser_js_files()
+        if "/api/e2e-run-detail" in _strip_line_comments(path.read_text(encoding="utf-8"))
+    ]
+    assert fetch_sites == ["dashboard/e2e_run_view.js"], (
+        f"expected a single run-detail fetch owner, found: {fetch_sites}"
+    )
 
 
 def test_contract_reader_exposes_every_browser_json_boundary() -> None:
@@ -4353,11 +4591,40 @@ def test_contract_reader_exposes_every_browser_json_boundary() -> None:
 
     If one is missing, that boundary grows its own bespoke parsing again —
     which is how the scattered checks this issue removes got there.
+
+    ``errorMessage`` is here for the same reason: a failure body has no
+    schema, and without one sanctioned place to say so, every caller
+    re-invents ``.json().catch(...)`` — which is exactly how the
+    swallow-into-``{}`` bugs this issue fixes were written.
     """
     src = UI_CONTRACT_JSON_JS.read_text(encoding="utf-8")
-    for reader in ("fromDataset", "fromInlineScript", "fromResponse", "fromEventData", "fromValue"):
+    for reader in (
+        "fromDataset",
+        "fromInlineScript",
+        "fromResponse",
+        "fromEventData",
+        "fromValue",
+        "errorMessage",
+    ):
         assert f"        {reader}," in src, f"shared reader must export {reader}"
     assert "setViolationReporter" in src, "diagnostics must be redirectable by the host/tests"
+
+
+def test_fetch_bodies_are_never_hand_parsed_outside_the_shared_reader() -> None:
+    """Only the shared reader may ``JSON.parse`` a fetch body.
+
+    The migrated boundaries each had a hand-rolled
+    ``response.json().catch(() => ({}))``; collapsing those onto
+    ``uiContractJson`` is what makes "the browser validates its JSON"
+    true rather than aspirational. A ``JSON.parse`` reappearing in one of
+    these files means a boundary grew its own parsing again.
+    """
+    for rel in sorted(CONTRACT_READER_REQUIRED_JS):
+        source = _strip_line_comments((STATIC_JS_DIR / rel).read_text(encoding="utf-8"))
+        assert "JSON.parse(" not in source, (
+            f"{rel} hand-parses JSON — route it through uiContractJson "
+            "(errorMessage() covers uncontracted failure bodies)"
+        )
 
 
 def test_generated_validators_are_not_hand_edited() -> None:

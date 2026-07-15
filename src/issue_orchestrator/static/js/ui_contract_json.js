@@ -173,6 +173,34 @@
         return parse(rawData, schemaName, source || 'event data');
     }
 
+    // Reads a FAILURE body to build a display string.
+    //
+    // Error bodies are deliberately outside the contract: the OpenAPI
+    // spec defines a schema for the 200 of each UI endpoint, not for its
+    // failures, so there is nothing to validate one against. This is the
+    // single sanctioned raw read at a fetch boundary — it exists so that
+    // "the error body has no schema" is expressed once here rather than
+    // as a hand-rolled ``.json().catch(...)`` in every caller, and so a
+    // stray ``JSON.parse`` in feature code stays a red flag.
+    //
+    // Returns a string, never a payload: nothing here can reach a
+    // renderer. Callers pass their own fallback for a body that is
+    // absent, unreadable, or not JSON.
+    async function errorMessage(response, fallback) {
+        const status = response && response.status;
+        const defaultText = fallback || 'HTTP ' + (status || 'error');
+        if (!response || typeof response.text !== 'function') return defaultText;
+        try {
+            const body = JSON.parse(await response.text());
+            const message = body && typeof body === 'object'
+                ? body.error || body.detail
+                : null;
+            return String(message || defaultText);
+        } catch (_) {
+            return defaultText;
+        }
+    }
+
     function _elementById(id) {
         const globalScope = typeof globalThis !== 'undefined' ? globalThis : null;
         const doc = globalScope && globalScope.document;
@@ -189,6 +217,7 @@
 
     return {
         describeViolation,
+        errorMessage,
         fromDataset,
         fromEventData,
         fromInlineScript,

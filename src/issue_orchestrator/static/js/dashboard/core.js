@@ -421,8 +421,15 @@ async function refreshIssueRows(vm, rowsOverride = null) {
 
         const res = await fetch(url.toString());
         if (!res.ok) return;
-        const data = await res.json();
-        rows = data.rows || [];
+        // Contract-validated (issue #6337).  The reconciliation below
+        // trusts this payload structurally: ``row.html`` is written
+        // straight into the DOM and ``row.issue_number`` keys which
+        // existing rows survive.  A malformed payload used to degrade
+        // to ``[]``, which removed every rendered row and read as
+        // "no issues" for what was actually a payload bug.
+        const payload = await uiContractJson.fromResponse(res, 'IssueRowsPayload', '/api/issue-rows');
+        if (!payload) return;
+        rows = payload.rows;
     }
 
     const nextIds = new Set(rows.map(row => String(row.issue_number)));

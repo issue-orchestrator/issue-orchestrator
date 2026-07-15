@@ -164,6 +164,44 @@ test('fromResponse: an unreadable body is reported, not thrown', async () => {
     });
 });
 
+// ── error bodies (deliberately uncontracted) ────────────────────────
+
+test('errorMessage: prefers the server-provided error field', async () => {
+    const response = { ok: false, status: 404, text: async () => '{"error": "run 88 is gone"}' };
+    assert.strictEqual(await uiContractJson.errorMessage(response), 'run 88 is gone');
+});
+
+test('errorMessage: falls back to FastAPI-style detail', async () => {
+    const response = { ok: false, status: 422, text: async () => '{"detail": "bad nodeid"}' };
+    assert.strictEqual(await uiContractJson.errorMessage(response), 'bad nodeid');
+});
+
+test('errorMessage: a non-JSON error body degrades to the status', async () => {
+    const response = { ok: false, status: 502, text: async () => '<html>502 Bad Gateway</html>' };
+    assert.strictEqual(await uiContractJson.errorMessage(response), 'HTTP 502');
+});
+
+test('errorMessage: an unreadable body degrades to the status rather than throwing', async () => {
+    const response = { ok: false, status: 500, text: async () => { throw new Error('socket closed'); } };
+    assert.strictEqual(await uiContractJson.errorMessage(response), 'HTTP 500');
+});
+
+test('errorMessage: the caller-supplied fallback wins over the bare status', async () => {
+    const response = { ok: false, status: 500, text: async () => '{}' };
+    assert.strictEqual(
+        await uiContractJson.errorMessage(response, 'Failed to load run details'),
+        'Failed to load run details',
+    );
+});
+
+test('errorMessage: never reports a contract violation — error bodies have no schema', async () => {
+    await withCaptureAsync(async (violations) => {
+        const response = { ok: false, status: 500, text: async () => '{"error": "boom"}' };
+        assert.strictEqual(await uiContractJson.errorMessage(response), 'boom');
+        assert.deepEqual(violations, [], 'an uncontracted body is not a contract failure');
+    });
+});
+
 // ── streaming / event payloads ──────────────────────────────────────
 
 test('fromEventData: a valid event payload returns the payload', () => {
