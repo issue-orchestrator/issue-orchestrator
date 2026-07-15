@@ -662,3 +662,45 @@ class TestStateBoardSnapshotProvider:
         snapshot = provider.snapshot(None)
 
         assert snapshot.recent_failures == []
+
+    def test_storm_health_queue_preserves_problem_cohort_after_tick(self) -> None:
+        """The health launch snapshot retains the whole storm after the
+        per-tick discovery buffer is cleared (#6780).
+
+        Also pins the context/authority split (R4 F1): the merged failure list
+        is CONTEXT the provider assembles, while the cohort surface is only
+        ever what the launch boundary grants — the provider never promotes its
+        own merged failures into authority.
+        """
+        state = OrchestratorState()
+        cohort = tuple(
+            DiscoveredFailure(
+                issue_number=number,
+                issue_title=f"Problem {number}",
+                failure_reason="blocked" if number == 42 else "failed",
+                observed_at=1_000.0,
+            )
+            for number in (41, 42, 43)
+        )
+        PendingSessionQueues(state).queue_health_review(
+            900,
+            "Health Review — walk the floor",
+            problem_cohort=cohort,
+        )
+        state.discovered_failures.clear()
+
+        provider = StateBoardSnapshotProvider(_make_builder(), lambda: state)
+        snapshot = provider.snapshot(None, (41, 42, 43))
+
+        assert [failure.issue_number for failure in snapshot.recent_failures] == [
+            41,
+            42,
+            43,
+        ]
+        assert snapshot.problem_issue_numbers() == frozenset({41, 42, 43})
+
+        # Same board, no grant: the failures are still there to read, but the
+        # provider grants nothing on its own.
+        ungranted = provider.snapshot(None)
+        assert [f.issue_number for f in ungranted.recent_failures] == [41, 42, 43]
+        assert ungranted.problem_issue_numbers() == frozenset()

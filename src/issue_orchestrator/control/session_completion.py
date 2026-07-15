@@ -35,6 +35,7 @@ from .completion_dispatcher import (
 from .session_completion_diagnostics import run_session_analysis, surface_failure_context
 from .session_run_resolution import resolve_session_run_dir
 from .transition_log import log_transition
+from .triage_reaction import record_completed_session_problem
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
@@ -259,7 +260,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     terminalization; the ONE effective outcome is finalized post-apply on every
     apply outcome (return or raise), then any apply error is re-raised (#6777).
     """
-    from ..domain.models import DiscoveredReview, DiscoveredFailure, PendingValidationRetry
+    from ..domain.models import DiscoveredReview, PendingValidationRetry
 
     name = session.terminal_id
     entity = (
@@ -452,15 +453,17 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             agent_label=session.agent_label,
             issue_key=session.issue.key.stable_id(),
         ))
+    record_completed_session_problem(
+        status=effective_status,
+        session=session,
+        triage_agent=config.triage_review_agent,
+        blocking_label=blocked_label or "",
+        artifact_hints=lambda: _failure_artifact_hints(
+            session.worktree_path, run_dir, diagnostic_path, claude_log_path
+        ),
+        record=state.record_discovered_failure,
+    )
     if effective_status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
-        state.record_discovered_failure(DiscoveredFailure(
-            session.issue.number,
-            session.issue.title,
-            effective_status.value,
-            artifact_hints=_failure_artifact_hints(
-                session.worktree_path, run_dir, diagnostic_path, claude_log_path
-            ),
-        ))
         # Track failed issues to prevent immediate retry (cleared on cache refresh)
         state.failed_this_cycle.add(session.issue.number)
         logger.info(

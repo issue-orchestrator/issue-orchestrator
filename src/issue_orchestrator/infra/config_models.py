@@ -339,14 +339,20 @@ class TriageAuthorityConfig:
 
 @dataclass
 class TriageHealthReviewConfig:
-    """Periodic health-review trigger settings (ADR-0031 §4).
+    """Periodic and problem-storm health-review trigger settings (ADR-0031).
 
     ``interval_minutes`` drives the planner-side trigger: every N minutes
     the orchestrator creates a health-review anchor issue for the triage
     agent to walk the board snapshot. 0 (the default) disables the trigger.
+
+    ``storm_threshold`` is the number of recent blocked/failed problem issues
+    that replaces per-issue investigations with one unscheduled health review;
+    0 disables storm escalation. ``storm_window_minutes`` defines "recent".
     """
 
     interval_minutes: int = 0
+    storm_threshold: int = 3
+    storm_window_minutes: int = 5
 
     def startup_errors(self) -> list[str]:
         """Startup configuration errors for the health-review block.
@@ -355,12 +361,23 @@ class TriageHealthReviewConfig:
         misconfiguration that must fail startup loudly, never be silently
         treated as disabled (#6763 finding 8).
         """
+        errors: list[str] = []
         if self.interval_minutes < 0:
-            return [
+            errors.append(
                 "triage.health_review.interval_minutes must be >= 0 "
                 f"(0 disables the trigger), got {self.interval_minutes}"
-            ]
-        return []
+            )
+        if self.storm_threshold < 0:
+            errors.append(
+                "triage.health_review.storm_threshold must be >= 0 "
+                f"(0 disables storm escalation), got {self.storm_threshold}"
+            )
+        if self.storm_window_minutes <= 0:
+            errors.append(
+                "triage.health_review.storm_window_minutes must be > 0, got "
+                f"{self.storm_window_minutes}"
+            )
+        return errors
 
 
 @dataclass
@@ -402,7 +419,11 @@ class TriageConfig:
             },
             "priority": self.priority,
             "authority": self.authority.to_event_dict(),
-            "health_review": {"interval_minutes": self.health_review.interval_minutes},
+            "health_review": {
+                "interval_minutes": self.health_review.interval_minutes,
+                "storm_threshold": self.health_review.storm_threshold,
+                "storm_window_minutes": self.health_review.storm_window_minutes,
+            },
         }
 
 

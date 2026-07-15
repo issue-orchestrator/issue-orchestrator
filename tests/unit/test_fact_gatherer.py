@@ -19,6 +19,7 @@ from issue_orchestrator.domain.models import (
     PendingTriageReview,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredFailure,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -637,6 +638,97 @@ class TestFactGathererHealthReviewFacts:
 
         assert result is not None
         mock_repository_host.list_milestones.assert_not_called()
+
+    @staticmethod
+    def _arm_storm(mock_config, sample_state, *, count: int = 3) -> None:
+        """Put ``count`` fresh problems on the board with threshold=3."""
+        from issue_orchestrator.domain.models import DiscoveredFailure
+
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_on_failure = True
+        mock_config.triage.health_review.storm_threshold = 3
+        mock_config.triage.health_review.storm_window_minutes = 5
+        for number in range(41, 41 + count):
+            sample_state.record_discovered_failure(
+                DiscoveredFailure(number, f"Problem {number}", "failed")
+            )
+
+    @staticmethod
+    def _open_anchor():
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        return Issue(
+            number=100,
+            title="Health Review — walk the floor",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+        )
+
+    def test_storm_arms_anchor_scan_when_interval_is_not_due(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """A storm can fire an anchor on a tick the interval is NOT due, so the
+        open-anchor scan must be armed by the storm too.
+
+        Arming only on due-ness leaves ``existing_health_review_issue`` None on
+        exactly the ticks a storm creates an anchor, so an anchor that is
+        already open — including one currently RUNNING, which no queue-derived
+        fallback can see — gets duplicated.
+        """
+        self._arm_health_review(mock_config, interval_minutes=60)
+        sample_state.last_health_review_at = 999_000.0
+        self._arm_storm(mock_config, sample_state)
+        mock_repository_host.list_issues.return_value = [self._open_anchor()]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_060.0)
+
+        assert result is not None
+        assert result.health_review_due is False
+        assert result.existing_health_review_issue == 100
+
+    def test_storm_only_config_arms_anchor_scan(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """interval_minutes=0 disables only the PERIODIC trigger.
+
+        Storm escalation stays live, so a storm-only configuration must still
+        gather the dedup fact — otherwise gathering bails out before any scan
+        and every storm mints another anchor.
+        """
+        mock_config.triage.health_review.interval_minutes = 0
+        self._arm_storm(mock_config, sample_state)
+        mock_repository_host.list_issues.return_value = [self._open_anchor()]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is False
+        assert result.existing_health_review_issue == 100
+
+    def test_no_scan_when_problems_stay_below_the_storm_threshold(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """GitHub API discipline: the extra scan is bought only by a real storm.
+
+        Two problems cannot escalate, so a not-due tick still makes zero calls.
+        """
+        mock_config.triage.health_review.interval_minutes = 0
+        self._arm_storm(mock_config, sample_state, count=2)
+
+        assert fact_gatherer.gather_triage_facts(sample_state, now=999_999.0) is None
+        mock_repository_host.list_issues.assert_not_called()
+
+    def test_disabled_storm_threshold_arms_no_scan(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """storm_threshold=0 disables escalation, so it arms nothing either."""
+        mock_config.triage.health_review.interval_minutes = 0
+        self._arm_storm(mock_config, sample_state, count=5)
+        mock_config.triage.health_review.storm_threshold = 0
+
+        assert fact_gatherer.gather_triage_facts(sample_state, now=999_999.0) is None
+        mock_repository_host.list_issues.assert_not_called()
 
     def test_existing_marker_labeled_issue_detected(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
@@ -1430,3 +1522,76 @@ class TestCaseFileScanClassification:
         # The projection the board snapshot builder reads is preserved, not
         # wiped by the empty tuple the frugal tick carried.
         assert [cf.issue_number for cf in publisher.case_files()] == [800]
+
+
+class TestClearDiscoveredFacts:
+    """Retention rule for the tick-scoped fact buffers (#6780).
+
+    The clear exists to drop facts the tick CONSUMED. A paused tick consumes
+    nothing — the Planner returns an empty plan and ``apply_plan`` refuses to
+    apply actions while paused — so clearing there would silently discard
+    problems that nothing else records. A session that fails while paused is
+    discovered exactly once, so a dropped storm cohort is unrecoverable even
+    after resume.
+    """
+
+    @staticmethod
+    def _config() -> Config:
+        config = Config(repo="test/repo")
+        config.triage_review_agent = "agent:triage"
+        config.triage_review_on_failure = True
+        return config
+
+    @staticmethod
+    def _state_with_cohort() -> OrchestratorState:
+        state = OrchestratorState()
+        for number in (41, 42, 43):
+            state.record_discovered_failure(
+                DiscoveredFailure(
+                    issue_number=number,
+                    issue_title=f"Problem {number}",
+                    failure_reason="failed",
+                    observed_at=1_000.0,
+                )
+            )
+        return state
+
+    def test_paused_tick_retains_discovered_failures(self):
+        """A paused tick planned nothing, so it consumed nothing."""
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        state = self._state_with_cohort()
+
+        clear_discovered_facts(state, self._config(), tick_paused=True)
+
+        assert [f.issue_number for f in state.discovered_failures] == [41, 42, 43]
+
+    def test_running_tick_clears_discovered_failures(self):
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        state = self._state_with_cohort()
+
+        clear_discovered_facts(state, self._config(), tick_paused=False)
+
+        assert state.discovered_failures == []
+
+    def test_retention_ignores_live_state_paused(self):
+        """Retention is the TICK's decision, never a fresh shared-state read.
+
+        ``state.paused`` is mutated from the web thread and can flip between
+        the snapshot and this call. Both directions are pinned here: the clear
+        must follow ``tick_paused`` even when live state says the opposite.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        resumed_mid_tick = self._state_with_cohort()
+        resumed_mid_tick.paused = False
+        clear_discovered_facts(resumed_mid_tick, self._config(), tick_paused=True)
+        assert [
+            f.issue_number for f in resumed_mid_tick.discovered_failures
+        ] == [41, 42, 43]
+
+        paused_mid_apply = self._state_with_cohort()
+        paused_mid_apply.paused = True
+        clear_discovered_facts(paused_mid_apply, self._config(), tick_paused=False)
+        assert paused_mid_apply.discovered_failures == []

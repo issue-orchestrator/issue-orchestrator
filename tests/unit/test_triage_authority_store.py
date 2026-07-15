@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.domain.models import DiscoveredFailure
 from issue_orchestrator.domain.triage_session import (
     StoredTriageOp,
     TriageLaunchAuthority,
@@ -17,6 +18,7 @@ from issue_orchestrator.ports.triage_authority import (
     TriageOpConflictError,
     TriagePatternConflictError,
     TriageShippedFixConflictError,
+    TriageStormCohortConflictError,
 )
 from issue_orchestrator.infra.triage_authority_store import (
     SqliteTriageAuthorityStore,
@@ -133,10 +135,9 @@ def test_allowed_targets_by_flavor() -> None:
 
 def test_allowed_act_level_targets_are_issue_only() -> None:
     """Act-level (reset_retry/kill_hung_session) scope is the STRICTER
-    issue-only set (#6764 re-review F1): only a failure investigation owns a
-    resettable work issue; batch/health reviews expose none, so a manifest PR
-    (or anchor) can never be handed to the issue reset owner as an issue_number
-    (confused deputy)."""
+    issue-only set (#6764 re-review F1, #6780): an investigation owns its focus;
+    a health review owns its immutable launch-granted problem cohort; a batch owns no
+    resettable issue. Triage anchors and manifest PRs are never act targets."""
     investigation = TriageLaunchAuthority(
         flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
         anchor_issue_number=7,
@@ -149,8 +150,32 @@ def test_allowed_act_level_targets_are_issue_only() -> None:
     health = TriageLaunchAuthority(
         flavor=TriageSessionFlavor.HEALTH_REVIEW,
         anchor_issue_number=9,
+        problem_issue_numbers=(12, 14),
     )
-    assert health.allowed_act_level_targets() == frozenset()
+    assert health.allowed_act_level_targets() == frozenset({12, 14})
+    assert 9 not in health.allowed_act_level_targets()
+
+
+def test_health_problem_cohort_round_trips_and_is_validated() -> None:
+    health = TriageLaunchAuthority(
+        flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        anchor_issue_number=9,
+        problem_issue_numbers=(12, 14),
+    )
+
+    assert TriageLaunchAuthority.from_dict(health.to_dict()) == health
+    with pytest.raises(ValueError, match="sorted and unique"):
+        TriageLaunchAuthority(
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            anchor_issue_number=9,
+            problem_issue_numbers=(14, 12, 12),
+        )
+    with pytest.raises(ValueError, match="only for a health review"):
+        TriageLaunchAuthority(
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+            anchor_issue_number=9,
+            problem_issue_numbers=(12,),
+        )
 
 
 def test_discard_removes_only_the_named_run(tmp_path: Path) -> None:
@@ -361,6 +386,117 @@ def test_pattern_methods_satisfy_the_port() -> None:
     )
 
     for method in ("record_pattern", "lookup_pattern", "list_patterns"):
+        assert callable(getattr(SqliteTriageAuthorityStore, method))
+        assert callable(getattr(InMemoryTriageAuthorityStore, method))
+        assert callable(getattr(TriageAuthorityStorePort, method))
+
+
+# --- Problem-storm cohort ledger (#6780) ---------------------------------
+
+
+def _cohort(numbers: tuple[int, ...] = (41, 42)) -> tuple[DiscoveredFailure, ...]:
+    return tuple(
+        DiscoveredFailure(
+            issue_number=number,
+            issue_title=f"Problem {number}",
+            failure_reason="failed",
+            artifact_hints=(f"/runs/{number}/failure-diagnostic.json",),
+            observed_at=1_000.0 + number,
+            blocking_label="blocked-failed",
+            issue_body=f"body {number}",
+            issue_milestone="M1",
+        )
+        for number in numbers
+    )
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_storm_cohort_round_trip_preserves_every_field(
+    tmp_path: Path, make_store
+) -> None:
+    """The WHOLE typed fact must survive, hints included: a recovered anchor
+    hands these to the board snapshot verbatim (#6780)."""
+    store = make_store(tmp_path)
+    store.record_storm_cohort(anchor_issue_number=999, cohort=_cohort())
+
+    assert store.load_storm_cohort(anchor_issue_number=999) == _cohort()
+    assert store.load_storm_cohort(anchor_issue_number=1000) is None
+    assert store.list_storm_cohorts() == ((999, _cohort()),)
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_record_storm_cohort_identical_payload_is_noop(
+    tmp_path: Path, make_store
+) -> None:
+    """Create-once: a retried intake for the same anchor is accepted."""
+    store = make_store(tmp_path)
+    store.record_storm_cohort(anchor_issue_number=999, cohort=_cohort())
+    store.record_storm_cohort(anchor_issue_number=999, cohort=_cohort())
+
+    assert store.list_storm_cohorts() == ((999, _cohort()),)
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_record_conflicting_storm_cohort_fails_loudly(
+    tmp_path: Path, make_store
+) -> None:
+    """The cohort is act-level authority AND artifact-retention scope; it must
+    never silently change or expand after the anchor exists (#6780)."""
+    store = make_store(tmp_path)
+    store.record_storm_cohort(anchor_issue_number=999, cohort=_cohort())
+
+    with pytest.raises(TriageStormCohortConflictError):
+        store.record_storm_cohort(
+            anchor_issue_number=999, cohort=_cohort((41, 42, 43))
+        )
+
+    assert store.load_storm_cohort(anchor_issue_number=999) == _cohort()
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_discard_storm_cohort_is_idempotent(tmp_path: Path, make_store) -> None:
+    store = make_store(tmp_path)
+    store.record_storm_cohort(anchor_issue_number=999, cohort=_cohort())
+
+    store.discard_storm_cohort(anchor_issue_number=999)
+    store.discard_storm_cohort(anchor_issue_number=999)
+
+    assert store.load_storm_cohort(anchor_issue_number=999) is None
+    assert store.list_storm_cohorts() == ()
+
+
+@pytest.mark.parametrize("make_store", OP_STORES)
+def test_list_storm_cohorts_is_anchor_sorted(tmp_path: Path, make_store) -> None:
+    store = make_store(tmp_path)
+    store.record_storm_cohort(anchor_issue_number=30, cohort=_cohort((3,)))
+    store.record_storm_cohort(anchor_issue_number=10, cohort=_cohort((1,)))
+    store.record_storm_cohort(anchor_issue_number=20, cohort=_cohort((2,)))
+
+    assert [anchor for anchor, _ in store.list_storm_cohorts()] == [10, 20, 30]
+
+
+def test_storm_cohort_survives_reopen(tmp_path: Path) -> None:
+    """The whole point: the cohort outlives the process that discovered it."""
+    SqliteTriageAuthorityStore.for_repo(tmp_path).record_storm_cohort(
+        anchor_issue_number=999, cohort=_cohort()
+    )
+
+    reopened = SqliteTriageAuthorityStore.for_repo(tmp_path)
+
+    assert reopened.load_storm_cohort(anchor_issue_number=999) == _cohort()
+
+
+def test_storm_cohort_methods_satisfy_the_port() -> None:
+    from issue_orchestrator.ports.triage_authority import (
+        TriageAuthorityStore as TriageAuthorityStorePort,
+    )
+
+    for method in (
+        "record_storm_cohort",
+        "load_storm_cohort",
+        "discard_storm_cohort",
+        "list_storm_cohorts",
+    ):
         assert callable(getattr(SqliteTriageAuthorityStore, method))
         assert callable(getattr(InMemoryTriageAuthorityStore, method))
         assert callable(getattr(TriageAuthorityStorePort, method))

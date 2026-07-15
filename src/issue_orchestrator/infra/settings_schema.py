@@ -1187,6 +1187,46 @@ class ReviewSettings(BaseModel):
             "yaml_path": "triage.health_review.interval_minutes",
         },
     )
+    triage_health_review_storm_threshold: int = Field(
+        3,
+        title="Health Review Storm Threshold",
+        description=(
+            "Escalate this many recent blocked/failed issues into one health "
+            "review (0 = disabled)"
+        ),
+        ge=0,
+        le=100,
+        json_schema_extra={
+            "doc_examples": ["0", "3", "5"],
+            "doc_notes": (
+                "When the threshold is reached inside the configured storm "
+                "window, the orchestrator creates one immediate, unscheduled "
+                "health review and suppresses individual investigations for "
+                "the cohort. The periodic interval remains independent."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.health_review.storm_threshold",
+            "yaml_path": "triage.health_review.storm_threshold",
+        },
+    )
+    triage_health_review_storm_window_minutes: int = Field(
+        5,
+        title="Health Review Storm Window (minutes)",
+        description="Time window used to group blocked/failed problem issues",
+        ge=1,
+        le=1440,
+        json_schema_extra={
+            "doc_examples": ["1", "5", "15"],
+            "doc_notes": (
+                "Problems observed within this window count toward the storm "
+                "threshold. This window groups reactions; it does not delay "
+                "ordinary failure investigations."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.health_review.storm_window_minutes",
+            "yaml_path": "triage.health_review.storm_window_minutes",
+        },
+    )
 
     @field_validator(
         "triage_authority_post_comment",

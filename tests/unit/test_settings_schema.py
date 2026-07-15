@@ -225,6 +225,14 @@ class TestValidation:
             == 0
         )
 
+    def test_health_review_storm_settings_enforce_bounds(self):
+        assert ReviewSettings().triage_health_review_storm_threshold == 3
+        assert ReviewSettings().triage_health_review_storm_window_minutes == 5
+        with pytest.raises(ValidationError):
+            ReviewSettings(triage_health_review_storm_threshold=-1)
+        with pytest.raises(ValidationError):
+            ReviewSettings(triage_health_review_storm_window_minutes=0)
+
     def test_web_port_min(self):
         with pytest.raises(ValidationError):
             AdvancedSettings(web_port=-1)
@@ -514,6 +522,21 @@ class TestFormControlClassification:
         control = classify_form_control(
             "review.triage_health_review_interval_minutes", prop
         )
+        assert control["kind"] == FORM_CONTROL_INTEGER
+
+    @pytest.mark.parametrize(
+        ("name", "minimum"),
+        [
+            ("triage_health_review_storm_threshold", 0),
+            ("triage_health_review_storm_window_minutes", 1),
+        ],
+    )
+    def test_health_review_storm_settings_project_accessible_number_controls(
+        self, name: str, minimum: int
+    ) -> None:
+        prop = get_settings_json_schema()["review"]["properties"][name]
+        assert prop["minimum"] == minimum
+        control = classify_form_control(f"review.{name}", prop)
         assert control["kind"] == FORM_CONTROL_INTEGER
 
     def test_rejected_negative_interval_surfaces_field_scoped_save_error(self):

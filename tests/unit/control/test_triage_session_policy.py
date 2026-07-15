@@ -116,3 +116,114 @@ class TestReadTriageAssignment:
 
         with pytest.raises(ValueError, match="flavor"):
             read_triage_assignment(tmp_path)
+
+
+class TestDiscardTriageAuthorityAfterCompletion:
+    """The retention owner drops BOTH triage records at a run's terminal.
+
+    The run-keyed launch authority and the anchor-keyed storm cohort (#6780)
+    have different keys but the same end: once the review's run is over,
+    neither may outlive it. The cohort's discard is what releases its members'
+    held run artifacts for cleanup.
+    """
+
+    @staticmethod
+    def _config():
+        from issue_orchestrator.infra.config import Config
+
+        config = Config(repo="test/repo")
+        config.triage_review_agent = "agent:triage"
+        return config
+
+    @staticmethod
+    def _session(agent_type: str):
+        from unittest.mock import MagicMock
+
+        session = MagicMock()
+        session.issue.number = 999
+        session.issue.agent_type = agent_type
+        session.run_assets.run_id = "r1"
+        session.run_assets.session_name = "issue-999"
+        return session
+
+    @staticmethod
+    def _store_with_both_rows():
+        from issue_orchestrator.domain.models import DiscoveredFailure
+        from issue_orchestrator.domain.triage_session import TriageLaunchAuthority
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        store = InMemoryTriageAuthorityStore()
+        store.record(
+            run_id="r1",
+            session_name="issue-999",
+            authority=TriageLaunchAuthority(
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+                anchor_issue_number=999,
+                problem_issue_numbers=(41, 42),
+            ),
+        )
+        store.record_storm_cohort(
+            anchor_issue_number=999,
+            cohort=tuple(
+                DiscoveredFailure(number, f"Problem {number}", "failed")
+                for number in (41, 42)
+            ),
+        )
+        return store
+
+    def test_terminal_completion_discards_authority_and_cohort(self) -> None:
+        from issue_orchestrator.control.triage_completion import (
+            discard_triage_authority_after_completion,
+        )
+
+        store = self._store_with_both_rows()
+
+        discard_triage_authority_after_completion(
+            self._config(),
+            store,
+            self._session("agent:triage"),
+            processing_errors=None,
+        )
+
+        assert store.load(run_id="r1", session_name="issue-999") is None
+        assert store.load_storm_cohort(anchor_issue_number=999) is None
+        assert store.list_storm_cohorts() == ()
+
+    def test_publish_failure_retains_both_for_the_retry(self) -> None:
+        """A publish-stage failure re-enters completion for this same run, so
+        neither record may be dropped yet."""
+        from issue_orchestrator.control.completion_types import ERROR_PREFIX_PUSH
+        from issue_orchestrator.control.triage_completion import (
+            discard_triage_authority_after_completion,
+        )
+
+        store = self._store_with_both_rows()
+
+        discard_triage_authority_after_completion(
+            self._config(),
+            store,
+            self._session("agent:triage"),
+            processing_errors=[f"{ERROR_PREFIX_PUSH}: remote rejected"],
+        )
+
+        assert store.load(run_id="r1", session_name="issue-999") is not None
+        assert store.load_storm_cohort(anchor_issue_number=999) is not None
+
+    def test_non_triage_session_touches_nothing(self) -> None:
+        from issue_orchestrator.control.triage_completion import (
+            discard_triage_authority_after_completion,
+        )
+
+        store = self._store_with_both_rows()
+
+        discard_triage_authority_after_completion(
+            self._config(),
+            store,
+            self._session("agent:coder"),
+            processing_errors=None,
+        )
+
+        assert store.load(run_id="r1", session_name="issue-999") is not None
+        assert store.load_storm_cohort(anchor_issue_number=999) is not None

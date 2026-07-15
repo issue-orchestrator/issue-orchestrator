@@ -227,3 +227,136 @@ def test_restart_safe_shipped_fix_evidence_is_synchronized(variant: str) -> None
     text = PROMPT_VARIANTS[variant]
     assert "recent_shipped_fixes" in text
     assert "issue/PR" in text
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_health_flow_teaches_cohort_scoped_act_level_authority(
+    variant: str,
+) -> None:
+    """#6780: the prompt must match the runtime act-level scope rule.
+
+    The orchestrator records a health review's act-level authority from its
+    OWNED cohort and rejects `reset_retry`/`kill_hung_session` proposals for
+    anything outside it. The prompt used to tell the agent that act-level
+    proposals "may only target THIS tracking issue", which made a storm
+    review's whole reason for existing unusable: it could be authorized for
+    #41/#42/#43 and still be instructed never to propose for them.
+    """
+    section = _flow_section(PROMPT_VARIANTS[variant], "Health Review Flow")
+
+    # The superseded rule must be gone, or the agent is told not to use its
+    # own authority.
+    assert "act-level) may\n  only target THIS tracking issue" not in section, (
+        f"{variant} still forbids act-level proposals for the owned cohort"
+    )
+    # Anchor-scoped proposals stay anchor-scoped.
+    assert "`post_comment`/`escalate_to_human` may only target THIS tracking" in (
+        section
+    ), f"{variant} no longer scopes post_comment/escalate_to_human to the anchor"
+    # Act-level scope is the cohort surface, named exactly as the snapshot
+    # field the orchestrator writes and validates against.
+    assert "problem_cohort" in section, (
+        f"{variant} does not name the problem_cohort act-level scope"
+    )
+    for act_level in ("reset_retry", "kill_hung_session"):
+        assert act_level in section, (
+            f"{variant} does not name {act_level} in the health flow"
+        )
+    # An empty cohort grants nothing (the periodic-review case).
+    assert "EMPTY `problem_cohort`" in section, (
+        f"{variant} does not teach that an empty cohort grants no act-level targets"
+    )
+    # recent_failures is context, never authority.
+    assert "`recent_failures` is CONTEXT, not authority" in section, (
+        f"{variant} does not warn that recent_failures is not authority"
+    )
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_generic_target_scope_rule_matches_the_two_scope_runtime_split(
+    variant: str,
+) -> None:
+    """#6780 round-2 F1: the GENERIC artifact rule must not contradict the flow.
+
+    ``test_health_flow_teaches_cohort_scoped_act_level_authority`` only reads
+    the Health Review Flow section, so the later generic rule under Required
+    Output Artifacts kept telling every agent that act-level proposals "may
+    only target the manifest PRs or your own tracking issue ... or the
+    `focus_issue_number`. Any other target is rejected." A storm review could
+    therefore be launched holding cohort authority and still be instructed
+    that its authorized cohort targets were invalid.
+
+    The rule mirrors the runtime two-scope split
+    (``TriageLaunchAuthority.allowed_targets`` vs
+    ``allowed_act_level_targets``), which is DISJOINT for a health review:
+    anchor for post_comment/escalate_to_human, cohort for act-level.
+    """
+    section = _flow_section(
+        PROMPT_VARIANTS[variant], "Required Output Artifacts (MANDATORY)"
+    )
+
+    # The superseded single-scope rule must be gone: it lumped the act-level
+    # verbs in with the anchor-scoped ones and never named the cohort.
+    assert "and `kill_hung_session` may only\n  target the manifest PRs" not in (
+        section
+    ), f"{variant} generic rule still forbids the health review's cohort targets"
+    # The generic rule must name the health-review act-level authority.
+    assert "`problem_cohort` (health review)" in section, (
+        f"{variant} generic rule does not name problem_cohort act-level authority"
+    )
+    # Anchor-scoped verbs stay anchor-scoped, including in a health review.
+    assert "THIS tracking issue (health review)" in section, (
+        f"{variant} generic rule does not keep post_comment anchor-scoped"
+    )
+    # A batch review's act-level scope is empty at runtime (frozenset()), so
+    # the prompt must not invite a manifest-PR/anchor reset (#6764 F1).
+    assert "no act-level target at all" in section, (
+        f"{variant} generic rule does not teach that batch owns no act-level target"
+    )
+
+
+def test_generic_rule_act_level_verbs_match_the_domain_contract() -> None:
+    """The generic rule names the REAL act-level verbs, not a drifted alias.
+
+    Pins the prompt's act-level list to ``ACT_LEVEL_TRIAGE_ACTIONS`` so a new
+    act-level action type cannot be added to the runtime scope check while the
+    generic prompt rule silently keeps teaching the old pair.
+    """
+    from issue_orchestrator.domain.triage_artifacts import ACT_LEVEL_TRIAGE_ACTIONS
+
+    for variant, text in sorted(PROMPT_VARIANTS.items()):
+        section = _flow_section(text, "Required Output Artifacts (MANDATORY)")
+        act_level_rule = section[section.index("- Act-level ") :]
+        for action_type in sorted(ACT_LEVEL_TRIAGE_ACTIONS):
+            assert f"`{action_type}`" in act_level_rule, (
+                f"{variant} generic act-level rule does not name {action_type}"
+            )
+
+
+@pytest.mark.parametrize("variant", sorted(PROMPT_VARIANTS))
+def test_board_snapshot_fields_document_the_cohort_surface(variant: str) -> None:
+    """The snapshot field list must distinguish context from authority."""
+    text = PROMPT_VARIANTS[variant]
+    assert "`problem_cohort` (the issue" in text, (
+        f"{variant} does not document the problem_cohort field"
+    )
+    assert "`recent_failures` (context)" in text, (
+        f"{variant} does not mark recent_failures as context"
+    )
+
+
+def test_prompt_cohort_rule_matches_the_snapshot_contract() -> None:
+    """The prompt names the REAL serialized field, not a drifted alias.
+
+    A guardrail asserting on a field name the orchestrator never writes would
+    pass while the agent looked for something that does not exist.
+    """
+    from issue_orchestrator.domain.board_snapshot import BoardSnapshot
+
+    snapshot = BoardSnapshot(
+        generated_at="2026-07-15T00:00:00",
+        orchestrator_paused=False,
+        problem_cohort=[41],
+    )
+    assert "problem_cohort" in snapshot.to_dict()
+    assert snapshot.problem_issue_numbers() == frozenset({41})

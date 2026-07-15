@@ -1,9 +1,10 @@
 # ADR 0031: Triage as a tech lead with graduated, config-scoped authority
 
 **Status:** Proposed
-**Date:** 2026-07-10 (amended 2026-07-11: §2 gated-issue surfacing, #6778)
+**Date:** 2026-07-10 (amended 2026-07-11: §2 gated-issue surfacing, #6778;
+2026-07-14: §4 reaction model, #6780)
 **Milestone:** P1
-**Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778
+**Tracks:** Issues #6760, #6761, #6762, #6763, #6764, #6778, #6780
 
 ## TL;DR
 
@@ -175,7 +176,10 @@ their `triage-data/` directory, a typed **board snapshot**:
 
 - active sessions (type, state, age, issue, terminal),
 - pending/blocked queues with reasons,
-- recent failures with paths to session artifacts and failure diagnoses,
+- recent failures with paths to session artifacts and failure diagnoses —
+  board CONTEXT, never act-level authority (see §4),
+- the `problem_cohort` a health review owns act-level authority over (empty
+  for every other flavor, and for a periodic health review),
 - recent timeline extracts for affected issues,
 - an orchestrator log tail.
 
@@ -185,7 +189,7 @@ to the failed issue plus board context; batch sessions get it alongside the PR
 manifest. The canonical prompt documents the layout; the agent stays
 sandbox-compatible (reads local files, never queries GitHub).
 
-### 4. Periodic trigger: the health review
+### 4. Reaction triggers: investigations and health reviews
 
 `triage.health_review.interval_minutes` (absent/0 = disabled) drives a
 planner-side trigger: when the interval elapses and no health review is active
@@ -194,6 +198,58 @@ board snapshot. The last-run marker is persisted so restarts do not
 double-fire. Capacity/pause gating reuses `TriageWorkflow.should_launch_triage()`.
 Health-review completions flow through the decision artifact — there is no PR
 manifest to label.
+
+The interval is a periodic floor, not the only reaction trigger. Session
+completion records `BLOCKED` alongside `FAILED` and `TIMED_OUT` as a typed,
+timestamped problem fact. One deterministic reaction-policy owner classifies
+the fact using the existing dependency evaluator and reverse dependency graph:
+
+- a plain block on a tracked open dependency is explained healthy waiting and
+  launches no investigation;
+- a `blocked-failed` result, a dependency-satisfied-but-stuck issue, or a block
+  with no tracked open dependency is unexplained; when that issue has
+  downstream dependents, it queues an immediate failure investigation ahead
+  of ordinary issue pickup;
+- `triage.health_review.storm_threshold` problem issues observed inside
+  `triage.health_review.storm_window_minutes` suppress their individual
+  investigations and create one immediate, unscheduled health review. A zero
+  threshold disables storm escalation without changing the interval trigger.
+
+Suppression is bound to persistence, never merely to the decision to escalate.
+The cohort is queued as individual investigations first, and only the anchor's
+intake — the one owner that knows the anchor was actually created — retires the
+investigations it supersedes. Every path that leaves the cohort without an
+anchor (an open or pending health review, no capacity, a failed create, the
+apply-time triage cooldown) therefore leaves the investigations queued, and
+they consolidate into one health review on a later tick. A paused tick applies
+nothing, so it retains its discovered facts instead of clearing them. A problem
+is discovered exactly once, so any suppression not matched by a persisted
+cohort would drop it permanently.
+
+A storm-created anchor owns a typed problem cohort, persisted durably at
+anchor creation and rehydrated by startup recovery, so the grant survives a
+restart between creation and launch. The queued item hands that cohort across
+the launch boundary as a `TriageLaunchScope`, and the orchestrator records
+`TriageLaunchAuthority.problem_issue_numbers` from that grant, outside the
+agent-writable worktree.
+
+Authority is NOT inferred from the board snapshot. That snapshot's
+`recent_failures` is deliberately broad CONTEXT — it merges the live failure
+buffer, every pending failure investigation, and every pending cohort — so
+reading authority back out of it widened a review's act-level scope to
+unrelated issues that merely happened to be failing at launch, and handed a
+periodic review a cohort it should never have. The snapshot therefore carries
+the grant on its own dedicated `problem_cohort` surface, distinct from the
+failures it displays.
+
+A health review may issue act-level `reset_retry`/`kill_hung_session`
+proposals only for that immutable cohort; general comments and escalations
+remain anchor-scoped. A periodic health review owns no cohort: it walks the
+board and proposes, but acts on nothing. Completion re-reads the worktree
+snapshot's cohort surface solely as tamper evidence and rejects divergence
+from the recorded authority; context failures exceeding the grant are expected
+and are not tampering. Execution-time precondition checks still apply
+independently to each cohort action.
 
 ### 5. Sequencing and scope boundaries
 

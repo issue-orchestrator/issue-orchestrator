@@ -199,6 +199,57 @@ class TriageAssignment:
         return cls.from_dict(json.loads(path.read_text()))
 
 
+@dataclass(frozen=True, slots=True)
+class TriageLaunchScope:
+    """What the PRODUCER boundary grants one triage session run (#6780).
+
+    The queued item knows which variant it is and — for a problem storm —
+    exactly which issues the review owns. This value object carries that
+    grant across the launch command boundary (queue -> routing -> launcher ->
+    ``prepare_triage_session_data``) so the authority record is built from the
+    OWNED cohort rather than inferred downstream.
+
+    It exists because the board snapshot is the wrong place to infer authority
+    from: that surface merges the live failure buffer, every pending failure
+    investigation, and every pending health review's cohort, so deriving
+    ``problem_issue_numbers`` from it silently widened a review's act-level
+    scope to unrelated issues that merely happened to be failing at launch
+    — and handed a PERIODIC review act-level scope it should never
+    have.
+
+    Issue numbers, not ``DiscoveredFailure`` objects: a scope conveys
+    AUTHORITY (which issues may be acted on). The failure detail those issues
+    carry is board CONTEXT, and travels in the snapshot.
+    """
+
+    flavor: TriageSessionFlavor
+    problem_issue_numbers: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (
+            self.problem_issue_numbers
+            and self.flavor is not TriageSessionFlavor.HEALTH_REVIEW
+        ):
+            raise ValueError(
+                "TriageLaunchScope problem_issue_numbers are valid only for a "
+                "health review; other flavors derive scope from their focus "
+                "issue or PR manifest"
+            )
+        if any(
+            isinstance(number, bool) or number <= 0
+            for number in self.problem_issue_numbers
+        ):
+            raise ValueError(
+                "TriageLaunchScope problem_issue_numbers must contain positive ints"
+            )
+        if self.problem_issue_numbers != tuple(
+            sorted(set(self.problem_issue_numbers))
+        ):
+            raise ValueError(
+                "TriageLaunchScope problem_issue_numbers must be sorted and unique"
+            )
+
+
 @dataclass(frozen=True)
 class TriageLaunchAuthority:
     """Orchestrator-owned launch scope for one triage session run.
@@ -214,6 +265,12 @@ class TriageLaunchAuthority:
     anchor_issue_number: int
     focus_issue_number: int | None = None
     manifest_pr_numbers: tuple[int, ...] = ()
+    # The health review's OWNED problem cohort (#6780), recorded from the
+    # producer's ``TriageLaunchScope`` grant (or the durable cohort ledger for
+    # an anchor launched outside the pending queue) — never inferred from the
+    # board snapshot, whose failure list is deliberately broader context.
+    # Immutable act-level authority, not agent-provided scope.
+    problem_issue_numbers: tuple[int, ...] = ()
     schema_version: int = _SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -234,8 +291,30 @@ class TriageLaunchAuthority:
         ):
             raise ValueError(
                 "TriageLaunchAuthority with flavor=health_review carries no "
-                "focus issue or manifest PRs; its scope is the anchor issue only "
-                "(ADR-0031 §4)"
+                "focus issue or manifest PRs; its general scope is the anchor "
+                "and its act-level scope is the problem cohort it was launched "
+                "owning"
+            )
+        if (
+            self.flavor is not TriageSessionFlavor.HEALTH_REVIEW
+            and self.problem_issue_numbers
+        ):
+            raise ValueError(
+                "TriageLaunchAuthority problem_issue_numbers are valid only "
+                "for a health review"
+            )
+        if any(
+            isinstance(number, bool) or number <= 0
+            for number in self.problem_issue_numbers
+        ):
+            raise ValueError(
+                "TriageLaunchAuthority problem_issue_numbers must contain "
+                "positive ints"
+            )
+        if self.problem_issue_numbers != tuple(sorted(set(self.problem_issue_numbers))):
+            raise ValueError(
+                "TriageLaunchAuthority problem_issue_numbers must be sorted "
+                "and unique"
             )
 
     def allowed_targets(self) -> frozenset[int]:
@@ -263,15 +342,19 @@ class TriageLaunchAuthority:
         ``issue_number``, so a batch manifest PR number — or a triage
         bookkeeping anchor — passed here is a confused deputy: it resets the
         wrong entity (#6764 re-review F1). Only a failure investigation owns a
-        work issue in scope: its focus issue. Batch and health reviews own no
-        resettable work issue (batch manifest entries are PRs; batch/health
-        anchors are triage bookkeeping issues), so NO act-level target is in
-        scope for them — board-wide remediation must route through the
-        scope-free ``create_issue``/``flag_pattern`` proposals instead.
+        work issue in scope: its focus issue. A health review additionally owns
+        the problem cohort it was LAUNCHED owning — the storm the anchor was
+        created for, carried here from the launch grant (#6780) — enabling
+        group diagnosis with individually gated and execution-time re-validated
+        resets. That cohort is empty for a periodic review, which therefore
+        owns no act-level target at all. Batch reviews own no resettable work
+        issue because manifest entries are PRs and their anchor is bookkeeping.
         """
         if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
             assert self.focus_issue_number is not None  # __post_init__
             return frozenset((self.focus_issue_number,))
+        if self.flavor is TriageSessionFlavor.HEALTH_REVIEW:
+            return frozenset(self.problem_issue_numbers)
         return frozenset()
 
     def matches_assignment(self, assignment: TriageAssignment) -> bool:
@@ -288,6 +371,7 @@ class TriageLaunchAuthority:
             "anchor_issue_number": self.anchor_issue_number,
             "focus_issue_number": self.focus_issue_number,
             "manifest_pr_numbers": list(self.manifest_pr_numbers),
+            "problem_issue_numbers": list(self.problem_issue_numbers),
         }
 
     @classmethod
@@ -323,11 +407,21 @@ class TriageLaunchAuthority:
             raise ValueError(
                 f"triage authority manifest_pr_numbers must be a list of ints, got {raw_prs!r}"
             )
+        raw_problems = data.get("problem_issue_numbers", [])
+        if not isinstance(raw_problems, list) or any(
+            isinstance(number, bool) or not isinstance(number, int)
+            for number in raw_problems
+        ):
+            raise ValueError(
+                "triage authority problem_issue_numbers must be a list of ints, "
+                f"got {raw_problems!r}"
+            )
         return cls(
             flavor=flavor,
             anchor_issue_number=anchor,
             focus_issue_number=focus,
             manifest_pr_numbers=tuple(raw_prs),
+            problem_issue_numbers=tuple(raw_problems),
             schema_version=raw_schema,
         )
 

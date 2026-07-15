@@ -91,7 +91,6 @@ def _required_label_provisioning_error(
         existing.add(folded)
     return None
 
-
 def _proposal_link_comment(
     action: CreateTriageProposalIssueAction, issue_number: int
 ) -> str:
@@ -209,7 +208,19 @@ def apply_create_triage_issue(
     events.publish(
         make_trace_event(
             EventName.TRIAGE_ISSUE_CREATED,
-            {"issue_number": issue_number, "pr_count": action.pr_count},
+            {
+                "issue_number": issue_number,
+                "pr_count": action.pr_count,
+                # Why this anchor exists, and what it consumed. A storm
+                # escalation collapses N individual investigations into one
+                # review; without these the only trace of that decision is log
+                # text, which UI and tests must never parse. ``flavor`` is the
+                # authoring owner's decision, carried on the action — this
+                # boundary reports it and never reinterprets marker labels.
+                "trigger": action.reason,
+                "storm_problem_count": len(action.storm_problems),
+                "flavor": action.flavor.value,
+            },
         )
     )
     finalization_error = _finalize_ledger_backed_creation(

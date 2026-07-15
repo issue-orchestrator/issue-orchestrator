@@ -48,10 +48,11 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
 
 It contains active sessions (type/state/age), pending queues with reasons,
-blocked issues, recent failures, open pattern case files, per-area distinct
-patterns plus shipped-fix counts, a restart-safe `recent_shipped_fixes` list
-with issue/PR/area evidence, per-issue timeline extracts, and an orchestrator
-log tail. Batch reviews: use it to
+blocked issues, `recent_failures` (context), `problem_cohort` (the issue
+numbers a health review owns act-level authority over, empty otherwise), open
+pattern case files, per-area distinct patterns plus shipped-fix counts, a
+restart-safe `recent_shipped_fixes` list with issue/PR/area evidence,
+per-issue timeline extracts, and an orchestrator log tail. Batch reviews: use it to
 spot cross-PR and systemic patterns worth `flag_pattern`/`create_issue` proposals. Failure
 investigations: start from your focus issue, then use the snapshot for board
 context (what else was running, queued, or failing at the same time). Health
@@ -165,9 +166,17 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
   fixed-then-recurred work cluster on one seam, propose the root-cause design
   review described below instead of another point patch. Cite the relevant
   case-file issues and `recent_shipped_fixes` issue/PR entries as evidence.
-- Targeted proposals (`post_comment`, `escalate_to_human`, act-level) may
-  only target THIS tracking issue; board-wide findings belong in
-  `create_issue`/`flag_pattern` proposals.
+- `post_comment`/`escalate_to_human` may only target THIS tracking issue;
+  board-wide findings belong in `create_issue`/`flag_pattern` proposals.
+- Act-level proposals (`reset_retry`, `kill_hung_session`) may only target
+  issue numbers listed in the snapshot's `problem_cohort` - the storm cohort
+  this review owns. An EMPTY `problem_cohort` means you own no act-level
+  targets at all (a periodic review walks the floor and proposes; it does not
+  act): report the problem and use `create_issue`/`escalate_to_human` instead.
+- `recent_failures` is CONTEXT, not authority. It shows what else is failing
+  on the board, including issues another review already owns. An act-level
+  proposal for an issue outside `problem_cohort` is rejected at completion, so
+  check the cohort - never the failure list - before proposing one.
 - There is no PR manifest for this session: do NOT audit or label PRs, do
   NOT follow any Batch Review Flow step, and do NOT write the batch flow's
   empty-audit pair - your artifacts carry the board findings themselves.
@@ -239,11 +248,18 @@ Compact `triage-decision.json` example:
   `needs-*`, `*-reviewed`, `*-failed`, `publish-*`, `blocked*`, `agent:*`,
   or `triage:*` corrupts orchestrator label truth (matching is
   case-insensitive).
-- Targets are scoped to what you were launched to audit: `post_comment`,
-  `escalate_to_human`, `reset_retry`, and `kill_hung_session` may only
-  target the manifest PRs or your own tracking issue (batch review), or the
-  `focus_issue_number` (failure investigation). Any other target is
-  rejected. `create_issue` and `flag_pattern` carry no target.
+- Targets are scoped to what you were launched to audit, and the scope
+  splits by action kind:
+  - `post_comment` and `escalate_to_human` may only target the manifest
+    PRs or your own tracking issue (batch review), the `focus_issue_number`
+    (failure investigation), or THIS tracking issue (health review).
+  - Act-level `reset_retry` and `kill_hung_session` may only target the
+    `focus_issue_number` (failure investigation), or an issue number listed
+    in the snapshot's `problem_cohort` (health review). A batch review owns
+    no act-level target at all: manifest entries are PRs and the anchor is
+    bookkeeping, so resetting either would hit the wrong entity.
+  Any other target is rejected at completion. `create_issue` and
+  `flag_pattern` carry no target.
 - `flag_pattern` requires a stable `pattern_signature` (a short reusable slug
   naming the recurring pattern). Both `flag_pattern` and
   root-cause/design-review `create_issue` actions may carry an `area` naming

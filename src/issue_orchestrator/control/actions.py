@@ -29,6 +29,7 @@ from ..domain.models import (
     AwaitingMergeTerminalStatus,
     DiscoveredFailure,
 )
+from ..domain.triage_session import TriageSessionFlavor
 from .session_manager import SessionType
 
 if TYPE_CHECKING:
@@ -353,6 +354,17 @@ class CreateTriageIssueAction(Action):
     labels: tuple[str, ...] = field(default_factory=tuple)
     pr_count: int = 0
     milestone: TriageMilestoneIntent = field(default_factory=TriageMilestoneIntent)
+    # Non-empty only for an immediate problem-storm health review. Preserves
+    # the exact discovery facts across create -> durable ledger -> pending
+    # queue -> launch, so the cohort the anchor is authorized over is the one
+    # that was actually discovered. The board snapshot's failure list is
+    # deliberately broader board context and is never the authority (#6780).
+    storm_problems: tuple[DiscoveredFailure, ...] = ()
+    # The lifecycle variant this anchor is authored as. The owner that decides
+    # to create the anchor (health-review trigger vs batch planning) states it
+    # here, so the applier reports the decision instead of re-deriving it from
+    # marker labels at the creation boundary (#6780).
+    flavor: TriageSessionFlavor = TriageSessionFlavor.BATCH_REVIEW
     action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
 
 

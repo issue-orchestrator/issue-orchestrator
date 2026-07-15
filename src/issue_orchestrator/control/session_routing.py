@@ -22,7 +22,7 @@ from ..domain.models import (
     PendingValidationRetry,
     Session,
 )
-from ..domain.triage_session import TriageSessionFlavor
+from ..domain.triage_session import TriageLaunchScope, TriageSessionFlavor
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
@@ -125,14 +125,42 @@ class PendingSessionQueues:
             )
         )
 
-    def queue_health_review(self, issue_number: int, title: str) -> TriageQueueOutcome:
+    def queue_health_review(
+        self,
+        issue_number: int,
+        title: str,
+        *,
+        problem_cohort: tuple[DiscoveredFailure, ...] = (),
+    ) -> TriageQueueOutcome:
         """Queue an interval-created health-review anchor (ADR-0031 §4); like a
-        batch review it carries no failure context (``__post_init__`` rejects one)."""
+        batch review it carries no singular failure context. An unscheduled
+        problem-storm review instead carries its typed cohort so the later
+        launch snapshot cannot lose the trigger facts at end-of-tick."""
         return self._queue_triage(
             PendingTriageReview(
-                issue_number, title, flavor=TriageSessionFlavor.HEALTH_REVIEW
+                issue_number,
+                title,
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+                problem_cohort=problem_cohort,
             )
         )
+
+    def remove_failure_investigations(
+        self, issue_numbers: frozenset[int]
+    ) -> None:
+        """Remove only storm-superseded individual investigation entries.
+
+        Batch and health anchors may share an issue number with other triage
+        bookkeeping and must never be removed by a problem-cohort transition.
+        """
+        self.state.pending_triage_reviews[:] = [
+            item
+            for item in self.state.pending_triage_reviews
+            if not (
+                item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+                and item.issue_number in issue_numbers
+            )
+        ]
 
     def queue_failure_investigation(
         self, issue_number: int, title: str, *, failure: DiscoveredFailure
@@ -397,7 +425,7 @@ def orchestrator_launch_triage_session(
     result = session_launcher.launch_issue_session(
         Issue(triage.issue_number, triage.title, [agent]),
         state.active_sessions,
-        triage_flavor=triage.flavor,
+        triage_scope=triage.launch_scope(),
     )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
@@ -596,11 +624,11 @@ def orchestrator_launch_session(
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer | None" = None,
     *,
-    triage_flavor: TriageSessionFlavor | None = None,
+    triage_scope: TriageLaunchScope | None = None,
 ) -> Optional[Session]:
     """Launch an issue session and update active-session tracking."""
     result = session_launcher.launch_issue_session(
-        issue, state.active_sessions, triage_flavor=triage_flavor
+        issue, state.active_sessions, triage_scope=triage_scope
     )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])

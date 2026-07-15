@@ -247,6 +247,8 @@ def parse_triage_config(data: dict) -> TriageConfig:
     health_review_data = data.get("health_review", {}) or {}
     health_review = TriageHealthReviewConfig(
         interval_minutes=int(health_review_data.get("interval_minutes", 0)),
+        storm_threshold=int(health_review_data.get("storm_threshold", 3)),
+        storm_window_minutes=int(health_review_data.get("storm_window_minutes", 5)),
     )
 
     return TriageConfig(

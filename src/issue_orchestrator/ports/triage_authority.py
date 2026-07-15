@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from ..domain.models import DiscoveredFailure
     from ..domain.triage_session import (
         StoredTriageOp,
         TriageLaunchAuthority,
@@ -28,6 +29,10 @@ if TYPE_CHECKING:
 
 class TriageAuthorityConflictError(RuntimeError):
     """A different launch authority already exists for this session run."""
+
+
+class TriageStormCohortConflictError(RuntimeError):
+    """A different problem cohort already exists for this anchor issue."""
 
 
 class TriageOpConflictError(RuntimeError):
@@ -99,6 +104,73 @@ class TriageAuthorityStore(Protocol):
         """All (proposal_issue_number, op) rows — the open-proposal ledger."""
         ...
 
+    # -- Problem-storm cohorts (#6780) --------------------------------------
+    #
+    # The durable cohort ledger, keyed by the health-review ANCHOR issue
+    # number. A storm collapses N per-issue failure investigations into one
+    # anchor, so from that moment the cohort is the only record of which
+    # problems the review owns — and the pending queue that carries it is
+    # in-memory. This ledger is the recoverable boundary between the two
+    # orchestrator-owned facts that outlive a tick:
+    #
+    #   * WHAT the review may act on. Launch records
+    #     ``TriageLaunchAuthority.problem_issue_numbers`` from the cohort the
+    #     anchor owns; a restart between anchor creation and launch would
+    #     otherwise rehydrate an empty cohort and strip the review of its
+    #     act-level scope.
+    #   * WHICH run artifacts must survive. The cleanup-hold owner holds the
+    #     cohort members' worktrees while the anchor is still referenced, so
+    #     ``DiscoveredFailure.artifact_hints`` cannot outlive the files.
+    #
+    # Recorded create-once at anchor intake, rehydrated by startup recovery,
+    # and discarded by the completion retention owner. The issue body is NOT
+    # the authority: it is mutable human documentation.
+    #
+    # Retention: a row whose anchor is neither pending nor active is inert,
+    # not load-bearing — every reader intersects the ledger with live pending
+    # or active triage work, so a row leaked by an anchor that never reached
+    # completion (e.g. dropped after exhausted launch retries) holds nothing
+    # and grants nothing.
+
+    def record_storm_cohort(
+        self, *, anchor_issue_number: int, cohort: tuple["DiscoveredFailure", ...]
+    ) -> None:
+        """Persist the problem cohort for one anchor issue (create-once).
+
+        Recording an identical cohort for an existing anchor is a no-op;
+        recording a DIFFERENT cohort must raise
+        :class:`TriageStormCohortConflictError` — the cohort is the review's
+        act-level authority and its artifact-retention scope, so it must
+        never silently change or expand after the anchor is created.
+        """
+        ...
+
+    def load_storm_cohort(
+        self, *, anchor_issue_number: int
+    ) -> tuple["DiscoveredFailure", ...] | None:
+        """Return an anchor's persisted cohort, or None when absent.
+
+        None means "not a storm anchor" (a periodic health review has no
+        cohort) — distinct from an empty tuple, which never gets recorded.
+        """
+        ...
+
+    def discard_storm_cohort(self, *, anchor_issue_number: int) -> None:
+        """Remove an anchor's cohort row. No-op if absent (retention owner)."""
+        ...
+
+    def list_storm_cohorts(
+        self,
+    ) -> tuple[tuple[int, tuple["DiscoveredFailure", ...]], ...]:
+        """All (anchor_issue_number, cohort) rows — the cleanup-hold read.
+
+        Once a health review LAUNCHES its pending queue item is removed, so
+        this ledger is the only remaining carrier of the cohort its run still
+        references. The hold owner reads the whole (small, storm-scoped)
+        ledger once per tick rather than issuing a lookup per active session.
+        """
+        ...
+
     # -- Pattern case files (#6781) -----------------------------------------
     #
     # The durable flag_pattern ledger: one case-file issue per pattern
@@ -149,6 +221,7 @@ class InMemoryTriageAuthorityStore:
         self._ops: dict[int, "StoredTriageOp"] = {}
         self._patterns: dict[str, int] = {}
         self._shipped_fixes: dict[int, "TriageShippedFixSummary"] = {}
+        self._storm_cohorts: dict[int, tuple["DiscoveredFailure", ...]] = {}
 
     def record(
         self, *, run_id: str, session_name: str, authority: "TriageLaunchAuthority"
@@ -190,6 +263,32 @@ class InMemoryTriageAuthorityStore:
 
     def list_ops(self) -> tuple[tuple[int, "StoredTriageOp"], ...]:
         return tuple(sorted(self._ops.items()))
+
+    def record_storm_cohort(
+        self, *, anchor_issue_number: int, cohort: tuple["DiscoveredFailure", ...]
+    ) -> None:
+        existing = self._storm_cohorts.get(anchor_issue_number)
+        if existing is not None:
+            if existing == cohort:
+                return
+            raise TriageStormCohortConflictError(
+                f"a different storm cohort is already recorded for anchor"
+                f" issue #{anchor_issue_number}"
+            )
+        self._storm_cohorts[anchor_issue_number] = cohort
+
+    def load_storm_cohort(
+        self, *, anchor_issue_number: int
+    ) -> tuple["DiscoveredFailure", ...] | None:
+        return self._storm_cohorts.get(anchor_issue_number)
+
+    def discard_storm_cohort(self, *, anchor_issue_number: int) -> None:
+        self._storm_cohorts.pop(anchor_issue_number, None)
+
+    def list_storm_cohorts(
+        self,
+    ) -> tuple[tuple[int, tuple["DiscoveredFailure", ...]], ...]:
+        return tuple(sorted(self._storm_cohorts.items()))
 
     def record_pattern(self, *, signature: str, issue_number: int) -> None:
         existing = self._patterns.get(signature)

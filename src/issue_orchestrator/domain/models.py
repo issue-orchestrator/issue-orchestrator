@@ -14,7 +14,12 @@ from .dependency_gates import DependencyGateSnapshot
 from .issue_key import IssueKey, GitHubIssueKey, parse_external_id
 from .session_key import SessionKey, TaskKind  # re-exported for callers
 from .session_run import SessionRunAssets
-from .triage_session import ApprovedTriageOp, TriageCaseFileSummary, TriageSessionFlavor
+from .triage_session import (
+    ApprovedTriageOp,
+    TriageCaseFileSummary,
+    TriageLaunchScope,
+    TriageSessionFlavor,
+)
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue as IssueProtocol
@@ -1479,10 +1484,27 @@ class DiscoveredMergeQueueEnqueue:
 
 @dataclass(frozen=True)
 class DiscoveredFailure:
-    """A session failure discovered, pending Planner decision on triage.
+    """A session problem discovered, pending Planner decision on triage.
 
     This is a "fact" - the Planner will decide whether to queue a triage review.
     Immutable to be safely included in OrchestratorSnapshot.
+
+    ``failure_reason`` covers terminal failures (``failed`` / ``timed_out``)
+    plus explicit worker blocks (``blocked``). ``blocking_label`` preserves
+    the completion policy's classification so the reaction model can treat a
+    ``blocked-failed``-class outcome as unexplained while still recognizing a
+    plain block that dependency policy can explain as healthy waiting.
+
+    ``observed_at`` is epoch seconds at the discovery boundary. It lets the
+    reaction owner group problems across adjacent ticks without relying on the
+    planner tick rate. A zero value is accepted for restored/legacy test facts;
+    a current-tick discovery treats it as current, while an already-pending
+    legacy fact cannot count toward a time-bounded storm.
+
+    ``issue_body`` and ``issue_milestone`` preserve dependency inputs from the
+    completed session. The filtered issue queue may no longer contain that
+    active issue after completion, but reaction classification must still be
+    able to distinguish a tracked open dependency from an unexplained block.
 
     ``artifact_hints`` are absolute paths to on-disk artifacts a failure
     investigation should start from (failure diagnostic, session run
@@ -1493,8 +1515,51 @@ class DiscoveredFailure:
     """
     issue_number: int
     issue_title: str
-    failure_reason: str  # "failed" or "timed_out"
+    failure_reason: str  # "failed", "timed_out", or "blocked"
     artifact_hints: tuple[str, ...] = ()
+    observed_at: float = 0.0
+    blocking_label: str = ""
+    issue_body: str = ""
+    issue_milestone: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for the durable storm-cohort ledger (#6780).
+
+        A storm cohort outlives the process that discovered it: the anchor is
+        created on tick N and the health review may launch after a restart, so
+        the ledger must round-trip the WHOLE fact — ``artifact_hints`` above
+        all, since the recovered board snapshot projects them verbatim.
+        """
+        return {
+            "issue_number": self.issue_number,
+            "issue_title": self.issue_title,
+            "failure_reason": self.failure_reason,
+            "artifact_hints": list(self.artifact_hints),
+            "observed_at": self.observed_at,
+            "blocking_label": self.blocking_label,
+            "issue_body": self.issue_body,
+            "issue_milestone": self.issue_milestone,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DiscoveredFailure":
+        """Rehydrate a ledger row. Missing keys raise (fail-fast).
+
+        The orchestrator writes every key in :meth:`to_dict`, so an absent one
+        means a corrupt or hand-edited row — never a shape to paper over with
+        defaults that would silently launch a health review with a truncated
+        cohort.
+        """
+        return cls(
+            issue_number=data["issue_number"],
+            issue_title=data["issue_title"],
+            failure_reason=data["failure_reason"],
+            artifact_hints=tuple(data["artifact_hints"]),
+            observed_at=data["observed_at"],
+            blocking_label=data["blocking_label"],
+            issue_body=data["issue_body"],
+            issue_milestone=data["issue_milestone"],
+        )
 
 
 @dataclass(frozen=True)
@@ -1574,19 +1639,41 @@ class PendingTriageReview:
     so the launch-time board snapshot must read the failure from the queue
     item, not the buffer. It is required for FAILURE_INVESTIGATION (that
     variant exists only because a failure was discovered) and forbidden for
-    BATCH_REVIEW and HEALTH_REVIEW (threshold-/interval-created, no
-    triggering failure).
+    BATCH_REVIEW and HEALTH_REVIEW. A storm-triggered HEALTH_REVIEW instead
+    carries all triggering problems in ``problem_cohort``.
     """
     issue_number: int  # The triage review GitHub issue number
     title: str  # Issue title (for display)
     flavor: TriageSessionFlavor  # Which triage variant this queue entry launches as
     failure: DiscoveredFailure | None = None  # Triggering failure (FAILURE_INVESTIGATION only)
+    # Problem-storm context preserved for an unscheduled HEALTH_REVIEW. The
+    # per-tick discovery buffer is cleared before the anchor launches, so the
+    # pending owner must carry the exact cohort into the launch-time board
+    # snapshot. Interval/batch reviews keep this empty.
+    problem_cohort: tuple[DiscoveredFailure, ...] = ()
     # Retryable launch failures consumed so far (owner-tracked by
     # PendingSessionQueues.retain_triage_for_retry; bounded — see
     # TRIAGE_LAUNCH_RETRY_LIMIT). For failure investigations this queue item
     # is the ONLY durable record of the investigation, so transient prep
     # failures retain it instead of dropping it.
     retryable_launch_failures: int = 0
+
+    def launch_scope(self) -> TriageLaunchScope:
+        """The typed grant this queued item hands the launch boundary (#6780).
+
+        The queue item is the producer that knows both the variant and, for a
+        storm, the exact cohort the review owns. Handing that grant down means
+        the launch authority is built from the OWNED cohort instead of being
+        inferred from the board snapshot, whose failure list also contains
+        unrelated pending investigations.
+        """
+        return TriageLaunchScope(
+            flavor=self.flavor,
+            problem_issue_numbers=tuple(
+                sorted({problem.issue_number for problem in self.problem_cohort})
+            ),
+        )
+
     def __post_init__(self) -> None:
         if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION and self.failure is None:
             raise ValueError(
@@ -1604,6 +1691,11 @@ class PendingTriageReview:
                 f"{self.flavor.value} but carries failure context; batch and "
                 "health reviews are threshold-/interval-created and have no "
                 "triggering failure."
+            )
+        if self.problem_cohort and self.flavor is not TriageSessionFlavor.HEALTH_REVIEW:
+            raise ValueError(
+                f"PendingTriageReview for issue #{self.issue_number} carries a "
+                "problem cohort but is not a health review"
             )
 
 

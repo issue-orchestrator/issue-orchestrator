@@ -94,10 +94,21 @@ class BoardSnapshotBuilder:
         *,
         focus_issue: int | None = None,
         failures: Sequence[DiscoveredFailure] = (),
+        problem_cohort: Sequence[int] = (),
         timeline_limit: int = 30,
         log_tail_lines: int = 200,
     ) -> BoardSnapshot:
         """Build a bounded snapshot of the board from ``state``.
+
+        ``problem_cohort`` is a health review's OWNED act-level remit, given
+        by the launch boundary. It is recorded verbatim as its own surface and
+        is NOT derived from ``failures``: the failure list is deliberately
+        broad context (live buffer + every pending investigation + every
+        pending cohort), so reading authority back out of it granted reviews
+        scope over unrelated issues (#6780). Unlike the other list
+        fields it is not truncated — a cohort is a small, exact grant, and
+        silently dropping a member would shrink authority rather than bound a
+        display.
 
         Failures are an explicit parameter rather than read from
         ``state.discovered_failures`` because that field is a per-tick fact
@@ -153,6 +164,7 @@ class BoardSnapshotBuilder:
                 )
                 for failure in list(failures)[:MAX_LIST_ENTRIES]
             ],
+            problem_cohort=sorted(set(problem_cohort)),
             case_files=[
                 BoardCaseFile(
                     issue_number=item.issue_number,
@@ -331,13 +343,25 @@ class StateBoardSnapshotProvider:
         self._builder = builder
         self._state_getter = state_getter
 
-    def snapshot(self, focus_issue: int | None) -> BoardSnapshot:
-        """Build a snapshot of the current board (``BoardSnapshotProvider``)."""
+    def snapshot(
+        self,
+        focus_issue: int | None,
+        problem_cohort: tuple[int, ...] = (),
+    ) -> BoardSnapshot:
+        """Build a snapshot of the current board (``BoardSnapshotProvider``).
+
+        ``problem_cohort`` is passed through verbatim from the launch boundary
+        that owns the grant; this provider never derives it. The merged
+        failure list below is deliberately WIDER than the cohort — it is the
+        context a reviewer reads — which is exactly why authority must not be
+        read back out of it (#6780).
+        """
         state = self._state_getter()
         return self._builder.build(
             state,
             focus_issue=focus_issue,
             failures=_merge_failure_sources(state),
+            problem_cohort=problem_cohort,
         )
 
 
@@ -349,12 +373,17 @@ def _merge_failure_sources(state: OrchestratorState) -> tuple[DiscoveredFailure,
     """
     live = tuple(state.discovered_failures)
     seen = {failure.issue_number for failure in live}
-    queued = tuple(
-        triage.failure
-        for triage in state.pending_triage_reviews
-        if triage.failure is not None and triage.failure.issue_number not in seen
-    )
-    return live + queued
+    queued: list[DiscoveredFailure] = []
+    for triage in state.pending_triage_reviews:
+        candidates = (
+            (triage.failure,) if triage.failure is not None else triage.problem_cohort
+        )
+        for failure in candidates:
+            if failure.issue_number in seen:
+                continue
+            queued.append(failure)
+            seen.add(failure.issue_number)
+    return live + tuple(queued)
 
 
 def _rework_issue_number(rework: PendingRework) -> int:

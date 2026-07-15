@@ -13,10 +13,11 @@ if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState, Session, SessionStatus
     from ..ports.queue_cache_store import QueueCacheStore
+    from ..ports.triage_authority import TriageAuthorityStore
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from .planner import Planner
-    from .planner_types import Plan
+    from .planner_types import OrchestratorSnapshot, Plan
     from .action_applier import ActionApplier, ActionResult
     from .actions import Action
     from .cleanup_manager import CleanupManager
@@ -126,6 +127,12 @@ class OrchestratorSupport:
     get_review_machine: Callable[[int, int], object]
     kill_session: Callable[[str], None]
     queue_cache_store: "QueueCacheStore | None" = None
+    # Durable triage ledgers (#6780). Anchor intake records a storm cohort
+    # here, and the end-of-tick fact clear reads it to hold the cohort's run
+    # artifacts. Optional so unrelated tests need not wire it; without it a
+    # storm anchor cannot prove its cohort, so intake declines to collapse the
+    # individual investigations rather than losing the problems.
+    triage_authority: "TriageAuthorityStore | None" = None
 
     _last_ui_update: float = field(default=0.0, init=False)
     _ui_update_interval: int = field(default=30, init=False)
@@ -183,8 +190,10 @@ class OrchestratorSupport:
             paused=self.state.paused,
         )
 
-    def clear_discovered_facts(self) -> None:
-        clear_discovered_facts(self.state, self.config)
+    def clear_discovered_facts(self, tick: "OrchestratorSnapshot") -> None:
+        clear_discovered_facts(
+            self.state, self.config, self.triage_authority, tick_paused=tick.paused
+        )
 
     def emit_heartbeat_if_needed(self) -> None:
         if time.time() - self._last_ui_update >= self._ui_update_interval and self.state.active_sessions:
@@ -378,7 +387,7 @@ class OrchestratorSupport:
         from .health_review_trigger import intake_created_triage_anchor
         num = result.details.get("issue_number")
         if num:
-            intake_created_triage_anchor(cast(CreateTriageIssueAction, action), num, self.state, self.queue_cache_store)
+            intake_created_triage_anchor(cast(CreateTriageIssueAction, action), num, self.state, self.queue_cache_store, self.triage_authority)
             logger.info("Created triage #%d", num)
 
     def _handle_cleanup_session(self, action: "Action", result: "ActionResult") -> None:
@@ -639,7 +648,7 @@ def run_planning_cycle(
     scheduler: object,
     github_workflow: object,
     apply_plan_fn: Callable[["Plan"], None],
-    clear_discovered_facts_fn: Callable[[], None],
+    clear_discovered_facts_fn: Callable[["OrchestratorSnapshot"], None],
     last_network_sync: float,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
@@ -698,7 +707,10 @@ def run_planning_cycle(
 
     apply_plan_fn(plan)
     _track_stale_ticks(config, events, event_context, state, stale_issues)
-    clear_discovered_facts_fn()
+    # The tick's OWN snapshot decides retention: this call is separated from
+    # the snapshot by a fetch, planning and apply, and `state.paused` can have
+    # been flipped from the web thread in that window.
+    clear_discovered_facts_fn(snapshot)
 
     return last_network_sync, refresh_requested
 

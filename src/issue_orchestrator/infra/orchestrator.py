@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Optional, cast
 
 if TYPE_CHECKING:
-    from ..control.planner_types import Plan
+    from ..control.planner_types import OrchestratorSnapshot, Plan
     from ..control.session_manager import SessionRef, SessionType
-    from ..domain.triage_session import TriageSessionFlavor
+    from ..domain.triage_session import TriageLaunchScope
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun
 
@@ -250,6 +250,7 @@ class Orchestrator:
             get_review_machine=self._get_review_machine,
             kill_session=lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
             queue_cache_store=self.deps.queue_cache_store,
+            triage_authority=self.deps.triage_authority,
         )
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str: return get_session_name(number, session_type)
@@ -376,8 +377,8 @@ class Orchestrator:
                 sessions_root,
             )
 
-    def launch_session(self, issue: Issue, *, triage_flavor: "TriageSessionFlavor | None" = None) -> Optional[Session]:
-        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, triage_flavor=triage_flavor)
+    def launch_session(self, issue: Issue, *, triage_scope: "TriageLaunchScope | None" = None) -> Optional[Session]:
+        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, triage_scope=triage_scope)
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output, publish_recovery=self.deps.publish_recovery)
 
     def tick(self) -> bool:
@@ -772,7 +773,7 @@ class Orchestrator:
             self.state.queue_refresh_requested = False
         self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self._issue_fetch_resilience, self.observer, self.deps.claim_manager, queue_cache_store=self.deps.queue_cache_store, io_claimed_label=self.deps.label_manager.io_claimed)
 
-    def _clear_discovered_facts(self) -> None: self._plan_applier.clear_discovered_facts()
+    def _clear_discovered_facts(self, tick: "OrchestratorSnapshot") -> None: self._plan_applier.clear_discovered_facts(tick)
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier.emit_heartbeat_if_needed()
 
     def _reconcile_orphaned_labels_at_startup(self) -> None:

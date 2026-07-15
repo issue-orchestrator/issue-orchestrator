@@ -22,6 +22,7 @@ from issue_orchestrator.ports.triage_authority import (
 )
 from issue_orchestrator.control.publish_recovery import PublishRecoveryService
 from issue_orchestrator.domain.models import (
+    DiscoveredFailure,
     Issue,
     OrchestratorState,
     Session,
@@ -1130,6 +1131,10 @@ def _arm_authority_for_locators(authority_store, locators):
             anchor_issue_number=4057,
         ),
     )
+    authority_store.record_storm_cohort(
+        anchor_issue_number=4057,
+        cohort=(DiscoveredFailure(41, "Problem 41", "failed"),),
+    )
 
 
 def test_retry_success_discards_triage_authority_row(make_session, tmp_path) -> None:
@@ -1160,6 +1165,7 @@ def test_retry_success_discards_triage_authority_row(make_session, tmp_path) -> 
         )
         is None
     )
+    assert authority_store.load_storm_cohort(anchor_issue_number=4057) is None
 
 
 def test_abandon_issue_discards_triage_authority_row(make_session, tmp_path) -> None:
@@ -1186,3 +1192,4 @@ def test_abandon_issue_discards_triage_authority_row(make_session, tmp_path) -> 
         )
         is None
     )
+    assert authority_store.load_storm_cohort(anchor_issue_number=4057) is None

@@ -26,7 +26,7 @@ from typing import Any, TypedDict
 
 logger = logging.getLogger(__name__)
 
-BOARD_SNAPSHOT_SCHEMA_VERSION = 2
+BOARD_SNAPSHOT_SCHEMA_VERSION = 3
 
 # Canonical snapshot filename inside a session's triage-data directory,
 # next to TRIAGE_ASSIGNMENT_FILENAME (domain/triage_session.py).
@@ -119,6 +119,7 @@ class BoardSnapshotDict(TypedDict):
     queues: list[BoardQueueEntryDict]
     blocked_issues: list[BoardBlockedIssueDict]
     recent_failures: list[BoardFailureDict]
+    problem_cohort: list[int]
     case_files: list[BoardCaseFileDict]
     area_signals: list[BoardAreaSignalDict]
     recent_shipped_fixes: list[BoardShippedFixDict]
@@ -247,11 +248,30 @@ class BoardSnapshot:
     queues: list[BoardQueueEntry] = field(default_factory=list)
     blocked_issues: list[BoardBlockedIssue] = field(default_factory=list)
     recent_failures: list[BoardFailure] = field(default_factory=list)
+    problem_cohort: list[int] = field(default_factory=list)
     case_files: list[BoardCaseFile] = field(default_factory=list)
     area_signals: list[BoardAreaSignal] = field(default_factory=list)
     recent_shipped_fixes: list[BoardShippedFix] = field(default_factory=list)
     timeline: list[BoardTimelineExtract] = field(default_factory=list)
     log_tail: list[str] = field(default_factory=list)
+
+    def problem_issue_numbers(self) -> frozenset[int]:
+        """The health review's OWNED problem cohort — its act-level remit.
+
+        This is the dedicated cohort surface (#6780), deliberately
+        NOT derived from ``recent_failures``. Those are board CONTEXT: the
+        provider merges the live failure buffer plus every pending failure
+        investigation and every pending health-review cohort, so a review
+        reading that list sees issues it does not own. Inferring authority
+        from it let a storm review act on an unrelated pending investigation,
+        and handed a periodic review act-level scope whenever anything on the
+        board happened to be failing.
+
+        Empty for a periodic health review (its remit is to walk the board and
+        PROPOSE, not to act on a cohort) and for every non-health flavor,
+        which scope by focus issue or PR manifest instead.
+        """
+        return frozenset(self.problem_cohort)
 
     def to_dict(self) -> BoardSnapshotDict:
         """Convert to JSON-serializable dict."""
@@ -301,6 +321,7 @@ class BoardSnapshot:
                 }
                 for f in self.recent_failures
             ],
+            "problem_cohort": list(self.problem_cohort),
             "case_files": [
                 {
                     "issue_number": item.issue_number,
@@ -399,6 +420,7 @@ class BoardSnapshot:
                 )
                 for f in data["recent_failures"]
             ],
+            problem_cohort=list(data["problem_cohort"]),
             case_files=[
                 BoardCaseFile(
                     issue_number=item["issue_number"],

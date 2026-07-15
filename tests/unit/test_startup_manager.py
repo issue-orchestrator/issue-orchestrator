@@ -1044,7 +1044,7 @@ class TestStartupManagerTriageRecovery:
 
         launch_call = launcher.launch_issue_session.call_args
         assert launch_call.args[0].number == 100
-        assert launch_call.kwargs["triage_flavor"] is TriageSessionFlavor.BATCH_REVIEW
+        assert launch_call.kwargs["triage_scope"].flavor is TriageSessionFlavor.BATCH_REVIEW
 
     @pytest.mark.asyncio
     async def test_recovers_marker_labeled_anchor_as_health_review(
