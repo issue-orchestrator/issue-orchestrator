@@ -4569,10 +4569,10 @@ class TestTriageProducerToLaunchBoundary:
         The cohort is created on tick N and only reaches the agent at launch.
         If the orchestrator dies in between, the in-memory pending queue is
         gone and the anchor comes back from its LABEL alone. Recovery must
-        rehydrate the cohort from the durable ledger, because launch authority
-        is derived from the board snapshot, which merges the pending item's
-        ``problem_cohort`` — recovering empty would launch a health review
-        that rejects every proposal for the issues that triggered it.
+        rehydrate the cohort from the durable ledger, because the queued item
+        is what grants launch its ``problem_issue_numbers`` — recovering empty
+        would launch a health review that rejects every proposal for the
+        issues that triggered it.
 
         Drives the real chain through real SQLite: intake -> restart ->
         recover -> launch -> TriageLaunchAuthority.

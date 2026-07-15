@@ -176,7 +176,10 @@ their `triage-data/` directory, a typed **board snapshot**:
 
 - active sessions (type, state, age, issue, terminal),
 - pending/blocked queues with reasons,
-- recent failures with paths to session artifacts and failure diagnoses,
+- recent failures with paths to session artifacts and failure diagnoses —
+  board CONTEXT, never act-level authority (see §4),
+- the `problem_cohort` a health review owns act-level authority over (empty
+  for every other flavor, and for a periodic health review),
 - recent timeline extracts for affected issues,
 - an orchestrator log tail.
 

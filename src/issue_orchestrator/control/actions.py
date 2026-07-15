@@ -354,8 +354,10 @@ class CreateTriageIssueAction(Action):
     pr_count: int = 0
     milestone: TriageMilestoneIntent = field(default_factory=TriageMilestoneIntent)
     # Non-empty only for an immediate problem-storm health review. Preserves
-    # the exact discovery facts across create -> pending queue -> launch so the
-    # board snapshot and immutable cohort authority describe the same issues.
+    # the exact discovery facts across create -> durable ledger -> pending
+    # queue -> launch, so the cohort the anchor is authorized over is the one
+    # that was actually discovered. The board snapshot's failure list is
+    # deliberately broader board context and is never the authority (#6780).
     storm_problems: tuple[DiscoveredFailure, ...] = ()
     action_type: ActionType = field(default=ActionType.CREATE_TRIAGE_ISSUE, init=False)
 

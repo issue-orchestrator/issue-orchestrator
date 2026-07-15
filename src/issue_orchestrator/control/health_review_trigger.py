@@ -449,9 +449,9 @@ def queue_recovered_triage_anchor(
     anchor already exists; ``last_health_review_at`` records creation time.
 
     A storm anchor also recovers its COHORT from the durable ledger (#6780
-    R3 F2). The cohort is the anchor's act-level authority: launch derives
-    ``TriageLaunchAuthority.problem_issue_numbers`` from the board snapshot,
-    which merges the pending item's ``problem_cohort``. Recovering without it
+    R3 F2). The cohort is the anchor's act-level authority: the queued item
+    hands it to launch as a ``TriageLaunchScope``, which becomes
+    ``TriageLaunchAuthority.problem_issue_numbers``. Recovering without it
     (the in-memory queue is gone after a crash, and the issue BODY is mutable
     human documentation, never authority) would launch a health review that
     rejects every proposal for the very issues that triggered it.

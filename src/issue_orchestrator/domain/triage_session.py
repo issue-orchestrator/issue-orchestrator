@@ -265,9 +265,11 @@ class TriageLaunchAuthority:
     anchor_issue_number: int
     focus_issue_number: int | None = None
     manifest_pr_numbers: tuple[int, ...] = ()
-    # Snapshot-derived health-review cohort (#6780). These are the problem
-    # issue numbers present in the orchestrator-built board snapshot at launch.
-    # They are immutable act-level authority, not agent-provided scope.
+    # The health review's OWNED problem cohort (#6780), recorded from the
+    # producer's ``TriageLaunchScope`` grant (or the durable cohort ledger for
+    # an anchor launched outside the pending queue) — never inferred from the
+    # board snapshot, whose failure list is deliberately broader context.
+    # Immutable act-level authority, not agent-provided scope.
     problem_issue_numbers: tuple[int, ...] = ()
     schema_version: int = _SCHEMA_VERSION
 

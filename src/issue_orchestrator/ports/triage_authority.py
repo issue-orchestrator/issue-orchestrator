@@ -113,10 +113,11 @@ class TriageAuthorityStore(Protocol):
     # in-memory. This ledger is the recoverable boundary between the two
     # orchestrator-owned facts that outlive a tick:
     #
-    #   * WHAT the review may act on. Launch authority is derived from the
-    #     board snapshot, which merges the pending item's cohort; a restart
-    #     between anchor creation and launch would otherwise rehydrate an
-    #     empty cohort and strip the review of its act-level scope.
+    #   * WHAT the review may act on. Launch records
+    #     ``TriageLaunchAuthority.problem_issue_numbers`` from the cohort the
+    #     anchor owns; a restart between anchor creation and launch would
+    #     otherwise rehydrate an empty cohort and strip the review of its
+    #     act-level scope.
     #   * WHICH run artifacts must survive. The cleanup-hold owner holds the
     #     cohort members' worktrees while the anchor is still referenced, so
     #     ``DiscoveredFailure.artifact_hints`` cannot outlive the files.

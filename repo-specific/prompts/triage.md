@@ -39,10 +39,11 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
 ```
 
 It contains active sessions (type/state/age), pending queues with reasons,
-blocked issues, recent failures, open pattern case files, per-area distinct
-patterns plus shipped-fix counts, a restart-safe `recent_shipped_fixes` list
-with issue/PR/area evidence, per-issue timeline extracts, and an orchestrator
-log tail. Batch reviews: use it to
+blocked issues, `recent_failures` (context), `problem_cohort` (the issue
+numbers a health review owns act-level authority over, empty otherwise), open
+pattern case files, per-area distinct patterns plus shipped-fix counts, a
+restart-safe `recent_shipped_fixes` list with issue/PR/area evidence,
+per-issue timeline extracts, and an orchestrator log tail. Batch reviews: use it to
 spot cross-PR and systemic patterns worth `flag_pattern`/`create_issue` proposals. Failure
 investigations: start from your focus issue, then use the snapshot for board
 context (what else was running, queued, or failing at the same time). Health
@@ -187,9 +188,17 @@ cat "$ISSUE_ORCHESTRATOR_RUN_DIR/triage-data/board-snapshot.json"
   fixed-then-recurred work cluster on one seam, propose the root-cause design
   review described below instead of another point patch. Cite the relevant
   case-file issues and `recent_shipped_fixes` issue/PR entries as evidence.
-- Targeted proposals (`post_comment`, `escalate_to_human`, act-level) may
-  only target THIS tracking issue; board-wide findings belong in
-  `create_issue`/`flag_pattern` proposals.
+- `post_comment`/`escalate_to_human` may only target THIS tracking issue;
+  board-wide findings belong in `create_issue`/`flag_pattern` proposals.
+- Act-level proposals (`reset_retry`, `kill_hung_session`) may only target
+  issue numbers listed in the snapshot's `problem_cohort` - the storm cohort
+  this review owns. An EMPTY `problem_cohort` means you own no act-level
+  targets at all (a periodic review walks the floor and proposes; it does not
+  act): report the problem and use `create_issue`/`escalate_to_human` instead.
+- `recent_failures` is CONTEXT, not authority. It shows what else is failing
+  on the board, including issues another review already owns. An act-level
+  proposal for an issue outside `problem_cohort` is rejected at completion, so
+  check the cohort - never the failure list - before proposing one.
 - There is no PR manifest for this session: do NOT audit or label PRs, do
   NOT follow any Batch Review Flow step, and do NOT write the batch flow's
   empty-audit pair - your artifacts carry the board findings themselves.
