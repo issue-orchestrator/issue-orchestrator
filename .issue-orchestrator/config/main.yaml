@@ -95,6 +95,14 @@ review:
     # Persistent coder<->reviewer exchange (code default; explicit for clarity,
     # matching tixmeup's config).
     mode: "via-local-loop"
+  # Triage tech lead (ADR-0031): agent:triage investigates failed/timed-out
+  # sessions and files/updates its findings. Act-level actions stay in shadow
+  # (propose) by default — see the `triage.authority` dials below.
+  triage_review_agent: agent:triage
+  # Required companion: the worker a triage `create_issue` follow-up routes to.
+  triage_follow_up_agent: agent:backend
+  triage_review_on_failure: true
+  # triage_review_threshold: 5   # (optional) batch-review after N code-reviewed PRs (0 = manual only)
 
 # Route approved PRs through GitHub's native merge queue instead of reworking
 # them merely for being behind base. Requires the repo's branch protection to
@@ -134,6 +142,17 @@ filtering:
 
 triage:
   inherit_labels: ["io-e2e-test-data", "test-data"]
+  # Graduated act-level authority (ADR-0031). Defaults keep destructive actions in
+  # shadow: post_comment/create_issue/flag_pattern = execute; reset_retry &
+  # kill_hung_session = propose (surfaced as would-have-done, no mutation). Watch
+  # the `triage.action_proposed` events, then graduate when trusted:
+  #   authority:
+  #     reset_retry: execute         # wired to the scratch-reset owner (#6764/#6777)
+  #     # kill_hung_session: execute # still a startup error until fully wired
+  # Periodic "walk the board" health review — uses the single session slot when due
+  # (deduped, skips at capacity). Off by default; enable for the proactive cadence:
+  #   health_review:
+  #     interval_minutes: 240
 
 goal_pilot:
   enabled: true
