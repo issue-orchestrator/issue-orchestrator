@@ -136,7 +136,7 @@ def test_allowed_targets_by_flavor() -> None:
 def test_allowed_act_level_targets_are_issue_only() -> None:
     """Act-level (reset_retry/kill_hung_session) scope is the STRICTER
     issue-only set (#6764 re-review F1, #6780): an investigation owns its focus;
-    a health review owns its immutable snapshot problem cohort; a batch owns no
+    a health review owns its immutable launch-granted problem cohort; a batch owns no
     resettable issue. Triage anchors and manifest PRs are never act targets."""
     investigation = TriageLaunchAuthority(
         flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,

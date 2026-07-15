@@ -1293,7 +1293,8 @@ class TestDecisionTargetScope:
         )
 
         assert error is not None
-        assert "immutable snapshot problem cohort (#41, #42, #43)" in error
+        assert "immutable problem cohort" in error
+        assert "(#41, #42, #43)" in error
 
     def test_context_only_failures_do_not_widen_health_act_level_scope(
         self, tmp_path: Path
@@ -1335,7 +1336,8 @@ class TestDecisionTargetScope:
         )
 
         assert error is not None
-        assert "immutable snapshot problem cohort (#41, #42, #43)" in error
+        assert "immutable problem cohort" in error
+        assert "(#41, #42, #43)" in error
 
     def test_context_only_failures_still_pass_the_tamper_check(
         self, tmp_path: Path

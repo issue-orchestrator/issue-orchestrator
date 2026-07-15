@@ -27,14 +27,22 @@ Policy summary:
   planner re-reads the same validation for its planning effects (#6761
   finding 3).
 * Decision proposals may only target the session's immutable launch scope:
-  a failure investigation targets its focus issue only; a health review
-  targets its anchor issue only (the report's home, ADR-0031 §4); a batch
-  review targets manifest PRs plus the anchor tracking issue
+  a failure investigation targets its focus issue only; a batch review
+  targets manifest PRs plus the anchor tracking issue
   (``create_issue``/``flag_pattern`` are scope-free — that is where a health
   review's board-wide findings land) — out-of-scope targets are contract
   violations (#6761 re-review finding 2). A failure investigation must
   additionally publish its diagnosis: >=1 ``post_comment`` targeting the
   focus issue (#6761 finding 2).
+* A health review's scope SPLITS by tier (#6780): ``post_comment`` /
+  ``escalate_to_human`` stay anchor-scoped (the report's home, ADR-0031 §4),
+  while act-level ``reset_retry`` / ``kill_hung_session`` target ONLY the
+  immutable ``problem_cohort`` the review was launched owning
+  (``allowed_act_level_targets``). A periodic review owns no cohort and so
+  owns no act-level targets at all. The cohort comes from the launch grant
+  recorded in ``TriageLaunchAuthority``, never from the board snapshot's
+  ``recent_failures`` — that list is deliberately broader context, and
+  reading authority out of it let a review act on issues it did not own.
 * Health reviews close their anchor issue on success: the anchor is a
   walk-the-floor log entry, closed when the review lands. A rejected or
   missing pair leaves the anchor open for operator visibility; a
@@ -229,7 +237,8 @@ def _launch_scope_description(
         return (
             f"the health-review anchor issue #{authority.anchor_issue_number}"
             " (board-wide comments/escalations belong on the anchor; act-level"
-            " proposals use the separate snapshot cohort)"
+            " proposals instead use the cohort this review owns, published as"
+            " problem_cohort in board-snapshot.json)"
         )
     return (
         "the audited manifest PRs and the tracking issue"
@@ -244,8 +253,9 @@ def _act_level_scope_description(authority: TriageLaunchAuthority) -> str:
     if authority.flavor is TriageSessionFlavor.HEALTH_REVIEW:
         cohort = ", ".join(f"#{n}" for n in authority.problem_issue_numbers)
         return (
-            "the health review's immutable snapshot problem cohort"
-            f" ({cohort or 'empty'})"
+            "the health review's immutable problem cohort, published as"
+            " problem_cohort in board-snapshot.json"
+            f" ({cohort or 'empty — a periodic review owns no act-level target'})"
         )
     return (
         "no work issue is in scope for an act-level reset/kill from this"

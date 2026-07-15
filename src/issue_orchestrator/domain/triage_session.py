@@ -292,7 +292,8 @@ class TriageLaunchAuthority:
             raise ValueError(
                 "TriageLaunchAuthority with flavor=health_review carries no "
                 "focus issue or manifest PRs; its general scope is the anchor "
-                "and its act-level scope is the snapshot problem cohort"
+                "and its act-level scope is the problem cohort it was launched "
+                "owning"
             )
         if (
             self.flavor is not TriageSessionFlavor.HEALTH_REVIEW
@@ -342,11 +343,12 @@ class TriageLaunchAuthority:
         bookkeeping anchor — passed here is a confused deputy: it resets the
         wrong entity (#6764 re-review F1). Only a failure investigation owns a
         work issue in scope: its focus issue. A health review additionally owns
-        the problem issues captured from its own orchestrator-authored board
-        snapshot at launch (#6780), enabling group diagnosis with individually
-        gated and execution-time re-validated resets. Batch reviews own no
-        resettable work issue because manifest entries are PRs and their anchor
-        is bookkeeping.
+        the problem cohort it was LAUNCHED owning — the storm the anchor was
+        created for, carried here from the launch grant (#6780) — enabling
+        group diagnosis with individually gated and execution-time re-validated
+        resets. That cohort is empty for a periodic review, which therefore
+        owns no act-level target at all. Batch reviews own no resettable work
+        issue because manifest entries are PRs and their anchor is bookkeeping.
         """
         if self.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION:
             assert self.focus_issue_number is not None  # __post_init__
