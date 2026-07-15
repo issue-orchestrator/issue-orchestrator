@@ -13,10 +13,11 @@ if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState, Session, SessionStatus
     from ..ports.queue_cache_store import QueueCacheStore
+    from ..ports.triage_authority import TriageAuthorityStore
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from .planner import Planner
-    from .planner_types import Plan
+    from .planner_types import OrchestratorSnapshot, Plan
     from .action_applier import ActionApplier, ActionResult
     from .actions import Action
     from .cleanup_manager import CleanupManager
@@ -37,6 +38,7 @@ from .queue_cache import (
     record_issue_refreshes,
 )
 from .dependency_gate_snapshot import build_refresh_snapshot
+from .fact_gatherer import clear_discovered_facts
 from .issue_fetch_resilience import IssueFetchResilience, TransientIssueFetchError
 from .reconciliation import ReconciliationRequired, get_pause_label
 from .tick_telemetry import report_slow_tick
@@ -49,24 +51,13 @@ from .transition_log import log_transition
 from ..domain.models import (
     BLOCKED_HISTORY_STATUSES,
     PendingRetrospectiveReview,
-    PendingReview, PendingRework, PendingTriageReview,
+    PendingReview, PendingRework,
 )
+from .session_routing import PendingSessionQueues
 
 logger = logging.getLogger(__name__)
 
 _BLOCKED_HISTORY_HOT_REFRESH_LOOKBACK = 200
-_DISCOVERED_FACT_ATTRS: tuple[str, ...] = (
-    "discovered_reviews",
-    "discovered_retrospective_reviews",
-    "discovered_awaiting_merge_reconciliations",
-    "discovered_awaiting_merge_drifts",
-    "discovered_awaiting_merge_escalations",
-    "discovered_merge_queue_enqueues",
-    "discovered_reworks",
-    "discovered_escalations",
-    "discovered_failures",
-    "immediate_cleanups",
-)
 
 
 def init_orchestrator_components(orch: "Orchestrator") -> None:
@@ -136,6 +127,12 @@ class OrchestratorSupport:
     get_review_machine: Callable[[int, int], object]
     kill_session: Callable[[str], None]
     queue_cache_store: "QueueCacheStore | None" = None
+    # Durable triage ledgers (#6780). Anchor intake records a storm cohort
+    # here, and the end-of-tick fact clear reads it to hold the cohort's run
+    # artifacts. Optional so unrelated tests need not wire it; without it a
+    # storm anchor cannot prove its cohort, so intake declines to collapse the
+    # individual investigations rather than losing the problems.
+    triage_authority: "TriageAuthorityStore | None" = None
 
     _last_ui_update: float = field(default=0.0, init=False)
     _ui_update_interval: int = field(default=30, init=False)
@@ -193,9 +190,10 @@ class OrchestratorSupport:
             paused=self.state.paused,
         )
 
-    def clear_discovered_facts(self) -> None:
-        for attr in _DISCOVERED_FACT_ATTRS:
-            getattr(self.state, attr).clear()
+    def clear_discovered_facts(self, tick: "OrchestratorSnapshot") -> None:
+        clear_discovered_facts(
+            self.state, self.config, self.triage_authority, tick_paused=tick.paused
+        )
 
     def emit_heartbeat_if_needed(self) -> None:
         if time.time() - self._last_ui_update >= self._ui_update_interval and self.state.active_sessions:
@@ -386,10 +384,10 @@ class OrchestratorSupport:
 
     def _handle_create_triage_issue(self, action: "Action", result: "ActionResult") -> None:
         from .actions import CreateTriageIssueAction
-        a = cast(CreateTriageIssueAction, action)
+        from .health_review_trigger import intake_created_triage_anchor
         num = result.details.get("issue_number")
         if num:
-            self.state.pending_triage_reviews.append(PendingTriageReview(num, a.title))
+            intake_created_triage_anchor(cast(CreateTriageIssueAction, action), num, self.state, self.queue_cache_store, self.triage_authority)
             logger.info("Created triage #%d", num)
 
     def _handle_cleanup_session(self, action: "Action", result: "ActionResult") -> None:
@@ -458,8 +456,7 @@ class OrchestratorSupport:
     def _handle_queue_triage(self, action: "Action", result: "ActionResult") -> None:
         from .actions import QueueTriageAction
         a = cast(QueueTriageAction, action)
-        if not any(t.issue_number == a.issue_number for t in self.state.pending_triage_reviews):
-            self.state.pending_triage_reviews.append(PendingTriageReview(a.issue_number, a.title))
+        PendingSessionQueues(self.state).queue_failure_investigation(a.issue_number, a.title, failure=a.failure)
 
     def update_queue_cache(self) -> None:
         from .queue_projection import QueueProjection
@@ -509,12 +506,6 @@ def pause_issue_for_reconciliation(
             "[RECONCILIATION] Failed to add pause label to #%d: %s",
             issue_number, e
         )
-
-
-def clear_discovered_facts(state: "OrchestratorState") -> None:
-    """Clear discovered facts from state - moved per method table."""
-    for attr in _DISCOVERED_FACT_ATTRS:
-        getattr(state, attr).clear()
 
 
 def emit_heartbeat_if_needed(
@@ -657,7 +648,7 @@ def run_planning_cycle(
     scheduler: object,
     github_workflow: object,
     apply_plan_fn: Callable[["Plan"], None],
-    clear_discovered_facts_fn: Callable[[], None],
+    clear_discovered_facts_fn: Callable[["OrchestratorSnapshot"], None],
     last_network_sync: float,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
@@ -716,7 +707,10 @@ def run_planning_cycle(
 
     apply_plan_fn(plan)
     _track_stale_ticks(config, events, event_context, state, stale_issues)
-    clear_discovered_facts_fn()
+    # The tick's OWN snapshot decides retention: this call is separated from
+    # the snapshot by a fetch, planning and apply, and `state.paused` can have
+    # been flipped from the web thread in that window.
+    clear_discovered_facts_fn(snapshot)
 
     return last_network_sync, refresh_requested
 

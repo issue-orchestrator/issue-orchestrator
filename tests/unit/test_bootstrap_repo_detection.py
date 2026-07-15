@@ -346,6 +346,94 @@ class TestBuildOrchestratorForTesting:
             assert orch.config is minimal_config
             assert orch.deps.repository_host is mock_github
 
+    def test_build_orchestrator_writes_real_board_snapshot_on_triage_launch(
+        self, minimal_config: Config, mock_github: MagicMock, tmp_path
+    ) -> None:
+        """Bootstrap must wire the REAL board snapshot provider (ADR-0031 §3).
+
+        Merely constructing the launcher cannot distinguish the real
+        ``StateBoardSnapshotProvider`` from a Null one, so this drives a
+        public triage launch end-to-end through the bootstrapped
+        orchestrator: a triage agent is configured, ``launch_session`` runs
+        the real worktree + triage-prep path (``prepare_triage_session_data``),
+        and the board-snapshot.json the agent treats as authoritative input
+        must be written and non-trivially populated. The terminal-creation
+        boundary is the default ``NullSessionRunner`` — a public bootstrap
+        seam that reports successful session creation without a terminal.
+        """
+        import json
+        import subprocess
+        from pathlib import Path
+
+        from issue_orchestrator.domain.board_snapshot import BOARD_SNAPSHOT_SCHEMA_VERSION, BoardSnapshot
+        from issue_orchestrator.domain.models import AgentConfig, Issue
+
+        # A real git repo: the bootstrapped GitWorktreeManager is not a mock.
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        subprocess.run(
+            ["git", "init", "--initial-branch=main"], cwd=repo_root, check=True,
+            capture_output=True,
+        )
+        (repo_root / "README.md").write_text("seed\n")
+        subprocess.run(["git", "add", "."], cwd=repo_root, check=True, capture_output=True)
+        subprocess.run(
+            [
+                "git", "-c", "user.email=test@example.com", "-c", "user.name=Test",
+                "commit", "-m", "seed",
+            ],
+            cwd=repo_root, check=True, capture_output=True,
+        )
+        # Worktree creation fetches origin/<base>; a self-remote satisfies it
+        # without any network.
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(repo_root)],
+            cwd=repo_root, check=True, capture_output=True,
+        )
+        minimal_config.repo_root = repo_root
+        minimal_config.worktree_base = tmp_path / "worktrees"
+
+        prompt = tmp_path / "triage-prompt.md"
+        prompt.write_text("Triage prompt")
+        minimal_config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt, model="sonnet", timeout_minutes=45,
+        )
+        minimal_config.triage_review_agent = "agent:triage"
+        # Bounded GitHub seams: no PRs to audit, no fresh issue to re-read.
+        mock_github.get_prs_with_label.return_value = []
+        mock_github.get_issue.return_value = None
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config,
+                github=mock_github,
+            )
+
+        session = orch.launch_session(
+            Issue(
+                number=41,
+                title="Triage Batch Review",
+                labels=["agent:triage"],
+                repo="test/repo",
+                body="No dependencies.",
+            )
+        )
+
+        assert session is not None, "triage launch must succeed end-to-end"
+        snapshot_path = (
+            Path(session.run_assets.run_dir) / "triage-data" / "board-snapshot.json"
+        )
+        assert snapshot_path.exists(), (
+            "prepare_triage_session_data must write the authoritative "
+            "board-snapshot.json through the bootstrap-wired provider"
+        )
+        # Non-trivially populated and readable through the typed contract.
+        data = json.loads(snapshot_path.read_text())
+        assert data["generated_at"], "real provider stamps a real clock"
+        snapshot = BoardSnapshot.read(snapshot_path)
+        assert snapshot.schema_version == BOARD_SNAPSHOT_SCHEMA_VERSION
+        assert snapshot.orchestrator_paused is False
+
     def test_build_orchestrator_wires_pair_registry_for_shutdown(
         self, minimal_config: Config, mock_github: MagicMock
     ) -> None:
@@ -665,6 +753,123 @@ class TestBuildOrchestratorForTesting:
             )
 
             assert orch.deps.fact_gatherer is not None
+
+    def _configure_triage_agent(
+        self, config: Config, prompt_dir, *, threshold: int = 5
+    ) -> None:
+        """Arm the triage batch trigger on a real config (#6781 board wiring)."""
+        from issue_orchestrator.domain.models import AgentConfig
+
+        prompt = prompt_dir / "triage-prompt.md"
+        prompt.write_text("Triage prompt")
+        config.agents["agent:triage"] = AgentConfig(
+            prompt_path=prompt, model="sonnet", timeout_minutes=45,
+        )
+        config.triage_review_agent = "agent:triage"
+        config.triage_review_threshold = threshold
+
+    def test_build_orchestrator_for_testing_wires_triage_board_publisher(
+        self, minimal_config: Config, mock_github: MagicMock, tmp_path
+    ) -> None:
+        """A configured triage agent wires a real TriageBoardPublisher into the
+        fact gatherer's projection seam (#6781); without it the board file is
+        never produced no matter how many ticks run.
+        """
+        from issue_orchestrator.control.triage_board import TriageBoardPublisher
+
+        self._configure_triage_agent(minimal_config, tmp_path)
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config, github=mock_github,
+            )
+
+        assert isinstance(orch.deps.fact_gatherer.board_publisher, TriageBoardPublisher)
+
+    def test_build_orchestrator_for_testing_no_board_publisher_without_triage(
+        self, minimal_config: Config, mock_github: MagicMock
+    ) -> None:
+        """No triage agent -> no publisher wired and nothing crashes (#6781).
+
+        The gate mirrors the other triage-only deps: when triage is not
+        configured the fact gatherer's ``board_publisher`` stays ``None`` so
+        the publish call is skipped entirely (no board file, no error).
+        """
+        assert minimal_config.triage_review_agent is None  # fixture default
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config, github=mock_github,
+            )
+
+        assert orch.deps.fact_gatherer.board_publisher is None
+
+    def test_bootstrap_wired_fact_gathering_writes_triage_board(
+        self, minimal_config: Config, mock_github: MagicMock, tmp_path
+    ) -> None:
+        """Driving the real tick fact-gathering seam produces triage-board.md.
+
+        This exercises the WIRING (not ``publish`` in isolation, which the
+        publisher unit tests already cover): a triage-configured orchestrator
+        built by bootstrap, driven through the same ``create_snapshot`` seam
+        the tick uses, must render the board at ``triage_board_path`` from a
+        gathered case file AND from the authority ledger the publisher shares
+        with the fact gatherer.
+        """
+        from issue_orchestrator.control.triage_board import triage_board_path
+        from issue_orchestrator.domain.models import Issue, OrchestratorState
+        from issue_orchestrator.domain.triage_session import (
+            TRIAGE_OBSERVATION_LABEL,
+            StoredTriageOp,
+        )
+
+        self._configure_triage_agent(minimal_config, tmp_path)
+        # Bounded GitHub seams: one open case-file issue from the anchor scan,
+        # no batch PRs, no linked-issue re-reads.
+        mock_github.list_issues.return_value = [
+            Issue(
+                number=800,
+                title="Pattern case file: db-timeout",
+                labels=["agent:triage", TRIAGE_OBSERVATION_LABEL, "area:db"],
+            ),
+        ]
+        mock_github.get_prs_with_label.return_value = []
+        mock_github.get_issue.return_value = None
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=minimal_config, github=mock_github,
+            )
+
+        # Record an op on the SAME authority store the publisher was wired to,
+        # so the board's open-proposals section proves the authority wiring.
+        orch.deps.fact_gatherer.triage_authority.record_op(
+            issue_number=500,
+            op=StoredTriageOp(
+                op_type="reset_retry",
+                target_issue_number=13,
+                rationale="r",
+                source_run_id="run-1",
+                source_session_name="issue-99",
+                source_action_id="A2",
+                created_at="2026-07-11T00:00:00+00:00",
+            ),
+        )
+
+        state = OrchestratorState()
+        snapshot = orch.deps.fact_gatherer.create_snapshot(state, [])
+
+        assert snapshot.triage_facts is not None
+        assert snapshot.triage_facts.open_case_files, "case file must be gathered"
+
+        board = triage_board_path(minimal_config.repo_root)
+        assert board.exists(), "the wired publisher must write the board on gather"
+        content = board.read_text()
+        assert content.startswith("# Triage Board")  # stable render marker
+        assert "#800" in content  # the gathered case file (board_path wiring)
+        assert "#500" in content and "reset_retry" in content  # authority wiring
+        board_snapshot = orch.deps.board_snapshot_builder.build(state)
+        assert [item.issue_number for item in board_snapshot.case_files] == [800]
 
     def test_build_orchestrator_for_testing_creates_all_other_components(
         self, minimal_config: Config, mock_github: MagicMock

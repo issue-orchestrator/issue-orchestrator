@@ -277,6 +277,9 @@ class TestSSEFunctionality:
             async def run_loop(self) -> None:
                 return None
 
+            def close(self) -> None:
+                return None
+
         monkeypatch.setattr(web, "broadcast_event", fake_broadcast_event)
         monkeypatch.setattr(web, "run_web_dashboard", fake_run_web_dashboard)
         monkeypatch.setattr(web.asyncio, "sleep", fast_sleep)

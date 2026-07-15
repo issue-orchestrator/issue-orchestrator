@@ -152,6 +152,37 @@ def _pydantic_field_constraints(prop_schema: dict[str, Any]) -> list[str]:
     return constraints
 
 
+@dataclass(frozen=True)
+class ClassifiedComponents:
+    """Components partitioned by how they render.
+
+    ``enum_aliases`` and ``union_aliases`` become ``Literal``/union type
+    aliases; everything else becomes an object model. Enum aliases carry no
+    forward references, so callers emit them before the models that ``$ref``
+    them.
+    """
+
+    enum_aliases: tuple[ComponentSchema, ...]
+    union_aliases: tuple[ComponentSchema, ...]
+    models: tuple[ComponentSchema, ...]
+
+
+def _classify_components(components: list[ComponentSchema]) -> ClassifiedComponents:
+    """Split components into enum aliases, union aliases, and object models,
+    preserving their (already sorted) input order within each group."""
+    enum_aliases: list[ComponentSchema] = []
+    union_aliases: list[ComponentSchema] = []
+    models: list[ComponentSchema] = []
+    for component in components:
+        if _is_enum_alias_schema(component):
+            enum_aliases.append(component)
+        elif _is_union_alias_schema(component):
+            union_aliases.append(component)
+        else:
+            models.append(component)
+    return ClassifiedComponents(tuple(enum_aliases), tuple(union_aliases), tuple(models))
+
+
 def render_python_models(components: list[ComponentSchema]) -> str:
     lines: list[str] = [
         HEADER,
@@ -165,81 +196,81 @@ def render_python_models(components: list[ComponentSchema]) -> str:
         "\n",
     ]
 
-    alias_components: list[ComponentSchema] = []
-    for component in components:
-        name = component.name
-        schema = component.schema
-        if _is_union_alias_schema(schema):
-            alias_components.append(component)
-            continue
-        properties = schema.get("properties", {})
-        required = set(schema.get("required", []))
-        additional = schema.get("additionalProperties")
-        extra_mode = "forbid"
-        if additional is True:
-            extra_mode = "allow"
-
-        lines.append(f"class {name}(BaseModel):")
-        lines.append(f"    model_config = ConfigDict(extra=\"{extra_mode}\")")
-        if not properties:
-            lines.append("    pass")
-            lines.append("")
-            continue
-
-        for prop in sorted(properties.keys()):
-            prop_schema = properties[prop]
-            annotation = resolve_type(prop_schema)
-            if prop not in required and not is_optional(prop_schema):
-                annotation = f"{annotation} | None"
-            constraints = _pydantic_field_constraints(prop_schema)
-            if constraints:
-                # Required props get ``Field(..., ge=N)``; optional
-                # ones get ``Field(default=None, ge=N)``.
-                if prop in required:
-                    field_call = "Field(..., " + ", ".join(constraints) + ")"
-                else:
-                    field_call = "Field(default=None, " + ", ".join(constraints) + ")"
-                lines.append(f"    {prop}: {annotation} = {field_call}")
-            else:
-                default = "" if prop in required else " = None"
-                lines.append(f"    {prop}: {annotation}{default}")
-
+    classified = _classify_components(components)
+    # Enum aliases carry no forward references, so emit them first —
+    # every model field that ``$ref``s them resolves without a rebuild.
+    for component in classified.enum_aliases:
+        lines.append(f"{component.name}: TypeAlias = {resolve_type(component.schema)}")
         lines.append("")
-
-    for component in alias_components:
+    for component in classified.models:
+        lines.extend(_render_python_model(component))
+    for component in classified.union_aliases:
         lines.append(f"{component.name}: TypeAlias = {resolve_type(component.schema)}")
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _render_python_model(component: ComponentSchema) -> list[str]:
+    schema = component.schema
+    extra_mode = "allow" if schema.get("additionalProperties") is True else "forbid"
+    lines = [
+        f"class {component.name}(BaseModel):",
+        f"    model_config = ConfigDict(extra=\"{extra_mode}\")",
+    ]
+    properties = schema.get("properties", {})
+    if not properties:
+        lines += ["    pass", ""]
+        return lines
+
+    required = set(schema.get("required", []))
+    for prop in sorted(properties.keys()):
+        prop_schema = properties[prop]
+        annotation = resolve_type(prop_schema)
+        if prop not in required and not is_optional(prop_schema):
+            annotation = f"{annotation} | None"
+        constraints = _pydantic_field_constraints(prop_schema)
+        lines.append(_python_field_line(prop, annotation, constraints, prop in required))
+    lines.append("")
+    return lines
+
+
+def _python_field_line(
+    prop: str, annotation: str, constraints: list[str], required: bool
+) -> str:
+    if not constraints:
+        default = "" if required else " = None"
+        return f"    {prop}: {annotation}{default}"
+    # Required props get ``Field(..., ge=N)``; optional ones get
+    # ``Field(default=None, ge=N)``.
+    head = "Field(..., " if required else "Field(default=None, "
+    return f"    {prop}: {annotation} = {head}{', '.join(constraints)})"
+
+
 def render_dts_types(components: list[ComponentSchema]) -> str:
     lines: list[str] = [DTS_HEADER, "\n"]
-    alias_components: list[ComponentSchema] = []
-    for component in components:
-        name = component.name
-        schema = component.schema
-        if _is_union_alias_schema(schema):
-            alias_components.append(component)
-            continue
-        properties = schema.get("properties", {})
-        required = set(schema.get("required", []))
-        additional = schema.get("additionalProperties")
-
-        lines.append(f"export interface {name} {{")
-        for prop in sorted(properties.keys()):
-            prop_schema = properties[prop]
-            optional = prop not in required
-            suffix = "?" if optional else ""
-            lines.append(f"  {prop}{suffix}: {ts_type(prop_schema)};")
-        if additional is True:
-            lines.append("  [key: string]: any;")
-        lines.append("}\n")
-
-    for component in alias_components:
+    classified = _classify_components(components)
+    for component in classified.enum_aliases:
         lines.append(f"export type {component.name} = {ts_type(component.schema)};\n")
-
+    for component in classified.models:
+        lines.extend(_render_dts_interface(component))
+    for component in classified.union_aliases:
+        lines.append(f"export type {component.name} = {ts_type(component.schema)};\n")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_dts_interface(component: ComponentSchema) -> list[str]:
+    schema = component.schema
+    required = set(schema.get("required", []))
+    properties = schema.get("properties", {})
+    lines = [f"export interface {component.name} {{"]
+    for prop in sorted(properties.keys()):
+        suffix = "?" if prop not in required else ""
+        lines.append(f"  {prop}{suffix}: {ts_type(properties[prop])};")
+    if schema.get("additionalProperties") is True:
+        lines.append("  [key: string]: any;")
+    lines.append("}\n")
+    return lines
 
 
 def ts_type(schema: dict[str, Any]) -> str:
@@ -301,11 +332,29 @@ def _resolve_python_enum(values: list[Any]) -> str:
     return " | ".join(parts) if parts else "Any"
 
 
-def _is_union_alias_schema(schema: dict[str, Any]) -> bool:
+def _is_union_alias_schema(component: ComponentSchema) -> bool:
+    schema = component.schema
     has_union = bool(schema.get("oneOf") or schema.get("anyOf"))
     if has_union and schema.get("properties"):
         raise ValueError("component schemas must not mix oneOf/anyOf with properties")
     return has_union
+
+
+def _is_enum_alias_schema(component: ComponentSchema) -> bool:
+    """A top-level ``enum`` component (e.g. ``TimelineView``) renders as a
+    reusable ``Literal`` alias, not a Pydantic model.
+
+    Without this a bare-enum component would fall through to the object
+    branch and emit an empty ``class TimelineView(BaseModel): pass`` — a
+    useless model that ``$ref`` sites could not narrow against.  Enum
+    aliases carry no forward references, so they are emitted before the
+    model classes and can be referenced by any field.
+    """
+    schema = component.schema
+    has_enum = "enum" in schema and isinstance(schema["enum"], list)
+    if has_enum and schema.get("properties"):
+        raise ValueError("component schemas must not mix enum with properties")
+    return has_enum
 
 
 def generate_artifacts(schema_path: Path | None = None, python_out: Path | None = None, dts_out: Path | None = None) -> None:

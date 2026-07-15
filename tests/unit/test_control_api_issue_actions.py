@@ -977,10 +977,16 @@ class TestDismissIssueEndpoint:
         assert data["success"] is True
         assert "dismiss" in data["message"].lower()
 
-        # Verify labels were targeted for removal (blocked, blocked-needs-human, blocked-failed, in-progress)
+        # Verify all dismissible labels, including triage provenance, were targeted.
         removed_issue_numbers = [num for num, _ in removed_labels]
         assert all(num == 123 for num in removed_issue_numbers)
-        assert len(removed_labels) == 4  # blocked, blocked-needs-human, blocked-failed, in-progress
+        assert {label for _, label in removed_labels} == {
+            "blocked",
+            "blocked-needs-human",
+            "triage-needs-human",
+            "blocked-failed",
+            "in-progress",
+        }
 
         # Verify session history entry was removed
         assert len(mock_orch.state.session_history) == 0

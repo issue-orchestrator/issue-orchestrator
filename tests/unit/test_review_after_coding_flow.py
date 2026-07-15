@@ -69,6 +69,10 @@ def make_repository_host(prs):
 def make_completion_handler(config: Config, repository_host) -> CompletionHandler:
     session_output = MagicMock(spec=SessionOutput)
     session_output.find_run_dir.return_value = None
+    from issue_orchestrator.ports.triage_authority import (
+        InMemoryTriageAuthorityStore,
+    )
+
     return CompletionHandler(
         config=config,
         events=NullEventSink(),
@@ -77,6 +81,8 @@ def make_completion_handler(config: Config, repository_host) -> CompletionHandle
         get_session_machine_fn=lambda _terminal_id: None,
         get_review_machine_fn=lambda _pr_number: None,
         session_output=session_output,
+        triage_authority=InMemoryTriageAuthorityStore(),
+        active_session_run_id=lambda _n: None,
     )
 
 

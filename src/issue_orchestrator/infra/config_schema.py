@@ -214,6 +214,7 @@ def allowed_config_shape() -> dict[str, ConfigShape]:
         "code_review_label": LEAF,
         "code_reviewed_label": LEAF,
         "triage_review_agent": LEAF,
+        "triage_follow_up_agent": LEAF,
         "triage_review_label": LEAF,
         "triage_reviewed_label": LEAF,
         "triage_failed_label": LEAF,

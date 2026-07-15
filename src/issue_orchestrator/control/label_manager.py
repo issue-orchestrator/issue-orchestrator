@@ -14,6 +14,13 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
+from ..domain.triage_session import (
+    PROPOSED_TRIAGE_LABEL,
+    TRIAGE_AREA_LABEL_PREFIX,
+    TRIAGE_OBSERVATION_LABEL,
+    is_proposed_triage_gate,
+)
+
 if TYPE_CHECKING:
     from ..infra.config import Config
 
@@ -34,13 +41,43 @@ class LabelEntry:
     category: LabelCategory
     description: str  # Human-readable: "failed run"
     pattern: bool = False  # True for rework-cycle-{N}
+    raw: bool = False  # True for triage-subsystem labels that never take a prefix
 
 
 # Legacy labels that predated the blocked-* convention
 _LEGACY_BLOCKING = frozenset({"needs-human", "failed", "publish-failed"})
 
+# Provenance marker for needs-human escalations owned by the triage launcher.
+# It is intentionally informational: the paired needs-human label carries the
+# blocking semantics, while this label answers only "who owns the transition?".
+TRIAGE_NEEDS_HUMAN_LABEL = "triage-needs-human"
+
 _REWORK_CYCLE_RE = re.compile(r"^rework-cycle-(\d+)$")
 _PUBLISH_FAIL_COUNT_RE = re.compile(r"^publish-fail-count-(\d+)$")
+
+_TRIAGE_ISSUE_LABEL_METADATA = {
+    TRIAGE_OBSERVATION_LABEL.casefold(): (
+        "B60205",
+        "Pattern case file (triage observation ledger)",
+    ),
+}
+
+
+def triage_issue_label_metadata(name: str) -> tuple[str, str]:
+    """Return creation metadata for a trusted triage issue label.
+
+    Dynamic ``area:*`` names cannot be provisioned during setup. The shared
+    triage issue-creation owner uses this registry metadata before creating an
+    issue; configured repository labels receive neutral metadata only when an
+    upgraded repository has not provisioned them yet.
+    """
+    metadata = _TRIAGE_ISSUE_LABEL_METADATA.get(name.casefold())
+    if metadata is not None:
+        return metadata
+    area_prefix = TRIAGE_AREA_LABEL_PREFIX.casefold()
+    if name.casefold().startswith(area_prefix):
+        return "1D76DB", "Triage pattern area"
+    return "EDEDED", "Required by an orchestrator-created triage issue"
 
 
 class LabelManager:
@@ -74,13 +111,19 @@ class LabelManager:
 
         # Pre-compute resolved names for O(1) named-property access
         self._resolved: dict[str, str] = {
-            e.key: self._resolve_base(e.base_name)
+            e.key: (e.base_name if e.raw else self._resolve_base(e.base_name))
             for e in self._entries.values()
             if not e.pattern
         }
 
         # Set of all resolved non-pattern labels for fast membership test
         self._resolved_set: frozenset[str] = frozenset(self._resolved.values())
+        # Casefolded variant for case-insensitive reserved-name checks:
+        # GitHub label names are case-insensitive, so untrusted label input
+        # must not bypass ownership by case-flipping an owned name.
+        self._resolved_folded: frozenset[str] = frozenset(
+            value.casefold() for value in self._resolved_set
+        )
 
     # ------------------------------------------------------------------
     # Registry construction
@@ -119,6 +162,12 @@ class LabelManager:
             LabelEntry("blocked_failed", "blocked-failed", LabelCategory.BLOCKING, "Failed run"),
             LabelEntry("publish_failed", "publish-failed", LabelCategory.BLOCKING, "Publishing failed"),
             LabelEntry("blocked_needs_human", config.label_needs_human, LabelCategory.BLOCKING, "Needs human"),
+            LabelEntry(
+                "triage_needs_human",
+                TRIAGE_NEEDS_HUMAN_LABEL,
+                LabelCategory.INFORMATIONAL,
+                "Triage needs-human provenance",
+            ),
             LabelEntry("blocked_cross_milestone", "blocked-cross-milestone", LabelCategory.BLOCKING, "Cross-milestone dep"),
             LabelEntry("needs_rework", config.label_needs_rework, LabelCategory.LIFECYCLE, "Needs rework"),
             LabelEntry("validation_failed", config.label_validation_failed, LabelCategory.LIFECYCLE, "Validation failed"),
@@ -135,6 +184,13 @@ class LabelManager:
             LabelEntry("review_keep_approach", config.review_keep_current_approach_label, LabelCategory.INFORMATIONAL, "Keep current approach"),
             LabelEntry("code_review", config.code_review_label or "needs-code-review", LabelCategory.LIFECYCLE, "Needs code review"),
             LabelEntry("code_reviewed", config.code_reviewed_label or "code-reviewed", LabelCategory.LIFECYCLE, "Code reviewed"),
+            # Gated triage proposal issues (#6778): blocking-class so the
+            # scheduler never picks one up; raw (never prefixed) like the
+            # rest of the triage subsystem's labels.
+            LabelEntry("proposed_triage", PROPOSED_TRIAGE_LABEL, LabelCategory.BLOCKING, "Triage proposal awaiting operator approval", raw=True),
+            # Pattern case-file issues (#6781): same treatment as the gate
+            # label — blocking-class (never picked up), raw (never prefixed).
+            LabelEntry("triage_observation", TRIAGE_OBSERVATION_LABEL, LabelCategory.BLOCKING, "Pattern case file (triage observation ledger)", raw=True),
         ]
         for e in entries:
             self._entries[e.key] = e
@@ -203,6 +259,10 @@ class LabelManager:
         return self._resolved["blocked_needs_human"]
 
     @property
+    def triage_needs_human(self) -> str:
+        return self._resolved["triage_needs_human"]
+
+    @property
     def blocked_cross_milestone(self) -> str:
         return self._resolved["blocked_cross_milestone"]
 
@@ -259,6 +319,16 @@ class LabelManager:
         return self._triage_reviewed_base
 
     @property
+    def proposed_triage(self) -> str:
+        """The gated-proposal label (#6778). Raw — never prefixed."""
+        return self._resolved["proposed_triage"]
+
+    @property
+    def triage_observation(self) -> str:
+        """The pattern case-file label (#6781). Raw — never prefixed."""
+        return self._resolved["triage_observation"]
+
+    @property
     def review_keep_approach(self) -> str:
         return self._resolved["review_keep_approach"]
 
@@ -294,6 +364,26 @@ class LabelManager:
             return True
         return False
 
+    def is_workflow_reserved(self, label: str) -> bool:
+        """Case-insensitive union of ``is_ours`` and ``is_blocking``.
+
+        GitHub label names are case-insensitive, so agent-proposed labels
+        (untrusted input) are checked against casefolded owned/blocking
+        names — including a casefolded configured prefix — rather than the
+        exact-spelling checks used for orchestrator-written labels.
+        """
+        folded = label.casefold()
+        if folded in self._resolved_folded:
+            return True
+        base = folded
+        if self._prefix and folded.startswith(f"{self._prefix.casefold()}:"):
+            base = folded[len(self._prefix) + 1:]
+        if _REWORK_CYCLE_RE.match(base) or _PUBLISH_FAIL_COUNT_RE.match(base):
+            return True
+        if base == "blocked" or base.startswith(("blocked-", "blocked:")):
+            return True
+        return base in _LEGACY_BLOCKING
+
     def get_ours(self, labels: Sequence[str]) -> list[str]:
         """Return only orchestrator-owned labels from *labels*."""
         return [l for l in labels if self.is_ours(l)]
@@ -303,9 +393,26 @@ class LabelManager:
     # ------------------------------------------------------------------
 
     def is_blocking(self, label: str) -> bool:
-        """Return True if *label* blocks processing (prefix-aware)."""
+        """Return True if *label* blocks processing (prefix-aware).
+
+        ``proposed-triage`` is blocking-class (#6778): gated triage proposal
+        issues are excluded from pickup until an operator removes the gate
+        label (per-instance approval, ADR-0031 §2 amendment). The gate match is
+        case-insensitive via the shared owner (#6779 R15) — GitHub folds label
+        names, so a canonical ``Proposed-Triage`` still blocks and can never be
+        classified as approved by reconciliation while blocking treats it as
+        absent.
+        ``triage-observation`` is blocking-class the same way (#6781):
+        pattern case files are evidence ledgers, never agent work items.
+        """
         base = self._strip_prefix(label)
-        if base == "blocked" or base.startswith("blocked-") or base.startswith("blocked:"):
+        if (
+            base == "blocked"
+            or base.startswith("blocked-")
+            or base.startswith("blocked:")
+            or is_proposed_triage_gate(base)
+            or base.casefold() == self._resolved["triage_observation"].casefold()
+        ):
             return True
         if base in _LEGACY_BLOCKING:
             return True
@@ -329,6 +436,21 @@ class LabelManager:
         """Remove only blocking labels, returning what remains."""
         return [l for l in labels if not self.is_blocking(l)]
 
+    def repository_initialization_labels(
+        self, agent_labels: Sequence[str]
+    ) -> list[str]:
+        """Return the shared minimal label set for repository init commands."""
+        return [
+            self.in_progress,
+            self.blocked,
+            self.needs_human,
+            self.triage_needs_human,
+            "priority:high",
+            "priority:medium",
+            "priority:low",
+            *agent_labels,
+        ]
+
     # ------------------------------------------------------------------
     # Recovery / completion cleanup
     # ------------------------------------------------------------------
@@ -345,6 +467,7 @@ class LabelManager:
         """
         return (
             label == self.pr_pending
+            or label == self.triage_needs_human
             or self.is_blocking(label)
             or self.is_publish_fail_count(label)
         )

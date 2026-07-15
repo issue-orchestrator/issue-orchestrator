@@ -78,12 +78,18 @@ from .config_sections import (
     parse_filtering_config,
     parse_milestone_order,
 )
-from .config_value_rules import validate_review_nit_policy
+from .config_value_rules import resolve_triage_watch_label, validate_review_nit_policy
 from .validation_config_loader import (
     load_validation_config as load_validation_config,
     load_validation_config_from_file as load_validation_config_from_file,
     load_runtime_validation_config as load_runtime_validation_config,
 )
+
+
+def _put_if_truthy(target: dict, key: str, value: object) -> None:
+    """Insert ``key`` only when truthy (to_dict omits defaults)."""
+    if value:
+        target[key] = value
 
 
 @dataclass
@@ -261,10 +267,25 @@ class Config:
     # Triage/batch review workflow (optional) - pattern review across multiple PRs
     triage_review_agent: Optional[str] = None  # Agent that does batch reviews (e.g., "agent:triage")
     triage_review_label: Optional[str] = None  # Label for PRs awaiting triage review (uses code_reviewed_label if not set)
-    triage_reviewed_label: Optional[str] = None  # Label after triage review (e.g., "triage-reviewed")
-    triage_failed_label: Optional[str] = None  # Label when triage fails (e.g., "triage-failed")
+    triage_reviewed_label: str = "triage-reviewed"  # Label after triage review (matches load_review_section default)
+    triage_failed_label: str = "triage-failed"  # Label when triage fails (matches load_review_section default)
     triage_review_threshold: int = 0  # Trigger triage review after N PRs (0 = manual only)
     triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
+    # Validated worker a triage create_issue follow-up routes to (#6779 R9).
+    triage_follow_up_agent: Optional[str] = None
+
+    @property
+    def triage_watch_label(self) -> str:
+        """The single owned label that selects PRs for triage batch review.
+
+        Fact gathering (threshold trigger), manifest building (session
+        inputs), and prompt generation must all use this one derivation so
+        the PR set that trips the threshold is exactly the set the triage
+        session audits and labels.
+        """
+        return resolve_triage_watch_label(
+            self.triage_review_label, self.code_reviewed_label
+        )
 
     # Rework cycle limit (when reviewer requests changes)
     max_rework_cycles: int = 5  # Max times to re-queue work agent before escalating to needs-human
@@ -686,15 +707,7 @@ class Config:
                 "fetch_limit": self.filtering.fetch_limit,
                 "max_to_start": self.filtering.max_to_start,
             },
-            "triage": {
-                "inherit_labels": list(self.triage.inherit_labels),
-                "explicit_labels": list(self.triage.explicit_labels),
-                "milestone_strategy": {
-                    "inherit_from_issues": self.triage.milestone_strategy.inherit_from_issues,
-                    "explicit": self.triage.milestone_strategy.explicit,
-                },
-                "priority": self.triage.priority,
-            },
+            "triage": self.triage.to_event_dict(),
             "scheduling": {
                 "default_priority_tier": self.scheduling.default_priority_tier,
             },
@@ -973,8 +986,8 @@ class Config:
             review_dict["code_review_label"] = self.code_review_label
         if self.code_reviewed_label:
             review_dict["code_reviewed_label"] = self.code_reviewed_label
-        if self.triage_review_agent:
-            review_dict["triage_review_agent"] = self.triage_review_agent
+        _put_if_truthy(review_dict, "triage_review_agent", self.triage_review_agent)
+        _put_if_truthy(review_dict, "triage_follow_up_agent", self.triage_follow_up_agent)
         if self.triage_review_label:
             review_dict["triage_review_label"] = self.triage_review_label
         if self.triage_reviewed_label and self.triage_reviewed_label != "triage-reviewed":

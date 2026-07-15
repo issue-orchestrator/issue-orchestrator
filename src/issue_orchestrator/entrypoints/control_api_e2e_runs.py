@@ -29,6 +29,7 @@ from .timeline_presentation import (
 )
 from .timeline_projection_boundary import TIMELINE_PROJECTION_BOUNDARY_EXCEPTIONS, timeline_projection_endpoint
 from ..view_models.lifecycle_projection import project_e2e_suite_lifecycle_container_for_run
+from ..view_models.timeline_view import normalize_timeline_view
 
 logger = logging.getLogger(__name__)
 
@@ -426,8 +427,7 @@ async def e2e_run_timeline_endpoint(
         if not agent_events:
             agent_events = _load_worktree_agent_events(validated_root, run_id)
 
-        if view not in {"user", "ops", "debug", "raw"}:
-            view = "user"
+        view = normalize_timeline_view(view)
         issue_affordances = collect_issue_affordances(
             agent_events,
             run_id=run_id,

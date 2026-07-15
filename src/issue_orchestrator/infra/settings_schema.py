@@ -14,9 +14,9 @@ from __future__ import annotations
 import functools
 from typing import Any, Literal, Optional, TYPE_CHECKING
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .config_models import MERGE_QUEUE_PROVIDERS
+from .config_models import MERGE_QUEUE_PROVIDERS, TRIAGE_AUTHORITY_MODES
 
 from .settings_schema_support import (
     CONFIG_VALUE_TYPE_PATH,
@@ -983,6 +983,26 @@ class ReviewSettings(BaseModel):
             "doctor_severity": DOCTOR_SEVERITY_ERROR,
         },
     )
+    triage_follow_up_agent: Optional[str] = Field(
+        None,
+        title="Triage Follow-Up Agent",
+        description="Worker agent that triage-proposed follow-up issues route to",
+        json_schema_extra={
+            "doc_examples": ["agent:developer"],
+            "doc_notes": (
+                "When a triage decision proposes a new follow-up issue, the "
+                "orchestrator attaches this worker's agent label so normal "
+                "discovery picks it up. Must match a worker label under agents. "
+                "REQUIRED whenever review.triage_review_agent is set: a "
+                "configured triage agent makes create_issue proposals reachable, "
+                "so leaving this unset fails startup validation instead of "
+                "guessing by config order later."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage_follow_up_agent",
+            "yaml_path": "review.triage_follow_up_agent",
+        },
+    )
     triage_threshold: int = Field(
         0,
         title="Triage Threshold",
@@ -997,6 +1017,248 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.triage_review_threshold",
         },
     )
+    triage_review_label: Optional[str] = Field(
+        None,
+        title="Triage Review Label",
+        description="Label marking PRs that await triage review (optional)",
+        json_schema_extra={
+            "doc_examples": ["needs-triage-review"],
+            "doc_notes": "Falls back to code_reviewed_label when not set.",
+            "section": "Triage Review",
+            "config_attr": "triage_review_label",
+            "yaml_path": "review.triage_review_label",
+        },
+    )
+    triage_reviewed_label: str = Field(
+        "triage-reviewed",
+        title="Triage Reviewed Label",
+        description="Label added to manifest PRs after triage completes",
+        json_schema_extra={
+            "doc_examples": ["triage-reviewed"],
+            "doc_notes": "Added to every PR in the triage manifest on success.",
+            "section": "Triage Review",
+            "config_attr": "triage_reviewed_label",
+            "yaml_path": "review.triage_reviewed_label",
+        },
+    )
+    triage_failed_label: str = Field(
+        "triage-failed",
+        title="Triage Failed Label",
+        description="Label added to manifest PRs when a triage session fails",
+        json_schema_extra={
+            "doc_examples": ["triage-failed"],
+            "doc_notes": "Added to every PR in the triage manifest on failure.",
+            "section": "Triage Review",
+            "config_attr": "triage_failed_label",
+            "yaml_path": "review.triage_failed_label",
+        },
+    )
+    triage_review_on_failure: bool = Field(
+        True,
+        title="Triage on Session Failure",
+        description="Queue a triage investigation when sessions fail",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Disable to only triage PR batches, not failures.",
+            "section": "Triage Review",
+            "config_attr": "triage_review_on_failure",
+            "yaml_path": "review.triage_review_on_failure",
+        },
+    )
+    # Graduated triage authority (ADR-0031). Each key is constrained to
+    # TRIAGE_AUTHORITY_MODES — the same set YAML loading validates against —
+    # exposed as an `enum` select plus a POST-time validator (a Literal type
+    # is deliberately avoided; see merge_queue.provider for the rationale).
+    # escalate_to_human is intentionally absent: it is the non-configurable
+    # floor and always executes.
+    triage_authority_post_comment: str = Field(
+        "execute",
+        title="Triage Authority: Post Comment",
+        description="Execute or surface triage-proposed diagnosis comments",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["execute", "propose"],
+            "doc_notes": (
+                "execute posts the proposed comment; propose (shadow mode) "
+                "surfaces it as would-have-done. Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.post_comment",
+            "yaml_path": "triage.authority.post_comment",
+        },
+    )
+    triage_authority_create_issue: str = Field(
+        "execute",
+        title="Triage Authority: Create Issue",
+        description="Execute or gate triage-proposed follow-up issues",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["execute", "propose"],
+            "doc_notes": (
+                "execute files the proposed follow-up issue directly; propose "
+                "files it as a gated proposal issue carrying the proposed-triage "
+                "label, inert until an operator removes that label (per-instance "
+                "approval, #6778). Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.create_issue",
+            "yaml_path": "triage.authority.create_issue",
+        },
+    )
+    triage_authority_flag_pattern: str = Field(
+        "execute",
+        title="Triage Authority: Flag Pattern",
+        description="Open/append durable pattern case-file issues for recurring cross-job patterns",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["execute", "propose"],
+            "doc_notes": (
+                "execute opens a durable pattern case-file issue the first time "
+                "a pattern_signature is observed and appends an evidence comment "
+                "to that same case file on every repeat observation (one case "
+                "file per signature, #6781), so cross-job pattern evidence "
+                "accrues for later health reviews to mine; it also emits the "
+                "pattern trace event. propose (shadow mode) records only a "
+                "would-have-done proposal and opens no case file. Every "
+                "flag_pattern action MUST carry a pattern_signature (the "
+                "case-file ledger key) or the triage decision is rejected. "
+                "Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.flag_pattern",
+            "yaml_path": "triage.authority.flag_pattern",
+        },
+    )
+    triage_authority_reset_retry: str = Field(
+        "propose",
+        title="Triage Authority: Reset & Retry",
+        description="Act-level: reset-and-retry an issue from scratch",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["propose", "execute"],
+            "doc_notes": (
+                "execute runs the reset+retry-from-scratch owner after "
+                "re-validating the proposal's preconditions at execution time; "
+                "stale proposals downgrade to a surfaced record (#6764). "
+                "propose (default) files each proposal as a gated GitHub issue "
+                "carrying the proposed-triage label; removing the label is "
+                "per-instance approval and triggers the same re-validated "
+                "execution (#6778). Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.reset_retry",
+            "yaml_path": "triage.authority.reset_retry",
+        },
+    )
+    triage_authority_kill_hung_session: str = Field(
+        "propose",
+        title="Triage Authority: Kill Hung Session",
+        description="Act-level: terminate a stuck session",
+        json_schema_extra={
+            "enum": list(TRIAGE_AUTHORITY_MODES),
+            "doc_examples": ["propose"],
+            "doc_notes": (
+                "propose (default) files each proposal as a gated GitHub issue "
+                "carrying the proposed-triage label; removing the label is "
+                "per-instance approval and executes the stored op after "
+                "re-validating the target session is still active (#6778). "
+                "Direct execute is not wired yet (#6764) and remains a startup "
+                "configuration error. Allowed values: execute, propose."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.authority.kill_hung_session",
+            "yaml_path": "triage.authority.kill_hung_session",
+        },
+    )
+    triage_health_review_interval_minutes: int = Field(
+        0,
+        title="Health Review Interval (minutes)",
+        description="Create a periodic health-review issue every N minutes (0 = disabled)",
+        ge=0,
+        json_schema_extra={
+            "doc_examples": ["0", "240"],
+            "doc_notes": (
+                "ADR-0031 §4: when the interval elapses the orchestrator files "
+                "a health-review anchor issue for the triage agent to walk the "
+                "board snapshot. Requires a configured triage agent. 0 disables."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.health_review.interval_minutes",
+            "yaml_path": "triage.health_review.interval_minutes",
+        },
+    )
+    triage_health_review_storm_threshold: int = Field(
+        3,
+        title="Health Review Storm Threshold",
+        description=(
+            "Escalate this many recent blocked/failed issues into one health "
+            "review (0 = disabled)"
+        ),
+        ge=0,
+        le=100,
+        json_schema_extra={
+            "doc_examples": ["0", "3", "5"],
+            "doc_notes": (
+                "When the threshold is reached inside the configured storm "
+                "window, the orchestrator creates one immediate, unscheduled "
+                "health review and suppresses individual investigations for "
+                "the cohort. The periodic interval remains independent."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.health_review.storm_threshold",
+            "yaml_path": "triage.health_review.storm_threshold",
+        },
+    )
+    triage_health_review_storm_window_minutes: int = Field(
+        5,
+        title="Health Review Storm Window (minutes)",
+        description="Time window used to group blocked/failed problem issues",
+        ge=1,
+        le=1440,
+        json_schema_extra={
+            "doc_examples": ["1", "5", "15"],
+            "doc_notes": (
+                "Problems observed within this window count toward the storm "
+                "threshold. This window groups reactions; it does not delay "
+                "ordinary failure investigations."
+            ),
+            "section": "Triage Review",
+            "config_attr": "triage.health_review.storm_window_minutes",
+            "yaml_path": "triage.health_review.storm_window_minutes",
+        },
+    )
+
+    @field_validator(
+        "triage_authority_post_comment",
+        "triage_authority_create_issue",
+        "triage_authority_flag_pattern",
+        "triage_authority_reset_retry",
+        "triage_authority_kill_hung_session",
+    )
+    @classmethod
+    def _validate_triage_authority_mode(cls, value: str) -> str:
+        if value not in TRIAGE_AUTHORITY_MODES:
+            raise ValueError(
+                f"triage authority mode must be one of"
+                f" {list(TRIAGE_AUTHORITY_MODES)}, got {value!r}"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _health_review_interval_requires_triage_agent(self) -> "ReviewSettings":
+        # Cross-field invariant (#6763/#6776): a positive health-review
+        # interval without a configured triage agent would be silently
+        # disabled at runtime. Reject the pair so the misconfiguration is
+        # loud instead of degrading (0 disables; a positive interval needs
+        # an agent to walk the board).
+        if self.triage_health_review_interval_minutes > 0 and not self.triage_agent:
+            raise ValueError(
+                "triage.health_review.interval_minutes is "
+                f"{self.triage_health_review_interval_minutes} but no triage "
+                "agent is configured; set review.triage_review_agent, or use 0 "
+                "to disable the periodic health review."
+            )
+        return self
 
 
 class GoalPilotSettings(BaseModel):

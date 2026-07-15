@@ -256,11 +256,13 @@ class MockGitHubAdapter:
         state: str = "open",
         limit: int = 100,
         required_stable_ids: set[str] | None = None,
+        *,
+        exhaustive: bool = False,
     ) -> list[Issue]:
         """Return configured test issues, filtered by labels."""
         self.list_issues_calls.append({
             "labels": labels, "milestone": milestone, "state": state, "limit": limit,
-            "required_stable_ids": required_stable_ids,
+            "required_stable_ids": required_stable_ids, "exhaustive": exhaustive,
         })
         result = self.issues
         if labels:
@@ -825,7 +827,10 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.control.health_gate import HealthGate
     from issue_orchestrator.control.session_restorer import SessionRestorer
     from issue_orchestrator.control.completion_dispatcher import SynchronousCompletionDispatcher
+    from datetime import datetime
+
     from issue_orchestrator.control.label_sync import LabelSync
+    from issue_orchestrator.control.board_snapshot_builder import BoardSnapshotBuilder
     from issue_orchestrator.control.orchestrator_deps import OrchestratorDeps
     from issue_orchestrator.events import EventHub
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
@@ -960,6 +965,10 @@ def build_test_orchestrator_deps(
     label_manager = LabelManager(config)
     label_store = LabelStore(config.repo_root / ".issue-orchestrator" / "label_store.sqlite")
     attempt_store = create_attempt_store(config)
+    from issue_orchestrator.infra.triage_authority_store import (
+        SqliteTriageAuthorityStore,
+    )
+    triage_authority = SqliteTriageAuthorityStore.for_repo(config.repo_root)
 
     _action_applier.claim_gate = claim_gate
     # build_test_orchestrator_deps() returns deps without a live Orchestrator state.
@@ -977,6 +986,7 @@ def build_test_orchestrator_deps(
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
+        triage_authority=triage_authority,
     )
 
     from issue_orchestrator.execution.json_publish_retry_locator_store import (
@@ -999,6 +1009,7 @@ def build_test_orchestrator_deps(
         # the raw optional argument which is None when callers omit it.
         action_applier=_action_applier,
         code_review_agent_configured=bool(config.code_review_agent),
+        triage_authority=triage_authority,
     )
     # Same post-construction wiring as bootstrap: the ActionApplier abandons
     # publish retries at issue terminal boundaries via the runtime terminator.
@@ -1027,6 +1038,14 @@ def build_test_orchestrator_deps(
         session_controller=_session_controller,
         completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
+        # Null fact sources: unit tests exercising snapshots inject their own.
+        board_snapshot_builder=BoardSnapshotBuilder(
+            timeline_reader=lambda issue, limit: [],
+            log_tail_provider=lambda lines: [],
+            case_file_reader=lambda: (),
+            shipped_fix_reader=lambda limit: (),
+            clock=datetime.now,
+        ),
         session_output=session_output,
         claim_manager=claim_manager,
         claim_gate=claim_gate,

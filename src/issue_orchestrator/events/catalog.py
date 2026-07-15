@@ -193,7 +193,12 @@ class EventName(str, Enum):
     TRIAGE_ISSUE_CREATED = "triage.issue_created"
     TRIAGE_SKIPPED = "triage.skipped"
     TRIAGE_LAUNCHING = "triage.launching"
-    TRIAGE_BATCH_TRIGGERED = "triage.batch_triggered"
+    # Triage decision artifact wiring (ADR-0031); internal trace events only
+    TRIAGE_ACTION_PROPOSED = "triage.action_proposed"
+    # Act-level proposal executed by the orchestrator (#6764), completing
+    # the propose/execute pair (mirrors GOAL_PILOT_ACTION_*).
+    TRIAGE_ACTION_EXECUTED = "triage.action_executed"
+    TRIAGE_DECISION_REJECTED = "triage.decision_rejected"
 
     # =========================================================================
     # Cleanup operations

@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, call, patch
 
+from issue_orchestrator.control.session_launch_types import LaunchResult
+from issue_orchestrator.control.session_routing import orchestrator_launch_triage_session
 from issue_orchestrator.control.startup_manager import StartupManager
 from issue_orchestrator.control.issue_fetch_resilience import IssueFetchResilience
 from issue_orchestrator.control.action_applier import ActionApplier
@@ -22,6 +24,7 @@ from issue_orchestrator.domain.models import (
     PendingTriageReview,
     ORCHESTRATOR_PR_MARKER,
 )
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 
 
 class _FakeLabelSet:
@@ -999,6 +1002,229 @@ class TestStartupManagerTriageRecovery:
 
         assert len(sample_state.pending_triage_reviews) == 1
         assert sample_state.pending_triage_reviews[0].issue_number == 100
+        # Recovery restores agent-labeled batch tracking issues; the queue
+        # entry must say so or the launch runs it as a failure investigation
+        # that skips manifest prep and audits nothing (#6768 B5).
+        assert (
+            sample_state.pending_triage_reviews[0].flavor
+            is TriageSessionFlavor.BATCH_REVIEW
+        )
+
+    @pytest.mark.asyncio
+    async def test_recovered_triage_launches_with_batch_flavor(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """Startup-recovery -> launch boundary keeps the batch flavor (#6768 B5)."""
+        mock_config.agents = {"agent:triage": MagicMock()}
+        mock_config.triage_review_agent = "agent:triage"
+
+        triage_issue = Issue(
+            number=100,
+            title="Batch Review: 5 PRs",
+            labels=["agent:triage"]
+        )
+        mock_repository_host.list_issues.return_value = [triage_issue]
+
+        await startup_manager.run_startup(sample_state)
+
+        (recovered,) = sample_state.pending_triage_reviews
+        launcher = MagicMock()
+        launcher.launch_issue_session.return_value = LaunchResult(
+            session=None, success=False
+        )
+        launcher.session_manager.runner.discover_running_sessions.return_value = []
+
+        orchestrator_launch_triage_session(
+            recovered, sample_state, mock_config, launcher, MagicMock()
+        )
+
+        launch_call = launcher.launch_issue_session.call_args
+        assert launch_call.args[0].number == 100
+        assert launch_call.kwargs["triage_scope"].flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    @pytest.mark.asyncio
+    async def test_recovers_marker_labeled_anchor_as_health_review(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """A marker-labeled anchor recovers with the HEALTH flavor (ADR-0031 §4).
+
+        The queued flavor is forwarded verbatim to launch (#6768 B5), so
+        recovering the anchor as BATCH_REVIEW would relaunch it as a batch
+        audit — manifest prep, batch authority, manifest labels on
+        completion. The marker label is the crash-safe classifier.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:triage"]),
+        ]
+
+        await startup_manager.run_startup(sample_state)
+
+        by_number = {
+            item.issue_number: item for item in sample_state.pending_triage_reviews
+        }
+        assert set(by_number) == {100, 200}
+        assert by_number[200].flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert by_number[200].failure is None
+        assert by_number[100].flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    @pytest.mark.asyncio
+    async def test_recovery_ignores_closed_batch_tracking_issue(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """A COMPLETED (closed) batch tracking issue is never requeued (#6768 r4).
+
+        Successful batch completion closes the tracking issue; recovery asks
+        the host only for OPEN agent-labeled issues (the port's default state),
+        so the closed batch disappears from the recovery query.
+        """
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+
+        closed_batch = Issue(
+            number=100,
+            title="Triage Batch Review: 5 PRs pending",
+            labels=["agent:triage"],
+        )
+
+        def list_issues(labels=None, state="open", limit=100, **kwargs):
+            # Honor GitHub state filtering: the closed batch only appears in
+            # non-open queries.
+            del labels, limit, kwargs
+            return [] if state == "open" else [closed_batch]
+
+        mock_repository_host.list_issues.side_effect = list_issues
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_triage_reviews == []
+        # The recovery query must not widen to closed issues.
+        for query in mock_repository_host.list_issues.call_args_list:
+            assert query.kwargs.get("state", "open") == "open"
+
+    @pytest.mark.asyncio
+    async def test_recovery_skips_already_queued_triage(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """Recovery routes through the queue owner and never double-queues."""
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+
+        existing = PendingTriageReview(
+            issue_number=100,
+            title="Batch Review: 5 PRs",
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+        )
+        sample_state.pending_triage_reviews.append(existing)
+
+        triage_issue = Issue(
+            number=100,
+            title="Batch Review: 5 PRs",
+            labels=["agent:triage"]
+        )
+        mock_repository_host.list_issues.return_value = [triage_issue]
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_triage_reviews == [existing]
+
+    @pytest.mark.asyncio
+    async def test_recovery_ignores_anchor_outside_filter_scope(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """Startup and fact gathering share ONE eligibility rule: a run-scoped
+        restart must NOT queue another run's anchor (#6763 finding 7).
+
+        The out-of-scope anchor carries the triage agent label but not the
+        active ``filtering.label``; the shared scoped discovery owner drops it.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.filtering.label = "io:e2e:run-1"
+
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+        ]
+
+        await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_triage_reviews == []
+
+    @pytest.mark.asyncio
+    async def test_recovery_discovers_more_than_twenty_anchors(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+    ):
+        """The old startup scan capped at limit=20 and could strand an older
+        anchor; the shared exhaustive owner recovers all of them (#6763 f7)."""
+        mock_config.agents = {}
+        mock_config.triage_review_agent = "agent:triage"
+
+        anchors = [
+            Issue(number=n, title=f"Batch Review {n}", labels=["agent:triage"])
+            for n in range(1, 26)
+        ]
+
+        def list_issues(labels=None, state="open", limit=100, **kwargs):
+            # Honor GitHub's page limit so a regression back to limit=20 would
+            # strand the tail — exactly the bug this guards.
+            del labels, state, kwargs
+            return anchors[:limit]
+
+        mock_repository_host.list_issues.side_effect = list_issues
+
+        await startup_manager.run_startup(sample_state)
+
+        assert {item.issue_number for item in sample_state.pending_triage_reviews} == {
+            n for n in range(1, 26)
+        }
+        # The discovery query asked for a page large enough to hold them all.
+        assert any(
+            call.kwargs.get("limit", 0) >= 25
+            for call in mock_repository_host.list_issues.call_args_list
+        )
 
 
 class TestStartupManagerResumePartialWork:
@@ -1527,6 +1753,43 @@ class TestStartupGitHubCallBudget:
 
         assert mock_repository_host.list_issues.call_count == 0
         assert mock_repository_host.list_issues_delta.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_warm_start_hydrates_last_health_review_at(
+        self, mock_config, mock_events, mock_runner, mock_repository_host,
+        mock_action_applier, mock_issue_branches_fn,
+    ):
+        """Restart hydrates state.last_health_review_at from the durable store.
+
+        Without hydration a restart would see 0.0 and re-fire the periodic
+        health review immediately regardless of the interval (ADR-0031 §4).
+        """
+        mock_config.agents = {"agent:test": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30)}
+
+        mock_store = MagicMock()
+        mock_store.load_issues.return_value = [
+            Issue(number=1, title="Cached Issue", labels=["agent:test"]),
+        ]
+        mock_store.load_watermark.return_value = "2025-01-01T00:00:00Z"
+        mock_store.load_last_health_review_at.return_value = 1750000000.25
+        mock_repository_host.list_issues_delta.return_value = ([], "2025-01-01T00:00:01Z")
+
+        sm = StartupManager(
+            config=mock_config, events=mock_events, runner=mock_runner,
+            repository_host=mock_repository_host, action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+            issue_fetch_resilience=IssueFetchResilience("owner/repo"),
+            queue_cache_store=mock_store,
+        )
+
+        state = OrchestratorState()
+        await sm.run_startup(state)
+
+        assert state.last_health_review_at == 1750000000.25
 
     @pytest.mark.asyncio
     async def test_warm_start_preserves_blocked_scope_issues(

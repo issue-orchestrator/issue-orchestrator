@@ -85,6 +85,26 @@ class Issue(Protocol):
         ...
 
     @property
+    def created_at(self) -> str | None:
+        """ISO-8601 creation timestamp from the backing store, if known.
+
+        Crash-safe reconciliation input: the health-review trigger derives
+        its last-fired time from the newest marker-labeled anchor's creation
+        time when the durable store is behind (ADR-0031 §4).
+        """
+        ...
+
+    @property
+    def updated_at(self) -> str | None:
+        """ISO-8601 last-update timestamp from the backing store, if known."""
+        ...
+
+    @property
+    def comment_count(self) -> int:
+        """Number of comments present in this issue snapshot."""
+        ...
+
+    @property
     def agent_type(self) -> str | None:
         """Agent type label (e.g., 'agent:developer'), if any."""
         ...

@@ -30,7 +30,7 @@ from ..ports.issue_tracker import IssueTracker
 from ..ports.provider_resilience import InMemoryProviderCircuitStore
 from ..ports.session_runner import SessionRunner, NullSessionRunner
 from ..ports.timeline_reader import NullTimelineReader
-from ..ports.timeline_store import NullTimelineStore
+from ..ports.timeline_store import NullTimelineStore, TimelineStore
 from ..ports.timeline_writer import NullTimelineWriter
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..control.provider_resilience import ProviderResilienceManager
@@ -81,6 +81,11 @@ from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit, runtime_identity
+from .bootstrap_triage import (
+    create_board_snapshot_builder,
+    create_triage_composition,
+    wire_triage_act_executors,
+)
 from ..infra.repo_identity import state_dir
 from ..infra.secret_env import (
     configure_extra_forbidden_env_vars,
@@ -108,6 +113,7 @@ if TYPE_CHECKING:
         InMemoryPersistentExchangePairRegistry,
     )
     from ..ports.turn_mailbox import TurnMailbox
+    from ..ports.triage_authority import TriageAuthorityStore
     from ..control.background_job_supervisor import BackgroundJobSupervisor
 
 logger = logging.getLogger(__name__)
@@ -438,6 +444,7 @@ def _create_completion_components(
     pair_registry: "InMemoryPersistentExchangePairRegistry | None" = None,
     attempt_store: "AttemptStore | None" = None,
     turn_mailbox: "TurnMailbox | None" = None,
+    triage_authority: "TriageAuthorityStore | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -491,6 +498,7 @@ def _create_completion_components(
         review_exchange_canceller=_cancel_review_exchange,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
+        triage_authority=triage_authority,
     ) if github else None
 
     session_controller_instance = SessionController(
@@ -551,6 +559,7 @@ def _build_publish_recovery(
     fresh_issue_reader: "FreshIssueReader",
     action_applier: "ActionApplier",
     config: Config,
+    triage_authority: "TriageAuthorityStore",
 ) -> "PublishRecoveryService":
     """Wire the "Retry publish" owner: durable locator store + dedicated runner.
 
@@ -576,6 +585,7 @@ def _build_publish_recovery(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         code_review_agent_configured=bool(config.code_review_agent),
+        triage_authority=triage_authority,
     )
 
 
@@ -782,12 +792,10 @@ def build_orchestrator(
         reconcile=True,
     ) if github else None
 
-    # Create fact gatherer (read-only snapshot creation)
-    fact_gatherer = FactGatherer(
-        config=config,
-        repository_host=github,
-        events=events,
-    ) if github else None
+    triage = create_triage_composition(config, github, events)
+    triage_authority = triage.authority
+    triage_board_publisher = triage.board_publisher
+    fact_gatherer = triage.fact_gatherer
 
     # Create PR scanner and session restorer
     pr_scanner = (
@@ -831,16 +839,6 @@ def build_orchestrator(
     from ..execution.review_exchange_turn_mailbox import InMemoryTurnMailbox
     turn_mailbox = InMemoryTurnMailbox()
 
-    # Wire the registry into action_applier so ``_apply_escalate``
-    # and ``_apply_reconcile_history_entry`` can release the pair at
-    # their lifecycle boundaries (escalation, await-merge terminal).
-    # The shared supervisor completes the cancellation contract for
-    # STOP_SESSION: release the subprocess pair, then mark matching
-    # review-exchange jobs terminal so the main tick stops polling them.
-    if action_applier is not None:
-        action_applier.pair_registry = pair_registry
-        action_applier.background_job_supervisor = background_job_supervisor
-
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
         config, github, events, working_copy, session_output, command_runner, provider_resilience,
@@ -849,6 +847,7 @@ def build_orchestrator(
         pair_registry=pair_registry,
         attempt_store=attempt_store,
         turn_mailbox=turn_mailbox,
+        triage_authority=triage_authority,
     )
     _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -891,19 +890,23 @@ def build_orchestrator(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         config=config,
+        triage_authority=triage_authority,
     )
 
     # Build infrastructure services bundle
     from ..control.infra_services import InfraServices
     from ..execution.label_store import LabelStore
-
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
-    # Wire post-construction collaborators into action_applier: label_store for
-    # write-through persistence, and publish_recovery so its issue terminal
-    # boundaries abandon publish retries via the shared runtime terminator
-    # (post-construction because PublishRecoveryService depends on this applier).
+    # Wire post-construction collaborators into action_applier: the pair
+    # registry + shared supervisor so escalation / history-reconcile /
+    # STOP_SESSION boundaries terminate hidden review-exchange runtime,
+    # label_store for write-through persistence, and publish_recovery so
+    # issue terminal boundaries abandon publish retries (post-construction
+    # because PublishRecoveryService depends on this applier).
     if action_applier is not None:
+        action_applier.pair_registry = pair_registry
+        action_applier.background_job_supervisor = background_job_supervisor
         action_applier.label_store = label_store
         action_applier.publish_recovery = publish_recovery
 
@@ -917,6 +920,7 @@ def build_orchestrator(
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
+        triage_authority=triage_authority,
         pair_registry=pair_registry,
         turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
@@ -951,6 +955,9 @@ def build_orchestrator(
         # on a dedicated runner so a slow publish never blocks the heartbeat.
         completion_dispatcher=BackgroundCompletionDispatcher(ThreadBackgroundJobRunner()),
         health_gate=health_gate,
+        board_snapshot_builder=create_board_snapshot_builder(
+            config, timeline_store, triage_board_publisher
+        ),
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,
@@ -958,7 +965,10 @@ def build_orchestrator(
         services=infra_services,
     )
 
-    return Orchestrator(config=config, deps=deps)
+    orchestrator = Orchestrator(config=config, deps=deps)
+    # Act-level executor wiring closes over live orchestrator state (#6764/#6778).
+    wire_triage_act_executors(orchestrator)
+    return orchestrator
 
 
 def _check_github_token_scopes(config: Config, github: GitHubAdapter) -> None:
@@ -1099,13 +1109,11 @@ def build_orchestrator_for_testing(
             reconcile=False,  # Disable for testing by default
         )
 
-    # Create default fact gatherer
-    if fact_gatherer is None:
-        fact_gatherer = FactGatherer(
-            config=config,
-            repository_host=github,
-            events=events,
-        )
+    triage = create_triage_composition(config, github, events, fact_gatherer)
+    triage_authority_for_testing = triage.authority
+    triage_board_publisher_for_testing = triage.board_publisher
+    fact_gatherer = triage.fact_gatherer
+    assert fact_gatherer is not None
 
     # Create HealthGate for testing
     health_gate = HealthGate(
@@ -1150,6 +1158,7 @@ def build_orchestrator_for_testing(
     if action_applier is not None:
         action_applier.pair_registry = pair_registry_for_testing
         action_applier.background_job_supervisor = background_job_supervisor
+        action_applier.triage_ops = triage_authority_for_testing
 
     def _cancel_review_exchange_for_testing(
         issue_number: int,
@@ -1178,6 +1187,7 @@ def build_orchestrator_for_testing(
         review_exchange_canceller=_cancel_review_exchange_for_testing,
         review_artifact_reader=ManifestReviewArtifactReader(),
         runtime_identity=runtime_identity.resolve_runtime_identity(),
+        triage_authority=triage_authority_for_testing,
     )
     _wire_stack_publish_gate(
         completion_processor, _dependency_evaluator, github, command_runner, config,
@@ -1206,6 +1216,7 @@ def build_orchestrator_for_testing(
     event_hub = EventHub()
     timeline_reader = NullTimelineReader()
     timeline_writer = NullTimelineWriter()
+    timeline_store: TimelineStore = NullTimelineStore()
 
     # Create claim components for testing (NullClaimManager by default).
     lease_config = LeaseConfig()
@@ -1224,6 +1235,7 @@ def build_orchestrator_for_testing(
         fresh_issue_reader=fresh_issue_reader,
         action_applier=action_applier,
         config=config,
+        triage_authority=triage_authority_for_testing,
     )
 
     # Queue cache store for testing (uses repo_root state dir)
@@ -1234,7 +1246,6 @@ def build_orchestrator_for_testing(
     # Build infrastructure services bundle
     from ..control.infra_services import InfraServices
     from ..execution.label_store import LabelStore
-
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
     # Wire post-construction collaborators into action_applier (same as the
@@ -1250,10 +1261,11 @@ def build_orchestrator_for_testing(
         queue_cache_store=queue_cache_store,
         provider_resilience=provider_resilience,
         timeline_reader=timeline_reader,
-        timeline_store=NullTimelineStore(),
+        timeline_store=timeline_store,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         attempt_store=attempt_store,
+        triage_authority=triage_authority_for_testing,
         pair_registry=pair_registry_for_testing,
         turn_mailbox=turn_mailbox,
         background_job_supervisor=background_job_supervisor,
@@ -1282,10 +1294,12 @@ def build_orchestrator_for_testing(
         state_machine_manager=state_machine_manager,
         completion_processor=completion_processor,
         session_controller=session_controller,
-        # Tests default to synchronous (one-tick) completion; the background
-        # dispatcher is exercised explicitly where async behavior is under test.
+        # Tests default to synchronous; async dispatch is exercised explicitly.
         completion_dispatcher=SynchronousCompletionDispatcher(),
         health_gate=health_gate,
+        board_snapshot_builder=create_board_snapshot_builder(
+            config, timeline_store, triage_board_publisher_for_testing
+        ),
         claim_manager=claim_manager,
         claim_gate=claim_gate,
         lease_renewer=lease_renewer,

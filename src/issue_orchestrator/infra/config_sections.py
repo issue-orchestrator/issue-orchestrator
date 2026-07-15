@@ -34,7 +34,9 @@ from .config_models import (
     SessionInteractionsConfig,
     SqliteBackupConfig,
     TimelineConfig,
+    TriageAuthorityConfig,
     TriageConfig,
+    TriageHealthReviewConfig,
     PublishValidationConfig,
     ValidationCommandConfig,
     ValidationConfig,
@@ -242,11 +244,20 @@ def parse_triage_config(data: dict) -> TriageConfig:
         explicit=ms_data.get("explicit"),
     )
 
+    health_review_data = data.get("health_review", {}) or {}
+    health_review = TriageHealthReviewConfig(
+        interval_minutes=int(health_review_data.get("interval_minutes", 0)),
+        storm_threshold=int(health_review_data.get("storm_threshold", 3)),
+        storm_window_minutes=int(health_review_data.get("storm_window_minutes", 5)),
+    )
+
     return TriageConfig(
         inherit_labels=list(inherit_labels),
         explicit_labels=list(explicit_labels),
         milestone_strategy=milestone_strategy,
         priority=data.get("priority"),
+        authority=TriageAuthorityConfig.from_mapping(data.get("authority", {}) or {}),
+        health_review=health_review,
     )
 
 
@@ -408,6 +419,7 @@ def load_review_section(config: "Config", review_section: dict) -> None:
     config.code_review_label = review_section.get("code_review_label", "needs-code-review")
     config.code_reviewed_label = review_section.get("code_reviewed_label", "code-reviewed")
     config.triage_review_agent = review_section.get("triage_review_agent")
+    config.triage_follow_up_agent = review_section.get("triage_follow_up_agent")
     config.triage_review_label = review_section.get("triage_review_label")
     config.triage_reviewed_label = review_section.get("triage_reviewed_label", "triage-reviewed")
     config.triage_failed_label = review_section.get("triage_failed_label", "triage-failed")

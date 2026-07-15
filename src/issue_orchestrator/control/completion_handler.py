@@ -1,12 +1,8 @@
-"""CompletionHandler - handles session completion state machine updates and events.
+"""CompletionHandler - session completion state-machine updates and events.
 
-This module extracts completion logic from the orchestrator:
-1. State machine transitions (issue, session, review)
-2. Event emission for trace events
-3. History entry creation
-4. Cleanup decision logic
-
-The orchestrator calls this to handle the complex state updates when a session completes.
+Owns the complex state updates when a session completes: state-machine
+transitions (issue/session/review), trace-event emission, history entries,
+and cleanup decisions.
 """
 
 import logging
@@ -22,6 +18,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from ..domain.models import PendingReview, PendingRework, PendingTriageReview
+    from ..ports.triage_authority import TriageAuthorityStore
     from .state_machine_manager import StateMachineManager
     from .label_manager import LabelManager
 
@@ -50,6 +47,7 @@ from .completion_action_planner import (
     critical_processing_errors,
     has_review_exchange_errors,
 )
+from .triage_completion import discard_triage_authority_after_completion
 from .invalid_record_actions import (
     failure_event_reason,
     invalid_record_event_fields,
@@ -65,10 +63,7 @@ from ..infra.run_audit import write_run_audit
 logger = logging.getLogger(__name__)
 
 
-_PUBLISH_STAGE_LABELS = {
-    "push_branch": "Push",
-    "create_pr": "PR creation",
-}
+_PUBLISH_STAGE_LABELS = {"push_branch": "Push", "create_pr": "PR creation"}
 
 # Maximum length of the blocked-card status-reason line. Cards render the
 # reason inline; anything longer wraps ugly or truncates without ellipsis
@@ -78,13 +73,10 @@ _PUBLISH_FAILURE_SUMMARY_CHAR_CAP = 160
 
 
 def _summarize_publish_failure(critical_errors: list[str]) -> str:
-    """Build a card-friendly summary from raw publish error strings.
+    """Card-friendly one-line summary from raw publish error strings.
 
-    Input strings look like ``push_branch: Push failed: git command timed out: ...``
-    or ``create_pr: <exc>`` — we strip the stage prefix, collapse to one line,
-    and cap length so it renders inside a card without overflowing. Falls back
-    to the legacy generic text if the shape is unexpected (so the card still
-    says *something* if the prefix convention ever changes).
+    Strips the ``push_branch:``/``create_pr:`` stage prefix and caps length so it
+    renders inside a card; falls back to generic text on an unexpected shape.
     """
     if not critical_errors:
         return "Push or PR creation failed"
@@ -118,6 +110,7 @@ class CompletionResult:
     """Result of processing a session completion."""
 
     history_entry: SessionHistoryEntry
+    history_status: SessionStatus = SessionStatus.COMPLETED
     pr_url: Optional[str] = None
     pr_number: Optional[int] = None
     should_defer_cleanup: bool = False
@@ -129,13 +122,8 @@ class CompletionResult:
 class CompletionHandler:
     """Handles session completion state machine updates and event emission.
 
-    Dependencies:
-    - config: Configuration with cleanup and review settings
-    - events: EventSink for trace event emission
-    - repository_host: For fetching PR info
-    - issue_machines: Dict of issue state machines
-    - session_machines: Dict of session state machines
-    - review_machines: Dict of review state machines
+    Injected: config (cleanup/review settings), events (EventSink), repository_host,
+    and the issue/session/review state-machine lookups.
     """
 
     def __init__(
@@ -147,6 +135,8 @@ class CompletionHandler:
         get_session_machine_fn: Callable[[str], Optional["SessionStateMachine"]],
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
         session_output: SessionOutput,
+        triage_authority: "TriageAuthorityStore",
+        active_session_run_id: Callable[[int], str | None],
         remove_session_machine_fn: Callable[[str], None] | None = None,
         label_manager: "LabelManager | None" = None,
     ):
@@ -157,23 +147,22 @@ class CompletionHandler:
         self._get_session_machine = get_session_machine_fn
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
+        self._triage_authority = triage_authority
         self._remove_session_machine = remove_session_machine_fn
         if label_manager is None:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
         self._action_planner = CompletionActionPlanner(
-            config,
-            repository_host,
-            label_manager,
+            config, repository_host, label_manager, triage_authority,
+            active_session_run_id,
         )
 
     def mark_session_retry(self, session: Session, reason: str) -> None:
         """Mark a session terminal when it will be retried.
 
-        Validation retries re-launch a session with the same name. Ensure the
-        existing session state machine reaches a terminal state so the next
-        launch can create a fresh machine without invalid transitions.
+        Validation retries re-launch under the same name, so drive the existing
+        machine to a terminal state first — the next launch builds a fresh one.
         """
         session_machine = self._get_session_machine(session.terminal_id)
         if not session_machine:
@@ -200,18 +189,14 @@ class CompletionHandler:
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
+        finalize_terminal: bool = True,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
-        Args:
-            session: The completed session
-            status: The completion status
-            pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
-            processing_errors: Errors from completion processor (push failed, etc.)
-            diagnostic_path: Path to detailed failure diagnostic file (in worktree)
-
-        Returns:
-            CompletionResult with history entry and cleanup decision
+        Returns a CompletionResult with the history entry and cleanup decision.
+        With ``finalize_terminal=False`` the terminal trace event and the
+        state-machine transition defer to ``finalize_terminal_outcome`` so the
+        caller can drive both from the effective post-apply status (#6777).
         """
         start_time = time.monotonic()
         issue_key = session.key.issue.stable_id()
@@ -277,15 +262,13 @@ class CompletionHandler:
             session, history_status, pr_url, status_reason_override=history_status_reason
         )
 
-        # Emit trace events
-        self._emit_trace_events(
-            session, history_status, pr_url, pr_number,
-            blocked_reason=blocked_reason,
-            completion_detail=completion_detail,
-        )
-
-        # Update state machines
-        self._update_state_machines(session, history_status, pr_url)
+        # The terminal trace event AND the cached state-machine transition are the
+        # two terminal-outcome commits; both defer to finalize_terminal_outcome when
+        # the caller finalizes post-apply from the EFFECTIVE status (#6777). Default
+        # commits both here from history_status, exactly as before.
+        if finalize_terminal:
+            self.emit_trace_events(session, history_status, pr_url, pr_number, blocked_reason=blocked_reason, completion_detail=completion_detail)
+            self._update_state_machines(session, history_status, pr_url)
 
         # Determine cleanup strategy
         should_defer, pending_cleanup = self._determine_cleanup_strategy(
@@ -360,8 +343,16 @@ class CompletionHandler:
         if audit_actions:
             completion_actions = completion_actions + audit_actions
 
+        # Retention (#6769 F3): completion finalization is this run's terminal
+        # seam; publish-stage failures keep the row for Retry Publish.
+        discard_triage_authority_after_completion(
+            self.config, self._triage_authority, session,
+            processing_errors=processing_errors,
+        )
+
         result = CompletionResult(
             history_entry=history_entry,
+            history_status=history_status,
             pr_url=pr_url,
             pr_number=pr_number,
             should_defer_cleanup=should_defer,
@@ -521,13 +512,8 @@ class CompletionHandler:
     ) -> tuple[Optional[str], Optional[int], Optional[list[Any]]]:
         """Fetch PR info for a completed session.
 
-        Args:
-            session: The completed session
-            status: The completion status
-            pr_url_hint: Optional PR URL from completion processor (for dry-run mode)
-
-        Returns:
-            Tuple of (pr_url, pr_number, prs_list)
+        Returns ``(pr_url, pr_number, prs_list)``; ``pr_url_hint`` short-circuits
+        the branch lookup (dry-run mode).
         """
         pr_url = None
         pr_number = None
@@ -617,12 +603,8 @@ class CompletionHandler:
     ) -> SessionHistoryEntry:
         """Create a session history entry.
 
-        Args:
-            session: The session that completed
-            status: The status to record in history
-            pr_url: URL of the PR if one was created
-            status_reason_override: Optional override for the status reason
-                (used when agent said completed but push/PR failed)
+        ``status_reason_override`` supplies the reason when the agent said
+        completed but push/PR failed.
         """
         # Generate human-readable status reason
         status_reasons = {
@@ -647,9 +629,35 @@ class CompletionHandler:
             status_reason=status_reason,
             worktree_path=session.worktree_path,
             completed_at=datetime.now(timezone.utc),
+            issue_labels=tuple(session.issue.labels),
         )
 
-    def _emit_trace_events(
+    def finalize_terminal_outcome(
+        self,
+        session: Session,
+        effective_status: SessionStatus,
+        pr_url: Optional[str],
+        pr_number: Optional[int],
+        *,
+        blocked_reason: Optional[str] = None,
+        completion_detail: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Commit BOTH terminal consumers from the ONE effective status post-apply.
+
+        The terminal trace event and the cached ``SessionStateMachine`` transition
+        are the two terminal-outcome commits. ``handle_session_completion`` defers
+        both out of ``process_completion`` (``finalize_terminal=False``) and calls
+        this once with ``effective_terminal_status(history_status, outcome)`` so a
+        failed mandated reset ends the machine FAILED and emits one SESSION_FAILED —
+        never a false COMPLETED neither consumer can retract (#6777).
+        """
+        self.emit_trace_events(
+            session, effective_status, pr_url, pr_number,
+            blocked_reason=blocked_reason, completion_detail=completion_detail,
+        )
+        self._update_state_machines(session, effective_status, pr_url)
+
+    def emit_trace_events(
         self,
         session: Session,
         status: SessionStatus,
@@ -659,11 +667,10 @@ class CompletionHandler:
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Emit trace events for session completion.
+        """Emit the terminal/lifecycle trace event for a completion.
 
-        ``completion_detail`` carries curated fields from the CompletionRecord
-        so downstream consumers (timeline, UI) get the rich agent-provided data
-        without rummaging across files.
+        Public so ``finalize_terminal_outcome`` drives it post-apply from the
+        EFFECTIVE status (#6777).
         """
         detail = completion_detail or {}
 
@@ -795,14 +802,13 @@ class CompletionHandler:
         pr_url: Optional[str],
     ) -> None:
         """Update all relevant state machines for the session completion."""
-        status_reasons = {
+        status_reason = {
             SessionStatus.COMPLETED: "PR created successfully",
             SessionStatus.BLOCKED: "Agent marked issue as blocked",
             SessionStatus.NEEDS_HUMAN: "Agent requested human input",
             SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
             SessionStatus.FAILED: "Session ended without PR or status update",
-        }
-        status_reason = status_reasons.get(status, "Unknown")
+        }.get(status, "Unknown")
 
         logger.debug(f"[STATE_MACHINE] Triggering transitions for session {session.terminal_id}")
 
@@ -1006,9 +1012,8 @@ class CompletionHandler:
         issue_number: int | None,
     ) -> None:
         payload = {
-            "pr_number": pr_info.number,
+            "pr_number": pr_info.number, "pr_url": getattr(pr_info, "url", None),
             "labels": list(getattr(pr_info, "labels", []) or []),
-            "pr_url": getattr(pr_info, "url", None),
         }
         if issue_key is not None:
             payload["issue_key"] = issue_key
@@ -1024,11 +1029,8 @@ class CompletionHandler:
         issue_number: int,
     ) -> None:
         payload = {
-            "pr_number": pr_number,
-            "labels": [],
-            "pr_url": pr_url,
-            "issue_key": issue_key,
-            "issue_number": issue_number,
+            "pr_number": pr_number, "labels": [], "pr_url": pr_url,
+            "issue_key": issue_key, "issue_number": issue_number,
         }
         self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
@@ -1134,7 +1136,6 @@ class CompletionHandler:
         review_exchange_completed: bool,
     ) -> tuple[Action, ...]:
         """Return label actions after an approved local review exchange."""
-
         if not review_exchange_completed or not pr_url:
             return ()
         if session.key.task in {TaskKind.REVIEW, TaskKind.RETROSPECTIVE_REVIEW}:
@@ -1197,8 +1198,7 @@ class CompletionHandler:
         return resolve_session_run_dir(self._session_output, session)
 
 def launch_review_by_number(
-    n: int,
-    pending_reviews: list["PendingReview"],
+    n: int, pending_reviews: list["PendingReview"],
     launch_review_session_fn: Callable[["PendingReview"], Optional["Session"]],
 ) -> Optional["Session"]:
     """Launch review session by number - moved per method table."""
@@ -1207,8 +1207,7 @@ def launch_review_by_number(
 
 
 def launch_rework_by_number(
-    n: int,
-    pending_reworks: list["PendingRework"],
+    n: int, pending_reworks: list["PendingRework"],
     launch_rework_session_fn: Callable[["PendingRework"], Optional["Session"]],
 ) -> Optional["Session"]:
     """Launch rework session by number - moved per method table."""
@@ -1222,13 +1221,13 @@ def get_review_machine(pr: int, issue: int, state_machines: "StateMachineManager
 
 
 def launch_triage_by_number(
-    n: int,
-    pending_triage_reviews: list["PendingTriageReview"],
-    active_sessions: list["Session"],
-    launch_triage_session_fn: Callable[["PendingTriageReview"], None],
+    n: int, pending_triage_reviews: list["PendingTriageReview"],
+    launch_triage_session_fn: Callable[["PendingTriageReview"], Optional["Session"]],
 ) -> Optional["Session"]:
-    """Launch triage session by number - moved per method table."""
+    """Launch triage session by number - moved per method table.
+
+    Queue lifecycle (removal vs retention) is owned by the launch wrapper
+    (``orchestrator_launch_triage_session``), like the review/rework lookups.
+    """
     t = next((t for t in pending_triage_reviews if t.issue_number == n), None)
-    if t:
-        launch_triage_session_fn(t)
-    return next((s for s in active_sessions if s.issue.number == n), None)
+    return launch_triage_session_fn(t) if t else None

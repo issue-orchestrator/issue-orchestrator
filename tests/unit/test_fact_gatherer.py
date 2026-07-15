@@ -19,6 +19,7 @@ from issue_orchestrator.domain.models import (
     PendingTriageReview,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredFailure,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -262,18 +263,27 @@ class TestFactGathererTriageFacts:
 
         assert result is None
 
-    def test_triage_facts_returns_none_when_no_watch_label(
-        self, fact_gatherer, sample_state, mock_config
+    def test_triage_facts_uses_default_watch_label_when_none_configured(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
-        """Test returns None when no watch label configured."""
+        """With agent+threshold set, the watch label falls back to the default.
+
+        The single watch-label owner (Config.triage_watch_label, #6768 B3)
+        returns "code-reviewed" when neither label is configured — the same
+        default the manifest builder always applied — instead of silently
+        disabling the trigger while the manifest side stayed armed.
+        """
         mock_config.triage_review_agent = "agent:triage"
         mock_config.triage_review_threshold = 5
         mock_config.triage_review_label = None
         mock_config.code_reviewed_label = None
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues.return_value = []
 
         result = fact_gatherer.gather_triage_facts(sample_state)
 
-        assert result is None
+        assert result is not None
+        assert result.watch_label == "code-reviewed"
 
     def test_triage_facts_counts_prs_with_label(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
@@ -297,6 +307,57 @@ class TestFactGathererTriageFacts:
         assert result.threshold == 2
         assert result.watch_label == "code-reviewed"
 
+    def test_triage_facts_exclude_terminally_triaged_prs(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Terminally-triaged PRs never count toward the threshold (#6768 r5).
+
+        Fact gathering shares the manifest builder's candidate predicate;
+        counting triage-reviewed/triage-failed PRs that the manifest then
+        filters out is what created endless empty-batch tracking issues.
+        """
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=10, url="...", title="Still pending", branch="b1",
+                   labels=["code-reviewed"], body="", state="open"),
+            PRInfo(number=11, url="...", title="Audited", branch="b2",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+            PRInfo(number=12, url="...", title="Audit failed", branch="b3",
+                   labels=["code-reviewed", "triage-failed"], body="", state="open"),
+        ]
+        mock_repository_host.list_issues.return_value = []
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.pr_count == 1
+        assert result.prs == ((10, "Still pending"),)
+
+    def test_triage_facts_never_read_milestones(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Fact gathering is observation only (#6769 finding 4): even with
+        the explicit strategy configured and creation imminent, milestone
+        name->number resolution belongs to the create-issue applier — the
+        gatherer must make zero list_milestones calls."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 1
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_config.triage.milestone_strategy.explicit = "M5"
+        mock_repository_host.get_prs_with_label.return_value = [
+            PRInfo(number=10, url="...", title="PR 10", branch="b1", labels=[], body="", state="open"),
+        ]
+        mock_repository_host.list_issues.return_value = []
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.pr_count == 1
+        mock_repository_host.list_milestones.assert_not_called()
+
     def test_triage_facts_detects_existing_issue(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
     ):
@@ -314,6 +375,39 @@ class TestFactGathererTriageFacts:
 
         assert result is not None
         assert result.existing_triage_issue == 100
+
+    def test_triage_facts_ignore_closed_batch_tracking_issue(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """A CLOSED batch tracking issue no longer suppresses batch creation (#6768 r4).
+
+        Successful batch completion closes the tracking issue; the existing-batch
+        finder queries state="open", so the closed batch stops matching and
+        existing_triage_issue clears, allowing the next threshold trigger.
+        """
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        closed_batch = Issue(
+            number=100,
+            title="Triage Batch Review: 5 PRs pending",
+            labels=["agent:triage"],
+        )
+
+        def list_issues(labels=None, state="open", limit=100, **kwargs):
+            # Honor GitHub state filtering: the closed batch only appears in
+            # non-open queries.
+            del labels, limit, kwargs
+            return [] if state == "open" else [closed_batch]
+
+        mock_repository_host.get_prs_with_label.return_value = []
+        mock_repository_host.list_issues.side_effect = list_issues
+
+        result = fact_gatherer.gather_triage_facts(sample_state)
+
+        assert result is not None
+        assert result.existing_triage_issue is None
 
     def test_triage_facts_ignores_existing_issue_outside_filter_label(
         self, fact_gatherer, sample_state, mock_config, mock_repository_host
@@ -413,6 +507,372 @@ class TestFactGathererTriageFacts:
         assert "io-e2e-test-data" in result.source_labels
         assert "test-data" in result.source_labels
         assert "priority:high" in result.source_labels
+
+
+class _LabelFilteringTracker:
+    """RepositoryHost fake honoring GitHub's server-side label AND-filter.
+
+    Returns only issues that carry EVERY requested label, then applies the
+    page ``limit`` — exactly the behavior that lets an older anchor fall off a
+    too-small first page of the broad triage-agent scan (#6763 finding 4). It
+    records each query so tests can prove the dedup lookup is marker-scoped.
+    """
+
+    def __init__(self, issues):
+        self._issues = list(issues)
+        self.calls: list[dict] = []
+
+    def list_issues(self, labels=None, state="open", limit=100, **kwargs):
+        self.calls.append(
+            {
+                "labels": list(labels or []),
+                "state": state,
+                "limit": limit,
+                **kwargs,
+            }
+        )
+        wanted = {label.casefold() for label in (labels or [])}
+        matched = [
+            issue
+            for issue in self._issues
+            if issue.state == state or state == "all"
+            if wanted <= {label.casefold() for label in issue.labels}
+        ]
+        return matched[:limit]
+
+    def get_prs_with_label(self, *args, **kwargs):
+        return []
+
+
+class TestFactGathererHealthReviewFacts:
+    """Health-review trigger facts (ADR-0031 §4).
+
+    The interval gates the health fields, triage_review_threshold gates the
+    batch fields — each feature works alone, and both share ONE list_issues
+    scan for anchor-issue dedup (GitHub API discipline).
+    """
+
+    @staticmethod
+    def _arm_health_review(mock_config, interval_minutes: int = 60) -> None:
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage.health_review.interval_minutes = interval_minutes
+
+    def test_due_when_interval_elapsed_with_batch_disabled(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """threshold=0 + interval set: health fields populate, batch stays inert."""
+        self._arm_health_review(mock_config)
+        sample_state.last_health_review_at = 1_000.0
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 3600)
+
+        assert result is not None
+        assert result.health_review_due is True
+        assert result.existing_health_review_issue is None
+        # Batch fields inert: no watch label, no PRs, threshold 0.
+        assert result.watch_label == ""
+        assert result.pr_count == 0
+        assert result.prs == ()
+        assert result.threshold == 0
+        # No PR fetch when batch is disabled — health review costs only the
+        # single exhaustive anchor/case-file scan.
+        mock_repository_host.get_prs_with_label.assert_not_called()
+        mock_repository_host.list_issues.assert_called_once()
+        assert mock_repository_host.list_issues.call_args.kwargs["exhaustive"] is True
+
+    def test_not_due_within_interval(
+        self, fact_gatherer, sample_state, mock_config
+    ):
+        self._arm_health_review(mock_config, interval_minutes=60)
+        sample_state.last_health_review_at = 1_000.0
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 1800)
+
+        assert result is not None
+        assert result.health_review_due is False
+
+    def test_never_run_is_due_immediately(
+        self, fact_gatherer, sample_state, mock_config
+    ):
+        """last_health_review_at=0 means due as soon as the trigger is enabled."""
+        self._arm_health_review(mock_config, interval_minutes=60)
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is True
+
+    def test_disabled_interval_returns_none_without_batch(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """interval=0 + threshold=0 keeps the pre-existing None (no API calls)."""
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage.health_review.interval_minutes = 0
+
+        assert fact_gatherer.gather_triage_facts(sample_state) is None
+        mock_repository_host.list_issues.assert_not_called()
+        mock_repository_host.get_prs_with_label.assert_not_called()
+
+    def test_interval_without_triage_agent_is_disabled(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        mock_config.triage_review_agent = None
+        mock_config.triage.health_review.interval_minutes = 60
+
+        assert fact_gatherer.gather_triage_facts(sample_state) is None
+        mock_repository_host.list_issues.assert_not_called()
+
+    def test_health_only_facts_skip_explicit_milestone_resolution(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Batch-disabled facts never resolve triage.milestone_strategy.explicit.
+
+        The name -> number lookup costs a list_milestones call that only batch
+        creation consumes; health-only gathering must not pay it (GitHub API
+        discipline) nor fail on an unresolvable name.
+        """
+        self._arm_health_review(mock_config)
+        mock_config.triage.milestone_strategy.explicit = "M9"
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        mock_repository_host.list_milestones.assert_not_called()
+
+    @staticmethod
+    def _arm_storm(mock_config, sample_state, *, count: int = 3) -> None:
+        """Put ``count`` fresh problems on the board with threshold=3."""
+        from issue_orchestrator.domain.models import DiscoveredFailure
+
+        mock_config.triage_review_agent = "agent:triage"
+        mock_config.triage_review_on_failure = True
+        mock_config.triage.health_review.storm_threshold = 3
+        mock_config.triage.health_review.storm_window_minutes = 5
+        for number in range(41, 41 + count):
+            sample_state.record_discovered_failure(
+                DiscoveredFailure(number, f"Problem {number}", "failed")
+            )
+
+    @staticmethod
+    def _open_anchor():
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        return Issue(
+            number=100,
+            title="Health Review — walk the floor",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+        )
+
+    def test_storm_arms_anchor_scan_when_interval_is_not_due(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """A storm can fire an anchor on a tick the interval is NOT due, so the
+        open-anchor scan must be armed by the storm too.
+
+        Arming only on due-ness leaves ``existing_health_review_issue`` None on
+        exactly the ticks a storm creates an anchor, so an anchor that is
+        already open — including one currently RUNNING, which no queue-derived
+        fallback can see — gets duplicated.
+        """
+        self._arm_health_review(mock_config, interval_minutes=60)
+        sample_state.last_health_review_at = 999_000.0
+        self._arm_storm(mock_config, sample_state)
+        mock_repository_host.list_issues.return_value = [self._open_anchor()]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_060.0)
+
+        assert result is not None
+        assert result.health_review_due is False
+        assert result.existing_health_review_issue == 100
+
+    def test_storm_only_config_arms_anchor_scan(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """interval_minutes=0 disables only the PERIODIC trigger.
+
+        Storm escalation stays live, so a storm-only configuration must still
+        gather the dedup fact — otherwise gathering bails out before any scan
+        and every storm mints another anchor.
+        """
+        mock_config.triage.health_review.interval_minutes = 0
+        self._arm_storm(mock_config, sample_state)
+        mock_repository_host.list_issues.return_value = [self._open_anchor()]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is False
+        assert result.existing_health_review_issue == 100
+
+    def test_no_scan_when_problems_stay_below_the_storm_threshold(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """GitHub API discipline: the extra scan is bought only by a real storm.
+
+        Two problems cannot escalate, so a not-due tick still makes zero calls.
+        """
+        mock_config.triage.health_review.interval_minutes = 0
+        self._arm_storm(mock_config, sample_state, count=2)
+
+        assert fact_gatherer.gather_triage_facts(sample_state, now=999_999.0) is None
+        mock_repository_host.list_issues.assert_not_called()
+
+    def test_disabled_storm_threshold_arms_no_scan(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """storm_threshold=0 disables escalation, so it arms nothing either."""
+        mock_config.triage.health_review.interval_minutes = 0
+        self._arm_storm(mock_config, sample_state, count=5)
+        mock_config.triage.health_review.storm_threshold = 0
+
+        assert fact_gatherer.gather_triage_facts(sample_state, now=999_999.0) is None
+        mock_repository_host.list_issues.assert_not_called()
+
+    def test_existing_marker_labeled_issue_detected(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """An open marker-labeled anchor dedupes creation (crash-safe)."""
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+        ]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is True
+        assert result.existing_health_review_issue == 200
+        # The marker-labeled anchor must NOT be misread as a batch anchor.
+        assert result.existing_triage_issue is None
+        mock_repository_host.list_issues.assert_called_once()
+
+    def test_both_triggers_share_one_issue_scan(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Batch + health armed together: one list_issues call, both classified."""
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        mock_config.triage_review_threshold = 2
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=100, title="Batch Review: 5 PRs", labels=["agent:triage"]),
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+        ]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.existing_triage_issue == 100
+        assert result.existing_health_review_issue == 200
+        assert result.watch_label == "code-reviewed"
+        mock_repository_host.list_issues.assert_called_once()
+
+    def test_marker_issue_outside_filter_label_ignored(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """Filtered runs ignore anchors outside the active label scope."""
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        mock_config.filtering.label = "io:e2e:run-1"
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=200,
+                title="Health Review — walk the floor",
+                labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+            ),
+        ]
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.existing_health_review_issue is None
+
+    def test_not_due_health_only_makes_zero_list_issues_calls(
+        self, fact_gatherer, sample_state, mock_config, mock_repository_host
+    ):
+        """GitHub API discipline: due-ness is computed FIRST, so a health-only
+        config that is not yet due makes ZERO GitHub calls — no anchor fact can
+        affect planning before the review is due (#6763 finding 3)."""
+        self._arm_health_review(mock_config, interval_minutes=60)
+        sample_state.last_health_review_at = 1_000.0
+
+        result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 1800)
+
+        assert result is not None
+        assert result.health_review_due is False
+        assert result.existing_health_review_issue is None
+        # No scan ran, so the case-file projection is NOT observed this tick;
+        # the flag stays False so the board publisher retains its last
+        # projection instead of wiping it with the empty tuple (#6781 R2).
+        assert result.case_files_scanned is False
+        assert result.open_case_files == ()
+        mock_repository_host.list_issues.assert_not_called()
+        mock_repository_host.get_prs_with_label.assert_not_called()
+
+    def test_marker_anchor_beyond_first_page_is_deduped(
+        self, sample_state, mock_config
+    ):
+        """Crash-safe dedup must be exhaustive: a marker anchor sitting BEYOND
+        the first ten triage-agent items is still found, so no duplicate anchor
+        is created (#6763 finding 4).
+
+        The fake honors GitHub's label AND-filter plus page limit, so a broad
+        ``[triage_agent]``/limit=10 scan would strand the anchor at position
+        11; the marker-scoped lookup finds it regardless of position.
+        """
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        self._arm_health_review(mock_config)
+        crowd = [
+            Issue(number=n, title=f"Batch {n}", labels=["agent:triage"])
+            for n in range(1, 12)
+        ]
+        anchor = Issue(
+            number=200,
+            title="Health Review — walk the floor",
+            labels=["agent:triage", HEALTH_REVIEW_MARKER_LABEL],
+        )
+        tracker = _LabelFilteringTracker([*crowd, anchor])
+        gatherer = FactGatherer(config=mock_config, repository_host=tracker)
+
+        result = gatherer.gather_triage_facts(sample_state, now=999_999.0)
+
+        assert result is not None
+        assert result.health_review_due is True
+        assert result.existing_health_review_issue == 200
+        # The due health review uses the shared exhaustive triage-agent scan,
+        # which both finds the anchor beyond the first page and supplies open
+        # case files to the health-review snapshot (#6781).
+        assert tracker.calls == [
+            {
+                "labels": ["agent:triage"],
+                "state": "open",
+                "limit": 2000,
+                "exhaustive": True,
+            }
+        ]
 
 
 class TestFactGathererCleanupFacts:
@@ -689,3 +1149,449 @@ class TestFactGathererFetchIssues:
         results = gatherer.fetch_issues(labels_for_agent=["test-label"])
 
         assert [issue.number for issue in results] == [1, 3]
+
+
+class TestGatedProposalScanClassification:
+    """The ONE anchor scan classifies gated proposals too (#6778)."""
+
+    def _op(self, target: int, op_type: str = "reset_retry"):
+        from issue_orchestrator.domain.triage_session import StoredTriageOp
+
+        return StoredTriageOp(
+            op_type=op_type,
+            target_issue_number=target,
+            rationale="r",
+            source_run_id="run-1",
+            source_session_name="issue-99",
+            source_action_id="A2",
+            created_at="2026-07-11T00:00:00+00:00",
+        )
+
+    def _gatherer(self, mock_config, mock_repository_host, ops):
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 5
+        mock_config.code_reviewed_label = "code-reviewed"
+        store = InMemoryTriageAuthorityStore()
+        for issue_number, op in ops:
+            store.record_op(issue_number=issue_number, op=op)
+        return FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            triage_authority=store,
+        )
+
+    def test_approved_op_classified_from_same_scan(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """An op-backed issue WITHOUT the gate label is approved; the anchor
+        classification still works on the remaining issues — all from one
+        list_issues call."""
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=500, title="Triage proposal: reset & retry issue #13 from scratch", labels=["triage-agent"]),
+            Issue(number=7, title="Triage Batch Review: 3 PRs pending", labels=["triage-agent"]),
+        ]
+        gatherer = self._gatherer(
+            mock_config, mock_repository_host, [(500, self._op(13))]
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        [approved] = facts.approved_triage_ops
+        assert approved.proposal_issue_number == 500
+        assert approved.op.target_issue_number == 13
+        assert facts.existing_triage_issue == 7
+        # Exactly one issue scan was made for anchors + proposals.
+        assert mock_repository_host.list_issues.call_count == 1
+
+    def test_still_gated_proposal_yields_nothing_and_never_becomes_anchor(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=500,
+                title="Triage proposal: kill hung session for issue #14",
+                labels=["triage-agent", "proposed-triage"],
+            ),
+        ]
+        gatherer = self._gatherer(
+            mock_config,
+            mock_repository_host,
+            [(500, self._op(14, "kill_hung_session"))],
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        assert facts.approved_triage_ops == ()
+        assert facts.existing_triage_issue is None
+        assert facts.existing_health_review_issue is None
+
+    def test_exhaustive_scan_limit_prevents_hiding_ops_behind_a_backlog(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """R4: the anchor/proposal scan pages the COMPLETE matching set."""
+        from issue_orchestrator.control.triage_proposals import (
+            TRIAGE_PROPOSAL_SCAN_LIMIT,
+        )
+
+        mock_repository_host.list_issues.return_value = []
+        gatherer = self._gatherer(mock_config, mock_repository_host, [])
+
+        gatherer.gather_triage_facts(sample_state)
+
+        _, kwargs = mock_repository_host.list_issues.call_args
+        assert kwargs["limit"] == TRIAGE_PROPOSAL_SCAN_LIMIT
+        assert TRIAGE_PROPOSAL_SCAN_LIMIT > 100  # forces the adapter to paginate
+
+    def test_ledger_row_absent_from_scan_is_surfaced_as_candidate_read_only(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """R7/R10: an op whose proposal issue is absent from the exhaustive scan
+        is surfaced as a cleanup CANDIDATE, but fact gathering is READ-ONLY —
+        it must NOT discard the ledger row during observation. Cleanup flows
+        through the planner's DiscardTerminalTriageProposalOpsAction/owner,
+        which confirms with a targeted read first (a truncated scan must never
+        delete a live op)."""
+        # #500 is still an open proposal; #501's issue is absent from the scan.
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=500, title="Triage proposal", labels=["triage-agent", "proposed-triage"]),
+        ]
+        gatherer = self._gatherer(
+            mock_config,
+            mock_repository_host,
+            [(500, self._op(13)), (501, self._op(14, "kill_hung_session"))],
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        # The absent row is surfaced as a candidate...
+        assert facts is not None
+        assert facts.absent_proposal_op_candidates == (501,)
+        # ...but the store is UNTOUCHED — observation never mutates the ledger.
+        assert sorted(n for n, _ in gatherer.triage_authority.list_ops()) == [500, 501]
+        # A second scan is still read-only (no self-heal happens here).
+        gatherer.gather_triage_facts(sample_state)
+        assert sorted(n for n, _ in gatherer.triage_authority.list_ops()) == [500, 501]
+
+    def test_without_store_gate_labeled_issues_are_still_excluded(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 5
+        mock_config.code_reviewed_label = "code-reviewed"
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=500,
+                title="Triage proposal: reset & retry issue #13 from scratch",
+                labels=["triage-agent", "proposed-triage"],
+            ),
+        ]
+        gatherer = FactGatherer(
+            config=mock_config, repository_host=mock_repository_host
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        assert facts.approved_triage_ops == ()
+        assert facts.existing_triage_issue is None
+    def _gatherer_batch_disabled(self, mock_config, mock_repository_host, ops):
+        """Threshold=0 (batch trigger OFF) but a triage agent + wired ledger.
+
+        The proposal machinery must still reconcile in this shape (#6779 R12):
+        proposal advancement is decoupled from the batch review threshold.
+        """
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 0  # batch trigger disabled
+        mock_config.code_reviewed_label = "code-reviewed"
+        store = InMemoryTriageAuthorityStore()
+        for issue_number, op in ops:
+            store.record_op(issue_number=issue_number, op=op)
+        return FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            triage_authority=store,
+        )
+
+    def test_batch_disabled_proposals_still_execute_and_clean_up(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """R12: with the batch threshold at 0 (batch trigger OFF) but a triage
+        agent configured, an APPROVED gated proposal's op is still executed and
+        a terminal/absent proposal op is still surfaced for cleanup. Proposal
+        reconcile is decoupled from the batch review threshold — otherwise
+        manual-approval / default-threshold proposals never advance or
+        self-heal."""
+        # #500 is approved (op-backed issue WITHOUT the gate label); #501's
+        # issue is absent from the scan (terminal cleanup candidate).
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=500, title="Triage proposal for issue #13", labels=["triage-agent"]),
+        ]
+        gatherer = self._gatherer_batch_disabled(
+            mock_config,
+            mock_repository_host,
+            [(500, self._op(13)), (501, self._op(14, "kill_hung_session"))],
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        assert facts.threshold == 0  # batch trigger stays OFF
+        assert facts.existing_triage_issue is None  # no batch anchor surfaced
+        # The approved op is executed even though the batch threshold is 0.
+        [approved] = facts.approved_triage_ops
+        assert approved.proposal_issue_number == 500
+        assert approved.op.target_issue_number == 13
+        # The terminal/absent op is still surfaced for cleanup.
+        assert facts.absent_proposal_op_candidates == (501,)
+
+    def test_batch_disabled_empty_ledger_makes_no_scan(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        """R12 frugality: batch threshold 0 + triage agent but an EMPTY ledger
+        has nothing to reconcile, so it produces None and makes ZERO GitHub
+        calls (no scan is worth making)."""
+        mock_config.triage.health_review.interval_minutes = 0
+        gatherer = self._gatherer_batch_disabled(mock_config, mock_repository_host, [])
+
+        assert gatherer.gather_triage_facts(sample_state) is None
+        mock_repository_host.list_issues.assert_not_called()
+
+
+class TestCaseFileScanClassification:
+    """The ONE anchor scan also classifies open pattern case files (#6781)."""
+
+    def _gatherer(self, mock_config, mock_repository_host, *, board_publisher=None):
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 5
+        mock_config.code_reviewed_label = "code-reviewed"
+        return FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            triage_authority=InMemoryTriageAuthorityStore(),
+            board_publisher=board_publisher,
+        )
+
+    def test_case_file_classified_into_snapshot_and_never_anchor(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        from issue_orchestrator.domain.triage_session import TRIAGE_OBSERVATION_LABEL
+
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=800,
+                # A title that LOOKS like an anchor must not fool the split.
+                title="Triage Batch Review: recurring db timeout",
+                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL, "area:db"],
+            ),
+            Issue(
+                number=7,
+                title="Triage Batch Review: 3 PRs pending",
+                labels=["triage-agent"],
+            ),
+        ]
+        gatherer = self._gatherer(mock_config, mock_repository_host)
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        assert facts is not None
+        [case_file] = facts.open_case_files
+        assert case_file.issue_number == 800
+        assert case_file.area == "db"
+        # The observation-labeled issue is NEVER an anchor; #7 still is.
+        assert facts.existing_triage_issue == 7
+        # The anchor scan ran, so the projection is authoritative this tick.
+        assert facts.case_files_scanned is True
+        # Still just one issue scan for anchors + proposals + case files.
+        assert mock_repository_host.list_issues.call_count == 1
+
+    def test_board_publisher_receives_facts_and_health_review_timestamp(
+        self, mock_config, mock_repository_host, sample_state
+    ) -> None:
+        from issue_orchestrator.domain.triage_session import TRIAGE_OBSERVATION_LABEL
+
+        class _RecordingPublisher:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def publish(self, facts, *, last_health_review_at) -> None:
+                self.calls.append((facts, last_health_review_at))
+
+        publisher = _RecordingPublisher()
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=800,
+                title="Pattern case file: db-timeout",
+                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL],
+            ),
+        ]
+        gatherer = self._gatherer(
+            mock_config, mock_repository_host, board_publisher=publisher
+        )
+
+        facts = gatherer.gather_triage_facts(sample_state)
+
+        # Fire-and-forget projection sink got the gathered facts + state.
+        assert len(publisher.calls) == 1
+        published_facts, last_health_review_at = publisher.calls[0]
+        assert published_facts is facts
+        assert last_health_review_at == sample_state.last_health_review_at
+        assert len(published_facts.open_case_files) == 1
+
+    def test_no_scan_tick_preserves_prior_case_file_projection(
+        self, mock_config, mock_repository_host, sample_state, tmp_path
+    ) -> None:
+        """#6781 R2 end-to-end: a scanned tick populates the board projection;
+        a later health-armed/not-due/no-op tick makes NO scan and must not wipe
+        it. This wires the real gatherer -> real publisher path so the
+        ``case_files_scanned`` flag the gatherer stamps actually governs whether
+        the projection the board snapshot builder reads is retained.
+        """
+        from issue_orchestrator.control.triage_board import (
+            TriageBoardPublisher,
+            triage_board_path,
+        )
+        from issue_orchestrator.domain.triage_session import (
+            TRIAGE_OBSERVATION_LABEL,
+        )
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        # Health review armed; batch disabled (threshold 0 -> no watch label);
+        # empty op ledger. The only thing that ever triggers the anchor scan
+        # here is health-review due-ness.
+        mock_config.triage_review_agent = "triage-agent"
+        mock_config.triage_review_threshold = 0
+        mock_config.triage.health_review.interval_minutes = 60
+        mock_config.code_reviewed_label = "code-reviewed"
+
+        publisher = TriageBoardPublisher(
+            board_path=triage_board_path(tmp_path),
+            authority=InMemoryTriageAuthorityStore(),
+        )
+        gatherer = FactGatherer(
+            config=mock_config,
+            repository_host=mock_repository_host,
+            triage_authority=InMemoryTriageAuthorityStore(),
+            board_publisher=publisher,
+        )
+
+        # Tick 1: health review is due -> the anchor scan runs and observes an
+        # open pattern case file.
+        mock_repository_host.list_issues.return_value = [
+            Issue(
+                number=800,
+                title="Pattern case file: db-timeout",
+                labels=["triage-agent", TRIAGE_OBSERVATION_LABEL, "area:db"],
+            ),
+        ]
+        sample_state.last_health_review_at = 1_000.0
+        scanned = gatherer.gather_triage_facts(sample_state, now=1_000.0 + 3600)
+        assert scanned is not None
+        assert scanned.case_files_scanned is True
+        assert [cf.issue_number for cf in publisher.case_files()] == [800]
+
+        # The review ran, so its timestamp advances (orchestrator authority).
+        sample_state.last_health_review_at = 1_000.0 + 3600
+
+        # Tick 2: not due, empty ledger, batch off -> NO scan this tick.
+        mock_repository_host.list_issues.reset_mock()
+        mock_repository_host.list_issues.return_value = []
+        not_scanned = gatherer.gather_triage_facts(
+            sample_state, now=1_000.0 + 3600 + 60
+        )
+        assert not_scanned is not None
+        assert not_scanned.case_files_scanned is False
+        assert not_scanned.open_case_files == ()
+        # Zero GitHub calls on the frugal tick (GitHub API discipline).
+        mock_repository_host.list_issues.assert_not_called()
+        # The projection the board snapshot builder reads is preserved, not
+        # wiped by the empty tuple the frugal tick carried.
+        assert [cf.issue_number for cf in publisher.case_files()] == [800]
+
+
+class TestClearDiscoveredFacts:
+    """Retention rule for the tick-scoped fact buffers (#6780).
+
+    The clear exists to drop facts the tick CONSUMED. A paused tick consumes
+    nothing — the Planner returns an empty plan and ``apply_plan`` refuses to
+    apply actions while paused — so clearing there would silently discard
+    problems that nothing else records. A session that fails while paused is
+    discovered exactly once, so a dropped storm cohort is unrecoverable even
+    after resume.
+    """
+
+    @staticmethod
+    def _config() -> Config:
+        config = Config(repo="test/repo")
+        config.triage_review_agent = "agent:triage"
+        config.triage_review_on_failure = True
+        return config
+
+    @staticmethod
+    def _state_with_cohort() -> OrchestratorState:
+        state = OrchestratorState()
+        for number in (41, 42, 43):
+            state.record_discovered_failure(
+                DiscoveredFailure(
+                    issue_number=number,
+                    issue_title=f"Problem {number}",
+                    failure_reason="failed",
+                    observed_at=1_000.0,
+                )
+            )
+        return state
+
+    def test_paused_tick_retains_discovered_failures(self):
+        """A paused tick planned nothing, so it consumed nothing."""
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        state = self._state_with_cohort()
+
+        clear_discovered_facts(state, self._config(), tick_paused=True)
+
+        assert [f.issue_number for f in state.discovered_failures] == [41, 42, 43]
+
+    def test_running_tick_clears_discovered_failures(self):
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        state = self._state_with_cohort()
+
+        clear_discovered_facts(state, self._config(), tick_paused=False)
+
+        assert state.discovered_failures == []
+
+    def test_retention_ignores_live_state_paused(self):
+        """Retention is the TICK's decision, never a fresh shared-state read.
+
+        ``state.paused`` is mutated from the web thread and can flip between
+        the snapshot and this call. Both directions are pinned here: the clear
+        must follow ``tick_paused`` even when live state says the opposite.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        resumed_mid_tick = self._state_with_cohort()
+        resumed_mid_tick.paused = False
+        clear_discovered_facts(resumed_mid_tick, self._config(), tick_paused=True)
+        assert [
+            f.issue_number for f in resumed_mid_tick.discovered_failures
+        ] == [41, 42, 43]
+
+        paused_mid_apply = self._state_with_cohort()
+        paused_mid_apply.paused = True
+        clear_discovered_facts(paused_mid_apply, self._config(), tick_paused=False)
+        assert paused_mid_apply.discovered_failures == []

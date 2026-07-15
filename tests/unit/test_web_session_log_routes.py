@@ -1356,6 +1356,88 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
+    def test_session_prompt_returns_rework_launch_prompt(self, tmp_path: Path):
+        """A rework session's run-scoped launch prompt (manifest
+        session_prompt_path) is served and labelled as the launch prompt,
+        rather than the static agent template (#6588)."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+
+        worktree = tmp_path / "wt-rework-454"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "rework-1", issue_number=454)
+        launch_prompt = run.run_dir / "session-prompt.txt"
+        launch_prompt.write_text(
+            "Resolve the merge conflict in PR #469 against the base branch.\n",
+            encoding="utf-8",
+        )
+        session_output.update_manifest(
+            run.run_dir, {"session_prompt_path": str(launch_prompt)}
+        )
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=454,
+                title="Broken merge",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=worktree,
+            ),
+        ]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/session/prompt/454?run_dir={run.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["prompt_path"] == str(launch_prompt)
+            assert payload["content"] == (
+                "Resolve the merge conflict in PR #469 against the base branch.\n"
+            )
+            assert payload["label"] == "Launch prompt"
+        finally:
+            set_orchestrator(None)
+
+    def test_session_prompt_rejects_out_of_run_manifest_path(self, tmp_path: Path):
+        """A manifest whose session_prompt_path points outside the run dir must
+        not be served: the endpoint 404s and never returns the out-of-run
+        content (path containment is enforced by the run-artifact owner)."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+
+        worktree = tmp_path / "wt-escape-123"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=123)
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("OUT OF RUN SECRET\n", encoding="utf-8")
+        session_output.update_manifest(
+            run.run_dir, {"session_prompt_path": str(outside)}
+        )
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=worktree,
+            ),
+        ]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/session/prompt/123?run_dir={run.run_dir}")
+            assert response.status_code == 404
+            assert "OUT OF RUN SECRET" not in response.text
+        finally:
+            set_orchestrator(None)
+
     def test_orchestrator_log_honors_run_dir_query(self, tmp_path: Path):
         """GET /api/session/orchestrator-log should write tail into requested run_dir."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput

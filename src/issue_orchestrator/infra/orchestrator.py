@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Optional, cast
 
 if TYPE_CHECKING:
-    from ..control.planner_types import Plan
+    from ..control.planner_types import OrchestratorSnapshot, Plan
     from ..control.session_manager import SessionRef, SessionType
+    from ..domain.triage_session import TriageLaunchScope
     from ..ports.session_runner import DiscoveredSession
     from .e2e_db import E2ERun
 
@@ -41,12 +42,13 @@ from ..control.session_completion import (
     process_active_sessions as _process_active_sessions,
 )
 from ..control.session_launcher import SessionLauncher
+from ..control.board_snapshot_builder import StateBoardSnapshotProvider
 from ..control.session_routing import (
     orchestrator_launch_review_session as _launch_review_session,
     orchestrator_launch_retrospective_review_session as _launch_retrospective_review_session,
     orchestrator_launch_rework_session as _launch_rework_session,
     orchestrator_launch_validation_retry_session as _launch_validation_retry_session,
-    launch_triage_session as _launch_triage_session,
+    orchestrator_launch_triage_session as _launch_triage_session,
     session_launcher_callback as _session_launcher_callback,
     restore_running_sessions as _restore_running_sessions,
     parse_session_ref as _parse_session_ref,
@@ -110,6 +112,8 @@ class Orchestrator:
     _loop_error_limit: int = field(default=3, init=False)
     _last_tick_time: float = field(default=0.0, init=False)
     _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _external_close_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _external_resources_closed: bool = field(default=False, init=False, repr=False)
     _last_backup_check: float = field(default=0.0, init=False)
     _last_orphan_reconcile_scan_at: float = field(default=0.0, init=False)
     _last_orphan_reconcile_active_count: int = field(default=0, init=False)
@@ -209,14 +213,13 @@ class Orchestrator:
 
     @cached_property
     def _completion_handler(self) -> CompletionHandler:
+        from ..control.active_sessions import active_session_run_id
+        smm = self.deps.state_machine_manager
         return CompletionHandler(
             self.config, self.deps.events, self.deps.repository_host,
-            lambda issue: self.deps.state_machine_manager.issue_machines.get(issue.number),
-            lambda s: self.deps.state_machine_manager.session_machines.get(s),
-            lambda n: self.deps.state_machine_manager.review_machines.get(n),
-            self.deps.session_output,
-            remove_session_machine_fn=self.deps.state_machine_manager.remove_session_machine,
-            label_manager=self.deps.label_manager,
+            lambda issue: smm.issue_machines.get(issue.number), lambda s: smm.session_machines.get(s), lambda n: smm.review_machines.get(n),
+            self.deps.session_output, self.deps.triage_authority, lambda n: active_session_run_id(self.state.active_sessions, n),
+            remove_session_machine_fn=smm.remove_session_machine, label_manager=self.deps.label_manager,
         )
 
     @cached_property
@@ -224,7 +227,7 @@ class Orchestrator:
         return SessionLauncher(
             self.config, self.deps.events, self.deps.repository_host, self.deps.action_applier, self.deps.session_manager,
             self.deps.worktree_manager, self.deps.working_copy, self.deps.command_runner, self.deps.session_output,
-            self.deps.manifest_downloader,
+            self.deps.manifest_downloader, self.deps.triage_authority,
             lambda name: _session_exists(name, self.deps.session_manager, self.deps.events),
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, self.scheduler.dependency_evaluator,
@@ -233,6 +236,7 @@ class Orchestrator:
             remove_session_machine=self.deps.state_machine_manager.remove_session_machine,
             label_manager=self.deps.label_manager,
             send_to_session_fn=lambda name, text: self.deps.session_manager.runner.send_to_session_by_name(name, text),
+            board_snapshot_provider=StateBoardSnapshotProvider(self.deps.board_snapshot_builder, lambda: self.state),
         )
 
     @cached_property
@@ -246,6 +250,7 @@ class Orchestrator:
             get_review_machine=self._get_review_machine,
             kill_session=lambda name: _kill_session(name, self.deps.session_manager, self.deps.events),
             queue_cache_store=self.deps.queue_cache_store,
+            triage_authority=self.deps.triage_authority,
         )
 
     def _get_session_name(self, number: int, session_type: str = "issue") -> str: return get_session_name(number, session_type)
@@ -262,7 +267,7 @@ class Orchestrator:
         if retry is None:
             return None
         return _launch_validation_retry_session(retry, self.state, self._session_launcher, self.deps.session_restorer)
-    def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self.state.active_sessions, self._launch_triage_session)
+    def _launch_triage_by_number(self, n: int) -> Optional[Session]: return _ch_launch_triage_by_number(n, self.state.pending_triage_reviews, self._launch_triage_session)
 
     def _get_issue_machine(self, issue: Issue) -> Optional[IssueStateMachine]: return _gw_get_issue_machine(issue, self.deps.state_machine_manager)
     def _get_session_machine(self, name: str, n: int, timeout: int) -> Optional[SessionStateMachine]: return _sl_get_session_machine(name, n, timeout, self.deps.state_machine_manager)
@@ -301,6 +306,7 @@ class Orchestrator:
             queue_cache_store=self.deps.queue_cache_store,
             label_manager=self.deps.label_manager,
             label_store=self.deps.label_store,
+            triage_authority=self.deps.services.triage_authority,
         )
 
     async def startup(self) -> None:
@@ -371,13 +377,8 @@ class Orchestrator:
                 sessions_root,
             )
 
-    def launch_session(self, issue: Issue) -> Optional[Session]:
-        return _launch_session(
-            issue,
-            self.state,
-            self._session_launcher,
-            self.deps.session_restorer,
-        )
+    def launch_session(self, issue: Issue, *, triage_scope: "TriageLaunchScope | None" = None) -> Optional[Session]:
+        return _launch_session(issue, self.state, self._session_launcher, self.deps.session_restorer, triage_scope=triage_scope)
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output, publish_recovery=self.deps.publish_recovery)
 
     def tick(self) -> bool:
@@ -392,10 +393,12 @@ class Orchestrator:
             supervisor = self.deps.services.background_job_supervisor
             if supervisor is not None:
                 supervisor.tick()
-            # Reconcile any off-thread "Retry publish" jobs that finished since
-            # the last tick (clears publish-failed state + stored locators on
-            # success; leaves them retryable on failure).
+            # Reconcile completed off-thread publish retries; success clears
+            # failure state, while failures remain retryable.
             self.deps.publish_recovery.drain_completed_retries(self.state)
+            self._session_launcher.reconcile_stale_triage_needs_human(
+                self.state.active_sessions, discover_markers=not self.state.paused
+            )
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
                 self._event_context,
@@ -770,7 +773,7 @@ class Orchestrator:
             self.state.queue_refresh_requested = False
         self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self._issue_fetch_resilience, self.observer, self.deps.claim_manager, queue_cache_store=self.deps.queue_cache_store, io_claimed_label=self.deps.label_manager.io_claimed)
 
-    def _clear_discovered_facts(self) -> None: self._plan_applier.clear_discovered_facts()
+    def _clear_discovered_facts(self, tick: "OrchestratorSnapshot") -> None: self._plan_applier.clear_discovered_facts(tick)
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier.emit_heartbeat_if_needed()
 
     def _reconcile_orphaned_labels_at_startup(self) -> None:
@@ -868,6 +871,7 @@ class Orchestrator:
                 "sessions": [s.issue.number for s in active],
             }),
         ))
+        self._close_external_resources()
         self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_SHUTDOWN_COMPLETED,
             self._event_context.enrich({
@@ -877,27 +881,31 @@ class Orchestrator:
             }),
         ))
 
-        # Clean up E2E runner if active
-        self._cleanup_e2e_runner()
-
-        # Wait for background review-exchange threads so daemon-thread kill
-        # doesn't leave half-written summary.json / round-NNN.json files.
-        self._drain_background_jobs()
-
-        # Tear down every persistent coder/reviewer pair (ADR 0026 / B2:
-        # pairs survive across exchanges within an issue, so the natural
-        # shutdown boundary is here, not per-exchange).
+    def _shutdown_runtime_owners(self) -> None:
+        """Terminate agent processes before waiting for their worker threads."""
+        logger.info("[SHUTDOWN] Terminating agent runtime owners")
         pair_registry = getattr(self.deps, "pair_registry", None)
         if pair_registry is not None:
             pair_registry.shutdown_all(reason="orchestrator-shutdown")
-
-        # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
         self.deps.runner.on_orchestrator_shutdown()
-        goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
-        if goal_pilot_store is not None:
-            close = getattr(goal_pilot_store, "close", None)
-            if callable(close):
-                close()
+        # Closing the agent processes above unblocks review-exchange workers.
+        self._drain_background_jobs()
+        logger.info("[SHUTDOWN] Agent runtime owners terminated")
+
+    def _close_external_resources(self) -> None:
+        """Close process-scoped resources exactly once across all exit paths."""
+        with self._external_close_lock:
+            if self._external_resources_closed:
+                logger.debug("[SHUTDOWN] External resources already closed")
+                return
+            self._cleanup_e2e_runner()
+            self._shutdown_runtime_owners()
+            goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
+            if goal_pilot_store is not None:
+                close = getattr(goal_pilot_store, "close", None)
+                if callable(close):
+                    close()
+            self._external_resources_closed = True
 
     def _drain_background_jobs(self, timeout: float = 60.0) -> None:
         """Block shutdown until review-exchange background threads finish.
@@ -958,21 +966,7 @@ class Orchestrator:
 
     def close(self) -> None:
         """Release external resources for test harnesses and short-lived runs."""
-        self._cleanup_e2e_runner()
-        # Tear down every persistent coder/reviewer pair the orchestrator
-        # spawned so PTY-attached agent processes don't leak past the
-        # orchestrator's lifetime. ADR 0026 / B2: pairs survive across
-        # exchanges within an issue, so the natural shutdown boundary
-        # is here, not in ``run_persistent_session_exchange``.
-        pair_registry = getattr(self.deps, "pair_registry", None)
-        if pair_registry is not None:
-            pair_registry.shutdown_all(reason="orchestrator-shutdown")
-        self.deps.runner.on_orchestrator_shutdown()
-        goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
-        if goal_pilot_store is not None:
-            close = getattr(goal_pilot_store, "close", None)
-            if callable(close):
-                close()
+        self._close_external_resources()
 
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         with self._state_lock:
@@ -1041,7 +1035,7 @@ class Orchestrator:
     def _github_workflow(self) -> GitHubWorkflow: return GitHubWorkflow(self.config, self.deps.events, self.deps.repository_host, self.deps.fact_gatherer, self.deps.pr_scanner, self.deps.label_sync, self._event_context, self.deps.label_manager, self.scheduler.dependency_evaluator)
     def launch_review_session(self, review: PendingReview) -> Optional[Session]: return _launch_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
     def launch_retrospective_review_session(self, review: PendingRetrospectiveReview) -> Optional[Session]: return _launch_retrospective_review_session(review, self.state, self._session_launcher, self.deps.session_restorer)
-    def _launch_triage_session(self, triage: PendingTriageReview) -> None: _launch_triage_session(triage, self.config, self.launch_session)
+    def _launch_triage_session(self, triage: PendingTriageReview) -> Optional[Session]: return _launch_triage_session(triage, self.state, self.config, self._session_launcher, self.deps.session_restorer)
     def process_deferred_cleanups(self) -> None: self.state.pending_cleanups = self._github_workflow.process_deferred_cleanups(self.state.pending_cleanups, self._cleanup_manager)
     def _recover_orphaned_cleanups(self) -> None: self._plan_applier.recover_orphaned_cleanups()
     def scan_needs_code_review_prs(self) -> None: self._github_workflow.scan_needs_code_review_prs(self.state)

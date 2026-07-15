@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,13 @@ from ..domain.review_artifacts import (
     REVIEW_REPORT_FILENAME,
 )
 from ..domain.run_manifest import RunManifest
-from .session_output_adapter import CLAUDE_SESSION_LOG_NAME
+from .session_output_adapter import (
+    CLAUDE_SESSION_LOG_NAME,
+    RETRY_PROMPT_NAME,
+    SESSION_PROMPT_NAME,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -306,6 +313,106 @@ class ManifestAccessor:
             resolved,
             content_type=content_type,
         )
+
+    def get_session_prompt(self) -> ArtifactStream:
+        """Return the run-scoped launch prompt for this run.
+
+        This is the prompt the session was actually launched with — the
+        manifest's ``session_prompt_path`` when present, otherwise the run's
+        own ``session-prompt.txt`` / ``retry-prompt.md`` / newest
+        review-exchange round prompt, in that order. It is NOT the static
+        agent template.
+
+        Every candidate is resolved against ``run_dir`` and rejected when it
+        escapes the run directory, so a malformed or stale manifest cannot
+        point this reader at a file outside the selected run. The first
+        contained, real, non-empty candidate wins; if none qualify an
+        ``ArtifactNotFoundError`` is raised.
+        """
+        run_dir = self.run_identity.run_dir
+        self._require_run_dir_exists(run_dir)
+        resolved_run_dir = run_dir.resolve()
+        for candidate in self._session_prompt_candidates(run_dir):
+            if not self._is_within_run_dir(candidate, resolved_run_dir):
+                continue
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return self._artifact_stream("session_prompt", candidate)
+        raise ArtifactNotFoundError(
+            f"no run-scoped session prompt artifact found under {run_dir}"
+        )
+
+    def _session_prompt_candidates(self, run_dir: Path) -> list[Path]:
+        """Ordered launch-prompt candidates for this run.
+
+        Order: manifest ``session_prompt_path`` → ``session-prompt.txt`` →
+        ``retry-prompt.md`` → newest review-exchange round prompt. This only
+        assembles candidate paths; containment and existence are enforced by
+        the caller so the fallback order is preserved even when an earlier
+        candidate is rejected.
+        """
+        candidates: list[Path] = []
+        manifest_candidate = self._manifest_session_prompt_candidate(run_dir)
+        if manifest_candidate is not None:
+            candidates.append(manifest_candidate)
+        candidates.append(run_dir / SESSION_PROMPT_NAME)
+        candidates.append(run_dir / RETRY_PROMPT_NAME)
+        exchange_candidate = self._latest_review_exchange_prompt(run_dir)
+        if exchange_candidate is not None:
+            candidates.append(exchange_candidate)
+        return candidates
+
+    def _manifest_session_prompt_candidate(self, run_dir: Path) -> Path | None:
+        """Return the manifest's ``session_prompt_path`` as a path, if set.
+
+        Relative values resolve against ``run_dir``. Returns ``None`` when the
+        manifest is absent/unreadable or carries no usable value; containment
+        is enforced by the caller, not here.
+        """
+        manifest_file = run_dir / "manifest.json"
+        if not manifest_file.exists():
+            return None
+        try:
+            payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        value = payload.get("session_prompt_path") if isinstance(payload, dict) else None
+        if not isinstance(value, str) or not value:
+            return None
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = run_dir / candidate
+        return candidate
+
+    def _latest_review_exchange_prompt(self, run_dir: Path) -> Path | None:
+        """Return the newest review-exchange round prompt under run_dir, if any."""
+        exchange_root = run_dir / "review-exchange"
+        if not exchange_root.exists():
+            return None
+        candidates = sorted(
+            list(exchange_root.glob("round-*/coder-prompt.txt"))
+            + list(exchange_root.glob("round-*/reviewer-prompt.txt")),
+            key=lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
+
+    def _is_within_run_dir(self, candidate: Path, resolved_run_dir: Path) -> bool:
+        """Return ``True`` only when ``candidate`` stays inside ``run_dir``.
+
+        Resolves symlinks and ``..`` traversal before comparing, so an
+        absolute path outside the run, a ``../outside`` escape, or a symlink
+        pointing out of the run are all rejected. ``resolved_run_dir`` must
+        already be resolved.
+        """
+        try:
+            candidate.resolve().relative_to(resolved_run_dir)
+        except (OSError, ValueError):
+            logger.warning(
+                "session prompt candidate escapes run_dir; skipping: %s",
+                candidate,
+            )
+            return False
+        return True
 
     def get_completion_record(self) -> ArtifactStream:
         """Return the completion record stream for this run."""

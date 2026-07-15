@@ -14,6 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 
+TimelineView: TypeAlias = Literal['user', 'ops', 'debug', 'raw']
+
 class AgentIdentityPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -198,6 +200,12 @@ class DoctorDialogPayload(BaseModel):
     overall: str
     title: str
 
+class E2EArtifactDiagnosticPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    collected_count: int
+    configured_glob_count: int
+    state: Literal['collected', 'globs_matched_nothing', 'not_configured']
+
 class E2EFailureDetailsAvailablePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal['available']
@@ -218,6 +226,7 @@ class E2EIssueAffordancePayload(BaseModel):
 class E2ERunDetailPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[IssueDetailActionPayload]
+    artifact_diagnostic: E2EArtifactDiagnosticPayload
     artifacts: list[TestRunArtifactPayload]
     blocked_detail: IssueDetailBlockedDetailPayload | None
     cycles: list[E2ETimelineCyclePayload]
@@ -241,7 +250,7 @@ class E2ERunDetailPayload(BaseModel):
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
     title: str
-    view: str | None = None
+    view: TimelineView | None = None
 
 class E2ERunExecutionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -502,7 +511,7 @@ class IssueDetailPayload(BaseModel):
     summary: IssueDetailSummaryPayload
     timeline_steps: list[dict[str, Any]]
     title: str
-    view: str | None = None
+    view: TimelineView | None = None
 
 class IssueDetailSummaryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1000,7 +1009,7 @@ class SwitchE2ETimelineViewCommandPayload(BaseModel):
     kind: Literal['switch_e2e_timeline_view']
     label: str
     run_id: int = Field(..., ge=1, strict=True)
-    view: Literal['user', 'ops', 'debug', 'raw']
+    view: TimelineView
 
 class TestCaseHistoryPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -28,7 +28,7 @@ Usage:
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Literal, Optional, Sequence, TypeVar
 
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -38,7 +38,6 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session
-from .session_history import HistoryReconciliationMutation
 
 if TYPE_CHECKING:
     from .background_job_supervisor import BackgroundJobSupervisor
@@ -50,7 +49,10 @@ if TYPE_CHECKING:
     from ..ports.persistent_exchange_pair_registry import (
         PersistentExchangePairRegistry,
     )
+    from ..ports.triage_authority import TriageAuthorityStore
     from .session_history import SessionHistoryOwner
+    from .triage_kill_session import TriageKillSessionExecutor
+    from .triage_reset_retry import TriageResetRetryExecutor
 from .reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,
@@ -65,6 +67,7 @@ from .actions import (
     Action,
     ActionResult,
     ActionType,
+    TRIAGE_ISSUE_CREATION_ACTION_TYPES,
     AddLabelAction,
     RemoveLabelAction,
     SyncLabelsAction,
@@ -80,12 +83,19 @@ from .actions import (
     CloseIssueAction,
     SetIssueStateAction,
     CreateTriageIssueAction,
+    KillHungSessionAction,
+    SurfaceTriageProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
     RecoverTerminalIssueAction,
+    ResetRetryIssueAction,
 )
 from .session_manager import SessionManager, SessionRef, SessionType, SessionContext
+from .triage_issue_creation import apply_create_triage_issue
+from .history_reconciliation import apply_history_reconciliation
+from .triage_proposals import apply_discard_terminal_triage_proposal_ops, execute_approved_triage_op
+from .triage_reset_retry import apply_surface_triage_proposal
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +108,8 @@ ValidationRetryLauncherCallback = Callable[[int], Optional[Session]]
 # Type alias for lease_id lookup callback
 # Takes issue_number and returns lease_id if active session exists
 LeaseIdLookup = Callable[[int], str | None]
+# Act-level triage op actions share one dispatch shape (#6764/#6778).
+_TriageOpAction = TypeVar("_TriageOpAction", ResetRetryIssueAction, KillHungSessionAction)
 LabelMutationStatField = Literal[
     "label_add_attempted",
     "label_add_applied",
@@ -200,6 +212,13 @@ class ActionApplier:
     on_worktree_removed: Optional[Callable[[str], int]] = None
     # Owner for controlled in-memory history mutations.
     history_owner: Optional["SessionHistoryOwner"] = None
+    # Execution-time owners for act-level triage ops (#6764/#6778), plus the
+    # orchestrator-owned gated-proposal op store. Wired post-construction by
+    # the composition root (production runners close over live orchestrator
+    # state); unwired means the actions fail loudly instead of no-oping.
+    triage_reset_retry: Optional["TriageResetRetryExecutor"] = None
+    triage_kill_session: Optional["TriageKillSessionExecutor"] = None
+    triage_ops: Optional["TriageAuthorityStore"] = None
     _active_label_mutation_stats: _LabelMutationStats | None = field(
         default=None, init=False, repr=False
     )
@@ -273,8 +292,15 @@ class ActionApplier:
             ActionType.QUEUE_TRIAGE: self._apply_queue_operation,
             ActionType.ESCALATE_TO_HUMAN: self._apply_escalate,
             ActionType.ENQUEUE_TO_MERGE_QUEUE: self._apply_enqueue_to_merge_queue,
-            # Issue creation
-            ActionType.CREATE_TRIAGE_ISSUE: self._apply_create_triage_issue,
+            # All triage-authored issues share one apply-time creation owner.
+            **dict.fromkeys(TRIAGE_ISSUE_CREATION_ACTION_TYPES, self._apply_create_triage_issue),
+            # Triage decision proposals - event-only, no GitHub calls (ADR-0031)
+            ActionType.SURFACE_TRIAGE_PROPOSAL: self._apply_surface_triage_proposal,
+            # Act-level triage execution via the reset owner (#6764)
+            ActionType.RESET_RETRY_ISSUE: self._apply_reset_retry_issue,
+            # Approved kill_hung_session ops via the termination owner (#6778)
+            ActionType.KILL_HUNG_SESSION: self._apply_kill_hung_session,
+            ActionType.DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS: lambda action: apply_discard_terminal_triage_proposal_ops(action, tracker=self.repository_host, authority=self.triage_ops),
             # Cleanup operations
             ActionType.CLEANUP_SESSION: self._apply_cleanup_session,
             ActionType.REMOVE_WORKTREE: self._apply_remove_worktree,
@@ -1263,95 +1289,14 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     def _apply_reconcile_history_entry(self, action: Action) -> ActionResult:
         """Reconcile a session history entry through the history owner."""
         assert isinstance(action, ReconcileHistoryEntryAction)
-
-        if self.history_owner is None:
-            return ActionResult.fail(action, "Session history owner is not configured")
-
-        outcome = self.history_owner.reconcile_awaiting_merge(
-            issue_number=action.issue_number,
-            pr_url=action.pr_url,
-            status=action.status,
-            status_reason=action.reason,
-        )
-        if not isinstance(outcome, HistoryReconciliationMutation):
-            if outcome.reason == "missing":
-                logger.warning(
-                    "Awaiting-merge history reconciliation missing entry: issue=%d pr=%d pr_url=%s status=%s",
-                    action.issue_number,
-                    action.pr_number,
-                    action.pr_url,
-                    action.status,
-                )
-            else:
-                logger.info(
-                    "Awaiting-merge history reconciliation no-op: issue=%d pr=%d current_status=%s status=%s",
-                    action.issue_number,
-                    action.pr_number,
-                    outcome.current_status,
-                    action.status,
-                )
-            return ActionResult.ok(
-                action,
-                issue_number=action.issue_number,
-                pr_number=action.pr_number,
-                status=action.status,
-                noop_reason=outcome.reason,
-                current_status=outcome.current_status,
-                no_op=True,
-            )
-
-        self.events.publish(make_trace_event(
-            EventName.HISTORY_RECONCILED,
-            {
-                "issue_number": action.issue_number,
-                "issue_key": action.issue_key or str(action.issue_number),
-                "pr_number": action.pr_number,
-                "pr_url": action.pr_url,
-                "previous_status": outcome.previous_status,
-                "status": outcome.status,
-                "status_reason": outcome.status_reason,
-                "source": action.source,
-            },
-        ))
-        # When the PR reaches the merged terminal state, surface a
-        # user-visible "PR merged" event on the timeline. The catalog,
-        # spec, view registry, and issue-detail view-models are all
-        # already wired for `review.merged` — only the publication was
-        # missing, leaving the dashboard with a HISTORY_RECONCILED
-        # debug-only record after a successful merge. Emitting here
-        # closes that gap at the orchestrator's canonical merge-detection
-        # point (the awaiting-merge reconciler).
-        if outcome.status == "merged":
-            self.events.publish(make_trace_event(
-                EventName.REVIEW_MERGED,
-                {
-                    "issue_number": action.issue_number,
-                    "issue_key": action.issue_key or str(action.issue_number),
-                    "pr_number": action.pr_number,
-                    "pr_url": action.pr_url,
-                    "source": action.source,
-                },
-            ))
-
-        # Awaiting-merge reconciliation that flips an issue's history
-        # entry to a terminal state (``merged`` or ``closed``) is the
-        # canonical "issue done" boundary. Terminate every issue-scoped
-        # runtime owner here so it doesn't linger until orchestrator
-        # shutdown — ADR 0026 / B2 review feedback (PR #6212): without
-        # this, a successfully merged issue keeps subprocesses or
-        # supervised background jobs alive even though no more exchanges
-        # can occur.
-        if outcome.status in {"merged", "closed"}:
-            self._terminate_issue_runtime_for_issue(
-                action.issue_number,
-                reason="issue-completed",
-            )
-        return ActionResult.ok(
+        return apply_history_reconciliation(
             action,
-            issue_number=action.issue_number,
-            pr_number=action.pr_number,
-            previous_status=outcome.previous_status,
-            status=outcome.status,
+            history_owner=self.history_owner,
+            events=self.events,
+            triage_authority=self.triage_ops,
+            terminate_issue_runtime=lambda issue_number, reason: (
+                self._terminate_issue_runtime_for_issue(issue_number, reason=reason)
+            ),
         )
 
     def _apply_recover_terminal_issue(self, action: Action) -> ActionResult:
@@ -1479,56 +1424,70 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         )
 
     def _apply_create_triage_issue(self, action: Action) -> ActionResult:
-        """Create a triage review issue.
-
-        Creates the GitHub issue via repository_host.
-        """
+        """Delegate triage-authored issue creation to its apply-time owner."""
         assert isinstance(action, CreateTriageIssueAction)
-
         if not self.repository_host:
             return ActionResult.fail(
                 action, "No repository_host configured for issue creation"
             )
+        return apply_create_triage_issue(
+            action,
+            repository_host=self.repository_host,
+            events=self.events,
+            ops=self.triage_ops,
+            add_comment=self.repository_host.add_comment,
+            emit_labels_changed=self._emit_issue_labels_changed,
+        )
 
-        try:
-            result = self.repository_host.create_issue(
-                title=action.title,
-                body=action.body,
-                labels=list(action.labels),
-                milestone=action.milestone,
+    def _apply_surface_triage_proposal(self, action: Action) -> ActionResult:
+        """Surface a triage decision proposal as a trace event (ADR-0031).
+
+        Event choice and payload are owned by ``triage_reset_retry`` (shared
+        with the stale-downgrade surface); NO GitHub calls are made.
+        """
+        assert isinstance(action, SurfaceTriageProposalAction)
+        return apply_surface_triage_proposal(action, self.events)
+
+    def _apply_reset_retry_issue(self, action: Action) -> ActionResult:
+        """Execute a triage reset_retry proposal via the injected owner (#6764).
+
+        Precondition re-validation, stale downgrade, and the reset itself are
+        owned by TriageResetRetryExecutor; approved gated proposals (#6778)
+        are finalized by the triage_proposals owner.
+        """
+        assert isinstance(action, ResetRetryIssueAction)
+        executor = self.triage_reset_retry
+        return self._apply_triage_op(action, executor.apply if executor else None, "reset_retry")
+
+    def _apply_kill_hung_session(self, action: Action) -> ActionResult:
+        """Execute an APPROVED kill_hung_session op via the injected owner
+        (#6778) — same pause gate / stale policy / finalization shape as
+        reset_retry."""
+        assert isinstance(action, KillHungSessionAction)
+        executor = self.triage_kill_session
+        return self._apply_triage_op(action, executor.apply if executor else None, "kill_hung_session")
+
+    def _apply_triage_op(
+        self,
+        action: "_TriageOpAction",
+        apply_fn: "Callable[[_TriageOpAction], ActionResult] | None",
+        op_type: str,
+    ) -> ActionResult:
+        # Reconciliation pause gate first (raises ReconciliationRequired) — a
+        # paused issue must never be mutated from an agent proposal.
+        self._require_expected(action, action.issue_number)
+        if apply_fn is None:
+            return ActionResult.fail(
+                action,
+                f"triage {op_type} execution requested but no executor is"
+                " wired into this applier",
             )
-
-            issue_number = result.get("number") if result else None
-            if issue_number:
-                logger.info(
-                    "[APPLIER] Created triage issue #%d for %d PRs (milestone=%s)",
-                    issue_number, action.pr_count, action.milestone
-                )
-                self._emit_issue_labels_changed(
-                    issue_number,
-                    list(action.labels),
-                    [],
-                )
-                self.events.publish(make_trace_event(EventName.TRIAGE_ISSUE_CREATED, {
-                    "issue_number": issue_number,
-                    "pr_count": action.pr_count,
-                }))
-                return ActionResult.ok(
-                    action,
-                    issue_number=issue_number,
-                    pr_count=action.pr_count,
-                )
-
-            logger.warning(
-                "[APPLIER] Triage issue creation returned None (title=%s labels=%s)",
-                action.title,
-                list(action.labels),
-            )
-            return ActionResult.fail(action, "Issue creation returned None")
-
-        except Exception as e:
-            logger.exception("Failed to create triage issue")
-            return ActionResult.fail(action, str(e))
+        return execute_approved_triage_op(
+            action,
+            apply_fn,
+            repository_host=self.repository_host,
+            ops=self.triage_ops,
+        )
 
     def _apply_cleanup_session(self, action: Action) -> ActionResult:
         """Clean up a completed session."""

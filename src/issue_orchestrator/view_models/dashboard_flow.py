@@ -51,6 +51,12 @@ def compute_compact_card_fingerprint(card: dict[str, Any]) -> str:
         _s(card.get("github_aria_label")),
         labels_str,
         _s(card.get("stack_signal")),
+        # `run_dir` binds the reused card node to a specific run. A card whose
+        # other fields are unchanged but whose run directory advanced (e.g. a
+        # `rework-<issue>` slot replaced by a new run) must re-fingerprint so
+        # the stale `data-run-dir` — and the launch-prompt action that reads
+        # it — cannot survive on a reused DOM node.
+        _s(card.get("run_dir")),
     ]
     return "|".join(parts)
 
@@ -104,6 +110,9 @@ def compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[s
         "github_aria_label": github_aria_label,
         "focus_hint": "Focus issue",
         "github_hint": github_title,
+        # Present only for running sessions; lets the compact-card prompt
+        # action open the run-scoped launch prompt.
+        "run_dir": item.get("run_dir", ""),
         "last_refreshed_label": item.get("last_refreshed_label", "unknown"),
         "is_stale": bool(item.get("is_stale", False)),
         "show_stale_badge": bool(item["show_stale_badge"]),
@@ -273,12 +282,20 @@ def build_awaiting_merge_items(
     queue_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
     history_items: list[dict[str, Any]],
+    *,
+    exclude_issue_numbers: frozenset[int] = frozenset(),
 ) -> list[dict[str, Any]]:
-    """Items with PRs ready to merge, drawn from all lifecycle stages."""
+    """Items with PRs ready to merge, drawn from all lifecycle stages.
+
+    ``exclude_issue_numbers`` are owned by another lane (e.g. issues queued for
+    rework belong to the Queued lane) and are dropped here — across *every*
+    source, not just one — so a stale ``merge_pending`` signal on any single
+    source cannot pull them into Awaiting Merge.
+    """
     return _dedupe_awaiting_merge_items([
         item
         for item in queue_items + blocked_items + history_items
-        if item.get("merge_pending")
+        if item.get("merge_pending") and _issue_number(item) not in exclude_issue_numbers
     ])
 
 

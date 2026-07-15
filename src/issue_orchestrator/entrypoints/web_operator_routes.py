@@ -205,6 +205,7 @@ def _append_operator_termination_history(
             status_reason="Terminated by operator",
             worktree_path=primary_session.worktree_path,
             completed_at=now,
+            issue_labels=tuple(primary_session.issue.labels),
         )
     )
 
@@ -272,6 +273,7 @@ def _hold_queued_issue(orchestrator: Any, issue_number: int) -> dict[str, Any]:
             status_reason="Cancelled from queue by operator",
             worktree_path=None,
             completed_at=datetime.now(timezone.utc),
+            issue_labels=tuple(issue.labels),
         )
     )
     state.failed_this_cycle.add(issue_number)

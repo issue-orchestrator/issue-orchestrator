@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from .dependency_evaluator import DependencyEvaluator
 
 
-def _build_successor_index(
+def build_successor_index(
     issues: Sequence[Issue],
 ) -> dict[int, tuple[SuccessorEdge, ...]]:
     """Invert same-repo predecessor edges into a predecessor→successors map.
@@ -140,7 +140,7 @@ class DependencyGateSnapshotBuilder:
                     reports[issue.number] = report
         return DependencyGateSnapshot(
             reports=reports,
-            successors=_build_successor_index(issues),
+            successors=build_successor_index(issues),
         )
 
 

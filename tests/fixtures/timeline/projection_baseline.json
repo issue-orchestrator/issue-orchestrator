@@ -923,11 +923,23 @@
     "status": "completed",
     "step": "transition.rejected"
   },
-  "triage.batch_triggered": {
+  "triage.action_executed": {
     "level": "detail",
     "phase": "system",
-    "status": "started",
-    "step": "triage.batch_triggered"
+    "status": "completed",
+    "step": "triage.action_executed"
+  },
+  "triage.action_proposed": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "triage.action_proposed"
+  },
+  "triage.decision_rejected": {
+    "level": "detail",
+    "phase": "system",
+    "status": "completed",
+    "step": "triage.decision_rejected"
   },
   "triage.issue_created": {
     "level": "detail",

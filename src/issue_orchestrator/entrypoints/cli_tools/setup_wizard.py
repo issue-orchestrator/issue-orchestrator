@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, Optional, cast
 
 import yaml
@@ -18,6 +19,7 @@ from ..setup_wizard_common import (
     find_existing_config,
     find_prompt_candidates,
     get_repository_host as _get_repository_host,
+    plan_setup_labels,
     run_git,
     write_config,
 )
@@ -517,6 +519,41 @@ def _print_claude_code_next_steps(
     )
 
 
+def _collect_stage2_triage(
+    prompter: Prompter, review: dict, code_reviewed_label: str, agent_labels: Iterable[str]
+) -> None:
+    """Prompt for the optional Stage 2 triage batch review and write it into the
+    review block (shared by both wizard flows).
+
+    A configured triage agent can propose create_issue follow-ups, so it also
+    REQUIRES a follow-up worker agent to route new issues to (#6779 R14) —
+    collected here so the generated config passes startup validation.
+    """
+    prompter.print("")
+    if not prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
+        return
+    prompter.print("\n  --- Stage 2: Triage Batch Review ---")
+    review_agent = prompter.input("  triage review agent label", "agent:triage")
+    reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
+    threshold_raw = prompter.input("  Trigger after N code-reviewed PRs", "5")
+    follow_up_default = next((a for a in agent_labels if a != review_agent), review_agent)
+    review["triage_review_agent"] = review_agent
+    review["triage_follow_up_agent"] = prompter.input(
+        "  Worker agent for triage-created follow-up issues", follow_up_default
+    )
+    review["triage_reviewed_label"] = reviewed_label
+    try:
+        threshold = int(threshold_raw)
+    except ValueError:
+        threshold = 0
+    if threshold > 0:
+        review["triage_review_threshold"] = threshold
+        prompter.print(
+            f"  ✓ triage review triggers after {threshold} PRs with '{code_reviewed_label}'"
+        )
+    prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {reviewed_label}")
+
+
 def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR0912 - interactive wizard with branches for each config option
     """Walk through new project setup."""
     config: dict[str, Any] = {"agents": {}}
@@ -786,31 +823,9 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
 
         # Stage 2: Triage Batch Review (advanced only)
         if advanced:
-            prompter.print("")
-            if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
-                prompter.print("\n  --- Stage 2: Triage Batch Review ---")
-                triage_review_agent = prompter.input(
-                    "  triage review agent label", "agent:triage"
-                )
-                triage_reviewed_label = prompter.input(
-                    "  Label after triage review", "triage-reviewed"
-                )
-                threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
-
-                config["review"]["triage_review_agent"] = triage_review_agent
-                config["review"]["triage_reviewed_label"] = triage_reviewed_label
-                try:
-                    threshold_int = int(threshold)
-                    if threshold_int > 0:
-                        config["review"]["triage_review_threshold"] = threshold_int
-                        prompter.print(
-                            f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'"
-                        )
-                except ValueError:
-                    pass
-                prompter.print(
-                    f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}"
-                )
+            _collect_stage2_triage(
+                prompter, config["review"], code_reviewed_label, config["agents"]
+            )
 
     return config
 
@@ -1134,31 +1149,9 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
             )
 
             # Stage 2: Triage Batch Review (only if Stage 1 enabled)
-            prompter.print("")
-            if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
-                prompter.print("\n  --- Stage 2: Triage Batch Review ---")
-                triage_review_agent = prompter.input(
-                    "  triage review agent label", "agent:triage"
-                )
-                triage_reviewed_label = prompter.input(
-                    "  Label after triage review", "triage-reviewed"
-                )
-                threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
-
-                config["review"]["triage_review_agent"] = triage_review_agent
-                config["review"]["triage_reviewed_label"] = triage_reviewed_label
-                try:
-                    threshold_int = int(threshold)
-                    if threshold_int > 0:
-                        config["review"]["triage_review_threshold"] = threshold_int
-                        prompter.print(
-                            f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'"
-                        )
-                except ValueError:
-                    pass
-                prompter.print(
-                    f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}"
-                )
+            _collect_stage2_triage(
+                prompter, config["review"], code_reviewed_label, config["agents"]
+            )
 
     return config, updating_existing_path
 
@@ -1407,68 +1400,10 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         repo_config.get("name") if isinstance(repo_config, dict) else repo_config
     )
     if repo_name:
-        # Gather all labels we want to ensure exist
-        labels_config = config.get("labels", {})
-        label_prefix = labels_config.get("prefix", "")
-
-        def prefixed(label: str) -> str:
-            """Apply label prefix if configured."""
-            return f"{label_prefix}:{label}" if label_prefix else label
-
-        # Agent labels (e.g., agent:developer, agent:reviewer)
-        agent_labels = [
-            (agent_name, "1D76DB", f"Issues for {agent_name.split(':')[-1]} agent")
-            for agent_name in config.get("agents", {}).keys()
-        ]
-
-        priority_labels = [
-            ("priority:high", "D93F0B", "Urgent - do first"),
-            ("priority:medium", "FBCA04", "Normal priority"),
-            ("priority:low", "0E8A16", "Nice to have"),
-        ]
-        status_labels = [
-            (
-                prefixed(labels_config.get("in_progress", "in-progress")),
-                "5319E7",
-                "Agent is working on this",
-            ),
-            (
-                prefixed(labels_config.get("blocked", "blocked")),
-                "B60205",
-                "Agent is blocked",
-            ),
-            (
-                prefixed(labels_config.get("needs_human", "needs-human")),
-                "FBCA04",
-                "Agent needs human input",
-            ),
-        ]
-        all_labels = agent_labels + priority_labels + status_labels
-
-        # Add review labels if configured (two-stage review workflow)
-        if code_review_agent:
-            all_labels.extend(
-                [
-                    (code_review_label, "7057FF", "PR needs code review"),
-                    (code_reviewed_label, "0E8A16", "PR has been code reviewed"),
-                ]
-            )
-        if triage_review_agent:
-            all_labels.append(
-                (triage_reviewed_label, "1D76DB", "PR has been triage reviewed")
-            )
-
-        # Check which labels already exist and collect missing ones
         existing_labels = set(fetch_github_labels(repo_name))
-        missing_labels = [
-            (name, color, desc)
-            for name, color, desc in all_labels
-            if name not in existing_labels
-        ]
-
-        for name, color, desc in missing_labels:
-            file_collector.add_label(name, color, desc)
-
+        for name, color, description in plan_setup_labels(config):
+            if name not in existing_labels:
+                file_collector.add_label(name, color, description)
     # Show summary and ask for confirmation
     _print_changes_summary(file_collector, prompter, dry_run)
 

@@ -41,14 +41,18 @@ from issue_orchestrator.domain.models import (
     AgentConfig,
     DiscoveredAwaitingMergeDrift,
     DiscoveredAwaitingMergeReconciliation,
+    DiscoveredFailure,
     DiscoveredMergeQueueEnqueue,
     DiscoveredRetrospectiveReview,
 )
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.control.workflows import TriageWorkflow
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from tests.unit.session_run_helpers import make_session_run_assets
 
 
@@ -205,7 +209,9 @@ class TestProviderResilienceLabels:
             rework_cycle=1,
             issue_number=2,
         )
-        pending_triage = PendingTriageReview(issue_number=3, title="Triage 3")
+        pending_triage = PendingTriageReview(
+            issue_number=3, title="Triage 3", flavor=TriageSessionFlavor.BATCH_REVIEW
+        )
 
         snapshot = make_snapshot(
             issues=[issue1, issue2, issue3],
@@ -1186,6 +1192,51 @@ class TestPlanTriageIssueCreation:
         assert action.pr_count == 3
         assert "agent:triage" in action.labels
 
+    def test_completed_closed_batch_does_not_retrigger_empty_batch(self):
+        """Reviewer repro (#6768 r5): after a successful batch (PRs carry
+        triage-reviewed, tracker closed) re-gathering + planning against the
+        same PR observations must not create an empty successor batch.
+
+        Facts come from the REAL FactGatherer so the shared candidate
+        predicate (fact side == manifest side) is what this exercises.
+        """
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.fact_gatherer import FactGatherer
+        from issue_orchestrator.domain.models import OrchestratorState
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=2,
+            triage_reviewed_label="triage-reviewed",
+        )
+        host = MagicMock()
+        host.get_prs_with_label.return_value = [
+            PRInfo(number=1, url="...", title="PR 1", branch="b1",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+            PRInfo(number=2, url="...", title="PR 2", branch="b2",
+                   labels=["code-reviewed", "triage-reviewed"], body="", state="open"),
+        ]
+        # The completed batch's tracking issue is CLOSED: open-state queries
+        # (the finder's contract) no longer return it.
+        host.list_issues.return_value = []
+
+        facts = FactGatherer(config=config, repository_host=host).gather_triage_facts(
+            OrchestratorState()
+        )
+        assert facts is not None
+        assert facts.pr_count == 0
+        assert facts.existing_triage_issue is None
+
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        create_actions = [
+            a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE
+        ]
+        assert create_actions == []
+
     def test_no_triage_issue_below_threshold(self):
         """Planner produces no CreateTriageIssueAction when below threshold."""
         from issue_orchestrator.domain.models import TriageFacts
@@ -1298,6 +1349,42 @@ class TestPlanTriageIssueCreation:
         assert "code-reviewed" in body
         assert "triage-reviewed" in body
 
+    def test_triage_issue_explicit_milestone_applied(self):
+        """Explicit milestone strategy travels as a NAME intent (#6769 F4).
+
+        The planner plans the configured name; the create-issue applier is
+        the single name->number resolution boundary, so planning makes zero
+        milestone API reads.
+        """
+        from issue_orchestrator.domain.models import TriageFacts
+        from issue_orchestrator.control.actions import ActionType, TriageMilestoneIntent
+        from issue_orchestrator.infra.config import MilestoneStrategyConfig, TriageConfig
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=1,
+            triage_reviewed_label="triage-reviewed",
+        )
+        config.triage = TriageConfig(
+            milestone_strategy=MilestoneStrategyConfig(explicit="M5"),
+        )
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        triage_facts = TriageFacts(
+            pr_count=1,
+            threshold=1,
+            existing_triage_issue=None,
+            watch_label="code-reviewed",
+            prs=((1, "PR 1"),),
+        )
+
+        plan = planner.plan(make_snapshot(triage_facts=triage_facts))
+
+        create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
+        assert len(create_actions) == 1
+        assert create_actions[0].milestone == TriageMilestoneIntent(explicit_name="M5")
+
     def test_triage_issue_inherits_labels_from_source(self):
         """Planner inherits labels from source issues based on triage config."""
         from issue_orchestrator.domain.models import TriageFacts
@@ -1376,8 +1463,10 @@ class TestPlanTriageIssueCreation:
         assert len(create_actions) == 1
         action = create_actions[0]
 
-        # Should pick highest milestone number (3 = M3)
-        assert action.milestone == 3
+        # Should pick highest milestone number (3 = M3) — known at planning
+        # time, so the intent carries the number directly.
+        assert action.milestone.inherited_number == 3
+        assert action.milestone.explicit_name is None
 
     def test_triage_issue_inherits_milestone_earliest(self):
         """Planner picks earliest milestone from source issues."""
@@ -1413,7 +1502,560 @@ class TestPlanTriageIssueCreation:
         action = create_actions[0]
 
         # Should pick lowest milestone number (1 = M1)
-        assert action.milestone == 1
+        assert action.milestone.inherited_number == 1
+        assert action.milestone.explicit_name is None
+
+
+class TestPlanApprovedTriageOpExecutions:
+    """Approved gated proposals (#6778): the plan carries the stored op's
+    execution action; still-gated proposals plan nothing."""
+
+    @staticmethod
+    def _op(target: int, op_type: str = "reset_retry"):
+        from issue_orchestrator.domain.triage_session import StoredTriageOp
+
+        return StoredTriageOp(
+            op_type=op_type,
+            target_issue_number=target,
+            rationale="r",
+            source_run_id="run-1",
+            source_session_name="issue-99",
+            source_action_id="A2",
+            created_at="2026-07-11T00:00:00+00:00",
+        )
+
+    def _plan(self, approved_ops):
+        from issue_orchestrator.domain.models import TriageFacts
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=3,
+            triage_reviewed_label="triage-reviewed",
+        )
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        snapshot = make_snapshot(
+            triage_facts=TriageFacts(
+                threshold=3,
+                watch_label="code-reviewed",
+                approved_triage_ops=approved_ops,
+            ),
+        )
+        return planner.plan(snapshot)
+
+    def test_approved_ops_plan_execution_actions(self):
+        from issue_orchestrator.control.actions import (
+            KillHungSessionAction,
+            ResetRetryIssueAction,
+        )
+        from issue_orchestrator.domain.triage_session import ApprovedTriageOp
+
+        plan = self._plan((
+            ApprovedTriageOp(proposal_issue_number=500, op=self._op(13)),
+            ApprovedTriageOp(
+                proposal_issue_number=501,
+                op=self._op(14, "kill_hung_session"),
+            ),
+        ))
+
+        [reset] = [a for a in plan.actions if isinstance(a, ResetRetryIssueAction)]
+        assert reset.issue_number == 13
+        assert reset.proposal_issue_number == 500
+        [kill] = [a for a in plan.actions if isinstance(a, KillHungSessionAction)]
+        assert kill.issue_number == 14
+        assert kill.proposal_issue_number == 501
+
+    def test_no_approved_ops_plans_no_executions(self):
+        """Still-gated proposals never reach the facts, so nothing plans."""
+        from issue_orchestrator.control.actions import (
+            KillHungSessionAction,
+            ResetRetryIssueAction,
+        )
+
+        plan = self._plan(())
+
+        assert not any(
+            isinstance(a, (ResetRetryIssueAction, KillHungSessionAction))
+            for a in plan.actions
+        )
+
+    def _plan_with_candidates(self, candidates):
+        from issue_orchestrator.domain.models import TriageFacts
+
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_threshold=3,
+            triage_reviewed_label="triage-reviewed",
+        )
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        snapshot = make_snapshot(
+            triage_facts=TriageFacts(
+                threshold=3,
+                watch_label="code-reviewed",
+                absent_proposal_op_candidates=candidates,
+            ),
+        )
+        return planner.plan(snapshot)
+
+    def test_absent_op_candidates_emit_confirm_and_discard_action(self):
+        """R7/R10: the planner turns the read-only absent-candidate fact into a
+        single DiscardTerminalTriageProposalOpsAction; the applier confirms each
+        with a targeted read before discarding."""
+        from issue_orchestrator.control.actions import (
+            DiscardTerminalTriageProposalOpsAction,
+        )
+
+        plan = self._plan_with_candidates((501, 777))
+
+        [discard] = [
+            a
+            for a in plan.actions
+            if isinstance(a, DiscardTerminalTriageProposalOpsAction)
+        ]
+        assert discard.candidate_issue_numbers == (501, 777)
+
+    def test_no_absent_candidates_plans_no_discard(self):
+        from issue_orchestrator.control.actions import (
+            DiscardTerminalTriageProposalOpsAction,
+        )
+
+        plan = self._plan_with_candidates(())
+
+        assert not any(
+            isinstance(a, DiscardTerminalTriageProposalOpsAction)
+            for a in plan.actions
+        )
+
+
+class TestPlanHealthReviewIssueCreation:
+    """Health-review anchor creation planning (ADR-0031 §4).
+
+    Policy lives in control/health_review_trigger; these tests exercise it
+    through the full planner (facts -> CreateTriageIssueAction).
+    """
+
+    @staticmethod
+    def _make_planner(interval_minutes: int = 60, events=None):
+        config = make_config(triage_review_agent="agent:triage")
+        config.triage.health_review.interval_minutes = interval_minutes
+        # The periodic trigger routes through the owned paused/capacity gate
+        # (TriageWorkflow), so the planner MUST carry that workflow — the same
+        # owner that emits TRIAGE_SKIPPED (#6763 finding 2).
+        events = events if events is not None else InMemoryEventSink()
+        workflow = TriageWorkflow(config=config, events=events)
+        planner = Planner(
+            config=config, scheduler=Scheduler(config), triage_workflow=workflow
+        )
+        return planner, config
+
+    @staticmethod
+    def _health_facts(**kwargs):
+        from issue_orchestrator.domain.models import TriageFacts
+
+        defaults = {"health_review_due": True, "existing_health_review_issue": None}
+        defaults.update(kwargs)
+        return TriageFacts(**defaults)
+
+    @staticmethod
+    def _create_actions(plan):
+        return [
+            a for a in plan.actions
+            if a.action_type == ActionType.CREATE_TRIAGE_ISSUE
+        ]
+
+    def test_creates_anchor_with_agent_and_marker_labels_when_due(self):
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        planner, _ = self._make_planner()
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        actions = self._create_actions(plan)
+        assert len(actions) == 1
+        action = actions[0]
+        assert action.title == "Health Review — walk the floor"
+        assert "agent:triage" in action.labels
+        assert HEALTH_REVIEW_MARKER_LABEL in action.labels
+        # The owner states the variant on the action; the creation boundary
+        # reports that decision rather than re-reading the marker label (#6780).
+        assert action.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert action.pr_count == 0
+        assert "board snapshot" in action.body.lower()
+        assert "ADR-0031" in action.body
+
+    def test_includes_filter_label_when_configured(self):
+        """Filtered runs must scope the anchor so pickup and dedup both see it."""
+        planner, config = self._make_planner()
+        config.filtering.label = "io:e2e:run-1"
+
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        (action,) = self._create_actions(plan)
+        assert "io:e2e:run-1" in action.labels
+
+    def test_skips_when_not_due(self):
+        planner, _ = self._make_planner()
+        facts = self._health_facts(health_review_due=False)
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+    def test_problem_storm_creates_one_unscheduled_health_review(self):
+        """K recent problems escalate to one health anchor carrying the whole
+        cohort, even when the periodic interval is not due (#6780).
+
+        The cohort is also queued as individual investigations in the same
+        plan: the anchor's intake collapses them on a successful create, so
+        persisting first is what keeps the problems recoverable if the create
+        never lands (#6780). See TestReactiveTriageStormEscalation.
+        """
+        planner, config = self._make_planner(interval_minutes=0)
+        config.triage.health_review.storm_threshold = 3
+        config.triage.health_review.storm_window_minutes = 5
+        problems = tuple(
+            DiscoveredFailure(
+                issue_number=number,
+                issue_title=f"Problem {number}",
+                failure_reason="failed",
+                observed_at=1_000.0,
+            )
+            for number in (3, 1, 2)
+        )
+        planner = Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config, InMemoryEventSink()),
+            clock=lambda: 1_100.0,
+        )
+
+        plan = planner.plan(make_snapshot(discovered_failures=problems))
+
+        [action] = self._create_actions(plan)
+        assert tuple(p.issue_number for p in action.storm_problems) == (1, 2, 3)
+        assert action.reason == "problem storm: 3 issues inside settle window"
+        assert action.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert "instead of" in action.body
+        # Persist-first: the cohort is queued ahead of the anchor that retires it.
+        assert sorted(
+            a.issue_number for a in plan.actions_of_type(ActionType.QUEUE_TRIAGE)
+        ) == [1, 2, 3]
+
+    def test_skips_when_existing_anchor_open(self):
+        planner, _ = self._make_planner()
+        facts = self._health_facts(existing_health_review_issue=321)
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+    def test_skips_when_health_review_pending_launch(self):
+        """Dedup keys off the queue item's typed flavor, not its title."""
+        planner, _ = self._make_planner()
+        pending = PendingTriageReview(
+            issue_number=321,
+            title="renamed by an operator",
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        )
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), pending_triage=[pending])
+        )
+
+        assert self._create_actions(plan) == []
+
+    def test_pending_batch_launch_does_not_block_health_review(self):
+        """A queued BATCH item must not dedupe the health anchor (independent
+        triggers; only a pending HEALTH_REVIEW covers the creation window)."""
+        planner, _ = self._make_planner()
+        pending = PendingTriageReview(
+            issue_number=100,
+            title="Triage Batch Review: 5 PRs pending",
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+        )
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), pending_triage=[pending])
+        )
+
+        assert len(self._create_actions(plan)) == 1
+
+    def test_health_only_facts_never_create_batch_issue(self):
+        """threshold<=0 facts (health-only) must not trip batch creation."""
+        planner, _ = self._make_planner()
+        facts = self._health_facts(
+            health_review_due=False, pr_count=0, threshold=0, watch_label=""
+        )
+
+        plan = planner.plan(make_snapshot(triage_facts=facts))
+
+        assert self._create_actions(plan) == []
+
+    @staticmethod
+    def _triage_skipped(events: InMemoryEventSink):
+        return [e for e in events.events if e.name == "triage.skipped"]
+
+    def test_paused_skips_creation_and_emits_triage_skipped(self):
+        """A due health review, while paused, files NO anchor and is observably
+        skipped through the owned gate (not silently dropped, #6763 finding 2).
+
+        ``Planner.plan()`` early-returns an empty plan when paused; the health
+        gate must still run so TRIAGE_SKIPPED carries the paused reason.
+        """
+        events = InMemoryEventSink()
+        planner, _ = self._make_planner(events=events)
+
+        plan = planner.plan(
+            make_snapshot(triage_facts=self._health_facts(), paused=True)
+        )
+
+        assert self._create_actions(plan) == []
+        skipped = self._triage_skipped(events)
+        assert [e.data["reason"] for e in skipped] == ["orchestrator_paused"]
+
+    def test_at_capacity_skips_creation_and_emits_triage_skipped(self):
+        """At capacity the anchor is NOT filed and TRIAGE_SKIPPED carries the
+        capacity reason — the phase-1 create must route through the gate, not
+        fire before it (#6763 finding 2)."""
+        events = InMemoryEventSink()
+        planner, config = self._make_planner(events=events)
+        config.max_concurrent_sessions = 2
+        active = [make_session(make_issue(1)), make_session(make_issue(2))]
+
+        plan = planner.plan(
+            make_snapshot(
+                triage_facts=self._health_facts(), active_sessions=active
+            )
+        )
+
+        assert self._create_actions(plan) == []
+        skipped = self._triage_skipped(events)
+        assert len(skipped) == 1
+        assert skipped[0].data["reason"] == "no_capacity"
+        assert skipped[0].data["active"] == 2
+        assert skipped[0].data["max"] == 2
+
+    def test_open_gate_still_creates_and_emits_no_skip(self):
+        """Belt and braces: with the gate open the anchor is filed and NO
+        spurious TRIAGE_SKIPPED is emitted (the happy path stays clean)."""
+        events = InMemoryEventSink()
+        planner, _ = self._make_planner(events=events)
+
+        plan = planner.plan(make_snapshot(triage_facts=self._health_facts()))
+
+        assert len(self._create_actions(plan)) == 1
+        assert self._triage_skipped(events) == []
+
+
+class TestReactiveTriageStormEscalation:
+    """Persist-first storm escalation (#6780).
+
+    The cohort is ALWAYS queued as individual investigations — the pending
+    queue is the only cross-tick carrier of a problem once discovered_failures
+    is cleared at end of tick — and the anchor is planned after them, so a
+    successful create collapses them at intake. Every path that leaves the
+    cohort without an anchor (existing/pending health review, no capacity, a
+    failed create, the apply-time cooldown) therefore keeps the investigations
+    queued. Suppression only holds back launches on the tick the cohort is
+    actually escalated; it never decides retention.
+    """
+
+    STORM_CLOCK = 1_100.0
+    WINDOW_OBSERVED_AT = 1_000.0
+
+    def _planner(self, *, max_concurrent: int = 3, events=None):
+        config = make_config(
+            triage_review_agent="agent:triage",
+            triage_review_on_failure=True,
+            max_concurrent_sessions=max_concurrent,
+        )
+        # Isolate the storm path from the periodic interval.
+        config.triage.health_review.interval_minutes = 0
+        config.triage.health_review.storm_threshold = 3
+        config.triage.health_review.storm_window_minutes = 5
+        events = events if events is not None else InMemoryEventSink()
+        planner = Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config=config, events=events),
+            clock=lambda: self.STORM_CLOCK,
+        )
+        return planner, config
+
+    def _cohort(self, numbers=(1, 2, 3)) -> tuple[DiscoveredFailure, ...]:
+        return tuple(
+            DiscoveredFailure(
+                issue_number=n,
+                issue_title=f"Problem {n}",
+                failure_reason="failed",
+                observed_at=self.WINDOW_OBSERVED_AT,
+            )
+            for n in numbers
+        )
+
+    @staticmethod
+    def _queued_triage_issue_numbers(plan) -> list[int]:
+        return sorted(
+            a.issue_number
+            for a in plan.actions
+            if a.action_type == ActionType.QUEUE_TRIAGE
+        )
+
+    def test_storm_persists_cohort_before_planning_its_anchor(self):
+        """Persist-first: an escalating storm queues the cohort as individual
+        investigations AND plans the anchor, with the QUEUE_TRIAGE actions
+        ordered strictly BEFORE the create. Intake collapses them on a
+        successful create; if the create never lands, those queued items are
+        what keeps the cohort alive (#6780)."""
+        planner, _ = self._planner()
+
+        plan = planner.plan(make_snapshot(discovered_failures=self._cohort()))
+
+        assert len(plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE)) == 1
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+        # Ordering is load-bearing: apply_plan applies in plan order, and the
+        # anchor's intake is what retires the investigations it supersedes.
+        action_types = [a.action_type for a in plan.actions]
+        last_queue = max(
+            i for i, t in enumerate(action_types) if t == ActionType.QUEUE_TRIAGE
+        )
+        assert action_types.index(ActionType.CREATE_TRIAGE_ISSUE) > last_queue
+
+    def test_storm_defers_to_investigations_when_anchor_already_open(self):
+        """A not-due tick with an open anchor must not mint a second one.
+
+        ``health_review_due=False`` alongside a populated
+        ``existing_health_review_issue`` is exactly what the gatherer produces
+        on a storm-only tick, because the storm — not just due-ness — arms the
+        anchor scan. See
+        ``TestFactGathererHealthReviewFacts::test_storm_arms_anchor_scan_when_interval_is_not_due``
+        for the gatherer-driven half of this contract; this half asserts the
+        planner honours the fact.
+        """
+        from issue_orchestrator.domain.models import TriageFacts
+
+        planner, _ = self._planner()
+        facts = TriageFacts(
+            health_review_due=False, existing_health_review_issue=555
+        )
+
+        plan = planner.plan(
+            make_snapshot(discovered_failures=self._cohort(), triage_facts=facts)
+        )
+
+        # No anchor carries the cohort, so the individual investigations must
+        # be queued instead of silently dropped.
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+
+    def test_storm_defers_to_investigations_when_health_review_pending(self):
+        planner, _ = self._planner()
+        pending = [
+            PendingTriageReview(
+                issue_number=777,
+                title="Health Review",
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            )
+        ]
+
+        plan = planner.plan(
+            make_snapshot(
+                discovered_failures=self._cohort(), pending_triage=pending
+            )
+        )
+
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+
+    def test_storm_defers_to_investigations_when_at_capacity(self):
+        planner, _ = self._planner(max_concurrent=2)
+        active = [make_session(make_issue(50)), make_session(make_issue(51))]
+
+        plan = planner.plan(
+            make_snapshot(
+                discovered_failures=self._cohort(), active_sessions=active
+            )
+        )
+
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._queued_triage_issue_numbers(plan) == [1, 2, 3]
+
+    def test_paused_storm_plans_nothing(self):
+        """A paused tick plans no reactive actions: apply_plan refuses to apply
+        anything while paused, so emitting fallback actions here would be dead
+        code that reports work it never does. The cohort instead survives
+        because clear_discovered_facts retains facts on a paused tick — see
+        TestClearDiscoveredFacts and the paused end-to-end coverage in
+        test_orchestrator_support (#6780)."""
+        planner, _ = self._planner()
+
+        plan = planner.plan(
+            make_snapshot(discovered_failures=self._cohort(), paused=True)
+        )
+
+        assert plan.actions == ()
+
+    def _cohort_with_one_already_queued(self):
+        """Cohort where #1 is already a queued investigation and #2/#3 are
+        freshly discovered — enough members to trip the storm threshold."""
+        already = PendingTriageReview(
+            issue_number=1,
+            title="Investigate 1",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=1,
+                issue_title="Problem 1",
+                failure_reason="failed",
+                observed_at=self.WINDOW_OBSERVED_AT,
+            ),
+        )
+        discovered = self._cohort((2, 3))
+        return already, discovered
+
+    @staticmethod
+    def _launched_triage_issue_numbers(plan) -> list[int]:
+        return sorted(
+            a.number
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.TRIAGE
+        )
+
+    def test_escalated_storm_suppresses_a_member_investigation_launch(self):
+        """When the cohort escalates, an already-queued member investigation is
+        held back from launch (the anchor covers it, and intake removes it)."""
+        planner, _ = self._planner()
+        already, discovered = self._cohort_with_one_already_queued()
+
+        plan = planner.plan(
+            make_snapshot(
+                discovered_failures=discovered, pending_triage=[already]
+            )
+        )
+
+        assert len(plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE)) == 1
+        assert self._launched_triage_issue_numbers(plan) == []
+
+    def test_deferred_storm_does_not_suppress_a_member_investigation_launch(self):
+        """When the cohort is deferred, the already-queued member investigation
+        must be allowed to launch — the deferred storm suppresses nothing."""
+        from issue_orchestrator.domain.models import TriageFacts
+
+        planner, _ = self._planner()
+        already, discovered = self._cohort_with_one_already_queued()
+        facts = TriageFacts(
+            health_review_due=False, existing_health_review_issue=555
+        )
+
+        plan = planner.plan(
+            make_snapshot(
+                discovered_failures=discovered,
+                pending_triage=[already],
+                triage_facts=facts,
+            )
+        )
+
+        assert plan.actions_of_type(ActionType.CREATE_TRIAGE_ISSUE) == []
+        assert self._launched_triage_issue_numbers(plan) == [1]
 
 
 class TestPlanDiscoveredReworks:
@@ -1925,10 +2567,10 @@ class TestPlanAwaitingMergeEscalations:
 
 
 class TestPlanDiscoveredFailures:
-    """Tests for Planner's _plan_discovered_failures method.
+    """Tests for the planner's failure-investigation queueing.
 
-    This method processes DiscoveredFailure facts from session completions
-    and produces QueueTriageAction for the orchestrator to apply.
+    Exercised through the public ``plan()`` API: DiscoveredFailure facts from
+    session completions produce QueueTriageAction for the orchestrator to apply.
     """
 
     def test_plans_triage_action_for_discovered_failure(self):
@@ -1961,6 +2603,11 @@ class TestPlanDiscoveredFailures:
         action = triage_actions[0]
         assert action.issue_number == 42
         assert "failed" in action.title
+        # The typed failure context must ride the action across the plan/apply
+        # boundary; discovered_failures is cleared after planning, so this is
+        # the only path by which the launch-time board snapshot can contain
+        # the investigation's own triggering failure.
+        assert action.failure is discovered
 
     def test_no_triage_action_when_disabled(self):
         """Planner produces no triage actions when triage_review_on_failure is disabled."""
@@ -2038,6 +2685,10 @@ class TestPlanDiscoveredFailures:
         pending_triage = PendingTriageReview(
             issue_number=42,
             title="Already queued",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=42, issue_title="Already queued", failure_reason="failed"
+            ),
         )
 
         snapshot = make_snapshot(
@@ -2156,6 +2807,42 @@ class TestPlanCleanups:
         cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
         assert len(cleanup_actions) == 0
 
+    def test_immediate_cleanup_held_for_failure_investigation(self):
+        """Held immediate cleanups are skipped; unheld ones still plan (#6771 r3).
+
+        A failed session's ImmediateCleanup lands in the same pass as its
+        DiscoveredFailure, but the investigation launches a tick later —
+        removing the worktree first deletes the artifact hints the
+        investigation was queued to read. The Planner must apply NO removal
+        for issues in CleanupFacts.held_issue_numbers while planning every
+        other immediate cleanup normally.
+        """
+        from issue_orchestrator.domain.models import CleanupFacts, ImmediateCleanup
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(triage_review_agent="agent:triage")
+        planner = Planner(config=config, scheduler=Scheduler(config))
+
+        cleanup_facts = CleanupFacts(
+            pending_cleanups=(),
+            reviewed_pr_numbers=frozenset(),
+            close_tabs=True,
+            remove_worktrees=True,
+            immediate_cleanups=(
+                ImmediateCleanup(42, "issue-42", "/tmp/worktree-42", "failed"),
+                ImmediateCleanup(7, "issue-7", "/tmp/worktree-7", "completed"),
+            ),
+            held_issue_numbers=frozenset({42}),
+        )
+
+        plan = planner.plan(make_snapshot(cleanup_facts=cleanup_facts))
+
+        cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
+        assert [a.issue_number for a in cleanup_actions] == [7], (
+            "the held failed-session worktree must not be cleaned up while "
+            "its failure investigation still references it"
+        )
+
     def test_cleanup_respects_close_tabs_setting(self):
         """Planner respects the close_tabs setting from CleanupFacts."""
         from issue_orchestrator.domain.models import CleanupFacts
@@ -2187,6 +2874,340 @@ class TestPlanCleanups:
 # =============================================================================
 # BEHAVIOR-CENTRIC TESTS: Priority and Action Ordering
 # =============================================================================
+
+class TestFailureInvestigationCleanupLifecycle:
+    """End-to-end lifecycle of the failure-investigation cleanup hold (#6771 r3).
+
+    Drives the real FactGatherer + Planner + end-of-tick clear across ticks:
+    failure discovery -> same-tick plan applies NO removal for the held
+    worktree -> investigation queued/launched with readable hints -> after
+    the investigation completes the deferred cleanup proceeds with removal.
+    """
+
+    def test_hold_spans_discovery_to_investigation_completion(self, tmp_path):
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.fact_gatherer import (
+            FactGatherer,
+            clear_discovered_facts,
+        )
+        from issue_orchestrator.control.session_routing import PendingSessionQueues
+        from issue_orchestrator.domain.models import (
+            ImmediateCleanup,
+            OrchestratorState,
+        )
+
+        config = make_config(triage_review_agent="agent:triage")
+        config.triage_review_on_failure = True
+        config.cleanup.with_triage.remove_worktrees = True
+        config.cleanup.with_triage.close_ai_session_tabs = True
+
+        gatherer = FactGatherer(config=config, repository_host=MagicMock())
+        planner = Planner(config=config, scheduler=Scheduler(config))
+
+        worktree = tmp_path / "worktree-42"
+        hint = (
+            worktree / ".issue-orchestrator" / "sessions" / "run__issue-42"
+            / "failure-diagnostic.json"
+        )
+        hint.parent.mkdir(parents=True)
+        hint.write_text("{}")
+
+        state = OrchestratorState()
+        failure = DiscoveredFailure(
+            issue_number=42,
+            issue_title="Broken thing",
+            failure_reason="failed",
+            artifact_hints=(str(hint),),
+        )
+        state.record_discovered_failure(failure)
+        state.immediate_cleanups.extend(
+            [ImmediateCleanup(42, "issue-42", str(worktree), "failed")]
+        )
+
+        def plan_tick():
+            facts = gatherer.gather_cleanup_facts(state)
+            snapshot = make_snapshot(
+                active_sessions=list(state.active_sessions),
+                pending_triage=list(state.pending_triage_reviews),
+                discovered_failures=tuple(state.discovered_failures),
+                cleanup_facts=facts,
+            )
+            return planner.plan(snapshot)
+
+        def cleanup_actions(plan):
+            return [
+                a for a in plan.actions
+                if a.action_type == ActionType.CLEANUP_SESSION
+            ]
+
+        # Tick 1 — discovery: triage is queued AND no removal is applied for
+        # the held worktree even though remove_worktrees is configured true.
+        plan = plan_tick()
+        queue_actions = [
+            a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE
+        ]
+        assert len(queue_actions) == 1
+        assert cleanup_actions(plan) == []
+        # The post-apply seam queues the investigation, then the tick clear.
+        PendingSessionQueues(state).queue_failure_investigation(
+            42, "Investigate: Broken thing (failed)", failure=failure
+        )
+        clear_discovered_facts(state, config, tick_paused=False)
+        assert [c.issue_number for c in state.immediate_cleanups] == [42], (
+            "the held cleanup must survive the end-of-tick fact clear"
+        )
+        assert state.discovered_failures == []
+
+        # Tick 2 — investigation queued: still held; queued hints readable.
+        plan = plan_tick()
+        assert cleanup_actions(plan) == []
+        queued = state.pending_triage_reviews[0]
+        assert queued.failure is not None
+        assert all(Path(h).exists() for h in queued.failure.artifact_hints), (
+            "the investigation must launch with readable artifact hints"
+        )
+        clear_discovered_facts(state, config, tick_paused=False)
+        assert [c.issue_number for c in state.immediate_cleanups] == [42]
+
+        # Tick 3 — investigation active: launch consumed the queue item and
+        # registered the triage session; the hold follows the session.
+        PendingSessionQueues(state).remove_triage(42)
+        state.active_sessions.append(
+            make_session(make_issue(42, labels=["agent:triage"]))
+        )
+        plan = plan_tick()
+        assert cleanup_actions(plan) == []
+        clear_discovered_facts(state, config, tick_paused=False)
+        assert [c.issue_number for c in state.immediate_cleanups] == [42]
+
+        # Tick 4 — investigation completed: the hold releases by
+        # re-evaluation and the deferred cleanup proceeds with removal.
+        state.active_sessions.clear()
+        plan = plan_tick()
+        assert [
+            (a.issue_number, a.worktree_path, a.remove_worktrees)
+            for a in cleanup_actions(plan)
+        ] == [(42, str(worktree), True)]
+        clear_discovered_facts(state, config, tick_paused=False)
+        assert state.immediate_cleanups == []
+
+
+class TestStormCohortCleanupLifecycle:
+    """End-to-end lifecycle of the STORM-COHORT cleanup hold (#6780).
+
+    A storm collapses the per-issue failure investigations into one health-
+    review anchor, so from that moment nothing in the queue is keyed by the
+    members' issue numbers — the cohort is. Holding only failure
+    investigations therefore let the members' worktrees be removed before the
+    review could read them, while their ``artifact_hints`` still pointed at
+    the deleted paths.
+
+    Drives the real intake owner + FactGatherer + Planner + end-of-tick clear
+    across the anchor's whole life: collapse -> pending -> active -> done.
+    """
+
+    def test_collapsed_cohort_is_held_until_the_health_review_ends(self, tmp_path):
+        from issue_orchestrator.control.actions import (
+            ActionType,
+            CreateTriageIssueAction,
+        )
+        from issue_orchestrator.control.fact_gatherer import (
+            FactGatherer,
+            clear_discovered_facts,
+        )
+        from issue_orchestrator.control.health_review_trigger import (
+            intake_created_triage_anchor,
+        )
+        from issue_orchestrator.control.session_routing import PendingSessionQueues
+        from issue_orchestrator.domain.models import (
+            ImmediateCleanup,
+            OrchestratorState,
+        )
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        config = make_config(triage_review_agent="agent:triage")
+        config.triage_review_on_failure = True
+        config.cleanup.with_triage.remove_worktrees = True
+        config.triage.health_review.storm_threshold = 3
+        config.triage.health_review.storm_window_minutes = 5
+
+        authority = InMemoryTriageAuthorityStore()
+        gatherer = FactGatherer(
+            config=config,
+            repository_host=MagicMock(),
+            triage_authority=authority,
+        )
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        state = OrchestratorState()
+
+        members = (41, 42, 43)
+        worktrees: dict[int, Path] = {}
+        cohort: list[DiscoveredFailure] = []
+        for number in members:
+            worktree = tmp_path / f"worktree-{number}"
+            hint = worktree / "failure-diagnostic.json"
+            hint.parent.mkdir(parents=True)
+            hint.write_text("{}")
+            worktrees[number] = worktree
+            failure = DiscoveredFailure(
+                issue_number=number,
+                issue_title=f"Problem {number}",
+                failure_reason="failed",
+                artifact_hints=(str(hint),),
+                observed_at=1_000.0,
+            )
+            cohort.append(failure)
+            state.record_discovered_failure(failure)
+            state.immediate_cleanups.append(
+                ImmediateCleanup(number, f"issue-{number}", str(worktree), "failed")
+            )
+
+        def plan_tick():
+            facts = gatherer.gather_cleanup_facts(state)
+            return planner.plan(
+                make_snapshot(
+                    active_sessions=list(state.active_sessions),
+                    pending_triage=list(state.pending_triage_reviews),
+                    discovered_failures=tuple(state.discovered_failures),
+                    cleanup_facts=facts,
+                )
+            )
+
+        def cleanup_numbers(plan) -> list[int]:
+            return sorted(
+                a.issue_number
+                for a in plan.actions
+                if a.action_type == ActionType.CLEANUP_SESSION
+            )
+
+        # Tick 1 — the storm escalates. The real intake owner collapses the
+        # investigations into the anchor's cohort, exactly as the post-apply
+        # seam does for a successful CreateTriageIssueAction.
+        queues = PendingSessionQueues(state)
+        for failure in cohort:
+            queues.queue_failure_investigation(
+                failure.issue_number,
+                f"Investigate {failure.issue_number}",
+                failure=failure,
+            )
+        intake_created_triage_anchor(
+            CreateTriageIssueAction(
+                title="Health Review — walk the floor",
+                body="Problem storm",
+                labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+                pr_count=0,
+                storm_problems=tuple(cohort),
+            ),
+            999,
+            state,
+            None,
+            authority,
+        )
+        clear_discovered_facts(state, config, authority, tick_paused=False)
+
+        assert [t.issue_number for t in state.pending_triage_reviews] == [999], (
+            "the collapse must leave exactly the anchor queued"
+        )
+        assert sorted(c.issue_number for c in state.immediate_cleanups) == [
+            41,
+            42,
+            43,
+        ], "the collapsed cohort's cleanups must survive the end-of-tick clear"
+
+        # Tick 2 — anchor PENDING launch: the cohort holds every member's
+        # worktree, and the hints the review will read are still on disk.
+        assert cleanup_numbers(plan_tick()) == []
+        clear_discovered_facts(state, config, authority, tick_paused=False)
+        (queued,) = state.pending_triage_reviews
+        assert all(
+            Path(hint).exists()
+            for problem in queued.problem_cohort
+            for hint in problem.artifact_hints
+        ), "the health review must launch with readable artifact hints"
+
+        # Tick 3 — anchor ACTIVE: launch consumed the queue item, so the
+        # durable cohort ledger is the only thing still naming these
+        # artifacts. The hold must follow the running review.
+        queues.remove_triage(999)
+        state.active_sessions.append(
+            make_session(make_issue(999, labels=["agent:triage"]))
+        )
+        assert cleanup_numbers(plan_tick()) == []
+        clear_discovered_facts(state, config, authority, tick_paused=False)
+        assert sorted(c.issue_number for c in state.immediate_cleanups) == [
+            41,
+            42,
+            43,
+        ]
+
+        # Tick 4 — review completed: the retention owner discarded the cohort
+        # row and the session is gone, so the hold releases by re-evaluation
+        # and every member's worktree is finally removed.
+        authority.discard_storm_cohort(anchor_issue_number=999)
+        state.active_sessions.clear()
+        plan = plan_tick()
+        assert cleanup_numbers(plan) == [41, 42, 43]
+        assert all(
+            a.remove_worktrees
+            for a in plan.actions
+            if a.action_type == ActionType.CLEANUP_SESSION
+        )
+        clear_discovered_facts(state, config, authority, tick_paused=False)
+        assert state.immediate_cleanups == []
+
+    def test_inert_cohort_row_does_not_hold_cleanup_forever(self, tmp_path):
+        """A row whose anchor is neither pending nor active grants no hold.
+
+        The ledger is intersected with live triage work precisely so that a
+        row leaked by an anchor that never reached completion (dropped after
+        exhausted launch retries) cannot strand a worktree forever.
+        """
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.fact_gatherer import FactGatherer
+        from issue_orchestrator.domain.models import (
+            ImmediateCleanup,
+            OrchestratorState,
+        )
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
+        config = make_config(triage_review_agent="agent:triage")
+        config.triage_review_on_failure = True
+        config.cleanup.with_triage.remove_worktrees = True
+
+        authority = InMemoryTriageAuthorityStore()
+        authority.record_storm_cohort(
+            anchor_issue_number=999,
+            cohort=(DiscoveredFailure(41, "Problem 41", "failed"),),
+        )
+        gatherer = FactGatherer(
+            config=config,
+            repository_host=MagicMock(),
+            triage_authority=authority,
+        )
+        planner = Planner(config=config, scheduler=Scheduler(config))
+
+        state = OrchestratorState()
+        state.immediate_cleanups.append(
+            ImmediateCleanup(41, "issue-41", str(tmp_path / "worktree-41"), "failed")
+        )
+
+        plan = planner.plan(
+            make_snapshot(cleanup_facts=gatherer.gather_cleanup_facts(state))
+        )
+
+        assert [
+            a.issue_number
+            for a in plan.actions
+            if a.action_type == ActionType.CLEANUP_SESSION
+        ] == [41]
+
 
 class TestActionPriority:
     """Tests for action priority: Reviews > Reworks > Triage > Issues.
@@ -2272,7 +3293,16 @@ class TestActionPriority:
         snapshot = make_snapshot(
             pending_reworks=[pending_rework],
             pending_triage=[
-                PendingTriageReview(issue_number=2, title="Investigate failure"),
+                PendingTriageReview(
+                    issue_number=2,
+                    title="Investigate failure",
+                    flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                    failure=DiscoveredFailure(
+                        issue_number=2,
+                        issue_title="Investigate failure",
+                        failure_reason="failed",
+                    ),
+                ),
             ],
         )
 
@@ -3013,7 +4043,9 @@ class TestSnapshotFromState:
         rework = PendingRework(issue_key=FakeIssueKey(name="2"), agent_type="agent:dev", rework_cycle=1)
         state.pending_reworks = [rework]
 
-        triage = PendingTriageReview(issue_number=3, title="Triage")
+        triage = PendingTriageReview(
+            issue_number=3, title="Triage", flavor=TriageSessionFlavor.BATCH_REVIEW
+        )
         state.pending_triage_reviews = [triage]
         validation_retry = PendingValidationRetry(
             issue_number=4,
@@ -3177,7 +4209,14 @@ class TestMultiplePendingTypesInteraction:
             branch_name="issue-100",
             _issue_number=100,
         )
-        pending_triage = PendingTriageReview(issue_number=101, title="Investigate")
+        pending_triage = PendingTriageReview(
+            issue_number=101,
+            title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=101, issue_title="Investigate", failure_reason="failed"
+            ),
+        )
 
         snapshot = make_snapshot(
             issues=[make_issue(100), make_issue(1), make_issue(2)],
@@ -3235,7 +4274,14 @@ class TestMultiplePendingTypesInteraction:
             agent_type="agent:dev",
             rework_cycle=1,
         )
-        pending_triage = PendingTriageReview(issue_number=3, title="Investigate")
+        pending_triage = PendingTriageReview(
+            issue_number=3,
+            title="Investigate",
+            flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+            failure=DiscoveredFailure(
+                issue_number=3, issue_title="Investigate", failure_reason="failed"
+            ),
+        )
 
         planner = Planner(
             config=config,

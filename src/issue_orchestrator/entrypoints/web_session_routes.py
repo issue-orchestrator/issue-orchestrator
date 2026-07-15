@@ -1238,27 +1238,18 @@ async def get_review_artifact_content(
     )
 
 
-def _latest_review_exchange_prompt(run_dir: Path) -> Path | None:
-    """Return newest review-exchange prompt artifact under run_dir if present."""
-    exchange_root = run_dir / "review-exchange"
-    if not exchange_root.exists():
-        return None
-    candidates = sorted(
-        list(exchange_root.glob("round-*/coder-prompt.txt"))
-        + list(exchange_root.glob("round-*/reviewer-prompt.txt")),
-        key=lambda path: path.stat().st_mtime if path.exists() else 0,
-        reverse=True,
-    )
-    return candidates[0] if candidates else None
-
-
 @web_session_router.get("/api/session/prompt/{issue_number}")
 async def get_session_prompt_content(
     issue_number: int,
     orchestrator: WebOrchestratorDependency,
     run_dir: str | None = None,
 ) -> JSONResponse:
-    """Return run-scoped prompt content for a session."""
+    """Return run-scoped prompt content for a session.
+
+    Prompt resolution and path containment are owned by
+    ``ManifestAccessor.get_session_prompt`` so a malformed or stale manifest
+    cannot point this endpoint at a file outside the selected run directory.
+    """
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     if not run_dir:
@@ -1270,38 +1261,21 @@ async def get_session_prompt_content(
             status_code=400,
         )
 
-    run_path = Path(run_dir)
-    if not run_path.exists():
-        return JSONResponse({"error": f"run_dir does not exist: {run_dir}"}, status_code=404)
-
-    from ..domain.run_manifest import RunManifest
-    from ..execution.session_output_adapter import SESSION_PROMPT_NAME
-
-    manifest_prompt_path: Path | None = None
+    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
+    accessor = ManifestAccessor(run_identity)
     try:
-        manifest = RunManifest.load(run_path)
-        session_prompt_path = manifest.to_dict().get("session_prompt_path")
-        if isinstance(session_prompt_path, str) and session_prompt_path:
-            manifest_prompt_path = Path(session_prompt_path)
-    except Exception:
-        manifest_prompt_path = None
-
-    candidates = [
-        manifest_prompt_path,
-        run_path / SESSION_PROMPT_NAME,
-        run_path / "retry-prompt.md",
-        _latest_review_exchange_prompt(run_path),
-    ]
-    prompt_path = next(
-        (path for path in candidates if path and path.exists() and path.stat().st_size > 0),
-        None,
-    )
-    if not prompt_path:
+        artifact = accessor.get_session_prompt()
+    except ArtifactNotFoundError as exc:
         return JSONResponse(
-            {"error": "No run-scoped prompt artifact found for this session"},
+            {
+                "error": "No run-scoped prompt artifact found for this session",
+                "run_dir": str(run_identity.run_dir),
+                "detail": str(exc),
+            },
             status_code=404,
         )
 
+    prompt_path = artifact.path
     try:
         content = prompt_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -1310,8 +1284,12 @@ async def get_session_prompt_content(
     return JSONResponse(
         {
             "issue_number": issue_number,
-            "run_dir": str(run_path),
+            "run_dir": str(run_identity.run_dir),
             "prompt_path": str(prompt_path),
+            # This is the run-scoped prompt the session was actually launched
+            # with (manifest ``session_prompt_path``), not the static agent
+            # template — label it so the UI names it the launch prompt.
+            "label": "Launch prompt",
             "content": content,
         }
     )

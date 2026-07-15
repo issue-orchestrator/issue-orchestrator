@@ -24,6 +24,8 @@ from ..view_models.dashboard import (
     stack_dependency_view,
 )
 from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
+from ..view_models.rework_status import resolve_queued_rework
+from ..view_models.timeline_view import normalize_timeline_view
 from ..view_models.lifecycle_projection import (
     project_dashboard_lifecycle_container,
     project_e2e_suite_lifecycle_container_for_run,
@@ -50,7 +52,6 @@ from .web_session_context import (
 logger = logging.getLogger(__name__)
 
 web_issue_detail_router = APIRouter()
-_VALID_DETAIL_VIEWS = {"user", "ops", "debug", "raw"}
 
 
 class E2ERunDatabaseNotFoundError(FileNotFoundError):
@@ -59,11 +60,6 @@ class E2ERunDatabaseNotFoundError(FileNotFoundError):
 
 class E2ERunRecordNotFoundError(LookupError):
     """The requested E2E run does not exist in the database."""
-
-
-def _normalize_detail_view(view: str) -> str:
-    """Return a supported drawer view mode."""
-    return view if view in _VALID_DETAIL_VIEWS else "user"
 
 
 def _current_run_validation_diagnostic(
@@ -424,6 +420,8 @@ def _e2e_run_artifacts(run: dict[str, Any], db_artifacts: list[dict[str, Any]]) 
         if artifact["kind"] in {"junit_xml", "html_report", "json_report", "playwright_report"}
     ]
     return artifacts, reports
+
+
 def _finalize_issue_detail_payload(
     *,
     orchestrator: Any,
@@ -574,7 +572,7 @@ async def get_issue_detail(
         phase_toc=phase_toc,
         cycles=cycles,
         context=_build_issue_story_context(orchestrator, issue_number),
-        view=_normalize_detail_view(view),
+        view=normalize_timeline_view(view),
         raw_events=raw_events,
     )
     payload = _finalize_issue_detail_payload(
@@ -692,7 +690,7 @@ async def get_e2e_run_detail(
     if not agent_events:
         agent_events = _load_orchestrator_events_for_run(orchestrator, run_id)
 
-    matcher_view = _normalize_detail_view(view)
+    matcher_view = normalize_timeline_view(view)
     events = _attach_issue_numbers_to_test_windows(
         e2e_events,
         agent_events,
@@ -723,11 +721,9 @@ async def get_e2e_run_detail(
             status_code=404,
         )
     run_payload = _public_e2e_run_payload(dict(run_details["run"]), run_id)
+    db_artifacts = list(run_details.get("artifacts") or [])
     try:
-        artifacts, reports = _e2e_run_artifacts(
-            run_payload,
-            list(run_details.get("artifacts") or []),
-        )
+        artifacts, reports = _e2e_run_artifacts(run_payload, db_artifacts)
     except ValueError:
         logger.exception("Malformed E2E artifact rows for run %s", run_id)
         return JSONResponse(
@@ -746,6 +742,11 @@ async def get_e2e_run_detail(
     payload["results_by_category"] = results_by_category
     payload["artifacts"] = artifacts
     payload["reports"] = reports
+    from ..view_models.dashboard_e2e import build_e2e_artifact_diagnostic
+
+    payload["artifact_diagnostic"] = build_e2e_artifact_diagnostic(
+        orchestrator.config.e2e, collected_count=len(db_artifacts)
+    ).model_dump(mode="json")
     payload["lifecycle"] = project_e2e_suite_lifecycle_container_for_run(
         run_id=run_id,
         events=events,
@@ -924,7 +925,7 @@ async def get_e2e_issue_detail(
         phase_toc=_build_phase_toc(events),
         cycles=_build_timeline_cycles(events),
         context=None,
-        view=_normalize_detail_view(view),
+        view=normalize_timeline_view(view),
         raw_events=raw_events,
     )
     payload = _finalize_issue_detail_payload(
@@ -1043,11 +1044,8 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
     dependency_problem = state.dependency_problems.get(issue_number)
     dependency_summary = dependency_problem.summary if dependency_problem else None
 
-    rework_cycle = 0
-    for rework in state.pending_reworks:
-        if rework.resolve_issue_number() == issue_number:
-            rework_cycle = rework.rework_cycle
-            break
+    rework_status = resolve_queued_rework(state, issue_number)
+    rework_cycle = rework_status.rework_cycle if rework_status else 0
 
     pr_url: str | None = None
     pr_number: int | None = None
@@ -1061,6 +1059,10 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
             if entry.issue_number == issue_number and entry.pr_url:
                 pr_url = entry.pr_url
                 break
+    # A rework-queued issue may have no pending_review; carry the PR number
+    # the rework is against so the drawer can name it.
+    if pr_number is None and rework_status is not None:
+        pr_number = rework_status.pr_number
 
     return IssueStoryContext(
         flow_stage=_determine_issue_flow_stage(
@@ -1069,6 +1071,7 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
             active_task_kind,
             state,
             pr_url,
+            is_queued_for_rework=rework_status is not None,
         ),
         active_runtime_minutes=active_runtime,
         active_task_kind=active_task_kind,
@@ -1078,6 +1081,7 @@ def _build_issue_story_context(  # noqa: C901, PLR0912 - story assembly pulls fr
         max_rework_cycles=config.max_rework_cycles,
         pr_url=pr_url,
         pr_number=pr_number,
+        rework_reason=rework_status.reason if rework_status else None,
     )
 
 
@@ -1087,6 +1091,8 @@ def _determine_issue_flow_stage(
     active_task_kind: str | None,
     state: Any,
     pr_url: str | None,
+    *,
+    is_queued_for_rework: bool = False,
 ) -> str:
     """Determine the flow stage for an issue."""
     from ..domain.models import _base_of, _is_blocking_label
@@ -1095,6 +1101,10 @@ def _determine_issue_flow_stage(
         return "in_progress"
     if any(_is_blocking_label(label) for label in labels):
         return "blocked"
+    # Checked before awaiting_merge: a rework-queued issue may still carry a
+    # stale pr-pending label for a tick, which must not mask the rework state.
+    if is_queued_for_rework:
+        return "queued_for_rework"
     if any(_base_of(label) == "pr-pending" for label in labels):
         return "awaiting_merge"
 

@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Request
@@ -17,7 +18,10 @@ from ..control.queue_cache import (
     clear_issue_refresh,
     record_issue_refreshes,
 )
-from ..control.review_exchange_lifecycle import terminate_issue_runtime
+from ..control.review_exchange_lifecycle import (
+    has_active_issue_runtime,
+    terminate_issue_runtime,
+)
 from ..control.retry_history_state import RetryHistoryState
 from ..events import EventName
 from ..history import latest_history_entries_by_issue
@@ -326,6 +330,7 @@ def reset_and_retry_issue(  # noqa: PLR0913
     reset_issue_fn: Callable[..., "ResetResult"],
     current_labels: Sequence[str] | None = None,
     extra_pending_labels: Sequence[str] = (),
+    source: str = "web.reset-retry",
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     # AddLabelAction is lazy for the same reason as RemoveLabelAction above.
     from ..control.actions import AddLabelAction
@@ -441,6 +446,7 @@ def reset_and_retry_issue(  # noqa: PLR0913
             pending_label=pending_label,
             pending_labels_to_add=pending_labels_to_add,
             events=deps.events,
+            source=source,
         )
         success = _make_reset_success(
             issue_number,
@@ -478,31 +484,81 @@ def reset_and_retry_issue(  # noqa: PLR0913
         return None, {"issue": issue_number, "error": str(exc)}
 
 
+@dataclass(frozen=True)
+class _ResetRetryRuntimeOwners:
+    """The runtime owners the reset boundary would terminate for one issue.
+
+    Resolved once and shared by both the termination boundary and the
+    freshness activity check so the reset teardown and the "is this proposal
+    still fresh?" predicate can never read a different owner set (#6777).
+    """
+
+    pair_registry: Any
+    job_supervisor: Any
+    session_manager: Any
+    active_sessions: Any
+    publish_recovery: Any
+
+
+def _reset_retry_runtime_owners(
+    state: "OrchestratorState", deps: Any
+) -> _ResetRetryRuntimeOwners:
+    """Resolve every runtime owner the reset boundary touches for an issue."""
+    services = _configured_attr(deps, "services")
+    return _ResetRetryRuntimeOwners(
+        pair_registry=_configured_attr(services, "pair_registry"),
+        job_supervisor=_configured_attr(services, "background_job_supervisor"),
+        session_manager=_configured_attr(deps, "session_manager"),
+        active_sessions=state.active_sessions,
+        # Publish-retry work has its own owner/runner outside the review-exchange
+        # supervisor; the shared runtime boundary abandons it on the same
+        # teardown so a late republish cannot repopulate the attempt being reset.
+        publish_recovery=_configured_attr(deps, "publish_recovery"),
+    )
+
+
+def has_active_reset_retry_runtime(
+    *,
+    issue_number: int,
+    state: "OrchestratorState",
+    deps: Any,
+) -> bool:
+    """Would the reset boundary terminate live runtime for this issue?
+
+    Shares its owner set with :func:`_terminate_reset_retry_runtime` via
+    :func:`_reset_retry_runtime_owners`, so an agent-authored reset proposal's
+    freshness check and the reset teardown consult exactly the same runtime
+    owners — visible issue/rework sessions, the persistent coder/reviewer pair,
+    supervised review-exchange jobs, and pending publish retry. A stale proposal
+    therefore stale-downgrades with zero effects whenever ANY of them is active,
+    and can never terminate live work the check did not observe.
+    """
+    owners = _reset_retry_runtime_owners(state, deps)
+    return has_active_issue_runtime(
+        issue_number=issue_number,
+        pair_registry=owners.pair_registry,
+        job_supervisor=owners.job_supervisor,
+        session_manager=owners.session_manager,
+        active_sessions=owners.active_sessions,
+        publish_recovery=owners.publish_recovery,
+    )
+
+
 def _terminate_reset_retry_runtime(
     *,
     issue_number: int,
     state: "OrchestratorState",
     deps: Any,
 ) -> None:
-    services = _configured_attr(deps, "services")
-    pair_registry = _configured_attr(services, "pair_registry")
-    background_job_supervisor = _configured_attr(
-        services,
-        "background_job_supervisor",
-    )
-    session_manager = _configured_attr(deps, "session_manager")
-    # Publish-retry work has its own owner/runner outside the review-exchange
-    # supervisor; the shared runtime terminator abandons it on the same boundary
-    # so a late republish cannot repopulate the attempt being reset.
-    publish_recovery = _configured_attr(deps, "publish_recovery")
+    owners = _reset_retry_runtime_owners(state, deps)
     terminate_issue_runtime(
         issue_number=issue_number,
         reason="reset-retry",
-        pair_registry=pair_registry,
-        job_supervisor=background_job_supervisor,
-        session_manager=session_manager,
-        active_sessions=state.active_sessions,
-        publish_recovery=publish_recovery,
+        pair_registry=owners.pair_registry,
+        job_supervisor=owners.job_supervisor,
+        session_manager=owners.session_manager,
+        active_sessions=owners.active_sessions,
+        publish_recovery=owners.publish_recovery,
     )
 
 
@@ -653,6 +709,7 @@ def _emit_reset_retry_unblocked(
     pending_label: str,
     pending_labels_to_add: list[str],
     events: Any,
+    source: str,
 ) -> None:
     events.publish(
         make_trace_event(
@@ -660,7 +717,7 @@ def _emit_reset_retry_unblocked(
             {
                 "issue_number": issue_number,
                 "reason": "reset_retry_requested",
-                "source": "web.reset-retry",
+                "source": source,
                 "pending_label": pending_label,
                 "pending_labels": pending_labels_to_add,
                 "from_scratch": from_scratch,

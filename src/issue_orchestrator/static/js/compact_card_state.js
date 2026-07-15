@@ -36,6 +36,11 @@
         // The server precomputes stack_signal (stack_signal() in
         // view_models/dashboard.py), so both sides fingerprint identically.
         const stackSignal = card?.stack_signal ?? '';
+        // run_dir binds the reused card node to a specific run. If it changes
+        // (e.g. a rework-<issue> slot replaced by a new run) the node must be
+        // rebuilt so the stale data-run-dir — read by the launch-prompt
+        // action — cannot linger. Mirrors compute_compact_card_fingerprint.
+        const runDir = card?.run_dir ?? '';
         return [
             cardId,
             issueNumber,
@@ -56,6 +61,7 @@
             githubAriaLabel,
             labels,
             stackSignal,
+            runDir,
         ].join('|');
     }
 

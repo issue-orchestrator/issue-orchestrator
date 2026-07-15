@@ -194,19 +194,96 @@ class TestCreateTriageReviewPrompt:
         assert "{review_label}" not in content
         assert "{reviewed_label}" not in content
 
-    def test_includes_gh_commands_with_labels(self, tmp_path):
-        """Test that gh commands include the actual labels."""
+    def test_forbids_gh_and_promises_manifest_labeling(self, tmp_path):
+        """Test the manifest contract: no gh usage, orchestrator labels manifest PRs."""
         prompt_path = tmp_path / "triage.md"
 
         create_triage_review_prompt(prompt_path, "my-review-label", "my-reviewed-label")
 
         content = prompt_path.read_text()
 
-        # Check gh commands have correct labels
-        assert 'gh pr list --label "my-review-label"' in content
-        # Orchestrator handles label updates via completion command workflow
+        # The agent must never call gh (reads or writes)
+        assert 'gh pr list --label "my-review-label"' not in content
+        assert "gh pr comment" not in content
+        assert "gh issue create" not in content
+        # Labels still appear: the selection label and the promised outcome label
         assert "my-review-label" in content
         assert "my-reviewed-label" in content
+
+    def test_uses_injected_run_dir_not_run_scans(self, tmp_path):
+        """Guardrail: prompts must use the active run contract, never scan runs.
+
+        Every managed session gets ISSUE_ORCHESTRATOR_RUN_DIR; wildcard
+        scans over sessions/* with head -1 can pick a stale run whenever the
+        worktree holds more than one (#6768 B2). Covers the generated prompt
+        and the packaged example prompts.
+        """
+        import re
+
+        prompt_path = tmp_path / "triage.md"
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        sources = {"generated prompt": prompt_path.read_text()}
+
+        repo_root = Path(__file__).resolve().parents[2]
+        for example in ("triage-review.md", "triage-data-sources.md"):
+            sources[example] = (repo_root / "examples" / "prompts" / example).read_text()
+
+        forbidden = re.compile(r"sessions/\*|head -1|ls -d")
+        for name, text in sources.items():
+            assert "ISSUE_ORCHESTRATOR_RUN_DIR" in text, f"{name} must use the run contract"
+            match = forbidden.search(text)
+            assert match is None, f"{name} contains run-scan discovery: {match.group(0)!r}"
+
+    def test_includes_flavor_assignment_contract(self, tmp_path):
+        """Prompts must lead with the assignment contract (ADR-0031).
+
+        Both triage flavors share one launch path; the prompt must direct the
+        agent to read triage-assignment.json and behave per flavor, including
+        never auditing PRs during a failure investigation. Covers the
+        generated prompt and the packaged/dogfood prompt variants.
+        """
+        prompt_path = tmp_path / "triage.md"
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        sources = {"generated prompt": prompt_path.read_text()}
+
+        repo_root = Path(__file__).resolve().parents[2]
+        for variant in (
+            repo_root / "examples" / "prompts" / "triage-review.md",
+            repo_root / "repo-specific" / "prompts" / "triage.md",
+        ):
+            sources[str(variant.relative_to(repo_root))] = variant.read_text()
+
+        for name, text in sources.items():
+            assert "triage-assignment.json" in text, f"{name} missing assignment file"
+            assert "Your Assignment" in text, f"{name} missing assignment section"
+            assert "batch_review" in text, f"{name} missing batch flavor"
+            assert "failure_investigation" in text, f"{name} missing failure flavor"
+            assert "focus_issue_number" in text, f"{name} missing focus contract"
+            assert "health_review" in text, f"{name} missing health flavor"
+
+    def test_includes_board_snapshot_contract(self, tmp_path):
+        """All triage prompt sources must document the board snapshot file.
+
+        The ADR-0031 §3 observation surface only pays off if agents are told
+        it exists: the generated prompt, both packaged/dogfood prompt
+        variants, and the data-sources contract must all name
+        board-snapshot.json (the data-sources doc lists it alongside the
+        manifest as a primary local source).
+        """
+        prompt_path = tmp_path / "triage.md"
+        create_triage_review_prompt(prompt_path, "review", "reviewed")
+        sources = {"generated prompt": prompt_path.read_text()}
+
+        repo_root = Path(__file__).resolve().parents[2]
+        for variant in (
+            repo_root / "examples" / "prompts" / "triage-review.md",
+            repo_root / "examples" / "prompts" / "triage-data-sources.md",
+            repo_root / "repo-specific" / "prompts" / "triage.md",
+        ):
+            sources[str(variant.relative_to(repo_root))] = variant.read_text()
+
+        for name, text in sources.items():
+            assert "board-snapshot.json" in text, f"{name} missing board snapshot"
 
     def test_substitutes_label_variables(self, tmp_path):
         """Test that label placeholders are substituted with actual values."""
@@ -231,34 +308,38 @@ class TestCreateTriageReviewPrompt:
 
         content = prompt_path.read_text()
 
-        assert "Review Process" in content
+        assert "Batch Review Flow" in content
         assert "Document Your Findings" in content
         assert "Patterns observed" in content
         assert "Audit Principles" in content
 
-    def test_includes_pr_investigation_steps(self, tmp_path):
-        """Test that PR investigation steps are included."""
+    def test_includes_manifest_investigation_steps(self, tmp_path):
+        """Test that manifest-based PR investigation steps are included."""
         prompt_path = tmp_path / "cto.md"
 
         create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
-        assert "gh pr view" in content
-        assert "gh pr diff" in content
+        assert "triage-data" in content
+        assert "manifest.json" in content
+        assert "pr-<number>-diff.txt" in content
+        assert "pr-<number>-meta.json" in content
         assert "For Each PR" in content
 
     def test_includes_completion_instructions(self, tmp_path):
-        """Test that completion instructions are included."""
+        """Test that coding-done completion instructions are included."""
         prompt_path = tmp_path / "cto.md"
 
         create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
-        assert "reviewer-done approved" in content
-        assert "--summary" in content
-        assert "--risk" in content
+        assert "coding-done completed" in content
+        assert "coding-done blocked" in content
+        assert "--implementation" in content
+        assert "--problems" in content
+        assert "reviewer-done" not in content
 
     def test_creates_parent_directories(self, tmp_path):
         """Test that parent directories are created."""
@@ -527,7 +608,10 @@ class TestSetupWizardSharedHelpers:
         assert "coding-done" in writes_by_agent["agent:backend"].content
         assert "needs-review" in writes_by_agent["agent:reviewer"].content
         assert "reviewer-done approved" in writes_by_agent["agent:reviewer"].content
-        assert 'gh pr list --label "reviewed"' in writes_by_agent["agent:triage"].content
+        triage_content = writes_by_agent["agent:triage"].content
+        assert "triage-data" in triage_content
+        assert "coding-done completed" in triage_content
+        assert "reviewer-done" not in triage_content
 
     def test_plan_setup_labels_matches_cli_defaults(self):
         """CLI setup should keep priority labels and default-agent review gating."""
@@ -548,9 +632,67 @@ class TestSetupWizardSharedHelpers:
         assert "agent:reviewer" in label_names
         assert "priority:high" in label_names
         assert "io:in-progress" in label_names
+        assert "io:triage-needs-human" in label_names
         assert "needs-code-review" in label_names
         assert "code-reviewed" in label_names
         assert "triage-reviewed" in label_names
+        # R3: a triage-enabled config provisions the act-level proposal gate
+        # (raw, never prefixed), health-review marker, and the static blocking
+        # observation marker. Dynamic area:* labels are provisioned at apply.
+        assert "proposed-triage" in label_names
+        assert "triage:health-review" in label_names
+        assert "triage-observation" in label_names
+
+    def test_plan_setup_labels_omits_gate_without_triage(self):
+        """No triage agent -> no gate label to provision."""
+        labels = plan_setup_labels({
+            "agents": {"agent:backend": {}},
+            "review": {"default": "agent:reviewer"},
+        })
+        label_names = {name for name, _, _ in labels}
+        assert "proposed-triage" not in label_names
+        assert "triage-observation" not in label_names
+
+    def test_required_repo_labels_includes_triage_gate(self):
+        """The CLI `init` label set (single owner) provisions the R3 gate."""
+        from unittest.mock import Mock
+
+        from issue_orchestrator.entrypoints.setup_wizard_common import (
+            required_repo_labels,
+        )
+        from issue_orchestrator.infra.config import Config
+
+        config = Config()
+        config.agents = {"agent:backend": Mock()}
+        config.triage_review_agent = "agent:triage"
+        config.triage_reviewed_label = "triage-reviewed"
+
+        labels = required_repo_labels(config)
+
+        assert "proposed-triage" in labels
+        assert "agent:triage" in labels
+        assert "triage:health-review" in labels
+        assert "triage-observation" in labels
+        assert "agent:backend" in labels
+        # De-duped: no label appears twice.
+        assert len(labels) == len(set(labels))
+
+    def test_required_repo_labels_omits_triage_when_unconfigured(self):
+        from unittest.mock import Mock
+
+        from issue_orchestrator.entrypoints.setup_wizard_common import (
+            required_repo_labels,
+        )
+        from issue_orchestrator.infra.config import Config
+
+        config = Config()
+        config.agents = {"agent:backend": Mock()}
+
+        labels = required_repo_labels(config)
+
+        assert "proposed-triage" not in labels
+        assert "triage-observation" not in labels
+        assert "agent:backend" in labels
 
     def test_plan_setup_labels_can_preserve_control_api_behavior(self):
         """Control Center setup should keep its legacy label surface."""
@@ -1056,6 +1198,7 @@ class TestWizardNewProject:
             "agent:triage",            # triage review agent
             "triage-reviewed",         # triage reviewed label
             "5",                    # threshold
+            "agent:backend",           # triage follow-up worker agent (#6779 R14)
         ])
 
         config = wizard_new_project(prompter)
@@ -1068,6 +1211,9 @@ class TestWizardNewProject:
 
         # Stage 2: Triage Batch Review
         assert config["review"]["triage_review_agent"] == "agent:triage"
+        # R14: a configured triage agent must also route create_issue follow-ups
+        # to a worker agent, so the wizard collects it up front.
+        assert config["review"]["triage_follow_up_agent"] == "agent:backend"
         assert config["review"]["triage_reviewed_label"] == "triage-reviewed"
         assert config["review"]["triage_review_threshold"] == 5
 

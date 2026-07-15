@@ -6,7 +6,7 @@ import json as _json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Iterator, Literal, cast
 from urllib.parse import quote
 
 import httpx
@@ -628,6 +628,7 @@ class GitHubHttpClient:
         milestone: str | None = None,
         limit: int = 100,
         use_cache: bool = True,
+        exhaustive: bool = False,
     ) -> list[dict[str, Any]]:
         """List issues matching the given criteria.
 
@@ -638,6 +639,12 @@ class GitHubHttpClient:
             limit: Maximum number of issues to return.
             use_cache: If True (default), use ETag cache. If False, bypass cache
                 and force a fresh request (used when required IDs are missing).
+            exhaustive: If True, the multi-page walk enforces the fail-loud
+                completeness contract (#6779 R17) — a later-page non-200 or
+                transport failure raises, and hitting the scan cap raises —
+                so an AUTHORITATIVE caller (the open-issue anchor scan) can
+                never consume a silently partial result. If False (default),
+                ``limit`` is a deliberate bound and later pages are best-effort.
         """
         params: dict[str, Any] = {
             "state": state,
@@ -659,7 +666,94 @@ class GitHubHttpClient:
         if not isinstance(payload, list):
             return []
         issues = [item for item in payload if "pull_request" not in item]
+        # Exhaustive discovery (#6779 R4): a single page caps at 100, so a
+        # caller asking for more than that and receiving a FULL first page may
+        # be truncating the matching set. Walk subsequent pages until a short
+        # page or the requested limit is reached. The common case (limit<=100)
+        # keeps the cached single-page path untouched.
+        if limit > 100 and len(payload) >= int(params["per_page"]):
+            issues.extend(
+                self._list_issues_remaining_pages(
+                    params=params, limit=limit, exhaustive=exhaustive
+                )
+            )
         return issues[:limit]
+
+    def _list_issues_remaining_pages(
+        self, *, params: dict[str, Any], limit: int, exhaustive: bool = False
+    ) -> list[dict[str, Any]]:
+        """Fetch issue pages beyond the first until short page / limit (#6779 R4).
+
+        When ``exhaustive`` the fail-loud contract applies (#6779 R17): the walk
+        shares :meth:`_paginate_fresh` with the all-labels pager, so a later-page
+        non-200/transport failure or a cap-exhausted scan RAISES instead of
+        returning a silently partial anchor set. Otherwise ``limit`` is a
+        deliberate bound and later-page failures are best-effort (the general
+        ``fetch_limit`` fetch, where a truncated window is expected, not a bug).
+
+        Uncached (mirrors :meth:`list_all_labels`): later pages are read fresh
+        rather than ETag-cached per page. Bounded by a page cap so an
+        unbounded scan fails loud rather than looping.
+        """
+        if exhaustive:
+            return self._list_open_issues_exhaustive_pages(params=params, limit=limit)
+        collected: list[dict[str, Any]] = []
+        page = 2
+        while True:
+            page_params = {**params, "page": page}
+            try:
+                response = self._client.get(
+                    f"/repos/{self._config.repo}/issues",
+                    params=page_params,
+                    headers=self._auth_headers(),
+                )
+            except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
+                raise GitHubTransportError(
+                    "GitHub transport error for list_issues pagination",
+                    method="GET",
+                    url=f"/repos/{self._config.repo}/issues",
+                    original=exc,
+                ) from exc
+            if response.status_code != 200:
+                break
+            batch = response.json()
+            if not isinstance(batch, list) or not batch:
+                break
+            collected.extend(item for item in batch if "pull_request" not in item)
+            if len(batch) < int(params["per_page"]) or len(collected) >= limit:
+                break
+            page += 1
+            if page > 20:  # Safety limit: 20 * 100 = 2000 issues (list_all_labels parity)
+                break
+        return collected
+
+    def _list_open_issues_exhaustive_pages(
+        self, *, params: dict[str, Any], limit: int
+    ) -> list[dict[str, Any]]:
+        """Fail-loud remaining-page walk for the AUTHORITATIVE open-issue scan.
+
+        ``discover_open_triage_anchor_issues`` consumes this as EXHAUSTIVE: an
+        anchor or approved op hidden on a dropped/uncrawled page causes
+        duplicate anchor creation, missed startup recovery, or an indefinitely
+        delayed approved op. So this reuses the SAME fail-loud pager as the
+        all-labels scan (#6779 R8/R17) — one completeness contract, no
+        cross-path drift — rather than accepting a partial list. ``limit`` sets
+        the page cap (``ceil(limit/per_page)`` pages, page 1 already read); a
+        scan that would exceed it cannot prove completeness and raises, exactly
+        as the label cap does.
+        """
+        per_page = int(params["per_page"])
+        page_cap = max(2, -(-limit // per_page))
+        collected: list[dict[str, Any]] = []
+        for batch in self._paginate_fresh(
+            f"/repos/{self._config.repo}/issues",
+            params=params,
+            start_page=2,
+            page_cap=page_cap,
+            what="repository issues",
+        ):
+            collected.extend(item for item in batch if "pull_request" not in item)
+        return collected
 
     def list_issues_since(
         self,
@@ -797,43 +891,113 @@ class GitHubHttpClient:
             params={"per_page": 100},
             caller="list_labels",
         )
-        return payload if isinstance(payload, list) else []
+        labels = payload if isinstance(payload, list) else []
+        # The port promises ALL labels (#6779 R8): page 1 keeps its ETag cache
+        # for the common (<=100 labels) case, but a FULL first page means more
+        # may exist, so continue paging. Without this a gate label sorted onto a
+        # later page (e.g. proposed-triage in a repo with 100+ labels) is missed
+        # and valid proposal creation is falsely refused. Mirrors list_issues.
+        if len(labels) >= 100:
+            labels = list(labels) + self._paginate_all_labels(start_page=2)
+        return labels
 
-    def list_all_labels(self) -> list[dict[str, Any]]:
-        """Fetch all labels with pagination (for cleanup operations).
+    # 20 pages * 100/page = 2000 labels. An exhaustive label scan that would
+    # exceed this cannot prove completeness, so it fails loud instead (R8).
+    _LABEL_PAGE_CAP = 20
 
-        Unlike list_labels() which returns only the first page,
-        this fetches all pages. Does not use ETag caching.
+    def _paginate_fresh(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any],
+        start_page: int,
+        page_cap: int,
+        what: str,
+    ) -> Iterator[list[Any]]:
+        """Yield fresh (uncached) page batches for an AUTHORITATIVE full scan,
+        failing loud when completeness cannot be proven (#6779 R8/R17).
+
+        The SINGLE exhaustive-pagination contract shared by the all-labels scan
+        and the open-issue anchor scan: a pre-response failure raises
+        ``GitHubTransportError``, a later-page non-200 raises ``GitHubHttpError``,
+        and exceeding ``page_cap`` full pages raises ``GitHubHttpError``.
+        Iteration stops only on the first empty/short/non-list page — the true
+        final page — so no caller can mistake a truncated read for a complete
+        one. ``params`` must carry ``per_page`` (the short-page threshold); later
+        pages are read fresh rather than ETag-cached per page.
         """
-        all_labels: list[dict[str, Any]] = []
-        page = 1
+        per_page = int(params["per_page"])
+        page = start_page
         while True:
             try:
                 response = self._client.get(
-                    f"/repos/{self._config.repo}/labels",
-                    params={"per_page": 100, "page": page},
+                    path,
+                    params={**params, "page": page},
                     headers=self._auth_headers(),
                 )
             except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
                 raise GitHubTransportError(
-                    "GitHub transport error for list_all_labels",
+                    f"GitHub transport error while paging {what}",
                     method="GET",
-                    url=f"/repos/{self._config.repo}/labels",
+                    url=path,
                     original=exc,
                 ) from exc
             if response.status_code != 200:
-                break
+                raise GitHubHttpError(
+                    f"GitHub returned status {response.status_code} while paging"
+                    f" {what} (page {page}); refusing to treat the partial"
+                    f" {what} as complete",
+                    method="GET",
+                    url=path,
+                    status_code=response.status_code,
+                    response_text=response.text,
+                )
             batch = response.json()
-            if not batch:
-                break
-            all_labels.extend(batch)
-            # Check for next page via Link header or empty response
-            if len(batch) < 100:
-                break
+            if not isinstance(batch, list) or not batch:
+                return
+            yield batch
+            if len(batch) < per_page:  # short page => exhausted, list is complete
+                return
             page += 1
-            if page > 20:  # Safety limit
-                break
-        return all_labels
+            if page > page_cap:
+                raise GitHubHttpError(
+                    f"{what} scan exceeded the {page_cap * per_page}-item page"
+                    " cap; cannot prove the list is complete",
+                    method="GET",
+                    url=path,
+                )
+
+    def _paginate_all_labels(self, *, start_page: int) -> list[dict[str, Any]]:
+        """Exhaustively page repo labels from ``start_page``, failing loud
+        when completeness cannot be established (#6779 R8).
+
+        The port promises ALL labels, and control/triage_proposals.py makes a
+        gate-ABSENT decision from this list — a truncated scan that misses the
+        ``proposed-triage`` gate would falsely refuse valid proposals. So this
+        never returns a silently partial result: it drains the shared fail-loud
+        pager (:meth:`_paginate_fresh`), which raises on a transport failure, a
+        later-page non-200, or a cap-exhausted scan. Uncached: later pages are
+        read fresh rather than ETag-cached per page.
+        """
+        collected: list[dict[str, Any]] = []
+        for batch in self._paginate_fresh(
+            f"/repos/{self._config.repo}/labels",
+            params={"per_page": 100},
+            start_page=start_page,
+            page_cap=self._LABEL_PAGE_CAP,
+            what="repository labels",
+        ):
+            collected.extend(batch)
+        return collected
+
+    def list_all_labels(self) -> list[dict[str, Any]]:
+        """Fetch all labels with pagination (for cleanup operations).
+
+        Unlike list_labels(), which ETag-caches the first page, this reads
+        every page fresh. Shares the exhaustive fail-loud pager so both
+        all-labels paths enforce completeness identically (#6779 R8).
+        """
+        return self._paginate_all_labels(start_page=1)
 
     def invalidate_labels_etag(self) -> None:
         """Invalidate ETag cache for the labels endpoint.

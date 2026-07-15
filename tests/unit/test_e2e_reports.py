@@ -7,9 +7,11 @@ import pytest
 
 from issue_orchestrator.infra.e2e_reports import (
     CONFIGURED_JUNIT_XML_PATHS_NO_FRESH_FILES_ERROR,
+    E2EArtifactCollectionState,
     E2ERunArtifactRecord,
     MAX_CAPTURED_OUTPUT_CHARS,
     JUnitCaseResult,
+    classify_e2e_artifact_collection,
     discover_report_artifacts,
     normalize_pytest_junit_cases,
     parse_junit_report,
@@ -443,3 +445,54 @@ def test_discover_report_artifacts_rejects_paths_outside_repo_root(
             junit_xml_paths=[],
             artifact_paths=[f"../{outside.name}"],
         )
+
+
+class TestClassifyE2EArtifactCollection:
+    """Read-side classification of a run's artifact-collection outcome (#6593)."""
+
+    def test_collected_when_artifacts_present(self) -> None:
+        diagnostic = classify_e2e_artifact_collection(
+            configured_globs=[".issue-orchestrator/e2e-results/**/*.log"],
+            collected_count=3,
+        )
+        assert diagnostic.state is E2EArtifactCollectionState.COLLECTED
+        assert diagnostic.collected_count == 3
+        assert diagnostic.configured_glob_count == 1
+
+    def test_collected_takes_priority_even_without_configured_globs(self) -> None:
+        # JUnit XML is always an artifact even if artifact_paths is empty, so a
+        # positive collected_count must classify as collected regardless.
+        diagnostic = classify_e2e_artifact_collection(
+            configured_globs=[],
+            collected_count=1,
+        )
+        assert diagnostic.state is E2EArtifactCollectionState.COLLECTED
+
+    def test_globs_matched_nothing_when_configured_but_empty(self) -> None:
+        diagnostic = classify_e2e_artifact_collection(
+            configured_globs=[
+                ".issue-orchestrator/e2e-results/**/*.log",
+                ".issue-orchestrator/e2e-results/**/*.xml",
+            ],
+            collected_count=0,
+        )
+        assert diagnostic.state is E2EArtifactCollectionState.GLOBS_MATCHED_NOTHING
+        assert diagnostic.collected_count == 0
+        assert diagnostic.configured_glob_count == 2
+
+    def test_not_configured_when_no_globs_and_no_artifacts(self) -> None:
+        diagnostic = classify_e2e_artifact_collection(
+            configured_globs=[],
+            collected_count=0,
+        )
+        assert diagnostic.state is E2EArtifactCollectionState.NOT_CONFIGURED
+        assert diagnostic.configured_glob_count == 0
+
+    def test_blank_globs_are_not_counted_as_configured(self) -> None:
+        # Trailing-newline YAML lists must not read as configured globs.
+        diagnostic = classify_e2e_artifact_collection(
+            configured_globs=["", "   ", "\n"],
+            collected_count=0,
+        )
+        assert diagnostic.state is E2EArtifactCollectionState.NOT_CONFIGURED
+        assert diagnostic.configured_glob_count == 0

@@ -1102,6 +1102,93 @@ class TestRunLoop:
         assert orchestrator.shutdown_requested is True
 
     @pytest.mark.asyncio
+    async def test_shutdown_terminates_agent_processes_before_waiting_for_jobs(
+        self,
+        sample_config,
+    ):
+        calls: list[str] = []
+        runner = MockSessionRunner()
+        runner.on_orchestrator_shutdown = MagicMock(
+            side_effect=lambda: calls.append("terminal-sessions")
+        )
+        pair_registry = MagicMock()
+        pair_registry.shutdown_all.side_effect = (
+            lambda *, reason: calls.append(f"persistent-pairs:{reason}")
+        )
+        job_supervisor = MagicMock()
+        job_supervisor.wait_until_idle.side_effect = (
+            lambda *, timeout: calls.append(f"background-jobs:{timeout}") or True
+        )
+        orchestrator = create_test_orchestrator(sample_config, runner=runner)
+        object.__setattr__(
+            orchestrator.deps,
+            "services",
+            replace(
+                orchestrator.deps.services,
+                pair_registry=pair_registry,
+                background_job_supervisor=job_supervisor,
+            ),
+        )
+        orchestrator.shutdown_requested = True
+
+        await orchestrator.run_loop()
+
+        assert calls == [
+            "persistent-pairs:orchestrator-shutdown",
+            "terminal-sessions",
+            "background-jobs:60.0",
+        ]
+        job_supervisor.tick.assert_called_once_with()
+
+    def test_close_is_idempotent_across_competing_exit_paths(self, sample_config):
+        runner = MockSessionRunner()
+        runner.on_orchestrator_shutdown = MagicMock()
+        pair_registry = MagicMock()
+        job_supervisor = MagicMock()
+        job_supervisor.wait_until_idle.return_value = True
+        orchestrator = create_test_orchestrator(sample_config, runner=runner)
+        object.__setattr__(
+            orchestrator.deps,
+            "services",
+            replace(
+                orchestrator.deps.services,
+                pair_registry=pair_registry,
+                background_job_supervisor=job_supervisor,
+            ),
+        )
+
+        orchestrator.close()
+        orchestrator.close()
+
+        pair_registry.shutdown_all.assert_called_once_with(
+            reason="orchestrator-shutdown"
+        )
+        runner.on_orchestrator_shutdown.assert_called_once_with()
+        job_supervisor.wait_until_idle.assert_called_once_with(timeout=60.0)
+
+    @pytest.mark.asyncio
+    async def test_tick_reconciles_triage_needs_human_against_active_sessions(
+        self,
+        sample_config,
+        mock_repository_host,
+    ):
+        """Every tick invokes the label-owned stale-escalation reconciler."""
+        mock_repository_host.issues = []
+        orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
+        reconcile = MagicMock()
+
+        with patch.object(
+            orchestrator._session_launcher,  # noqa: SLF001
+            "reconcile_stale_triage_needs_human",
+            reconcile,
+        ):
+            await run_loop_one_tick(orchestrator)
+
+        reconcile.assert_called_once_with(
+            orchestrator.state.active_sessions, discover_markers=True
+        )
+
+    @pytest.mark.asyncio
     async def test_run_loop_checks_active_sessions(
         self,
         sample_config,

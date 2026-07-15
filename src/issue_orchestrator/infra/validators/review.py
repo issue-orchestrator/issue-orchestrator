@@ -15,6 +15,11 @@ class ReviewWorkflowValidator(ConfigValidator):
     - If reviews enabled, default reviewer must be set
     - Default reviewer must exist in agents
     - Triage review agent must exist in agents (if set)
+    - A configured triage agent requires triage_follow_up_agent (#6779 R14)
+    - triage_follow_up_agent, when set, must name a real agent (#6779 R9)
+    - Triage authority modes are valid; act-level 'execute' rejected (#6764)
+    - Triage health-review interval is non-negative (0 = disabled, #6763)
+    - A positive health-review interval requires a triage agent (#6776)
     """
 
     def validate(self, config: "Config") -> list[str]:
@@ -22,6 +27,14 @@ class ReviewWorkflowValidator(ConfigValidator):
 
         self._validate_review_defaults(config, errors)
         self._validate_triage_agent(config, errors)
+        self._validate_triage_follow_up_agent(config, errors)
+        # Graduated triage authority (ADR-0031): act-level 'execute' is a
+        # startup configuration error until its executor is wired (#6764).
+        errors.extend(config.triage.authority.startup_errors())
+        # Periodic health review (ADR-0031 §4): a negative interval is a
+        # startup configuration error, never silently treated as disabled.
+        errors.extend(config.triage.health_review.startup_errors())
+        self._validate_health_review_requires_agent(config, errors)
 
         exchange_mode = config.review_exchange_mode
         self._validate_exchange_mode(exchange_mode, config, errors)
@@ -52,6 +65,52 @@ class ReviewWorkflowValidator(ConfigValidator):
             errors.append(
                 f"triage_review_agent '{config.triage_review_agent}' not found in agents. "
                 f"Available: {list(config.agents.keys())}"
+            )
+
+    def _validate_triage_follow_up_agent(
+        self, config: "Config", errors: list[str]
+    ) -> None:
+        # Typed destination for triage create_issue proposals (#6779 R9/R14).
+        #
+        # A configured triage agent makes create_issue proposals REACHABLE:
+        # both execute-authority (direct create) and propose-authority (a gated
+        # proposal issue that creates on approval) route the new issue to
+        # review.triage_follow_up_agent (see triage_follow_up_agent_label). Left
+        # unset, that routing RAISES at post-session planning time — a latent
+        # failure. So it is REQUIRED whenever a triage agent is configured
+        # (#6779 R14), and when set it MUST name a real agent so routing can
+        # never fall back to dict order and hand new work to a
+        # reviewer/triage/goal-pilot agent (#6779 R9).
+        if not config.triage_follow_up_agent:
+            if config.triage_review_agent:
+                errors.append(
+                    "review.triage_follow_up_agent is required when a triage"
+                    " agent is configured: a triage create_issue proposal routes"
+                    " the new issue to it, and leaving it unset fails at"
+                    " post-session planning. Set it to a worker agent in `agents`"
+                    f" (available: {list(config.agents.keys())}) (#6779 R14)"
+                )
+            return
+        if config.triage_follow_up_agent not in config.agents:
+            errors.append(
+                f"review.triage_follow_up_agent '{config.triage_follow_up_agent}' "
+                f"not found in agents. Available: {list(config.agents.keys())}"
+            )
+
+    def _validate_health_review_requires_agent(
+        self, config: "Config", errors: list[str]
+    ) -> None:
+        # Cross-field invariant (#6776): a positive health-review interval with
+        # no triage agent is silently disabled at runtime
+        # (health_review_interval_minutes() returns 0). Reject the pair so the
+        # misconfiguration fails loudly rather than degrading; 0/absent is the
+        # documented disable value and a positive interval needs an agent.
+        interval = config.triage.health_review.interval_minutes
+        if interval > 0 and not config.triage_review_agent:
+            errors.append(
+                f"triage.health_review.interval_minutes is {interval} but no "
+                "triage agent is configured. Set review.triage_review_agent, or "
+                "use 0 to disable the periodic health review."
             )
 
     def _validate_exchange_mode(

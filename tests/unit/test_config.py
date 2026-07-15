@@ -1456,11 +1456,27 @@ agents:
         assert config.retrospective_review_trigger_label == "retrospective-review"
         assert config.retrospective_reviewed_label == "retrospective-reviewed"
         assert config.retrospective_changes_requested_label == "retrospective-changes-requested"
-        # triage review defaults (all None when not configured)
+        # triage review defaults
         assert config.triage_review_agent is None
         assert config.triage_review_label is None
-        assert config.triage_reviewed_label is None
+        assert config.triage_reviewed_label == "triage-reviewed"
+        assert config.triage_failed_label == "triage-failed"
         assert config.triage_review_threshold == 0
+        assert config.triage_review_on_failure is True
+
+    def test_triage_watch_label_single_owner(self):
+        """triage_watch_label is the one derivation every consumer must share.
+
+        Fact gathering, manifest building, and prompt generation all key PR
+        selection off this property; drift between them lets the threshold
+        trigger on one PR set while the session audits another (#6768 B3).
+        """
+        config = Config()
+        assert config.triage_watch_label == "code-reviewed"
+        config.code_reviewed_label = "my-reviewed"
+        assert config.triage_watch_label == "my-reviewed"
+        config.triage_review_label = "audit-me"
+        assert config.triage_watch_label == "audit-me"
 
     def test_goal_pilot_defaults(self):
         """Goal Pilot defaults to disabled with journeys-only approvals."""
@@ -2980,6 +2996,7 @@ triage: {}
         config = Config()
         config.triage.inherit_labels.append("test-label")
         config.triage.explicit_labels.append("explicit-label")
+        config.triage.authority.post_comment = "propose"
 
         result = config.to_event_dict()
 
@@ -2987,8 +3004,180 @@ triage: {}
         assert result["triage"]["inherit_labels"] == ["test-label"]
         assert result["triage"]["explicit_labels"] == ["explicit-label"]
         assert result["triage"]["milestone_strategy"]["inherit_from_issues"] == "latest"
+        # All five graduated-authority modes are operator-visible (#6761 F7).
+        assert result["triage"]["authority"] == {
+            "post_comment": "propose",
+            "create_issue": "execute",
+            "flag_pattern": "execute",
+            "reset_retry": "propose",
+            "kill_hung_session": "propose",
+        }
 
+    def test_triage_authority_defaults(self):
+        """Authority defaults: GitHub-write actions execute, act-level propose."""
+        config = Config()
 
+        assert config.triage.authority.post_comment == "execute"
+        assert config.triage.authority.create_issue == "execute"
+        assert config.triage.authority.flag_pattern == "execute"
+        assert config.triage.authority.reset_retry == "propose"
+        assert config.triage.authority.kill_hung_session == "propose"
+        assert config.validate() == [] or not any(
+            "triage.authority" in e for e in config.validate()
+        )
+
+    def test_triage_authority_from_yaml(self, tmp_path):
+        """triage.authority.<key> parses per-action-type modes."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  authority:
+    post_comment: propose
+    create_issue: propose
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.authority.post_comment == "propose"
+        assert config.triage.authority.create_issue == "propose"
+        # Unset keys keep defaults
+        assert config.triage.authority.flag_pattern == "execute"
+        assert config.triage.authority.reset_retry == "propose"
+
+    def test_triage_authority_bad_value_rejected_at_load(self, tmp_path):
+        """A mode outside execute|propose fails config parsing loudly."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  authority:
+    post_comment: yolo
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ValueError, match="triage.authority.post_comment"):
+            Config.load(config_file)
+
+    @pytest.mark.parametrize("key", ["kill_hung_session"])
+    def test_triage_authority_unwired_act_level_execute_is_startup_error(self, key):
+        """Unwired act-level 'execute' must fail startup validation, never no-op."""
+        config = Config()
+        setattr(config.triage.authority, key, "execute")
+
+        errors = config.validate()
+
+        assert any(
+            f"triage.authority.{key}" in e and "#6764" in e for e in errors
+        ), errors
+
+    def test_triage_authority_reset_retry_execute_is_valid_at_startup(self):
+        """reset_retry is wired (#6764 first slice): execute passes validation."""
+        config = Config()
+        config.triage.authority.reset_retry = "execute"
+
+        errors = config.validate()
+
+        assert not any("triage.authority.reset_retry" in e for e in errors), errors
+
+    def test_triage_authority_mode_for_floor_and_unknown(self):
+        """escalate_to_human always executes; unknown action types raise."""
+        config = Config()
+        config.triage.authority.post_comment = "propose"
+
+        assert config.triage.authority.mode_for("escalate_to_human") == "execute"
+        assert config.triage.authority.mode_for("post_comment") == "propose"
+        with pytest.raises(ValueError, match="unknown triage action type"):
+            config.triage.authority.mode_for("push_code")
+
+    def test_triage_health_review_default_disabled(self):
+        """Periodic review is off; problem-storm escalation has safe defaults."""
+        config = Config()
+
+        assert config.triage.health_review.interval_minutes == 0
+        assert config.triage.health_review.storm_threshold == 3
+        assert config.triage.health_review.storm_window_minutes == 5
+
+    def test_triage_health_review_from_yaml(self, tmp_path):
+        """triage.health_review.interval_minutes parses as an int."""
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  health_review:
+    interval_minutes: 240
+    storm_threshold: 4
+    storm_window_minutes: 10
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.triage.health_review.interval_minutes == 240
+        assert config.triage.health_review.storm_threshold == 4
+        assert config.triage.health_review.storm_window_minutes == 10
+
+    def test_triage_health_review_negative_interval_is_startup_error(self):
+        """A negative interval is a misconfiguration, never silently disabled.
+
+        The documented disable value is exactly 0; ``-5`` must fail startup
+        validation loudly so an operator cannot accidentally turn the trigger
+        off with an out-of-range number (#6763 finding 8).
+        """
+        config = Config()
+        config.triage.health_review.interval_minutes = -5
+
+        errors = config.validate()
+
+        assert any(
+            "triage.health_review.interval_minutes" in e and "-5" in e
+            for e in errors
+        ), errors
+
+    def test_triage_health_review_startup_errors_reports_negative(self):
+        """The owning config block reports its own invariant (single owner)."""
+        config = Config()
+        config.triage.health_review.interval_minutes = -1
+
+        errors = config.triage.health_review.startup_errors()
+
+        assert len(errors) == 1
+        assert ">= 0" in errors[0]
+
+    def test_triage_health_review_zero_and_positive_have_no_startup_errors(self):
+        """0 (disabled) and any positive interval are both valid."""
+        config = Config()
+        config.triage.health_review.interval_minutes = 0
+        assert config.triage.health_review.startup_errors() == []
+        config.triage.health_review.interval_minutes = 240
+        assert config.triage.health_review.startup_errors() == []
+
+    @pytest.mark.parametrize(
+        ("attr", "value", "path"),
+        [
+            ("storm_threshold", -1, "storm_threshold"),
+            ("storm_window_minutes", 0, "storm_window_minutes"),
+        ],
+    )
+    def test_triage_health_review_rejects_invalid_storm_settings(
+        self, attr: str, value: int, path: str
+    ) -> None:
+        config = Config()
+        setattr(config.triage.health_review, attr, value)
+
+        errors = config.validate()
+
+        assert any(f"triage.health_review.{path}" in error for error in errors)
 
 
 class TestSchedulingConfig:

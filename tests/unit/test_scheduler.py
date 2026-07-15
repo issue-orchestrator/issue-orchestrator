@@ -930,6 +930,37 @@ class TestSchedulerDependencyGating:
             "publish-failed (Publishing failed)"
         )
 
+    def test_gated_triage_proposal_issue_is_never_picked_up(self, sample_config):
+        """proposed-triage joins the blocking classification (#6778): a gated
+        issue is excluded with a reason detail until an operator removes the
+        gate label (per-instance approval)."""
+        scheduler = Scheduler(config=sample_config)
+        issue = Issue(
+            number=3,
+            title="Fix flaky CI runner",
+            labels=["proposed-triage", "agent:backend"],
+            body="",
+        )
+
+        decision = scheduler.evaluate_issues([issue])[0]
+
+        assert decision.available is False
+        assert decision.reason == "blocked_label"
+        assert decision.detail == (
+            "blocking labels: proposed-triage"
+            " (Triage proposal awaiting operator approval)"
+        )
+
+        # Approval = removing the gate label: the issue flows into normal
+        # scheduling with nothing else changed.
+        approved = Issue(
+            number=3,
+            title="Fix flaky CI runner",
+            labels=["agent:backend"],
+            body="",
+        )
+        assert scheduler.evaluate_issues([approved])[0].available is True
+
     def test_get_available_allows_satisfied_dependencies(
         self, sample_config, checker, events
     ):

@@ -36,6 +36,7 @@ from .dashboard_flow import build_flow_columns
 from .dashboard_flow import exclude_flow_overlaps
 from .dashboard_flow import select_issues_for_tab
 from .dashboard_flow import stamp_issue_item_stale_badge_visibility
+from .rework_status import queued_rework_issue_numbers, resolve_queued_rework
 from .timestamp_values import dashboard_timestamp_source
 
 QUEUE_PAGE_SIZE = 20
@@ -594,6 +595,10 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "pr_url": "",
             "has_terminal": True,
             "worktree_path": str(session.worktree_path) if session.worktree_path else "",
+            # Run-scoped dir for this active session, so the prompt action can
+            # open the run manifest's launch prompt instead of the static
+            # agent template.
+            "run_dir": str(session.run_dir),
             "flow_stage": flow_stage,
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
@@ -704,10 +709,12 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             status_reason = _normalize_status_reason(dep_summary)
             detail_label = f"agent: {agent_label}"
 
+        rework_status = None
         if is_blocked:
             flow_stage = "blocked"
         elif issue.number in pending_numbers["rework"]:
             flow_stage = "rework"
+            rework_status = resolve_queued_rework(state, issue.number)
         elif issue.number in pending_numbers["triage"]:
             flow_stage = "triage"
         elif issue.number in pending_numbers["retrospective_review"]:
@@ -739,6 +746,12 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             if flow_stage == "queued"
             else None
         )
+        # A rework-queued issue explains itself with the PR number, cycle, and
+        # reason so operators see "Queued for rework — PR #469 …" on the card
+        # before the rework session launches, rather than a bare "Rework" chip.
+        if rework_status is not None:
+            queue_reason = rework_status.summary
+            status_reason = rework_status.summary
         if queue_reason:
             detail_label = queue_reason
 
@@ -769,7 +782,10 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
             "queue_wait_reason": queue_reason,
-            "merge_pending": lm.is_pr_pending(issue.labels),
+            # A rework-queued issue may still carry a stale pr-pending label for
+            # a tick until the planner strips it; treat it as rework (Queued),
+            # not awaiting-merge, so it does not linger in the merge lane.
+            "merge_pending": lm.is_pr_pending(issue.labels) and rework_status is None,
             "dependency_blocked": is_dependency_blocked,
             "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
@@ -1256,8 +1272,8 @@ def build_dashboard_view_model(
         completed_items = history_projection.completed_items
         completed_items = _sort_by_issue_number(completed_items)
 
-        # Awaiting merge = items with PRs ready for human merge
-        awaiting_merge_items = build_awaiting_merge_items(queue_items, blocked_items, history_items)
+        # Awaiting merge = PRs ready for human merge; queued-rework issues stay owned by Queued.
+        awaiting_merge_items = build_awaiting_merge_items(queue_items, blocked_items, history_items, exclude_issue_numbers=queued_rework_issue_numbers(state))
         awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
 
         queue_items, blocked_items, awaiting_merge_items, completed_items = apply_lane_precedence(

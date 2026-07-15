@@ -17,6 +17,7 @@
          data-pr-url="{{ issue.pr_url if issue.pr_url else '' }}"
          data-has-terminal="{{ 'true' if issue.has_terminal else 'false' }}"
          data-worktree-path="{{ issue.worktree_path if issue.worktree_path else '' }}"
+         data-run-dir="{{ issue.run_dir if issue.run_dir else '' }}"
          data-has-dependencies="{{ 'true' if issue.has_dependencies else 'false' }}"
          data-dependencies="{{ issue.dependencies if issue.dependencies else '[]' }}"
          data-dependency-summary="{{ issue.dependency_summary if issue.dependency_summary else '' }}"

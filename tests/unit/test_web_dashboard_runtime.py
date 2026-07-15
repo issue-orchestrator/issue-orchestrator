@@ -59,6 +59,34 @@ class TestTriggerServerShutdown:
         web.trigger_server_shutdown()
 
 
+class TestWebOrchestratorShutdownOwnership:
+    """The forced web exit path must retain the engine cleanup boundary."""
+
+    @pytest.mark.asyncio
+    async def test_registers_orchestrator_close_with_shutdown_manager(self, tmp_path):
+        from issue_orchestrator.entrypoints import web
+
+        orchestrator = create_mock_orchestrator()
+        orchestrator.config.repo_root = tmp_path
+
+        with (
+            patch.object(web.shutdown_manager, "initialize") as initialize,
+            patch.object(
+                web.shutdown_manager, "add_cleanup_callback"
+            ) as add_cleanup_callback,
+            patch.object(web, "run_web_dashboard", new=AsyncMock()),
+            patch.object(web.shutdown_manager, "request_shutdown"),
+        ):
+            await web.run_with_web_dashboard(
+                orchestrator,
+                port=0,
+                open_browser=False,
+            )
+
+        initialize.assert_called_once_with(tmp_path)
+        add_cleanup_callback.assert_called_once_with(orchestrator.close)
+
+
 class TestDashboardWithProblems:
     """Test dashboard shows problem items in the kanban blocked column."""
 

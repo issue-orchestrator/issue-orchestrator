@@ -1134,14 +1134,13 @@ async def control_issue_detail(
     from ..infra.e2e_worktree import get_e2e_worktree_path
     from ..timeline import TimelineStream
     from ..view_models.issue_detail import build_issue_detail_view_model
+    from ..view_models.timeline_view import normalize_timeline_view
 
     validated_root = _validate_repo_root(repo_root)
     if validated_root is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
-    valid_views = {"user", "ops", "debug", "raw"}
-    if view not in valid_views:
-        view = "user"
+    view = normalize_timeline_view(view)
 
     # Try base repo timeline first, then E2E worktree timeline
     candidates = [

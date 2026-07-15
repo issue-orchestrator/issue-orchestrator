@@ -82,6 +82,26 @@ test('compact card shows stale warning chrome when display flag is true', () => 
     assert.match(html, /badge-stale/);
 });
 
+test('compact card menu button carries run_dir so the prompt action opens the launch prompt', () => {
+    const { renderCompactCardHtml } = loadModule();
+
+    const html = renderCompactCardHtml(staleCard({
+        state_label: 'running',
+        show_stale_badge: false,
+        run_dir: '/runs/rework-454',
+    }));
+
+    assert.match(html, /data-run-dir="\/runs\/rework-454"/);
+});
+
+test('compact card menu button renders an empty run_dir when the card has none', () => {
+    const { renderCompactCardHtml } = loadModule();
+
+    const html = renderCompactCardHtml(staleCard({ show_stale_badge: false }));
+
+    assert.match(html, /data-run-dir=""/);
+});
+
 const ISO = '2026-06-09T01:52:59.902460+00:00';
 
 test('compact card timestamp phase-age is marked for the shared local-time localizer', () => {

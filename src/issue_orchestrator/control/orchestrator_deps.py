@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from ..ports.e2e_issue_tracker import E2EIssueTracker
     from ..ports.goal_pilot_store import GoalPilotStore
     from ..ports.attempt_store import AttemptStore
+    from ..ports.triage_authority import TriageAuthorityStore
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
     from .claim_gate import ClaimGate
     from .lease_renewer import LeaseRenewer
     from .provider_resilience import ProviderResilienceManager
+    from .board_snapshot_builder import BoardSnapshotBuilder
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,9 @@ class OrchestratorDeps:
     # the background impl keeps that work off the tick thread.
     completion_dispatcher: "CompletionDispatcher"
     health_gate: "HealthGate"
+    # Board-snapshot fact assembly (ADR-0031 §3); the orchestrator binds it to
+    # live state when wiring the session launcher's snapshot provider.
+    board_snapshot_builder: "BoardSnapshotBuilder"
 
     # IO adapters
     worktree_manager: "WorktreeManager"
@@ -136,6 +141,10 @@ class OrchestratorDeps:
     @property
     def attempt_store(self) -> "AttemptStore":
         return self.services.attempt_store
+
+    @property
+    def triage_authority(self) -> "TriageAuthorityStore":
+        return self.services.triage_authority
 
     @property
     def provider_resilience(self) -> "ProviderResilienceManager":

@@ -23,7 +23,7 @@ Usage:
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from ..infra.config import Config
 from ..infra.logging_config import issue_log
@@ -33,6 +33,8 @@ from ..domain.models import (
     active_retrospective_review_issue_numbers,
 )
 from ..domain.post_publish_escalation import build_post_publish_escalation_comment
+from ..domain.triage_session import TriageSessionFlavor
+
 if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
     from .label_manager import LabelManager
@@ -59,8 +61,8 @@ from .actions import (
     QueueReviewAction,
     QueueRetrospectiveReviewAction,
     QueueReworkAction,
-    QueueTriageAction,
     CreateTriageIssueAction,
+    DiscardTerminalTriageProposalOpsAction,
     EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CleanupSessionAction,
@@ -73,8 +75,16 @@ from .awaiting_merge_post_publish_policy import (
     build_post_publish_validation_comment,
     POST_PUBLISH_VALIDATION_SOURCE,
 )
+from .reactive_triage_planning import plan_reactive_triage
+from .triage_proposals import plan_approved_triage_op_executions
+from .triage_reaction import TriageReactionPolicy
 from .reconciliation import build_expected_for_mutation
 from .planner_types import OrchestratorSnapshot, Plan, PlanContext, SkippedItem
+from .triage_issue_policy import (
+    apply_triage_priority_prefix,
+    batch_review_issue_labels,
+    triage_issue_milestone_intent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +116,7 @@ class Planner:
         triage_workflow: Optional[TriageWorkflow] = None,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
         label_manager: Optional["LabelManager"] = None,
+        clock: Callable[[], float] = time.time,
     ):
         """Initialize planner with its dependencies.
 
@@ -131,6 +142,12 @@ class Planner:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._triage_reactions = TriageReactionPolicy(
+            config=config,
+            labels=label_manager,
+            dependency_evaluator=self.dependency_evaluator,
+            clock=clock,
+        )
         self._last_queue_decisions: dict[int, str] = {}
         self._last_queue_summary_logged_at: float = 0.0
         self._queue_summary_interval_seconds = 60.0
@@ -163,10 +180,25 @@ class Planner:
         """
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
+        reaction = self._triage_reactions.assess(snapshot)
+        # Reactive triage is one ATOMIC decision (#6780) owned by
+        # reactive_triage_planning: storm escalation vs individual
+        # investigations, computed once so suppression is bound to actual
+        # cohort persistence. Computing it here (before the paused
+        # early-return) also runs the health-review gate exactly once, so its
+        # TRIAGE_SKIPPED still fires while paused.
+        reactive = plan_reactive_triage(
+            snapshot, reaction, self.config, workflow=self.triage_workflow
+        )
 
         # Check if paused
         if snapshot.paused:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
+            # Returning actions here would be dead code: apply_plan refuses to
+            # apply anything while paused. The discovered facts a paused tick
+            # cannot act on are instead RETAINED by clear_discovered_facts, so
+            # a storm cohort survives the pause (#6780). The health-review
+            # gate already ran above for its TRIAGE_SKIPPED emission (#6763).
             return Plan.empty()
 
         plan_context = PlanContext(issue_labels_by_number={
@@ -216,14 +248,45 @@ class Planner:
         merge_queue_actions = self._plan_merge_queue_enqueues(snapshot)
         actions.extend(merge_queue_actions)
 
-        # 1e. Queue triage reviews for session failures
-        failure_triage_actions = self._plan_discovered_failures(snapshot)
-        actions.extend(failure_triage_actions)
+        # 1e+1f2. Reactive triage (tech-lead reaction, ADR-0031): the storm
+        # cohort escalates to one unscheduled health-review anchor OR the
+        # individual failure investigations queue — decided atomically above so
+        # a suppressed cohort is never lost — plus any due periodic anchor.
+        actions.extend(reactive.actions)
 
         # 1f. Create triage issue if threshold met
         triage_create_action = self._plan_triage_issue_creation(snapshot)
         if triage_create_action:
             actions.append(triage_create_action)
+
+        # 1f3. Execute APPROVED gated triage proposals (#6778): the operator
+        # removed the proposed-triage label, so the fact scan classified the
+        # stored op as approved. Policy lives in triage_proposals; the
+        # appliers re-validate preconditions and finalize the proposal issue.
+        if snapshot.triage_facts and snapshot.triage_facts.approved_triage_ops:
+            actions.extend(
+                plan_approved_triage_op_executions(
+                    snapshot.triage_facts.approved_triage_ops
+                )
+            )
+
+        # 1f4. Confirm-and-discard terminal gated-proposal ledger rows (#6779
+        # R7/R10): fact gathering only CLASSIFIED ledger rows absent from the
+        # exhaustive scan as cleanup candidates (it stays read-only). Emit the
+        # cleanup action so the applier re-reads each proposal issue before
+        # discarding — absence from a possibly-truncated scan must never delete
+        # a live op.
+        candidates = (
+            snapshot.triage_facts.absent_proposal_op_candidates
+            if snapshot.triage_facts
+            else ()
+        )
+        if candidates:
+            actions.append(
+                DiscardTerminalTriageProposalOpsAction(
+                    candidate_issue_numbers=candidates
+                )
+            )
 
         # 1g. Process cleanups for reviewed PRs
         cleanup_actions = self._plan_cleanups(snapshot)
@@ -236,6 +299,10 @@ class Planner:
         launch_actions, launch_skipped = self._plan_session_launches(
             snapshot,
             plan_context,
+            # Suppress individual investigation launches only when the cohort
+            # was actually escalated this tick; on a deferred storm the fallback
+            # investigations must be allowed to launch (#6780).
+            suppressed_triage_issue_numbers=reactive.suppressed_issue_numbers,
         )
         actions.extend(launch_actions)
         skipped.extend(launch_skipped)
@@ -246,6 +313,8 @@ class Planner:
         self,
         snapshot: OrchestratorSnapshot,
         plan_context: PlanContext,
+        *,
+        suppressed_triage_issue_numbers: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan capacity-consuming session launches in priority order."""
         actions: list[Action] = []
@@ -311,7 +380,12 @@ class Planner:
 
         # 5. Plan triage launches
         if capacity > 0 and self.triage_workflow:
-            triage_actions, triage_skipped = self._plan_triage(snapshot, capacity, plan_context)
+            triage_actions, triage_skipped = self._plan_triage(
+                snapshot,
+                capacity,
+                plan_context,
+                suppressed_issue_numbers=suppressed_triage_issue_numbers,
+            )
             actions.extend(triage_actions)
             skipped.extend(triage_skipped)
             capacity -= len(triage_actions)
@@ -590,8 +664,10 @@ class Planner:
             return None
 
         title, body = self._build_triage_issue_content(facts)
-        labels = self._compute_triage_labels(facts)
-        milestone = self._compute_triage_milestone(facts)
+        labels = batch_review_issue_labels(self.config, source_labels=facts.source_labels)
+        # Milestone travels as INTENT; the applier resolves an explicit name
+        # at the create-issue execution boundary (#6769 finding 4).
+        milestone = triage_issue_milestone_intent(self.config, facts.source_milestones)
 
         logger.info("Planner: creating triage issue for %d PRs (labels=%s, milestone=%s)", facts.pr_count, labels, milestone)
         return CreateTriageIssueAction(
@@ -601,6 +677,10 @@ class Planner:
 
     def _should_create_triage_issue(self, facts: "TriageFacts") -> bool:
         """Check if triage issue should be created."""
+        if facts.threshold <= 0:
+            # Batch trigger disabled; facts may exist for the health review
+            # alone (ADR-0031 §4), which plans its own anchor creation.
+            return False
         if facts.pr_count < facts.threshold:
             logger.debug("Planner: triage threshold not met (%d/%d)", facts.pr_count, facts.threshold)
             return False
@@ -621,50 +701,10 @@ class Planner:
 Review these PRs for patterns, architectural concerns, and process improvements.
 Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` after review.
 """
-        title = f"Triage Batch Review: {facts.pr_count} PRs pending"
-        priority_prefix = self._triage_priority_prefix()
-        if priority_prefix and not re.search(r"^\[P\d-\d+\]", title):
-            title = f"[{priority_prefix}-000] {title}"
+        title = apply_triage_priority_prefix(
+            self.config, f"Triage Batch Review: {facts.pr_count} PRs pending"
+        )
         return title, body
-
-    def _triage_priority_prefix(self) -> str | None:
-        """Return [P?-nnn] prefix tier from triage.priority if configured."""
-        priority = self.config.triage.priority
-        if not priority:
-            return None
-        priority = priority.strip()
-        if re.fullmatch(r"P\d", priority):
-            return priority
-        return None
-
-    def _compute_triage_labels(self, facts: "TriageFacts") -> tuple[str, ...]:
-        """Compute labels for triage issue."""
-        label_list: list[str] = []
-        if self.config.triage_review_agent:
-            label_list.append(self.config.triage_review_agent)
-        if self.config.filtering.label and self.config.filtering.label not in label_list:
-            label_list.append(self.config.filtering.label)
-        label_list.extend(self.config.triage.explicit_labels)
-        for inherit_label in self.config.triage.inherit_labels:
-            if inherit_label in facts.source_labels:
-                label_list.append(inherit_label)
-        return tuple(label_list)
-
-    def _compute_triage_milestone(self, facts: "TriageFacts") -> int | None:
-        """Compute milestone for triage issue."""
-        triage_ms = self.config.triage.milestone_strategy
-
-        if triage_ms.explicit:
-            logger.debug("Planner: explicit milestone '%s' configured but name lookup not implemented", triage_ms.explicit)
-            return None
-
-        if triage_ms.inherit_from_issues and facts.source_milestones:
-            sorted_milestones = sorted(facts.source_milestones, key=lambda m: m[0])
-            if triage_ms.inherit_from_issues == "earliest":
-                return sorted_milestones[0][0]
-            return sorted_milestones[-1][0]
-
-        return None
 
     def _plan_discovered_reworks(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan queue actions for discovered reworks from scans.
@@ -847,53 +887,6 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             )
         return actions
 
-    def _plan_discovered_failures(self, snapshot: OrchestratorSnapshot) -> list[Action]:
-        """Plan triage actions for session failures.
-
-        When a session fails or times out, the Planner decides whether to
-        queue a triage review based on:
-        - triage_review_on_failure config setting
-        - triage_review_agent being configured
-        - not already queued for this issue
-
-        Returns:
-            List of QueueTriageAction for failures to investigate
-        """
-        actions: list[Action] = []
-
-        if not snapshot.discovered_failures:
-            return actions
-
-        # Check if triage-on-failure is enabled
-        if not self.config.triage_review_on_failure:
-            logger.debug("Planner: triage_review_on_failure disabled, skipping %d failures",
-                        len(snapshot.discovered_failures))
-            return actions
-
-        # Check if triage agent is configured
-        if not self.config.triage_review_agent:
-            logger.debug("Planner: no triage_review_agent configured, skipping failures")
-            return actions
-
-        # Get issue numbers already queued for triage
-        already_queued = {t.issue_number for t in snapshot.pending_triage}
-
-        for failure in snapshot.discovered_failures:
-            if failure.issue_number in already_queued:
-                logger.debug("Planner: issue #%d already queued for triage, skipping",
-                           failure.issue_number)
-                continue
-
-            actions.append(QueueTriageAction(
-                issue_number=failure.issue_number,
-                title=f"Investigate: {failure.issue_title} ({failure.failure_reason})",
-                reason=f"Session failed with status '{failure.failure_reason}'",
-            ))
-            logger.info("Planner: queuing triage for failed issue #%d (%s)",
-                       failure.issue_number, failure.failure_reason)
-
-        return actions
-
     def _plan_cleanups(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan cleanup actions for completed sessions.
 
@@ -928,8 +921,21 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 logger.info("Planner: deferred cleanup for issue #%d (PR #%d reviewed)",
                            issue_number, pr_number)
 
-        # 2. Immediate cleanups - ready to execute now
+        # 2. Immediate cleanups - ready to execute now, EXCEPT run assets that
+        # pending/active triage work still references (#6771, #6780):
+        # cleaning those up before the investigation or health review
+        # launches deletes the artifact hints it was queued to read. The hold
+        # set comes from the triage-problem-artifact owner in the fact
+        # gatherer, which is also what retains these entries across the
+        # end-of-tick fact clear; they are re-planned once the hold releases.
         for cleanup in facts.immediate_cleanups:
+            if cleanup.issue_number in facts.held_issue_numbers:
+                logger.info(
+                    "Planner: holding cleanup for issue #%d — pending or active "
+                    "triage work still references its run assets",
+                    cleanup.issue_number,
+                )
+                continue
             actions.append(CleanupSessionAction(
                 issue_number=cleanup.issue_number,
                 pr_number=0,  # No PR for immediate cleanups
@@ -1562,6 +1568,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         snapshot: OrchestratorSnapshot,
         capacity: int,
         plan_context: PlanContext,
+        *,
+        suppressed_issue_numbers: frozenset[int] = frozenset(),
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which triage reviews to launch."""
         actions: list[Action] = []
@@ -1569,14 +1577,22 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         if not self.triage_workflow or not self.triage_workflow.is_configured():
             return actions, skipped
 
+        pending_triage = [
+            item
+            for item in snapshot.pending_triage
+            if not (
+                item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+                and item.issue_number in suppressed_issue_numbers
+            )
+        ]
         decision: TriageDecision = self.triage_workflow.should_launch_triage(
-            pending_triage=list(snapshot.pending_triage),
+            pending_triage=pending_triage,
             active_session_count=snapshot.active_count,
             paused=snapshot.paused,
         )
 
         if decision.skip_reason:
-            for triage in snapshot.pending_triage:
+            for triage in pending_triage:
                 skipped.append(SkippedItem(
                     item_type="triage",
                     number=triage.issue_number,

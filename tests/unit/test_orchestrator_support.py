@@ -42,6 +42,7 @@ from issue_orchestrator.control.reconciliation import (
     get_pause_label,
 )
 from issue_orchestrator.control.session_history import CLOSED_ISSUE_HISTORY_STATUS_REASON
+from issue_orchestrator.control.session_routing import PendingSessionQueues
 from issue_orchestrator.control.actions import (
     ActionResult,
     ActionType,
@@ -75,6 +76,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.triage_session import TriageSessionFlavor
 from tests.unit.session_run_helpers import make_session_run_assets
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports import TraceEvent
@@ -1116,7 +1118,7 @@ class TestClearDiscoveredFacts:
             DiscoveredFailure(issue_number=4, issue_title="Test", failure_reason="failed")
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config(), tick_paused=False)
 
         # All lists should be empty
         assert len(sample_orchestrator_state.discovered_reviews) == 0
@@ -1151,7 +1153,7 @@ class TestClearDiscoveredFacts:
             ),
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config(), tick_paused=False)
 
         assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
@@ -1170,7 +1172,7 @@ class TestClearDiscoveredFacts:
             )
         ]
 
-        clear_discovered_facts(sample_orchestrator_state)
+        clear_discovered_facts(sample_orchestrator_state, Config(), tick_paused=False)
 
         # Non-discovered fields should be untouched
         assert sample_orchestrator_state.paused is True
@@ -1473,6 +1475,13 @@ class TestOrchestratorSupportApplyPlan:
 # =============================================================================
 
 
+def _unpaused_tick(state):
+    """The snapshot of a normal running tick — the input the clear keys off."""
+    from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+
+    return OrchestratorSnapshot.from_state(issues=(), state=state)
+
+
 class TestOrchestratorSupportClearDiscoveredFacts:
     """Tests for OrchestratorSupport.clear_discovered_facts method.
 
@@ -1528,8 +1537,9 @@ class TestOrchestratorSupportClearDiscoveredFacts:
             ),
         ]
 
-        # Call the instance method (not the module-level function)
-        support.clear_discovered_facts()
+        # Call the instance method (not the module-level function), passing
+        # the tick's own snapshot — the read that decides retention.
+        support.clear_discovered_facts(_unpaused_tick(sample_orchestrator_state))
 
         assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
@@ -1589,7 +1599,7 @@ class TestOrchestratorSupportClearDiscoveredFacts:
             ImmediateCleanup(issue_number=5, terminal_id="t", worktree_path="p", reason="r")
         ]
 
-        support.clear_discovered_facts()
+        support.clear_discovered_facts(_unpaused_tick(sample_orchestrator_state))
 
         assert len(sample_orchestrator_state.discovered_reviews) == 0
         assert len(sample_orchestrator_state.discovered_awaiting_merge_reconciliations) == 0
@@ -1618,7 +1628,17 @@ class TestUpdateStateAfterAction:
         mock_repository_host,
         sample_event_context,
     ):
-        """Create support with accessible state."""
+        """Create support with accessible state.
+
+        A real in-memory triage authority is wired because the storm collapse
+        is bound to DURABLE cohort persistence (#6780): the composition
+        root always supplies the store, and without one intake declines to
+        retire the individual investigations.
+        """
+        from issue_orchestrator.ports.triage_authority import (
+            InMemoryTriageAuthorityStore,
+        )
+
         mock_config = MagicMock()
         mock_config.cleanup = MagicMock()
         mock_config.cleanup.without_triage = MagicMock()
@@ -1640,7 +1660,26 @@ class TestUpdateStateAfterAction:
             cleanup_manager=MagicMock(),
             get_review_machine=Mock(),
             kill_session=Mock(),
+            triage_authority=InMemoryTriageAuthorityStore(),
         )
+
+    @staticmethod
+    def _apply_via_plan(support, actions, **details) -> None:
+        """Drive the producer boundary through the public ``apply_plan`` seam.
+
+        The action applier is faked at its port boundary (``apply`` returns a
+        successful ``ActionResult`` carrying ``details``, the shape the real
+        applier produces), so ``apply_plan`` runs the real success-handling
+        path — including the post-apply state update that queues triage work.
+        This keeps coverage on the public planner/action-owner command path
+        rather than reaching into the private ``_update_state_after_action``.
+        """
+        from issue_orchestrator.control.planner_types import Plan
+
+        support.action_applier.apply.side_effect = lambda action: ActionResult.ok(
+            action, **details
+        )
+        support.apply_plan(Plan(actions=tuple(actions), skipped=()), MagicMock())
 
     def test_queue_review_adds_to_pending_reviews(self, support_with_state, mock_repository_host):
         """QUEUE_REVIEW action adds PendingReview to state."""
@@ -1873,10 +1912,480 @@ class TestUpdateStateAfterAction:
         # noqa: SLF001 - Testing state mutation behavior of private method
         support_with_state._update_state_after_action(action, result)  # noqa: SLF001
 
-        # Should have added to pending_triage_reviews
+        # Should have added to pending_triage_reviews as a batch review:
+        # threshold-created tracking issues audit the PR manifest (#6768 B5).
         assert len(support_with_state.state.pending_triage_reviews) == 1
         triage = support_with_state.state.pending_triage_reviews[0]
         assert triage.issue_number == 999
+        assert triage.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_queue_triage_adds_failure_investigation(self, support_with_state):
+        """QUEUE_TRIAGE queues a failure investigation, not a batch review (#6768 B5)."""
+        from issue_orchestrator.control.actions import QueueTriageAction
+        from issue_orchestrator.domain.models import DiscoveredFailure
+
+        failure = DiscoveredFailure(
+            issue_number=42, issue_title="Test issue", failure_reason="failed"
+        )
+        action = QueueTriageAction(
+            issue_number=42,
+            title="Investigate: Test issue (failed)",
+            failure=failure,
+            reason="Session failed with status 'failed'",
+        )
+        result = MagicMock(success=True, details={})
+
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert len(support_with_state.state.pending_triage_reviews) == 1
+        triage = support_with_state.state.pending_triage_reviews[0]
+        assert triage.issue_number == 42
+        assert triage.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        # The typed failure context rides the queue item so the launch-time
+        # board snapshot (a later tick) still contains the triggering failure.
+        assert triage.failure is failure
+
+    def test_queue_triage_without_failure_context_fails_fast(self, support_with_state):
+        """A QUEUE_TRIAGE action lacking failure context is a producer bug.
+
+        ``QueueTriageAction.failure`` is a required keyword field, so the
+        contract is enforced at action CONSTRUCTION — an investigation cannot
+        even be described without its triggering failure.
+        """
+        from issue_orchestrator.control.actions import QueueTriageAction
+
+        with pytest.raises(TypeError, match="failure"):
+            QueueTriageAction(
+                issue_number=42,
+                title="Investigate: Test issue (failed)",
+                reason="Session failed with status 'failed'",
+            )
+
+        assert support_with_state.state.pending_triage_reviews == []
+
+    def test_create_triage_issue_dedups_existing_queue_entry(self, support_with_state):
+        """The create-success path must not double-queue an issue (#6768 round 3).
+
+        Before the owner API, this producer appended without any dedup check.
+        """
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.models import PendingTriageReview
+
+        existing = PendingTriageReview(
+            issue_number=999,
+            title="Triage Batch Review",
+            flavor=TriageSessionFlavor.BATCH_REVIEW,
+        )
+        support_with_state.state.pending_triage_reviews.append(existing)
+
+        action = CreateTriageIssueAction(
+            title="Triage Batch Review",
+            body="Review these PRs",
+            labels=("agent:triage",),
+            pr_count=5,
+        )
+        result = MagicMock(success=True, details={"issue_number": 999})
+
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert support_with_state.state.pending_triage_reviews == [existing]
+
+    def test_batch_triage_issue_does_not_stamp_health_review(self, support_with_state):
+        """Unmarked batch creation must NOT touch last_health_review_at."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+
+        store = MagicMock()
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Triage Batch Review",
+            body="Review these PRs",
+            labels=("agent:triage",),
+            pr_count=5,
+        )
+
+        self._apply_via_plan(support_with_state, [action], issue_number=999)
+
+        assert support_with_state.state.last_health_review_at == 0.0
+        store.save_last_health_review_at.assert_not_called()
+        # And the intake routed to the BATCH owner operation, not health.
+        (triage,) = support_with_state.state.pending_triage_reviews
+        assert triage.flavor is TriageSessionFlavor.BATCH_REVIEW
+
+    def test_marker_labeled_creation_stamps_and_persists_health_review(
+        self, support_with_state
+    ):
+        """Marker-labeled creation queues a HEALTH_REVIEW and stamps state AND
+        the durable store (ADR-0031 §4)."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        store = MagicMock()
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Health Review — walk the floor",
+            body="Walk the floor",
+            labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+            pr_count=0,
+        )
+
+        before = time.time()
+        self._apply_via_plan(support_with_state, [action], issue_number=1000)
+
+        stamped = support_with_state.state.last_health_review_at
+        assert stamped >= before
+        store.save_last_health_review_at.assert_called_once_with(stamped)
+        # The anchor enters the pending-triage launch queue with the variant
+        # the marker label declares (typed intake, #6768 round 3).
+        (triage,) = support_with_state.state.pending_triage_reviews
+        assert triage.issue_number == 1000
+        assert triage.flavor is TriageSessionFlavor.HEALTH_REVIEW
+
+    def test_storm_health_creation_replaces_member_investigations(
+        self, support_with_state
+    ):
+        """Successful anchor intake atomically leaves one health review and
+        zero per-member failure investigations (#6780)."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.models import DiscoveredFailure
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        cohort = tuple(
+            DiscoveredFailure(number, f"Problem {number}", "failed")
+            for number in (41, 42, 43)
+        )
+        queues = PendingSessionQueues(support_with_state.state)
+        for failure in cohort:
+            queues.queue_failure_investigation(
+                failure.issue_number,
+                f"Investigate {failure.issue_number}",
+                failure=failure,
+            )
+        action = CreateTriageIssueAction(
+            title="Health Review — walk the floor",
+            body="Problem storm",
+            labels=("agent:triage", HEALTH_REVIEW_MARKER_LABEL),
+            pr_count=0,
+            storm_problems=cohort,
+        )
+
+        self._apply_via_plan(support_with_state, [action], issue_number=1000)
+
+        [queued] = support_with_state.state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert queued.problem_cohort == cohort
+
+    @staticmethod
+    def _storm_config():
+        from issue_orchestrator.infra.config import Config
+
+        config = Config(repo="test/repo", max_concurrent_sessions=3)
+        config.triage_review_agent = "agent:triage"
+        config.triage_review_on_failure = True
+        # Isolate the storm path from the periodic health-review interval.
+        config.triage.health_review.interval_minutes = 0
+        config.triage.health_review.storm_threshold = 3
+        config.triage.health_review.storm_window_minutes = 5
+        return config
+
+    def _plan_storm_tick(self, support, config):
+        """Record a 3-problem storm cohort and return the real planner's plan."""
+        from issue_orchestrator.control.planner import Planner
+        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+        from issue_orchestrator.control.scheduler import Scheduler
+        from issue_orchestrator.control.workflows import TriageWorkflow
+        from issue_orchestrator.ports.event_sink import InMemoryEventSink
+
+        for number in (41, 42, 43):
+            support.state.record_discovered_failure(
+                DiscoveredFailure(
+                    number, f"Problem {number}", "failed", observed_at=1_000.0
+                )
+            )
+        planner = Planner(
+            config=config,
+            scheduler=Scheduler(config),
+            triage_workflow=TriageWorkflow(config=config, events=InMemoryEventSink()),
+            clock=lambda: 1_100.0,
+        )
+        snapshot = OrchestratorSnapshot.from_state(
+            issues=(),
+            state=support.state,
+            discovered_failures=tuple(support.state.discovered_failures),
+        )
+        return planner.plan(snapshot)
+
+    @staticmethod
+    def _tick_snapshot(support):
+        """The snapshot THIS tick planned from — including its paused read."""
+        from issue_orchestrator.control.planner_types import OrchestratorSnapshot
+
+        return OrchestratorSnapshot.from_state(
+            issues=(),
+            state=support.state,
+            discovered_failures=tuple(support.state.discovered_failures),
+        )
+
+    @staticmethod
+    def _queued_investigation_numbers(support) -> list[int]:
+        return sorted(
+            t.issue_number
+            for t in support.state.pending_triage_reviews
+            if t.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+        )
+
+    def test_escalated_storm_collapses_investigations_into_anchor_cohort(
+        self, support_with_state
+    ):
+        """End-to-end (#6780) happy path: the cohort is queued FIRST, then
+        the created anchor's intake collapses it — leaving exactly one pending
+        health review carrying ``problem_cohort`` and zero leftover individual
+        investigations. Persist-first must not double-book the work.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        config = self._storm_config()
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        self._apply_via_plan(support_with_state, list(plan.actions), issue_number=999)
+        clear_discovered_facts(support_with_state.state, config, tick_paused=False)
+
+        assert self._queued_investigation_numbers(support_with_state) == []
+        (queued,) = support_with_state.state.pending_triage_reviews
+        assert queued.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        assert sorted(p.issue_number for p in queued.problem_cohort) == [41, 42, 43]
+
+    def test_storm_investigations_survive_a_failed_anchor_create(
+        self, support_with_state
+    ):
+        """End-to-end (#6780): the anchor create FAILS at apply time (a
+        GitHub outage/rate-limit/permission error), so no intake runs and no
+        cohort is persisted. The queued investigations must therefore remain —
+        binding suppression to a create the planner merely *planned* would drop
+        the cohort at the unconditional end-of-tick clear.
+        """
+        from issue_orchestrator.control.actions import ActionType
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+        from issue_orchestrator.control.planner_types import Plan
+
+        config = self._storm_config()
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        # Only the GitHub create fails; queue operations are in-memory no-ops
+        # in the real applier and always succeed.
+        support_with_state.action_applier.apply.side_effect = lambda action: (
+            ActionResult.fail(action, error="GitHub 403")
+            if action.action_type == ActionType.CREATE_TRIAGE_ISSUE
+            else ActionResult.ok(action)
+        )
+        support_with_state.apply_plan(
+            Plan(actions=tuple(plan.actions), skipped=()), MagicMock()
+        )
+        clear_discovered_facts(support_with_state.state, config, tick_paused=False)
+
+        assert support_with_state.state.discovered_failures == []
+        assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
+
+    def test_paused_storm_retains_cohort_facts_across_the_tick(
+        self, support_with_state
+    ):
+        """End-to-end (#6780): a paused tick plans nothing and applies
+        nothing (``apply_plan`` breaks on paused), so the discovered facts must
+        be RETAINED rather than cleared. A session that fails while paused is
+        discovered exactly once — clearing here would lose the cohort forever,
+        even after resume.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        config = self._storm_config()
+        support_with_state.state.paused = True
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        assert plan.actions == ()
+        self._apply_via_plan(support_with_state, list(plan.actions))
+        clear_discovered_facts(support_with_state.state, config, tick_paused=True)
+
+        assert [
+            f.issue_number for f in support_with_state.state.discovered_failures
+        ] == [41, 42, 43]
+
+    def test_retention_follows_the_tick_when_operator_resumes_mid_tick(
+        self, support_with_state
+    ):
+        """The operator RESUMES between this tick's snapshot and its clear.
+
+        The tick planned from ``paused=True`` — an empty plan that consumed
+        nothing — so its facts must survive, even though ``state.paused`` now
+        reads False. ``state.paused`` is mutated from the web thread and the
+        clear is separated from the snapshot by a fetch, planning and apply, so
+        a fresh read here decides retention from a DIFFERENT tick's pause state
+        and wipes a cohort nothing recorded.
+        """
+        config = self._storm_config()
+        support_with_state.state.paused = True
+        plan = self._plan_storm_tick(support_with_state, config)
+        tick = self._tick_snapshot(support_with_state)
+        assert plan.actions == ()
+        assert tick.paused is True
+
+        support_with_state.state.paused = False
+
+        support_with_state.clear_discovered_facts(tick)
+
+        assert [
+            f.issue_number for f in support_with_state.state.discovered_failures
+        ] == [41, 42, 43]
+
+    def test_retention_follows_the_tick_when_operator_pauses_mid_apply(
+        self, support_with_state
+    ):
+        """The operator PAUSES after the anchor create already applied.
+
+        The tick planned and applied unpaused, and intake has already collapsed
+        the cohort into the anchor — the facts ARE consumed and must be
+        cleared. Retaining them (what a fresh ``state.paused`` read does) leaves
+        every member in ``discovered_failures`` with its investigation already
+        retired, so the next tick re-queues each one individually while the
+        anchor still owns it in its cohort: the exact double-work the
+        escalation exists to prevent.
+        """
+        config = self._storm_config()
+        plan = self._plan_storm_tick(support_with_state, config)
+        tick = self._tick_snapshot(support_with_state)
+        assert tick.paused is False
+        self._apply_via_plan(support_with_state, list(plan.actions), issue_number=999)
+
+        support_with_state.state.paused = True
+
+        support_with_state.clear_discovered_facts(tick)
+
+        assert support_with_state.state.discovered_failures == []
+        assert self._queued_investigation_numbers(support_with_state) == []
+
+    def test_deferred_storm_investigations_survive_apply_and_fact_clear(
+        self, support_with_state
+    ):
+        """End-to-end (#6780): when a storm cannot escalate (here an
+        already-pending health review blocks a new anchor), the queued
+        investigations survive the end-of-tick discovered-fact clear — the
+        cohort is NOT lost.
+
+        Drives the real planner -> apply -> clear chain so the persist-first
+        decision and the durable queue outcome are exercised together, not just
+        asserted on the in-memory plan.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        config = self._storm_config()
+        # An already-pending health review defers a new storm anchor.
+        support_with_state.state.pending_triage_reviews.append(
+            PendingTriageReview(
+                issue_number=999,
+                title="Health Review",
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+            )
+        )
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        self._apply_via_plan(support_with_state, list(plan.actions))
+        # The end-of-tick fact clear runs unconditionally; the fallback
+        # investigations must have migrated to the durable pending queue.
+        clear_discovered_facts(support_with_state.state, config, tick_paused=False)
+
+        assert support_with_state.state.discovered_failures == []
+        assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
+
+    def test_storm_collapse_declines_when_the_cohort_cannot_be_persisted(
+        self, support_with_state, caplog
+    ):
+        """End-to-end (#6780): the durable cohort write FAILS at intake.
+
+        Collapsing retires the per-issue investigations, so it may only happen
+        once the cohort is somewhere that outlives this process. When the
+        ledger write fails the anchor still exists on GitHub — it cannot be
+        reported as an apply failure — so the collapse simply does not happen:
+        the individual investigations stay queued and the problems are still
+        worked, degraded rather than dropped, and loudly.
+        """
+        from issue_orchestrator.control.fact_gatherer import clear_discovered_facts
+
+        config = self._storm_config()
+        authority = MagicMock()
+        authority.record_storm_cohort.side_effect = RuntimeError("disk full")
+        authority.list_storm_cohorts.return_value = ()
+        support_with_state.triage_authority = authority
+        plan = self._plan_storm_tick(support_with_state, config)
+
+        with caplog.at_level("ERROR"):
+            self._apply_via_plan(
+                support_with_state, list(plan.actions), issue_number=999
+            )
+        clear_discovered_facts(
+            support_with_state.state, config, authority, tick_paused=False
+        )
+
+        assert self._queued_investigation_numbers(support_with_state) == [41, 42, 43]
+        (anchor,) = [
+            t
+            for t in support_with_state.state.pending_triage_reviews
+            if t.flavor is TriageSessionFlavor.HEALTH_REVIEW
+        ]
+        assert anchor.problem_cohort == (), (
+            "an anchor that could not persist its cohort must not claim one"
+        )
+        assert "storm cohort" in caplog.text
+
+    def test_marker_labeled_creation_survives_store_persist_failure(
+        self, support_with_state, caplog
+    ):
+        """Persistence failure warns but keeps the in-memory stamp and queue entry."""
+        from issue_orchestrator.control.actions import CreateTriageIssueAction
+        from issue_orchestrator.domain.triage_session import (
+            HEALTH_REVIEW_MARKER_LABEL,
+        )
+
+        store = MagicMock()
+        store.save_last_health_review_at.side_effect = RuntimeError("disk full")
+        support_with_state.queue_cache_store = store
+        action = CreateTriageIssueAction(
+            title="Health Review — walk the floor",
+            body="Walk the floor",
+            labels=(HEALTH_REVIEW_MARKER_LABEL,),
+            pr_count=0,
+        )
+
+        with caplog.at_level("WARNING"):
+            self._apply_via_plan(support_with_state, [action], issue_number=1001)
+
+        assert support_with_state.state.last_health_review_at > 0.0
+        assert len(support_with_state.state.pending_triage_reviews) == 1
+        assert "last_health_review_at" in caplog.text
+
+    def test_queue_triage_dedups_existing_queue_entry(self, support_with_state):
+        """Repeated QUEUE_TRIAGE for the same issue stays a single queue entry."""
+        from issue_orchestrator.control.actions import QueueTriageAction
+        from issue_orchestrator.domain.models import DiscoveredFailure
+
+        action = QueueTriageAction(
+            issue_number=42,
+            title="Investigate: Test issue (failed)",
+            failure=DiscoveredFailure(
+                issue_number=42, issue_title="Test issue", failure_reason="failed"
+            ),
+            reason="Session failed with status 'failed'",
+        )
+        result = MagicMock(success=True, details={})
+
+        # noqa: SLF001 - Testing state mutation behavior of private method
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+        support_with_state._update_state_after_action(action, result)  # noqa: SLF001
+
+        assert len(support_with_state.state.pending_triage_reviews) == 1
 
 
 # =============================================================================

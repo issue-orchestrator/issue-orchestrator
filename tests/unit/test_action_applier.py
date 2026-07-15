@@ -21,6 +21,7 @@ from issue_orchestrator.control.actions import (
     EnqueueToMergeQueueAction,
     EscalateToHumanAction,
     CreateTriageIssueAction,
+    SurfaceTriageProposalAction,
     CleanupSessionAction,
     RemoveWorktreeAction,
     ReconcileHistoryEntryAction,
@@ -32,9 +33,20 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.session_history import SessionHistoryOwner
 from issue_orchestrator.control.session_manager import SessionType
-from issue_orchestrator.domain.models import Issue, Session, AgentConfig, SessionHistoryEntry
+from issue_orchestrator.domain.models import (
+    AgentConfig,
+    DiscoveredFailure,
+    Issue,
+    Session,
+    SessionHistoryEntry,
+)
+from issue_orchestrator.domain.triage_session import (
+    HEALTH_REVIEW_MARKER_LABEL,
+    TriageSessionFlavor,
+)
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports.claim_manager import ClaimManager
+from issue_orchestrator.ports.triage_authority import InMemoryTriageAuthorityStore
 
 
 @pytest.fixture
@@ -338,6 +350,122 @@ class TestReconcileHistoryEntryAction:
         assert merged.data["pr_url"] == "https://github.com/test/repo/pull/318"
         assert merged.data["issue_key"] == "M1-228"
         assert merged.data["source"] == "pull_request"
+
+    def test_merged_area_tagged_issue_records_durable_shipped_fix(
+        self, applier
+    ) -> None:
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Repair DB seam",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=10,
+            pr_url="https://github.com/test/repo/pull/318",
+            issue_labels=("Area:db",),
+        )
+        store = InMemoryTriageAuthorityStore()
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.triage_ops = store
+
+        result = applier.apply(ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        ))
+
+        assert result.success
+        [fix] = store.list_recent_shipped_fixes(limit=10)
+        assert (fix.issue_number, fix.title, fix.area) == (
+            228,
+            "Repair DB seam",
+            "db",
+        )
+
+    def test_shipped_fix_persistence_failure_leaves_history_retryable(
+        self, applier
+    ) -> None:
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Repair DB seam",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=10,
+            pr_url="https://github.com/test/repo/pull/318",
+            status_reason="Recovered awaiting merge state on startup",
+            issue_labels=("area:db",),
+        )
+        store = MagicMock()
+        store.record_shipped_fix.side_effect = RuntimeError("disk full")
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.triage_ops = store
+
+        result = applier.apply(ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        ))
+
+        assert not result.success
+        assert result.error == "disk full"
+        assert entry.status == "completed"
+        assert entry.status_reason == "Recovered awaiting merge state on startup"
+
+    def test_area_tagged_merge_requires_durable_store(self, applier) -> None:
+        entry = SessionHistoryEntry(
+            issue_number=228,
+            title="Repair DB seam",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=10,
+            pr_url="https://github.com/test/repo/pull/318",
+            issue_labels=("area:db",),
+        )
+        applier.history_owner = SessionHistoryOwner([entry])
+
+        result = applier.apply(ReconcileHistoryEntryAction(
+            issue_number=228,
+            pr_number=318,
+            pr_url="https://github.com/test/repo/pull/318",
+            status="merged",
+            source="pull_request",
+            reason="PR merged; awaiting merge reconciled",
+        ))
+
+        assert not result.success
+        assert "required to record" in result.error
+        assert entry.status == "completed"
+
+    def test_closed_area_tagged_issue_is_not_a_shipped_fix(self, applier) -> None:
+        entry = SessionHistoryEntry(
+            issue_number=229,
+            title="Abandoned DB repair",
+            agent_type="agent:backend",
+            status="completed",
+            runtime_minutes=10,
+            pr_url="https://github.com/test/repo/pull/319",
+            issue_labels=("area:db",),
+        )
+        store = MagicMock()
+        applier.history_owner = SessionHistoryOwner([entry])
+        applier.triage_ops = store
+
+        result = applier.apply(ReconcileHistoryEntryAction(
+            issue_number=229,
+            pr_number=319,
+            pr_url="https://github.com/test/repo/pull/319",
+            status="closed",
+            source="pull_request",
+            reason="PR closed without merge",
+        ))
+
+        assert result.success
+        store.record_shipped_fix.assert_not_called()
 
     def test_reconcile_history_entry_closed_does_not_emit_review_merged(
         self,
@@ -1299,6 +1427,73 @@ class TestCreateTriageIssueAction:
         assert result.details["issue_number"] == 100
         mock_repository_host.create_issue.assert_called_once()
 
+    def test_storm_health_review_creation_emits_flavor_and_trigger(
+        self, applier, mock_repository_host, mock_events
+    ):
+        """Storm escalation is machine-observable without parsing log text."""
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        trigger = "problem storm: 3 issues inside settle window"
+        action = CreateTriageIssueAction(
+            title="Repository health review",
+            body="Review this problem cohort",
+            labels=(HEALTH_REVIEW_MARKER_LABEL,),
+            storm_problems=(
+                DiscoveredFailure(41, "Problem 41", "failed"),
+                DiscoveredFailure(42, "Problem 42", "failed"),
+                DiscoveredFailure(43, "Problem 43", "failed"),
+            ),
+            reason=trigger,
+            flavor=TriageSessionFlavor.HEALTH_REVIEW,
+        )
+
+        result = applier.apply(action)
+
+        assert result.success
+        [created] = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TRIAGE_ISSUE_CREATED.value
+        ]
+        assert created.data == {
+            "issue_number": 100,
+            "pr_count": 0,
+            "trigger": trigger,
+            "storm_problem_count": 3,
+            "flavor": TriageSessionFlavor.HEALTH_REVIEW.value,
+        }
+
+    @pytest.mark.parametrize(
+        "flavor",
+        [TriageSessionFlavor.BATCH_REVIEW, TriageSessionFlavor.HEALTH_REVIEW],
+    )
+    def test_creation_reports_the_authored_flavor_without_reading_labels(
+        self, applier, mock_repository_host, mock_events, flavor
+    ):
+        """The creation boundary reports the owner's decision verbatim.
+
+        Marker labels are the recovery/intake restatement of the variant, not
+        this boundary's input: classifying here would put health-review
+        lifecycle policy in the generic applier (#6780).
+        """
+        mock_repository_host.create_issue.return_value = {"number": 100}
+        action = CreateTriageIssueAction(
+            title="Anchor",
+            body="Body",
+            # Deliberately contradicts the flavor for BATCH_REVIEW: a label the
+            # applier must not interpret.
+            labels=(HEALTH_REVIEW_MARKER_LABEL,),
+            reason="trigger",
+            flavor=flavor,
+        )
+
+        assert applier.apply(action).success
+        [created] = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TRIAGE_ISSUE_CREATED.value
+        ]
+        assert created.data["flavor"] == flavor.value
+
     def test_create_triage_issue_no_repo_host(self, applier):
         """Test triage issue creation without repository host."""
         applier.repository_host = None
@@ -1314,6 +1509,158 @@ class TestCreateTriageIssueAction:
 
         assert not result.success
         assert "No repository_host" in result.error
+
+    def test_create_triage_issue_without_milestone_makes_no_milestone_read(
+        self, applier, mock_repository_host
+    ):
+        """Empty/number intents never touch the milestones API (#6769 F4)."""
+        mock_repository_host.create_issue.return_value = {"number": 100}
+
+        result = applier.apply(
+            CreateTriageIssueAction(title="T", body="B", labels=(), pr_count=1)
+        )
+
+        assert result.success
+        mock_repository_host.list_milestones.assert_not_called()
+        assert mock_repository_host.create_issue.call_args.kwargs["milestone"] is None
+
+    def test_create_triage_issue_resolves_explicit_name_at_creation(
+        self, applier, mock_repository_host
+    ):
+        """THE resolution boundary: the planned name becomes a number here,
+        with exactly one list_milestones read (#6769 finding 4)."""
+        from issue_orchestrator.control.actions import TriageMilestoneIntent
+
+        mock_repository_host.list_milestones.return_value = [
+            {"number": 3, "title": "M3"},
+            {"number": 5, "title": "M5"},
+        ]
+        mock_repository_host.create_issue.return_value = {"number": 100}
+
+        result = applier.apply(
+            CreateTriageIssueAction(
+                title="T",
+                body="B",
+                labels=(),
+                pr_count=1,
+                milestone=TriageMilestoneIntent(explicit_name="M5"),
+            )
+        )
+
+        assert result.success
+        mock_repository_host.list_milestones.assert_called_once()
+        assert mock_repository_host.create_issue.call_args.kwargs["milestone"] == 5
+
+    def test_create_triage_issue_unresolvable_name_fails_loudly_without_creating(
+        self, applier, mock_repository_host
+    ):
+        """execute + unresolvable configured name -> loud applier failure;
+        the issue is never created (#6769 finding 4)."""
+        from issue_orchestrator.control.actions import TriageMilestoneIntent
+
+        mock_repository_host.list_milestones.return_value = [
+            {"number": 3, "title": "M3"},
+        ]
+
+        result = applier.apply(
+            CreateTriageIssueAction(
+                title="T",
+                body="B",
+                labels=(),
+                pr_count=1,
+                milestone=TriageMilestoneIntent(explicit_name="Nope"),
+            )
+        )
+
+        assert not result.success
+        assert "does not match any" in result.error
+        mock_repository_host.create_issue.assert_not_called()
+
+
+class TestSurfaceTriageProposalAction:
+    """Tests for SURFACE_TRIAGE_PROPOSAL action (ADR-0031)."""
+
+    def _proposal(self, **overrides):
+        defaults = dict(
+            issue_number=42,
+            action_id="A1",
+            proposal_type="reset_retry",
+            target_number=17,
+            target_is_pr=False,
+            title="",
+            body_preview="Reset issue #17 from scratch",
+            finding_ids=("T1", "T2"),
+            mode="shadow",
+            reason="triage proposal A1 (reset_retry) surfaced as shadow",
+        )
+        defaults.update(overrides)
+        return SurfaceTriageProposalAction(**defaults)
+
+    def test_shadow_proposal_emits_action_proposed_with_full_payload(
+        self, applier, mock_events, mock_repository_host
+    ):
+        result = applier.apply(self._proposal())
+
+        assert result.success
+        published = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TRIAGE_ACTION_PROPOSED.value
+        ]
+        assert len(published) == 1
+        assert published[0].data == {
+            "issue_number": 42,
+            "action_id": "A1",
+            "proposal_type": "reset_retry",
+            "target_number": 17,
+            "target_is_pr": False,
+            "title": "",
+            "body_preview": "Reset issue #17 from scratch",
+            "finding_ids": ["T1", "T2"],
+            "mode": "shadow",
+        }
+        # Surfacing must never touch GitHub.
+        assert not mock_repository_host.method_calls
+
+    def test_pattern_proposal_emits_action_proposed(self, applier, mock_events):
+        result = applier.apply(
+            self._proposal(proposal_type="flag_pattern", mode="pattern", target_number=0)
+        )
+
+        assert result.success
+        names = [call.args[0].name for call in mock_events.publish.call_args_list]
+        assert EventName.TRIAGE_ACTION_PROPOSED.value in names
+        assert EventName.TRIAGE_DECISION_REJECTED.value not in names
+
+    def test_rejected_mode_emits_decision_rejected(
+        self, applier, mock_events, mock_repository_host, mock_labels
+    ):
+        result = applier.apply(
+            self._proposal(
+                action_id="",
+                proposal_type="decision",
+                target_number=0,
+                finding_ids=(),
+                mode="rejected",
+                body_preview="triage decision missing or empty: x",
+                reason="triage decision rejected (missing_decision)",
+            )
+        )
+
+        assert result.success
+        published = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if call.args[0].name == EventName.TRIAGE_DECISION_REJECTED.value
+        ]
+        assert len(published) == 1
+        assert published[0].data["proposal_type"] == "decision"
+        assert published[0].data["mode"] == "rejected"
+        assert published[0].data["body_preview"] == (
+            "triage decision missing or empty: x"
+        )
+        assert not mock_repository_host.method_calls
+        assert not mock_labels.method_calls
 
 
 class TestCleanupSessionAction:
@@ -2210,6 +2557,26 @@ class TestClaimGateAudit:
     # - CREATE_WORKTREE / REMOVE_WORKTREE: local filesystem only
     # - QUEUE_RETROSPECTIVE_REVIEW / QUEUE_REWORK / QUEUE_TRIAGE: local state operations
     # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
+    # - CREATE_TRIAGE_PROPOSAL_ISSUE: creates a NEW gated issue + records the
+    #   stored op (#6778); the anchor link comment targets the triage
+    #   session's own anchor issue, never a claimed coding issue
+    # - CREATE_TRIAGE_CASE_FILE_ISSUE: creates a NEW observation-labeled case
+    #   file + records the pattern ledger row (#6781); the repeat-observation
+    #   evidence comment targets that orchestrator-owned case file, never a
+    #   claimed coding issue
+    # - SURFACE_TRIAGE_PROPOSAL: emits a trace event only, no GitHub calls
+    # - RESET_RETRY_ISSUE: owner command (#6764) - every GitHub write it
+    #   triggers is delegated to the reset owner, which routes label/PR
+    #   mutations back through this applier's claim-verified handlers
+    #   (AddLabel/RemoveLabel/SupersedePR), same as the dashboard reset.
+    # - KILL_HUNG_SESSION: owner command (#6778) - applies the local
+    #   issue-runtime termination boundary (sessions/jobs/pair); its only
+    #   GitHub writes are the proposal-issue outcome comment + close, on the
+    #   unclaimed gated proposal issue the operator just approved.
+    # - DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS: orchestrator-owned ledger cleanup
+    #   (#6779 R7/R10) - confirms each absent proposal with a targeted READ
+    #   (get_issue_state) and discards only the local authority-store op row;
+    #   it never writes GitHub state and never touches a claimed coding issue.
     # - CLEANUP_SESSION: post-completion cleanup
     # - RECONCILE_HISTORY_ENTRY: local session history mutation + event only
     # - CREATE_PR: not implemented in action_applier
@@ -2223,6 +2590,12 @@ class TestClaimGateAudit:
         ActionType.QUEUE_REWORK,
         ActionType.QUEUE_TRIAGE,
         ActionType.CREATE_TRIAGE_ISSUE,
+        ActionType.CREATE_TRIAGE_PROPOSAL_ISSUE,
+        ActionType.CREATE_TRIAGE_CASE_FILE_ISSUE,
+        ActionType.SURFACE_TRIAGE_PROPOSAL,
+        ActionType.RESET_RETRY_ISSUE,
+        ActionType.KILL_HUNG_SESSION,
+        ActionType.DISCARD_TERMINAL_TRIAGE_PROPOSAL_OPS,
         ActionType.CLEANUP_SESSION,
         ActionType.RECONCILE_HISTORY_ENTRY,
         ActionType.CREATE_PR,

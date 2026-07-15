@@ -42,6 +42,7 @@ from ..ports.background_job import BackgroundJobRunner, CompletedJob
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.publish_retry_locator_store import PublishRetryLocatorStore
 from ..ports.pull_request_tracker import PRInfo
+from ..ports.triage_authority import TriageAuthorityStore
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
@@ -154,10 +155,12 @@ class PublishRecoveryService:
         fresh_issue_reader: FreshIssueReader,
         action_applier: _ActionApplier,
         code_review_agent_configured: bool,
+        triage_authority: TriageAuthorityStore,
     ) -> None:
         self._repository_host = repository_host
         self._completion_processor = completion_processor
         self._locator_store = locator_store
+        self._triage_authority = triage_authority
         self._runner = runner
         self._lm = label_manager
         self._fresh_issue_reader = fresh_issue_reader
@@ -276,7 +279,7 @@ class PublishRecoveryService:
                     review_exchange_halted=locators.review_exchange_halted,
                 ),
             )
-            self._locator_store.clear(issue_number)
+            self._clear_retry_terminal_state(issue_number)
             logger.info(
                 "[publish-retry] Recovered existing PR for issue=%s pr=%s branch=%s",
                 issue_number,
@@ -318,6 +321,19 @@ class PublishRecoveryService:
     # Termination (called when an issue's attempt is reset / torn down)
     # ------------------------------------------------------------------
 
+    def has_active_retry(self, issue_number: int) -> bool:
+        """Report whether a publish retry is in-flight or stored for the issue.
+
+        Non-mutating counterpart to :meth:`abandon_issue`: it reads the exact
+        state ``abandon_issue`` would clear — the live submission in ``_pending``
+        and the durable locators — so a lifecycle boundary that must decide
+        whether resetting would abandon live publish-retry work reads the same
+        owner state the abandon mutates, and the two can never drift.
+        """
+        with self._lock:
+            pending_present = issue_number in self._pending
+        return pending_present or self._locator_store.get(issue_number) is not None
+
     def abandon_issue(self, issue_number: int) -> None:
         """Abandon any in-flight publish retry and drop the durable locators.
 
@@ -355,6 +371,29 @@ class PublishRecoveryService:
                     issue_number,
                     context.token,
                 )
+        self._clear_retry_terminal_state(issue_number)
+
+    def _clear_retry_terminal_state(self, issue_number: int) -> None:
+        """Drop the locators AND both of the run's triage ledger rows.
+
+        A publish-retryable failure keeps the authority row alive so the
+        retry's re-entry into ``CompletionProcessor.process`` can re-validate
+        the launch scope; once the retry reaches its own terminal (success
+        finalization, existing-PR recovery, or abandonment) the run is truly
+        over and the rows must not outlive it (#6769 F3). This is the
+        publish-failure counterpart of
+        :func:`discard_triage_authority_after_completion` — skipped on exactly
+        this path, so it owes the same PAIR of releases: dropping only the
+        run-keyed row orphans a storm anchor's cohort row (#6780). Both
+        ``discard`` calls are no-ops for non-triage runs.
+        """
+        locators = self._locator_store.get(issue_number)
+        if locators is not None:
+            self._triage_authority.discard(
+                run_id=locators.run_assets.run_id,
+                session_name=locators.run_assets.session_name,
+            )
+        self._triage_authority.discard_storm_cohort(anchor_issue_number=issue_number)
         self._locator_store.clear(issue_number)
 
     # ------------------------------------------------------------------
@@ -445,7 +484,7 @@ class PublishRecoveryService:
                     review_exchange_halted=result.review_exchange_halted,
                 ),
             )
-            self._locator_store.clear(issue_number)
+            self._clear_retry_terminal_state(issue_number)
 
     def reconcile_retry_publish_success(
         self,

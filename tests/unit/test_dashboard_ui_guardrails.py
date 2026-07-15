@@ -55,6 +55,25 @@ def _last_css_rule_body(source: str, selector: str) -> str:
     return bodies[-1]
 
 
+def _html_element(html: str, tag: str, element_id: str) -> tuple[dict[str, str], str]:
+    """Return ``(attributes, inner_text)`` of the first ``<tag>`` element
+    carrying ``id="element_id"``.
+
+    Attribute order is irrelevant — the id may appear anywhere in the
+    opening tag — so callers can assert on class / id / tabindex / text
+    intent without pinning the exact serialized attribute string (which a
+    formatter reorder or an added attribute would otherwise break).
+    """
+    match = re.search(
+        rf'<{tag}\b([^>]*\bid="{re.escape(element_id)}"[^>]*)>(.*?)</{tag}>',
+        html,
+        re.DOTALL,
+    )
+    assert match, f"no <{tag} id={element_id!r}>...</{tag}> element found"
+    attrs = dict(re.findall(r'([\w-]+)="([^"]*)"', match.group(1)))
+    return attrs, match.group(2).strip()
+
+
 def _function_body(source: str, name: str) -> str:
     marker = f"function {name}("
     start = source.find(marker)
@@ -353,10 +372,29 @@ def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template(
 
 def test_issue_detail_uses_timeline_label_not_journey() -> None:
     html = _read(DASHBOARD_TEMPLATE)
-    assert '<h3 class="issue-detail-section-title visually-hidden" id="issueDetailTimelineHeading">Timeline</h3>' in html
-    assert 'aria-labelledby="issueDetailTimelineHeading"' in html
-    assert '<h3 class="issue-detail-section-title">Journey</h3>' not in html
-    assert '<details class="issue-detail-section" id="issueDetailRawEvents">' not in html
+
+    # The visually-hidden "Timeline" heading names the drawer's timeline
+    # region for assistive tech. Prove class + id + text intent while
+    # tolerating attribute reordering (the old exact-string assertion
+    # broke on any attribute shuffle even though the a11y intent held).
+    heading_attrs, heading_text = _html_element(html, "h3", "issueDetailTimelineHeading")
+    assert heading_text == "Timeline"
+    assert set(heading_attrs.get("class", "").split()) >= {
+        "issue-detail-section-title",
+        "visually-hidden",
+    }
+
+    # The timeline region is labelled by that heading and is keyboard
+    # focusable, so a keyboard user lands on it — prove the aria wiring
+    # and tabindex hold together.
+    journey_attrs, _ = _html_element(html, "div", "issueDetailJourney")
+    assert journey_attrs.get("aria-labelledby") == "issueDetailTimelineHeading"
+    assert journey_attrs.get("tabindex") == "-1"
+
+    # The legacy "Journey" heading and raw-events / focus / GitHub chrome
+    # must stay gone regardless of how their attributes were written.
+    assert ">Journey</h3>" not in html
+    assert 'id="issueDetailRawEvents"' not in html
     assert 'id="issueDetailFocusBtn"' not in html
     assert 'id="issueDetailGitHubBtn"' not in html
 
@@ -1003,6 +1041,20 @@ def test_open_validation_failure_uses_dedicated_dialog_endpoint() -> None:
     assert "renderCanonicalValidationViewer(data" in render_body
     assert "renderActionSections: renderValidationFailureActionSections" in render_body
     assert "renderValidationFailureActionSections" in js  # used inside the dialog
+
+
+def test_session_prompt_handlers_use_ui_action_contract() -> None:
+    # The run-scoped launch-prompt actions (issue #6588 F2) must build their
+    # request through the shared contract owner, not hardcode the endpoint, so
+    # future endpoint/query changes have a single source of truth.
+    js = _read(DASHBOARD_JS)
+    contract_js = _read(UI_ACTION_CONTRACT_JS)
+    assert "buildSessionPromptRequest" in contract_js
+    assert "SESSION_PROMPT" in contract_js
+    for fn in ("refreshInlineSessionPrompt", "openLaunchPromptDialog"):
+        body = _function_body(js, fn)
+        assert "uiActionContract.buildSessionPromptRequest" in body
+        assert "/api/session/prompt/" not in body
 
 
 def test_timeline_prioritizes_validation_details_for_validation_failures() -> None:
@@ -2261,10 +2313,13 @@ def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
     assert "e2eRunToCanonicalPayload(data)" in results_body
     assert "renderCanonicalValidationViewer(canonical)" in results_body
     assert "renderRunDetailsDisclosure(data, runId)" in results_body
-    # Run-level summary chips + untracked-failures banner are the only
-    # two run-scoped surfaces above the body.
+    # Run-level summary chips + untracked-failures banner + the first-class
+    # run-artifacts drill-down section are the run-scoped surfaces above the body.
     assert "_renderRunSummaryChips(data" in results_body
     assert "_renderUntrackedFailuresBanner(untrackedCount, runId)" in results_body
+    # Issue #6593: collected artifacts render as first-class drill-downs
+    # adjacent to the failure panel, not only inside the Diagnostics disclosure.
+    assert "_renderRunArtifactsSection(data)" in results_body
 
     # The legacy "test-results-panel" container is gone — the new wrapper
     # is .e2e-canonical-panel.  test_results_list / test-results-list
@@ -2301,14 +2356,16 @@ def test_e2e_run_modal_uses_canonical_viewer_body() -> None:
 # Playwright smoke at ``tests/e2e_web/test_e2e_canonical_view.py``.
 
 
-def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> None:
-    """Diagnostics row carries runner/command/artifacts/timeline diagnostics."""
+def test_e2e_run_evidence_disclosure_holds_metadata_and_timeline() -> None:
+    """Diagnostics row carries runner/command/timeline diagnostics.
+
+    Issue #6593 moved run artifacts out of this collapsed disclosure and into a
+    first-class ``_renderRunArtifactsSection`` above the failure panel (covered
+    by ``test_e2e_run_artifacts_section_is_first_class_drilldown``), so the
+    disclosure no longer duplicates the artifact buttons.
+    """
     js = _read(DASHBOARD_JS)
     disclosure_body = _function_body(js, "renderRunDetailsDisclosure")
-    artifact_descriptor_body = _function_body(js, "_runArtifactDescriptors")
-    artifact_body = _function_body(js, "_renderRunArtifactButtons")
-    artifact_button_body = _function_body(js, "_artifactButton")
-    artifact_open_body = _function_body(js, "openE2EArtifactFromButton")
     assert "<details" in disclosure_body
     # Issue #6334 round-2: disclosure uses CLASS not id (two
     # expanded rows have one each — id would collide).
@@ -2317,8 +2374,6 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
     assert "rdd-grid" in disclosure_body
     assert "Runner" in disclosure_body
     assert "Command" in disclosure_body
-    # The row is diagnostics, not more test-result rows. The label keeps
-    # run metadata, artifacts, and timeline events one expansion away.
     assert "Diagnostics" in disclosure_body
     assert "Run details &amp; artifacts" not in disclosure_body
     assert "Run evidence" not in disclosure_body
@@ -2326,18 +2381,52 @@ def test_e2e_run_evidence_disclosure_holds_metadata_artifacts_and_timeline() -> 
     # Same class-not-id rule for the timeline container.
     assert 'class="e2e-timeline-content"' in disclosure_body
     assert 'id="e2eTimelineContent"' not in disclosure_body
-    assert "Artifacts" in disclosure_body
-    # Artifact buttons still go through openPath via the host action handler;
-    # the broken file:// behavior is preserved for now in the disclosure but
-    # is no longer the modal's headline.
-    assert "Raw Output" in artifact_descriptor_body
-    assert "_renderArtifactDescriptorButtons(_runArtifactDescriptors(data))" in artifact_body
-    assert "data-artifact-path" in artifact_button_body
-    assert "openPath('" not in artifact_button_body
-    assert "button.dataset.artifactPath" in artifact_open_body
+    # Artifacts are no longer rendered inside the diagnostics disclosure.
+    assert "rdd-artifacts" not in disclosure_body
+    assert "_runArtifactDescriptors" not in disclosure_body
     css = _read_dashboard_css_bundle()
     assert ".run-details-disclosure" in css
     assert ".rdd-summary-chip" in css
+
+
+def test_e2e_run_artifacts_section_is_first_class_drilldown() -> None:
+    """Issue #6593: collected artifacts are first-class drill-downs.
+
+    The run-artifacts section renders the same typed openPath-backed artifact
+    buttons the Diagnostics disclosure used to own, plus a per-state diagnostic
+    note distinguishing "collected" / "globs matched nothing" / "not configured".
+    """
+    js = _read(DASHBOARD_JS)
+    section_body = _function_body(js, "_renderRunArtifactsSection")
+    note_body = _function_body(js, "_renderArtifactDiagnosticNote")
+    diagnostic_body = _function_body(js, "_artifactDiagnostic")
+    artifact_descriptor_body = _function_body(js, "_runArtifactDescriptors")
+    artifact_button_body = _function_body(js, "_artifactButton")
+    artifact_open_body = _function_body(js, "openE2EArtifactFromButton")
+
+    # Section renders the run artifact descriptors as drill-down buttons.
+    assert 'class="e2e-run-artifacts"' in section_body
+    assert "_runArtifactDescriptors(data)" in section_body
+    assert "_renderArtifactDescriptorButtons(descriptors)" in section_body
+    assert "_renderArtifactDiagnosticNote(_artifactDiagnostic(data))" in section_body
+
+    # Raw output is always available; artifact buttons route through openPath
+    # via the host action handler (data-artifact-path contract, no inline
+    # file:// onclick).
+    assert "Raw Output" in artifact_descriptor_body
+    assert "data-artifact-path" in artifact_button_body
+    assert "openPath('" not in artifact_button_body
+    assert "button.dataset.artifactPath" in artifact_open_body
+
+    # The diagnostic note distinguishes the three collection states.
+    assert "not_configured" in note_body
+    assert "globs_matched_nothing" in note_body
+    assert "not_configured" in diagnostic_body
+
+    css = _read_dashboard_css_bundle()
+    assert ".e2e-run-artifacts" in css
+    # Colour is not the only status signal, and focus stays visible.
+    assert ".e2e-run-artifacts .issue-action-btn:focus-visible" in css
     # Phase C: ``.test-results-headline`` / ``.test-results-filters``
     # / ``.trr-*`` CSS classes were specific to the deleted
     # ``test_results_panel.js`` panel and are no longer in the

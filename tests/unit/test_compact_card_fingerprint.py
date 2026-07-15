@@ -89,6 +89,9 @@ REPRESENTATIVE_CARDS: list[dict[str, Any]] = [
         "github_title": "Open PR on GitHub",
         "github_aria_label": "Open PR for issue #202 on GitHub",
         "orchestrator_labels": [],
+        # Running cards carry the run-scoped directory; parity must hold with a
+        # non-empty run_dir too (see test_run_dir_change_does_change_fingerprint).
+        "run_dir": "/runs/rework-202",
     },
     # Edge: missing fields default to empty strings on both sides
     {
@@ -178,3 +181,32 @@ def test_stale_badge_visibility_change_does_change_fingerprint() -> None:
     other = dict(base)
     other["show_stale_badge"] = True
     assert compute_compact_card_fingerprint(base) != compute_compact_card_fingerprint(other)
+
+
+def test_run_dir_change_does_change_fingerprint() -> None:
+    """A card whose run directory advanced (e.g. a `rework-<issue>` slot reused
+    by a new run) must re-fingerprint so the reused DOM node — and its stale
+    `data-run-dir` that the launch-prompt action reads — is replaced.
+    """
+    base = dict(REPRESENTATIVE_CARDS[1])
+    base["run_dir"] = "/runs/rework-202/run-a"
+    other = dict(base)
+    other["run_dir"] = "/runs/rework-202/run-b"
+    assert compute_compact_card_fingerprint(base) != compute_compact_card_fingerprint(other)
+
+
+def test_run_dir_change_does_change_fingerprint_while_phase_age_stays_excluded() -> None:
+    """Changing only run_dir flips the fingerprint; ticking phase_age alone
+    (with run_dir held constant) still does not — the two volatility rules are
+    independent.
+    """
+    base = dict(REPRESENTATIVE_CARDS[1])
+    base["run_dir"] = "/runs/rework-202/run-a"
+
+    changed_run = dict(base)
+    changed_run["run_dir"] = "/runs/rework-202/run-b"
+    assert compute_compact_card_fingerprint(base) != compute_compact_card_fingerprint(changed_run)
+
+    ticked_age = dict(base)
+    ticked_age["phase_age"] = "1h"
+    assert compute_compact_card_fingerprint(base) == compute_compact_card_fingerprint(ticked_age)

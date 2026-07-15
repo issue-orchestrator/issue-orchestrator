@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..domain.triage_artifacts import UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS
+
 
 @dataclass
 class CleanupWithTriage:
@@ -230,12 +232,162 @@ class MilestoneStrategyConfig:
     explicit: Optional[str] = None  # Explicit milestone name
 
 
+TRIAGE_AUTHORITY_MODES = ("execute", "propose")
+
+# Action types whose authority mode is configurable. escalate_to_human is
+# deliberately absent: it is the non-configurable floor and always executes.
+TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS = (
+    "post_comment",
+    "create_issue",
+    "flag_pattern",
+    "reset_retry",
+    "kill_hung_session",
+)
+
+
+@dataclass
+class TriageAuthorityConfig:
+    """Per-action-type authority modes for triage decision proposals (ADR-0031).
+
+    ``execute`` — the orchestrator performs the proposed action directly.
+    ``propose`` — for ``post_comment``/``flag_pattern``: shadow mode (the
+    proposal is surfaced as would-have-done). For ``create_issue`` and
+    act-level actions: a GATED ISSUE (#6778) — the proposal is created as a
+    GitHub issue carrying ``proposed-triage``; removing that label is
+    per-instance operator approval. Per-instance approval and config-level
+    trust coexist.
+
+    ``escalate_to_human`` is intentionally not a field: it is the
+    non-configurable floor and always executes. Act-level actions
+    (``reset_retry``, ``kill_hung_session``) default to ``propose``.
+    ``reset_retry: execute`` is honored — it is wired to the
+    reset+retry-from-scratch owner with execution-time re-validation
+    (#6764, first slice). ``kill_hung_session: execute`` remains a startup
+    error: its DIRECT tier is not wired yet — it ships as gated proposal
+    issues (#6778) — see ``Config.validate``.
+    """
+
+    post_comment: str = "execute"
+    create_issue: str = "execute"
+    flag_pattern: str = "execute"
+    reset_retry: str = "propose"
+    kill_hung_session: str = "propose"
+
+    @classmethod
+    def from_mapping(cls, data: dict) -> "TriageAuthorityConfig":
+        """Parse the ``triage.authority`` YAML section, validating modes."""
+        defaults = cls()
+        values: dict[str, str] = {}
+        for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
+            value = data.get(key, getattr(defaults, key))
+            if value not in TRIAGE_AUTHORITY_MODES:
+                raise ValueError(
+                    f"triage.authority.{key} must be one of"
+                    f" {list(TRIAGE_AUTHORITY_MODES)}, got {value!r}"
+                )
+            values[key] = value
+        return cls(**values)
+
+    def mode_for(self, action_type: str) -> str:
+        """Return the authority mode for a proposed triage action type.
+
+        ``escalate_to_human`` ALWAYS returns ``execute`` — routing to a
+        human is the fail-safe floor and cannot be configured away.
+        Unknown action types raise: authority for an unrecognized action
+        must never be silently guessed.
+        """
+        if action_type == "escalate_to_human":
+            return "execute"
+        if action_type not in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
+            raise ValueError(f"unknown triage action type: {action_type!r}")
+        return getattr(self, action_type)
+
+    def to_event_dict(self) -> dict:
+        """All five graduated-authority modes, for config event payloads."""
+        return {
+            key: getattr(self, key) for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS
+        }
+
+    def startup_errors(self) -> list[str]:
+        """Startup configuration errors for this authority block (ADR-0031).
+
+        ``execute`` on an act-level action whose DIRECT executor is not
+        wired yet must be a startup configuration error, never a silent
+        no-op (#6764). ``reset_retry`` is wired and no longer rejected; the
+        unwired set lives in ``UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS``. The
+        rejection is deliberate even though ``kill_hung_session`` ships as
+        GATED PROPOSAL ISSUES under ``propose`` (#6778): the gated tier is
+        the point — per-instance approval, not config-level trust.
+        """
+        errors: list[str] = []
+        for key in TRIAGE_AUTHORITY_CONFIGURABLE_ACTIONS:
+            mode = getattr(self, key)
+            if mode not in TRIAGE_AUTHORITY_MODES:
+                errors.append(
+                    f"triage.authority.{key} must be one of"
+                    f" {list(TRIAGE_AUTHORITY_MODES)}, got {mode!r}"
+                )
+        for key in sorted(UNWIRED_ACT_LEVEL_TRIAGE_ACTIONS):
+            if getattr(self, key) == "execute":
+                errors.append(
+                    f"triage.authority.{key}: direct 'execute' is not wired"
+                    " yet (#6764); use 'propose' — proposals surface as"
+                    " gated issues awaiting per-instance approval (#6778)"
+                )
+        return errors
+
+
+@dataclass
+class TriageHealthReviewConfig:
+    """Periodic and problem-storm health-review trigger settings (ADR-0031).
+
+    ``interval_minutes`` drives the planner-side trigger: every N minutes
+    the orchestrator creates a health-review anchor issue for the triage
+    agent to walk the board snapshot. 0 (the default) disables the trigger.
+
+    ``storm_threshold`` is the number of recent blocked/failed problem issues
+    that replaces per-issue investigations with one unscheduled health review;
+    0 disables storm escalation. ``storm_window_minutes`` defines "recent".
+    """
+
+    interval_minutes: int = 0
+    storm_threshold: int = 3
+    storm_window_minutes: int = 5
+
+    def startup_errors(self) -> list[str]:
+        """Startup configuration errors for the health-review block.
+
+        The documented disable value is exactly 0; a negative interval is a
+        misconfiguration that must fail startup loudly, never be silently
+        treated as disabled (#6763 finding 8).
+        """
+        errors: list[str] = []
+        if self.interval_minutes < 0:
+            errors.append(
+                "triage.health_review.interval_minutes must be >= 0 "
+                f"(0 disables the trigger), got {self.interval_minutes}"
+            )
+        if self.storm_threshold < 0:
+            errors.append(
+                "triage.health_review.storm_threshold must be >= 0 "
+                f"(0 disables storm escalation), got {self.storm_threshold}"
+            )
+        if self.storm_window_minutes <= 0:
+            errors.append(
+                "triage.health_review.storm_window_minutes must be > 0, got "
+                f"{self.storm_window_minutes}"
+            )
+        return errors
+
+
 @dataclass
 class TriageConfig:
     """Triage issue configuration.
 
     Controls how labels and milestones are assigned to orchestrator-created
-    triage issues.
+    triage issues, which triage decision proposals the orchestrator
+    executes versus surfaces (ADR-0031), and the periodic health-review
+    trigger (ADR-0031 §4).
     """
 
     # Labels to inherit from source issues (if any source issue has the label)
@@ -249,6 +401,30 @@ class TriageConfig:
 
     # Optional explicit priority label
     priority: Optional[str] = None
+
+    # Per-action-type graduated authority for triage decision proposals
+    authority: TriageAuthorityConfig = field(default_factory=TriageAuthorityConfig)
+
+    # Periodic health-review trigger (ADR-0031 §4)
+    health_review: TriageHealthReviewConfig = field(default_factory=TriageHealthReviewConfig)
+
+    def to_event_dict(self) -> dict:
+        """Serialized ``triage`` section for config event payloads."""
+        return {
+            "inherit_labels": list(self.inherit_labels),
+            "explicit_labels": list(self.explicit_labels),
+            "milestone_strategy": {
+                "inherit_from_issues": self.milestone_strategy.inherit_from_issues,
+                "explicit": self.milestone_strategy.explicit,
+            },
+            "priority": self.priority,
+            "authority": self.authority.to_event_dict(),
+            "health_review": {
+                "interval_minutes": self.health_review.interval_minutes,
+                "storm_threshold": self.health_review.storm_threshold,
+                "storm_window_minutes": self.health_review.storm_window_minutes,
+            },
+        }
 
 
 @dataclass

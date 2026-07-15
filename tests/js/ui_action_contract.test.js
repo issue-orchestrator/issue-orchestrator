@@ -135,3 +135,23 @@ test('buildReviewArtifactRequest rejects unsupported artifact type', () => {
         /Unsupported review artifact type/,
     );
 });
+
+test('buildSessionPromptRequest returns canonical endpoint and encoded run_dir', () => {
+    const req = uiActionContract.buildSessionPromptRequest('454', '/runs/rework-454');
+    assert.equal(req.endpoint, '/api/session/prompt/454?run_dir=%2Fruns%2Frework-454');
+    assert.equal(req.method, 'GET');
+});
+
+test('buildSessionPromptRequest rejects missing runDir', () => {
+    assert.throws(
+        () => uiActionContract.buildSessionPromptRequest(454, ''),
+        /runDir is required/,
+    );
+});
+
+test('buildSessionPromptRequest rejects an invalid issue number', () => {
+    assert.throws(
+        () => uiActionContract.buildSessionPromptRequest('x', '/runs/rework-454'),
+        /Invalid issue number/,
+    );
+});

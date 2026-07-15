@@ -8,10 +8,12 @@ SessionManager adapter calls.
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..domain.models import (
+    DiscoveredFailure,
     Issue,
     PendingReview,
     PendingRetrospectiveReview,
@@ -20,6 +22,7 @@ from ..domain.models import (
     PendingValidationRetry,
     Session,
 )
+from ..domain.triage_session import TriageLaunchScope, TriageSessionFlavor
 from ..events import EventName
 from ..infra.config import Config
 from ..ports import EventSink, Issue as IssueProtocol, make_trace_event
@@ -48,9 +51,38 @@ class _ExistingTerminalRestorationRequest:
     tab_name: str = ""
 
 
+class TriageQueueOutcome(Enum):
+    """Explicit result of asking the queue owner to enqueue triage work."""
+
+    QUEUED = "queued"
+    DUPLICATE = "duplicate"
+
+
+# Bound on retryable launch failures per queued triage item. Three attempts
+# ride out a transient SQLite/log/filesystem blip without relaunch-looping a
+# genuinely broken input forever; after the third failure the item is dropped
+# and the drop is surfaced loudly (fail-fast-but-not-silent).
+TRIAGE_LAUNCH_RETRY_LIMIT = 3
+
+
+class TriageRetentionOutcome(Enum):
+    """Explicit result of retaining a queued triage item after a retryable failure."""
+
+    RETAINED = "retained"
+    EXHAUSTED = "exhausted"
+
+
 @dataclass(frozen=True, slots=True)
-class _PendingSessionQueues:
-    """Owner for launch-routing pending queue removals."""
+class PendingSessionQueues:
+    """Owner for pending session queues: launch-routing removals + triage intake.
+
+    Triage intake is behavior-level (#6768 round 3): producers say WHICH
+    variant they are queueing (batch review, failure investigation, or health
+    review) and this owner constructs the ``PendingTriageReview``, applies the
+    single deduplication rule (by issue number against the pending queue), and
+    returns an explicit :class:`TriageQueueOutcome`. Producers never touch the
+    dataclass or the state list.
+    """
 
     state: "OrchestratorState"
 
@@ -78,6 +110,143 @@ class _PendingSessionQueues:
             if queued.issue_number != issue_number
         ]
 
+    def remove_triage(self, issue_number: int) -> None:
+        self.state.pending_triage_reviews[:] = [
+            t
+            for t in self.state.pending_triage_reviews
+            if t.issue_number != issue_number
+        ]
+
+    def queue_batch_review(self, issue_number: int, title: str) -> TriageQueueOutcome:
+        """Queue a threshold-created batch tracking issue (audits the PR manifest)."""
+        return self._queue_triage(
+            PendingTriageReview(
+                issue_number, title, flavor=TriageSessionFlavor.BATCH_REVIEW
+            )
+        )
+
+    def queue_health_review(
+        self,
+        issue_number: int,
+        title: str,
+        *,
+        problem_cohort: tuple[DiscoveredFailure, ...] = (),
+    ) -> TriageQueueOutcome:
+        """Queue an interval-created health-review anchor (ADR-0031 §4); like a
+        batch review it carries no singular failure context. An unscheduled
+        problem-storm review instead carries its typed cohort so the later
+        launch snapshot cannot lose the trigger facts at end-of-tick."""
+        return self._queue_triage(
+            PendingTriageReview(
+                issue_number,
+                title,
+                flavor=TriageSessionFlavor.HEALTH_REVIEW,
+                problem_cohort=problem_cohort,
+            )
+        )
+
+    def remove_failure_investigations(
+        self, issue_numbers: frozenset[int]
+    ) -> None:
+        """Remove only storm-superseded individual investigation entries.
+
+        Batch and health anchors may share an issue number with other triage
+        bookkeeping and must never be removed by a problem-cohort transition.
+        """
+        self.state.pending_triage_reviews[:] = [
+            item
+            for item in self.state.pending_triage_reviews
+            if not (
+                item.flavor is TriageSessionFlavor.FAILURE_INVESTIGATION
+                and item.issue_number in issue_numbers
+            )
+        ]
+
+    def queue_failure_investigation(
+        self, issue_number: int, title: str, *, failure: DiscoveredFailure
+    ) -> TriageQueueOutcome:
+        """Queue a focused investigation of one failed issue.
+
+        ``failure`` is required (non-optional): the queue item is the only
+        carrier of the typed triggering-failure context once the per-tick
+        ``discovered_failures`` buffer is cleared after planning (the
+        launch-time board snapshot reads it from here).
+        ``PendingTriageReview.__post_init__`` stays as defense-in-depth
+        against untyped callers passing ``None`` anyway.
+        """
+        return self._queue_triage(
+            PendingTriageReview(
+                issue_number,
+                title,
+                flavor=TriageSessionFlavor.FAILURE_INVESTIGATION,
+                failure=failure,
+            )
+        )
+
+    def retain_triage_for_retry(self, issue_number: int) -> TriageRetentionOutcome:
+        """Bounded retention of a queued triage item after a retryable launch failure.
+
+        Before escalation starts, failure investigations have no labels-as-
+        truth recovery: the queued item is the only record (the per-tick
+        ``discovered_failures`` buffer is cleared after planning), so a
+        transient required-input prep failure must retain it for retry, not
+        delete it. Retention is bounded by ``TRIAGE_LAUNCH_RETRY_LIMIT``:
+        once exhausted ``EXHAUSTED`` is returned, but the item is NOT removed
+        here (#6771 round 4). Destructive queue removal must not precede the
+        lifecycle's committed needs-human transition, so the launch caller
+        commits the drop via
+        ``remove_triage`` only after ``escalate_issue_needs_human`` succeeds;
+        on escalation failure the item is retained and re-attempted.
+
+        Asking to retain an item that is not queued is an invariant violation
+        upstream (the launch path holds the item it just failed to launch);
+        fail fast rather than silently absorbing it.
+        """
+        item = next(
+            (
+                t
+                for t in self.state.pending_triage_reviews
+                if t.issue_number == issue_number
+            ),
+            None,
+        )
+        if item is None:
+            raise ValueError(
+                f"Cannot retain triage item for issue #{issue_number} after a "
+                "retryable launch failure: no such item is queued"
+            )
+        item.retryable_launch_failures += 1
+        if item.retryable_launch_failures >= TRIAGE_LAUNCH_RETRY_LIMIT:
+            return TriageRetentionOutcome.EXHAUSTED
+        logger.warning(
+            "[TRIAGE] Retaining %s for issue #%d after retryable launch failure "
+            "%d/%d",
+            item.flavor.value,
+            issue_number,
+            item.retryable_launch_failures,
+            TRIAGE_LAUNCH_RETRY_LIMIT,
+        )
+        return TriageRetentionOutcome.RETAINED
+
+    def _queue_triage(self, item: PendingTriageReview) -> TriageQueueOutcome:
+        """Apply the one dedup rule (issue number vs pending queue) and enqueue."""
+        queue = self.state.pending_triage_reviews
+        if any(t.issue_number == item.issue_number for t in queue):
+            logger.info(
+                "[TRIAGE] Issue #%d already queued for triage; skipping %s request",
+                item.issue_number,
+                item.flavor.value,
+            )
+            return TriageQueueOutcome.DUPLICATE
+        queue.append(item)
+        logger.info(
+            "[TRIAGE] Queued %s for issue #%d: %s",
+            item.flavor.value,
+            item.issue_number,
+            item.title,
+        )
+        return TriageQueueOutcome.QUEUED
+
 
 def orchestrator_launch_review_session(
     review: PendingReview,
@@ -86,7 +255,7 @@ def orchestrator_launch_review_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a review session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_review_session(review, state.active_sessions)
     if result.success and result.session:
         pending_queues.remove_review(review.pr_number)
@@ -118,7 +287,7 @@ def orchestrator_launch_retrospective_review_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a retrospective review session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_retrospective_review_session(
         review,
         state.active_sessions,
@@ -154,7 +323,7 @@ def orchestrator_launch_rework_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a rework session and update orchestrator queues."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_rework_session(rework, state.active_sessions)
     if result.success and result.session:
         pending_queues.remove_rework(rework)
@@ -189,7 +358,7 @@ def orchestrator_launch_validation_retry_session(
     session_restorer: "SessionRestorer",
 ) -> Optional[Session]:
     """Launch a validation retry session and update retry queue tracking."""
-    pending_queues = _PendingSessionQueues(state)
+    pending_queues = PendingSessionQueues(state)
     result = session_launcher.launch_validation_retry_session(
         retry, state.active_sessions
     )
@@ -213,16 +382,137 @@ def orchestrator_launch_validation_retry_session(
     return result.session if result.success else None
 
 
-def launch_triage_session(
+def orchestrator_launch_triage_session(
     triage: PendingTriageReview,
+    state: "OrchestratorState",
     config: Config,
-    launch_session_fn: Callable[[Issue], Optional[Session]],
-) -> None:
-    """Launch a triage review session."""
+    session_launcher: SessionLauncher,
+    session_restorer: "SessionRestorer",
+) -> Optional[Session]:
+    """Launch a queued triage session and update orchestrator queues.
+
+    The pending-triage queue carries every triage variant — threshold-created
+    batch tracking issues, interval-created health-review anchors (ADR-0031
+    §4), and failure investigations — and the planner launches them
+    through this path before ordinary issue pickup. The producer boundary that
+    queued the item declared its flavor; forward it verbatim (#6768 B5:
+    hard-coding one flavor here made batch reviews skip manifest prep).
+
+    Queue lifecycle mirrors :func:`orchestrator_launch_review_session`
+    (#6768 round 4 — a launched item previously stayed queued and was
+    relaunched every tick): the item is removed through the owning
+    :class:`PendingSessionQueues` on success, on restore of an existing
+    terminal, and on permanent launch failure (labels-as-truth recovers a
+    dropped batch at startup; a dropped investigation is a best-effort audit).
+    It is retained in exactly two cases:
+
+    - ``keep_queued`` — an existing terminal that could not be restored yet;
+    - ``retry_queued`` — required-input prep failed transiently BEFORE the
+      session started. For failure investigations the queued item is the only
+      record of the investigation (no labels-as-truth recovery), so one
+      transient SQLite/log/filesystem error must not delete it. Retention is
+      bounded by the queue owner (``retain_triage_for_retry``); on exhaustion
+      the item is dropped as a DURABLE needs-human transition — the
+      needs-human label plus an explanatory comment applied through the
+      launcher's owning action boundary, then the ``ISSUE_NEEDS_HUMAN``
+      event (#6771 round 3: a log line and an event alone do not survive an
+      orchestrator restart; labels are the source of truth).
+    """
     agent = config.triage_review_agent
     if not agent or agent not in config.agents:
         raise ValueError(f"Invalid triage agent: {agent}")
-    launch_session_fn(Issue(triage.issue_number, triage.title, [agent]))
+    pending_queues = PendingSessionQueues(state)
+    result = session_launcher.launch_issue_session(
+        Issue(triage.issue_number, triage.title, [agent]),
+        state.active_sessions,
+        triage_scope=triage.launch_scope(),
+    )
+    if result.success and result.session:
+        append_unique_active_sessions(state.active_sessions, [result.session])
+        pending_queues.remove_triage(triage.issue_number)
+    elif result.keep_queued:
+        restored = _restore_existing_terminal(
+            request=_ExistingTerminalRestorationRequest(
+                issue_number=triage.issue_number,
+                session_name=f"issue-{triage.issue_number}",
+                is_review=False,
+            ),
+            state=state,
+            session_launcher=session_launcher,
+            session_restorer=session_restorer,
+        )
+        if restored:
+            pending_queues.remove_triage(triage.issue_number)
+            return restored
+    elif result.retry_queued:
+        outcome = pending_queues.retain_triage_for_retry(triage.issue_number)
+        if outcome is TriageRetentionOutcome.EXHAUSTED:
+            _commit_or_retain_dropped_triage(
+                triage, result.reason, session_launcher, pending_queues
+            )
+    else:
+        pending_queues.remove_triage(triage.issue_number)
+    return result.session if result.success else None
+
+
+def _commit_or_retain_dropped_triage(
+    triage: PendingTriageReview,
+    last_error: str,
+    session_launcher: SessionLauncher,
+    pending_queues: PendingSessionQueues,
+) -> None:
+    """Commit protocol for a triage item that exhausted its launch retries.
+
+    The queued item is the only record before escalation starts, so it is
+    dropped only after ``escalate_issue_needs_human`` confirms the label and
+    comment transition (#6771 round 4). A partial marker commit is independently
+    crash-recoverable, while this process retains the richer queued context for
+    retry. The failure is surfaced and no ISSUE_NEEDS_HUMAN event is emitted for
+    a non-transition.
+    """
+    logger.error(
+        "[TRIAGE] Escalating dropped %s for issue #%d after %d retryable "
+        "launch failures: %s",
+        triage.flavor.value,
+        triage.issue_number,
+        TRIAGE_LAUNCH_RETRY_LIMIT,
+        last_error,
+    )
+    comment = (
+        f"**Queued {triage.flavor.value} dropped after "
+        f"{TRIAGE_LAUNCH_RETRY_LIMIT} launch failures**\n\n"
+        "The orchestrator could not prepare the required inputs for this "
+        f"triage session {TRIAGE_LAUNCH_RETRY_LIMIT} times in a row, so the "
+        "queued item was dropped and will not retry on its own.\n\n"
+        f"Last error: {last_error}\n\n"
+        "A human needs to fix the launch failure and re-queue (or close) "
+        "this investigation."
+    )
+    committed = session_launcher.escalate_issue_needs_human(
+        issue_number=triage.issue_number,
+        reason="triage launch retries exhausted",
+        comment=comment,
+        context="triage_launch_retry_exhausted",
+        event_data={
+            "issue_number": triage.issue_number,
+            "issue_title": triage.title,
+            "reason": (
+                f"triage launch failed {TRIAGE_LAUNCH_RETRY_LIMIT} "
+                f"times on required-input preparation; dropping "
+                f"queued {triage.flavor.value}: {last_error}"
+            ),
+        },
+    )
+    if committed:
+        pending_queues.remove_triage(triage.issue_number)
+        return
+    logger.error(
+        "[TRIAGE] Durable needs-human escalation did NOT commit for issue "
+        "#%d; retaining queued %s context for retry (any committed marker "
+        "also enables crash recovery)",
+        triage.issue_number,
+        triage.flavor.value,
+    )
 
 
 def session_launcher_callback(
@@ -333,9 +623,13 @@ def orchestrator_launch_session(
     state: "OrchestratorState",
     session_launcher: SessionLauncher,
     session_restorer: "SessionRestorer | None" = None,
+    *,
+    triage_scope: TriageLaunchScope | None = None,
 ) -> Optional[Session]:
     """Launch an issue session and update active-session tracking."""
-    result = session_launcher.launch_issue_session(issue, state.active_sessions)
+    result = session_launcher.launch_issue_session(
+        issue, state.active_sessions, triage_scope=triage_scope
+    )
     if result.success and result.session:
         append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued and session_restorer is not None:

@@ -1517,8 +1517,10 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
 ) -> None:
     """The default run view leads with tests; per-test expansion exposes the
     linked agentic cycle's coder session, review session, transcript, and
-    validation actions inline. Run diagnostics (command, raw artifacts)
-    lives in the collapsed Diagnostics row at the bottom."""
+    validation actions inline. Raw artifact drill-downs live in the
+    first-class "Run artifacts" section above the failure panel (issue
+    #6593); the command and timeline diagnostics stay in the collapsed
+    Diagnostics row at the bottom."""
     base_url = fixture_web_server["url"]
     run_id = fixture_web_server["run_id"]
 
@@ -1636,16 +1638,22 @@ def test_run_drawer_results_surface_run_evidence_and_linked_issue_sessions(
     # the dataset marker would be missing.
     expect(cvv).to_have_attribute("data-cvv-a11y-bound", "1")
 
-    # The run command + raw artifact buttons live in the collapsed
-    # Diagnostics row. Expand it and verify they're reachable.
+    # Issue #6593: the raw artifact drill-downs (Raw Output, etc.) now live
+    # in the first-class "Run artifacts" section above the failure panel —
+    # reachable without expanding the collapsed Diagnostics row.
+    artifacts = modal.locator(".e2e-run-artifacts").first
+    expect(artifacts).to_be_visible(timeout=5000)
+    expect(artifacts.locator("button", has_text="Raw Output")).to_be_visible(
+        timeout=5000
+    )
+
+    # The run command + timeline diagnostics still live in the collapsed
+    # Diagnostics row. Expand it and verify the command is reachable.
     disclosure = modal.locator(".run-details-disclosure").first
     expect(disclosure).to_be_visible(timeout=5000)
     disclosure.locator("summary").first.click()
     expect(disclosure.locator(".e2e-run-command")).to_contain_text(
         run_detail_payload["run"]["command"][0]
-    )
-    expect(disclosure.locator("button", has_text="Raw Output")).to_be_visible(
-        timeout=5000
     )
 
     # The run-level issue affordance must be visible inside the timeline
@@ -1791,23 +1799,20 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
     expect(cvv).to_have_attribute("data-cvv-status", "passed")
     expect(cvv).to_contain_text("package.build_image")
 
-    # Run command + raw artifact buttons live in the collapsed Diagnostics
-    # row. Expand it before clicking the artifact buttons.
-    disclosure = modal.locator(".run-details-disclosure").first
-    expect(disclosure).to_be_visible(timeout=5000)
-    disclosure.locator("summary").first.click()
-    expect(disclosure.locator(".e2e-run-command")).to_contain_text(
-        "sh scripts/run-e2e-suite.sh"
-    )
+    # Issue #6593: the raw artifact buttons live in the first-class "Run
+    # artifacts" section above the failure panel — reachable without
+    # expanding the collapsed Diagnostics row.
+    artifacts = modal.locator(".e2e-run-artifacts").first
+    expect(artifacts).to_be_visible(timeout=5000)
 
-    raw_output_btn = disclosure.locator("button", has_text="Raw Output").first
-    junit_btn = disclosure.locator(
+    raw_output_btn = artifacts.locator("button", has_text="Raw Output").first
+    junit_btn = artifacts.locator(
         "button", has_text="JUnit XML: tixmeup-e2e-smoke.xml"
     ).first
-    compose_log_btn = disclosure.locator(
+    compose_log_btn = artifacts.locator(
         "button", has_text="Text Artifact: compose-services.log"
     ).first
-    summary_btn = disclosure.locator(
+    summary_btn = artifacts.locator(
         "button", has_text="Text Artifact: tixmeup-e2e-smoke.summary.txt"
     ).first
     expect(raw_output_btn).to_be_visible(timeout=5000)
@@ -1819,6 +1824,14 @@ def test_run_drawer_results_render_generic_artifacts_without_linked_issue_lifecy
     _dom_click_hit_tested(junit_btn, "generic run junit report button")
     _dom_click_hit_tested(compose_log_btn, "generic run compose log button")
     _dom_click_hit_tested(summary_btn, "generic run summary artifact button")
+
+    # The run command still lives in the collapsed Diagnostics row.
+    disclosure = modal.locator(".run-details-disclosure").first
+    expect(disclosure).to_be_visible(timeout=5000)
+    disclosure.locator("summary").first.click()
+    expect(disclosure.locator(".e2e-run-command")).to_contain_text(
+        "sh scripts/run-e2e-suite.sh"
+    )
 
     opened_paths = page.evaluate("() => window.__openedPaths.slice()")
     assert opened_paths == [

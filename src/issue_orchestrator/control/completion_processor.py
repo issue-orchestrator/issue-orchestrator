@@ -18,8 +18,6 @@ as untrusted input.
 import json
 import logging
 import os
-import shutil
-import stat as stat_module
 import time
 import traceback
 from collections.abc import Callable
@@ -106,6 +104,8 @@ from .review_exchange_pr_comment import (
     build_review_exchange_pr_comment_body,
 )
 from .test_skip_guard import scan_added_test_skip_guards
+from .triage_completion import triage_decision_processing_error
+from .triage_session_policy import is_benign_triage_no_commits, is_triage_session, shape_requested_actions_for_triage
 from .worktree_head import current_worktree_head_sha
 from ..ports.pull_request_tracker import PRInfo
 from ..ports.working_copy import PushResult
@@ -114,6 +114,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..infra.config import Config
+    from ..ports.triage_authority import TriageAuthorityStore
     from .stack_base import StackBaseDecision
     from .stack_publish_gate import StackBaseGate
 
@@ -126,315 +127,37 @@ class _MissingReviewArtifactReader:
         )
 
 
-# Only paths under ``<worktree>/.issue-orchestrator`` are acceptable as a
-# validation-record source. Agents write to this subtree as part of normal
-# operation; anything outside it (``/etc/hosts``, a sibling worktree, a
-# user's SSH key) should never be handed off to the manifest/copy path.
-# See security #5987 F1 review + #6017 P2 re-review.
-_VALIDATION_CONTAINMENT_SUBDIR = ".issue-orchestrator"
+class _MissingTriageAuthorityStore:
+    """Fail-fast default: triage completions require the wired port.
 
-
-def _contain_validation_record_path(
-    record_path: str, worktree: Path
-) -> Path | None:
-    """Resolve ``record_path`` and require it to live inside the worktree.
-
-    Returns the resolved ``Path`` when it exists, is a regular file, and
-    its fully-resolved target is under ``<worktree>/.issue-orchestrator``.
-    Returns ``None`` (with a log message) otherwise — the processor must
-    then skip the attach step rather than copy an out-of-tree file.
-
-    We resolve BOTH sides (the candidate path and the worktree) because
-    ``worktree`` on macOS can be under ``/private/tmp`` vs ``/tmp`` etc.,
-    and ``Path.resolve`` follows symlinks so an attacker-planted link
-    inside ``.issue-orchestrator`` cannot escape.
+    Production always injects the SQLite-backed store from bootstrap; a test
+    that exercises a triage completion without wiring the port surfaces the
+    misconfiguration immediately instead of silently fail-safing.
     """
-    try:
-        worktree_resolved = Path(worktree).resolve()
-    except (OSError, RuntimeError) as exc:
-        logger.warning(
-            "worktree %s could not be resolved: %s", worktree, exc
+
+    def _fail(self) -> Any:
+        raise RuntimeError(
+            "CompletionProcessor requires triage_authority to process a "
+            "triage session completion (wired in entrypoints/bootstrap.py)"
         )
-        return None
-    try:
-        candidate_raw = Path(record_path)
-        # Relative paths are interpreted relative to the worktree — that
-        # is the form coding-done produces when the agent records a
-        # worktree-local artifact; without this, ``resolve`` would
-        # anchor on the orchestrator's CWD and always fail containment.
-        if not candidate_raw.is_absolute():
-            candidate_raw = worktree_resolved / candidate_raw
-        candidate = candidate_raw.resolve()
-    except (OSError, RuntimeError) as exc:
-        logger.warning(
-            "validation_record_path %r could not be resolved: %s",
-            record_path,
-            exc,
-        )
-        return None
-    expected_root = worktree_resolved / _VALIDATION_CONTAINMENT_SUBDIR
-    try:
-        candidate.relative_to(expected_root)
-    except ValueError:
-        logger.warning(
-            "validation_record_path %s resolves outside the worktree "
-            "containment root %s; refusing to attach",
-            candidate,
-            expected_root,
-        )
-        return None
-    if not candidate.exists():
-        logger.info(
-            "validation_record_path %s does not exist; skipping attach",
-            candidate,
-        )
-        return None
-    if not candidate.is_file():
-        logger.warning(
-            "validation_record_path %s is not a regular file; refusing to attach",
-            candidate,
-        )
-        return None
-    return candidate
+
+    def record(self, *, run_id: str, session_name: str, authority: Any) -> None:
+        self._fail()
+
+    def load(self, *, run_id: str, session_name: str) -> Any:
+        self._fail()
+
+    def discard(self, *, run_id: str, session_name: str) -> None:
+        self._fail()
 
 
-# Hard cap on bytes we'll read off an agent-supplied validation record.
-# Mirrors the per-file gate in ``completion_record_validation`` so the
-# TOCTOU-safe copy path also refuses absurdly large files (#6017
-# re-review-3 P1).
-_VALIDATION_RECORD_MAX_BYTES = 2 * 1024 * 1024
-
-
-def _relative_parts_under_worktree(
-    record_path: str, worktree_resolved: Path
-) -> tuple[str, ...] | None:
-    """Convert ``record_path`` to segments below ``worktree_resolved``.
-
-    Handles both absolute and relative inputs. Absolute paths are
-    resolved (following symlinks) and required to fall under the
-    worktree's real path — this keeps common setups working where the
-    worktree itself is reached through a symlinked prefix (macOS
-    ``/tmp`` vs ``/private/tmp``, Linux ``/var`` vs ``/private/var``).
-    Resolving the input also turns any agent-planted symlink inside
-    the input into its real target; if that target escapes the
-    worktree, ``relative_to`` rejects it here. The subsequent
-    ``O_NOFOLLOW`` walk still guards against races between this check
-    and the open. Relative paths must not contain ``..``. The first
-    segment is required to be the containment subdirectory. Returns
-    the validated segments, or ``None`` on rejection.
-    """
-    raw = Path(record_path)
-    if raw.is_absolute():
-        try:
-            resolved_raw = raw.resolve(strict=False)
-        except (OSError, RuntimeError) as exc:
-            logger.warning(
-                "validation_record_path %r could not be resolved: %s",
-                record_path,
-                exc,
-            )
-            return None
-        try:
-            rel = resolved_raw.relative_to(worktree_resolved)
-        except ValueError:
-            logger.warning(
-                "validation_record_path %s resolves to %s, outside "
-                "worktree %s; refusing to attach",
-                record_path,
-                resolved_raw,
-                worktree_resolved,
-            )
-            return None
-    else:
-        if any(part == ".." for part in raw.parts):
-            logger.warning(
-                "validation_record_path %r contains '..' segment",
-                record_path,
-            )
-            return None
-        rel = raw
-
-    parts = rel.parts
-    if not parts:
-        logger.warning(
-            "validation_record_path %r resolved to empty segments",
-            record_path,
-        )
-        return None
-    if parts[0] != _VALIDATION_CONTAINMENT_SUBDIR:
-        logger.warning(
-            "validation_record_path %r first segment %r is not %s; "
-            "refusing to attach",
-            record_path,
-            parts[0],
-            _VALIDATION_CONTAINMENT_SUBDIR,
-        )
-        return None
-    if any(segment in ("", ".", "..") for segment in parts):
-        logger.warning(
-            "validation_record_path %r has invalid segment", record_path
-        )
-        return None
-    return parts
-
-
-def _nofollow_walk_open(
-    parts: tuple[str, ...], worktree_resolved: Path, record_path: str
-) -> int | None:
-    """Walk ``parts`` from ``worktree_resolved`` with ``O_NOFOLLOW``.
-
-    Returns an open fd on the final regular file, or ``None`` on
-    rejection. Caller owns the returned fd.
-    """
-    try:
-        parent_fd = os.open(
-            str(worktree_resolved),
-            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
-        )
-    except OSError as exc:
-        logger.warning(
-            "Could not open worktree root %s: %s", worktree_resolved, exc
-        )
-        return None
-
-    dir_fds: list[int] = [parent_fd]
-    try:
-        for segment in parts[:-1]:
-            try:
-                next_fd = os.open(
-                    segment,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=parent_fd,
-                )
-            except OSError as exc:
-                logger.warning(
-                    "Refusing validation_record_path %s: ancestor "
-                    "segment %r failed O_NOFOLLOW open (%s). Symlink "
-                    "in ancestor or race between check and open.",
-                    record_path,
-                    segment,
-                    exc,
-                )
-                return None
-            dir_fds.append(next_fd)
-            parent_fd = next_fd
-
-        try:
-            return os.open(
-                parts[-1],
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=parent_fd,
-            )
-        except OSError as exc:
-            logger.warning(
-                "Refusing validation_record_path %s: final open "
-                "failed (%s). File missing or final component is a "
-                "symlink.",
-                record_path,
-                exc,
-            )
-            return None
-    finally:
-        for fd in dir_fds:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-
-
-def _fd_is_safe_regular_file(fd: int, record_path: str) -> bool:
-    """Reject non-regular or oversize files behind ``fd``."""
-    try:
-        st = os.fstat(fd)
-    except OSError as exc:
-        logger.warning(
-            "fstat failed on validation record %s: %s", record_path, exc
-        )
-        return False
-    if not stat_module.S_ISREG(st.st_mode):
-        logger.warning(
-            "validation_record_path %s is not a regular file after "
-            "O_NOFOLLOW walk",
-            record_path,
-        )
-        return False
-    if st.st_size > _VALIDATION_RECORD_MAX_BYTES:
-        logger.warning(
-            "Validation record %s is %d bytes, exceeds cap %d",
-            record_path,
-            st.st_size,
-            _VALIDATION_RECORD_MAX_BYTES,
-        )
-        return False
-    return True
-
-
-def _open_contained_validation_record(
-    record_path: str, worktree: Path
-) -> int | None:
-    """Open ``record_path`` by symlink-safe walk under ``worktree``.
-
-    ``Path.resolve`` + ``relative_to`` establishes containment at a
-    point in time, but reopening by pathname later (``os.open(path,
-    O_NOFOLLOW)``) only refuses a symlink in the *final* component —
-    an attacker who swaps an ancestor directory for a symlink between
-    check and open still wins. Previously this was the bypass flagged
-    in #6017 re-review-4 P1.
-
-    The fix: never reopen by path. Walk from the worktree root,
-    opening each path component with ``O_NOFOLLOW | O_CLOEXEC`` on
-    directories (``O_DIRECTORY``) and on the final regular file. Any
-    symlink at any level trips ``ELOOP`` and we refuse. The returned
-    fd is anchored to the real inode and is safe to stream from via
-    ``os.fdopen`` without ever touching the path string again.
-
-    Returns the open fd on success (caller owns closing it) or
-    ``None`` on rejection.
-    """
-    if not record_path:
-        return None
-    if "\x00" in record_path:
-        logger.warning(
-            "validation_record_path %r rejected: contains null byte",
-            record_path,
-        )
-        return None
-    try:
-        worktree_resolved = Path(worktree).resolve()
-    except (OSError, RuntimeError) as exc:
-        logger.warning("worktree %s could not be resolved: %s", worktree, exc)
-        return None
-
-    parts = _relative_parts_under_worktree(record_path, worktree_resolved)
-    if parts is None:
-        return None
-
-    fd = _nofollow_walk_open(parts, worktree_resolved, record_path)
-    if fd is None:
-        return None
-    if not _fd_is_safe_regular_file(fd, record_path):
-        os.close(fd)
-        return None
-    return fd
-
-
-def _copy_from_fd(src_fd: int, dst: Path) -> bool:
-    """Stream ``src_fd`` into ``dst``, closing the fd on exit.
-
-    The caller opens ``src_fd`` through a symlink-safe path walk
-    (see ``_open_contained_validation_record``); this helper only
-    touches the fd and the destination path, never the source path
-    string again. Returns ``True`` on success.
-    """
-    try:
-        with os.fdopen(src_fd, "rb", closefd=True) as src, open(dst, "wb") as dst_file:
-            shutil.copyfileobj(src, dst_file, length=65536)
-    except OSError as exc:
-        logger.debug(
-            "Failed to copy validation record fd to %s: %s", dst, exc
-        )
-        return False
-    return True
+# Containment for agent-supplied validation record paths lives in its own
+# owner module; the private aliases keep the processor's call sites stable.
+from .validation_record_containment import (
+    contain_validation_record_path as _contain_validation_record_path,
+    copy_from_fd as _copy_from_fd,
+    open_contained_validation_record as _open_contained_validation_record,
+)
 
 
 class CompletionProcessor:
@@ -465,6 +188,7 @@ class CompletionProcessor:
         review_exchange_canceller: ReviewExchangeCanceller | None = None,
         review_artifact_reader: ReviewArtifactReader | None = None,
         runtime_identity: RuntimeIdentity | None = None,
+        triage_authority: "TriageAuthorityStore | None" = None,
     ):
         """Initialize the processor with required adapters.
 
@@ -488,6 +212,9 @@ class CompletionProcessor:
                 the async review-exchange job reaches a terminal failure.
             review_artifact_reader: Reader for run-scoped review artifacts.
             runtime_identity: Running orchestrator identity to stamp on PRs.
+            triage_authority: Orchestrator-owned triage launch-authority port
+                (ADR-0031). Required whenever triage completions are
+                processed; the fail-fast default raises on first use.
         """
         self.label_adapter = label_adapter
         self.pr_adapter = pr_adapter
@@ -535,6 +262,9 @@ class CompletionProcessor:
             git_adapter=git_adapter,
         )
         self._review_artifact_reader = review_artifact_reader or _MissingReviewArtifactReader()
+        self._triage_authority: "TriageAuthorityStore" = (
+            triage_authority or _MissingTriageAuthorityStore()
+        )
         self._runtime_identity = runtime_identity
         # Optional stack publish-gate owner (ADR-0029 / #6596). When attached, a
         # Stack-after: successor's PR is based on its predecessor branch and a
@@ -619,6 +349,11 @@ class CompletionProcessor:
         return self._record_validator.resolve_agent_label_from_completion_path(
             completion_path
         )
+
+    def _is_triage_session(self, agent_label: str | None) -> bool:
+        """Triage identity via the ADR-0031 owner (config-declared triage agent)."""
+        triage_agent = self._config.triage_review_agent if self._config else None
+        return is_triage_session(triage_agent, agent_label)
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
@@ -1020,6 +755,21 @@ class CompletionProcessor:
         if error_result:
             return error_result
         assert record is not None  # Guaranteed if error_result is None
+
+        if agent_label is None:
+            agent_label, agent_error = self._resolve_agent_label_from_completion_path(
+                completion_path
+            )
+            if agent_error:
+                return ProcessingResult(
+                    success=False, message=agent_error, errors=[agent_error]
+                )
+        # Triage prompts promise no orchestrator comments (ADR-0031); the
+        # record is untrusted intent, so shape it once at the door.
+        if self._is_triage_session(agent_label):
+            record.requested_actions = list(
+                shape_requested_actions_for_triage(tuple(record.requested_actions))
+            )
         requested_actions = tuple(record.requested_actions)
         running_query = ReviewExchangeRunningQuery(
             issue_number=issue_number,
@@ -1045,6 +795,7 @@ class CompletionProcessor:
             session_name,
             issue_number,
             run_assets,
+            agent_label=agent_label,
         )
         if pre_action_failure:
             return pre_action_failure
@@ -1065,17 +816,6 @@ class CompletionProcessor:
             record.outcome.value,
             [a.value for a in record.requested_actions],
         )
-
-        if agent_label is None:
-            agent_label, agent_error = self._resolve_agent_label_from_completion_path(
-                completion_path
-            )
-            if agent_error:
-                return ProcessingResult(
-                    success=False,
-                    message=agent_error,
-                    errors=[agent_error],
-                )
 
         preserved_completion_path = preserve_completion_record(
             session_output=self.session_output,
@@ -1152,6 +892,49 @@ class CompletionProcessor:
             cleanup_completion_record_fn=self._cleanup_completion_record,
         )
 
+    def _reject_triage_completion_if_invalid(
+        self,
+        *,
+        record: CompletionRecord,
+        agent_label: str | None,
+        issue_number: int,
+        run_assets: SessionRunAssets,
+    ) -> ProcessingResult | None:
+        """Authoritative triage authority + pair validation (ADR-0031).
+
+        A COMPLETED triage session must have a trusted launch-authority
+        record (#6761 re-review F1) and a valid decision artifact pair
+        (#6761 F3). Running here — in the pre-action policy phase, before
+        the completion record is preserved and before ANY requested action
+        executes (#6769 finding 1) — a rejection produces ZERO push/PR/
+        comment calls and a failed processing result whose tagged error is
+        classified critical, so history records FAILED for every flavor and
+        the triage failure labeling path fires downstream.
+        """
+        if self._config is None or not self._is_triage_session(agent_label):
+            return None
+        if record.outcome is not CompletionOutcome.COMPLETED:
+            return None
+        triage_error = triage_decision_processing_error(
+            self._config,
+            triage_authority=self._triage_authority,
+            run_dir=run_assets.run_dir,
+            run_id=run_assets.run_id,
+            session_name=run_assets.session_name,
+        )
+        if triage_error is None:
+            return None
+        logger.warning(
+            "Triage completion rejected before any action for issue #%d: %s",
+            issue_number,
+            triage_error,
+        )
+        return ProcessingResult(
+            success=False,
+            message=f"Triage completion rejected: {triage_error}",
+            errors=[triage_error],
+        )
+
     def _check_pre_action_policies(
         self,
         worktree: Path,
@@ -1159,8 +942,23 @@ class CompletionProcessor:
         session_name: str | None,
         issue_number: int,
         run_assets: SessionRunAssets,
+        *,
+        agent_label: str | None,
     ) -> ProcessingResult | None:
         """Run completion policies that must pass before any action executes."""
+        # First: triage scope/decision authority (#6769 finding 1). Checked
+        # ahead of the worktree policies because a rejected triage completion
+        # must produce zero GitHub calls — the worktree handlers below post
+        # diagnostic comments.
+        triage_rejection = self._reject_triage_completion_if_invalid(
+            record=record,
+            agent_label=agent_label,
+            issue_number=issue_number,
+            run_assets=run_assets,
+        )
+        if triage_rejection is not None:
+            return triage_rejection
+
         worktree_state = self.validate_worktree_state(worktree, record)
         if not worktree_state.ok:
             return self._handle_invalid_worktree_state(
@@ -1915,6 +1713,11 @@ class CompletionProcessor:
                 exchange_result=exchange_result,
             )
         except Exception as e:
+            # A clean triage audit has nothing to publish; that is success,
+            # not publish-failure (ADR-0031 / #6768 B1).
+            if self._is_triage_session(agent_label) and is_benign_triage_no_commits(action, e):
+                logger.info("[triage] clean audit, nothing to publish: issue=#%d", issue_number)
+                return self._ActionResult(branch=branch)
             logger.exception(
                 "Exception executing action %s for #%d: %s",
                 action.value,

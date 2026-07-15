@@ -90,6 +90,8 @@ agents:
     ai_system: "claude-code"
 
   "agent:triage":
+    # Starter content: examples/prompts/triage-review.md (manifest-based;
+    # reads local triage-data files, completes via coding-done, never calls gh)
     prompt: ".prompts/triage-review.md"
     model: "sonnet"
     timeout_minutes: 30
@@ -141,6 +143,12 @@ review:
   code_reviewed_label: "code-reviewed"
   keep_current_approach_label: "reviewer-keep-current-approach"
   triage_review_agent: "agent:triage"
+  # Worker agent a triage create_issue proposal routes its new issue to.
+  # REQUIRED whenever triage_review_agent is set: a configured triage agent
+  # makes create_issue proposals reachable (executed directly or as a gated
+  # proposal issue), and both route the follow-up here. Must name a worker
+  # label in `agents` (#6779 R9/R14).
+  triage_follow_up_agent: "agent:backend"
   triage_review_label: "needs-triage-review"
   triage_reviewed_label: "triage-reviewed"
   triage_failed_label: "triage-failed"
@@ -204,11 +212,11 @@ validation:
     # test skips such as assumeTrue/assumeFalse/@Disabled in JVM projects).
     timeout_seconds: 300
   publish:
-    cmd: "./scripts/validate-pr-suite.sh"
+    cmd: "make validate-pr-raw"
     # Authoritative pre-push / pre-publish gate. issue-orchestrator caches
     # successful runs by HEAD SHA + command so git pre-push can reuse them.
-    # If `make validate-pr` calls scripts/verify-pr.sh, configure a private
-    # non-recursive command here so pre-push validation does not re-enter itself.
+    # If `make validate-pr` calls scripts/verify-pr.sh, configure the underlying
+    # raw command here so pre-push validation does not re-enter itself.
     timeout_seconds: 1800
     # tracked = block on staged + unstaged changes (default)
     # all = block on tracked + untracked changes
@@ -346,6 +354,36 @@ triage:
     inherit_from_issues: true
     explicit: null
   priority: null
+  # Graduated authority for triage decision proposals (ADR-0031).
+  # execute = orchestrator performs the proposed action;
+  # propose = shadow mode - recorded as would-have-done, nothing executed
+  #   (except create_issue, see below).
+  # escalate_to_human is not configurable: it always executes (the floor).
+  # create_issue "propose" is NOT shadow: it files a REAL gated proposal issue
+  # carrying the proposed-triage label, inert until an operator removes it
+  # (per-instance approval, #6778). "execute" files the follow-up issue directly.
+  # reset_retry "execute" runs the reset+retry-from-scratch owner with
+  # execution-time re-validation (stale proposals are surfaced, not run).
+  # Unwired act-level actions (kill_hung_session) must stay "propose"
+  # until their executors land (#6764) - "execute" fails at startup.
+  # A create_issue follow-up routes its new issue to review.triage_follow_up_agent
+  # (set above; REQUIRED whenever review.triage_review_agent is configured, #6779).
+  # authority:
+  #   post_comment: "execute"       # execute | propose
+  #   create_issue: "execute"       # execute | propose (propose = gated issue)
+  #   flag_pattern: "execute"       # execute | propose
+  #   reset_retry: "propose"        # execute | propose
+  #   kill_hung_session: "propose"  # propose only until #6764
+  # Health reviews (ADR-0031 §4 + reaction-model amendment): the interval is
+  # the periodic floor. A storm of K recent blocked/failed problem issues
+  # creates one immediate health review instead of K investigations. The
+  # anchor closes automatically when the review lands with a valid decision.
+  # Requires review.triage_review_agent. interval_minutes=0 disables only the
+  # periodic trigger; storm_threshold=0 disables only storm escalation.
+  # health_review:
+  #   interval_minutes: 240
+  #   storm_threshold: 3
+  #   storm_window_minutes: 5
 
 scheduling:
   default_priority_tier: 1

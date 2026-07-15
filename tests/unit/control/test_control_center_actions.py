@@ -166,7 +166,18 @@ async def test_initialize_labels_uses_loaded_config_for_repository_host() -> Non
         in_progress="in-progress",
         blocked="blocked",
         needs_human="needs-human",
+        triage_needs_human="triage-needs-human",
     )
+    label_manager.repository_initialization_labels.return_value = [
+        "in-progress",
+        "blocked",
+        "needs-human",
+        "triage-needs-human",
+        "priority:high",
+        "priority:medium",
+        "priority:low",
+        "agent:backend",
+    ]
 
     with patch("issue_orchestrator.infra.config.Config.find_and_load", return_value=config):
         with patch("issue_orchestrator.control.label_manager.LabelManager", return_value=label_manager):
@@ -180,6 +191,7 @@ async def test_initialize_labels_uses_loaded_config_for_repository_host() -> Non
 
     assert result.status_code == 200
     mock_create_host.assert_called_once_with("owner/repo", config=config)
+    client.create_label.assert_any_call("triage-needs-human", force=True)
 
 
 @pytest.mark.asyncio

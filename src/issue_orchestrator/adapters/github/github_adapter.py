@@ -366,6 +366,9 @@ class GitHubAdapter:
                 milestone=(item.get("milestone") or {}).get("title"),
                 milestone_number=(item.get("milestone") or {}).get("number"),
                 milestone_due_on=(item.get("milestone") or {}).get("due_on"),
+                created_at=item.get("created_at"),
+                updated_at=item.get("updated_at"),
+                comment_count=int(item.get("comments", 0)),
             )
             for item in raw_issues
             if isinstance(item, dict)
@@ -399,6 +402,8 @@ class GitHubAdapter:
         state: str = "open",
         limit: int = 100,
         required_stable_ids: set[str] | None = None,
+        *,
+        exhaustive: bool = False,
     ) -> "list[Issue]":
         """List issues matching the given criteria.
 
@@ -409,6 +414,10 @@ class GitHubAdapter:
             limit: Maximum number of issues to return.
             required_stable_ids: Optional set of stable IDs that must be discovered.
                 If provided and missing after cached fetch, retry without cache.
+            exhaustive: If True, the multi-page walk fails loud rather than
+                returning a silently partial set (#6779 R17) — for AUTHORITATIVE
+                callers (the open-issue anchor scan) that must not plan/recover
+                from a truncated result.
 
         Returns:
             List of GitHubIssue objects matching the criteria.
@@ -424,6 +433,7 @@ class GitHubAdapter:
                 milestone=milestone,
                 limit=limit,
                 use_cache=use_cache,
+                exhaustive=exhaustive,
             )
 
         # First attempt with cache
@@ -507,6 +517,9 @@ class GitHubAdapter:
                     milestone=milestone_obj.get("title"),
                     milestone_number=milestone_obj.get("number"),
                     milestone_due_on=milestone_obj.get("due_on"),
+                    created_at=output.get("created_at"),
+                    updated_at=output.get("updated_at"),
+                    comment_count=int(output.get("comments", 0)),
                 )
             return None
         except GitHubHttpError as e:

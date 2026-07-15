@@ -326,7 +326,7 @@ def _seed_issue_410_timeline(store: SqliteTimelineStore, repo_root: Path) -> Non
 
 def _configure_flow_deps(orchestrator: FlowWebMockOrchestrator, repo_root: Path) -> None:
     state_dir = repo_root / ".issue-orchestrator" / "state"
-    state_dir.mkdir(parents=True)
+    state_dir.mkdir(parents=True, exist_ok=True)
     store = SqliteTimelineStore(db_path=state_dir / "timeline.sqlite")
     _seed_issue_408_timeline(store, repo_root)
     _seed_issue_409_timeline(store, repo_root)

@@ -11,12 +11,13 @@ def _label_manager() -> LabelManager:
 
 def test_labels_to_remove_for_retry_includes_blocking_and_pr_pending() -> None:
     lm = _label_manager()
-    labels = ["agent:web", lm.blocked, lm.pr_pending]
+    labels = ["agent:web", lm.blocked, lm.pr_pending, lm.triage_needs_human]
 
     result = labels_to_remove_for_retry(labels, lm)
 
     assert lm.blocked in result
     assert lm.pr_pending in result
+    assert lm.triage_needs_human in result
     assert "agent:web" not in result
 
 

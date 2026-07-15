@@ -31,6 +31,8 @@ class IssueTracker(Protocol):
         state: str = "open",
         limit: int = 100,
         required_stable_ids: set[str] | None = None,
+        *,
+        exhaustive: bool = False,
     ) -> list["Issue"]:
         """List issues matching the given criteria.
 
@@ -44,6 +46,11 @@ class IssueTracker(Protocol):
             limit: Maximum number of issues to return. Defaults to 100.
             required_stable_ids: Optional set of stable IDs that must be discovered.
                 If provided and missing after cached fetch, retry without cache.
+            exhaustive: If True, the paginated walk must FAIL LOUD rather than
+                return a silently partial set (#6779 R17). Authoritative callers
+                (the exhaustive open triage-agent anchor scan) pass this so
+                planning/recovery can never proceed from a truncated list; a
+                later-page HTTP/transport failure or a cap-exhausted scan raises.
 
         Returns:
             A list of Issue objects matching the criteria.

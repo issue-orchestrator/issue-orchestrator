@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..domain.models import RETROSPECTIVE_REVIEW_TERMINAL_PREFIX, Session, SessionStatus
-from ..domain.triage_manifest import TriageManifest
 from ..infra.config import Config
 from ..ports import RepositoryHost
+from ..ports.triage_authority import TriageAuthorityStore
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
+from .triage_completion import (
+    generate_triage_completion_actions,
+    generate_triage_decision_failure_actions,
+    generate_triage_failure_actions,
+    has_triage_decision_errors,
+)
 from .completion_types import (
     ERROR_PREFIX_CREATE_PR,
     ERROR_PREFIX_PUBLISH_BLOCKED,
     ERROR_PREFIX_PUSH,
+    ERROR_PREFIX_TRIAGE_AUTHORITY,
+    ERROR_PREFIX_TRIAGE_DECISION,
     REVIEW_EXCHANGE_ERROR_PREFIX,
 )
 from .invalid_record_actions import (
@@ -24,58 +31,9 @@ from .invalid_record_actions import (
 )
 from .label_manager import LabelManager
 from .reconciliation import ExpectedState, build_expected_for_mutation
+from .triage_session_policy import is_triage_session
 
 logger = logging.getLogger(__name__)
-
-
-def _read_triage_manifest(session: Session) -> TriageManifest | None:
-    """Read triage manifest from session if it exists.
-
-    The triage_manifest path is stored in the session's run manifest.json
-    during launch via ctx.update_manifest({"triage_manifest": path}).
-
-    Returns None if:
-    - Session has no worktree path
-    - No run directory with triage_manifest path exists
-    - Manifest file doesn't exist or can't be parsed
-    """
-    if not session.worktree_path:
-        return None
-
-    worktree = Path(session.worktree_path)
-    sessions_dir = worktree / ".issue-orchestrator" / "sessions"
-    if not sessions_dir.exists():
-        return None
-
-    # Find the run directory that has a triage_manifest entry in its manifest.json.
-    for run_dir in sessions_dir.iterdir():
-        if not run_dir.is_dir():
-            continue
-
-        run_manifest_path = run_dir / "manifest.json"
-        if not run_manifest_path.exists():
-            continue
-
-        try:
-            run_manifest = json.loads(run_manifest_path.read_text())
-            triage_manifest_path = run_manifest.get("triage_manifest")
-            if triage_manifest_path:
-                manifest_path = Path(triage_manifest_path)
-                if manifest_path.exists():
-                    return TriageManifest.read(manifest_path)
-                logger.warning(
-                    "[triage] Manifest path in run manifest doesn't exist: %s",
-                    manifest_path,
-                )
-        except Exception as exc:
-            logger.warning(
-                "[triage] Failed to read manifest from %s: %s",
-                run_dir,
-                exc,
-                exc_info=True,
-            )
-
-    return None
 
 
 def critical_processing_errors(
@@ -98,8 +56,13 @@ def critical_processing_errors(
     critical: list[str] = []
     downgraded: list[str] = []
     for error in processing_errors:
-        if error.startswith(ERROR_PREFIX_PUSH) or error.startswith(
-            ERROR_PREFIX_PUBLISH_BLOCKED
+        if error.startswith(
+            (
+                ERROR_PREFIX_PUSH,
+                ERROR_PREFIX_PUBLISH_BLOCKED,
+                ERROR_PREFIX_TRIAGE_DECISION,
+                ERROR_PREFIX_TRIAGE_AUTHORITY,
+            )
         ):
             critical.append(error)
             continue
@@ -120,16 +83,6 @@ def critical_processing_errors(
     return critical, downgraded
 
 
-def _has_critical_errors(
-    processing_errors: Optional[list[str]],
-    *,
-    pr_url: str | None = None,
-) -> bool:
-    """Check if processing_errors contains critical publish/finalize failures."""
-    critical, _ = critical_processing_errors(processing_errors, pr_url=pr_url)
-    return bool(critical)
-
-
 def has_review_exchange_errors(processing_errors: Optional[list[str]]) -> bool:
     """Check if processing_errors contains review exchange halt/failure markers."""
     if not processing_errors:
@@ -147,10 +100,16 @@ class CompletionActionPlanner:
         config: Config,
         repository_host: RepositoryHost,
         label_manager: LabelManager,
+        triage_authority: TriageAuthorityStore,
+        active_session_run_id: Callable[[int], str | None],
     ) -> None:
         self.config = config
         self.repository_host = repository_host
         self._lm = label_manager
+        self._triage_authority = triage_authority
+        # Resolves the target issue's live session run id so a gated
+        # kill_hung_session proposal binds approval to that generation (#6779 R1).
+        self._active_session_run_id = active_session_run_id
 
     def _interrupted_retry_mode(self, session: Session) -> str | None:
         """Map session type to interrupted-retry mode."""
@@ -251,58 +210,74 @@ class CompletionActionPlanner:
 
     def _is_triage_session(self, session: Session) -> bool:
         """Check if this session is a triage review session."""
-        if not self.config.triage_review_agent:
-            return False
-        return session.issue.agent_type == self.config.triage_review_agent
-
-    def _generate_triage_actions(
-        self,
-        session: Session,
-        status: SessionStatus,
-        processing_errors: Optional[list[str]],
-        expected: ExpectedState,
-    ) -> list[Action]:
-        """Generate label actions for triage session completion.
-
-        Adds triage-reviewed or triage-failed labels to all PRs in the manifest.
-        """
-        actions: list[Action] = []
-        session_kind = session.terminal_id.split("-", 1)[0]
-
-        if session_kind != "issue" or not self._is_triage_session(session):
-            return actions
-
-        triage_manifest = _read_triage_manifest(session)
-        if not triage_manifest or not triage_manifest.prs:
-            return actions
-
-        # Determine which label to add based on success/failure.
-        if status == SessionStatus.COMPLETED and not _has_critical_errors(
-            processing_errors
-        ):
-            triage_label = self.config.triage_reviewed_label or "triage-reviewed"
-            reason = "Triage completed successfully"
-        else:
-            triage_label = self.config.triage_failed_label or "triage-failed"
-            reason = "Triage session failed"
-
-        logger.info(
-            "[triage] Adding '%s' label to %d PRs",
-            triage_label,
-            len(triage_manifest.prs),
+        return is_triage_session(
+            self.config.triage_review_agent, session.issue.agent_type
         )
 
-        for pr in triage_manifest.prs:
-            actions.append(
-                AddLabelAction(
-                    issue_number=pr.number,
-                    label=triage_label,
-                    reason=reason,
-                    expected=expected,
+    def _generate_triage_actions(
+        self, session: Session, expected: ExpectedState
+    ) -> list[Action]:
+        """Delegate batch-success triage effects to the ADR-0031 owner module.
+
+        Called only from the COMPLETED-without-critical-errors branch, so
+        completed_ok is True by construction (triage decision rejections are
+        classified critical upstream and take the failure routing instead).
+        """
+        return generate_triage_completion_actions(
+            self.config,
+            session,
+            expected,
+            completed_ok=True,
+            labels=self._lm,
+            triage_authority=self._triage_authority,
+            active_session_run_id=self._active_session_run_id,
+        )
+
+    def _generate_triage_failure_actions(
+        self, session: Session, expected: ExpectedState
+    ) -> list[Action]:
+        """Delegate batch failure/timeout terminal effects to the owner module."""
+        return generate_triage_failure_actions(
+            self.config, session, expected, triage_authority=self._triage_authority
+        )
+
+    def _generate_completed_with_critical_actions(
+        self,
+        session: Session,
+        critical_errors: list[str],
+        diagnostic_path: Optional[str],
+        expected: ExpectedState,
+    ) -> tuple[Action, ...]:
+        """Route COMPLETED-with-critical-errors to the owning failure policy.
+
+        Rejected triage decision pairs (#6761 finding 3) go to the triage
+        owner (manifest triage-failed labels, rejection surfacing,
+        blocked-failed on the session's own issue) — publish-failure copy
+        and publish-fail counters do not apply to them.
+        """
+        logger.info(
+            "[COMPLETION] Agent said completed but processing failed: issue=%d errors=%s",
+            session.issue.number,
+            critical_errors,
+        )
+        if self._is_triage_session(session) and has_triage_decision_errors(
+            critical_errors
+        ):
+            return tuple(
+                generate_triage_decision_failure_actions(
+                    self.config,
+                    session,
+                    expected,
+                    processing_errors=critical_errors,
+                    labels=self._lm,
+                    triage_authority=self._triage_authority,
                 )
             )
-
-        return actions
+        return tuple(
+            self._generate_processing_failure_actions(
+                session, critical_errors, diagnostic_path, expected
+            )
+        )
 
     def generate_completion_actions(
         self,
@@ -334,15 +309,8 @@ class CompletionActionPlanner:
 
         # If agent said "completed" but critical processing failed, treat as blocked-failed.
         if status == SessionStatus.COMPLETED and critical_errors:
-            logger.info(
-                "[COMPLETION] Agent said completed but processing failed: issue=%d errors=%s",
-                session.issue.number,
-                critical_errors,
-            )
-            return tuple(
-                self._generate_processing_failure_actions(
-                    session, critical_errors, diagnostic_path, expected
-                )
+            return self._generate_completed_with_critical_actions(
+                session, critical_errors, diagnostic_path, expected
             )
 
         if status == SessionStatus.COMPLETED and review_exchange_halted:
@@ -353,7 +321,9 @@ class CompletionActionPlanner:
             return tuple(self._generate_review_exchange_halted_actions(session, expected))
 
         if status == SessionStatus.TIMED_OUT:
-            return tuple(self._generate_timeout_actions(session, expected))
+            timeout_actions = self._generate_timeout_actions(session, expected)
+            timeout_actions.extend(self._generate_triage_failure_actions(session, expected))
+            return tuple(timeout_actions)
 
         if status == SessionStatus.FAILED:
             detail = completion_detail
@@ -372,7 +342,13 @@ class CompletionActionPlanner:
             )
             if invalid_actions is not None:
                 return tuple(invalid_actions)
-            return tuple(self._generate_failure_actions(session, expected))
+            # Interrupted auto-retry relaunches the session: not terminal, so
+            # no triage failure effects (the retry re-audits the same PRs).
+            if retry_actions := self._generate_interrupted_retry_actions(session, expected):
+                return tuple(retry_actions)
+            failure_actions = self._generate_failure_actions(session, expected)
+            failure_actions.extend(self._generate_triage_failure_actions(session, expected))
+            return tuple(failure_actions)
 
         if status == SessionStatus.BLOCKED:
             return tuple(
@@ -394,11 +370,7 @@ class CompletionActionPlanner:
                     expected=expected,
                 )
             ]
-            actions.extend(
-                self._generate_triage_actions(
-                    session, status, processing_errors, expected
-                )
-            )
+            actions.extend(self._generate_triage_actions(session, expected))
             return tuple(actions)
 
         # NEEDS_HUMAN keeps in-progress to maintain the ownership claim.
@@ -607,10 +579,8 @@ class CompletionActionPlanner:
         session: Session,
         expected: ExpectedState,
     ) -> list[Action]:
-        """Generate actions when session failed without completion command."""
-        if retry_actions := self._generate_interrupted_retry_actions(session, expected):
-            return retry_actions
-
+        """Generate terminal actions when a session failed without a completion
+        command (interrupted auto-retry is decided by the caller)."""
         issue_number = session.issue.number
         in_progress_label = self._lm.in_progress
         is_issue_session = session.terminal_id.startswith("issue-")

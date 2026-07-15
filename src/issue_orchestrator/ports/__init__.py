@@ -43,6 +43,12 @@ _EXPORTS = {
     "StackPredecessorFactsProvider": (
         ".stack_predecessor_facts", "StackPredecessorFactsProvider",
     ),
+    "BoardSnapshotProvider": (
+        ".board_snapshot_provider", "BoardSnapshotProvider",
+    ),
+    "NullBoardSnapshotProvider": (
+        ".board_snapshot_provider", "NullBoardSnapshotProvider",
+    ),
     "WorktreeManager": (".worktree_manager", "WorktreeManager"),
     "WorktreeInfo": (".worktree_manager", "WorktreeInfo"),
     "WorktreeReuseOptions": (".worktree_manager", "WorktreeReuseOptions"),
@@ -90,6 +96,10 @@ _EXPORTS = {
     "ReviewArtifactContent": (".review_artifact_reader", "ReviewArtifactContent"),
     "ReviewArtifactReadCommand": (".review_artifact_reader", "ReviewArtifactReadCommand"),
     "ReviewArtifactReader": (".review_artifact_reader", "ReviewArtifactReader"),
+    "TriageAuthorityStore": (".triage_authority", "TriageAuthorityStore"),
+    "InMemoryTriageAuthorityStore": (
+        ".triage_authority", "InMemoryTriageAuthorityStore",
+    ),
 }
 
 __all__ = (
@@ -124,6 +134,8 @@ __all__ = (
     "RepositoryHostError",
     "IssueResolver",
     "StackPredecessorFactsProvider",
+    "BoardSnapshotProvider",
+    "NullBoardSnapshotProvider",
     "WorktreeManager",
     "WorktreeInfo",
     "WorktreeReuseOptions",
@@ -165,6 +177,8 @@ __all__ = (
     "ReviewArtifactContent",
     "ReviewArtifactReadCommand",
     "ReviewArtifactReader",
+    "TriageAuthorityStore",
+    "InMemoryTriageAuthorityStore",
 )
 
 
