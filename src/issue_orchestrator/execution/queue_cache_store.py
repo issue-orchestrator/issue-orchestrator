@@ -132,6 +132,37 @@ class QueueCacheStore:
                 (repr(value),),
             )
 
+    def load_last_reviewed_board_fingerprint(self) -> str:
+        """Load the board fingerprint reviewed by the last health review.
+
+        Returns "" when none was ever recorded. On any loss (unset, or a wiped
+        cache) the empty string makes the next due periodic review fire — the
+        gate fails toward reviewing, never toward silently suppressing one.
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_reviewed_board_fingerprint'"
+        ).fetchone()
+        if row is None:
+            return ""
+        return str(row["value"])
+
+    def save_last_reviewed_board_fingerprint(self, value: str) -> None:
+        """Persist the reviewed board fingerprint so a restart does not re-fire
+        the periodic health review over an unchanged board (ADR-0031 §4).
+
+        Stored in the same ``meta`` key/value table as ``last_health_review_at``;
+        ``clear()`` wipes it (worst case: one extra health review after a cache
+        reset — the fail-toward-reviewing side).
+        """
+        with self._transaction() as tx:
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES "
+                "('last_reviewed_board_fingerprint', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (value,),
+            )
+
     def save_snapshot(
         self,
         issues: Sequence["Issue"],

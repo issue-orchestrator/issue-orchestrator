@@ -16,12 +16,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from types import SimpleNamespace
+
 import pytest
 
 from issue_orchestrator.adapters.github.errors import GitHubHttpError
 from issue_orchestrator.control.actions import CreateTriageIssueAction
 from issue_orchestrator.control.health_review_trigger import (
     HEALTH_REVIEW_ISSUE_TITLE,
+    board_review_fingerprint,
     discover_open_health_review_anchor,
     discover_open_triage_anchor_issues,
     health_review_due,
@@ -52,10 +55,18 @@ def _iso(epoch: float) -> str:
 class _FakeStore:
     """QueueCacheStore fake for the durable last-fired timestamp."""
 
-    def __init__(self, stored: float = 0.0, *, raise_on_save: bool = False) -> None:
+    def __init__(
+        self,
+        stored: float = 0.0,
+        *,
+        raise_on_save: bool = False,
+        stored_fingerprint: str = "",
+    ) -> None:
         self._stored = stored
+        self._stored_fingerprint = stored_fingerprint
         self.raise_on_save = raise_on_save
         self.saved: list[float] = []
+        self.saved_fingerprints: list[str] = []
 
     def load_last_health_review_at(self) -> float:
         return self._stored
@@ -65,6 +76,15 @@ class _FakeStore:
             raise OSError("disk full")
         self._stored = value
         self.saved.append(value)
+
+    def load_last_reviewed_board_fingerprint(self) -> str:
+        return self._stored_fingerprint
+
+    def save_last_reviewed_board_fingerprint(self, value: str) -> None:
+        if self.raise_on_save:
+            raise OSError("disk full")
+        self._stored_fingerprint = value
+        self.saved_fingerprints.append(value)
 
 
 class _AnchorTracker:
@@ -142,12 +162,14 @@ class TestPersistFailureReconciliation:
 
         # Contrast: plain store hydration (0.0) WOULD re-fire immediately.
         naive = OrchestratorState()
+        naive.priority_queue = [42]  # non-empty board: isolate the interval gate
         naive.last_health_review_at = store.load_last_health_review_at()
         assert health_review_due(config, naive, now=fired_at + 1800) is True
 
         # Reconciled restart: the closed anchor carries the true fire time.
         tracker = _AnchorTracker([_anchor(200, fired_at, config=config)])
         restarted = OrchestratorState()
+        restarted.priority_queue = [42]  # non-empty board: isolate the interval gate
         hydrate_last_health_review_at(config, restarted, store, tracker)
 
         assert restarted.last_health_review_at == pytest.approx(fired_at)
@@ -292,3 +314,112 @@ class TestSharedAnchorDiscovery:
         assert any(
             HEALTH_REVIEW_MARKER_LABEL in call["labels"] for call in tracker.calls
         )
+
+
+def _board(*, blocked=(), queue=(), sessions=()) -> OrchestratorState:
+    """An OrchestratorState carrying a minimal reviewable board."""
+    state = OrchestratorState()
+    state.dependency_problems = {n: object() for n in blocked}  # only keys are read
+    state.priority_queue = list(queue)
+    state.active_sessions = list(sessions)
+    return state
+
+
+def _session(number: int, last_output_at: "float | None"):
+    """Stand-in exposing only what board_review_fingerprint reads on a session:
+    ``issue.number`` and ``last_output_at``."""
+    return SimpleNamespace(
+        issue=SimpleNamespace(number=number), last_output_at=last_output_at
+    )
+
+
+class TestBoardReviewFingerprint:
+    def test_empty_board_is_blank(self) -> None:
+        assert board_review_fingerprint(OrchestratorState(), now=1000.0) == ""
+
+    def test_nonempty_board_is_identity_sensitive(self) -> None:
+        fp_a = board_review_fingerprint(_board(blocked=[500]), now=1000.0)
+        fp_b = board_review_fingerprint(_board(blocked=[501]), now=1000.0)
+        assert fp_a and fp_b and fp_a != fp_b
+
+    def test_time_alone_does_not_change_it(self) -> None:
+        state = _board(queue=[7])
+        assert board_review_fingerprint(state, now=1000.0) == board_review_fingerprint(
+            state, now=9_000.0
+        )
+
+    def test_hung_session_flips_the_fingerprint(self) -> None:
+        state = _board(sessions=[_session(7, last_output_at=1000.0)])
+        fresh = board_review_fingerprint(state, now=1000.0 + 60)  # just emitted
+        hung = board_review_fingerprint(state, now=1000.0 + 31 * 60)  # silent > 30m
+        assert fresh != hung
+
+
+class TestHealthReviewDueGate:
+    def test_unchanged_board_is_not_due(self) -> None:
+        config = _config(interval_minutes=60)
+        state = _board(queue=[7])
+        state.last_health_review_at = 1000.0
+        state.last_reviewed_board_fingerprint = board_review_fingerprint(state, 1000.0)
+        assert health_review_due(config, state, now=1000.0 + 3600) is False
+
+    def test_changed_board_is_due(self) -> None:
+        config = _config(interval_minutes=60)
+        # A different blocked issue is a genuine board change (blocked issues are
+        # tracked by identity, unlike pending-queue depth).
+        state = _board(blocked=[500])
+        state.last_health_review_at = 1000.0
+        state.last_reviewed_board_fingerprint = board_review_fingerprint(
+            _board(blocked=[501]), 1000.0
+        )
+        assert health_review_due(config, state, now=1000.0 + 3600) is True
+
+    def test_empty_board_is_never_due(self) -> None:
+        config = _config(interval_minutes=60)
+        assert health_review_due(config, OrchestratorState(), now=999_999.0) is False
+
+    def test_first_run_with_backlog_is_due(self) -> None:
+        config = _config(interval_minutes=60)
+        state = _board(blocked=[500])  # never reviewed -> fingerprint ""
+        assert health_review_due(config, state, now=999_999.0) is True
+
+    def test_not_due_within_interval_even_when_changed(self) -> None:
+        config = _config(interval_minutes=60)
+        state = _board(queue=[7])
+        state.last_health_review_at = 1000.0
+        assert health_review_due(config, state, now=1000.0 + 1800) is False
+
+
+class TestFingerprintStampAndHydrate:
+    def _action(self, config) -> CreateTriageIssueAction:
+        return CreateTriageIssueAction(
+            title=HEALTH_REVIEW_ISSUE_TITLE, labels=health_review_issue_labels(config)
+        )
+
+    def test_creation_stamps_the_reviewed_fingerprint(self) -> None:
+        config = _config(interval_minutes=60)
+        store = _FakeStore()
+        state = _board(blocked=[500])
+        record_health_review_creation(self._action(config), state, store, now=5000.0)
+        expected = board_review_fingerprint(state, 5000.0)
+        assert state.last_reviewed_board_fingerprint == expected
+        assert store.saved_fingerprints == [expected]
+
+    def test_hydrate_restores_fingerprint_and_suppresses_refire(self) -> None:
+        config = _config(interval_minutes=60)
+        board = _board(queue=[7])
+        fp = board_review_fingerprint(board, 5000.0)
+        store = _FakeStore(stored=5000.0, stored_fingerprint=fp)
+        restarted = _board(queue=[7])
+        hydrate_last_health_review_at(config, restarted, store, _AnchorTracker([]))
+        assert restarted.last_reviewed_board_fingerprint == fp
+        # Interval elapsed but the board is unchanged -> no re-walk.
+        assert health_review_due(config, restarted, now=5000.0 + 3600) is False
+
+    def test_lost_fingerprint_fails_toward_reviewing(self) -> None:
+        config = _config(interval_minutes=60)
+        store = _FakeStore(stored=5000.0, stored_fingerprint="")  # persist was lost
+        restarted = _board(queue=[7])
+        hydrate_last_health_review_at(config, restarted, store, _AnchorTracker([]))
+        assert restarted.last_reviewed_board_fingerprint == ""
+        assert health_review_due(config, restarted, now=5000.0 + 3600) is True

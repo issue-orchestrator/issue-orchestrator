@@ -563,6 +563,7 @@ class TestFactGathererHealthReviewFacts:
         """threshold=0 + interval set: health fields populate, batch stays inert."""
         self._arm_health_review(mock_config)
         sample_state.last_health_review_at = 1_000.0
+        sample_state.priority_queue = [42]  # non-empty board: not suppressed by the change-gate
 
         result = fact_gatherer.gather_triage_facts(sample_state, now=1_000.0 + 3600)
 
@@ -594,8 +595,9 @@ class TestFactGathererHealthReviewFacts:
     def test_never_run_is_due_immediately(
         self, fact_gatherer, sample_state, mock_config
     ):
-        """last_health_review_at=0 means due as soon as the trigger is enabled."""
+        """Never-run + a non-empty board is due immediately (backlog first run)."""
         self._arm_health_review(mock_config, interval_minutes=60)
+        sample_state.priority_queue = [42]  # a backlog item to review on first run
 
         result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
 
@@ -747,6 +749,7 @@ class TestFactGathererHealthReviewFacts:
             ),
         ]
 
+        sample_state.priority_queue = [42]  # non-empty board so the anchor scan runs
         result = fact_gatherer.gather_triage_facts(sample_state, now=999_999.0)
 
         assert result is not None
@@ -856,6 +859,7 @@ class TestFactGathererHealthReviewFacts:
         )
         tracker = _LabelFilteringTracker([*crowd, anchor])
         gatherer = FactGatherer(config=mock_config, repository_host=tracker)
+        sample_state.priority_queue = [42]  # non-empty board so the anchor scan runs
 
         result = gatherer.gather_triage_facts(sample_state, now=999_999.0)
 
@@ -1500,6 +1504,7 @@ class TestCaseFileScanClassification:
             ),
         ]
         sample_state.last_health_review_at = 1_000.0
+        sample_state.priority_queue = [42]  # non-empty board so tick 1 is due
         scanned = gatherer.gather_triage_facts(sample_state, now=1_000.0 + 3600)
         assert scanned is not None
         assert scanned.case_files_scanned is True

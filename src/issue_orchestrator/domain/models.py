@@ -1833,6 +1833,13 @@ class OrchestratorState:
     # health_review_trigger owner on successful anchor creation, hydrated at
     # startup from the queue-cache meta store so restarts do not double-fire.
     last_health_review_at: float = 0.0
+    # Fingerprint of the reviewable board (blocked issues, active sessions +
+    # their hung flags, pending-queue depths, cycle failures) as of the last
+    # health review. The periodic trigger fires only when the interval has
+    # elapsed AND this differs from the current board's fingerprint, so an idle
+    # orchestrator does not re-walk an unchanged board (ADR-0031 §4). "" means
+    # never reviewed / a fresh cache — which makes the next due review fire.
+    last_reviewed_board_fingerprint: str = ""
     def retrospective_review_in_flight_issue_numbers(self) -> set[int]:
         """Issues already queued, discovered, or actively under retrospective review."""
 

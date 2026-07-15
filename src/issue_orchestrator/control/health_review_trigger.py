@@ -6,7 +6,10 @@ Single owner for the trigger side of the health-review lifecycle:
   fact gathering and startup recovery (one eligibility rule for both paths),
   plus the marker-scoped dedup lookup (the ``HEALTH_REVIEW_MARKER_LABEL`` is
   the crash-safe dedup key, ADR-0013);
-- **due policy**: the interval math against ``state.last_health_review_at``;
+- **due policy**: the interval math against ``state.last_health_review_at``
+  AND a board-change gate — the review fires only when the reviewable board
+  differs from the fingerprint recorded at the last review, so an idle
+  orchestrator never re-walks an unchanged board (the storm trigger is exempt);
 - **planning**: the anchor-issue creation action when the review is due, no
   open anchor or pending launch already covers it, and the owned
   paused/capacity gate (``TriageWorkflow``) says go — anchor shaping (labels,
@@ -35,6 +38,8 @@ pair lands (see ``triage_session_policy`` / ``triage_completion``).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from datetime import datetime
@@ -53,6 +58,7 @@ if TYPE_CHECKING:
         DiscoveredFailure,
         OrchestratorState,
         PendingTriageReview,
+        Session,
         TriageFacts,
     )
     from ..infra.config import Config
@@ -116,14 +122,84 @@ def health_review_interval_minutes(config: "Config") -> int:
     return config.triage.health_review.interval_minutes
 
 
+_HUNG_SESSION_NO_OUTPUT_SECONDS = 30 * 60
+
+
+def _session_is_hung(session: "Session", now: float) -> bool:
+    """A running session that has produced no output for a sustained window.
+
+    Uses ``last_output_at`` (not raw age): a legitimately long task still emits
+    output, whereas a wedged one goes silent. A session that has not emitted
+    anything yet (``last_output_at is None``) is treated as freshly started, not
+    hung. Folding this flag into the board fingerprint is what lets a session
+    that goes quiet re-trigger a review even when nothing else on the board has
+    changed (ADR-0031 §4 aging concern).
+    """
+    last_output = session.last_output_at
+    if last_output is None:
+        return False
+    return now - last_output >= _HUNG_SESSION_NO_OUTPUT_SECONDS
+
+
+def board_review_fingerprint(state: "OrchestratorState", now: float) -> str:
+    """Stable fingerprint of the reviewable board, or "" when nothing is on it.
+
+    Captures the identities/shape a health review would walk: blocked issues,
+    active sessions (each with a hung flag), the depth of every pending queue,
+    and this cycle's failures. Any change — a job started, finished, blocked,
+    queued, or a session going silent — flips the fingerprint; a fully idle
+    board yields "". Deterministic given (state, now): no clock buckets and no
+    config, so the due-check and the post-review stamp compute the same value
+    within a tick.
+    """
+    blocked = sorted(state.dependency_problems)
+    sessions = sorted(
+        (session.issue.number, _session_is_hung(session, now))
+        for session in state.active_sessions
+    )
+    queue_depths = [
+        len(state.pending_reviews),
+        len(state.pending_reworks),
+        len(state.pending_triage_reviews),
+        len(state.pending_validation_retries),
+        len(state.pending_cleanups),
+        len(state.priority_queue),
+    ]
+    failures = sorted(state.failed_this_cycle)
+    if not (blocked or sessions or any(queue_depths) or failures):
+        return ""
+    canonical = json.dumps(
+        [blocked, sessions, queue_depths, failures], separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def health_review_due(
     config: "Config", state: "OrchestratorState", now: float
 ) -> bool:
-    """True when the configured interval has elapsed since the last review."""
+    """True when the periodic review is due AND the board has unreviewed change.
+
+    Two gates, in order:
+
+    1. the configured interval has elapsed since the last review (a debounce
+       floor); and
+    2. the current board fingerprint is non-empty AND differs from the one
+       recorded at the last review.
+
+    So a quiet orchestrator does not re-walk an unchanged board, an empty board
+    is never walked, and the first review after startup (no recorded
+    fingerprint) fires to clear the backlog. The #6780 problem-storm trigger is
+    independent of this gate.
+    """
     interval_minutes = health_review_interval_minutes(config)
     if interval_minutes <= 0:
         return False
-    return now - state.last_health_review_at >= interval_minutes * 60
+    if now - state.last_health_review_at < interval_minutes * 60:
+        return False
+    fingerprint = board_review_fingerprint(state, now)
+    if not fingerprint:
+        return False
+    return fingerprint != state.last_reviewed_board_fingerprint
 
 
 def has_health_review_marker(labels: Iterable[str]) -> bool:
@@ -574,14 +650,22 @@ def record_health_review_creation(
         return
     stamped_at = time.time() if now is None else now
     state.last_health_review_at = stamped_at
+    # Record the board we just decided to review so the next periodic tick
+    # suppresses a re-walk until something on the board actually changes.
+    state.last_reviewed_board_fingerprint = board_review_fingerprint(
+        state, stamped_at
+    )
     if store is None:
         return
     try:
         store.save_last_health_review_at(stamped_at)
+        store.save_last_reviewed_board_fingerprint(
+            state.last_reviewed_board_fingerprint
+        )
     except Exception:
         logger.warning(
-            "Failed to persist last_health_review_at; a restart will reconcile "
-            "the interval from the anchor issue's creation time",
+            "Failed to persist health-review markers; a restart reconciles the "
+            "interval from the anchor issue and re-reviews on any board change",
             exc_info=True,
         )
 
@@ -606,6 +690,13 @@ def hydrate_last_health_review_at(
     """
     stored = store.load_last_health_review_at() if store is not None else 0.0
     state.last_health_review_at = stored
+    # Rehydrate the reviewed-board fingerprint so a restart does not re-walk an
+    # unchanged board. There is no anchor-issue truth for it (unlike the
+    # timestamp), so a lost value stays "" and the next due review fires — the
+    # fail-toward-reviewing side.
+    state.last_reviewed_board_fingerprint = (
+        store.load_last_reviewed_board_fingerprint() if store is not None else ""
+    )
     if health_review_interval_minutes(config) <= 0:
         return
     anchored = most_recent_health_anchor_created_at(repository_host, config)

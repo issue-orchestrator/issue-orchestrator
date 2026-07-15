@@ -140,6 +140,40 @@ class TestLastHealthReviewAt:
         assert store.load_last_health_review_at() == 0.0
 
 
+class TestLastReviewedBoardFingerprint:
+    """Durable reviewed-board fingerprint (ADR-0031 §4 activity gate)."""
+
+    def test_round_trip(self, store: QueueCacheStore) -> None:
+        store.save_last_reviewed_board_fingerprint("abc123")
+        assert store.load_last_reviewed_board_fingerprint() == "abc123"
+
+    def test_defaults_to_empty_on_empty_store(self, store: QueueCacheStore) -> None:
+        assert store.load_last_reviewed_board_fingerprint() == ""
+
+    def test_second_save_overwrites(self, store: QueueCacheStore) -> None:
+        store.save_last_reviewed_board_fingerprint("first")
+        store.save_last_reviewed_board_fingerprint("second")
+        assert store.load_last_reviewed_board_fingerprint() == "second"
+
+    def test_independent_of_last_health_review_at(
+        self, store: QueueCacheStore
+    ) -> None:
+        store.save_last_reviewed_board_fingerprint("fp")
+        store.save_last_health_review_at(100.0)
+        assert store.load_last_reviewed_board_fingerprint() == "fp"
+        assert store.load_last_health_review_at() == 100.0
+
+    def test_survives_snapshot_save(self, store: QueueCacheStore) -> None:
+        store.save_last_reviewed_board_fingerprint("fp")
+        store.save_snapshot([_issue(1)], "2025-06-01T00:00:00Z", repo="owner/repo")
+        assert store.load_last_reviewed_board_fingerprint() == "fp"
+
+    def test_cleared_with_store(self, store: QueueCacheStore) -> None:
+        store.save_last_reviewed_board_fingerprint("fp")
+        store.clear()
+        assert store.load_last_reviewed_board_fingerprint() == ""
+
+
 class TestReplaceSemantics:
     """save_snapshot replaces all issues."""
 
